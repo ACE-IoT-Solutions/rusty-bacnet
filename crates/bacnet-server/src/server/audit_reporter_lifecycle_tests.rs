@@ -209,7 +209,7 @@ async fn audit_reporter_create_late_initial_value_decode_failure_is_silent_and_r
                 &decoded.list_of_initial_values[1].value,
                 0
             ),
-            Err(Error::Decoding { .. })
+            Err(Error::Decoding(_) | Error::DecodingMessage { .. })
         ));
         let response = dispatch(&fixture.server, ConfirmedServiceChoice::CREATE_OBJECT, data).await;
         let Apdu::Error(error) = response else {

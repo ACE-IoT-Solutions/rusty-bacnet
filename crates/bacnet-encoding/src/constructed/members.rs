@@ -65,7 +65,7 @@ pub(super) fn unsigned_field<T: TryFrom<u64> + Default>(
     data: &[u8],
     offset: usize,
     tag: u8,
-    what: &str,
+    what: &'static str,
     too_wide: &'static str,
     oversized: &mut Option<&'static str>,
 ) -> Result<(T, usize), Error> {

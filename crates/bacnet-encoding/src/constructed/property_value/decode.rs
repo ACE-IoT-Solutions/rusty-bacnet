@@ -83,10 +83,7 @@ fn reason_of(error: &Error) -> RejectReason {
 }
 
 fn error_offset(error: &Error, fallback: usize) -> usize {
-    match error {
-        Error::Decoding { offset, .. } => *offset,
-        _ => fallback,
-    }
+    error.decode_fault().map_or(fallback, |(offset, _)| offset)
 }
 
 /// Decode a property value at `offset` in `data`; returns it and the offset just past it.

@@ -60,7 +60,7 @@ fn management_payloads_are_read_only_on_request() {
     assert_eq!(message.function, BvlcFunction::REGISTER_FOREIGN_DEVICE);
     assert!(matches!(
         message.message(),
-        Err(Error::Decoding { offset: 4, .. })
+        Err(Error::DecodingMessage { offset: 4, .. })
     ));
     assert_eq!(message.npdu(), None);
 }
@@ -72,7 +72,7 @@ fn datagram_with_octets_past_its_length_is_refused() {
     // shorter message; now the datagram is refused.
     let err = decode_bvll(&[0x81, 0x0A, 0x00, 0x06, 0x01, 0x00, 0xDE, 0xAD]).unwrap_err();
     assert!(
-        matches!(&err, Error::Decoding { offset: 2, message, .. }
+        matches!(&err, Error::DecodingMessage { offset: 2, message, .. }
             if message.contains("length 6") && message.contains("8-octet")),
         "{err}"
     );
@@ -87,7 +87,7 @@ fn header_errors_map_to_decoding_errors() {
         (&[0x81, 0x0A, 0x00, 0x03][..], 2),
     ] {
         match decode_bvll(wire) {
-            Err(Error::Decoding { offset: at, .. }) => assert_eq!(at, offset, "{wire:02X?}"),
+            Err(Error::DecodingMessage { offset: at, .. }) => assert_eq!(at, offset, "{wire:02X?}"),
             other => panic!("{wire:02X?}: {other:?}"),
         }
     }
@@ -127,7 +127,7 @@ fn error_mapping_covers_every_codec_error() {
     ];
     for (error, offset) in decoding {
         match bvll_error(error) {
-            Error::Decoding {
+            Error::DecodingMessage {
                 offset: at,
                 message,
                 ..
@@ -203,7 +203,7 @@ fn bip_mac_invalid_length() {
     for mac in [&[1, 2, 3][..], &[], &[0; 7]] {
         let err = decode_bip_mac(mac).unwrap_err();
         assert!(
-            matches!(&err, Error::Decoding { offset: 0, message, .. }
+            matches!(&err, Error::DecodingMessage { offset: 0, message, .. }
                 if message.contains("must be 6 octets")),
             "{err}"
         );

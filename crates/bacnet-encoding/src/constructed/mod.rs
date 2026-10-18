@@ -3,10 +3,10 @@
 //! ASHRAE 135-2020 Clause 20.2.1.5/20.2.1.6.
 //!
 //! These codecs encode to and decode from raw application-layer bytes, the
-//! same bytes carried by [`bacnet_types::primitives::PropertyValue::ApplicationData`].
+//! same bytes carried by `PropertyValue::ApplicationData`.
 //! Objects serve framed properties (e.g. `Event_Parameters`,
 //! `Fault_Parameters`, `Recipient_List`) by encoding with these functions;
-//! the flat application-tagged model in [`crate::primitives::encode_property_value`]
+//! the flat application-tagged model in `primitives::encode_property_value`
 //! cannot express their wire form.
 //!
 //! Tag-form rules applied here:
@@ -21,160 +21,169 @@
 //!   primitives; inner `SEQUENCE OF` / embedded `SEQUENCE` members are
 //!   constructed opening/closing pairs holding application-tagged elements.
 
-use bacnet_types::constructed::{
-    BACnetDeviceObjectPropertyReference, BACnetExtendedPropertyState, BACnetPropertyStates,
-    BACnetProprietaryPropertyState,
-};
-use bacnet_types::error::Error;
-use bytes::BytesMut;
+alloc_only! {
+    use bacnet_types::constructed::{
+        BACnetDeviceObjectPropertyReference, BACnetExtendedPropertyState, BACnetPropertyStates,
+        BACnetProprietaryPropertyState,
+    };
+    use bacnet_types::error::Error;
+    use bytes::BytesMut;
 
-use crate::primitives;
-use crate::tags::{self, TagClass};
-use tagged::{
-    contents, decode_ctx_object_id, decode_ctx_unsigned, decode_optional_ctx, expect_closing,
-    expect_end, expect_opening,
-};
+    use crate::primitives;
+    use crate::tags::{self, TagClass};
+    use tagged::{
+        contents, decode_ctx_object_id, decode_ctx_unsigned, decode_optional_ctx, expect_closing,
+        expect_end, expect_opening,
+    };
+}
 
-pub mod access_credential;
-pub mod access_rule;
-mod action_list;
-pub mod assigned_landing_calls;
-mod audit_notification;
-mod audit_record;
-pub mod authentication_policy;
-pub mod calendar;
-mod channel_value;
-mod color_command;
-pub mod cov_subscription;
-mod event_log_record;
-mod event_notification;
-pub mod event_notification_subscription;
-pub mod event_parameter;
-pub mod fault_parameter;
-mod floor_pairs;
-pub mod landing_call_status;
-pub mod landing_door_status;
-pub mod lift_car_call_list;
-mod lighting_command;
-mod log_fields;
-mod log_multiple_record;
-mod log_record;
-mod members;
-mod name_value;
-pub mod network_port;
-pub mod object_property_reference;
-pub mod port_permission;
-mod property_access_result;
+// The tagged-field readers and the property-value boundary need no
+// allocator; every codec below decodes to or encodes from owned types.
 mod property_value;
-mod read_access;
-pub mod recipient;
-mod reference_sinks;
-mod scale;
-pub mod schedule;
-mod shed_level;
-pub mod staging;
 pub mod tagged;
-mod value_source;
 
-pub use access_credential::{
-    decode_assigned_access_rights, decode_authentication_factor,
-    decode_authentication_factor_format, decode_credential_authentication_factor,
-    encode_assigned_access_rights, encode_authentication_factor,
-    encode_authentication_factor_format, encode_credential_authentication_factor,
-};
-pub use access_rule::{decode_access_rule, encode_access_rule};
-pub use action_list::{
-    decode_action_command, decode_action_list, encode_action_command, encode_action_list,
-};
-pub use assigned_landing_calls::{decode_assigned_landing_calls, encode_assigned_landing_calls};
-pub use audit_notification::{decode_audit_notification_at, encode_audit_notification};
-pub use audit_record::{
-    decode_audit_log_record, decode_audit_log_record_at, decode_audit_log_record_result_at,
-    encode_audit_log_record, encode_audit_log_record_result,
-};
-pub use authentication_policy::{decode_authentication_policy, encode_authentication_policy};
-pub use calendar::{
-    decode_calendar_entry, decode_calendar_entry_list, decode_date_range, encode_calendar_entry,
-    encode_calendar_entry_list, encode_date_range,
-};
-pub use channel_value::{channel_value_end, constructed_channel_value, ConstructedChannelValue};
-pub use color_command::{
-    decode_color_command, decode_color_command_value, decode_xy_color, encode_color_command,
-    encode_xy_color,
-};
-pub use cov_subscription::{
-    decode_cov_multiple_subscription, decode_cov_subscription, encode_cov_multiple_subscription,
-    encode_cov_multiple_subscription_list, encode_cov_subscription, encode_cov_subscription_list,
-};
-pub use event_log_record::{decode_event_log_record, encode_event_log_record};
-pub use event_notification::{
-    decode_event_notification, decode_event_notification_tolerant, decode_notification_parameters,
-    encode_event_notification, encode_notification_parameters,
-};
-pub use event_notification_subscription::{
-    decode_event_notification_subscription, encode_event_notification_subscription,
-    encode_event_notification_subscription_list,
-};
-pub use event_parameter::{decode_event_parameter, encode_event_parameter};
-pub use fault_parameter::{decode_fault_parameters, encode_fault_parameters};
-pub use landing_call_status::{
-    decode_landing_call_status, decode_landing_call_status_list, encode_landing_call_status,
-    encode_landing_call_status_list,
-};
-pub use landing_door_status::{decode_landing_door_status, encode_landing_door_status};
-pub use lift_car_call_list::{decode_lift_car_call_list, encode_lift_car_call_list};
-pub use lighting_command::{
-    decode_lighting_command, decode_lighting_command_value, encode_lighting_command,
-};
-pub use log_multiple_record::{decode_log_multiple_record, encode_log_multiple_record};
-pub use log_record::{decode_log_record, encode_log_record};
-pub use name_value::{decode_name_value, encode_name_value};
-pub use network_port::{
-    decode_bdt_entry, decode_bdt_entry_list, decode_fdt_entry, decode_fdt_entry_list,
-    decode_host_address, decode_host_n_port, encode_bdt_entry, encode_bdt_entry_list,
-    encode_fdt_entry, encode_fdt_entry_list, encode_host_address, encode_host_n_port,
-};
-pub use object_property_reference::{
-    decode_object_property_reference, decode_object_property_reference_at,
-    decode_setpoint_reference, decode_setpoint_reference_at, encode_object_property_reference,
-    encode_object_property_reference_to_sink, encode_setpoint_reference,
-    encode_setpoint_reference_to_sink,
-};
-pub use port_permission::{decode_port_permission, encode_port_permission};
-pub use property_access_result::{decode_property_access_result, encode_property_access_result};
-pub use property_value::{
-    decode_bacnet_property_value, decode_bacnet_property_value_in_list,
-    decode_bacnet_property_value_in_list_detailed, encode_bacnet_property_value,
-    extract_property_value, PropertyValueBoundary, PropertyValueDecodeError,
-    PropertyValueDecodeFailure, PropertyValueDecodeStage,
-};
-pub use read_access::{
-    decode_property_reference, decode_read_access_specification, encode_property_reference,
-    encode_property_reference_to_sink, encode_read_access_specification,
-};
-pub use recipient::{
-    check_decoded_mac_len, check_encoded_mac_len, decode_destination, decode_destination_list,
-    decode_recipient, encode_destination, encode_destination_list, encode_recipient,
-};
-pub use reference_sinks::encode_device_object_property_reference_to_sink;
-pub use scale::{decode_prescale, decode_scale, encode_prescale, encode_scale};
-pub use schedule::{
-    decode_daily_schedule, decode_exception_schedule, decode_special_event,
-    decode_special_event_period, decode_time_value, decode_weekly_schedule, encode_daily_schedule,
-    encode_exception_schedule, encode_special_event, encode_special_event_period,
-    encode_time_value, encode_weekly_schedule,
-};
-pub use shed_level::{decode_shed_level, encode_shed_level};
-pub use staging::{
-    decode_device_object_reference, decode_stage_limit_value, encode_device_object_reference,
-    encode_device_object_reference_to_sink, encode_stage_limit_value,
-};
+pub use property_value::{extract_property_value, PropertyValueBoundary};
 
-pub use value_source::{decode_value_source, encode_value_source};
+alloc_only! {
+    pub mod access_credential;
+    pub mod access_rule;
+    mod action_list;
+    pub mod assigned_landing_calls;
+    mod audit_notification;
+    mod audit_record;
+    pub mod authentication_policy;
+    pub mod calendar;
+    mod channel_value;
+    mod color_command;
+    pub mod cov_subscription;
+    mod event_log_record;
+    mod event_notification;
+    pub mod event_notification_subscription;
+    pub mod event_parameter;
+    pub mod fault_parameter;
+    mod floor_pairs;
+    pub mod landing_call_status;
+    pub mod landing_door_status;
+    pub mod lift_car_call_list;
+    mod lighting_command;
+    mod log_fields;
+    mod log_multiple_record;
+    mod log_record;
+    mod members;
+    mod name_value;
+    pub mod network_port;
+    pub mod object_property_reference;
+    pub mod port_permission;
+    mod property_access_result;
+    mod read_access;
+    pub mod recipient;
+    mod reference_sinks;
+    mod scale;
+    pub mod schedule;
+    mod shed_level;
+    pub mod staging;
+    mod value_source;
+
+    pub use access_credential::{
+        decode_assigned_access_rights, decode_authentication_factor,
+        decode_authentication_factor_format, decode_credential_authentication_factor,
+        encode_assigned_access_rights, encode_authentication_factor,
+        encode_authentication_factor_format, encode_credential_authentication_factor,
+    };
+    pub use access_rule::{decode_access_rule, encode_access_rule};
+    pub use action_list::{
+        decode_action_command, decode_action_list, encode_action_command, encode_action_list,
+    };
+    pub use assigned_landing_calls::{decode_assigned_landing_calls, encode_assigned_landing_calls};
+    pub use audit_notification::{decode_audit_notification_at, encode_audit_notification};
+    pub use audit_record::{
+        decode_audit_log_record, decode_audit_log_record_at, decode_audit_log_record_result_at,
+        encode_audit_log_record, encode_audit_log_record_result,
+    };
+    pub use authentication_policy::{decode_authentication_policy, encode_authentication_policy};
+    pub use calendar::{
+        decode_calendar_entry, decode_calendar_entry_list, decode_date_range, encode_calendar_entry,
+        encode_calendar_entry_list, encode_date_range,
+    };
+    pub use channel_value::{channel_value_end, constructed_channel_value, ConstructedChannelValue};
+    pub use color_command::{
+        decode_color_command, decode_color_command_value, decode_xy_color, encode_color_command,
+        encode_xy_color,
+    };
+    pub use cov_subscription::{
+        decode_cov_multiple_subscription, decode_cov_subscription, encode_cov_multiple_subscription,
+        encode_cov_multiple_subscription_list, encode_cov_subscription, encode_cov_subscription_list,
+    };
+    pub use event_log_record::{decode_event_log_record, encode_event_log_record};
+    pub use event_notification::{
+        decode_event_notification, decode_event_notification_tolerant, decode_notification_parameters,
+        encode_event_notification, encode_notification_parameters,
+    };
+    pub use event_notification_subscription::{
+        decode_event_notification_subscription, encode_event_notification_subscription,
+        encode_event_notification_subscription_list,
+    };
+    pub use event_parameter::{decode_event_parameter, encode_event_parameter};
+    pub use fault_parameter::{decode_fault_parameters, encode_fault_parameters};
+    pub use landing_call_status::{
+        decode_landing_call_status, decode_landing_call_status_list, encode_landing_call_status,
+        encode_landing_call_status_list,
+    };
+    pub use landing_door_status::{decode_landing_door_status, encode_landing_door_status};
+    pub use lift_car_call_list::{decode_lift_car_call_list, encode_lift_car_call_list};
+    pub use lighting_command::{
+        decode_lighting_command, decode_lighting_command_value, encode_lighting_command,
+    };
+    pub use log_multiple_record::{decode_log_multiple_record, encode_log_multiple_record};
+    pub use log_record::{decode_log_record, encode_log_record};
+    pub use name_value::{decode_name_value, encode_name_value};
+    pub use network_port::{
+        decode_bdt_entry, decode_bdt_entry_list, decode_fdt_entry, decode_fdt_entry_list,
+        decode_host_address, decode_host_n_port, encode_bdt_entry, encode_bdt_entry_list,
+        encode_fdt_entry, encode_fdt_entry_list, encode_host_address, encode_host_n_port,
+    };
+    pub use object_property_reference::{
+        decode_object_property_reference, decode_object_property_reference_at,
+        decode_setpoint_reference, decode_setpoint_reference_at, encode_object_property_reference,
+        encode_object_property_reference_to_sink, encode_setpoint_reference,
+        encode_setpoint_reference_to_sink,
+    };
+    pub use port_permission::{decode_port_permission, encode_port_permission};
+    pub use property_access_result::{decode_property_access_result, encode_property_access_result};
+    pub use read_access::{
+        decode_property_reference, decode_read_access_specification, encode_property_reference,
+        encode_property_reference_to_sink, encode_read_access_specification,
+    };
+    pub use recipient::{
+        check_decoded_mac_len, check_encoded_mac_len, decode_destination, decode_destination_list,
+        decode_recipient, encode_destination, encode_destination_list, encode_recipient,
+    };
+    pub use reference_sinks::encode_device_object_property_reference_to_sink;
+    pub use scale::{decode_prescale, decode_scale, encode_prescale, encode_scale};
+    pub use schedule::{
+        decode_daily_schedule, decode_exception_schedule, decode_special_event,
+        decode_special_event_period, decode_time_value, decode_weekly_schedule, encode_daily_schedule,
+        encode_exception_schedule, encode_special_event, encode_special_event_period,
+        encode_time_value, encode_weekly_schedule,
+    };
+    pub use shed_level::{decode_shed_level, encode_shed_level};
+    pub use staging::{
+        decode_device_object_reference, decode_stage_limit_value, encode_device_object_reference,
+        encode_device_object_reference_to_sink, encode_stage_limit_value,
+    };
+
+    pub use value_source::{decode_value_source, encode_value_source};
+    pub use property_value::{
+        decode_bacnet_property_value, decode_bacnet_property_value_in_list,
+        decode_bacnet_property_value_in_list_detailed, encode_bacnet_property_value,
+        PropertyValueDecodeError, PropertyValueDecodeFailure, PropertyValueDecodeStage,
+    };
+}
 
 /// Upper bound on decoded SEQUENCE OF / list lengths, mirroring the socket-
 /// facing posture of `bacnet-services`' `MAX_DECODED_ITEMS`. Prevents memory
 /// exhaustion from malformed framed payloads.
+#[cfg(feature = "alloc")]
 const MAX_FRAMED_ITEMS: usize = 10_000;
 
 // ---------------------------------------------------------------------------
@@ -185,6 +194,7 @@ const MAX_FRAMED_ITEMS: usize = 10_000;
 ///
 /// Returns an error without modifying `buf` when a constructed proprietary
 /// value does not contain a BACnet TLV sequence.
+#[cfg(feature = "alloc")]
 pub fn encode_property_state(
     buf: &mut BytesMut,
     state: &BACnetPropertyStates,
@@ -276,6 +286,7 @@ pub fn encode_property_state(
 ///
 /// Proprietary tags 64 through 254 retain their encoded contents in
 /// [`BACnetPropertyStates::Other`]. Reserved standard tags are rejected.
+#[cfg(feature = "alloc")]
 pub fn decode_property_state(
     data: &[u8],
     offset: usize,
@@ -415,6 +426,7 @@ pub fn decode_property_state(
 /// `object-identifier [0]`, `property-identifier [1]`, optional
 /// `property-array-index [2]`, optional `device-identifier [3]` — the body
 /// that sits between the enclosing field's opening/closing tags.
+#[cfg(feature = "alloc")]
 pub(crate) fn encode_dopr_body(buf: &mut BytesMut, r: &BACnetDeviceObjectPropertyReference) {
     encode_device_object_property_reference_to_sink(buf, r)
         .expect("BytesMut accepts each reference");
@@ -422,10 +434,11 @@ pub(crate) fn encode_dopr_body(buf: &mut BytesMut, r: &BACnetDeviceObjectPropert
 
 /// Decode the members written by [`encode_dopr_body`], stopping before the
 /// enclosing closing tag.
+#[cfg(feature = "alloc")]
 pub(crate) fn decode_dopr_body(
     data: &[u8],
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(BACnetDeviceObjectPropertyReference, usize), Error> {
     let (object_identifier, offset) = decode_ctx_object_id(data, offset, 0, what)?;
     let (property_identifier, offset) = decode_ctx_unsigned::<u32>(data, offset, 1, what)?;
@@ -447,6 +460,7 @@ pub(crate) fn decode_dopr_body(
 /// Encode one bare `BACnetDeviceObjectPropertyReference`, the counterpart of
 /// [`decode_device_object_property_reference`]: its members with no enclosing
 /// frame, so a BACnetLIST of these references is their encodings back to back.
+#[cfg(feature = "alloc")]
 pub fn encode_device_object_property_reference(
     buf: &mut BytesMut,
     r: &BACnetDeviceObjectPropertyReference,
@@ -458,6 +472,7 @@ pub fn encode_device_object_property_reference(
 /// it and the offset past its last member. A BACnetLIST of these references
 /// concatenates its elements with no frame, so walking the list calls this at
 /// each element's start.
+#[cfg(feature = "alloc")]
 pub fn decode_device_object_property_reference(
     data: &[u8],
     offset: usize,
@@ -469,7 +484,8 @@ pub fn decode_device_object_property_reference(
 ///
 /// This checks matching context tags, the context nesting limit, and
 /// application-value forms while preserving defined CharacterString encodings.
-pub fn validate_tlv_sequence(data: &[u8], what: &str) -> Result<(), Error> {
+#[cfg(feature = "alloc")]
+pub fn validate_tlv_sequence(data: &[u8], what: &'static str) -> Result<(), Error> {
     let mut offset = 0;
     let mut count = 0;
     while offset < data.len() {
@@ -499,7 +515,8 @@ pub fn validate_tlv_sequence(data: &[u8], what: &str) -> Result<(), Error> {
 /// Its only context-tagged CHOICE is `reference [0]` over
 /// `BACnetDeviceObjectPropertyReference`; NotificationParameters uses a
 /// different Extended production with `property-value [0]`.
-pub(crate) fn validate_extended_parameters(data: &[u8], what: &str) -> Result<(), Error> {
+#[cfg(feature = "alloc")]
+pub(crate) fn validate_extended_parameters(data: &[u8], what: &'static str) -> Result<(), Error> {
     let mut offset = 0;
     let mut count = 0;
     while offset < data.len() {
@@ -522,5 +539,5 @@ pub(crate) fn validate_extended_parameters(data: &[u8], what: &str) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 pub(crate) mod tests;

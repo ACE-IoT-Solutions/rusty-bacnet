@@ -24,7 +24,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | --- | --- | --- | --- | --- |
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, the `named_codes!` copies, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
 | Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
-| Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std` | ✓ | ✓ | ✓ | ✓ |
+| Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std`, and their tests without either | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`), the `no_std` builds included |  | ✓ |  | ✓ |
 | Cargo Audit + Cargo Deny |  | ✓ |  | ✓ |
@@ -140,7 +140,8 @@ but not `[workspace.lints]`, since samples print to the terminal.
 ### `no_std` checks
 
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without `std`
-when `alloc` replaces their default `std` feature, and the MS/TP and B/IP
+when `alloc` replaces their default `std` feature, and without an allocator
+when neither is on (#1614), and the MS/TP and B/IP
 crates (`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
 `bacnet-bip-core`), the router core (`bacnet-router-core`) and the cores'
 time type (`bacnet-time`) never use it. A host build always has `std` and an allocator, so no single run
@@ -149,9 +150,10 @@ proves all of that; each check covers a part.
 | Check | Job | What it shows |
 | --- | --- | --- |
 | `scripts/ci/check-no-std.sh` | Clippy, `NO_STD_TARGETS` | Each crate and feature set compiles clean under clippy on `thumbv6m-none-eabi`, `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`, with nothing skipped, and no package in its graph turns `std` on or is `tracing`, `tokio` or `socket2`. Nor does the crate choose atomics for the firmware: its own graph holds no `portable-atomic` or `critical-section`, and no `bytes` with `extra-platforms` |
-| `scripts/ci/check-default-features.sh` | Clippy | Clippy and rustdoc, private items included, for the three `alloc` crates without `std`, on Linux, Windows and macOS |
-| `cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets` | Clippy | The three crates' tests with `alloc` and without `std`, which the Test job runs, are lint-clean too |
+| `scripts/ci/check-default-features.sh` | Clippy | Clippy and rustdoc, private items included, for the three crates with `alloc` and without `std`, and without either, on Linux, Windows and macOS |
+| `cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features [--features alloc] --all-targets` | Clippy | The three crates' tests with `alloc` and without `std`, and without either, which the Test job runs, are lint-clean too |
 | The `alloc` tests and doctests | Test | The three crates' tests and doctests with `alloc` and without `std`: the code a bare-metal build compiles. The tests link `std`; `check-no-std.sh` shows the code needs none |
+| The allocation-free tests | Test | The three crates' tests without `alloc` either, including `bacnet-services/tests/no_alloc_subset.rs`, which runs Who-Is, I-Am and ReadProperty through the APDU header under a counting allocator and finds no allocation. Their doctests aren't run: most examples build values with `alloc` |
 | `scripts/ci/check-msrv.sh` | MSRV | The three crates with `alloc` and without `std` build at the MSRV, in a run of their own, since the hosted crates turn `std` back on in the main run |
 | [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, and `bacnet-encoding` and `bacnet-services` into one with an allocator, each within its size budget |
 
@@ -1420,7 +1422,7 @@ Clippy runs six ways:
   `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`,
   `bacnet-router-core`, and `bacnet-types`,
   `bacnet-encoding` and `bacnet-services` with `alloc` in place of their
-  default `std`) on
+  default `std`, and with neither) on
   bare-metal targets, once per feature set
   (`scripts/ci/check-no-std.sh`). A host build always has `std` and an
   allocator, so only a target without them shows that a crate needs neither.
@@ -1433,8 +1435,8 @@ Clippy runs six ways:
   `tokio` or `socket2`: a dependency whose std leaks in through feature
   unification is caught even where it would still compile;
 - `bacnet-types`, `bacnet-encoding` and `bacnet-services` with `alloc` in
-  place of `std` and `--all-targets`, on the host, so the tests the Test job
-  runs without `std` are linted too;
+  place of `std`, and with neither, and `--all-targets`, on the host, so the
+  tests the Test job runs without `std` are linted too;
 - each published crate alone with default features, plus the `no_std` builds
   of `bacnet-types`, `bacnet-encoding` and `bacnet-services`
   (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
@@ -1485,6 +1487,7 @@ cargo nextest run -p bacnet-cli --locked   # the CLI's feature-off tests
 cargo nextest run -p bacnet-cli --no-default-features --locked   # without the TUI
 cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked   # no_std code, alloc
 cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
+cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked   # no_std code, no allocator
 cargo nextest run -p rusty-bacnet --locked # the PyO3 crate's Rust tests
 bash scripts/ci/check-file-size.sh
 bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh

@@ -3,43 +3,56 @@
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-#[cfg(not(any(feature = "std", feature = "alloc")))]
-compile_error!("bacnet-services needs the `std` or the `alloc` feature");
-
-// `format!` and `vec!` without std's prelude.
+// `format!` and `vec!` without std's prelude. Without `alloc` the crate
+// links no allocator at all (#1614).
+#[cfg(feature = "alloc")]
 #[macro_use]
 extern crate alloc;
 
-pub mod alarm_event;
-pub mod alarm_summary;
-pub mod audit;
-pub mod common;
-pub mod cov;
-mod cov_decode;
-pub mod cov_multiple;
-pub mod device_mgmt;
-pub mod enrollment_summary;
-pub mod file;
-pub mod life_safety;
-pub mod list_manipulation;
-pub mod object_mgmt;
-pub mod private_transfer;
-pub mod read_property;
-pub mod read_range;
-pub mod rpm;
-pub mod structured_error;
-pub mod text_message;
-pub mod virtual_terminal;
-pub mod who_am_i;
-pub mod who_has;
-pub mod who_is;
-pub mod wpm;
-pub mod write_group;
-pub mod write_property;
+/// Items only the `alloc` profile has: each gets `#[cfg(feature = "alloc")]`.
+macro_rules! alloc_only {
+    ($($item:item)*) => {
+        $(
+            #[cfg(feature = "alloc")]
+            $item
+        )*
+    };
+}
 
-#[cfg(test)]
+// Who-Is, I-Am and ReadProperty encode and decode without an allocator.
+pub mod read_property;
+pub mod who_is;
+
+alloc_only! {
+    pub mod alarm_event;
+    pub mod alarm_summary;
+    pub mod audit;
+    pub mod common;
+    pub mod cov;
+    mod cov_decode;
+    pub mod cov_multiple;
+    pub mod device_mgmt;
+    pub mod enrollment_summary;
+    pub mod file;
+    pub mod life_safety;
+    pub mod list_manipulation;
+    pub mod object_mgmt;
+    pub mod private_transfer;
+    pub mod read_range;
+    pub mod rpm;
+    pub mod structured_error;
+    pub mod text_message;
+    pub mod virtual_terminal;
+    pub mod who_am_i;
+    pub mod who_has;
+    pub mod wpm;
+    pub mod write_group;
+    pub mod write_property;
+}
+
+#[cfg(all(test, feature = "alloc"))]
 mod malformed_member_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod reject_reason_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod truncated_member_tests;

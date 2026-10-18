@@ -40,7 +40,7 @@ impl Kind {
     fn of(result: &Result<(), Error>) -> Self {
         match result {
             Ok(()) => Decodes,
-            Err(Error::Decoding { .. }) => Malformed,
+            Err(Error::Decoding(_) | Error::DecodingMessage { .. }) => Malformed,
             Err(Error::BufferTooShort { .. }) => Short,
             Err(Error::Reject { reason }) => Kind::Reject(RejectReason::from_raw(*reason)),
             Err(Error::Protocol { class, code }) => Kind::Protocol(*class, *code),

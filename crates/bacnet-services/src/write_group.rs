@@ -26,11 +26,11 @@ use bacnet_encoding::constructed::tagged::{
 /// Range of a write priority or overriding priority (Clauses 15.11.1.1.2 and 21.6).
 const PRIORITY_RANGE: core::ops::RangeInclusive<u64> = 1..=16;
 
-fn priority_message(field: &str, value: u64) -> String {
+fn priority_message(field: &'static str, value: u64) -> String {
     format!("WriteGroup {field} {value} out of range 1-16")
 }
 
-fn check_priority(field: &str, value: u64) -> Result<u8, Error> {
+fn check_priority(field: &'static str, value: u64) -> Result<u8, Error> {
     if PRIORITY_RANGE.contains(&value) {
         Ok(value as u8)
     } else {
@@ -38,7 +38,7 @@ fn check_priority(field: &str, value: u64) -> Result<u8, Error> {
     }
 }
 
-fn decode_priority(field: &str, offset: usize, value: u64) -> Result<u8, Error> {
+fn decode_priority(field: &'static str, offset: usize, value: u64) -> Result<u8, Error> {
     if PRIORITY_RANGE.contains(&value) {
         Ok(value as u8)
     } else {

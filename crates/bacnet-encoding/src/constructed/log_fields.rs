@@ -33,7 +33,7 @@ pub(super) fn encode_timestamp(buf: &mut BytesMut, date: &Date, time: &Time) {
 pub(super) fn decode_timestamp(
     data: &[u8],
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(Date, Time, usize), Error> {
     let (body, end) = decode_ctx_constructed(data, offset, 0, what)?;
     let (date, next) = application(body, 0, tags::app_tag::DATE, 4, offset, what)?;
@@ -105,7 +105,7 @@ pub(super) fn encode_failure(buf: &mut BytesMut, tag: u8, error_class: u32, erro
 }
 
 /// The class and code in the body of a failure alternative.
-pub(super) fn decode_failure(body: &[u8], offset: usize, what: &str) -> Result<(u32, u32), Error> {
+pub(super) fn decode_failure(body: &[u8], offset: usize, what: &'static str) -> Result<(u32, u32), Error> {
     let (class, next) = application(body, 0, tags::app_tag::ENUMERATED, 0, offset, what)?;
     let (code, last) = application(body, next, tags::app_tag::ENUMERATED, 0, offset, what)?;
     expect_end(body, last, offset, what)?;
@@ -117,7 +117,7 @@ pub(super) fn decode_failure(body: &[u8], offset: usize, what: &str) -> Result<(
 
 /// Refuse a bit string whose unused-bit count is above 7, or nonzero with no
 /// data: the decoder would refuse it. `what` names the value in the error.
-pub(super) fn check_bit_string(unused_bits: u8, data: &[u8], what: &str) -> Result<(), Error> {
+pub(super) fn check_bit_string(unused_bits: u8, data: &[u8], what: &'static str) -> Result<(), Error> {
     if unused_bits > 7 || (data.is_empty() && unused_bits != 0) {
         return Err(Error::OutOfRange(format!(
             "{what} has {unused_bits} unused bits over {} octets",
@@ -154,7 +154,7 @@ fn application<'a>(
     number: u8,
     length: u32,
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(&'a [u8], usize), Error> {
     let (tag, start) = tags::decode_tag(data, pos)?;
     if tag.class != tags::TagClass::Application

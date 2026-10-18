@@ -29,7 +29,7 @@ fn single(channel: u16, value: Vec<u8>) -> WriteGroupRequest {
 
 fn assert_decoding_error(data: &[u8]) {
     match WriteGroupRequest::decode(data) {
-        Err(Error::Decoding { .. }) | Err(Error::BufferTooShort { .. }) => {}
+        Err(Error::Decoding(_) | Error::DecodingMessage { .. }) | Err(Error::BufferTooShort { .. }) => {}
         other => panic!("expected a decoding error for {data:02X?}, got {other:?}"),
     }
 }
@@ -275,7 +275,7 @@ fn decode_rejects_group_zero_as_decoding_error() {
     ];
     assert!(matches!(
         WriteGroupRequest::decode(&data),
-        Err(Error::Decoding { .. })
+        Err(Error::Decoding(_) | Error::DecodingMessage { .. })
     ));
 }
 
@@ -300,7 +300,7 @@ fn decode_rejects_out_of_range_numbers() {
         &entry,
     ))
     .unwrap_err();
-    assert!(matches!(err, Error::Decoding { .. }), "{err:?}");
+    assert!(matches!(err, Error::Decoding(_) | Error::DecodingMessage { .. }), "{err:?}");
     assert!(err.to_string().contains("group number"), "{err}");
     // Write priority 0, 17 and 257.
     for priority in [&[0x19, 0x00][..], &[0x19, 0x11], &[0x1A, 0x01, 0x01]] {
@@ -495,7 +495,10 @@ fn truncated_application_value_is_rejected_by_decode_and_encode() {
 fn invalid_value_error_points_at_the_value() {
     let data = wire_with_value(&[0x74, 0x03, 0x00, 0x00, 0x41]);
     match WriteGroupRequest::decode(&data) {
-        Err(Error::Decoding { offset, .. }) => assert!(offset >= 7, "offset {offset}"),
+        Err(error) if error.decode_fault().is_some() => {
+            let (offset, _) = error.decode_fault().unwrap();
+            assert!(offset >= 7, "offset {offset}");
+        }
         other => panic!("expected a decoding error, got {other:?}"),
     }
 }

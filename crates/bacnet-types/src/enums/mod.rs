@@ -162,8 +162,12 @@ mod audit;
 pub use audit::*;
 mod units;
 pub use units::*;
+// Resolution promotes a PropertyValue, which needs alloc.
+#[cfg(feature = "alloc")]
 mod resolve;
+#[cfg(feature = "alloc")]
 pub use resolve::*;
 
-#[cfg(test)]
+// The tests resolve values, which needs alloc.
+#[cfg(all(test, feature = "alloc"))]
 mod tests;

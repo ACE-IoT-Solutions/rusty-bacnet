@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc")]
 use bytes::BytesMut;
 
 use super::TagClass;
@@ -9,17 +10,20 @@ use crate::sink::{EncodeSink, SinkFull};
 /// For context tags, `tag_number` is the field identifier (0-254).
 /// This function preserves the unvalidated input behavior of the original
 /// `BytesMut` encoder; it does not enforce those semantic ranges.
+#[cfg(feature = "alloc")]
 pub fn encode_tag(buf: &mut BytesMut, tag_number: u8, class: TagClass, length: u32) {
     encode_tag_to_sink(buf, tag_number, class, length)
         .expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-specific opening tag into a growable buffer.
+#[cfg(feature = "alloc")]
 pub fn encode_opening_tag(buf: &mut BytesMut, tag_number: u8) {
     encode_opening_tag_to_sink(buf, tag_number).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-specific closing tag into a growable buffer.
+#[cfg(feature = "alloc")]
 pub fn encode_closing_tag(buf: &mut BytesMut, tag_number: u8) {
     encode_closing_tag_to_sink(buf, tag_number).expect("the BytesMut sink cannot return SinkFull");
 }
@@ -31,7 +35,7 @@ pub fn encode_closing_tag(buf: &mut BytesMut, tag_number: u8) {
 /// attempted. A write's own error is returned unchanged. In either case the
 /// sink contract preserves all previous output and leaves no partial header.
 ///
-/// Like [`encode_tag`], this only assembles a header: it does not validate tag
+/// Like `encode_tag`, this only assembles a header: it does not validate tag
 /// numbers or datatype-specific lengths, and it does not append the contents.
 /// For an application Boolean, `length` carries its value (0 or 1).
 ///

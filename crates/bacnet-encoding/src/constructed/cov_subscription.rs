@@ -220,7 +220,7 @@ pub fn decode_cov_multiple_subscription(
 fn decode_specification(
     data: &[u8],
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(BACnetCOVSubscriptionSpecification, usize), Error> {
     let (monitored_object_identifier, pos) = decode_ctx_object_id(data, offset, 0, what)?;
     let mut pos = expect_opening(data, pos, 1, what)?;
@@ -250,7 +250,7 @@ fn decode_specification(
 fn decode_cov_reference(
     data: &[u8],
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(BACnetCOVReference, usize), Error> {
     let pos = expect_opening(data, offset, 0, what)?;
     let (property_identifier, pos) = decode_ctx_unsigned::<u32>(data, pos, 0, what)?;
@@ -275,7 +275,7 @@ fn decode_cov_reference(
 fn decode_recipient_process(
     data: &[u8],
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(BACnetRecipientProcess, usize), Error> {
     let pos = expect_opening(data, offset, 0, what)?;
     let pos = expect_opening(data, pos, 0, what)?;

@@ -40,21 +40,24 @@ fn main() -> Result<(), SinkFull> {
 The tag-sink functions append one complete header or return `SinkFull` without
 changing the sink. They do not validate every tag number or datatype-specific
 length, and their atomic write guarantee does not span several encoder calls.
-The primitive, APDU and NPDU modules retain their documented buffer APIs.
+A variable-length value, such as a CharacterString with its header, goes out
+through `EncodeSink::write_parts`, all of it or none. See
+[the sink design](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/encoding-sinks.md).
 
 ## Features and allocation
 
-One of `std` or `alloc` is required, even when output uses a slice or a heapless
-container. Disabling both is a compile error.
+The crate has three profiles. With neither `std` nor `alloc` it builds without
+an allocator (#1614), for firmware with no heap.
 
-| Feature | Effect |
-| --- | --- |
-| `std` (default) | Hosted support; enables `alloc` and the dependencies' standard-library support. Adds tracing for reserved NPDU control bits. |
-| `alloc` | `no_std` support with allocation. Firmware must supply a global allocator. |
-| `heapless` | Adds `sink::EncodeSink` for `heapless::Vec<u8, N>`. This does not select `std` or `alloc` for you. |
+| Profile | Features | What it has |
+| --- | --- | --- |
+| Hosted | `std` (default) | Everything; enables `alloc` and the dependencies' standard-library support. Adds tracing for reserved NPDU control bits. |
+| `no_std` with a heap | `alloc` | Everything but the tracing. Firmware must supply a global allocator. |
+| No allocator | neither | Tag decoding and the `_to_sink` encoders (tags, scalars, timestamps, strings, octet and bit strings), the primitive decoders and the borrowed views (`primitives::CharacterStringRef`, `primitives::ApplicationValueRef`), the tagged-field readers in `constructed::tagged`, and `apdu::header`, which reads and writes the header of an Unconfirmed-Request and an unsegmented Confirmed-Request or ComplexACK. The owned APDU and NPDU, segmentation, the other `constructed` codecs and every `BytesMut` encoder need `alloc`. |
+| | `heapless` | Adds `sink::EncodeSink` for `heapless::Vec<u8, N>`, in any profile. |
 
-`EncodeSink` also supports caller slices, `Vec<u8>` and `bytes::BytesMut`.
-A bounded output adapter does not make this crate allocation-free.
+`EncodeSink` also supports caller slices, and with `alloc` `Vec<u8>` and
+`bytes::BytesMut`. Only the `alloc` profile has `bytes` in its graph.
 
 For an alloc-only dependency build, replace the dependency block with:
 
@@ -63,18 +66,20 @@ For an alloc-only dependency build, replace the dependency block with:
 bacnet-encoding = { path = "../rusty-bacnet/crates/bacnet-encoding", default-features = false, features = ["alloc"] }
 ```
 
-The quickstart executes unchanged with either block on a host. Firmware also
-needs a global allocator and a compatible `bytes` configuration. On targets
-without atomic compare-and-swap, such as ARMv6-M, enable `bytes`'s
-`extra-platforms` feature and select an appropriate `portable-atomic` backend
-in the firmware. The alloc-only block alone does not configure that backend.
-Host doctests do not establish bare-metal execution or a no-heap profile.
-Cargo features are additive, so check whether another dependency enables `std`.
+For a build without an allocator, leave out `features = ["alloc"]`: the
+quickstart runs unchanged with any of the three blocks on a host. With
+`alloc`, firmware also needs a global allocator and a compatible `bytes`
+configuration: on targets without atomic compare-and-swap, such as ARMv6-M,
+enable `bytes`'s `extra-platforms` feature and select a `portable-atomic`
+backend in the firmware. Without `alloc` there is no `bytes`, so no backend to
+choose. CI builds each profile for ARMv6-M, ARMv7E-M and RISC-V
+(`scripts/ci/check-no-std.sh`) but doesn't run it there. Cargo features are
+additive, so check whether another dependency enables `alloc` or `std`.
 
 ## API documentation
 
 This README is included in the crate's Rust documentation. The docs.rs profile
 explicitly enables `std` and `heapless`, disables implicit defaults, and renders
 only the default `x86_64-unknown-linux-gnu` target. That makes the optional sink
-adapter visible through its actual feature gate; it does not claim the crate
-builds without an allocator or qualify a bare-metal target.
+adapter visible through its actual feature gate; it does not qualify a
+bare-metal target.

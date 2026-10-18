@@ -70,7 +70,7 @@ fn decode_required_context<'a>(
     data: &'a [u8],
     offset: usize,
     expected_tag: u8,
-    field: &str,
+    field: &'static str,
 ) -> COVDecodeResult<(&'a [u8], usize)> {
     if offset >= data.len() {
         return Err(syntax(Error::missing(
@@ -85,7 +85,7 @@ fn decode_required_u32(
     data: &[u8],
     offset: usize,
     expected_tag: u8,
-    field: &str,
+    field: &'static str,
 ) -> COVDecodeResult<(u32, usize)> {
     let (content, end) = decode_required_context(data, offset, expected_tag, field)?;
     let value = decode_canonical_unsigned(content, offset, field).map_err(syntax)?;

@@ -120,7 +120,7 @@ fn lift_car_call_list_rejects_more_than_the_item_limit() {
     wire.push(0x0F);
     assert!(matches!(
         decode_lift_car_call_list(&wire, 0),
-        Err(Error::Decoding { .. })
+        Err(Error::Decoding(_) | Error::DecodingMessage { .. })
     ));
 }
 

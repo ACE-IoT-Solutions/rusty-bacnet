@@ -3,46 +3,107 @@
 //! Provides the top-level [`Error`] type used throughout the library,
 //! covering protocol errors, encoding/decoding failures, transport issues,
 //! and timeouts.
+//!
+//! Without `alloc` it keeps only the variants that own nothing: a decoder's
+//! [`DecodeError`] and a constructor's [`RangeError`] carry static labels
+//! and build their text when displayed (#1646). The variants holding a
+//! `String` or a `Box` need `alloc`.
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::{boxed::Box, string::String, vec::Vec};
+use core::fmt;
 use core::time::Duration;
 
+#[cfg(feature = "alloc")]
 use crate::constructed::BACnetObjectPropertyReference;
 use crate::data_link::DataLink;
-use crate::enums::{ErrorClass, ErrorCode, PropertyIdentifier, RejectReason};
+#[cfg(feature = "alloc")]
+use crate::enums::PropertyIdentifier;
+use crate::enums::{ErrorClass, ErrorCode, RejectReason};
 
-fn format_protocol_error(class: u32, code: u32) -> String {
-    let class_name = ErrorClass::ALL_NAMED
-        .iter()
-        .find(|(_, v)| v.to_raw() as u32 == class)
-        .map(|(n, _)| n.to_lowercase().replace('_', "-"));
-    let code_name = ErrorCode::ALL_NAMED
-        .iter()
-        .find(|(_, v)| v.to_raw() as u32 == code)
-        .map(|(n, _)| n.to_lowercase().replace('_', "-"));
+mod decode;
+pub use decode::{DecodeError, DecodingKind, RangeError};
 
-    match (class_name, code_name) {
-        (Some(cn), Some(co)) => format!("BACnet error: {cn} / {co}"),
-        (Some(cn), None) => format!("BACnet error: {cn} / code={code}"),
-        (None, Some(co)) => format!("BACnet error: class={class} / {co}"),
-        (None, None) => format!("BACnet error: class={class} / code={code}"),
+/// How a protocol error's class and code read: each name in lower case with
+/// hyphens, or the raw number for a value without one.
+struct ProtocolText {
+    class: u32,
+    code: u32,
+}
+
+impl fmt::Display for ProtocolText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn name(
+            f: &mut fmt::Formatter<'_>,
+            named: Option<&str>,
+            field: &str,
+            value: u32,
+        ) -> fmt::Result {
+            let Some(named) = named else {
+                return write!(f, "{field}={value}");
+            };
+            for c in named.chars() {
+                let c = if c == '_' {
+                    '-'
+                } else {
+                    c.to_ascii_lowercase()
+                };
+                fmt::Write::write_char(f, c)?;
+            }
+            Ok(())
+        }
+        let class = ErrorClass::ALL_NAMED
+            .iter()
+            .find(|(_, v)| u32::from(v.to_raw()) == self.class)
+            .map(|(n, _)| *n);
+        let code = ErrorCode::ALL_NAMED
+            .iter()
+            .find(|(_, v)| u32::from(v.to_raw()) == self.code)
+            .map(|(n, _)| *n);
+        f.write_str("BACnet error: ")?;
+        name(f, class, "class", self.class)?;
+        f.write_str(" / ")?;
+        name(f, code, "code", self.code)
+    }
+}
+
+/// [`Error::LogNotAdvancing`]'s text.
+struct NotAdvancing {
+    requested: u64,
+    returned: Option<u64>,
+}
+
+impl fmt::Display for NotAdvancing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let requested = self.requested;
+        match self.returned {
+            Some(returned) => write!(
+                f,
+                "asked for sequence number {requested}, the device answered from {returned}"
+            ),
+            None => write!(
+                f,
+                "asked for sequence number {requested}, which the log's counts say it holds, \
+                 the device answered with no records"
+            ),
+        }
     }
 }
 
 /// Top-level error type for the BACnet library.
 ///
 /// It is `#[non_exhaustive]`, so a `match` on it outside this crate needs a
-/// wildcard arm. `Error::Transport` exists only with the `std` feature, and
-/// any crate in a build can turn that on, so without the attribute a match
-/// written against the `alloc` build would stop compiling (#1604).
+/// wildcard arm. Some variants exist only with a feature, and any crate in a
+/// build can turn that on: `Error::Transport` needs `std`, and the variants
+/// that hold a `String` or a `Box` need `alloc`. Without the attribute a
+/// match written against a smaller build would stop compiling (#1604).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 // Clippy fails if the attribute above goes.
 #[deny(clippy::exhaustive_enums)]
 pub enum Error {
     /// BACnet protocol error response (Clause 20.1.7).
-    #[error("{}", format_protocol_error(*.class, *.code))]
+    #[error("{}", ProtocolText { class: *.class, code: *.code })]
     Protocol {
         /// Error class value.
         class: u32,
@@ -55,8 +116,9 @@ pub enum Error {
     /// WritePropertyMultiple-Error, SubscribeCOVPropertyMultiple-Error,
     /// ConfirmedPrivateTransfer-Error or VTClose-Error. `detail` holds the
     /// extra fields; a body whose optional fields are all absent is reported
-    /// as [`Error::Protocol`].
-    #[error("{}, {detail}", format_protocol_error(*.class, *.code))]
+    /// as [`Error::Protocol`]. Only with `alloc`.
+    #[cfg(feature = "alloc")]
+    #[error("{}, {detail}", ProtocolText { class: *.class, code: *.code })]
     Structured {
         /// Error class value.
         class: u32,
@@ -118,13 +180,24 @@ pub enum Error {
         limit: usize,
     },
 
-    /// Error encoding a PDU.
+    /// Error encoding a PDU. Only with `alloc`.
+    #[cfg(feature = "alloc")]
     #[error("encoding error: {0}")]
     Encoding(String),
 
-    /// Error decoding received data.
+    /// Error decoding received data, with a static label (#1646). Every
+    /// decoder in the allocation-free profile reports this form.
+    #[error("{0}")]
+    Decoding(DecodeError),
+
+    /// Error decoding received data, with a message formatted when the error
+    /// was made. Only with `alloc`: decoders outside the allocation-free
+    /// profile still word some refusals this way, and [`Error::Decoding`] is
+    /// the form they move to. [`Error::decode_fault`] reads the offset and
+    /// kind of either form.
+    #[cfg(feature = "alloc")]
     #[error("decoding error at offset {offset}: {message}")]
-    Decoding {
+    DecodingMessage {
         /// Byte offset where the error occurred.
         offset: usize,
         /// Which kind of fault the decoder found.
@@ -143,7 +216,8 @@ pub enum Error {
     #[error("request timed out after {0:?}")]
     Timeout(Duration),
 
-    /// Segmentation assembly error.
+    /// Segmentation assembly error. Only with `alloc`.
+    #[cfg(feature = "alloc")]
     #[error("segmentation error: {0}")]
     Segmentation(String),
 
@@ -156,9 +230,18 @@ pub enum Error {
         have: usize,
     },
 
-    /// Value out of valid range.
+    /// Value out of valid range, with a formatted message. Only with
+    /// `alloc`; [`Error::Range`] is the static form.
+    #[cfg(feature = "alloc")]
     #[error("value out of range: {0}")]
     OutOfRange(String),
+
+    /// A value a checked constructor refused, with a static label (#1646),
+    /// such as an object type or instance
+    /// [`ObjectIdentifier::new`](crate::primitives::ObjectIdentifier::new)
+    /// can't encode.
+    #[error("{0}")]
+    Range(RangeError),
 
     /// A well-formed ReadRange acknowledgement that breaks a rule the client
     /// checks against the request it answers, so the client refused it. The
@@ -174,7 +257,10 @@ pub enum Error {
     /// clamp a reference past their sequence wrap back to the oldest record,
     /// or number the record after the wrap 0; read such a log by position
     /// instead.
-    #[error("log read is not advancing: {}", not_advancing(*.requested, *.returned))]
+    #[error(
+        "log read is not advancing: {}",
+        NotAdvancing { requested: *.requested, returned: *.returned }
+    )]
     LogNotAdvancing {
         /// The sequence number the read asked for.
         requested: u64,
@@ -184,15 +270,44 @@ pub enum Error {
     },
 }
 
-fn not_advancing(requested: u64, returned: Option<u64>) -> String {
-    match returned {
-        Some(returned) => {
-            format!("asked for sequence number {requested}, the device answered from {returned}")
-        }
-        None => format!(
-            "asked for sequence number {requested}, which the log's counts say it holds, \
-             the device answered with no records"
-        ),
+impl From<DecodeError> for Error {
+    fn from(error: DecodeError) -> Self {
+        Self::Decoding(error)
+    }
+}
+
+impl From<RangeError> for Error {
+    fn from(error: RangeError) -> Self {
+        Self::Range(error)
+    }
+}
+
+/// The text a decoding error constructor such as [`Error::decoding`] takes.
+///
+/// A `&'static str` label makes an [`Error::Decoding`], as every decoder in
+/// the allocation-free profile does. With `alloc`, a formatted `String`
+/// makes an `Error::DecodingMessage`. Build a [`DecodeError`] directly for
+/// a label that names a context or a number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DecodeMessage {
+    /// A static label.
+    Label(&'static str),
+    /// A message formatted when the error was made. Only with `alloc`.
+    #[cfg(feature = "alloc")]
+    Formatted(String),
+}
+
+impl From<&'static str> for DecodeMessage {
+    fn from(label: &'static str) -> Self {
+        Self::Label(label)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<String> for DecodeMessage {
+    fn from(message: String) -> Self {
+        Self::Formatted(message)
     }
 }
 
@@ -268,67 +383,10 @@ impl core::fmt::Display for ReadRangeViolation {
     }
 }
 
-/// Which fault a decoder found in the data it refused, so a responder can
-/// name it (#1446). [`DecodingKind::reject_reason`] gives the Clause 18.9
-/// Reject reason each kind draws when the data was a confirmed request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DecodingKind {
-    /// Contents whose encoding isn't valid for their datatype: a wrong
-    /// length, an Unsigned of no octets or with padding a canonical field
-    /// refuses, an unknown character set, a BIT STRING's unused-bit count
-    /// past 7, and the like. The kind [`Error::decoding`] makes.
-    InvalidEncoding,
-    /// A value too large for its field's width, or outside the range the
-    /// production or service gives it.
-    OutOfRange,
-    /// More than the decoder takes: a count of items past its limit, or a tag
-    /// length past its sanity bound.
-    Overflow,
-    /// A tag that doesn't fit where it stands: another number, class or form
-    /// than the member there needs, a closing tag that closes no open frame,
-    /// a tag header that is itself malformed, or an opening tag nested
-    /// deeper than the decoder walks.
-    InvalidTag,
-    /// The data ends, or the enclosing frame closes, where a required member
-    /// or a frame's closing tag is due: a member is missing.
-    Missing,
-    /// Octets are left after the last member of a value that must fill its
-    /// input: arguments beyond those the production has.
-    Trailing,
-    /// A well-formed encoding the decoder doesn't handle: a CharacterString
-    /// in a character set it can't convert (IBM/Microsoft DBCS, JIS X 0208
-    /// or UCS-4).
-    Unsupported,
-}
-
-impl DecodingKind {
-    /// The Clause 18.9 Reject reason that names this fault in a confirmed
-    /// request:
-    ///
-    /// | Kind | Reject reason |
-    /// |---|---|
-    /// | [`InvalidEncoding`](Self::InvalidEncoding) | INVALID_DATA_ENCODING |
-    /// | [`OutOfRange`](Self::OutOfRange) | PARAMETER_OUT_OF_RANGE |
-    /// | [`Overflow`](Self::Overflow) | BUFFER_OVERFLOW |
-    /// | [`InvalidTag`](Self::InvalidTag) | INVALID_TAG |
-    /// | [`Missing`](Self::Missing) | MISSING_REQUIRED_PARAMETER |
-    /// | [`Trailing`](Self::Trailing) | TOO_MANY_ARGUMENTS |
-    /// | [`Unsupported`](Self::Unsupported) | OTHER |
-    pub fn reject_reason(self) -> RejectReason {
-        match self {
-            Self::InvalidEncoding => RejectReason::INVALID_DATA_ENCODING,
-            Self::OutOfRange => RejectReason::PARAMETER_OUT_OF_RANGE,
-            Self::Overflow => RejectReason::BUFFER_OVERFLOW,
-            Self::InvalidTag => RejectReason::INVALID_TAG,
-            Self::Missing => RejectReason::MISSING_REQUIRED_PARAMETER,
-            Self::Trailing => RejectReason::TOO_MANY_ARGUMENTS,
-            Self::Unsupported => RejectReason::OTHER,
-        }
-    }
-}
-
 /// The fields a Clause 21 error production adds to the error class and code,
 /// one variant per shape. The service the error answers names the production.
+/// Only with `alloc`.
+#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorDetail {
     /// ChangeList-Error (AddListElement, RemoveListElement; Clauses 15.1.1.3
@@ -364,6 +422,7 @@ pub enum ErrorDetail {
     VtSessionIdentifiers(Vec<u8>),
 }
 
+#[cfg(feature = "alloc")]
 impl core::fmt::Display for ErrorDetail {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         fn reference(
@@ -419,7 +478,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 impl Error {
     /// The error an Error PDU reports: [`Error::Structured`] when its body
-    /// carried a detail, [`Error::Protocol`] otherwise.
+    /// carried a detail, [`Error::Protocol`] otherwise. Only with `alloc`.
+    #[cfg(feature = "alloc")]
     pub fn protocol(class: u32, code: u32, detail: Option<ErrorDetail>) -> Self {
         match detail {
             Some(detail) => Self::Structured {
@@ -433,63 +493,85 @@ impl Error {
 
     /// Create a [`DecodingKind::InvalidEncoding`] decoding error at the given
     /// byte offset: contents whose encoding isn't valid for their datatype.
-    pub fn decoding(offset: usize, message: impl Into<String>) -> Self {
+    /// See [`DecodeMessage`] for the form `message` gives.
+    pub fn decoding(offset: usize, message: impl Into<DecodeMessage>) -> Self {
         Self::decoding_kind(DecodingKind::InvalidEncoding, offset, message)
     }
 
-    /// Create a decoding error of `kind` at the given byte offset.
-    pub fn decoding_kind(kind: DecodingKind, offset: usize, message: impl Into<String>) -> Self {
-        Self::Decoding {
-            offset,
-            kind,
-            message: message.into(),
+    /// Create a decoding error of `kind` at the given byte offset: an
+    /// [`Error::Decoding`] for a static label, an `Error::DecodingMessage`
+    /// for a formatted message.
+    pub fn decoding_kind(
+        kind: DecodingKind,
+        offset: usize,
+        message: impl Into<DecodeMessage>,
+    ) -> Self {
+        match message.into() {
+            DecodeMessage::Label(label) => Self::Decoding(DecodeError::new(kind, offset, label)),
+            #[cfg(feature = "alloc")]
+            DecodeMessage::Formatted(message) => Self::DecodingMessage {
+                offset,
+                kind,
+                message,
+            },
         }
     }
 
     /// Create a [`DecodingKind::InvalidTag`] decoding error: a tag at
     /// `offset` that doesn't fit there.
-    pub fn invalid_tag(offset: usize, message: impl Into<String>) -> Self {
+    pub fn invalid_tag(offset: usize, message: impl Into<DecodeMessage>) -> Self {
         Self::decoding_kind(DecodingKind::InvalidTag, offset, message)
     }
 
     /// Create a [`DecodingKind::Missing`] decoding error: a required member
     /// due at `offset` isn't there.
-    pub fn missing(offset: usize, message: impl Into<String>) -> Self {
+    pub fn missing(offset: usize, message: impl Into<DecodeMessage>) -> Self {
         Self::decoding_kind(DecodingKind::Missing, offset, message)
     }
 
     /// Create a [`DecodingKind::Trailing`] decoding error: octets from
     /// `offset` on that the value leaves unread.
-    pub fn trailing(offset: usize, message: impl Into<String>) -> Self {
+    pub fn trailing(offset: usize, message: impl Into<DecodeMessage>) -> Self {
         Self::decoding_kind(DecodingKind::Trailing, offset, message)
     }
 
     /// Create a [`DecodingKind::OutOfRange`] decoding error: a value at
     /// `offset` too large for its field, or outside its range.
-    pub fn out_of_range(offset: usize, message: impl Into<String>) -> Self {
+    pub fn out_of_range(offset: usize, message: impl Into<DecodeMessage>) -> Self {
         Self::decoding_kind(DecodingKind::OutOfRange, offset, message)
     }
 
     /// Create a [`DecodingKind::Overflow`] decoding error: more items, or a
     /// longer tag, than the decoder takes.
-    pub fn overflow(offset: usize, message: impl Into<String>) -> Self {
+    pub fn overflow(offset: usize, message: impl Into<DecodeMessage>) -> Self {
         Self::decoding_kind(DecodingKind::Overflow, offset, message)
+    }
+
+    /// The offset and kind of a decoding error of either form
+    /// ([`Error::Decoding`] or `Error::DecodingMessage`); `None` for any
+    /// other error.
+    pub fn decode_fault(&self) -> Option<(usize, DecodingKind)> {
+        match self {
+            Self::Decoding(error) => Some((error.offset, error.kind)),
+            #[cfg(feature = "alloc")]
+            Self::DecodingMessage { offset, kind, .. } => Some((*offset, *kind)),
+            _ => None,
+        }
     }
 
     /// The Reject reason a responder answers a confirmed request with when
     /// this error refused it while decoding its parameters (Clauses 18.9 and
     /// 20.1.8): the reason itself for [`Error::Reject`], the kind's reason
-    /// for [`Error::Decoding`] (the table on [`DecodingKind::reject_reason`]),
-    /// and MISSING_REQUIRED_PARAMETER for [`Error::BufferTooShort`], a member
-    /// cut short because the data ran out before it was complete. `None` for
-    /// any other error, which no decoder of the request's parameters
-    /// reports.
+    /// for a decoding error of either form (the table on
+    /// [`DecodingKind::reject_reason`]), and MISSING_REQUIRED_PARAMETER for
+    /// [`Error::BufferTooShort`], a member cut short because the data ran out
+    /// before it was complete. `None` for any other error, which no decoder
+    /// of the request's parameters reports.
     pub fn reject_reason(&self) -> Option<RejectReason> {
         match self {
             Self::Reject { reason } => Some(RejectReason::from_raw(*reason)),
-            Self::Decoding { kind, .. } => Some(kind.reject_reason()),
             Self::BufferTooShort { .. } => Some(RejectReason::MISSING_REQUIRED_PARAMETER),
-            _ => None,
+            _ => self.decode_fault().map(|(_, kind)| kind.reject_reason()),
         }
     }
 
@@ -517,210 +599,4 @@ impl Error {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn protocol_error_display() {
-        let err = Error::Protocol { class: 2, code: 31 };
-        assert!(err.to_string().contains("property"));
-        assert!(err.to_string().contains("unknown-object"));
-
-        // Unknown class/code falls back to numeric
-        let err2 = Error::Protocol {
-            class: 999,
-            code: 999,
-        };
-        assert!(err2.to_string().contains("class=999"));
-        assert!(err2.to_string().contains("code=999"));
-    }
-
-    #[test]
-    fn structured_error_display_names_the_detail() {
-        use crate::enums::ObjectType;
-        use crate::primitives::ObjectIdentifier;
-
-        let reference = |index| BACnetObjectPropertyReference {
-            object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 7).unwrap(),
-            property_identifier: PropertyIdentifier::PRESENT_VALUE.to_raw(),
-            property_array_index: index,
-        };
-        let private_transfer = |error_parameters| ErrorDetail::PrivateTransfer {
-            vendor_id: 555,
-            service_number: 7,
-            error_parameters,
-        };
-        for (class, code, detail, expected) in [
-            (
-                5,
-                81,
-                ErrorDetail::FirstFailedElementNumber(2),
-                "BACnet error: services / list-element-not-found, first failed element 2",
-            ),
-            (
-                2,
-                40,
-                ErrorDetail::FirstFailedWriteAttempt(reference(Some(3))),
-                "BACnet error: property / write-access-denied, \
-                 first failed write attempt ANALOG_VALUE,7 PRESENT_VALUE[3]",
-            ),
-            (
-                2,
-                44,
-                ErrorDetail::FirstFailedSubscription(reference(None)),
-                "BACnet error: property / not-cov-property, \
-                 first failed subscription ANALOG_VALUE,7 PRESENT_VALUE",
-            ),
-            (
-                5,
-                0,
-                private_transfer(Some(vec![0x21, 1])),
-                "BACnet error: services / other, vendor 555 service 7, \
-                 2 octets of error parameters",
-            ),
-            (
-                5,
-                0,
-                private_transfer(None),
-                "BACnet error: services / other, vendor 555 service 7",
-            ),
-            (
-                5,
-                39,
-                ErrorDetail::VtSessionIdentifiers(vec![1, 4]),
-                "BACnet error: services / vt-session-termination-failure, \
-                 VT sessions not closed: 1 4",
-            ),
-        ] {
-            assert_eq!(
-                Error::protocol(class, code, Some(detail)).to_string(),
-                expected
-            );
-        }
-        assert!(matches!(
-            Error::protocol(2, 31, None),
-            Error::Protocol { class: 2, code: 31 }
-        ));
-    }
-
-    #[test]
-    fn decoding_error_display() {
-        let err = Error::decoding(42, "unexpected tag");
-        assert!(err.to_string().contains("offset 42"));
-        assert!(err.to_string().contains("unexpected tag"));
-    }
-
-    #[test]
-    fn syntax_faults_name_their_reject_reasons() {
-        for (error, reason) in [
-            (
-                Error::decoding(1, "bad"),
-                RejectReason::INVALID_DATA_ENCODING,
-            ),
-            (
-                Error::out_of_range(1, "wide"),
-                RejectReason::PARAMETER_OUT_OF_RANGE,
-            ),
-            (Error::overflow(1, "many"), RejectReason::BUFFER_OVERFLOW),
-            (
-                Error::decoding_kind(DecodingKind::Unsupported, 1, "DBCS"),
-                RejectReason::OTHER,
-            ),
-            (Error::invalid_tag(1, "tag"), RejectReason::INVALID_TAG),
-            (
-                Error::missing(1, "gone"),
-                RejectReason::MISSING_REQUIRED_PARAMETER,
-            ),
-            (Error::trailing(1, "more"), RejectReason::TOO_MANY_ARGUMENTS),
-            (
-                Error::buffer_too_short(9, 4),
-                RejectReason::MISSING_REQUIRED_PARAMETER,
-            ),
-            (
-                Error::Reject { reason: 8 },
-                RejectReason::UNDEFINED_ENUMERATION,
-            ),
-        ] {
-            assert_eq!(error.reject_reason(), Some(reason), "{error}");
-        }
-        for error in [
-            Error::Protocol { class: 5, code: 0 },
-            Error::Encoding("x".into()),
-            Error::OutOfRange("x".into()),
-            Error::Abort { reason: 1 },
-        ] {
-            assert_eq!(error.reject_reason(), None, "{error}");
-        }
-        // A request's decode error becomes its Reject; any other error stays.
-        assert!(matches!(
-            Error::trailing(3, "more").into_request_reject(),
-            Error::Reject { reason } if reason == RejectReason::TOO_MANY_ARGUMENTS.to_raw()
-        ));
-        assert!(matches!(
-            Error::OutOfRange("x".into()).into_request_reject(),
-            Error::OutOfRange(_)
-        ));
-        // The kind doesn't show in the message.
-        assert_eq!(
-            Error::trailing(3, "two trailing byte(s)").to_string(),
-            "decoding error at offset 3: two trailing byte(s)"
-        );
-    }
-
-    #[test]
-    fn buffer_too_short_display() {
-        let err = Error::buffer_too_short(10, 3);
-        assert!(err.to_string().contains("need 10"));
-        assert!(err.to_string().contains("have 3"));
-    }
-
-    #[test]
-    fn timeout_error_display() {
-        let err = Error::Timeout(Duration::from_secs(3));
-        assert!(err.to_string().contains("3s"));
-    }
-
-    #[test]
-    fn send_too_long_keeps_the_observed_lengths_without_becoming_an_apdu_reject() {
-        let error = Error::SendTooLong {
-            length: 1500,
-            limit: 480,
-        };
-        assert_eq!(
-            error.to_string(),
-            "send refused before transmission: 1500 octets exceed the 480-octet limit"
-        );
-        assert_eq!(error.reject_reason(), None);
-        assert!(matches!(
-            error.into_request_reject(),
-            Error::SendTooLong {
-                length: 1500,
-                limit: 480
-            }
-        ));
-    }
-
-    #[test]
-    fn routed_path_too_long_display_preserves_dnet() {
-        let err = Error::RoutedPathTooLong { dnet: 1234 };
-        assert!(err.to_string().contains("1234"));
-    }
-
-    #[test]
-    fn routed_path_capacity_display_preserves_bound() {
-        let err = Error::RoutedPathCapacityExceeded { capacity: 256 };
-        assert!(err.to_string().contains("256"));
-    }
-
-    #[test]
-    fn unsupported_transport_display_names_both_data_links() {
-        let err = Error::UnsupportedTransport {
-            required: DataLink::Bip,
-            actual: DataLink::Mstp,
-        };
-        assert_eq!(
-            err.to_string(),
-            "operation requires BACnet/IP; this transport is MS/TP"
-        );
-    }
-}
+mod tests;

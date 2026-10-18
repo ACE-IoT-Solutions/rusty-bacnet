@@ -1,0 +1,256 @@
+//! Borrowed views of CharacterString contents and application-tagged values,
+//! which read the octets in place instead of copying them (#1614).
+
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
+
+use super::{
+    charset, decode_bit_string_ref, decode_double, decode_real, decode_signed, decode_unsigned,
+    fixed_length_label, invalid_utf8, unknown_charset,
+};
+use crate::tags::{self, app_tag, Tag, TagClass};
+
+/// A CharacterString's contents, borrowed from the octets they were decoded
+/// from: the character-set octet, then the string in that character set
+/// (Clause 20.2.9).
+///
+/// [`decode`](Self::decode) checks that the character set is one the clause
+/// defines, and that UTF-8 contents are valid UTF-8, so
+/// [`as_str`](Self::as_str) borrows them as a `&str`. Contents in another
+/// character set are carried as they are, for the caller to convert.
+///
+/// ```
+/// use bacnet_encoding::primitives::{charset, CharacterStringRef};
+///
+/// let text = CharacterStringRef::decode(&[charset::UTF8, b'A', b'V'])?;
+/// assert_eq!((text.charset(), text.as_str()), (charset::UTF8, Some("AV")));
+///
+/// let latin1 = CharacterStringRef::decode(&[charset::ISO_8859_1, 0xE9])?;
+/// assert_eq!((latin1.as_str(), latin1.bytes()), (None, &[0xE9][..]));
+/// # Ok::<(), bacnet_types::error::Error>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CharacterStringRef<'a> {
+    /// The character-set octet and the string after it; never empty once
+    /// decoded.
+    contents: &'a [u8],
+}
+
+impl<'a> CharacterStringRef<'a> {
+    /// Read CharacterString contents: refuses an empty input, a character
+    /// set Clause 20.2.9 doesn't define and invalid UTF-8, each
+    /// [`DecodingKind::InvalidEncoding`] at an offset into `contents`.
+    pub fn decode(contents: &'a [u8]) -> Result<Self, Error> {
+        let Some((&charset_id, payload)) = contents.split_first() else {
+            return Err(Error::decoding(
+                0,
+                "CharacterString requires at least 1 byte for charset",
+            ));
+        };
+        match charset_id {
+            charset::UTF8 => {
+                core::str::from_utf8(payload).map_err(invalid_utf8)?;
+            }
+            charset::IBM_MICROSOFT_DBCS..=charset::ISO_8859_1 => {}
+            other => return Err(unknown_charset(other)),
+        }
+        Ok(Self { contents })
+    }
+
+    /// Contents taken as they are, for a decoder that checks them itself.
+    pub(super) fn unchecked(contents: &'a [u8]) -> Self {
+        Self { contents }
+    }
+
+    /// The character set, one of [`charset`].
+    pub fn charset(&self) -> u8 {
+        self.contents.first().copied().unwrap_or(charset::UTF8)
+    }
+
+    /// The string's octets in its character set, after the character-set
+    /// octet.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.contents.get(1..).unwrap_or_default()
+    }
+
+    /// The complete contents: the character-set octet and the string.
+    pub fn contents(&self) -> &'a [u8] {
+        self.contents
+    }
+
+    /// The string, when it is UTF-8; `None` for any other character set.
+    pub fn as_str(&self) -> Option<&'a str> {
+        if self.charset() != charset::UTF8 {
+            return None;
+        }
+        core::str::from_utf8(self.bytes()).ok()
+    }
+}
+
+/// One application-tagged value of a primitive datatype (Clause 20.2.2 to
+/// 20.2.14), borrowed from the octets it was decoded from.
+///
+/// [`decode_application_value_ref`] reads one; strings, octet strings and bit
+/// strings stay in place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ApplicationValueRef<'a> {
+    /// Null.
+    Null,
+    /// Boolean.
+    Boolean(bool),
+    /// Unsigned integer, up to 64 bits.
+    Unsigned(u64),
+    /// Signed integer.
+    Signed(i32),
+    /// IEEE 754 single-precision float.
+    Real(f32),
+    /// IEEE 754 double-precision float.
+    Double(f64),
+    /// Octet string.
+    OctetString(&'a [u8]),
+    /// Character string.
+    CharacterString(CharacterStringRef<'a>),
+    /// Bit string.
+    BitString {
+        /// How many trailing bits of the final data octet carry nothing.
+        unused_bits: u8,
+        /// The bit data octets.
+        data: &'a [u8],
+    },
+    /// Enumerated value.
+    Enumerated(u32),
+    /// Date.
+    Date(Date),
+    /// Time.
+    Time(Time),
+    /// Object identifier.
+    ObjectIdentifier(ObjectIdentifier),
+}
+
+/// Decode one application-tagged primitive value from `data` at `offset`,
+/// without copying it; returns the value and the offset past it.
+///
+/// It refuses what the owned decoder, `decode_application_value`, refuses
+/// in an application-tagged value, at the same offsets: a fixed-size value
+/// whose header gives another length is [`Error::Decoding`], contents that run
+/// past the end of `data` are [`Error::BufferTooShort`]. It also refuses a
+/// context-tagged element, which only the owned decoder keeps (as its raw
+/// octets), with [`DecodingKind::InvalidTag`]. A CharacterString is checked
+/// as [`CharacterStringRef::decode`] checks it, so one in a character set the
+/// owned decoder can't convert still reads here.
+///
+/// ```
+/// use bacnet_encoding::primitives::{decode_application_value_ref, ApplicationValueRef};
+///
+/// // A REAL 72.5, then a CharacterString "AV".
+/// let data = [0x44, 0x42, 0x91, 0x00, 0x00, 0x73, 0x00, b'A', b'V'];
+/// let (real, next) = decode_application_value_ref(&data, 0)?;
+/// assert_eq!(real, ApplicationValueRef::Real(72.5));
+/// let (text, end) = decode_application_value_ref(&data, next)?;
+/// let ApplicationValueRef::CharacterString(text) = text else { unreachable!() };
+/// assert_eq!((text.as_str(), end), (Some("AV"), data.len()));
+/// # Ok::<(), bacnet_types::error::Error>(())
+/// ```
+pub fn decode_application_value_ref(
+    data: &[u8],
+    offset: usize,
+) -> Result<(ApplicationValueRef<'_>, usize), Error> {
+    let (tag, content_start) = tags::decode_tag(data, offset)?;
+    if tag.class == TagClass::Context {
+        return Err(Error::invalid_tag(
+            offset,
+            "expected an application-tagged value, found a context tag",
+        ));
+    }
+    let (value, end) = decode_application_primitive(data, offset, tag, content_start)?;
+    if let ApplicationValueRef::CharacterString(text) = value {
+        let checked = CharacterStringRef::decode(text.contents())?;
+        return Ok((ApplicationValueRef::CharacterString(checked), end));
+    }
+    Ok((value, end))
+}
+
+/// Decode the application-tagged value whose header `tag`, at `offset`, has
+/// its contents at `content_start`. A CharacterString comes back unchecked:
+/// the owned decoder converts it, and the view checks it.
+pub(super) fn decode_application_primitive(
+    data: &[u8],
+    offset: usize,
+    tag: Tag,
+    content_start: usize,
+) -> Result<(ApplicationValueRef<'_>, usize), Error> {
+    if tag.is_opening || tag.is_closing {
+        return Err(Error::invalid_tag(offset, "unexpected opening/closing tag"));
+    }
+    if tag.number == app_tag::NULL && tag.length != 0 {
+        return Err(Error::decoding(
+            offset,
+            "application NULL must have no contents",
+        ));
+    }
+    if tag.number == app_tag::BOOLEAN && tag.length > 1 {
+        return Err(Error::decoding(
+            offset,
+            "application BOOLEAN L/V/T must be 0 or 1",
+        ));
+    }
+    let content_end = content_start
+        .checked_add(tag.length as usize)
+        .ok_or_else(|| Error::decoding(content_start, "length overflow"))?;
+    if tag.number == app_tag::BOOLEAN {
+        return Ok((ApplicationValueRef::Boolean(tag.length != 0), content_start));
+    }
+    // A fixed-size value's length is judged before its contents are read, so
+    // a wrong length is reported as such even when the data also stops early.
+    if let Some((label, octets)) = fixed_length_label(tag.number) {
+        if tag.length != octets {
+            return Err(
+                DecodeError::new(DecodingKind::InvalidEncoding, offset, label)
+                    .with_value(tag.length.into())
+                    .into(),
+            );
+        }
+    }
+    if data.len() < content_end {
+        return Err(Error::buffer_too_short(content_end, data.len()));
+    }
+    let content = &data[content_start..content_end];
+    let value = match tag.number {
+        app_tag::NULL => ApplicationValueRef::Null,
+        app_tag::UNSIGNED => ApplicationValueRef::Unsigned(decode_unsigned(content)?),
+        app_tag::SIGNED => ApplicationValueRef::Signed(decode_signed(content)?),
+        app_tag::REAL => ApplicationValueRef::Real(decode_real(content)?),
+        app_tag::DOUBLE => ApplicationValueRef::Double(decode_double(content)?),
+        app_tag::OCTET_STRING => ApplicationValueRef::OctetString(content),
+        app_tag::CHARACTER_STRING => {
+            ApplicationValueRef::CharacterString(CharacterStringRef::unchecked(content))
+        }
+        app_tag::BIT_STRING => {
+            let (unused_bits, data) = decode_bit_string_ref(content)?;
+            ApplicationValueRef::BitString { unused_bits, data }
+        }
+        app_tag::ENUMERATED => {
+            let value = u32::try_from(decode_unsigned(content)?)
+                .map_err(|_| Error::out_of_range(content_start, "ENUMERATED exceeds u32"))?;
+            ApplicationValueRef::Enumerated(value)
+        }
+        app_tag::DATE => ApplicationValueRef::Date(Date::decode(content)?),
+        app_tag::TIME => ApplicationValueRef::Time(Time::decode(content)?),
+        app_tag::OBJECT_IDENTIFIER => {
+            ApplicationValueRef::ObjectIdentifier(ObjectIdentifier::decode(content)?)
+        }
+        other => {
+            return Err(DecodeError::new(
+                DecodingKind::InvalidTag,
+                offset,
+                "unknown application tag number {}",
+            )
+            .with_value(other.into())
+            .into());
+        }
+    };
+    Ok((value, content_end))
+}
+
+#[cfg(test)]
+mod tests;

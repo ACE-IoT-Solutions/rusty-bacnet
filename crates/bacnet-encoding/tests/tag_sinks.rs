@@ -1,5 +1,8 @@
 //! Public tag-header sink contract and independently tabulated wire cases.
 
+// These compare with the BytesMut encoders, which need alloc.
+#![cfg(feature = "alloc")]
+
 use bacnet_encoding::sink::{EncodeSink, SinkFull};
 use bacnet_encoding::tags::{
     encode_closing_tag, encode_closing_tag_to_sink, encode_opening_tag, encode_opening_tag_to_sink,
