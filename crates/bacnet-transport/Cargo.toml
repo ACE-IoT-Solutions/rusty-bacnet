@@ -8,6 +8,14 @@ repository.workspace = true
 description = "BACnet transport layer: BIP, IPv6, BACnet/SC, MS/TP, BBMD, Ethernet"
 keywords = ["bacnet", "building-automation", "transport", "bip", "mstp"]
 categories = ["network-programming"]
+readme = "README.md"
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["ipv6", "sc-tls", "serial", "serial-gpio", "ethernet"]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bacnet-types = { workspace = true, features = ["std"] }

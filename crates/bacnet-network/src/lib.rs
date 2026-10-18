@@ -1,5 +1,4 @@
-//! BACnet network layer: packet assembly, dispatch, and routing.
-
+#![doc = include_str!("../README.md")]
 pub mod layer;
 pub mod network_number;
 pub mod priority_channel;
