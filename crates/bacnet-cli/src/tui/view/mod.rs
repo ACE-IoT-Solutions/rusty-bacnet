@@ -9,6 +9,7 @@ mod chrome;
 mod connection;
 mod devices;
 mod dialogs;
+mod watch;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,6 +17,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
+use super::app::watch::Screen;
 use super::app::{App, Overlay};
 
 /// Smallest usable width.
@@ -62,6 +64,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     chrome::status_bar(frame, status, app, &theme);
     devices::banner(frame, banner_area, banner, &theme);
     match &app.browser {
+        _ if app.screen == Screen::Watch => watch::draw(frame, body, app, &theme),
         Some(open) => browser::draw(frame, body, open, &theme),
         None => devices::table(frame, body, app, &theme),
     }
@@ -70,7 +73,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     }
     chrome::footer(frame, footer, app, &theme);
     match &app.overlay {
-        Overlay::None => {}
+        // The command bar is the footer.
+        Overlay::None | Overlay::Command(_) => {}
         Overlay::Connection => {
             if let Some(connection) = &app.connection {
                 connection::draw(frame, area, connection, &theme);

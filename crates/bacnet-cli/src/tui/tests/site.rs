@@ -34,6 +34,7 @@ use tokio::task::JoinHandle;
 use super::lab::{lab_database, lab_identity};
 use super::*;
 use crate::tui::app::{Link, OpState};
+use crate::tui::worker::session::SessionOptions;
 use crate::tui::worker::{session, EventSink, EVENT_CHANNEL_CAPACITY};
 
 /// Reject reason: the service is not recognized (Clause 20.1.5).
@@ -50,6 +51,9 @@ pub(super) struct Quirks {
     pub(super) abort_first_rpm: bool,
     /// Answer no confirmed request at all.
     pub(super) silent: bool,
+    /// Reject SubscribeCOV and SubscribeCOVProperty as unknown services: a
+    /// device without COV.
+    pub(super) refuse_cov: bool,
 }
 
 struct Port {
@@ -63,8 +67,8 @@ struct Ports {
     ports: Vec<Port>,
     /// Confirmed requests outstanding per destination, and the most seen.
     outstanding: HashMap<MacAddr, (usize, usize)>,
-    /// Every confirmed request: its destination and service.
-    requests: Vec<(MacAddr, u8)>,
+    /// Every confirmed request: its destination, service and when it went.
+    requests: Vec<(MacAddr, u8, tokio::time::Instant)>,
 }
 
 /// Every port sees every broadcast; a unicast reaches the port with that MAC.
@@ -91,8 +95,20 @@ impl Hub {
         inner
             .requests
             .iter()
-            .filter(|(to, _)| to.as_slice() == mac)
-            .map(|(_, service)| *service)
+            .filter(|(to, ..)| to.as_slice() == mac)
+            .map(|(_, service, _)| *service)
+            .collect()
+    }
+
+    /// The confirmed requests sent to `mac`: each one's service and when
+    /// it went, retries included.
+    pub(super) fn requests_to(&self, mac: &[u8]) -> Vec<(u8, tokio::time::Instant)> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .requests
+            .iter()
+            .filter(|(to, ..)| to.as_slice() == mac)
+            .map(|(_, service, at)| (*service, *at))
             .collect()
     }
 }
@@ -141,8 +157,15 @@ impl HubPort {
             let to = MacAddr::from_slice(to);
             match (pdu_type, request) {
                 (0, Some((invoke_id, service))) => {
-                    inner.requests.push((to.clone(), service));
+                    inner
+                        .requests
+                        .push((to.clone(), service, tokio::time::Instant::now()));
                     let rpm = service == ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE.to_raw();
+                    let cov = [
+                        ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw(),
+                        ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY.to_raw(),
+                    ]
+                    .contains(&service);
                     let Some(port) = inner.ports.iter_mut().find(|port| port.mac == to) else {
                         return;
                     };
@@ -150,14 +173,15 @@ impl HubPort {
                         return;
                     }
                     // Answer for the device, with no NPDU options.
-                    let answer = if rpm && port.quirks.refuse_rpm {
-                        Some([0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
-                    } else if rpm && port.quirks.abort_first_rpm {
-                        port.quirks.abort_first_rpm = false;
-                        Some([0x01, 0x00, 0x71, invoke_id, SEGMENTATION_NOT_SUPPORTED])
-                    } else {
-                        None
-                    };
+                    let answer =
+                        if (rpm && port.quirks.refuse_rpm) || (cov && port.quirks.refuse_cov) {
+                            Some([0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
+                        } else if rpm && port.quirks.abort_first_rpm {
+                            port.quirks.abort_first_rpm = false;
+                            Some([0x01, 0x00, 0x71, invoke_id, SEGMENTATION_NOT_SUPPORTED])
+                        } else {
+                            None
+                        };
                     if let Some(answer) = answer {
                         let back = ReceivedNpdu::unverified(
                             Bytes::copy_from_slice(&answer),
@@ -329,6 +353,16 @@ impl Site {
 
     /// `servers` and a connected client at 10.0.0.1 with `limits`.
     pub(super) async fn start_with(servers: Vec<Server>, limits: ClientLimits) -> Self {
+        Self::start_with_options(servers, limits, SessionOptions::default()).await
+    }
+
+    /// `servers` and a connected client at 10.0.0.1 with `limits`, its
+    /// session run with `options`.
+    pub(super) async fn start_with_options(
+        servers: Vec<Server>,
+        limits: ClientLimits,
+        options: SessionOptions,
+    ) -> Self {
         let hub = Arc::new(Hub::default());
         let mut started = Vec::new();
         for server in servers {
@@ -356,7 +390,7 @@ impl Site {
             AddressStyle::Bip,
             sink,
             command_rx,
-            0,
+            options,
         )));
         let mut site = Self {
             hub,
@@ -436,10 +470,39 @@ impl Site {
         self.pump_until(|app| app.devices.len() >= rows).await;
     }
 
+    /// The server at index `i` of those the site started with.
+    pub(super) fn server(&self, i: usize) -> &BACnetServer<HubPort> {
+        &self.servers[i]
+    }
+
+    /// Apply worker events, and hand on their commands, for `span` of
+    /// (paused) time.
+    pub(super) async fn run_for(&mut self, span: Duration) {
+        let end = tokio::time::Instant::now() + span;
+        loop {
+            tokio::select! {
+                event = self.events.recv() => {
+                    let commands = worker(&mut self.app, event.expect("worker stopped"));
+                    self.send(commands).await;
+                }
+                () = tokio::time::sleep_until(end) => return,
+            }
+        }
+    }
+
+    /// Quit as the UI does: drop the command sender and wait for the
+    /// worker, which cancels the watch list's subscriptions and stops the
+    /// client. The servers keep running.
+    pub(super) async fn quit(&mut self) {
+        self.commands = None;
+        if let Some(worker) = self.worker.take() {
+            bounded(worker).await.unwrap();
+        }
+    }
+
     pub(super) async fn stop(mut self) {
         // Dropping the command sender stops the worker, which stops the client.
-        self.commands = None;
-        bounded(self.worker.take().unwrap()).await.unwrap();
+        self.quit().await;
         for server in &mut self.servers {
             bounded(server.stop()).await.unwrap();
         }

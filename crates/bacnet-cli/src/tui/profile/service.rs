@@ -75,6 +75,10 @@ impl Service {
             profile,
         })
     }
+    /// The workspace of profile `name`, which connecting it created.
+    pub(crate) fn workspace(&self, name: &str) -> Option<std::path::PathBuf> {
+        self.store.as_ref().ok()?.workspace(name).ok()
+    }
     /// Validate the displayed snapshot, persist authorization and prepare its
     /// workspace, then return the already resolved connection configuration.
     pub(crate) fn prepare(

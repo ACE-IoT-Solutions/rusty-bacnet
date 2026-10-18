@@ -14,9 +14,11 @@
 //! - [`log_layer`]: tracing into an in-memory ring for the log pane.
 //!
 //! - [`point`]: the device browser's data, shared by the worker and the app.
+//! - [`watched`]: the watch list's messages.
 //!
-//! The TUI is read-only: discovery, the device browser's reads and finite
-//! foreign-device registrations, with no device application writes.
+//! The TUI is read-only: discovery, the device browser's reads, the watch
+//! list's reads and finite COV subscriptions, and finite foreign-device
+//! registrations, with no device application writes.
 
 mod app;
 mod event_loop;
@@ -27,6 +29,7 @@ mod point;
 mod profile;
 mod terminal;
 mod view;
+mod watched;
 mod worker;
 
 #[cfg(test)]
@@ -47,7 +50,8 @@ use self::event_loop::LoopIo;
 use self::log_layer::{LogRing, RingLayer, LOG_CAPACITY};
 use self::terminal::Signals;
 use self::worker::coordinator;
-use self::worker::session::{ConnectPlan, TransportKind};
+use self::worker::session::{ConnectPlan, SessionOptions, TransportKind};
+use self::worker::watch::WatchOptions;
 use self::worker::{EventSink, COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY};
 use crate::args::{Cli, Command};
 use crate::core::interfaces::list_ipv4_interfaces;
@@ -64,14 +68,34 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("{hint}");
         std::process::exit(1);
     }
-    let (fps, log_file, max_rate) = match &cli.command {
+    let (fps, log_file, options) = match &cli.command {
         Some(Command::Tui {
             fps,
             log_file,
             max_rate,
+            cov_lifetime,
+            poll_interval,
             ..
-        }) => (*fps, log_file.clone(), *max_rate),
-        _ => (20, None, worker::browse::DEFAULT_MAX_RATE),
+        }) => (
+            *fps,
+            log_file.clone(),
+            SessionOptions {
+                max_rate: *max_rate,
+                watch: WatchOptions {
+                    lifetime: *cov_lifetime,
+                    poll_every: Duration::from_secs(*poll_interval),
+                    workspace: None,
+                },
+            },
+        ),
+        _ => (
+            20,
+            None,
+            SessionOptions {
+                max_rate: worker::browse::DEFAULT_MAX_RATE,
+                watch: WatchOptions::default(),
+            },
+        ),
     };
     let kind = if cli.sc {
         TransportKind::Sc
@@ -140,7 +164,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let dropped = sink.dropped_counter();
     let (commands, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-    let mut worker = coordinator::spawn(plan, profiles, sink, command_rx, max_rate);
+    let mut worker = coordinator::spawn(plan, profiles, sink, command_rx, options);
     let mut io = LoopIo {
         input: EventStream::new(),
         events,

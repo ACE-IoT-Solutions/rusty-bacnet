@@ -73,7 +73,7 @@ async fn a_directed_bip6_who_is_resolves_beside_the_loop() {
         AddressStyle::Bip6,
         sink,
         command_rx,
-        0,
+        Default::default(),
     )));
 
     // The status line: the VMAC instance 4321 gives (H.7.2) and where the

@@ -64,7 +64,7 @@ async fn coordinator_disconnects_reconnects_same_port_and_joins_on_quit() {
     };
     let (sink, mut events) = EventSink::channel(32);
     let (commands, rx) = mpsc::channel(16);
-    let task = coordinator::spawn(Some(plan), None, sink, rx, 0);
+    let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
     let first = connected(&mut events, 1).await;
     for generation in 1..=3 {
         commands.send(Command::Disconnect).await.unwrap();
@@ -92,7 +92,7 @@ async fn failed_attempt_keeps_coordinator_available_for_corrected_interface() {
     };
     let (sink, mut events) = EventSink::channel(32);
     let (commands, rx) = mpsc::channel(16);
-    let task = coordinator::spawn(Some(plan), None, sink, rx, 0);
+    let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
     loop {
         if let WorkerEvent::Session {
             generation: 1,
@@ -136,7 +136,7 @@ async fn disconnect_cancels_pending_foreign_registration_and_stops_renewals() {
     };
     let (sink, mut events) = EventSink::channel(32);
     let (commands, rx) = mpsc::channel(16);
-    let task = coordinator::spawn(Some(plan), None, sink, rx, 0);
+    let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
     let mut packet = [0; 256];
     let (len, peer) = tokio::time::timeout(Duration::from_secs(2), bbmd.recv_from(&mut packet))
         .await
@@ -166,7 +166,7 @@ async fn a_saturated_event_channel_cannot_block_retirement_or_quit() {
         args: profile().transport_args().unwrap(),
         await_interface: false,
     };
-    let task = coordinator::spawn(Some(plan), None, sink, rx, 0);
+    let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
     // SessionStarted occupies the only slot; Connected waits for room.
     tokio::time::sleep(Duration::from_millis(30)).await;
     commands.send(Command::Disconnect).await.unwrap();
@@ -189,7 +189,7 @@ async fn unauthorized_or_unsaved_profiles_never_start_a_network_attempt() {
     };
     let (sink, mut events) = EventSink::channel(16);
     let (commands, rx) = mpsc::channel(16);
-    let task = coordinator::spawn(None, Some(service), sink, rx, 0);
+    let task = coordinator::spawn(None, Some(service), sink, rx, Default::default());
     commands
         .send(Command::Profile(Request::Connect {
             name: "local".into(),
@@ -371,7 +371,7 @@ async fn a_refused_first_registration_still_connects_and_retries_in_background()
     };
     let (sink, mut events) = EventSink::channel(32);
     let (commands, rx) = mpsc::channel(16);
-    let task = coordinator::spawn(Some(plan), None, sink, rx, 0);
+    let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
     let mut packet = [0; 256];
     let (_, peer) = tokio::time::timeout(Duration::from_secs(2), bbmd.recv_from(&mut packet))
         .await

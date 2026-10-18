@@ -103,9 +103,7 @@ impl Browser {
         }
     }
 
-    /// The selected object, for an action on it such as adding it to a
-    /// watch list (#965).
-    #[allow(dead_code)] // The watch list (#965) is its first caller.
+    /// The selected object, which `a` adds to the watch list.
     pub(crate) fn selected_point(&self) -> Option<(u32, ObjectIdentifier)> {
         self.objects.selected().map(|object| (self.device, object))
     }

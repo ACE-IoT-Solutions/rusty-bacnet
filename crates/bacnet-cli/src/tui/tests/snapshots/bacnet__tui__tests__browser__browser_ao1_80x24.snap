@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/browser.rs
 expression: text
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | drop 0                   ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0           ? help "
 " Device 100   Card    Objects   [Properties]   Tab switches                     "
 "┌ analog-output 1 ───────────────────────┐┌ Priority array: 10 in control ─────┐"
 "│ Status: normal                         ││  1 life safety, manual    -        │"
@@ -25,4 +25,4 @@ expression: text
 "│ deadband                    1          ││ Present_Value       55             │"
 "│ limit-enable                ()         ││                                    │"
 "└────────────────────────────────────────┘└────────────────────────────────────┘"
-" Enter read  Tab pane  / filter  r refresh  Esc devices  ? help  q quit         "
+" Enter read  a watch  Tab pane  / filter  r refresh  Esc devices  ? help  q quit"

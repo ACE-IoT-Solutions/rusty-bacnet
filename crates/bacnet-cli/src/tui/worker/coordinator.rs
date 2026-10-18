@@ -1,6 +1,6 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
-use super::session::{ConnectPlan, TransportKind};
+use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::point::{BrowseResult, ReqId};
@@ -16,22 +16,22 @@ struct Active {
 
 /// The coordinator lives until the UI drops its command channel. It never
 /// detaches an attempt or starts a replacement before the old one is joined.
-/// `max_rate` caps the device browser's requests a second (0: no cap).
+/// Every session runs with `options`; a profile's adds its workspace.
 pub(crate) fn spawn(
     plan: Option<ConnectPlan>,
     profiles: Option<Service>,
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    options: SessionOptions,
 ) -> JoinHandle<()> {
-    tokio::spawn(Box::pin(run(plan, profiles, sink, commands, max_rate)))
+    tokio::spawn(Box::pin(run(plan, profiles, sink, commands, options)))
 }
 
 async fn start(
     plan: &ConnectPlan,
     generation: u64,
     sink: &EventSink,
-    max_rate: u32,
+    options: &SessionOptions,
 ) -> Option<Active> {
     let (cancel, cancelled) = watch::channel(false);
     let (commands, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
@@ -42,7 +42,7 @@ async fn start(
         return None;
     }
     let scoped = sink.for_session(generation, cancelled);
-    let task = session::spawn(plan.clone(), scoped, command_rx, max_rate);
+    let task = session::spawn(plan.clone(), scoped, command_rx, options.clone());
     Some(Active {
         cancel,
         commands,
@@ -77,14 +77,14 @@ async fn run(
     profiles: Option<Service>,
     sink: EventSink,
     mut commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    mut options: SessionOptions,
 ) {
     let mut generation = 0;
     let mut active = None;
     if let Some(plan) = &plan {
         if !plan.await_interface {
             generation += 1;
-            active = start(plan, generation, &sink, max_rate).await;
+            active = start(plan, generation, &sink, &options).await;
         }
     }
     loop {
@@ -120,11 +120,12 @@ async fn run(
                     Command::Browse { req, .. } => {
                         forward_browse(active.as_ref(), command, req, generation, &sink).await;
                     }
-                    Command::StopBrowse { .. } => {
-                        // Best effort: a stale browse result is dropped by the UI anyway.
+                    Command::StopBrowse { .. } | Command::Watch(_) => {
+                        // Best effort: a stale browse result is dropped by the UI
+                        // anyway, and the session ending cancels every watch row.
                         if let Some(active) = &active {
                             if let Err(error) = active.commands.try_send(command) {
-                                tracing::debug!("browse stop not admitted: {error}");
+                                tracing::debug!("command not admitted: {error}");
                             }
                         }
                     }
@@ -150,10 +151,11 @@ async fn run(
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
                                         profile.authorized_at_unix = authorized_at_unix;
+                                        options.watch.workspace = profiles.workspace(&name);
                                         sink.deliver(WorkerEvent::Profile(Ok(Reply::Loaded { name, profile }))).await;
                                         let next = ConnectPlan { kind: TransportKind::Bip, args, await_interface: false };
                                         generation += 1;
-                                        active = start(&next, generation, &sink, max_rate).await;
+                                        active = start(&next, generation, &sink, &options).await;
                                         plan = Some(next);
                                         continue;
                                     }
@@ -169,7 +171,7 @@ async fn run(
                             plan.args.interface = interface; plan.args.broadcast = broadcast;
                             plan.await_interface = false;
                             generation += 1;
-                            active = start(plan, generation, &sink, max_rate).await;
+                            active = start(plan, generation, &sink, &options).await;
                         } else { reject(&sink, "select a profile before connecting").await; }
                     }
                     Command::Reconnect => {
@@ -178,7 +180,7 @@ async fn run(
                         if let Some(plan) = &plan {
                             if plan.await_interface { reject(&sink, "choose an interface first").await; continue; }
                             generation += 1;
-                            active = start(plan, generation, &sink, max_rate).await;
+                            active = start(plan, generation, &sink, &options).await;
                         }
                     }
                 }

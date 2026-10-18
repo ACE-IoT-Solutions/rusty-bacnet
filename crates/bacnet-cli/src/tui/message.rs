@@ -144,6 +144,8 @@ pub(crate) enum Command {
         /// Device instance.
         device: u32,
     },
+    /// A watch list request.
+    Watch(super::watched::WatchCommand),
 }
 
 /// One row of the device table, already formatted for display.
@@ -178,7 +180,7 @@ pub(crate) enum OpOutcome {
 }
 
 /// Worker to UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WorkerEvent {
     /// An unexpected worker failure makes resource ownership uncertain.
     Fatal { error: String },
@@ -248,6 +250,8 @@ pub(crate) enum WorkerEvent {
         /// The result.
         result: BrowseResult,
     },
+    /// A watch list report.
+    Watch(super::watched::WatchEvent),
 }
 
 #[cfg(test)]

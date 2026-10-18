@@ -32,6 +32,7 @@ mod lab;
 mod load;
 mod profile_ui;
 mod site;
+mod watch;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;

@@ -189,6 +189,9 @@ support B/IP only. Global flags can appear before or after `tui`.
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
 | `--log-file <FILE>` | | Append log lines to this file as well as the in-app log pane |
+| `--max-rate <N>` | `20` | Confirmed requests a second across the browser and the watch list; 0 for no cap |
+| `--cov-lifetime <SECS>` | `300` | Lifetime of the watch list's COV subscriptions, 10 to 28800 |
+| `--poll-interval <SECS>` | `10` | Least time between two polls of a watched point, 1 to 3600 |
 
 `-v` and `-vv` raise the log level from info to debug and trace.
 
@@ -310,6 +313,8 @@ client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
+| `3` / `1` | Show the watch list / back to the devices |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off` |
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
@@ -334,6 +339,24 @@ Object_List too large for one answer element by element. A device never has
 more than one of the browser's requests outstanding, and `--max-rate N` caps
 the requests a second across all devices (default 20; 0 for no cap). The
 browser only reads.
+
+**Watch list.** `a` on an object in the browser watches its Present_Value;
+`:watch 1234 ai:1 [property]` on the command bar watches any property of a
+device in the table (`dnet:1234` for a routed one). `3` shows the list: device,
+object, property, value, units, status flags, source, the age of the last
+value and a sparkline. `x` stops watching the selected row.
+
+Each row subscribes for COV with a finite lifetime (`--cov-lifetime`, default
+300 s) that is renewed before it runs out: SubscribeCOV for Present_Value,
+SubscribeCOVProperty for anything else. Removing a row, and quitting, cancel
+its subscription on the device; the status bar's `COV` counter is how many
+subscriptions the session holds. A device that refuses COV, or a routed one,
+is polled instead: one ReadPropertyMultiple per device for up to 16 rows, a
+point at most every `--poll-interval` seconds (default 10), one request
+outstanding per device, and within the shared `--max-rate`. The list's title
+shows the request rate over the last 10 s. Notifications the TUI couldn't
+keep up with count in the `drop` counter. With a profile, `:csv on` logs every
+value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
 
 The `tui` cargo feature is off by default until the terminal UI ships in
 0.14.0 (#975), so the release binaries and a plain `cargo install bacnet-cli`

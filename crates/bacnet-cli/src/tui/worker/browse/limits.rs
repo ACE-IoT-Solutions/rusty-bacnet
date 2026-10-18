@@ -2,7 +2,7 @@
 //! never has more than one of our confirmed requests outstanding, and a
 //! global cap on how many requests a second leave across every device.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -11,13 +11,26 @@ use tokio::time::Instant;
 
 use crate::tui::point::{BrowseRead, ReqId};
 
-/// Spaces requests evenly: at most `per_second` a second across every job.
-/// Each caller takes the next free slot and sleeps until it; the lock is
-/// held only to take the slot, never across the sleep.
+/// Spaces requests evenly: at most `per_second` a second across every job,
+/// the browser's and the watch list's alike. Each caller takes the next free
+/// slot and sleeps until it; the lock is held only to take the slot, never
+/// across the sleep. It also remembers when recent requests went, for the
+/// request-rate meter.
 pub(crate) struct RateCap {
     interval: Duration,
-    next: Mutex<Option<Instant>>,
+    state: Mutex<Slots>,
 }
+
+#[derive(Default)]
+struct Slots {
+    /// The next free slot.
+    next: Option<Instant>,
+    /// The slots handed out within the meter's window, oldest first.
+    recent: VecDeque<Instant>,
+}
+
+/// How long the meter remembers a request.
+const METER_WINDOW: Duration = Duration::from_secs(crate::tui::watched::METER_WINDOW_SECS);
 
 impl RateCap {
     /// A cap of `per_second` requests a second; 0 means no cap.
@@ -28,25 +41,43 @@ impl RateCap {
         };
         Self {
             interval,
-            next: Mutex::new(None),
+            state: Mutex::new(Slots::default()),
         }
     }
 
     /// The instant this request may go, reserving it.
     fn reserve(&self, now: Instant) -> Instant {
-        let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
-        let slot = next.map_or(now, |next| next.max(now));
-        *next = Some(slot + self.interval);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = state.next.map_or(now, |next| next.max(now));
+        state.next = Some(slot + self.interval);
+        while state
+            .recent
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) >= METER_WINDOW)
+        {
+            state.recent.pop_front();
+        }
+        state.recent.push_back(slot);
         slot
     }
 
     /// Wait for this request's turn.
     pub(crate) async fn acquire(&self) {
-        if self.interval.is_zero() {
-            return;
-        }
         let slot = self.reserve(Instant::now());
-        tokio::time::sleep_until(slot).await;
+        if !self.interval.is_zero() {
+            tokio::time::sleep_until(slot).await;
+        }
+    }
+
+    /// Requests whose slot fell in the meter's window up to now.
+    pub(crate) fn recent(&self) -> usize {
+        let now = Instant::now();
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state
+            .recent
+            .iter()
+            .filter(|at| **at <= now && now.saturating_duration_since(**at) < METER_WINDOW)
+            .count()
     }
 }
 
