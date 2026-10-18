@@ -35,9 +35,11 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
         [command, device, object, rest @ ..] if matches!(*command, "watch" | "w") => {
             let device = match parse_target(device)? {
                 Target::Instance(instance) | Target::Routed { instance, .. } => instance,
-                _ => return Err(format!(
+                _ => {
+                    return Err(format!(
                     "'{device}': watch takes a device instance (N or dnet:N) from the device table"
-                )),
+                ))
+                }
             };
             let (object_type, instance) = parse_object_specifier(object)?;
             let object = ObjectIdentifier::new(object_type, instance)
