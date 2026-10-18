@@ -5,24 +5,28 @@
 //! [`Action::Tick`], so the whole state machine is testable without a
 //! terminal or a transport.
 
+pub(crate) mod browser;
 pub(crate) mod connection;
 pub(crate) mod devices;
+pub(crate) mod objects;
 pub(crate) mod picker;
 pub(crate) mod whois;
 
 use std::time::{Duration, Instant};
 
+use self::browser::Browser;
 use self::devices::{DeviceTable, Duplicates, Movement};
 use self::picker::{Picker, PickerKey};
 use self::whois::{FormKey, FormOutcome, WhoIsForm};
 use super::log_layer::LogRing;
-use super::message::{AddressStyle, Command, OpId, OpOutcome, WhoIsSpec, WorkerEvent};
+use super::message::{Command, OpId, OpOutcome, WhoIsSpec, WorkerEvent};
+use crate::core::target::AddressStyle;
 
 /// A second Ctrl-C within this window quits.
 pub(crate) const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 
 /// How long a status message stays in the footer.
-const FLASH_FOR: Duration = Duration::from_secs(4);
+pub(crate) const FLASH_FOR: Duration = Duration::from_secs(4);
 
 /// State of the link to the network.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,8 +159,17 @@ pub(crate) enum Action {
     Disconnect,
     /// Open the Who-Is form.
     OpenWhoIs,
-    /// Move the table selection.
+    /// Move the selection in the device table or the focused browser pane.
     Move(Movement),
+    /// Enter: browse the selected device, or read the selected object.
+    Open,
+    /// Focus the browser's next pane, or the previous one.
+    CyclePane {
+        /// Go backwards.
+        back: bool,
+    },
+    /// Read the browser's device or object again.
+    Refresh,
     /// Next sort column.
     CycleSort,
     /// Flip the sort direction.
@@ -203,6 +216,9 @@ pub(crate) struct App {
     pub(crate) generation: u64,
     /// The device table.
     pub(crate) devices: DeviceTable,
+    /// The device browser, when open; the device table otherwise.
+    pub(crate) browser: Option<Box<Browser>>,
+    next_req: super::point::ReqId,
     /// Instances claimed by more than one address.
     pub(crate) duplicates: Duplicates,
     /// The open modal.
@@ -252,6 +268,8 @@ impl App {
             connection: None,
             generation: 0,
             devices: DeviceTable::default(),
+            browser: None,
+            next_req: 0,
             duplicates: Duplicates::default(),
             overlay,
             filter_editing: false,
@@ -290,6 +308,14 @@ impl App {
     /// True while a Who-Is is sending or listening.
     pub(crate) fn op_running(&self) -> bool {
         self.op.as_ref().is_some_and(Operation::running)
+    }
+
+    /// The filter of the list on screen: the browser's objects or the devices.
+    pub(crate) fn filter_text(&self) -> &str {
+        match &self.browser {
+            Some(browser) => browser.objects.filter(),
+            None => self.devices.filter(),
+        }
     }
 
     fn flash(&mut self, text: impl Into<String>, lasts: Duration) {
@@ -373,10 +399,16 @@ impl App {
         self.flash(text, CTRL_C_WINDOW);
     }
 
-    fn escape(&mut self) {
+    fn escape(&mut self, out: &mut Vec<Command>) {
         match self.overlay {
             Overlay::Picker(_) => self.quit = true,
             Overlay::Help | Overlay::WhoIs(_) | Overlay::Connection => self.overlay = Overlay::None,
+            Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
+                Some(browser) if !browser.objects.filter().is_empty() => {
+                    browser.objects.clear_filter();
+                }
+                _ => self.close_browser(out),
+            },
             Overlay::None if !self.devices.filter().is_empty() => {
                 self.devices.clear_filter();
                 self.devices.settle();
@@ -399,6 +431,19 @@ impl App {
     }
 
     fn filter_key(&mut self, key: FilterKey) {
+        if let Some(browser) = self.browser.as_deref_mut() {
+            let objects = &mut browser.objects;
+            match key {
+                FilterKey::Char(ch) => objects.push_filter(ch),
+                FilterKey::Backspace => objects.pop_filter(),
+                FilterKey::Commit => self.filter_editing = false,
+                FilterKey::Clear => {
+                    objects.clear_filter();
+                    self.filter_editing = false;
+                }
+            }
+            return;
+        }
         match key {
             FilterKey::Char(ch) => self.devices.push_filter(ch),
             FilterKey::Backspace => self.devices.pop_filter(),
@@ -465,6 +510,7 @@ impl App {
 
     fn reset_session(&mut self) {
         self.devices = DeviceTable::default();
+        self.browser = None;
         self.duplicates = Duplicates::default();
         self.op = None;
         self.last_spec = None;
@@ -622,6 +668,11 @@ impl App {
             WorkerEvent::OpRejected { op, cancel, error } => {
                 self.operation_rejected(op, cancel, error)
             }
+            WorkerEvent::Browse { req, result } => {
+                if let Some(browser) = self.browser.as_deref_mut() {
+                    browser.apply(req, result);
+                }
+            }
             WorkerEvent::OpFinished { op, outcome } => {
                 if let Some(op) = self.running_op_mut(op) {
                     op.state = match outcome {
@@ -651,7 +702,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Resize => {}
         Action::Quit => app.quit = true,
         Action::CtrlC => app.ctrl_c(&mut out),
-        Action::Escape => app.escape(),
+        Action::Escape => app.escape(&mut out),
         Action::ToggleHelp => {
             app.overlay = match std::mem::replace(&mut app.overlay, Overlay::None) {
                 Overlay::None => Overlay::Help,
@@ -674,7 +725,17 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
                 }
             }
         }
-        Action::Move(movement) => app.devices.move_selection(movement),
+        Action::Move(movement) => match app.browser.as_deref_mut() {
+            Some(browser) => browser.move_selection(movement),
+            None => app.devices.move_selection(movement),
+        },
+        Action::Open => app.open(&mut out),
+        Action::CyclePane { back } => {
+            if let Some(browser) = app.browser.as_deref_mut() {
+                browser.cycle_focus(back);
+            }
+        }
+        Action::Refresh => app.refresh(&mut out),
         Action::CycleSort => {
             app.devices.cycle_sort();
             app.devices.settle();
@@ -683,7 +744,12 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             app.devices.reverse();
             app.devices.settle();
         }
-        Action::StartFilter => app.filter_editing = true,
+        Action::StartFilter => {
+            if let Some(browser) = app.browser.as_deref_mut() {
+                browser.focus = browser::Pane::Objects;
+            }
+            app.filter_editing = true;
+        }
         Action::Filter(key) => app.filter_key(key),
         Action::Form(key) => app.form_key(key, &mut out),
         Action::Picker(key) => app.picker_key(key, &mut out),

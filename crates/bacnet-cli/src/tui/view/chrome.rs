@@ -48,7 +48,7 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let line = if app.filter_editing {
         Line::from(vec![
             Span::styled(" /", theme.accent()),
-            Span::styled(format!("{}_", app.devices.filter()), theme.selected()),
+            Span::styled(format!("{}_", app.filter_text()), theme.selected()),
             Span::styled("  Enter keep  Esc clear", theme.dim()),
         ])
     } else if let Some(flash) = &app.flash {
@@ -60,11 +60,20 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Line::raw("")
     } else {
         let hints: &[(&str, &str)] = match app.link {
+            Link::Up { .. } if app.browser.is_some() => &[
+                ("Enter", "read"),
+                ("Tab", "pane"),
+                ("/", "filter"),
+                ("r", "refresh"),
+                ("Esc", "devices"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
             Link::Up { .. } => &[
+                ("Enter", "browse"),
                 ("d", "Who-Is"),
                 ("/", "filter"),
                 ("s", "sort"),
-                ("p", "profiles"),
                 ("x", "disconnect"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -101,10 +110,17 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Devices",
         &[
-            ("d", "Open the Who-Is form"),
+            ("d  Enter", "Who-Is form; browse the selected device"),
             ("Up Down j k", "Move; PgUp PgDn Home End jump"),
             ("s  S", "Next sort column; reverse the order"),
             ("/", "Filter rows; Esc clears the filter"),
+        ],
+    ),
+    (
+        "Browser",
+        &[
+            ("Tab  Enter", "Next pane; read the selected object"),
+            ("/  r  Esc", "Filter objects; read again; back"),
         ],
     ),
     (
@@ -132,7 +148,7 @@ pub(super) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        " READ-ONLY: discovery and finite FD registrations.",
+        " READ-ONLY: discovery, reads and finite FD registrations.",
         theme.dim(),
     ));
     let height = lines.len() as u16 + 2;

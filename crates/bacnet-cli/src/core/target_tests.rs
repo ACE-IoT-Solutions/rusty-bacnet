@@ -52,15 +52,71 @@ fn test_parse_target_instance() {
 }
 
 #[test]
-fn test_parse_target_routed() {
-    let target = parse_target("2:1234").unwrap();
-    match target {
-        Target::Routed(dnet, id) => {
-            assert_eq!(dnet, 2);
-            assert_eq!(id, 1234);
-        }
-        _ => panic!("expected Routed target"),
+fn routed_targets_name_a_network_and_an_instance_or_a_mac() {
+    assert_eq!(
+        parse_target("2:1234"),
+        Ok(Target::Routed {
+            dnet: 2,
+            instance: 1234
+        })
+    );
+    assert_eq!(
+        parse_target("5:0x05"),
+        Ok(Target::RoutedMac {
+            dnet: 5,
+            mac: vec![5]
+        })
+    );
+    assert_eq!(
+        parse_target("7:0X020000000001"),
+        Ok(Target::RoutedMac {
+            dnet: 7,
+            mac: vec![2, 0, 0, 0, 0, 1]
+        })
+    );
+    for bad in ["0:1234", "65535:1234", "0:0x05", "65535:0x05"] {
+        let error = parse_target(bad).unwrap_err();
+        assert!(error.contains("expected 1 to 65534"), "{bad}: {error}");
     }
+    for bad in ["2:0x", "2:0x5", "2:0xZZ"] {
+        let error = parse_target(bad).unwrap_err();
+        assert!(
+            error.contains("invalid MAC in routed target"),
+            "{bad}: {error}"
+        );
+    }
+}
+
+/// A BACnet/SC VMAC (or any 6-octet MAC) is written as hex octets; the
+/// `ip:port` spelling of the same six octets still parses.
+#[test]
+fn six_hex_octets_are_a_mac() {
+    let vmac = vec![2, 0, 0, 0, 0, 1];
+    for text in ["02:00:00:00:00:01", "02-00-00-00-00-01", "020000000001"] {
+        assert_eq!(mac(parse_target(text)), vmac, "{text}");
+    }
+    assert_eq!(mac(parse_target("2.0.0.0:1")), vmac);
+    // Mixed or short groups are not a MAC.
+    for text in ["02:00:00:00:00", "2:0:0:0:0:1", "02:00-00:00:00:01"] {
+        assert!(parse_target(text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn addresses_format_per_transport_and_read_back() {
+    assert_eq!(
+        AddressStyle::Bip.format(&[10, 0, 0, 1, 0xBA, 0xC0]),
+        "10.0.0.1:47808"
+    );
+    // A B/IPv6 MAC is the node's VMAC (Clause U.1.3).
+    assert_eq!(AddressStyle::Bip6.format(&[0, 4, 0xD2]), "bip6:0x0004D2");
+    let vmac = [2, 0, 0, 0, 0, 1];
+    for style in [AddressStyle::Bip6, AddressStyle::Hex] {
+        assert_eq!(style.format(&vmac), "02:00:00:00:00:01");
+    }
+    assert_eq!(mac(parse_target(&AddressStyle::Hex.format(&vmac))), vmac);
+    let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    assert_eq!(AddressStyle::of(&bip), AddressStyle::Bip);
 }
 
 #[test]
@@ -196,4 +252,9 @@ async fn a_bip6_vmac_needs_the_bip6_transport() {
         mac(parse_target_on(&bip, "10.0.0.1")),
         [10, 0, 0, 1, 0xBA, 0xC0]
     );
+    // And B/IPv6, whose MACs are 3-octet VMACs, refuses a 6-octet one.
+    let bip6 = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(1));
+    let error = parse_target_on(&bip6, "02:00:00:00:00:01").unwrap_err();
+    assert!(error.contains("3-octet VMAC"), "{error}");
+    assert_eq!(AddressStyle::of(&bip6), AddressStyle::Bip6);
 }

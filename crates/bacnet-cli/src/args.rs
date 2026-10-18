@@ -167,6 +167,11 @@ pub(crate) enum Command {
         /// Also write log lines to this file (the in-app log pane is `L`).
         #[arg(long, value_name = "FILE")]
         log_file: Option<PathBuf>,
+        /// Most confirmed requests a second the device browser sends, across
+        /// all devices (0 for no cap). Each device has at most one
+        /// outstanding at a time either way.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        max_rate: u32,
     },
 
     /// Discover BACnet devices (WhoIs).

@@ -7,6 +7,7 @@
 //! rather than queued without limit, and the table is resynchronised from the
 //! client's own discovery table afterwards.
 
+pub(crate) mod browse;
 pub(crate) mod coordinator;
 pub(crate) mod session;
 
@@ -18,7 +19,8 @@ use bacnet_client::discovery::DiscoveredDevice;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
-use super::message::{hex, AddressStyle, DeviceRow, WorkerEvent};
+use super::message::{DeviceRow, WorkerEvent};
+use crate::core::target::{hex, AddressStyle};
 
 /// Capacity of the worker-to-UI channel.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 1_024;

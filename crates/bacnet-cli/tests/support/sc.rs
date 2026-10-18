@@ -130,9 +130,9 @@ pub fn cli(files: &Files, url: &str, leaf: &Leaf) -> Command {
 }
 
 pub fn read(cmd: &mut Command) -> &mut Command {
-    // Existing CLI target parser encodes IP:port into six MAC bytes. On SC
-    // these are the fixture server's VMAC, NOT an IP destination to dial.
-    // Colon-hex VMAC target syntax is not currently accepted by that parser.
+    // The IP:port spelling of six MAC octets: on SC these are the fixture
+    // server's VMAC, NOT an IP destination to dial. The hex VMAC spelling
+    // (02:00:00:00:00:01) is tested in sc_handshake.rs.
     cmd.args(["read", "2.0.0.0:1", "dev:123", "object-name"])
 }
 

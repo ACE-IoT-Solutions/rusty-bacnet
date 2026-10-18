@@ -174,7 +174,7 @@ async fn shell_bip6_address_target_resolves_to_the_vmac_there() {
         resolve_target_mac(&client, &target).await.unwrap(),
         [0x00, 0x04, 0xD2]
     );
-    let bound = resolve::as_bip6(client.transport())
+    let bound = target::as_bip6(client.transport())
         .and_then(|bip6| bip6.local_address())
         .unwrap();
     let (label, line) = local_address_line(client.local_mac(), Some(bound));

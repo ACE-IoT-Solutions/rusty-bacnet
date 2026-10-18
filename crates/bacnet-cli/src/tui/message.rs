@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_types::enums::Segmentation;
 
+use super::point::{BrowseRead, BrowseResult, ReqId};
+
 /// Identifies one user-started operation, so late results can be dropped.
 pub(crate) type OpId = u64;
 
@@ -127,6 +129,21 @@ pub(crate) enum Command {
         /// Operation id.
         op: OpId,
     },
+    /// Read for the device browser.
+    Browse {
+        /// Request id, echoed in the results.
+        req: ReqId,
+        /// Device instance, from the discovery table.
+        device: u32,
+        /// What to read.
+        read: BrowseRead,
+    },
+    /// Stop reading `device`: drop its queued reads and end the running one
+    /// after its outstanding request.
+    StopBrowse {
+        /// Device instance.
+        device: u32,
+    },
 }
 
 /// One row of the device table, already formatted for display.
@@ -224,48 +241,13 @@ pub(crate) enum WorkerEvent {
         /// How.
         outcome: OpOutcome,
     },
-}
-
-/// How a transport's MAC addresses are shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AddressStyle {
-    /// 4-byte IPv4 address and 2-byte port.
-    Bip,
-    /// 3-byte B/IPv6 VMAC, as `bip6:0x0004D2` (Clause U.1.3).
-    Bip6,
-    /// Hex bytes (BACnet/SC VMACs and anything else).
-    Hex,
-}
-
-impl AddressStyle {
-    /// Format a MAC for display, in a form the directed Who-Is reads back.
-    pub(crate) fn format(self, mac: &[u8]) -> String {
-        match (self, mac.len()) {
-            (Self::Bip, 6) | (Self::Bip6, 3) => crate::output::format_mac(mac),
-            _ => hex(mac),
-        }
-    }
-
-    /// The addresses a directed Who-Is takes on this transport.
-    pub(crate) fn directed_forms(self) -> &'static str {
-        match self {
-            Self::Bip => "IP or IP:port",
-            Self::Bip6 => "bip6:N, bip6:0xVMAC or [IPv6]:port",
-            Self::Hex => "VMAC as 12 hex digits",
-        }
-    }
-}
-
-/// Colon-separated lowercase hex.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 {
-            out.push(':');
-        }
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+    /// A device browser result.
+    Browse {
+        /// The request it answers.
+        req: ReqId,
+        /// The result.
+        result: BrowseResult,
+    },
 }
 
 #[cfg(test)]
@@ -290,23 +272,5 @@ mod tests {
         assert!(!bounded.wants(100) && !bounded.wants(104));
         assert_eq!(bounded.describe(), "network 5 101-103");
         assert_eq!(spec(WhoIsScope::Global, None).describe(), "global, all");
-    }
-
-    #[test]
-    fn addresses_format_per_transport() {
-        assert_eq!(
-            AddressStyle::Bip.format(&[10, 0, 0, 1, 0xBA, 0xC0]),
-            "10.0.0.1:47808"
-        );
-        // A B/IPv6 MAC is the node's VMAC (Clause U.1.3).
-        assert_eq!(AddressStyle::Bip6.format(&[0, 4, 0xD2]), "bip6:0x0004D2");
-        assert_eq!(
-            AddressStyle::Bip6.format(&[2, 0, 0, 0, 0, 1]),
-            "02:00:00:00:00:01"
-        );
-        assert_eq!(
-            AddressStyle::Hex.format(&[2, 0, 0, 0, 0, 1]),
-            "02:00:00:00:00:01"
-        );
     }
 }

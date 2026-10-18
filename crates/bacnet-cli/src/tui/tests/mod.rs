@@ -6,7 +6,10 @@
 //!   line and a directed Who-Is to an IPv6 address.
 //! - `frames`: `TestBackend` frames at 80x24 and 120x40, compared with
 //!   insta snapshots in `snapshots/`.
-//! - `inprocess`: real `BACnetServer`s and a client on an in-memory network.
+//! - `inprocess`: discovery with real `BACnetServer`s and a client on the
+//!   in-memory network of `site`.
+//! - `browser`: the device browser against the lab device of
+//!   `tests/support/lab.rs` on that network.
 //! - `load`: a 1,000 events/s burst, and the render-time budget.
 //! - `event_loop`: the `select!` loop on a `TestBackend` with scripted input.
 //!
@@ -17,13 +20,18 @@
 
 mod app_core;
 mod bip6_worker;
+mod browser;
 mod build_retirement;
 mod connections;
 mod event_loop;
 mod frames;
 mod inprocess;
+#[allow(dead_code)] // The integration tests use the rest.
+#[path = "../../../tests/support/lab.rs"]
+mod lab;
 mod load;
 mod profile_ui;
+mod site;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
@@ -38,8 +46,9 @@ use super::app::picker::Picker;
 use super::app::{update, Action, App, AppConfig};
 use super::keymap::map_key;
 use super::log_layer::LogRing;
-use super::message::{AddressStyle, Command, DeviceRow, WorkerEvent};
+use super::message::{Command, DeviceRow, WorkerEvent};
 use crate::core::interfaces::Ipv4Interface;
+use crate::core::target::AddressStyle;
 
 /// One fixed start time per test process, so ages are exact offsets from it.
 pub(super) fn t0() -> Instant {

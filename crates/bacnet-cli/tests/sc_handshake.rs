@@ -90,6 +90,41 @@ async fn explicit_site_ca_read_property_and_untrusted_ca_rejection() {
     .await;
 }
 
+/// A BACnet/SC target is the device's VMAC as hex octets (#963), not the
+/// IPv4-and-port spelling of its six octets that `read` in the support
+/// module still uses.
+#[tokio::test]
+async fn read_property_with_a_vmac_target() {
+    with_fixture(async |fixture| {
+        let site = Site::new();
+        fixture.start(&site).await;
+        let files = Files::new();
+        let ca = files.write("site.pem", site.ca.pem());
+        let leaf = site.leaf("cli", ClientAuth, None);
+        for vmac in ["02:00:00:00:00:01", "020000000001"] {
+            let mut cmd = cli(&files, &fixture.url, &leaf);
+            cmd.arg("--sc-ca")
+                .arg(&ca)
+                .args(["read", vmac, "dev:123", "object-name"]);
+            let output = Process::spawn(&mut cmd).output().await;
+            assert!(
+                output.status.success(),
+                "{vmac}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "object": "DEVICE:123", "property": "OBJECT_NAME", "value": "\"CLI site device\""
+                }),
+                "{vmac}"
+            );
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn hub_rejects_untrusted_expired_and_future_operational_certificates() {
     with_fixture(async |fixture| {
