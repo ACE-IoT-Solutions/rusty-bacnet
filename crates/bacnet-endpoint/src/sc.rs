@@ -258,6 +258,7 @@ impl ScEndpointBuilder {
     /// kill/reconnect preserves VMAC+UUID via the caller-owned reconnect
     /// config (vs transient connections that renegotiate).
     #[cfg(feature = "sc-tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
     pub fn build_hub_session(
         mut self,
         ws: bacnet_transport::sc_tls::TlsWebSocket,
