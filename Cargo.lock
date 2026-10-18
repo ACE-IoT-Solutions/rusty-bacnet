@@ -451,6 +451,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-npdu"
+version = "0.13.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-objects"
 version = "0.13.0"
 dependencies = [
