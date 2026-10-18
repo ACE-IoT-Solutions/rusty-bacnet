@@ -70,6 +70,7 @@ impl Shared {
 /// [`BACnetRouter::stop`](super::BACnetRouter::stop) ends them, the local
 /// receivers see their queues close.
 pub(super) struct Outputs {
+    pub(super) replies: Arc<super::replies::ReplyLifetime>,
     /// Each port's send queue, by port index.
     pub(super) send_txs: Vec<send_queue::Sender>,
     /// The local application receive queue.
@@ -124,7 +125,10 @@ impl PortDispatch {
             let mut router = shared.engine.lock();
             let failures = router.counters().write_failures;
             let outcome = match router.receive(frame, shared.engine.now(), &mut host) {
-                Received::Local(local) => Outcome::Local(Delivery::of(&local)),
+                Received::Local(local) => Outcome::Local(Delivery::of(
+                    &local,
+                    router.ports()[usize::from(port.0)].max_npdu.unicast,
+                )),
                 Received::ToRouter(_) => Outcome::ToRouter,
                 Received::Discarded(reason) => Outcome::Discarded(reason),
                 Received::Handled => Outcome::Handled,
@@ -146,9 +150,11 @@ impl PortDispatch {
             .unwrap_or_default();
         match outcome {
             Outcome::Local(delivery) => {
-                let _ = outputs
-                    .local_tx
-                    .try_send_apdu(delivery.application(received, network));
+                let _ = outputs.local_tx.try_send_apdu(delivery.application(
+                    received,
+                    network,
+                    &self.outputs,
+                ));
             }
             Outcome::ToRouter => outputs.local_control.deliver(&received),
             Outcome::Discarded(reason) => {

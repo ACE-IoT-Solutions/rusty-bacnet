@@ -60,6 +60,7 @@ mod ingress;
 mod init;
 mod output;
 mod reject;
+mod reply;
 mod tasks;
 
 use core::borrow::BorrowMut;
@@ -72,6 +73,7 @@ pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 pub use reject::RejectOrigin;
+pub use reply::ReplyPlan;
 
 use counters::bump;
 use output::Outputs;

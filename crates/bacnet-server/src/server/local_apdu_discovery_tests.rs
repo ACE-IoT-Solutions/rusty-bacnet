@@ -60,6 +60,7 @@ async fn who_is_projects_frozen_identity_and_checks_membership() {
                 service_request: Bytes::new(),
             },
             &bacnet_network::layer::ReceivedApdu {
+                router_response: None,
                 direct_response: None,
                 apdu: Bytes::new(),
                 source_mac: MacAddr::from_slice(&[2]),

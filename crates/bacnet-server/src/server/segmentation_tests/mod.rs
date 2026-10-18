@@ -198,6 +198,7 @@ async fn dispatch_test_apdu_from_network(
         source_mac.as_slice(),
         apdu,
         bacnet_network::layer::ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: Bytes::new(),
             source_mac: source_mac.clone(),

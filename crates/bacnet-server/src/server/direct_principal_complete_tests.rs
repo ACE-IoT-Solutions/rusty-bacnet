@@ -342,6 +342,7 @@ async fn direct_principal_endpoint_reinitialize_context_keeps_the_provenance() {
     // loopback egress, so the send may fail; the handler has run by then.
     let _ = responder
         .handle(ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: npdu.payload,
             source_mac: admitted.source_mac.clone(),

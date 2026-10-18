@@ -63,6 +63,8 @@ pub struct Local<'f> {
     /// Its network priority: the control octet's two low bits, 0 (normal)
     /// to 3 (life safety), so never more than 3.
     pub priority: u8,
+    /// Owned return route and explicitly addressed local source, if any.
+    pub reply: super::ReplyPlan,
 }
 
 /// Why a frame was discarded. Each has its count in
@@ -133,7 +135,7 @@ pub(super) struct Arrival<'f> {
 }
 
 /// The local delivery of `npdu`'s APDU.
-fn local<'f>(npdu: &Npdu<'f>, group: bool, global: bool) -> Local<'f> {
+fn local<'f>(at: &Arrival<'_>, npdu: &Npdu<'f>, group: bool, global: bool) -> Local<'f> {
     Local {
         apdu: npdu.payload,
         apdu_offset: npdu.payload_offset,
@@ -142,6 +144,13 @@ fn local<'f>(npdu: &Npdu<'f>, group: bool, global: bool) -> Local<'f> {
         global,
         expecting_reply: npdu.expecting_reply,
         priority: npdu.priority,
+        reply: super::ReplyPlan::new(
+            at.port,
+            at.source,
+            (!group).then_some(npdu.destination).flatten(),
+            npdu.source,
+        )
+        .expect("local delivery has valid bounded node addresses"),
     }
 }
 
@@ -235,17 +244,17 @@ impl<
         host: &mut impl Host,
     ) -> Received<'f> {
         let Some(destination) = npdu.destination else {
-            return Received::Local(local(npdu, at.link_group, false));
+            return Received::Local(local(at, npdu, at.link_group, false));
         };
         if destination.network == GLOBAL_NETWORK {
             self.forward_global(at, npdu, host);
-            return Received::Local(local(npdu, true, true));
+            return Received::Local(local(at, npdu, true, true));
         }
         // The router's own address on any of its networks is its own
         // application's, before any route is looked up (Clause 6.1, Figure
         // 6-12). A DLEN 0 broadcast names no one node, so it is never that.
         if !destination.mac.is_empty() && self.is_own(destination) {
-            return Received::Local(local(npdu, false, false));
+            return Received::Local(local(at, npdu, false, false));
         }
         let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {
             return Received::Handled;
@@ -253,8 +262,8 @@ impl<
         let mut delivered = None;
         if route.port() == at.port && route.is_direct() {
             let own = &self.ports[usize::from(at.port.0)].mac;
-            if *own == *destination.mac {
-                return Received::Local(local(npdu, false, false));
+            if !destination.mac.is_empty() && *own == *destination.mac {
+                return Received::Local(local(at, npdu, false, false));
             }
             // A DLEN 0 broadcast on the arrival network is delivered, and
             // also sent back out the arrival port below, as the hosted
@@ -262,7 +271,7 @@ impl<
             // the port's limit is delivered and also draws reason 4, since
             // the relay gains SNET and SADR.
             if destination.mac.is_empty() {
-                delivered = Some(local(npdu, true, false));
+                delivered = Some(local(at, npdu, true, false));
             }
         }
         let mut npdu = *npdu;
@@ -278,7 +287,7 @@ impl<
                     mac: &[],
                 });
                 if route.port() == at.port {
-                    delivered = Some(local(&npdu, true, false));
+                    delivered = Some(local(at, &npdu, true, false));
                 }
             }
             Group::Broadcast | Group::Refuse => return self.group_drop(),

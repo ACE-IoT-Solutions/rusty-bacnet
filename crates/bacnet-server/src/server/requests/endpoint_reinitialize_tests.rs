@@ -55,6 +55,7 @@ fn received(service_choice: ConfirmedServiceChoice, service_request: Bytes) -> R
     };
     encode_apdu(&mut bytes, &Apdu::ConfirmedRequest(request)).unwrap();
     ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: bytes.freeze(),
         source_mac: MacAddr::from_slice(&[2]),

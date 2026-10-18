@@ -66,6 +66,7 @@ async fn dispatch_counted(server: &BACnetServer<TestTransport>, request: Bytes) 
             service_request: request,
         }),
         ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: Bytes::new(),
             source_mac: MacAddr::from_slice(SOURCE),

@@ -31,7 +31,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             source_mac,
             source_network,
             provenance,
-            direct_response,
+            response_route,
             is_group,
             reply_tx,
         } = inbound;
@@ -364,7 +364,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 }
             }
             Apdu::ConfirmedRequest(req) => {
-                let reply = InboundReply::new(provenance, direct_response, reply_tx);
+                let reply = InboundReply::new(response_route, reply_tx);
                 if is_group {
                     debug!(
                         invoke_id = req.invoke_id,

@@ -23,7 +23,25 @@ pub(crate) use crate::sc::direct_egress::DirectWrite as ResponseWrite;
 #[derive(Debug, Default)]
 pub struct DirectResponseScope(Arc<AtomicBool>);
 
+/// Weak response-owner guard. Cloning it keeps neither the owner nor a socket
+/// alive. It becomes closed when that owner seals or drops its scope.
+#[derive(Debug, Clone)]
+pub struct ResponseScopeGuard(Weak<AtomicBool>);
+impl ResponseScopeGuard {
+    /// Whether the original owner still permits an unstarted response.
+    pub fn is_open(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|scope| !scope.load(Ordering::Acquire))
+    }
+}
+
 impl DirectResponseScope {
+    /// Retain an independently checked weak guard for a queued response.
+    pub fn guard(&self) -> ResponseScopeGuard {
+        ResponseScopeGuard(Arc::downgrade(&self.0))
+    }
+
     /// Reject new and queued direct responses. Idempotent and irreversible.
     pub fn seal(&self) {
         self.0.store(true, Ordering::Release);
@@ -111,7 +129,27 @@ impl DirectResponse {
     /// Send one encoded response NPDU without Data Options on this connection.
     /// The peer's negotiated NPDU and complete BVLC limits are both enforced.
     pub async fn send(&self, npdu: &[u8], scope: &DirectResponseScope) -> Result<(), Error> {
-        if scope.0.load(Ordering::Acquire) {
+        self.send_guarded(npdu, scope, None).await
+    }
+
+    /// Send while both the network owner and an additional captured router
+    /// owner remain live. Both guards are checked again before queued writing.
+    pub async fn send_with_owner(
+        &self,
+        npdu: &[u8],
+        scope: &DirectResponseScope,
+        owner: &ResponseScopeGuard,
+    ) -> Result<(), Error> {
+        self.send_guarded(npdu, scope, Some(owner)).await
+    }
+
+    async fn send_guarded(
+        &self,
+        npdu: &[u8],
+        scope: &DirectResponseScope,
+        owner: Option<&ResponseScopeGuard>,
+    ) -> Result<(), Error> {
+        if scope.0.load(Ordering::Acquire) || owner.is_some_and(|owner| !owner.is_open()) {
             return Err(unavailable());
         }
         if npdu.len() > usize::from(self.peer_max_npdu) {
@@ -138,7 +176,7 @@ impl DirectResponse {
                     self.send.try_send(ResponseWrite {
                         bytes: bytes.freeze(),
                         done,
-                        scope: Some(Arc::downgrade(&scope.0)),
+                        scopes: [Some(scope.guard()), owner.cloned()],
                         started: Arc::new(AtomicBool::new(false)),
                         deadline,
                     })

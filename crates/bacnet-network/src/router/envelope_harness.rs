@@ -239,6 +239,7 @@ impl Harness {
     /// router's network-control consumer.
     fn connect(&mut self, control: Option<crate::layer::AdmissionSender<ReceivedNetworkControl>>) {
         let outputs = Arc::new(Outputs {
+            replies: Default::default(),
             send_txs: self.txs.clone(),
             local_tx: self.local_tx.clone(),
             local_control: LocalControl::new(control, Arc::new(AtomicU64::new(0))),

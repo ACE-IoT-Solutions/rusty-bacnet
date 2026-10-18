@@ -393,25 +393,23 @@ async fn send_raw_response<T: TransportPort + 'static>(
     route: &bacnet_network::response_route::ResponseRoute,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
 ) {
-    let reply_tx = if route.provenance().is_direct_peer() {
+    let reply_tx = if route.requires_direct_response() {
         None
     } else {
         reply_tx
     };
     if let Some(tx) = reply_tx {
-        use bacnet_encoding::npdu::{encode_npdu, Npdu};
-        let npdu = Npdu {
-            is_network_message: false,
-            expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
-            destination: source_network.cloned(),
-            source: None,
-            payload: apdu_bytes.clone(),
-            ..Npdu::default()
-        };
-        let mut npdu_buf = BytesMut::with_capacity(2 + apdu_bytes.len());
-        match encode_npdu(&mut npdu_buf, &npdu) {
-            Ok(()) => {
+        match network.encode_response_for_handoff(
+            bacnet_network::layer::IssuedApdu {
+                apdu: apdu_bytes,
+                next_hop: source_mac,
+                destination: source_network,
+                expecting_reply: false,
+                priority: NetworkPriority::NORMAL,
+            },
+            route,
+        ) {
+            Ok(npdu_buf) => {
                 let _ = tx.send(npdu_buf.freeze());
             }
             Err(error) => {
@@ -467,26 +465,24 @@ async fn send_response<T: TransportPort + 'static>(
     let mut buf = BytesMut::new();
     encode_apdu(&mut buf, response).expect("valid APDU encoding");
 
-    let reply_tx = if route.provenance().is_direct_peer() {
+    let reply_tx = if route.requires_direct_response() {
         None
     } else {
         reply_tx
     };
     if let Some(tx) = reply_tx {
-        use bacnet_encoding::npdu::{encode_npdu, Npdu};
         let apdu_bytes = buf.freeze();
-        let npdu = Npdu {
-            is_network_message: false,
-            expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
-            destination: source_network.cloned(),
-            source: None,
-            payload: apdu_bytes.clone(),
-            ..Npdu::default()
-        };
-        let mut npdu_buf = BytesMut::with_capacity(2 + apdu_bytes.len());
-        match encode_npdu(&mut npdu_buf, &npdu) {
-            Ok(()) => {
+        match network.encode_response_for_handoff(
+            bacnet_network::layer::IssuedApdu {
+                apdu: &apdu_bytes,
+                next_hop: source_mac,
+                destination: source_network,
+                expecting_reply: false,
+                priority: NetworkPriority::NORMAL,
+            },
+            route,
+        ) {
+            Ok(npdu_buf) => {
                 let handed_off = tx.send(npdu_buf.freeze()).is_ok();
                 // Synchronous reply-channel handoff, not the serial worker's
                 // later turnaround. A failed handoff releases too, but is not

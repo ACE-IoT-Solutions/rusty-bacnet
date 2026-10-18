@@ -299,6 +299,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     continue;
                                 }
 
+                                if !Self::accept_segment_route(
+                                    &network_dispatch,
+                                    &mut seg_receivers,
+                                    &key,
+                                    &route,
+                                )
+                                .await
+                                {
+                                    continue;
+                                }
+
                                 // Clause 5.4.5.1
                                 // ConfirmedSegmentedReceivedNotSupported: a
                                 // device that does not support segmented
@@ -504,10 +515,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     let (state, initial_ack) =
                                         super::segmented_receive::initial_state(
                                             payload,
-                                            provenance,
-                                            received
-                                                .as_ref()
-                                                .and_then(|r| r.direct_response.clone()),
+                                            route.clone(),
                                             source_mac.clone(),
                                             source_network.clone(),
                                             req,
@@ -559,8 +567,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 if let Some(total) = final_total {
                                     if let Some(state) = seg_receivers.remove(&key) {
                                         if let Some(envelope) = received.as_mut() {
-                                            envelope.provenance = state.provenance;
-                                            envelope.direct_response = state.direct_response;
+                                            envelope.set_response_route(state.route.clone());
                                         }
                                         match state.payload.complete(total) {
                                             Ok(reassembled) => {
@@ -574,22 +581,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                     &dispatch_context,
                                                     &source_mac,
                                                     Apdu::ConfirmedRequest(reassembled),
-                                                    received.take().unwrap_or_else(|| {
-                                                        warn!("received consumed twice - using empty fallback");
-                                                        bacnet_network::layer::ReceivedApdu {
-                                                            direct_response: None,
-                                                            apdu: bytes::Bytes::new(),
-                                                            source_mac: bacnet_types::MacAddr::new(),
-                                                            ingress_network: None,
-                                                            source_network: None,
-                                                            link_layer_group: false,
-                                                            is_group: false,
-                                                            global_broadcast: false,
-                                                            data_attributes: Vec::new(),
-                                                            provenance: bacnet_transport::port::TransportProvenance::unverified(),
-                                                            reply_tx: None,
-                                                        }
-                                                    }),
+                                                    received.take().unwrap_or_else(
+                                                        super::segmented_receive::empty_reassembled_envelope,
+                                                    ),
                                                 )
                                                 .await;
                                             }
@@ -619,6 +613,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 received.take().unwrap_or_else(|| {
                                     warn!("received consumed twice — using empty fallback");
                                     bacnet_network::layer::ReceivedApdu {
+                                        router_response: None,
                                         direct_response: None,
                                         apdu: bytes::Bytes::new(),
                                         source_mac: bacnet_types::MacAddr::new(),

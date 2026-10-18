@@ -216,7 +216,7 @@ pub(crate) struct SegmentedRequestState {
     /// Provenance snapshot at session open (RB-07). Compared by value on
     /// every later segment; conflicting contexts fail closed.
     pub(crate) provenance: TransportProvenance,
-    pub(crate) direct_response: Option<bacnet_transport::port::DirectResponse>,
+    pub(crate) route: bacnet_network::response_route::ResponseRoute,
     pub(crate) last_activity: Instant,
     /// Last successfully saved new in-order segment, independent of SegmentTimer.
     pub(crate) last_progress: Instant,

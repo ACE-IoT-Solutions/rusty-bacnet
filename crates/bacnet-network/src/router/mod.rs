@@ -73,9 +73,11 @@ mod local_control;
 mod local_delivery;
 mod options;
 mod port_groups;
+mod replies;
 mod send_queue;
 mod send_warning;
 mod sender;
+pub use replies::RouterResponse;
 
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
@@ -121,6 +123,7 @@ enum SendRequest {
         mac: MacAddr,
         data_attributes: Vec<DataAttribute>,
         reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
+        response: Option<replies::ReplyCompletion>,
     },
     Broadcast {
         npdu: Bytes,
@@ -166,6 +169,7 @@ pub struct RouterPort<T: TransportPort> {
 /// network numbers at startup, reachable-only and arrival-port-aware
 /// route answers, the hop count, and the router's own address on any port.
 pub struct BACnetRouter {
+    replies: Arc<replies::ReplyLifetime>,
     /// The engine, the gate and the ports' groups.
     shared: Arc<Shared>,
     /// Dispatch tasks (one per port).
@@ -441,7 +445,9 @@ impl BACnetRouter {
         let (send_txs, send_rxs): (Vec<_>, Vec<_>) = (0..ports.len())
             .map(|_| send_queue::channel(send_queue::CAPACITY))
             .unzip();
+        let replies = Arc::new(replies::ReplyLifetime::default());
         let outputs = Arc::new(Outputs {
+            replies: Arc::clone(&replies),
             send_txs,
             local_tx,
             local_control: local_control::LocalControl::new(
@@ -519,6 +525,7 @@ impl BACnetRouter {
 
         Ok((
             Self {
+                replies,
                 shared,
                 dispatch_tasks,
                 sender_tasks,
@@ -564,6 +571,7 @@ impl BACnetRouter {
     /// drop and does not clear depth/high-water/drop totals. See the
     /// [receive-queue contract](crate::layer#receive-queue-admission).
     pub async fn stop(&mut self) {
+        self.replies.seal();
         for task in self.dispatch_tasks.drain(..) {
             task.abort();
             let _ = task.await;
@@ -630,6 +638,8 @@ mod priority_harness;
 #[cfg(test)]
 mod priority_tests;
 #[cfg(test)]
+mod r7_reply_tests;
+#[cfg(test)]
 mod rb06_convergence_tests;
 #[cfg(test)]
 mod rb09_control_policy_tests;
@@ -637,3 +647,9 @@ mod rb09_control_policy_tests;
 mod reject_tests;
 #[cfg(test)]
 mod tests;
+
+impl Drop for BACnetRouter {
+    fn drop(&mut self) {
+        self.replies.seal();
+    }
+}
