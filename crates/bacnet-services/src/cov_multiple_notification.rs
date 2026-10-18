@@ -17,7 +17,7 @@ use super::helpers::{
 };
 use crate::common::MAX_DECODED_ITEMS;
 use bacnet_encoding::constructed::tagged::{
-    decode_ctx_fixed, decode_ctx_object_id, decode_ctx_unsigned, expect_end, misplaced_tag,
+    decode_ctx_fixed, decode_ctx_object_id, decode_ctx_unsigned, expect_end, misplaced_tag, Fixed,
     next_is_context,
 };
 
@@ -340,8 +340,7 @@ impl COVNotificationMultipleRequest {
                         data,
                         offset,
                         3,
-                        4,
-                        "Time",
+                        Fixed::TIME,
                         "COVNotificationMultiple time-of-change",
                     )
                     .map_err(|error| match error {

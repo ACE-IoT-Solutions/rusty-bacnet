@@ -12,7 +12,7 @@ fn decode_event_transition_bits(
     data: &[u8],
     offset: usize,
     expected_tag: u8,
-    field: &str,
+    field: &'static str,
 ) -> Result<(EventTransitionBits, usize), Error> {
     let (content, end) = decode_ctx_primitive(data, offset, expected_tag, field)?;
     if content.len() != 2 || content[0] != 5 || content[1] & 0x1f != 0 {

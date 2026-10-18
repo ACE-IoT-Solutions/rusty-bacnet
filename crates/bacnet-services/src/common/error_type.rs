@@ -37,7 +37,7 @@ pub(crate) fn encode_error_in(
 /// production in errors.
 pub(crate) fn decode_error_type(
     data: &[u8],
-    what: &str,
+    what: &'static str,
 ) -> Result<((ErrorClass, ErrorCode), usize), Error> {
     decode_error_in(data, 0, 0, what)
 }
@@ -48,7 +48,7 @@ pub(crate) fn decode_error_in(
     data: &[u8],
     offset: usize,
     tag_number: u8,
-    what: &str,
+    what: &'static str,
 ) -> Result<((ErrorClass, ErrorCode), usize), Error> {
     let (body, end) = decode_ctx_constructed(data, offset, tag_number, what)?;
     let (class, position) = decode_app_enumerated::<u16>(body, 0, what)?;
@@ -78,8 +78,8 @@ pub(crate) fn encode_element_error(
 /// a body that decodes builds no label (#1645).
 pub(crate) fn decode_element_error(
     data: &[u8],
-    what: &str,
-    number: &str,
+    what: &'static str,
+    number: &'static str,
 ) -> Result<(ErrorClass, ErrorCode, u32), Error> {
     let ((class, code), offset) = decode_error_type(data, what)?;
     let (number, end) = decode_ctx_unsigned::<u32>(data, offset, 1, number)?;
@@ -113,7 +113,7 @@ pub(crate) fn error_pdu(
 pub(crate) fn decode_error_pdu<T>(
     pdu: &ErrorPdu,
     services: &[ConfirmedServiceChoice],
-    what: &str,
+    what: &'static str,
     decode: impl FnOnce(&[u8]) -> Result<T, Error>,
     pair: impl FnOnce(&T) -> (ErrorClass, ErrorCode),
 ) -> Result<T, Error> {

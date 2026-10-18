@@ -49,6 +49,8 @@ bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
 step "clippy (no_std types, encoding and services with alloc, all targets)"
 cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
+step "clippy (no_std types, encoding and services without alloc, all targets)"
+cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --all-targets --locked -- -D warnings
 step "firmware link test (bare-metal images, size budgets)"; bash scripts/ci/check-firmware-link.sh
 # The firmware images under QEMU: a manual check, never part of this run.
 # Uncomment to opt in; it needs Docker running (or add --native for a
@@ -71,6 +73,8 @@ if ! "$quick"; then
   step "no_std crates' tests and doctests (alloc, without std)"
   cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
   cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
+  step "no_std crates' tests (without alloc)"
+  cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked
   step "PyO3 crate Rust tests"
   cargo nextest run -p rusty-bacnet --locked
 fi

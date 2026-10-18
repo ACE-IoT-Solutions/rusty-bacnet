@@ -251,6 +251,10 @@ jobs:
       - name: Clippy (no_std crates with alloc, all targets)
         if: ${{ !cancelled() }}
         run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
+      # And without alloc either, the allocation-free profile (#1614).
+      - name: Clippy (no_std crates without alloc, all targets)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --all-targets --locked -- -D warnings
       # Clippy doesn't link, so this builds the stacks into bare-metal images
       # (firmware/link), one per stack, for each target, and checks their
       # sizes against the budget: MS/TP (extended frames off and on), the
@@ -336,6 +340,12 @@ jobs:
       - name: no_std crates' doctests (alloc, without std)
         if: ${{ !cancelled() }}
         run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
+      # Without alloc either (#1614): the allocation-free profile's code, and
+      # tests/no_alloc_subset.rs, which counts the subset's allocations: none.
+      # Its doctests aren't run: most examples build values with alloc.
+      - name: no_std crates' tests (without alloc)
+        if: ${{ !cancelled() }}
+        run: cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked --profile ci
       - *disk
 
   python:

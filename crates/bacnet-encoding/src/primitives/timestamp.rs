@@ -9,7 +9,7 @@ use super::{encode_app_date_to_sink, encode_app_time_to_sink, encode_ctx_unsigne
 
 /// Append a complete bare `BACnetTimeStamp` CHOICE in one sink write.
 ///
-/// This has the wire layout and accepted inputs of [`super::encode_timestamp_choice`].
+/// This has the wire layout and accepted inputs of `encode_timestamp_choice`.
 /// It stages at most twelve output bytes before writing to the caller sink.
 /// A known shortage returns the total required and available lengths without
 /// calling `write`; an arbitrary sink refusal is returned unchanged. Earlier
@@ -31,7 +31,7 @@ pub fn encode_timestamp_choice_to_sink<S: EncodeSink + ?Sized>(
 
 /// Append an outer context frame and its complete timestamp in one sink write.
 ///
-/// This preserves [`super::encode_timestamp`]'s layout, including both nested
+/// This preserves `encode_timestamp`'s layout, including both nested
 /// context-2 frames when a DateTime is enclosed by outer tag 2. It stages at
 /// most sixteen output bytes. The [bare encoder's storage contract](encode_timestamp_choice_to_sink)
 /// applies to the entire outer frame, not separately to its markers and value.

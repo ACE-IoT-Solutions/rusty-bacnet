@@ -34,17 +34,25 @@ Core BACnet types, enums, and error definitions.
 ### `no_std` builds
 
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` also build without
-the standard library, for firmware that has a global allocator. Depend on them
-with `default-features = false, features = ["alloc"]`. Each crate needs `std`
-(the default) or `alloc`, and refuses to build with neither. Without `std`,
-`bacnet_types::bip_port` and `Error::Transport` don't exist, and
-`bacnet-encoding` logs nothing. `bytes` has to build for the target too: on
-one without atomic compare-and-swap, such as ARMv6-M, that takes its
-`extra-platforms` feature and a `portable-atomic` backend the firmware
-chooses. CI builds all three for ARMv6-M, ARMv7E-M and RISC-V
+the standard library. With `default-features = false, features = ["alloc"]`
+they keep everything but the hosted parts, for firmware that has a global
+allocator: without `std`, `bacnet_types::bip_port` and `Error::Transport`
+don't exist, and `bacnet-encoding` logs nothing. `bytes` has to build for the
+target too: on one without atomic compare-and-swap, such as ARMv6-M, that
+takes its `extra-platforms` feature and a `portable-atomic` backend the
+firmware chooses.
+
+With `default-features = false` and neither feature they build without an
+allocator (#1614), for firmware with no heap, and without `bytes`. That
+profile has the enums and identifiers, the error type's static variants, tag
+and primitive decoding, the `_to_sink` encoders, borrowed views of strings and
+application-tagged values, the tagged-field readers, the APDU header
+(`bacnet_encoding::apdu::header`), and Who-Is, I-Am and ReadProperty (request
+and `ReadPropertyAckRef`). Each crate's README lists what needs `alloc`. CI
+builds all three profiles for ARMv6-M, ARMv7E-M and RISC-V
 (`scripts/ci/check-no-std.sh`), on ARMv6-M with `portable-atomic`'s
-`critical-section` backend, and runs their tests and doctests with `alloc`
-and without `std` ([CI](ci.md#no_std-checks)).
+`critical-section` backend where `bytes` is in the graph, and runs their tests
+with `alloc` and without `std`, and without either ([CI](ci.md#no_std-checks)).
 
 ### Enums (`bacnet_enum!` macro)
 
@@ -119,9 +127,17 @@ Error PDU, and each body has its own type for encoding and decoding:
 `cov_multiple::SubscribeCOVPropertyMultipleError`,
 `private_transfer::PrivateTransferError` and `virtual_terminal::VTCloseError`.
 
-`Error::Decoding { offset, kind, message }` carries the `DecodingKind` of the
-fault a decoder found, and `Error::reject_reason()` names the Reject reason
-it draws when it refuses a confirmed request (#1446):
+A decoding error carries the `DecodingKind` of the fault a decoder found, and
+`Error::reject_reason()` names the Reject reason it draws when it refuses a
+confirmed request (#1446). It comes in two forms. `Error::Decoding(DecodeError)`
+holds the offset, the kind, a static context and label and up to two numbers,
+and builds its text only when displayed, so firmware that never displays it
+links no formatting code (#1646); every decoder in the allocation-free profile
+uses it. With `alloc`, `Error::DecodingMessage { offset, kind, message }`
+holds a message formatted when the error was made, as the decoders outside
+that profile still word some refusals until they move to `Error::Decoding`
+(#1776). `Error::decode_fault()` reads the offset and kind of either. A checked constructor's refusal, such as
+`ObjectIdentifier::new`'s, is likewise static: `Error::Range(RangeError)`.
 
 | Fault | Reported as | Reject reason |
 |---|---|---|
@@ -154,8 +170,9 @@ state is protected by a held/waiting gate or configured/learned evidence, so a
 new path was rejected before transaction registration or frame emission.
 `Error` is `#[non_exhaustive]`, so a `match` on it outside `bacnet-types`
 needs a wildcard arm. `Error::Transport` exists only with the `std` feature,
-and any crate in a build can turn that on, so a match written against the
-`alloc` build could otherwise stop compiling.
+and the variants holding a `String` or a `Box` only with `alloc`; any crate in
+a build can turn those on, so a match written against a smaller build could
+otherwise stop compiling.
 
 ---
 
@@ -172,9 +189,12 @@ and return its length. Caller slices and `heapless::Vec<u8, N>` (with the
 A failed header append preserves previous output. The existing `BytesMut`
 entrypoints use the same implementation and keep their signatures and bytes.
 
-Only this encoder family uses the sink contract. The crate still needs `std`
-or `alloc`, and the new functions do not add tag-number or datatype validation.
-See [the sink design](encoding-sinks.md) for append semantics, capacity errors
+The bounded scalar, timestamp and reference encoders, the CharacterString,
+OCTET STRING and BIT STRING encoders, the APDU header writer and the
+allocation-free services use the same contract; a variable-length value goes
+out through `EncodeSink::write_parts`, whole or not at all. None of them needs
+an allocator, and they do not add tag-number or datatype validation. See
+[the sink design](encoding-sinks.md) for append semantics, capacity errors
 and the limits on multi-write atomicity.
 
 ### Property Value Encoding

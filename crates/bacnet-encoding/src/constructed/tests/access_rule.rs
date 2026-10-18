@@ -192,7 +192,7 @@ fn access_rule_rejects_malformed_elements() {
     assert!(
         matches!(
             decode_access_rule(wrong_tag, 0),
-            Err(Error::Decoding { .. })
+            Err(Error::Decoding(_) | Error::DecodingMessage { .. })
         ),
         "{:?}",
         decode_access_rule(wrong_tag, 0)

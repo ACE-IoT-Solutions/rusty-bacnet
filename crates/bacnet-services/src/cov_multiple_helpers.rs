@@ -103,7 +103,7 @@ fn property_identifier_is_forbidden(property_identifier: PropertyIdentifier) -> 
 
 pub(super) fn validate_property_identifier(
     property_identifier: PropertyIdentifier,
-    field: &str,
+    field: &'static str,
 ) -> Result<(), Error> {
     if property_identifier_is_forbidden(property_identifier) {
         return Err(Error::Encoding(format!(
@@ -115,7 +115,7 @@ pub(super) fn validate_property_identifier(
 
 pub(super) fn validate_decoded_property_identifier(
     property_identifier: PropertyIdentifier,
-    _field: &str,
+    _field: &'static str,
 ) -> Result<(), Error> {
     if property_identifier_is_forbidden(property_identifier) {
         return Err(reject(

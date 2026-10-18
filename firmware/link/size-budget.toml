@@ -21,11 +21,13 @@
 #   0.9 KB, which the 12% headroom would otherwise absorb; the MS/TP core
 #   divides in 32 bits (#1618). The apdu image's counts are what it links
 #   today, with no headroom, so a new function fails the check, and a count
-#   under its limit gets a notice to lower the limit. Its libraries build
-#   error messages with format!, which brings in core::fmt (15 functions,
-#   about 2.7 KB of text on ARMv7-M). On ARMv6-M, which has no multiply
-#   with a 64-bit product, formatting a u64 divides by a constant through
-#   the 64-bit division routine (3 functions).
+#   under its limit gets a notice to lower the limit. Its decoders' errors
+#   carry static labels, formatted only when displayed (#1646), which the
+#   image never does; the encoders' validation errors and assertion messages
+#   still format (#1777), which brings in core::fmt (12 functions). Before #1646 it
+#   was 15, and on ARMv6-M, which has no multiply with a 64-bit product,
+#   formatting a decoded u64 also linked the 64-bit division routine (3
+#   functions); now none.
 # - memmove_functions counts compiler-builtins' memmove and the entry points
 #   in front of it (memmove, __aeabi_memmove, __aeabi_memmove4 and 8),
 #   0.8-1.4 KB in all, which a whole-value copy the compiler can't prove
@@ -73,6 +75,21 @@
 # image was added (#1635), measured again on 2026-10-12, same toolchain,
 # when the service decoders stopped building their context labels on
 # success (#1645): 100-124 octets less text, the counts unchanged.
+#
+# The apdu rows were measured again on 2026-10-18, same toolchain, when the
+# decoders' errors became static labels (#1646), as text / rodata /
+# flash, against dev at a7145abc built the same way, then after, merged
+# with dev at d930e28e:
+#
+#   thumbv7m apdu     39216 / 5192 / 45432   38520 / 5100 / 44644
+#   thumbv6m apdu     41652 / 5192 / 47036   41112 / 5100 / 46404
+#   riscv32imc apdu   47600 / 5736 / 53358   46216 / 5648 / 51886
+#   thumbv7em apdu    39136 / 5192 / 45352   38396 / 5100 / 44520
+#
+# fmt_functions dropped from 15 to 12 on every target and div64_functions
+# from 3 to 0 on thumbv6m; those limits and the rodata budgets are the new
+# counts and sizes plus 12%. The text and flash budgets stay as they were:
+# the sizes plus 12% would be looser.
 #
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
@@ -281,12 +298,12 @@ memmove_functions = 0
 
 [thumbv7m-none-eabi.apdu]
 text = 41904
-rodata = 5824
+rodata = 5712
 data = 64
 bss = 1184
 flash = 48864
 ram = 1184
-fmt_functions = 15
+fmt_functions = 12
 div64_functions = 0
 memmove_functions = 2
 
@@ -358,13 +375,13 @@ memmove_functions = 0
 
 [thumbv6m-none-eabi.apdu]
 text = 44576
-rodata = 5824
+rodata = 5712
 data = 64
 bss = 1184
 flash = 50608
 ram = 1184
-fmt_functions = 15
-div64_functions = 3
+fmt_functions = 12
+div64_functions = 0
 memmove_functions = 2
 
 [thumbv6m-none-eabi.mstp-extended]
@@ -435,12 +452,12 @@ memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.apdu]
 text = 50672
-rodata = 6544
+rodata = 6336
 data = 64
 bss = 1184
 flash = 57232
 ram = 1184
-fmt_functions = 15
+fmt_functions = 12
 div64_functions = 0
 memmove_functions = 2
 
@@ -512,12 +529,12 @@ memmove_functions = 0
 
 [thumbv7em-none-eabihf.apdu]
 text = 41808
-rodata = 5824
+rodata = 5712
 data = 64
 bss = 1184
 flash = 48752
 ram = 1184
-fmt_functions = 15
+fmt_functions = 12
 div64_functions = 0
 memmove_functions = 2
 

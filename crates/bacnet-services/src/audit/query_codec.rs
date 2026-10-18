@@ -431,7 +431,7 @@ fn decode_operation_flags(
     data: &[u8],
     offset: usize,
     expected_tag: u8,
-    field: &str,
+    field: &'static str,
 ) -> Result<(AuditOperationFlags, usize), Error> {
     let (content, end) = decode_ctx_primitive(data, offset, expected_tag, field)?;
     let (unused_bits, bits) = primitives::decode_bit_string(content)?;
@@ -443,7 +443,7 @@ fn decode_success_filter(
     data: &[u8],
     offset: usize,
     expected_tag: u8,
-    field: &str,
+    field: &'static str,
 ) -> Result<(BACnetSuccessFilter, usize), Error> {
     // Strict corrected-baseline enumerated form (Errata 2024-04-29 item 7):
     // only 0 (all), 1 (successes-only), and 2 (failures-only) are accepted,

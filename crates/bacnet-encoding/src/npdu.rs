@@ -10,7 +10,7 @@
 
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::enums::{NetworkPriority, RejectMessageReason};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::MacAddr;
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -204,9 +204,15 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
 
     let version = data[0];
     if version != BACNET_PROTOCOL_VERSION {
-        return Err(
-            Error::decoding(0, format!("unsupported BACnet protocol version: {version}")).into(),
-        );
+        return Err(Error::from(
+            DecodeError::new(
+                DecodingKind::InvalidEncoding,
+                0,
+                "unsupported BACnet protocol version: {}",
+            )
+            .with_value(version.into()),
+        )
+        .into());
     }
 
     let control = data[1];
@@ -353,12 +359,13 @@ fn decode_address(
     }
     let end = offset + usize::from(length);
     if end > data.len() {
-        return Err(Error::decoding(
-            offset,
-            format!(
-                "NPDU {field} address truncated: {}={length}",
-                field.length_octet()
-            ),
+        let label = match field {
+            NpduAddressField::Destination => "NPDU destination address truncated: DLEN={}",
+            NpduAddressField::Source => "NPDU source address truncated: SLEN={}",
+        };
+        return Err(Error::from(
+            DecodeError::new(DecodingKind::InvalidEncoding, offset, label)
+                .with_value(length.into()),
         )
         .into());
     }
@@ -392,13 +399,13 @@ fn source_behind(data: &[u8], offset: usize) -> Option<NpduAddress> {
 /// that the enclosing NPDU is the standard Reject-Message-To-Network type.
 pub fn decode_reject_message_to_network(payload: &[u8]) -> Result<RejectMessageToNetwork, Error> {
     if payload.len() != 3 {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             0,
-            format!(
-                "Reject-Message-To-Network payload must be exactly 3 octets, got {}",
-                payload.len()
-            ),
-        ));
+            "Reject-Message-To-Network payload must be exactly 3 octets, got {}",
+        )
+        .with_value(payload.len() as u64)
+        .into());
     }
     Ok(RejectMessageToNetwork {
         reason: RejectMessageReason::from_raw(payload[0]),

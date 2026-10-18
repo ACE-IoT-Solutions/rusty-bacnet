@@ -227,7 +227,9 @@ fn address_too_long_reads_as_out_of_range() {
             text.contains(&format!("{}=19", field.length_octet())),
             "{text}"
         );
-        assert!(matches!(Error::from(refused), Error::OutOfRange(_)));
+        let converted = Error::from(refused);
+        assert!(matches!(converted, Error::Range(_)));
+        assert_eq!(converted.to_string(), format!("value out of range: {text}"));
     }
     let malformed = decode(vec![BACNET_PROTOCOL_VERSION]).unwrap_err();
     assert!(matches!(

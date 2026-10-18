@@ -406,7 +406,7 @@ mod tests {
             buf.extend_from_slice(&vec![0; length as usize]);
             assert!(matches!(
                 WritePropertyRequest::decode(&buf),
-                Err(Error::Decoding { .. })
+                Err(Error::Decoding(_) | Error::DecodingMessage { .. })
             ));
         }
     }

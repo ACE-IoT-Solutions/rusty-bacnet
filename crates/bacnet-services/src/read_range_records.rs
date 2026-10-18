@@ -141,9 +141,9 @@ impl<C> From<LogRecordsError<C>> for Error {
     /// A [`Error::Decoding`] at the failing record's offset, keeping the
     /// inner fault's kind.
     fn from(error: LogRecordsError<C>) -> Self {
-        let kind = match &error.error {
-            Error::Decoding { kind, .. } => *kind,
-            Error::BufferTooShort { .. } => DecodingKind::Missing,
+        let kind = match (&error.error, error.error.decode_fault()) {
+            (_, Some((_, kind))) => kind,
+            (Error::BufferTooShort { .. }, None) => DecodingKind::Missing,
             _ => DecodingKind::InvalidEncoding,
         };
         Error::decoding_kind(kind, error.offset, error.to_string())

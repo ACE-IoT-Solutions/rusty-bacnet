@@ -54,7 +54,7 @@ use super::MAX_FRAMED_ITEMS;
 
 /// The message for a `BACnetAddress` MAC of `length` octets, or `None` when it
 /// fits [`BACnetAddress::MAX_MAC_LEN`]. The one place the bound is compared.
-fn mac_len_excess(what: &str, length: usize) -> Option<String> {
+fn mac_len_excess(what: &'static str, length: usize) -> Option<String> {
     (length > BACnetAddress::MAX_MAC_LEN).then(|| {
         format!(
             "{what}: mac-address of {length} octets exceeds the {}-octet limit",
@@ -68,14 +68,14 @@ fn mac_len_excess(what: &str, length: usize) -> Option<String> {
 /// or any other OCTET STRING that names a MAC on a data link, such as the
 /// You-Are device MAC (#1200). Decoders call it on the tag's length, before
 /// copying any octet.
-pub fn check_decoded_mac_len(length: usize, offset: usize, what: &str) -> Result<(), Error> {
+pub fn check_decoded_mac_len(length: usize, offset: usize, what: &'static str) -> Result<(), Error> {
     mac_len_excess(what, length).map_or(Ok(()), |message| Err(Error::overflow(offset, message)))
 }
 
 /// Refuse to encode a MAC longer than [`BACnetAddress::MAX_MAC_LEN`] octets,
 /// which [`check_decoded_mac_len`] would refuse on the way back in: a
 /// `BACnetAddress` mac-address (#1156) or the You-Are device MAC (#1200).
-pub fn check_encoded_mac_len(mac: &[u8], what: &str) -> Result<(), Error> {
+pub fn check_encoded_mac_len(mac: &[u8], what: &'static str) -> Result<(), Error> {
     mac_len_excess(what, mac.len()).map_or(Ok(()), |message| Err(Error::Encoding(message)))
 }
 
@@ -306,7 +306,7 @@ pub fn decode_destination_list(data: &[u8]) -> Result<Vec<BACnetDestination>, Er
 pub(super) fn decode_app_mac_address(
     data: &[u8],
     offset: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(MacAddr, usize), Error> {
     let (tag, pos) = tags::decode_tag(data, offset)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::OCTET_STRING {
@@ -324,7 +324,7 @@ pub(super) fn decode_app_mac_address(
 }
 
 /// Decode an application-tagged Time member (exactly 4 contents octets).
-fn decode_app_time(data: &[u8], offset: usize, what: &str) -> Result<(Time, usize), Error> {
+fn decode_app_time(data: &[u8], offset: usize, what: &'static str) -> Result<(Time, usize), Error> {
     let (tag, pos) = tags::decode_tag(data, offset)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::TIME {
         return Err(misplaced_tag(

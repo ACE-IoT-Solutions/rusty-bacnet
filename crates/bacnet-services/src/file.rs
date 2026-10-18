@@ -16,7 +16,7 @@ use crate::common::MAX_DECODED_ITEMS;
 
 /// The application-tagged INTEGER at `offset` (a file-start-position or
 /// file-start-record) and the offset past it.
-fn decode_start(data: &[u8], offset: usize, what: &str) -> Result<(i32, usize), Error> {
+fn decode_start(data: &[u8], offset: usize, what: &'static str) -> Result<(i32, usize), Error> {
     let (octets, end) = decode_app_primitive(data, offset, tags::app_tag::SIGNED, what)?;
     Ok((primitives::decode_signed(octets)?, end))
 }
@@ -24,7 +24,25 @@ fn decode_start(data: &[u8], offset: usize, what: &str) -> Result<(i32, usize), 
 /// The fault where `what`'s access-method choice, `[0]` or `[1]`, is due at
 /// `offset` and neither opens there: a missing member when the data ends
 /// after the file identifier, any other tag a wrong one.
-fn unknown_access_method(data: &[u8], offset: usize, what: &str) -> Error {
+/// A record's refusal with its index in the label, formatted only when a
+/// record fails to decode (#1645): the shared reader's label is static
+/// (#1646), so it names the list, and this adds which record.
+fn indexed_record(error: Error, index: u32) -> Error {
+    match error {
+        Error::Decoding(refused) => Error::decoding_kind(
+            refused.kind,
+            refused.offset,
+            format!(
+                "{}[{index}]: {}",
+                refused.context,
+                refused.within("").message()
+            ),
+        ),
+        other => other,
+    }
+}
+
+fn unknown_access_method(data: &[u8], offset: usize, what: &'static str) -> Error {
     if offset >= data.len() {
         Error::missing(offset, format!("{what}: access method missing"))
     } else {
@@ -253,9 +271,9 @@ impl AtomicWriteFileRequest {
                     content,
                     inner,
                     tags::app_tag::OCTET_STRING,
-                    // Formatted only if the record fails to decode (#1645).
-                    format_args!("AtomicWriteFile record data[{i}]"),
-                )?;
+                    "AtomicWriteFile record data",
+                )
+                .map_err(|error| indexed_record(error, i))?;
                 file_record_data.push(record.to_vec());
                 inner = new_inner;
             }
@@ -407,9 +425,9 @@ impl AtomicReadFileAck {
                     content,
                     inner,
                     tags::app_tag::OCTET_STRING,
-                    // Formatted only if the record fails to decode (#1645).
-                    format_args!("AtomicReadFileAck record data[{i}]"),
-                )?;
+                    "AtomicReadFileAck record data",
+                )
+                .map_err(|error| indexed_record(error, i))?;
                 file_record_data.push(slice.to_vec());
                 inner = new_inner;
             }

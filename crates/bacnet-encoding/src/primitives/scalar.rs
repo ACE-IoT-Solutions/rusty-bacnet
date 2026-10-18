@@ -1,32 +1,38 @@
 //! Bounded scalar encoding, shared by growable-buffer and sink entrypoints.
 
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
+#[cfg(feature = "alloc")]
 use bytes::BytesMut;
 
 use crate::sink::{EncodeSink, SinkFull};
 use crate::tags::{self, app_tag, TagClass};
 
 /// Encode an unsigned integer using the minimum number of big-endian octets.
+#[cfg(feature = "alloc")]
 pub fn encode_unsigned(buf: &mut BytesMut, value: u64) {
     encode_unsigned_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a signed integer using minimum octets, two's complement, big-endian.
+#[cfg(feature = "alloc")]
 pub fn encode_signed(buf: &mut BytesMut, value: i32) {
     encode_signed_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an IEEE-754 single-precision float (big-endian, 4 bytes).
+#[cfg(feature = "alloc")]
 pub fn encode_real(buf: &mut BytesMut, value: f32) {
     encode_real_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an IEEE-754 double-precision float (big-endian, 8 bytes).
+#[cfg(feature = "alloc")]
 pub fn encode_double(buf: &mut BytesMut, value: f64) {
     encode_double_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Null.
+#[cfg(feature = "alloc")]
 pub fn encode_app_null(buf: &mut BytesMut) {
     encode_app_null_to_sink(buf).expect("the BytesMut sink cannot return SinkFull");
 }
@@ -34,71 +40,85 @@ pub fn encode_app_null(buf: &mut BytesMut) {
 /// Encode an application-tagged Boolean.
 ///
 /// The value is encoded in the tag's L/V/T bits with no content octets.
+#[cfg(feature = "alloc")]
 pub fn encode_app_boolean(buf: &mut BytesMut, value: bool) {
     encode_app_boolean_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Unsigned.
+#[cfg(feature = "alloc")]
 pub fn encode_app_unsigned(buf: &mut BytesMut, value: u64) {
     encode_app_unsigned_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Signed.
+#[cfg(feature = "alloc")]
 pub fn encode_app_signed(buf: &mut BytesMut, value: i32) {
     encode_app_signed_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Real (f32).
+#[cfg(feature = "alloc")]
 pub fn encode_app_real(buf: &mut BytesMut, value: f32) {
     encode_app_real_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Double (f64).
+#[cfg(feature = "alloc")]
 pub fn encode_app_double(buf: &mut BytesMut, value: f64) {
     encode_app_double_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Enumerated.
+#[cfg(feature = "alloc")]
 pub fn encode_app_enumerated(buf: &mut BytesMut, value: u32) {
     encode_app_enumerated_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Date.
+#[cfg(feature = "alloc")]
 pub fn encode_app_date(buf: &mut BytesMut, date: &Date) {
     encode_app_date_to_sink(buf, date).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged Time.
+#[cfg(feature = "alloc")]
 pub fn encode_app_time(buf: &mut BytesMut, time: &Time) {
     encode_app_time_to_sink(buf, time).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode an application-tagged ObjectIdentifier.
+#[cfg(feature = "alloc")]
 pub fn encode_app_object_id(buf: &mut BytesMut, oid: &ObjectIdentifier) {
     encode_app_object_id_to_sink(buf, oid).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged Unsigned.
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_unsigned(buf: &mut BytesMut, tag: u8, value: u64) {
     encode_ctx_unsigned_to_sink(buf, tag, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged Signed.
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_signed(buf: &mut BytesMut, tag: u8, value: i32) {
     encode_ctx_signed_to_sink(buf, tag, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged Real (f32).
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_real(buf: &mut BytesMut, tag: u8, value: f32) {
     encode_ctx_real_to_sink(buf, tag, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged Double (f64).
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_double(buf: &mut BytesMut, tag: u8, value: f64) {
     encode_ctx_double_to_sink(buf, tag, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged Enumerated.
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_enumerated(buf: &mut BytesMut, tag: u8, value: u32) {
     encode_ctx_enumerated_to_sink(buf, tag, value)
         .expect("the BytesMut sink cannot return SinkFull");
@@ -107,16 +127,19 @@ pub fn encode_ctx_enumerated(buf: &mut BytesMut, tag: u8, value: u32) {
 /// Encode a context-tagged Boolean.
 ///
 /// Context-tagged booleans use a 1-byte content octet (unlike application-tagged).
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_boolean(buf: &mut BytesMut, tag: u8, value: bool) {
     encode_ctx_boolean_to_sink(buf, tag, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged ObjectIdentifier.
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_object_id(buf: &mut BytesMut, tag: u8, oid: &ObjectIdentifier) {
     encode_ctx_object_id_to_sink(buf, tag, oid).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Encode a context-tagged Date.
+#[cfg(feature = "alloc")]
 pub fn encode_ctx_date(buf: &mut BytesMut, tag: u8, date: &Date) {
     encode_ctx_date_to_sink(buf, tag, date).expect("the BytesMut sink cannot return SinkFull");
 }
