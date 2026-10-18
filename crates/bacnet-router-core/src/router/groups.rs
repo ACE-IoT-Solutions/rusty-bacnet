@@ -100,16 +100,18 @@ impl GroupClassifier for Groups {
         match self {
             Self::None => Group::No,
             #[cfg(feature = "bip")]
-            Self::Bip { destinations, port } => match bacnet_bip_codec::address_from_slice(mac) {
-                Ok(address) if destinations.contains(address) => {
-                    if address.port() == *port {
-                        Group::Broadcast
-                    } else {
-                        Group::Refuse
+            Self::Bip { destinations, port } => {
+                match bacnet_bip_core::codec::address_from_slice(mac) {
+                    Ok(address) if destinations.contains(address) => {
+                        if address.port() == *port {
+                            Group::Broadcast
+                        } else {
+                            Group::Refuse
+                        }
                     }
+                    _ => Group::No,
                 }
-                _ => Group::No,
-            },
+            }
             #[cfg(feature = "mstp")]
             Self::Mstp if mac == [bacnet_mstp_core::codec::BROADCAST_MAC] => Group::Broadcast,
             #[cfg(feature = "mstp")]

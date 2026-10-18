@@ -203,6 +203,35 @@
 # arrays with copies, which linked memmove on every target (#1679): 1,444 /
 # 1,140 / 780 / 1,424 octets less text on thumbv7m / thumbv6m / riscv32imc
 # / thumbv7em than it measured before.
+#
+# The node and bbmd rows were measured again on 2026-10-18, same
+# toolchain, when both images moved onto bacnet-bip-core's port driver
+# (#1766), as text / rodata / data / bss, then flash / ram:
+#
+#   thumbv7m node      13420 /  304 / 0 / 3128   14748 / 3128
+#   thumbv6m node      14684 /  320 / 0 / 3128   15196 / 3128
+#   riscv32imc node    15212 /  760 / 0 / 3128   15994 / 3128
+#   thumbv7em node     13356 /  304 / 0 / 3128   14684 / 3128
+#   thumbv7m bbmd      10036 /  388 / 0 /  240   11448 /  240
+#   thumbv6m bbmd      11796 /  388 / 0 /  240   12376 /  240
+#   riscv32imc bbmd    12672 /  756 / 0 /  240   13450 /  240
+#   thumbv7em bbmd      9968 /  388 / 0 /  240   11380 /  240
+#
+# The node image now runs a NodePort, which holds the two broadcasts the
+# node holds for its first registration in HeldBroadcast slots of 1,500
+# octets each (a 1,497-octet NPDU, as long as the link's broadcasts may
+# be, its length and a padding octet); before, the
+# scenario kept only a count and sent a constant it knew, so its RAM never
+# showed what holding costs. The port also sends while the received
+# datagram is still borrowed, so the image has a second 64-octet datagram
+# buffer: .bss is 3,128 octets, from 64. .text grew by 0.9-1.4 KB, the
+# port's drain, hold and release code. The bbmd image now runs a BbmdPort
+# over its Link, which answers the management requests from the tables
+# (Tables::serve), Delete-Foreign-Device-Table-Entry among them, where the
+# scenario answered three of them by hand and refused the fourth; it also
+# checks the link and each requester's address. .text grew by 1.6-2.2 KB,
+# with two more steps in the scenario, and .rodata by 64 octets; .bss is
+# unchanged.
 
 [thumbv7m-none-eabi.mstp]
 text = 18320
@@ -249,22 +278,22 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.node]
-text = 13648
-rodata = 336
+text = 15040
+rodata = 352
 data = 64
-bss = 80
-flash = 15120
-ram = 80
+bss = 3504
+flash = 16528
+ram = 3504
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.bbmd]
-text = 9504
-rodata = 368
+text = 11248
+rodata = 448
 data = 64
 bss = 272
-flash = 11008
+flash = 12832
 ram = 272
 fmt_functions = 0
 div64_functions = 0
@@ -326,22 +355,22 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.node]
-text = 15424
-rodata = 336
+text = 16448
+rodata = 368
 data = 64
-bss = 80
-flash = 15968
-ram = 80
+bss = 3504
+flash = 17024
+ram = 3504
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.bbmd]
-text = 11408
-rodata = 368
+text = 13216
+rodata = 448
 data = 64
 bss = 272
-flash = 11984
+flash = 13872
 ram = 272
 fmt_functions = 0
 div64_functions = 0
@@ -403,22 +432,22 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.node]
-text = 15488
-rodata = 816
+text = 17040
+rodata = 864
 data = 64
-bss = 80
-flash = 16320
-ram = 80
+bss = 3504
+flash = 17920
+ram = 3504
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.bbmd]
-text = 11840
-rodata = 784
+text = 14192
+rodata = 848
 data = 64
 bss = 272
-flash = 12640
+flash = 15072
 ram = 272
 fmt_functions = 0
 div64_functions = 0
@@ -480,22 +509,22 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.node]
-text = 13536
-rodata = 336
+text = 14960
+rodata = 352
 data = 64
-bss = 80
-flash = 15008
-ram = 80
+bss = 3504
+flash = 16448
+ram = 3504
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.bbmd]
-text = 9456
-rodata = 368
+text = 11168
+rodata = 448
 data = 64
 bss = 272
-flash = 10960
+flash = 12752
 ram = 272
 fmt_functions = 0
 div64_functions = 0

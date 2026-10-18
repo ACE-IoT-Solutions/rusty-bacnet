@@ -38,8 +38,9 @@
 //! plugs in; two features add the glue for the portable link cores, so
 //! firmware can route between them with no allocator:
 //!
-//! - `bip`: B/IP ports over `bacnet-bip-core`'s node engine, in normal or
-//!   foreign-device mode, or as a BBMD over its tables (module `bip`).
+//! - `bip`: B/IP ports over `bacnet-bip-core`'s port driver, in normal or
+//!   foreign-device mode, or as a BBMD that answers management requests
+//!   from its tables (module `bip`).
 //! - `mstp`: MS/TP ports over `bacnet-mstp-core`'s master core, with
 //!   extended frames (module `mstp`).
 //!
@@ -55,8 +56,8 @@
 //! a refusal, a [`Discard`](router::Discard), an
 //! [`Event`](router::Event), a [`Kind`](router::Kind) or another of these
 //! enums a wildcard arm. The enums a host acts on case by case,
-//! [`Action`](router::Action), [`Received`](router::Received) and the B/IP
-//! glue's `Ingress`, stay exhaustive, as do the closed sets such as
+//! [`Action`](router::Action) and [`Received`](router::Received), stay
+//! exhaustive, as do the closed sets such as
 //! [`Dest`](router::Dest), [`Group`](router::Group) and
 //! [`Reachability`](table::Reachability). The wire codes,
 //! [`MessageType`](message::MessageType) and
@@ -187,7 +188,7 @@
 //! feature needs std or an allocator, and every combination builds on
 //! bare-metal targets.
 //!
-//! - `bip`: the B/IP glue, which adds `bacnet-bip-core` and
+//! - `bip`: the B/IP glue, which adds `bacnet-bip-core`, and through it
 //!   `bacnet-bip-codec`.
 //! - `mstp`: the MS/TP glue, which adds `bacnet-mstp-core`.
 

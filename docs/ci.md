@@ -214,16 +214,19 @@ credited to a crate reliably within one LTO image:
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
   sink), both its B/IP and its B/IPv6 messages, with no global allocator.
   It links the codec alone, so its budget measures the codec;
-- `node` links `bacnet-bip-core`'s node engine, a foreign-device `Node`
-  with two exchange slots, and through it the codec and `bacnet-time`, with
+- `node` links `bacnet-bip-core`'s port driver over its node engine, a
+  `NodePort` on a foreign-device `Node` with two exchange slots, and
+  through it the codec and `bacnet-time`, with no global allocator;
+- `bbmd` links `bacnet-bip-core`'s port driver on a BBMD, a `BbmdPort`
+  over the receive rules of a `Link` in BBMD mode and the BBMD tables
+  (`Tables<4, 4>`), which answer the management requests themselves, with
   no global allocator;
-- `bbmd` links `bacnet-bip-core`'s BBMD tables (`Tables<4, 4>`) and the
-  receive rules of a `Link` in BBMD mode, with no global allocator;
 - `router` links `bacnet-router-core` with its `bip` and `mstp` glue: a
   `Router` over `Storage<2, 8, 8, 4>` between a B/IP port where the router
-  is also the BBMD (`BbmdPort`, `Tables<2, 2>`) and an MS/TP port with
-  extended frames, which Clause 9.3 asks of a router, and through them the
-  node engine, the MS/TP core and both codecs, with no global allocator. It
+  is also the BBMD (bip-core's `BbmdPort`, `Tables<2, 2>`) and an MS/TP
+  port with extended frames, which Clause 9.3 asks of a router, and through
+  them the receive rules, the MS/TP core and both codecs, with no global
+  allocator. It
   routes and nothing more: a product router also needs a Device object,
   since Clause 6.6 holds a router to the device requirements of Clause
   22.1.5, and the image has no application layer to host one;
@@ -528,12 +531,17 @@ targets, so a crate that needs one builds only with a backend such as
   7,712 octets: receive storage of 1,516 octets, `HeaplessQueues<1, 1,
   1497>` and `ExtendedActionBuffers<1>`. Each more queue slot would add
   about 1.5 KB. Its scenario keeps its own NPDUs and frames on the stack,
-  and only while it builds or checks them. The node image's `.bss` is its
-  64-octet datagram buffer, and the bbmd image's its two datagram buffers
-  and what the tables write a decision's destinations and a Read-FDT-Ack's
-  rows into, 240 octets; the node, 752 octets on these targets, and the
-  tables are built on the stack. The router image's static is 15,504
-  octets on these targets:
+  and only while it builds or checks them. The node image's `.bss` is
+  3,128 octets: its two 64-octet datagram buffers, one received and one
+  sent, since the port sends while the received one is still borrowed,
+  and the two `HeldBroadcast` slots the port holds the node's broadcasts
+  in until its first registration resolves, 1,500 octets each at the
+  link's default budget (a 1,497-octet NPDU and its length). The bbmd image's is its two datagram buffers and
+  what the port lends the tables for a decision's destinations and a
+  Read-FDT-Ack's rows, 240 octets. The node and its port, 752 octets and
+  a little more on these targets, and the bbmd image's port and tables
+  are built on the stack. The router image's static is 15,600 octets on
+  these targets:
   - the router's `Storage<2, 8, 8, 4>`, 3,216: a 1,497-octet output
     scratch, a table of 8 routes (120 octets each) and 8 hold-down
     records, 4 searches, the output queue and the counters;
@@ -545,13 +553,15 @@ targets, so a crate that needs one builds only with a backend such as
   - the B/IP socket's two datagram buffers, 1,507 octets each: the one
     received, which the router reads in place, and the one sent, which
     the port's `Datagrams` encodes into;
-  - where the BBMD writes one decision's destinations, 40.
+  - where the BBMD writes one decision's destinations, 40, and a
+    Read-FDT-Ack's rows, 20.
 
-  The router (88 octets), the MS/TP core (528), the BBMD port with its
-  node (712) and the BBMD's tables (72) are built on the stack. A BBMD
-  port holds no broadcasts, so the image has no `HeldBroadcast` slots; a
-  foreign-device port would need its `hold` of them, each as long as
-  `Link::max_npdu(Cast::Broadcast)`, 1,497 octets at the default budget.
+  The router (88 octets), the MS/TP core (528), the BBMD port and the
+  BBMD's tables (72) are built on the stack; a BBMD port runs no node. A
+  BBMD port holds no broadcasts, so the image has no `HeldBroadcast`
+  slots; a foreign-device port would need its `hold` of them, each as long
+  as `Link::max_npdu(Cast::Broadcast)`, 1,497 octets at the default
+  budget.
   `cargo nextest run -p firmware-link` prints the host sizes from the
   `ram_sizes` tests. The apdu image's
   `.bss` is its 1 KiB arena and the allocator's 32-octet state: what its

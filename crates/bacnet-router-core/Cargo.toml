@@ -16,14 +16,14 @@ categories = ["embedded", "network-programming", "no-std", "no-std::no-alloc"]
 # glue for one portable link core, and needs neither either.
 [features]
 default = []
-# B/IP ports over bacnet-bip-core's node engine, a BBMD's included.
-bip = ["dep:bacnet-bip-core", "dep:bacnet-bip-codec"]
+# B/IP ports over bacnet-bip-core's port driver, a BBMD's included. The
+# BVLL codec comes through bacnet-bip-core, which re-exports it.
+bip = ["dep:bacnet-bip-core"]
 # MS/TP ports over bacnet-mstp-core's master core.
 mstp = ["dep:bacnet-mstp-core"]
 
 [dependencies]
 bacnet-time = { workspace = true }
-bacnet-bip-codec = { workspace = true, optional = true }
 bacnet-bip-core = { workspace = true, optional = true }
 bacnet-mstp-core = { workspace = true, optional = true }
 

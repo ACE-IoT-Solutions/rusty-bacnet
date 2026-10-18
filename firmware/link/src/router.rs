@@ -5,9 +5,10 @@
 //! MS/TP port through the core's `bip` and `mstp` glue.
 //!
 //! - **Port 0, network 1:** B/IP, where the router is also the BBMD
-//!   ([`BbmdPort`] over [`BbmdTables`]), with one peer in its BDT, reached
-//!   by two-hop distribution. A BBMD and a router may share a device
-//!   (Annex J.7.1).
+//!   (`bacnet-bip-core`'s port driver, a [`BbmdPort`] over [`BbmdTables`],
+//!   which answers the BBMD's management requests itself), with one peer
+//!   in its BDT, reached by two-hop distribution. A BBMD and a router may
+//!   share a device (Annex J.7.1).
 //! - **Port 1, network 2:** MS/TP with extended frames on, which a routing
 //!   node needs (Clause 9.3), so both ports carry NPDUs of up to 1497
 //!   octets (Table 6-1). The router is station 1 and passes the token to
@@ -63,8 +64,7 @@
 //!
 //! [`Memory`] holds what the router, the MS/TP core and the BBMD port
 //! borrow, and the B/IP socket's two datagram buffers. The router, the
-//! core, the port with its node, and the BBMD's tables are built on the
-//! stack.
+//! core, the BBMD port and its tables are built on the stack.
 //!
 //! # What it isn't
 //!
@@ -79,9 +79,10 @@ pub use expected::expected;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, Bvll};
+use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, Bvll, FdtEntry};
 use bacnet_bip_core::bbmd::{Tables, Target, TWO_HOP_MASK};
-use bacnet_bip_core::node::{self, Addressed, Datagram, Link, Mode, Node, MAX_DATAGRAM};
+use bacnet_bip_core::node::{self, Addressed, Datagram, Link, Mode, MAX_DATAGRAM};
+use bacnet_bip_core::port::{BbmdPort, Datagrams, Ingress};
 use bacnet_bip_core::LocalSubnet;
 use bacnet_mstp_codec::{Frame, FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::codec::{MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA};
@@ -89,10 +90,10 @@ use bacnet_mstp_core::{
     Action as MstpAction, Duration, ExtendedActionBuffers, HeaplessQueues, MasterCore,
     MstpCoreConfig, RequestId, TransmitId,
 };
-use bacnet_router_core::bip::{BbmdPort, Datagrams, Ingress};
+use bacnet_router_core::bip::BipPort;
 use bacnet_router_core::mstp::MstpPort;
 use bacnet_router_core::router::{
-    Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received, SendRefusal,
+    Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received,
 };
 use bacnet_router_core::{Instant, PortId, Router, Storage, MAX_NPDU};
 
@@ -140,16 +141,16 @@ pub const FDT_ENTRIES: usize = 2;
 /// The BBMD's tables.
 pub type BbmdTables = Tables<BDT_ROWS, FDT_ENTRIES>;
 
-/// The B/IP port: a BBMD's node with one exchange slot, which it never
-/// uses (a BBMD registers nowhere), over [`BbmdTables`].
-pub type BipPort<'m> = BbmdPort<'m, BDT_ROWS, FDT_ENTRIES, 1>;
+/// The B/IP port: a BBMD's link over [`BbmdTables`]. A BBMD registers
+/// nowhere and holds no broadcasts, so the port runs no node.
+pub type Bbmd<'m> = BbmdPort<'m, BDT_ROWS, FDT_ENTRIES>;
 
 /// The B/IP port's network.
 pub const BIP_NETWORK: u16 = 1;
 /// The MS/TP port's network.
 pub const MSTP_NETWORK: u16 = 2;
 /// The B/IP port.
-const BIP: PortId = PortId(0);
+const BIP: BipPort = BipPort::new(PortId(0));
 /// The MS/TP port.
 const MSTP: MstpPort = MstpPort::new(PortId(1));
 
@@ -268,6 +269,8 @@ pub struct Memory {
     actions: Actions,
     /// Where the BBMD writes one decision's destinations.
     targets: [Target; BbmdTables::MAX_TARGETS],
+    /// Where it writes a Read-FDT-Ack's rows.
+    rows: [FdtEntry; FDT_ENTRIES],
     /// The datagram the B/IP socket received.
     datagram_in: [u8; MAX_DATAGRAM],
     /// The datagram it sends.
@@ -283,6 +286,7 @@ impl Memory {
             queues: Queues::new(),
             actions: Actions::new(),
             targets: [Target::UNUSED; BbmdTables::MAX_TARGETS],
+            rows: [NO_ROW; FDT_ENTRIES],
             datagram_in: [0; MAX_DATAGRAM],
             datagram_out: [0; MAX_DATAGRAM],
         }
@@ -294,6 +298,9 @@ impl Default for Memory {
         Self::new()
     }
 }
+
+/// An unused row of a Read-FDT-Ack: all zero bits.
+const NO_ROW: FdtEntry = FdtEntry::new(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0), 0, 0);
 
 /// What the router made of a frame it took ([`Received`], without the
 /// borrow of the frame).
@@ -431,6 +438,7 @@ pub fn run(memory: &mut Memory) -> Summary {
         queues,
         actions,
         targets,
+        rows,
         datagram_in,
         datagram_out,
     } = memory;
@@ -440,11 +448,7 @@ pub fn run(memory: &mut Memory) -> Summary {
         summary.error();
     }
     // One at a time, so no two results to unpack share the stack.
-    let Ok(node) = Node::new(LINK, Instant::ZERO) else {
-        summary.error();
-        return summary;
-    };
-    let Ok(mut bbmd) = BipPort::new(BIP, node, &mut tables, targets) else {
+    let Ok(mut bbmd) = Bbmd::new(LINK, &mut tables, targets, rows) else {
         summary.error();
         return summary;
     };
@@ -452,7 +456,7 @@ pub fn run(memory: &mut Memory) -> Summary {
         summary.error();
         return summary;
     };
-    let ports = [bbmd.config(BIP_NETWORK), mstp_port];
+    let ports = [BipPort::config(&LINK, BIP_NETWORK), mstp_port];
     let Ok(mut router) = RouterEngine::new(router, &ports, OPTIONS, Instant::ZERO) else {
         summary.error();
         return summary;
@@ -502,10 +506,10 @@ struct Socket<'w> {
 }
 
 impl Datagrams for Socket<'_> {
-    fn send(&mut self, to: SocketAddrV4, message: &Bvll<'_>) -> Result<(), SendRefusal> {
+    fn send(&mut self, to: SocketAddrV4, message: &Bvll<'_>) -> Result<(), node::SendRefusal> {
         let Some(datagram) = self.summary.bip.send(self.buffer, to, message) else {
             self.summary.error();
-            return Err(SendRefusal::Other);
+            return Err(node::SendRefusal::SocketError);
         };
         let length = u16::try_from(datagram.len()).unwrap_or(u16::MAX);
         let entry = (message.function(), to, length);
@@ -524,7 +528,7 @@ const MAX_ACTIONS: usize = 16;
 /// time.
 struct Device<'d, 'm> {
     router: &'d mut RouterEngine<'m>,
-    bbmd: &'d mut BipPort<'m>,
+    bbmd: &'d mut Bbmd<'m>,
     core: &'d mut Core<'m>,
     host: Hooks,
     datagram_in: &'d mut [u8],
@@ -683,7 +687,8 @@ impl Device<'_, '_> {
             .bbmd
             .receive(&datagram, self.now, &mut node::Permissive, &mut socket);
         match ingress {
-            Ingress::Npdu(arrived) => {
+            Ingress::Npdu(delivery) => {
+                let arrived = BIP.arrived(&delivery);
                 let received = self
                     .router
                     .receive(arrived.frame(), self.now, &mut self.host);
@@ -705,12 +710,12 @@ impl Device<'_, '_> {
             };
             let entry = (send.port.0, send.kind, send.to == Dest::Broadcast);
             record(&mut self.summary.sends, entry, &mut self.summary.errors);
-            let result = if send.port == BIP {
+            let result = if send.port == BIP.port() {
                 let mut socket = Socket {
                     buffer: &mut *self.datagram_out,
                     summary: &mut *self.summary,
                 };
-                self.bbmd.send(&send, self.now, &mut socket)
+                BIP.send(self.bbmd, &send, self.now, &mut socket)
             } else {
                 MSTP.send(self.core, &send, self.now)
             };
