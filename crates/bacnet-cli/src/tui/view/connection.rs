@@ -115,7 +115,7 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
         "Blank renewal = half TTL; interface 0.0.0.0 = all interfaces.",
     ));
     lines.push(Line::raw(
-        "Writes: never or session. Dangerous: false. UI stays read-only.",
+        "Writes: never or session (W arms). Dangerous: allows priority 6.",
     ));
     lines
 }
@@ -158,8 +158,12 @@ fn preview<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
                 ));
             }
             lines.push(Line::raw(format!(
-                "Saved writes policy: {:?}; dangerous: false. UI is read-only.",
-                profile.safety.writes
+                "Writes: {}; dangerous: {}. Read-only until W arms a session.",
+                match profile.safety.writes {
+                    crate::tui::profile::Writes::Never => "never",
+                    crate::tui::profile::Writes::Session => "session",
+                },
+                profile.safety.dangerous
             )));
             if !connection.overrides.is_empty() {
                 lines.push(Line::styled(

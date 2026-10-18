@@ -170,10 +170,11 @@ bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
 `bacnet tui` opens a B/IP profile dialog before connecting. With no saved
 profiles it opens creation; with one it previews that connection; with several
 it shows a picker. `--profile NAME` selects one directly. The Devices screen is
-a live table of I-Am answers, with a Who-Is form. The status bar remains
-`READ-ONLY`: this version supports discovery and finite foreign-device
-registrations, with no device-write commands. The design and planned screens
-(browse, watch, BBMD, SC, MS/TP, capture) are in
+a live table of I-Am answers, with a Who-Is form. The status bar shows the
+session level: `READ-ONLY` by default (discovery, reads, finite COV
+subscriptions and foreign-device registrations), a red `WRITE mm:ss` while a
+write session is armed (see [Write sessions](#write-sessions)), or `PASSIVE`.
+The design and planned screens (BBMD, SC, MS/TP, capture) are in
 [docs/design/tui.md](design/tui.md).
 
 Explicit global network flags without `--profile`, or `--no-profile`, start
@@ -187,6 +188,7 @@ support B/IP only. Global flags can appear before or after `tui`.
 |------|---------|-------------|
 | `--profile <NAME>` | | Preview a named B/IP profile; explicit global flags override saved values |
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
+| `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. The ledger can still be viewed |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
 | `--log-file <FILE>` | | Append log lines to this file as well as the in-app log pane |
 | `--max-rate <N>` | `20` | Confirmed requests a second across the browser and the watch list; 0 for no cap |
@@ -245,14 +247,17 @@ On first use, `a` explicitly attests that you are authorized to use BACnet on
 the displayed network. Its timestamp must be saved successfully before the
 client is built. Enter alone does not attest. Subsequent connections use Enter
 or `c`; editing saved network settings clears the old attestation. The safety
-policy accepts `writes = "never"` or `"session"` and requires
-`dangerous = false`; neither setting enables writes in this TUI.
+policy is `writes = "session"` (the default: `W` may arm a write session) or
+`"never"` (`W` says why and arms nothing), and `dangerous = true`, which needs
+`writes = "session"`, allows dangerous operations inside an armed session
+(today, commanding priority 6).
 
 The config root is the platform directory returned by
 `directories::ProjectDirs::from("", "", "bacnet").config_dir()`. The dialog
 shows its path. `BACNET_CONFIG_DIR` replaces it completely, including all
 per-profile workspaces. Profiles are `profiles/NAME.toml`; workspaces are
-`workspaces/NAME/` and currently contain no saved device/cache/history data.
+`workspaces/NAME/` and hold the session ledger (`ledger.json`), the audit log
+(`audit.jsonl`) and watch-list CSV logs.
 Names use 1–64 ASCII letters, digits, `_` or `-`, excluding Windows device
 names. New-profile saves never overwrite an existing name. Failed saves keep
 the previous file; errors stay visible. Reload after changing a file outside
@@ -274,7 +279,7 @@ ttl = 300
 # renewal_secs = 30
 
 [safety]
-writes = "never"
+writes = "session"
 dangerous = false
 ```
 
@@ -314,13 +319,16 @@ client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `3` / `1` | Show the watch list / back to the devices |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off` |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...` |
+| `W` | Arm a write session, or disarm the armed one |
+| `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
+| `u` | The session ledger |
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
 | `?` | Help |
 | `Ctrl-C` | Close a dialog or cancel the running Who-Is/connection attempt; press again within 2 s to quit |
-| `q` | Quit |
+| `q` | Quit; with changes still in the ledger, the exit guard asks first |
 
 **Device browser.** Enter on a device opens its card (vendor, model, firmware,
 protocol revision, supported services and object types, Max APDU,
@@ -337,8 +345,8 @@ The browser reads with one ReadPropertyMultiple per object, falling back to
 ReadProperty for each property when a device refuses it, and reads an
 Object_List too large for one answer element by element. A device never has
 more than one of the browser's requests outstanding, and `--max-rate N` caps
-the requests a second across all devices (default 20; 0 for no cap). The
-browser only reads.
+the requests a second across all devices (default 20; 0 for no cap). Writes
+go through a write session (below).
 
 **Watch list.** `a` on an object in the browser watches its Present_Value;
 `:watch 1234 ai:1 [property]` on the command bar watches any property of a
@@ -364,6 +372,71 @@ limits and `--max-rate`, once per lifetime. The list's title shows the
 request rate over the last 10 s. Notifications the TUI couldn't
 keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
+
+#### Write sessions
+
+The TUI is read-only until `W` arms a write session. Arming needs a profile
+whose policy allows it (`writes = "session"`), because the profile's
+workspace holds the ledger and the audit log; a flags-only session can't arm.
+The arm dialog shows the site and network, takes an optional reason or ticket,
+and a length in minutes (default 15, at most 480). While armed the status bar
+is red with a countdown; at zero the session disarms itself, and `W` disarms
+it early.
+
+In the browser, with an object open, `w` writes a property (Present_Value by
+default, at priority 16 by default for a commandable object) and `n`
+relinquishes a priority slot (writes NULL to it). Values use the one-shot
+`write` syntax (`42`, `72.5`, `true`, `active`, `"text"`, `null`); a number is
+sent as the datatype the property already holds. `:writem DEVICE OBJECT
+PROPERTY VALUE[@P] ...` sends several writes to one device as one
+WritePropertyMultiple.
+
+Before every write the TUI reads the object's priority array, Present_Value,
+Relinquish_Default and Out_Of_Service, then shows a preview: the old and new
+slot or property value, who holds the slot (empty, our earlier write, or
+another commander, whose value the write replaces without telling them), and
+whether Present_Value will change; a write at a weaker priority than the one in
+control won't change it. The preview then asks for a confirmation that depends
+on the tier:
+
+| Tier | Changes | Confirm with |
+|---|---|---|
+| T1 | Priorities 9 to 16, non-commandable properties | Enter |
+| T2 | Priorities 3, 4, 7 and 8; Out_Of_Service; relinquishing another commander's slot; any `writem` batch | `y` |
+| T3 | Priorities 1, 2 and 5 (life safety, critical equipment) | typing the device instance, then Enter |
+| Blocked | Priority 6, which the standard keeps for minimum on and off times | refused, unless the profile sets `dangerous = true` (then T3) |
+
+Esc declines; nothing is sent and the audit log records it. The result shows
+each write's outcome; a device whose write policy refuses it
+(SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors.
+
+**Ledger.** Every change still in effect is kept with its pre-image in
+`ledger.json`, saved before each request goes out and after each answer, so it
+outlives a crash. `u` lists it, and `R` then `y` reverts everything, newest
+first: our slots are relinquished, or given back the value another commander
+had there; other properties (Out_Of_Service included) get their old value
+back. Reverting needs a connection but not an armed session. Quitting with
+entries in the ledger opens the exit guard: `r` reverts all and quits, `k`
+keeps them, records that in the audit log and quits, Esc cancels. Entries left
+by an earlier run, whether kept or left by a crash, are listed when the next
+session on the profile starts.
+
+**Audit log.** `audit.jsonl` in the workspace gets one JSON object a line,
+flushed and synced: UTC time, OS user, host, profile, transport and local
+address, session level, the event, and for a write its target, service,
+parameters, priority, pre-image and outcome (ack, error class and code,
+denied, reject, abort, timeout or not sent). Arming, disarming, refusals,
+declined confirmations, reverts and kept entries are recorded too. Fields
+named like passwords are written as `[redacted]`. Reads are not logged. This
+is a client-side record, separate from BACnet's own audit reporting.
+
+**Passive.** `--passive` builds no client at all, so nothing is transmitted;
+discovery, browsing, watching and arming are refused with a notice. The
+status bar shows `PASSIVE`.
+
+**Footprint.** The status bar's `COV n FD m` counts the state this session
+holds on other devices: COV subscriptions, and our entry in a BBMD's
+foreign-device table. `ledger n` counts changes still in effect.
 
 The `tui` cargo feature is off by default until the terminal UI ships in
 0.14.0 (#975), so the release binaries and a plain `cargo install bacnet-cli`

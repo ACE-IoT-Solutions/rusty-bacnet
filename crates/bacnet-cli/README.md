@@ -39,8 +39,10 @@ Named B/IP profiles preview resolved settings before connecting and record an
 explicit first-use authorization. Press `p` for profiles, `x` to disconnect and
 `c` to reconnect. `BACNET_CONFIG_DIR` isolates both profiles and workspaces.
 `--no-profile` or explicit network flags without `--profile` retain the
-nonpersistent connection flow; SC and B/IPv6 still use that flow. The TUI
-remains read-only.
+nonpersistent connection flow; SC and B/IPv6 still use that flow. The TUI is
+read-only until `W` arms a time-boxed write session on a profile; every write
+is previewed, kept in a revertible ledger and recorded in an audit log.
+`--passive` transmits nothing.
 
 The [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/main/docs/CLI.md)
 lists every command and option.

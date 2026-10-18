@@ -11,6 +11,7 @@ pub(crate) mod connection;
 pub(crate) mod devices;
 pub(crate) mod objects;
 pub(crate) mod picker;
+pub(crate) mod safety;
 pub(crate) mod watch;
 pub(crate) mod whois;
 
@@ -49,6 +50,8 @@ pub(crate) enum Link {
     },
     /// Building the client failed.
     Failed(String),
+    /// `--passive`: no client, nothing transmitted.
+    Passive,
 }
 
 /// The modal on top of the screen, if any.
@@ -66,6 +69,8 @@ pub(crate) enum Overlay {
     Picker(Picker),
     /// The `:` command bar, with what has been typed.
     Command(String),
+    /// A write session dialog.
+    Safety(Box<safety::Modal>),
 }
 
 /// Progress of the current operation.
@@ -197,6 +202,17 @@ pub(crate) enum Action {
     OpenCommandLine,
     /// A key on the command bar.
     CommandLine(FilterKey),
+    /// `W`: arm or disarm a write session.
+    ToggleArm,
+    /// `u`: the session ledger.
+    OpenLedger,
+    /// `w` / `n` on an open object: write, or relinquish a slot.
+    OpenWrite {
+        /// Relinquish.
+        relinquish: bool,
+    },
+    /// A key in a write session dialog.
+    Modal(safety::ModalKey),
     /// A message from the worker.
     Worker(WorkerEvent),
 }
@@ -211,6 +227,8 @@ pub(crate) struct AppConfig {
     pub(crate) color: bool,
     /// Interfaces to pick from, when BACnet/IP has no `-i`.
     pub(crate) picker: Option<Picker>,
+    /// `--passive`.
+    pub(crate) passive: bool,
     /// Start time.
     pub(crate) now: Instant,
 }
@@ -235,6 +253,10 @@ pub(crate) struct App {
     pub(crate) browser: Option<Box<Browser>>,
     /// The watch list.
     pub(crate) watch: WatchList,
+    /// The write session.
+    pub(crate) safety: safety::SafetyState,
+    /// The BBMD this session registers with as a foreign device.
+    pub(crate) foreign: Option<String>,
     /// The screen in the body.
     pub(crate) screen: Screen,
     next_req: super::point::ReqId,
@@ -289,6 +311,8 @@ impl App {
             devices: DeviceTable::default(),
             browser: None,
             watch: WatchList::default(),
+            safety: safety::SafetyState::new(config.passive),
+            foreign: None,
             screen: Screen::Main,
             next_req: 0,
             duplicates: Duplicates::default(),
@@ -384,7 +408,7 @@ impl App {
             .ctrl_c_at
             .is_some_and(|t| now.saturating_duration_since(t) < CTRL_C_WINDOW)
         {
-            self.quit = true;
+            self.request_quit();
             return;
         }
         if self.link == Link::Picking {
@@ -424,9 +448,11 @@ impl App {
     fn escape(&mut self, out: &mut Vec<Command>) {
         match self.overlay {
             Overlay::Picker(_) => self.quit = true,
-            Overlay::Help | Overlay::WhoIs(_) | Overlay::Connection | Overlay::Command(_) => {
-                self.overlay = Overlay::None
-            }
+            Overlay::Help
+            | Overlay::WhoIs(_)
+            | Overlay::Connection
+            | Overlay::Command(_)
+            | Overlay::Safety(_) => self.overlay = Overlay::None,
             Overlay::None if self.screen == Screen::Watch => self.screen = Screen::Main,
             Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
@@ -443,6 +469,9 @@ impl App {
     }
 
     fn open_who_is(&mut self) {
+        if !self.may_transmit() {
+            return;
+        }
         if !matches!(self.link, Link::Up { .. }) {
             self.flash("Not connected yet.", FLASH_FOR);
             return;
@@ -538,6 +567,12 @@ impl App {
         self.browser = None;
         // The worker of the ended session cancelled the subscriptions.
         self.watch = WatchList::default();
+        self.foreign = None;
+        // A new session starts read-only; its worker reports the policy
+        // and the ledger again.
+        self.safety.armed = None;
+        self.safety.policy = None;
+        self.safety.workspace = false;
         self.duplicates = Duplicates::default();
         self.op = None;
         self.last_spec = None;
@@ -626,12 +661,12 @@ impl App {
         }
     }
 
-    fn worker_event(&mut self, event: WorkerEvent) {
+    fn worker_event(&mut self, event: WorkerEvent, out: &mut Vec<Command>) {
         match event {
             WorkerEvent::Fatal { error } => self.fail(error, 1),
             WorkerEvent::Session { generation, event } => {
                 if generation == self.generation && self.link != Link::Disconnecting {
-                    self.worker_event(*event);
+                    self.worker_event(*event, out);
                 }
             }
             WorkerEvent::SessionStarted { generation } => {
@@ -714,6 +749,9 @@ impl App {
                     };
                 }
             }
+            WorkerEvent::Safety(event) => self.safety_event(event, out),
+            WorkerEvent::Passive => self.link = Link::Passive,
+            WorkerEvent::ForeignDevice { bbmd } => self.foreign = Some(bbmd),
         }
     }
 }
@@ -730,9 +768,12 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             now,
             dropped,
             log_generation,
-        } => app.tick(now, dropped, log_generation),
+        } => {
+            app.tick(now, dropped, log_generation);
+            app.safety_tick(&mut out);
+        }
         Action::Resize => {}
-        Action::Quit => app.quit = true,
+        Action::Quit => app.request_quit(),
         Action::CtrlC => app.ctrl_c(&mut out),
         Action::Escape => app.escape(&mut out),
         Action::ToggleHelp => {
@@ -791,7 +832,11 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::RemoveWatch => app.unwatch_selected(&mut out),
         Action::OpenCommandLine => app.open_command_line(),
         Action::CommandLine(key) => app.command_line_key(key, &mut out),
-        Action::Worker(event) => app.worker_event(event),
+        Action::ToggleArm => app.toggle_arm(&mut out),
+        Action::OpenLedger => app.open_ledger(),
+        Action::OpenWrite { relinquish } => app.open_write(relinquish),
+        Action::Modal(key) => app.modal_key(key, &mut out),
+        Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out
 }

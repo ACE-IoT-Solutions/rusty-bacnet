@@ -23,6 +23,8 @@ mod bip6_worker;
 mod browser;
 mod build_retirement;
 mod connections;
+#[cfg(unix)]
+mod crash;
 mod event_loop;
 mod frames;
 mod inprocess;
@@ -33,6 +35,8 @@ mod load;
 mod profile_ui;
 mod site;
 mod watch;
+mod writes;
+mod writes_app;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
@@ -70,6 +74,7 @@ pub(super) fn new_app(picker: Option<Picker>) -> App {
             style: AddressStyle::Bip,
             color: false,
             picker,
+            passive: false,
             now: t0(),
         },
         LogRing::new(100),

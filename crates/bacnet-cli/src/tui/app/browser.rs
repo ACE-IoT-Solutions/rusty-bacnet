@@ -149,6 +149,12 @@ impl Browser {
         true
     }
 
+    /// Mark `object` as being read again by request `req`.
+    pub(crate) fn reading(&mut self, req: ReqId, object: ObjectIdentifier) {
+        self.object_req = Some(req);
+        self.view = ViewState::Reading(object);
+    }
+
     /// Focus the next pane, or the previous one with `back`.
     pub(crate) fn cycle_focus(&mut self, back: bool) {
         const ORDER: [Pane; 3] = [Pane::Card, Pane::Objects, Pane::Properties];
@@ -182,13 +188,16 @@ impl Browser {
 }
 
 impl App {
-    fn next_req(&mut self) -> ReqId {
+    pub(super) fn next_req(&mut self) -> ReqId {
         self.next_req += 1;
         self.next_req
     }
 
     /// Enter: open the selected device, or read the selected object.
     pub(super) fn open(&mut self, out: &mut Vec<Command>) {
+        if !self.may_transmit() {
+            return;
+        }
         if !matches!(self.link, Link::Up { .. }) {
             self.flash("Not connected.", FLASH_FOR);
             return;
@@ -230,7 +239,7 @@ impl App {
     /// `r`: read the open object again, or the whole device from the card
     /// or the object list.
     pub(super) fn refresh(&mut self, out: &mut Vec<Command>) {
-        if !matches!(self.link, Link::Up { .. }) {
+        if !matches!(self.link, Link::Up { .. }) || !self.may_transmit() {
             return;
         }
         let req = self.next_req();

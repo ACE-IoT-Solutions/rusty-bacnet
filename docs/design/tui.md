@@ -124,7 +124,7 @@ What M0 draws (80x24):
 | SC (planned) | Hub connector status, connection-doctor phase timeline, local and peer certificates, VMAC and UUID |
 | MS/TP (planned) | Participant panel or passive monitor (station grid, token timing, Max_Master analysis, error counters, join wizard) |
 | Capture (planned) | Frame list, decode tree, hex view, filters, pcap export |
-| Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; session ledger and write confirmations remain planned |
+| Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; arm dialog (`W`), write and relinquish forms (`w`, `n`), the preview and its confirmation, the session ledger (`u`) and the exit guard (#964) |
 
 ### 4.3 Keybindings
 
@@ -148,9 +148,10 @@ M0 keys:
 | `Enter` | Who-Is form | send; a global or unbounded request needs a second Enter |
 | `Esc` | dialogs | discard/back in the profile editor; close other dialogs |
 
-Planned: `1` to `7` and `Tab` to switch screens, `:` for a command bar that
-accepts one-shot syntax, `W` to arm writes, `u` for the ledger, `r` to refresh,
-`a`, `w`, `n`, `x`, `Space`, `e`, `c` and `J` on later screens.
+Since M0: `a`, `x`, `3`/`1` and `:` for the watch list (#965); `W` to arm or
+disarm writes, `w`/`n` to write or relinquish on an open object, and `u` for
+the ledger (#964). Planned: `1` to `7` and `Tab` to switch screens, and
+`Space`, `e`, `c` and `J` on later screens.
 
 Only key presses count; Windows also reports releases. Mouse capture will be
 opt-in (`--mouse`) because it breaks native text selection.
@@ -177,19 +178,26 @@ tracks guarding those separately, without changing the one-shot contract here.
 
 **Session levels** (always shown in the status bar):
 
-1. **Passive** (planned, `--passive`): never transmits. Capture, the MS/TP
-   monitor and offline files only.
-2. **Read-only** (the default, and the only level in M0): discovery, reads,
-   ReadRange, BDT and FDT reads. FD registrations create remote state with a finite TTL. Disconnect stops
+1. **Passive** (`--passive`, #964): never transmits. No client is built at
+   all, so not even an automatic answer to an incoming request goes out; as a
+   second line, a session loop running with the passive option refuses every
+   command that would transmit. Today that leaves the ledger view; capture, the
+   MS/TP monitor and offline files come later.
+2. **Read-only** (the default): discovery, reads, ReadRange, BDT and FDT reads.
+   FD registrations create remote state with a finite TTL. Disconnect stops
    local renewal and releases the client; the remote FDT entry expires under
    its TTL plus grace rather than being deleted immediately (J.5.2.2–J.5.2.3).
-   COV cancellation and the footprint ledger remain planned.
-3. **Write session** (planned, #964): armed with `W`. A modal shows the site and
+   COV subscriptions are cancelled on remove and exit (#965). The status bar's
+   footprint counts both (`COV n FD m`).
+3. **Write session** (#964): armed with `W`. A modal shows the site and
    network, asks for an optional reason or ticket, and sets a duration (default
-   15 min). The bar turns red with a countdown and the session disarms when it
-   expires. A profile can set `writes = "never"`.
-4. **Dangerous operations** (planned): off unless the profile enables them and a
-   write session is armed.
+   15 min, at most 480). The bar turns red with a countdown and the session
+   disarms when it expires; the worker keeps its own deadline too. A profile can
+   set `writes = "never"`. Arming needs a profile workspace for the ledger and
+   the audit log, so a flags-only session stays read-only.
+4. **Dangerous operations** (#964): off unless the profile sets
+   `dangerous = true` and a write session is armed. Today the only one is
+   commanding priority 6; DCC, reinitialize and BDT writes will join it.
 
 **Confirmation tiers**
 
@@ -201,26 +209,50 @@ tracks guarding those separately, without changing the one-shot contract here.
 | T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. DCC defaults to a finite duration |
 | Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3); the deprecated plain-disable DCC option, which current-revision servers ignore (Clause 16.1) | Expert flag only |
 
-Before any commandable write, the TUI will read the priority array. It warns
-when a higher-priority slot is active (so the write would not change the present
-value) and when the target slot already holds another writer's value: writing a
-slot replaces whatever another party put there, and that party is not told
-(Clause 19.2).
+As built in #964 (`tui/safety/plan.rs`): priorities 3, 4 and 7, which Table 19-1
+leaves to the site but which outrank the operator's 8, are T2 like 8. A
+WritePropertyMultiple batch is at least T2 and takes its strongest member's
+tier; one blocked member blocks it. The "expert flag" is the profile's
+`dangerous = true`, which turns priority 6 into a T3 write. Relinquishing a
+slot this session's ledger holds is T1 at priorities 9 to 16. A write without a
+priority goes to 16 for a commandable property (Clause 19.2.1); a priority on a
+non-commandable property is not sent. The app enforces the tiers, and the write
+worker checks the level, the policy and priority 6 again before sending. The T3
+flow (the device instance typed out) and `audit::Secret` for passwords are
+there for DCC and reinitialize to reuse.
 
-**Session ledger** (planned). Every change records its pre-image (slot value,
-Out_Of_Service, property value, BDT). The ledger is written to the workspace on
-each change, so it survives a crash. Revert-all relinquishes our slots, restores
-Out_Of_Service and rewrites old values. Quitting with outstanding overrides
-opens a modal: revert all, keep and log, or cancel. The next launch on the same
-profile lists entries left behind by a crashed session.
+Before any commandable write, the TUI reads the priority array, Present_Value,
+Relinquish_Default and Out_Of_Service. It says when a stronger slot is active
+(so the write would not change the present value) and when the target slot
+already holds another writer's value: writing a slot replaces whatever another
+party put there, and that party is not told (Clause 19.2). SERVICE_REQUEST_DENIED
+from a device's mutation policy is shown as `DENIED`, apart from other errors.
 
-**Audit log** (planned). `audit.jsonl` in the profile workspace is append-only.
+**Session ledger** (#964). Every change records its pre-image (the slot value,
+or the property's old value, Out_Of_Service included; BDT entries come with
+BDT writes). `ledger.json` in the workspace is saved atomically before each
+request goes out and after its answer, so a kill mid-request still leaves the
+entry (state `sending`, or `unknown` after a timeout); a write is not sent if
+the ledger can't be saved. Repeated writes to one target keep the first
+pre-image, and a write that restores it closes the entry. Revert-all, newest
+first, relinquishes our slots (or gives back another commander's value we
+overwrote) and rewrites old property values; it needs a connection but not an
+armed session. Quitting with entries left opens a modal: revert all, keep and
+log, or cancel. The next session on the same profile lists entries an earlier
+run left, marking the kept ones. A write already sent when its session is
+retired completes and is recorded; one still queued is recorded as not sent.
+
+**Audit log** (#964). `audit.jsonl` in the profile workspace is append-only.
 Each record holds UTC time, OS user, host, profile, transport and local
 address, target, service, decoded parameters, priority, pre-image, outcome
 (ack, error class and code, reject, abort, timeout) and session level.
-Passwords are redacted, file payloads are reduced to size plus SHA-256, and key
-material never appears. Arming, disarming and declined confirmations are
-recorded too. This is a client-side record, separate from BACnet audit
+Passwords are redacted (an `audit::Secret` serialises as `[redacted]`, and any
+field named like a password is redacted on the way out), file payloads will be
+reduced to size plus SHA-256 when file writes arrive, and key material never
+appears. Arming, disarming, refusals, declined confirmations, reverts and kept
+entries are recorded too. Each line is flushed and synced before the next; the
+host name comes from `HOSTNAME`/`COMPUTERNAME` or the `hostname` command,
+looked up once. This is a client-side record, separate from BACnet audit
 reporting (Clause 19.6), and it complements the server-side
 [mutation policy](../mutation-policy.md); SERVICE_REQUEST_DENIED is shown
 distinctly.
@@ -292,8 +324,10 @@ crates/bacnet-cli/src/
     tests/           app-core, frames (insta), in-process lab, load, event loop
 ```
 
-Planned additions: `safety.rs` (levels, tiers, ledger, audit writer),
-and one worker and view module per later screen. The implemented profile
+`safety/` holds the write session model (levels, tiers and planning, ledger,
+audit writer); `worker/write.rs` and `worker/passive.rs` its worker side, and
+`app/safety.rs` and `view/safety.rs` its dialogs (#964). Planned: one worker
+and view module per later screen. The implemented profile
 store is in `profile/`; SC and MS/TP persistence are still planned.
 
 The 700-line file cap (`scripts/ci/check-file-size.sh`) and `missing_docs =
@@ -434,8 +468,8 @@ MS/TP profiles and shell-history migration remain separate work in #962.
 - Version 1 TOML files live at `profiles/NAME.toml` under
   `directories::ProjectDirs::from("", "", "bacnet").config_dir()`. Set
   `BACNET_CONFIG_DIR` to replace that root. Per-profile `workspaces/NAME/`
-  directories use the same root; no device cache, watch list, capture, ledger
-  or audit content is persisted by this slice.
+  directories use the same root and hold the session ledger, the audit log
+  (#964) and watch-list CSV logs (#965); no device cache or capture yet.
 - Names are bounded ASCII identifiers, checked before constructing paths.
   New files cannot overwrite an existing profile. Saves publish a complete,
   synced temporary file atomically and preserve the prior file on failure.
@@ -448,8 +482,8 @@ MS/TP profiles and shell-history migration remain separate work in #962.
   picker where reload is reachable. Stale saves still preserve external edits.
   Deterministic invalid settings are rejected before binding. Whether the
   BBMD equals the actual local endpoint is checked by the transport after bind.
-- `writes = "never" | "session"` and `dangerous = false` record the intended
-  policy. The UI remains read-only for both write policies. First use requires
+- `writes = "never" | "session"` (default `session`) and `dangerous`
+  (default false; true needs `session`) are the write policy (#964). First use requires
   an explicit authorization attestation, saved with a Unix timestamp before
   construction of the client. A save/workspace failure prevents connection.
   Editing saved network settings clears the attestation. CLI overrides stay

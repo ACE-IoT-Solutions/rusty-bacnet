@@ -65,20 +65,36 @@ impl Default for Bip {
     }
 }
 
-/// Persisted write policy, reserved for future write operations.
+/// Whether a profile may arm a write session (`W`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Writes {
+    /// Read-only for good: `W` says why and arms nothing.
     Never,
+    /// A time-boxed write session may be armed.
     Session,
 }
 
-/// Safety settings never enable any writes in this TUI.
+/// A profile's write policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Safety {
+    /// Whether a write session may be armed.
     pub(crate) writes: Writes,
+    /// Allow dangerous operations (today, commanding priority 6) inside an
+    /// armed write session.
     pub(crate) dangerous: bool,
+}
+
+impl Default for Safety {
+    /// Sessions may be armed, with nothing dangerous. Arming is itself the
+    /// explicit, time-boxed step.
+    fn default() -> Self {
+        Self {
+            writes: Writes::Session,
+            dangerous: false,
+        }
+    }
 }
 
 impl Default for Profile {
@@ -87,10 +103,7 @@ impl Default for Profile {
             version: 1,
             transport: Transport::Bip,
             bip: Bip::default(),
-            safety: Safety {
-                writes: Writes::Never,
-                dangerous: false,
-            },
+            safety: Safety::default(),
             authorized_at_unix: None,
         }
     }
@@ -102,8 +115,8 @@ impl Profile {
         if self.version != 1 {
             return Err(format!("unsupported profile version {}", self.version));
         }
-        if self.safety.dangerous {
-            return Err("dangerous must be false; this TUI is read-only".into());
+        if self.safety.dangerous && self.safety.writes == Writes::Never {
+            return Err("dangerous = true needs writes = \"session\"".into());
         }
         let b = &self.bip;
         if b.interface.is_multicast() || b.interface.is_broadcast() {

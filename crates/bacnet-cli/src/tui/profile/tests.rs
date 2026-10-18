@@ -27,6 +27,7 @@ fn foreign() -> Profile {
     p.bip.ttl = 120;
     p.bip.renewal_secs = Some(30);
     p.safety.writes = Writes::Session;
+    p.safety.dangerous = true;
     p
 }
 
@@ -149,7 +150,12 @@ fn deterministic_invalid_network_and_safety_settings_fail_before_transport_args(
     }
     let mut p = Profile::default();
     p.safety.dangerous = true;
-    assert!(p.transport_args().is_err());
+    p.transport_args().unwrap();
+    p.safety.writes = Writes::Never;
+    assert!(
+        p.transport_args().is_err(),
+        "dangerous needs write sessions"
+    );
     p.safety.dangerous = false;
     p.bip.min_interval_ms = 3_600_001;
     assert!(p.transport_args().is_err());
