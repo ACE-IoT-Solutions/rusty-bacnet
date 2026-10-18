@@ -3,17 +3,22 @@
 //!
 //! A router's MS/TP port takes extended frames: Clause 9.3 asks them of a
 //! routing node, and they carry the 1,497-octet NPDUs that B/IP carries
-//! (Table 6-1). [`MstpPort::config`] refuses a core configuration without
-//! them. The port is a thin translator that keeps no state: the caller owns
-//! the [`MasterCore`] and lends it to each call.
+//! (Table 6-1). [`MstpPort::new`] and [`MstpPort::config`] refuse a core
+//! configuration without them. The port owns its [`MasterCore`], as
+//! bip-core's `NodePort` owns its node, and translates between it and the
+//! router.
 //!
 //! Wiring a port to the router:
 //!
-//! - **Receive:** for each [`Action::DeliverNpdu`](bacnet_mstp_core::Action::DeliverNpdu)
-//!   the core polls, pass [`MstpPort::arrived`]'s frame to
-//!   [`Router::receive`](crate::Router::receive). The frame borrows the
-//!   core's delivery, so let go of the router's answer before the next
-//!   step.
+//! - **Actions:** poll [`MstpPort::poll_action`] after each call into the
+//!   port or its core, until [`Action::Idle`]. A
+//!   [`PortAction::Core`] is the core's own action, which the port's
+//!   adapter carries out as for any core (switch the transceiver, send a
+//!   frame).
+//! - **Receive:** a [`PortAction::Arrived`] is an NPDU for the router: pass
+//!   its frame to [`Router::receive`](crate::Router::receive). The frame
+//!   borrows the core's delivery, so let go of the router's answer before
+//!   the next step.
 //! - **Release:** then hand the delivery's request, if it had one, to
 //!   [`MstpPort::release`]. Unless the router's own application already
 //!   answered it, the core answers Reply Postponed at once, as a router
@@ -24,6 +29,8 @@
 //!   an error to [`Router::refused`](crate::Router::refused). It queues
 //!   the NPDU with [`MasterCore::enqueue_npdu`] at the send's network
 //!   priority, so the core's queues serve the most urgent first.
+//! - **Line and timers:** feed the line's events and deadlines to the core
+//!   through [`MstpPort::core_mut`], as any adapter does.
 //! - **Groups:** [`MstpPort::config`] installs the rule that station 255
 //!   is the port's broadcast.
 //!
@@ -42,9 +49,9 @@
 
 use core::fmt;
 
-use bacnet_mstp_core::codec::BROADCAST_MAC;
+use bacnet_mstp_core::codec::{BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA};
 use bacnet_mstp_core::{
-    MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage, ReplyDecision,
+    Action, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage, ReplyDecision,
     RequestError, RequestId,
 };
 
@@ -64,17 +71,76 @@ impl fmt::Display for NotExtended {
 
 impl core::error::Error for NotExtended {}
 
-/// A router port on an MS/TP master core.
+/// What [`MstpPort::poll_action`] returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MstpPort {
-    port: PortId,
+#[must_use = "an action the adapter doesn't carry out is lost"]
+pub enum PortAction<'a> {
+    /// An NPDU the core delivered, for the router: pass
+    /// [`Arrived::frame`] to [`Router::receive`](crate::Router::receive),
+    /// then `request` to [`MstpPort::release`].
+    Arrived {
+        /// The router's view of the delivery.
+        arrived: Arrived<'a>,
+        /// The request the NPDU asked a reply to, if it did.
+        request: Option<RequestId>,
+    },
+    /// Any other action of the core, for its adapter to carry out; never
+    /// [`Action::DeliverNpdu`]. [`Action::Idle`] when nothing waits.
+    Core(Action<'a>),
 }
 
-impl MstpPort {
-    /// Port `port`.
-    #[must_use]
-    pub const fn new(port: PortId) -> Self {
-        Self { port }
+/// A router port on an MS/TP master core, which it owns.
+///
+/// `NPDU` is the core's: extended frames carry
+/// [`MAX_EXTENDED_MPDU_DATA`] octets, so that is the default.
+pub struct MstpPort<'rx, Q, const NPDU: usize = MAX_EXTENDED_MPDU_DATA> {
+    port: PortId,
+    core: MasterCore<'rx, Q, NPDU>,
+}
+
+/// The port's index and its core's state.
+impl<Q: QueueStorage, const NPDU: usize> fmt::Debug for MstpPort<'_, Q, NPDU> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MstpPort")
+            .field("port", &self.port)
+            .field("core", &self.core)
+            .finish()
+    }
+}
+
+impl MstpPort<'_, (), 0> {
+    /// The [`PortConfig`] of an MS/TP port on `network` whose core runs
+    /// with `config`: the router's MAC is the station, and it carries
+    /// [`MstpCoreConfig::max_npdu`] octets, 1,497, each way.
+    /// Refused without extended frames. A port already built gives the
+    /// same with [`MstpPort::port_config`].
+    pub const fn config(config: &MstpCoreConfig, network: u16) -> Result<PortConfig, NotExtended> {
+        if !config.extended_frames {
+            return Err(NotExtended);
+        }
+        Ok(port_config(config, network))
+    }
+}
+
+/// The [`PortConfig`] of a port whose core runs with `config`, which has
+/// extended frames.
+const fn port_config(config: &MstpCoreConfig, network: u16) -> PortConfig {
+    PortConfig::new(
+        network,
+        Mac::from_array([config.station]),
+        // 1497 with extended frames on, so the cast is exact.
+        Limits::both(config.max_npdu() as u16),
+        Groups::Mstp,
+    )
+}
+
+impl<'rx, Q: QueueStorage, const NPDU: usize> MstpPort<'rx, Q, NPDU> {
+    /// Port `port` over `core`, which must run with extended frames.
+    pub fn new(port: PortId, core: MasterCore<'rx, Q, NPDU>) -> Result<Self, NotExtended> {
+        if !core.config().extended_frames {
+            return Err(NotExtended);
+        }
+        Ok(Self { port, core })
     }
 
     /// The port's index.
@@ -83,33 +149,53 @@ impl MstpPort {
         self.port
     }
 
-    /// The [`PortConfig`] of an MS/TP port on `network` whose core runs
-    /// with `config`: the router's MAC is the station, and it carries
-    /// [`MstpCoreConfig::max_npdu`] octets, 1,497, each way.
-    /// Refused without extended frames.
-    pub const fn config(config: &MstpCoreConfig, network: u16) -> Result<PortConfig, NotExtended> {
-        if !config.extended_frames {
-            return Err(NotExtended);
-        }
-        Ok(PortConfig::new(
-            network,
-            Mac::from_array([config.station]),
-            // 1497 with extended frames on, so the cast is exact.
-            Limits::both(config.max_npdu() as u16),
-            Groups::Mstp,
-        ))
+    /// The port's [`PortConfig`] on `network`, as [`MstpPort::config`]
+    /// builds it from the core's configuration.
+    #[must_use]
+    pub fn port_config(&self, network: u16) -> PortConfig {
+        // `new` took only a core with extended frames.
+        port_config(self.core.config(), network)
     }
 
-    /// The router's view of a delivery the core polled
-    /// ([`Action::DeliverNpdu`](bacnet_mstp_core::Action::DeliverNpdu)):
-    /// from station `source`, a link broadcast when `destination` is 255.
+    /// The core.
     #[must_use]
-    pub fn arrived<'d>(&self, source: u8, destination: u8, npdu: &'d [u8]) -> Arrived<'d> {
-        Arrived {
-            port: self.port,
-            source: Mac::from_array([source]),
-            link_group: destination == BROADCAST_MAC,
-            npdu,
+    pub const fn core(&self) -> &MasterCore<'rx, Q, NPDU> {
+        &self.core
+    }
+
+    /// The core, to feed it the line's events and deadlines and take its
+    /// counters. Poll its actions through [`Self::poll_action`], so that
+    /// each NPDU reaches the router as an [`Arrived`].
+    pub fn core_mut(&mut self) -> &mut MasterCore<'rx, Q, NPDU> {
+        &mut self.core
+    }
+
+    /// The core back, the port gone.
+    #[must_use]
+    pub fn into_core(self) -> MasterCore<'rx, Q, NPDU> {
+        self.core
+    }
+
+    /// The core's next action, an NPDU delivery as the router's
+    /// [`Arrived`]: from station `source`, a link broadcast when it went to
+    /// station 255.
+    pub fn poll_action(&mut self) -> PortAction<'_> {
+        match self.core.poll_action() {
+            Action::DeliverNpdu {
+                source,
+                destination,
+                npdu,
+                request_id,
+            } => PortAction::Arrived {
+                arrived: Arrived {
+                    port: self.port,
+                    source: Mac::from_array([source]),
+                    link_group: destination == BROADCAST_MAC,
+                    npdu,
+                },
+                request: request_id,
+            },
+            action => PortAction::Core(action),
         }
     }
 
@@ -117,18 +203,20 @@ impl MstpPort {
     /// unless the router's own application answered it already, the core
     /// answers Reply Postponed (Clauses 6.5.4, 9.5.6.9). `None`, a delivery
     /// with no request, does nothing; so does a request already answered.
-    /// The core's other refusals, such as a release after the requester may
-    /// have stopped waiting ([`RequestError::Expired`]), come back as
-    /// they are.
-    pub fn release<Q: QueueStorage, const NPDU: usize>(
-        core: &mut MasterCore<'_, Q, NPDU>,
+    /// The core's other refusal, a release after the requester may have
+    /// stopped waiting ([`RequestError::Expired`]), comes back as it is.
+    pub fn release(
+        &mut self,
         request: Option<RequestId>,
         now: Instant,
     ) -> Result<(), RequestError> {
         let Some(request) = request else {
             return Ok(());
         };
-        match core.complete_request(request, ReplyDecision::Postponed, now) {
+        match self
+            .core
+            .complete_request(request, ReplyDecision::Postponed, now)
+        {
             Err(RequestError::NoPending | RequestError::Stale) => Ok(()),
             result => result,
         }
@@ -138,12 +226,7 @@ impl MstpPort {
     /// its station, or for station 255 as a broadcast, at its network
     /// priority. A unicast must name one station, and never 255; a send
     /// for another port is refused.
-    pub fn send<Q: QueueStorage, const NPDU: usize>(
-        &self,
-        core: &mut MasterCore<'_, Q, NPDU>,
-        send: &Send<'_>,
-        now: Instant,
-    ) -> Result<(), SendRefusal> {
+    pub fn send(&mut self, send: &Send<'_>, now: Instant) -> Result<(), SendRefusal> {
         if send.port != self.port {
             return Err(SendRefusal::Other);
         }
@@ -153,7 +236,8 @@ impl MstpPort {
             Dest::Unicast(_) => return Err(SendRefusal::Other),
         };
         let priority = NetworkPriority::try_from(send.priority).map_err(|_| SendRefusal::Other)?;
-        core.enqueue_npdu(destination, send.npdu, priority, now)
+        self.core
+            .enqueue_npdu(destination, send.npdu, priority, now)
             .map_err(|why| match why {
                 QueueRefusal::Full => SendRefusal::Full,
                 QueueRefusal::Oversize => SendRefusal::TooLong,

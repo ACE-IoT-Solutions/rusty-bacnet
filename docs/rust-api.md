@@ -2835,11 +2835,20 @@ The B/IP ports are `bacnet-bip-core`'s port driver (#1766): a
 `port::NodePort` for a node in normal or foreign-device mode, and a
 `port::BbmdPort` for a BBMD, which answers the management requests from
 its tables itself (see bacnet-bip-core above). `bip::BipPort` is the
-router's translator over either, as `mstp::MstpPort` is over a master
-core: `BipPort::new(port)`, then `BipPort::config(link, network)` for the
-router's `PortConfig`, `arrived(&delivery)` for each NPDU a port hands up,
-and `send(&mut port, &send, now, &mut socket)` for each router send,
-whose refusals it maps to the router's. The ports count what their socket
+router's translator over either: `BipPort::new(port)`, then
+`BipPort::config(link, network)` for the router's `PortConfig`,
+`arrived(&delivery)` for each NPDU a port hands up, and
+`send(&mut port, &send, now, &mut socket)` for each router send, whose
+refusals it maps to the router's. The MS/TP port, `mstp::MstpPort`, owns
+its master core, as a `NodePort` owns its node (#1769):
+`MstpPort::new(port, core)` refuses a core without extended frames,
+`port_config(network)` gives the router's `PortConfig` (or
+`MstpPort::config(&core_config, network)` before the core exists),
+`poll_action()` hands each NPDU the core delivers up as a
+`PortAction::Arrived` and every other action as `PortAction::Core`,
+`release(request, now)` answers a relayed request Reply Postponed, and
+`send(&send, now)` queues a router send; `core_mut()` feeds the core the
+line's events. The B/IP ports count what their socket
 refused, drained like the link cores' counts: `take_counters()` returns
 a `PortCounters` of `u32`s that saturate between takes, and `counters()`
 looks without taking. The router's counts drain the same way (#1767,

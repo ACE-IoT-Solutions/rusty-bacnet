@@ -2,6 +2,8 @@
 
 use bacnet_mstp_codec::{decode_frame_in_place, Frame, FrameType, MAX_EXTENDED_MPDU_DATA};
 use bacnet_mstp_core::{Action, ExtendedStorage, FixedQueues, Instant, MasterCore, MstpCoreConfig};
+use bacnet_router_core::mstp::MstpPort;
+use bacnet_router_core::{Arrived, Mac, PortId};
 
 /// The router's station on the MS/TP port.
 pub const STATION: u8 = 1;
@@ -14,6 +16,23 @@ pub type Queues<const U: usize> = FixedQueues<U, 1, MAX_EXTENDED_MPDU_DATA>;
 
 /// A master core over a [`Bus`]'s storage.
 pub type Core<'a, const U: usize> = MasterCore<'a, &'a mut Queues<U>, MAX_EXTENDED_MPDU_DATA>;
+
+/// The router's MS/TP port, port 1, over a [`Bus`]'s core.
+pub type Port<'a, const U: usize> = MstpPort<'a, &'a mut Queues<U>>;
+
+/// The MS/TP port's index in these suites.
+pub const MSTP_PORT_ID: PortId = PortId(1);
+
+/// What the MS/TP port hands the router for an NPDU from station `source`
+/// to `destination`, as its [`MstpPort::poll_action`] does.
+pub fn mstp_arrived(source: u8, destination: u8, npdu: &[u8]) -> Arrived<'_> {
+    Arrived {
+        port: MSTP_PORT_ID,
+        source: Mac::from_array([source]),
+        link_group: destination == bacnet_mstp_codec::BROADCAST_MAC,
+        npdu,
+    }
+}
 
 /// The router's station, masters 0 to 2, with extended frames on, or
 /// without them when `extended` is false.
@@ -49,6 +68,12 @@ impl<const U: usize> Bus<U> {
     /// The core's queues, once the core is gone.
     pub fn queues(&mut self) -> &mut Queues<U> {
         self.storage.queues_mut()
+    }
+
+    /// The router's MS/TP port, port 1, over its core with extended frames
+    /// on, built at t = 0.
+    pub fn port(&mut self) -> Port<'_, U> {
+        MstpPort::new(MSTP_PORT_ID, self.core(true)).unwrap()
     }
 
     /// The router's core, with extended frames on, or off, built at t = 0.

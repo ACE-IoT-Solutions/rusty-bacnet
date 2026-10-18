@@ -54,12 +54,14 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
   announcements wait for its registration. Datagrams leave through a sink
   you implement, which encodes each straight into your socket's buffer.
 - `mstp` (feature `mstp`): MS/TP ports over `bacnet-mstp-core`'s master
-  core, which must run with extended frames. Sends queue at their network
-  priority, and a request passed on is answered Reply Postponed.
+  core, which each port owns and which must run with extended frames.
+  Sends queue at their network priority, and a request passed on is
+  answered Reply Postponed.
 
 ## Port group rules
 
-Use `BipPort::config` or `MstpPort::config` to build the router's port
+Use `BipPort::config`, or `MstpPort::config` (`port_config` on a port
+already built over its core), to build the router's port
 configuration. Each carries
 its link's group rules, so `router::Permissive` handles group destinations
 without an extra hook. An Unconfirmed-Request for a directly attached
