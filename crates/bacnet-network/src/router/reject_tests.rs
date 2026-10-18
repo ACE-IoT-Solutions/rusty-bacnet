@@ -26,6 +26,7 @@ fn unicast(request: SendRequest) -> (Vec<u8>, MacAddr, Vec<DataAttribute>) {
             npdu,
             mac,
             data_attributes,
+            ..
         } => (npdu.to_vec(), mac, data_attributes),
         SendRequest::Broadcast { .. } => panic!("expected a unicast"),
     }

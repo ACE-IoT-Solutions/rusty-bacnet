@@ -11,6 +11,7 @@ fn request(priority: u8, tag: u8) -> SendRequest {
     SendRequest::Broadcast {
         npdu: Bytes::from(vec![priority, tag]),
         data_attributes: Vec::new(),
+        reject_origin: None,
     }
 }
 
@@ -29,10 +30,9 @@ fn all_priorities_share_capacity_without_eviction_and_dequeue_releases_a_slot() 
         tx.try_send(priority, request(priority, index as u8))
             .unwrap();
     }
-    let Err(TrySendError::Full(rejected)) = tx.try_send(3, request(3, 99)) else {
+    let Err(TrySendError::Full(())) = tx.try_send(3, request(3, 99)) else {
         panic!("a full queue must refuse even life safety");
     };
-    assert_eq!(tag(rejected), (3, 99));
     assert_eq!(tag(rx.try_recv().unwrap()), (3, 3));
     tx.try_send(3, request(3, 99)).unwrap();
     let mut expected = Vec::new();
@@ -116,6 +116,7 @@ fn receiver_drop_releases_every_lane_and_closed_wins_over_full() {
             SendRequest::Broadcast {
                 npdu,
                 data_attributes: Vec::new(),
+                reject_origin: None,
             },
         )
         .unwrap();
@@ -123,10 +124,9 @@ fn receiver_drop_releases_every_lane_and_closed_wins_over_full() {
     assert!(lifetimes.iter().all(|weak| weak.upgrade().is_some()));
     drop(rx);
     assert!(lifetimes.iter().all(|weak| weak.upgrade().is_none()));
-    let Err(TrySendError::Closed(rejected)) = tx.try_send(3, request(3, 88)) else {
+    let Err(TrySendError::Closed(())) = tx.try_send(3, request(3, 88)) else {
         panic!("dropped receiver must close admission");
     };
-    assert_eq!(tag(rejected), (3, 88));
 }
 
 #[derive(Default)]

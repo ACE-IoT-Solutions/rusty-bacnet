@@ -102,9 +102,12 @@ impl Driven {
     /// Record the send, then take it or refuse it.
     fn send(&self, npdu: &[u8], to: Option<&[u8]>) -> Result<(), Error> {
         let refusal = if self.down.load(Ordering::SeqCst) {
-            Some("the port is down")
+            Some(Error::Encoding("the port is down".into()))
         } else if npdu.len() > usize::from(self.limit.load(Ordering::SeqCst)) {
-            Some("too long for the port")
+            Some(Error::SendTooLong {
+                length: npdu.len(),
+                limit: usize::from(self.limit.load(Ordering::SeqCst)),
+            })
         } else {
             None
         };
@@ -114,7 +117,7 @@ impl Driven {
             taken: refusal.is_none(),
         };
         let _ = self.sent.send(sent);
-        refusal.map_or(Ok(()), |why| Err(Error::Encoding(why.into())))
+        refusal.map_or(Ok(()), Err)
     }
 }
 

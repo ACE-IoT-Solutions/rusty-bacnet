@@ -451,6 +451,13 @@ pub trait TransportPort: Send + Sync {
 
     /// Send NPDU bytes to a specific MAC address (unicast).
     ///
+    /// When [`Error::SendTooLong`] is returned, the NPDU or its encoded link
+    /// frame exceeded a bound before any bytes were sent or queued for
+    /// writing. BACnet/SC uses it for NPDU and frame-length checks; other
+    /// transports may return their existing error variants. Wrappers must
+    /// preserve `SendTooLong`. Other variants do not identify a definite
+    /// length refusal for the router.
+    ///
     /// B/IP refuses a MAC that is one of its group addresses
     /// ([`Self::is_group_destination`]) with an error, sending nothing
     /// (#1677): its receivers drop an Original-Unicast-NPDU that wasn't sent
@@ -477,6 +484,8 @@ pub trait TransportPort: Send + Sync {
     }
 
     /// Broadcast NPDU bytes on the local network.
+    /// [`Error::SendTooLong`], when returned, has the same meaning as in
+    /// [`Self::send_unicast`].
     fn send_broadcast(
         &self,
         npdu: &[u8],
@@ -545,8 +554,9 @@ pub trait TransportPort: Send + Sync {
     /// it is published: every frame it routes after that goes by it, so an
     /// NPDU too long for the new limit draws reason 4. A send already on
     /// the port's queue when the limit falls can still be refused by the
-    /// transport as too long; the router counts that refusal as
-    /// `egress_too_long` too.
+    /// transport as too long; [`Error::SendTooLong`] lets the router count
+    /// it and return reason 4 to an eligible origin. Forwarded rejects and
+    /// fan-outs never draw another reject.
     ///
     /// BACnet/SC returns one: its limit comes from the hub connection, and
     /// it publishes the new one whenever it connects to a hub that carries

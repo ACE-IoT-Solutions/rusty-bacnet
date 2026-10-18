@@ -48,16 +48,18 @@ pub(super) fn drain(
                 npdu,
                 mac: MacAddr::from_slice(mac),
                 data_attributes,
+                reject_origin: send.reject_origin,
             },
             Dest::Broadcast => SendRequest::Broadcast {
                 npdu,
                 data_attributes,
+                reject_origin: send.reject_origin,
             },
         };
         let (port, kind) = (usize::from(send.port.0), send.kind);
         let result = match send_txs.get(port) {
             Some(tx) => tx.try_send(send.priority, request),
-            None => Err(TrySendError::Closed(request)),
+            None => Err(TrySendError::Closed(())),
         };
         if let Err(error) = result {
             refused(kind, &error);
@@ -68,7 +70,7 @@ pub(super) fn drain(
 
 /// Log a send its queue refused, as the router logged it before the engine.
 /// Relays and searches were dropped without a word, and still are.
-fn refused(kind: Kind, error: &TrySendError<SendRequest>) {
+fn refused(kind: Kind, error: &TrySendError<()>) {
     match kind {
         Kind::Forward => warn!(%error, "Router dropped message: output channel full"),
         Kind::Global => warn!(%error, "Router dropped broadcast: output channel full"),

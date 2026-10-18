@@ -106,6 +106,18 @@ pub enum Error {
         actual: DataLink,
     },
 
+    /// A definite length refusal before any bytes of this send were written
+    /// or admitted to a transport's write queue. The limit may apply to the
+    /// NPDU or its full link envelope, including data attributes. An I/O
+    /// failure, including an uncertain partial write, must not use this.
+    #[error("send refused before transmission: {length} octets exceed the {limit}-octet limit")]
+    SendTooLong {
+        /// Length of the NPDU or encoded link frame that was refused.
+        length: usize,
+        /// The corresponding bound when this send was refused.
+        limit: usize,
+    },
+
     /// Error encoding a PDU.
     #[error("encoding error: {0}")]
     Encoding(String),
@@ -666,6 +678,26 @@ mod tests {
     fn timeout_error_display() {
         let err = Error::Timeout(Duration::from_secs(3));
         assert!(err.to_string().contains("3s"));
+    }
+
+    #[test]
+    fn send_too_long_keeps_the_observed_lengths_without_becoming_an_apdu_reject() {
+        let error = Error::SendTooLong {
+            length: 1500,
+            limit: 480,
+        };
+        assert_eq!(
+            error.to_string(),
+            "send refused before transmission: 1500 octets exceed the 480-octet limit"
+        );
+        assert_eq!(error.reject_reason(), None);
+        assert!(matches!(
+            error.into_request_reject(),
+            Error::SendTooLong {
+                length: 1500,
+                limit: 480
+            }
+        ));
     }
 
     #[test]

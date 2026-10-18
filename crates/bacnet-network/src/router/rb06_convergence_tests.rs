@@ -155,6 +155,8 @@ impl bacnet_transport::port::TransportPort for MemTransport {
                 npdu: Bytes::copy_from_slice(npdu),
                 mac: MacAddr::from_slice(mac),
                 data_attributes: data_attributes.to_vec(),
+
+                reject_origin: None,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))
     }
@@ -167,6 +169,8 @@ impl bacnet_transport::port::TransportPort for MemTransport {
             .try_send(SendRequest::Broadcast {
                 npdu: Bytes::copy_from_slice(npdu),
                 data_attributes: data_attributes.to_vec(),
+
+                reject_origin: None,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))
     }

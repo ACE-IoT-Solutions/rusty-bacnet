@@ -12,7 +12,7 @@
 use super::counters::bump;
 use super::host::{Event, Host};
 use super::tasks::{Task, TaskKind};
-use super::Storage;
+use super::{RejectOrigin, Storage};
 use crate::message::{MessageType, RejectReason};
 use crate::npdu::Npdu;
 use crate::{swap_apart, Mac, PortId};
@@ -50,6 +50,10 @@ pub struct Send<'a> {
     pub kind: Kind,
     /// What prompted it.
     pub cause: Cause,
+    /// Return-path record for an eligible routed send. Retain it with a
+    /// queued send for [`Router::refused_later`](super::Router::refused_later).
+    /// It is absent for fan-outs, forwarded rejects and local messages.
+    pub reject_origin: Option<RejectOrigin>,
 }
 
 /// A link-layer destination.
@@ -107,7 +111,7 @@ pub enum Cause {
 pub enum SendRefusal {
     /// Its queue is full.
     Full,
-    /// The NPDU is too long for it.
+    /// The NPDU or its link envelope was refused as too long before sending.
     TooLong,
     /// It is down.
     PortDown,
@@ -161,6 +165,7 @@ pub(super) struct Current {
     to: Mac,
     /// Written for a table answer, which a refusal ends.
     pub(super) table_ack: bool,
+    pub(super) reject_origin: RejectOrigin,
 }
 
 impl Current {
@@ -177,6 +182,7 @@ impl Current {
         broadcast: false,
         to: Mac::EMPTY,
         table_ack: false,
+        reject_origin: RejectOrigin::NONE,
     };
 
     /// `len` octets in the scratch, going to `target`.
@@ -398,6 +404,7 @@ impl<
                     npdu: &self.scratch[..current.len],
                     priority: current.priority,
                     kind: current.kind(),
+                    reject_origin: current.reject_origin.as_option(),
                     cause: if current.local {
                         Cause::Local
                     } else {

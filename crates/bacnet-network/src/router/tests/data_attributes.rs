@@ -120,6 +120,7 @@ async fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
             SendRequest::Broadcast {
                 npdu: data,
                 data_attributes: sent_attributes,
+                ..
             } => {
                 let decoded = decode_npdu(data).unwrap();
                 assert_eq!(decoded.destination.as_ref().unwrap().network, 0xFFFF);

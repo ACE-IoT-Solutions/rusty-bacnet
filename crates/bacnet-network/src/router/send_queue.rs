@@ -58,18 +58,19 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
 impl Sender {
     /// Admit at the engine's validated network priority (0 through 3).
     /// Closure wins over fullness, as for the previous bounded channel.
+    /// Refused work is dropped; callers need only the refusal kind.
     pub(super) fn try_send(
         &self,
         priority: u8,
         request: SendRequest,
-    ) -> Result<(), TrySendError<SendRequest>> {
+    ) -> Result<(), TrySendError<()>> {
         {
             let mut state = self.0.lock();
             if !state.receiver {
-                return Err(TrySendError::Closed(request));
+                return Err(TrySendError::Closed(()));
             }
             if state.len == state.capacity {
-                return Err(TrySendError::Full(request));
+                return Err(TrySendError::Full(()));
             }
             state.lanes[usize::from(priority)].push_back(request);
             state.len += 1;

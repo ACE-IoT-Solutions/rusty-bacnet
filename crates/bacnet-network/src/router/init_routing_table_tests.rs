@@ -361,6 +361,8 @@ async fn full_queue_drops_acks_without_mutation_or_panic() {
                 SendRequest::Broadcast {
                     npdu: Bytes::new(),
                     data_attributes: Vec::new(),
+
+                    reject_origin: None,
                 },
             )
             .unwrap();
@@ -390,6 +392,8 @@ async fn full_queue_drops_acks_without_mutation_or_panic() {
                 SendRequest::Broadcast {
                     npdu: Bytes::new(),
                     data_attributes: Vec::new(),
+
+                    reject_origin: None,
                 },
             )
             .unwrap();
@@ -424,6 +428,8 @@ async fn a_full_queue_ends_a_chunked_answer_at_its_first_refused_ack() {
                 SendRequest::Broadcast {
                     npdu: Bytes::new(),
                     data_attributes: Vec::new(),
+
+                    reject_origin: None,
                 },
             )
             .unwrap();

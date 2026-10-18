@@ -68,7 +68,7 @@ async fn queued_routed_traffic_uses_priority_then_arrival_order() {
     barrier(&peers[0], &mut apdus).await;
     assert!(peers[1].sent.try_recv().is_err(), "one in-flight send");
     assert_eq!(router.counters().refused, 0);
-    in_flight.complete.send(()).unwrap();
+    in_flight.complete.send(Ok(())).unwrap();
 
     // LifeSafety A/B, Critical, Urgent, Normal A/B. FIFO spans traffic kinds.
     for index in [3, 5, 4, 1, 0, 2] {
@@ -78,7 +78,7 @@ async fn queued_routed_traffic_uses_priority_then_arrival_order() {
         assert_eq!(sent.npdu, expected, "queued item {tag:#x}");
         assert_eq!(sent.to, to);
         assert_eq!(sent.attributes, attributes(tag));
-        sent.complete.send(()).unwrap();
+        sent.complete.send(Ok(())).unwrap();
     }
     router.stop().await;
 }
@@ -113,7 +113,7 @@ async fn full_held_port_refuses_new_work_without_stalling_another_port_or_shutdo
     assert_eq!(sent.npdu, expected);
     assert_eq!(sent.to, to);
     assert_eq!(sent.attributes, attributes(0xcc));
-    sent.complete.send(()).unwrap();
+    sent.complete.send(Ok(())).unwrap();
 
     tokio::time::timeout(std::time::Duration::from_secs(2), router.stop())
         .await

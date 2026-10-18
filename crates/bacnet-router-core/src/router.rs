@@ -71,6 +71,7 @@ pub use groups::{Group, GroupClassifier, Groups};
 pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
+pub use reject::RejectOrigin;
 
 use counters::bump;
 use output::Outputs;
@@ -364,22 +365,30 @@ where
     /// it ends a table answer (Initialize-Routing-Table-Ack) that still has
     /// Acks to send, as a full queue does in the hosted router.
     pub fn refused(&mut self, why: SendRefusal) {
-        self.refused_later(why);
+        self.refused_later(why, None);
         self.store().end_refused_answer();
     }
 
-    /// Say that a port refused a send polled before the last poll: one its
-    /// link took into a queue and failed later, as the hosted router's
-    /// ports do. It is counted as [`refused`](Self::refused) counts one,
-    /// in [`Counters::refused`], and in [`Counters::egress_too_long`] too
-    /// when it was [`SendRefusal::TooLong`]; the outputs waiting now are
-    /// left alone, so it ends no table answer.
-    pub fn refused_later(&mut self, why: SendRefusal) {
-        let counters = &mut self.store().counters;
+    /// Report one definite refusal of a previously polled, queued send.
+    /// `origin` is that send's [`Send::reject_origin`], from this router.
+    /// Every refusal increments [`Counters::refused`]; [`SendRefusal::TooLong`]
+    /// also increments [`Counters::egress_too_long`] and, when eligible,
+    /// queues reason 4 back to the retained origin with the original DNET.
+    ///
+    /// Existing outputs, including a table answer, remain ahead of the new
+    /// reject. Poll until [`Action::Idle`] before reporting another refusal.
+    /// Sends with no origin record, including forwarded rejects and fan-outs,
+    /// produce no reply. A generated reject likewise carries no record, so
+    /// its own refusal cannot cause a rejection loop.
+    pub fn refused_later(&mut self, why: SendRefusal, origin: Option<RejectOrigin>) {
+        let store = self.store();
         if why == SendRefusal::TooLong {
-            bump(&mut counters.egress_too_long);
+            bump(&mut store.counters.egress_too_long);
+            if let Some(origin) = origin {
+                store.queue_reject(origin, crate::message::RejectReason::MESSAGE_TOO_LONG);
+            }
         }
-        bump(&mut counters.refused);
+        bump(&mut store.counters.refused);
     }
 
     /// Replace port `port`'s NPDU limits while the router runs: for a link
