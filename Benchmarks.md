@@ -638,6 +638,10 @@ The images:
   extended frames.
 - `apdu`: the application layer encoder and decoders, with a 1-kilobyte
   heap; the only image with an allocator.
+- `device`: a whole MS/TP device with no heap: the data link, the
+  network layer and an application layer that answers Who-Is and
+  ReadProperty. It joined after the tables below were measured; its sizes
+  follow them.
 
 Flash is code, read-only data and the vector table. RAM is static RAM
 (initialized and zeroed data, the heap arena included), not the stack.
@@ -665,6 +669,11 @@ not re-run for this report; see `docs/ci.md`, "Emulation (manual)", and
 | Netduino Plus 2 (`thumbv7em-none-eabihf`) | 1,832 | 2,868 | 2,100 | 4,188 | 2,228 | 5,640 | 2,536 |
 | SiFive E (`riscv32imc-unknown-none-elf`) | 1,712 | 2,732 | 2,020 | 4,008 | 2,132 | does not fit | 2,464 |
 
+The `device` image, measured when it joined (#1771) with the same
+toolchain and QEMU: 29,656 bytes of flash on Cortex-M0+, 28,352 on
+Cortex-M4F, and 3,496 bytes of static RAM on every target; its deepest
+stack was 2,652 bytes on the micro:bit board and 2,284 on the LM3S6965.
+
 What an embedded project can expect:
 
 - An MS/TP device needs about 19 kilobytes of flash and 7.6 kilobytes of
@@ -672,6 +681,11 @@ What an embedded project can expect:
   about 10.7 kilobytes of RAM.
 - The application layer image (`apdu`) is about 44 kilobytes of flash on
   its own, plus its heap.
+- A whole MS/TP device that answers Who-Is and ReadProperty without a
+  heap (`device`) needs about 30 kilobytes of flash and 6.2 kilobytes of
+  RAM (3.5 static, 2.7 of stack). Without the heap, the application layer
+  links no formatting code, and the device is smaller in flash than the
+  `apdu` image alone.
 - The router needs about 21 kilobytes of RAM (15.5 static, 5.6 of stack),
   so it does not fit the 16-kilobyte boards; most of its static RAM is the
   extended-frame buffers an MS/TP router port requires.
