@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(ack.object_identifier, object);
     assert_eq!(ack.property_identifier, PropertyIdentifier::PRESENT_VALUE);
     assert_eq!(ack.property_array_index, None);
-    assert_eq!(ack.property_value, [0x44, 0x42, 0x90, 0x00, 0x00]);
+    assert_eq!(ack.property_value, [0x44, 0x42, 0x91, 0x00, 0x00]);
 
     client.stop().await?;
     server.stop().await?;
