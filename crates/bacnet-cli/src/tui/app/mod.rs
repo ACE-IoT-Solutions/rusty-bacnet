@@ -421,7 +421,11 @@ impl App {
             return;
         }
         self.ctrl_c_at = Some(now);
-        let cancelled = if self.overlay != Overlay::None {
+        let cancelled = if let Overlay::Safety(_) = self.overlay {
+            // As Esc: a preview closed this way is recorded as declined.
+            self.modal_key(safety::ModalKey::Esc, out);
+            Some("Closed")
+        } else if self.overlay != Overlay::None {
             self.overlay = Overlay::None;
             Some("Closed")
         } else if self.filter_editing {

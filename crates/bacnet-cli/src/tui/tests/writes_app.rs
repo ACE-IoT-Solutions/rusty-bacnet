@@ -139,6 +139,31 @@ fn a_double_ctrl_c_goes_through_the_exit_guard() {
 }
 
 #[test]
+fn ctrl_c_on_a_preview_declines_it() {
+    use crate::tui::safety::{Gate, Preview, Tier};
+    let mut app = connected_app();
+    ready(&mut app, true, Vec::new());
+    let preview = Box::new(Preview {
+        device: 100,
+        items: Vec::new(),
+        batch: false,
+        gate: Gate::Allowed(Tier::T1),
+    });
+    app.overlay = Overlay::Safety(Box::new(Modal::Confirm {
+        req: 1,
+        preview: preview.clone(),
+        typed: String::new(),
+        error: None,
+    }));
+    let commands = press_with(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(
+        commands,
+        [Command::Safety(SafetyCommand::Declined { preview })]
+    );
+    assert_eq!(app.overlay, Overlay::None);
+}
+
+#[test]
 fn an_empty_ledger_quits_at_once() {
     let mut app = connected_app();
     ready(&mut app, true, Vec::new());

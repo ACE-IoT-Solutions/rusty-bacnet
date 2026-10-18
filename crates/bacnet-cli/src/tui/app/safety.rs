@@ -578,6 +578,9 @@ impl App {
             SafetyEvent::Done { req, outcomes } => {
                 if waiting(self, req) {
                     self.overlay = modal(Modal::Result(outcomes));
+                } else if let Some((label, outcome)) = outcomes.first() {
+                    // The view was closed: say how it went anyway.
+                    self.flash(format!("{label}: {}", outcome.describe()), FLASH_FOR);
                 }
                 self.reread_object(out);
             }
