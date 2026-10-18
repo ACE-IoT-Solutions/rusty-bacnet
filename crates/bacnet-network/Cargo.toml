@@ -22,6 +22,7 @@ bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
 bacnet-router-core.workspace = true
+bacnet-time = { workspace = true, features = ["std"] }
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }

@@ -16,7 +16,7 @@
 //! from the router's start ([`Counters`]).
 //!
 //! The engine runs on Tokio time from one origin, taken when the router
-//! starts ([`RouterClock`]), so paused-time tests drive its timers as they
+//! starts ([`tokio_clock`]), so paused-time tests drive its timers as they
 //! drive the transports'.
 
 use std::ops::{Deref, DerefMut};
@@ -26,7 +26,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use bacnet_router_core::router::{
     ConfigError, Counters as EngineCounters, Limits, Options, PortConfig,
 };
-use bacnet_router_core::{Duration, Instant, Router, Storage};
+use bacnet_router_core::{Instant, Router, Storage};
+use bacnet_time::HostClock;
 use bacnet_transport::port::NpduLimits;
 
 use super::port_groups::PortGroups;
@@ -65,41 +66,19 @@ const _: () = assert!(
     "the hosted route cap is ROUTE_CAP"
 );
 
-/// Tokio time on the engine's nanosecond timeline, from the router's start.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct RouterClock {
-    origin: tokio::time::Instant,
-}
-
-impl RouterClock {
-    /// A clock whose zero is now.
-    pub(super) fn start() -> Self {
-        Self {
-            origin: tokio::time::Instant::now(),
-        }
-    }
-
-    /// The engine's time now.
-    pub(super) fn now(&self) -> Instant {
-        let elapsed = tokio::time::Instant::now().saturating_duration_since(self.origin);
-        // Saturates some 584 years after the router started.
-        Instant::ZERO + Duration::saturating_from_core(elapsed)
-    }
-
-    /// The Tokio instant of an engine time. Both ways are exact, so a timer
-    /// set here never wakes before the engine's deadline is due.
-    pub(super) fn instant(&self, at: Instant) -> tokio::time::Instant {
-        let offset = std::time::Duration::from_nanos(at.as_nanos());
-        self.origin
-            .checked_add(offset)
-            .unwrap_or_else(|| self.origin + std::time::Duration::from_secs(86_400 * 365))
-    }
+/// Tokio time on the engine's nanosecond timeline, from now: the router's
+/// start. It reads `tokio::time::Instant`, so paused time moves it.
+///
+/// bacnet-transport has the same constructor (`runtime_clock.rs`).
+pub(super) fn tokio_clock() -> HostClock {
+    let now = || tokio::time::Instant::now().into_std();
+    HostClock::new(now()).reading(now)
 }
 
 /// The engine of one router, with its clock and its published counts.
 pub(super) struct Engine {
     router: Mutex<HostedRouter>,
-    clock: RouterClock,
+    clock: HostClock,
     published: Published,
 }
 
@@ -111,7 +90,7 @@ impl Engine {
     /// 18 octets.
     pub(super) fn new(
         ports: &[PortConfig<PortGroups>],
-        clock: RouterClock,
+        clock: HostClock,
     ) -> Result<Self, ConfigError> {
         let router = Router::new(boxed_storage(), ports, OPTIONS, clock.now())?;
         Ok(Self {
@@ -175,7 +154,7 @@ impl Engine {
     }
 
     /// The engine's clock.
-    pub(super) fn clock(&self) -> RouterClock {
+    pub(super) fn clock(&self) -> HostClock {
         self.clock
     }
 
@@ -311,7 +290,7 @@ mod tests {
                 PortGroups::default(),
             )
         };
-        Engine::new(&[port(1, 1), port(2, 2)], RouterClock::start()).unwrap()
+        Engine::new(&[port(1, 1), port(2, 2)], tokio_clock()).unwrap()
     }
 
     /// Each guard takes the engine's `u32` counts as it is dropped and adds

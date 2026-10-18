@@ -1,13 +1,15 @@
 use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{Duration as CoreDuration, QueueRefusal};
+use bacnet_time::HostClock;
 use bacnet_types::error::Error;
 use tokio::sync::{mpsc, Mutex};
 
 use super::adapter::Task;
 use super::diagnostics::increment;
-use super::queues::{CoreClock, EnqueueError, SharedQueues};
+use super::queues::{EnqueueError, SharedQueues};
 use super::{DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode, SerialPort};
 use crate::port::{ReceivedNpdu, TransportPort};
+use crate::runtime_clock::tokio_clock;
 
 // ---------------------------------------------------------------------------
 // MS/TP Transport
@@ -39,7 +41,7 @@ pub struct MstpTransport<S: SerialPort> {
 /// What a send needs from a started transport.
 struct Link {
     queues: SharedQueues,
-    clock: CoreClock,
+    clock: HostClock,
     queue_max_age: CoreDuration,
 }
 
@@ -188,7 +190,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
 
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
         let queues = SharedQueues::new(self.config.extended_frames);
-        let clock = CoreClock::new();
+        let clock = tokio_clock();
         let task = Task {
             serial,
             config,

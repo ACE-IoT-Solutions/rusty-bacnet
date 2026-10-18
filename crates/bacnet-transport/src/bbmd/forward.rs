@@ -42,7 +42,7 @@ impl BbmdState {
             .foreign_device_policy
             .as_ref()
             .map_or(DEFAULT_FDT_FANOUT, |policy| policy.max_fdt_fanout);
-        Context::new(self.clock.to_core(now), fdt_fanout)
+        Context::new(self.clock.instant(now), fdt_fanout)
     }
 
     /// Count what the core reports about one list of destinations.

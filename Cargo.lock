@@ -442,6 +442,7 @@ version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-router-core",
+ "bacnet-time",
  "bacnet-transport",
  "bacnet-types",
  "bytes",
@@ -505,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-time"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "proptest",
 ]
@@ -520,6 +521,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
+ "bacnet-time",
  "bacnet-types",
  "bytes",
  "futures-util",

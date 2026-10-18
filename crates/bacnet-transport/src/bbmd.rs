@@ -17,16 +17,15 @@ use std::time::Instant;
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
 use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, Reservation};
 use bacnet_bip_core::Arrival;
+use bacnet_time::HostClock;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
 use crate::bvll::bvll_error;
 
-mod clock;
 mod forward;
 mod policy;
 mod tables;
-use clock::CoreClock;
 pub(crate) use forward::Forward;
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
@@ -74,12 +73,12 @@ pub struct FdtEntry {
 impl FdtEntry {
     /// This entry as the core's registration, on a clock whose midpoint is
     /// the registration time, and that clock.
-    fn registration(&self) -> (core_bbmd::Registration, CoreClock) {
-        let clock = CoreClock::new(self.registered_at);
+    fn registration(&self) -> (core_bbmd::Registration, HostClock) {
+        let clock = HostClock::centred(self.registered_at);
         let registration = core_bbmd::Registration::new(
             address(self.ip, self.port),
             self.ttl,
-            clock.to_core(self.registered_at),
+            clock.instant(self.registered_at),
         );
         (registration, clock)
     }
@@ -87,7 +86,7 @@ impl FdtEntry {
     /// Whether this entry has expired (TTL + grace period) relative to `now`.
     pub fn is_expired_at(&self, now: Instant) -> bool {
         let (registration, clock) = self.registration();
-        registration.is_expired_at(clock.to_core(now))
+        registration.is_expired_at(clock.instant(now))
     }
 
     /// Whether this entry has expired (TTL + grace period).
@@ -98,7 +97,7 @@ impl FdtEntry {
     /// Seconds remaining including the 30-second grace period relative to `now`.
     pub fn seconds_remaining_at(&self, now: Instant) -> u16 {
         let (registration, clock) = self.registration();
-        registration.seconds_remaining_at(clock.to_core(now))
+        registration.seconds_remaining_at(clock.instant(now))
     }
 
     /// Seconds remaining including the 30-second grace period.
@@ -109,7 +108,7 @@ impl FdtEntry {
     /// This entry as a Read-FDT-Ack reports it at `now` (Annex J.2.8.1).
     pub fn wire_entry_at(&self, now: Instant) -> codec::FdtEntry {
         let (registration, clock) = self.registration();
-        registration.wire_entry_at(clock.to_core(now))
+        registration.wire_entry_at(clock.instant(now))
     }
 }
 
@@ -246,7 +245,7 @@ pub fn fdt_from_wire(table: FdtEntries<'_>) -> Result<Vec<FdtEntryWire>, Error> 
 #[derive(Debug)]
 pub struct BbmdState {
     /// Maps the host clock onto the core's.
-    clock: CoreClock,
+    clock: HostClock,
     /// Both tables. The BDT holds this BBMD's own B/IP address.
     tables: Tables,
     /// The mask of the subnet this BBMD's own address is on, when the host
@@ -267,7 +266,7 @@ impl BbmdState {
     /// Create a new BBMD with the given local address.
     pub fn new(local_ip: [u8; 4], local_port: u16) -> Self {
         Self {
-            clock: CoreClock::new(Instant::now()),
+            clock: HostClock::centred(Instant::now()),
             tables: Tables::new(address(local_ip, local_port)),
             subnet_mask: None,
             management_acl: Vec::new(),
@@ -420,7 +419,7 @@ impl BbmdState {
         let outcome = self.tables.fdt.register(
             address(ip, port),
             ttl,
-            self.clock.to_core(now),
+            self.clock.instant(now),
             &limits,
             reservation,
             admit,
@@ -453,7 +452,7 @@ impl BbmdState {
 
     /// Purge expired FDT entries at the given instant and return the number removed.
     pub fn purge_expired_at(&mut self, now: Instant) -> usize {
-        let removed = self.tables.fdt.purge(self.clock.to_core(now));
+        let removed = self.tables.fdt.purge(self.clock.instant(now));
         self.counters.registrations_expired += removed as u64;
         removed
     }
@@ -474,7 +473,10 @@ impl BbmdState {
                 ip: registration.address.ip().octets(),
                 port: registration.address.port(),
                 ttl: registration.ttl,
-                registered_at: self.clock.to_std(registration.registered_at),
+                registered_at: self
+                    .clock
+                    .to_std(registration.registered_at)
+                    .unwrap_or(self.clock.origin()),
             })
             .collect()
     }
@@ -488,7 +490,7 @@ impl BbmdState {
     /// [`Self::fdt_wire_entries`] at `now`.
     pub(crate) fn fdt_wire_entries_at(&mut self, now: Instant) -> Vec<codec::FdtEntry> {
         self.purge_expired_at(now);
-        let now = self.clock.to_core(now);
+        let now = self.clock.instant(now);
         self.tables
             .fdt
             .registrations()
@@ -540,7 +542,7 @@ impl BbmdState {
     pub(crate) fn is_registered_foreign_device(&mut self, ip: [u8; 4], port: u16) -> bool {
         let now = Instant::now();
         self.purge_expired_at(now);
-        let now = self.clock.to_core(now);
+        let now = self.clock.instant(now);
         self.tables.fdt.is_registered_at(address(ip, port), now)
     }
 
@@ -573,7 +575,7 @@ impl BbmdState {
             .expect("foreign device entry exists");
         registration.registered_at = self
             .clock
-            .to_core(Instant::now())
+            .instant(Instant::now())
             .saturating_sub(bacnet_bip_core::Duration::saturating_from_core(elapsed));
         self.tables
             .fdt
@@ -588,7 +590,7 @@ impl BbmdState {
         let registration = core_bbmd::Registration::new(
             address(entry.ip, entry.port),
             entry.ttl,
-            self.clock.to_core(entry.registered_at),
+            self.clock.instant(entry.registered_at),
         );
         self.tables.fdt.restore(registration).expect("FDT has room");
     }

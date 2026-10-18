@@ -1604,7 +1604,10 @@ To release:
    environment `release`, then remove the one that names `ci.yml`. The
    [PyPI trusted publishing](#secrets-and-environment) job stops a release
    before crates.io if this isn't done.
-1. Set the workspace version, update the fuzz crates' lockfiles for it (see
+1. Set the workspace version, and bump `bacnet-time` (its own `version` and
+   the workspace dependency's) when its API changed since its last release:
+   it versions on its own (#1768), and the release skips a name and version
+   already on crates.io. Update the fuzz crates' lockfiles (see
    [Fuzzing](#fuzzing)), assemble the version's `CHANGELOG.md` section from
    the fragments, add release highlights by hand under the new heading if the
    release has any, and merge:
@@ -1638,7 +1641,7 @@ waits for them (see [CI gate](#ci-gate)).
 
 | Job | What it does |
 | --- | --- |
-| Validate | Runs the release script tests (`scripts/release/test_*.py`, `scripts/test_changelog.py`). Checks that every publishable crate has the workspace version and, for a tag, that the tag is `v<version>` and the commit is on `dev`'s or `main`'s first-parent history (`git rev-list --first-parent`), so a commit inside a merged PR's branch doesn't qualify. For a tag, checks that no `changelog.d/` fragment is left unassembled. Extracts the notes with `changelog_notes.py` and writes `THIRD-PARTY-NOTICES`. |
+| Validate | Runs the release script tests (`scripts/release/test_*.py`, `scripts/test_changelog.py`). Checks, with `release_version.py`, that every publishable crate has the workspace version, except `bacnet-time`, which versions on its own, and, for a tag, that the tag is `v<version>` and the commit is on `dev`'s or `main`'s first-parent history (`git rev-list --first-parent`), so a commit inside a merged PR's branch doesn't qualify. For a tag, checks that no `changelog.d/` fragment is left unassembled. Extracts the notes with `changelog_notes.py` and writes `THIRD-PARTY-NOTICES`. |
 | CI gate | `ci_gate.py` on the release commit (a PR's head on a PR's dry run). On a tag it waits for the CI run the tag's push started; a dry run checks once and only warns. See [CI gate](#ci-gate). |
 | Crates and sdist | `cargo publish --workspace --dry-run --locked`, which packages every publishable crate and builds each against the others as published. Then `cargo package` for the `crates` artifact, and `maturin sdist`. |
 | Build (linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64, windows-x86_64) | The wheels for CPython 3.11 to 3.14 (`PYTHONS`) and the CLI, on each platform's own runner. See [Builds](#builds). |

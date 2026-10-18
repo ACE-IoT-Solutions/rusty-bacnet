@@ -88,6 +88,7 @@ use bacnet_mstp_core::{
     Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
     QueueRefusal, ReplyDecision, RequestId, TransmitId,
 };
+use bacnet_time::{earliest, HostClock};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
@@ -96,7 +97,7 @@ use tracing::{debug, warn};
 
 use super::diagnostics::{increment, Counters};
 use super::echo::{EchoFilter, Ended, Pushed};
-use super::queues::{CoreClock, CoreQueues, EnqueueError, SharedQueues};
+use super::queues::{CoreQueues, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
@@ -118,7 +119,7 @@ pub(super) struct Task<S> {
     pub(super) serial: S,
     pub(super) config: MstpCoreConfig,
     pub(super) queues: SharedQueues,
-    pub(super) clock: CoreClock,
+    pub(super) clock: HostClock,
     pub(super) npdus: mpsc::Sender<ReceivedNpdu>,
     pub(super) counts: Arc<Counters>,
     /// [`MstpConfig::transmit_latency_pad`](super::MstpConfig::transmit_latency_pad).
@@ -257,7 +258,7 @@ struct Mac<S> {
     replies: Replies,
     serial: S,
     echo: Echo,
-    clock: CoreClock,
+    clock: HostClock,
     npdus: mpsc::Sender<ReceivedNpdu>,
     counts: Arc<Counters>,
     /// The core's queues, for late answers (queued as a send call queues).
@@ -284,14 +285,14 @@ impl<S: SerialPort> Mac<S> {
                 }
                 continue;
             }
-            let wake = [
-                core.next_deadline().map(|at| self.clock.instant(at)),
+            // A core deadline past the host clock's range never comes.
+            let wake = earliest([
+                core.next_deadline()
+                    .and_then(|at| self.clock.to_std(at))
+                    .map(tokio::time::Instant::from_std),
                 self.filter.deadline(),
                 self.replies.next_expiry(),
-            ]
-            .into_iter()
-            .flatten()
-            .min();
+            ]);
             let sleep =
                 wake.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3_600));
             // Input before a deadline at the same moment: the core judges
@@ -483,7 +484,7 @@ impl<S: SerialPort> Mac<S> {
     /// its request's arrival plus the queue's maximum age, not that age
     /// after now.
     fn enqueue_late_answer(&mut self, requester: u8, answer: &[u8], expires: tokio::time::Instant) {
-        let expires = self.clock.at(expires);
+        let expires = self.clock.instant(expires.into_std());
         let result = self
             .queues
             .enqueue_until(requester, answer, self.clock.now(), expires);

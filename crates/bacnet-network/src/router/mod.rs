@@ -100,7 +100,7 @@ pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
 use dispatch::{Outputs, PortDispatch, Shared};
-use engine::{Engine, EngineGuard, RouterClock, PORTS};
+use engine::{tokio_clock, Engine, EngineGuard, PORTS};
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
 use port_groups::PortGroups;
 
@@ -434,7 +434,7 @@ impl BACnetRouter {
             limit_changes.push(port.transport.max_npdu_changes());
             networks.push(port.network_number);
         }
-        let engine = Engine::new(&configs, RouterClock::start())
+        let engine = Engine::new(&configs, tokio_clock())
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
@@ -516,13 +516,15 @@ impl BACnetRouter {
         let aging = Arc::clone(&shared);
         let aging_task = tokio::spawn(async move {
             let clock = aging.engine.clock();
-            let mut next = aging.engine.lock().next_deadline();
+            // A deadline past the host clock's range never comes.
+            let wake = |next: Option<Instant>| next.and_then(|at| clock.to_std(at));
+            let mut next = wake(aging.engine.lock().next_deadline());
             loop {
                 match next {
-                    Some(deadline) => tokio::time::sleep_until(clock.instant(deadline)).await,
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
                     None => std::future::pending().await,
                 }
-                next = aging.sweep();
+                next = wake(aging.sweep());
             }
         });
 

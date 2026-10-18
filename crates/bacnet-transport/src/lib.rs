@@ -21,6 +21,7 @@ pub mod mstp_serial;
 mod npdu_channel;
 pub mod port;
 mod port_ownership;
+mod runtime_clock;
 pub mod sc;
 pub mod sc_frame;
 #[cfg(feature = "sc-tls")]

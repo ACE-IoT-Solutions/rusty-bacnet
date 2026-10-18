@@ -113,13 +113,25 @@ test('the installation page lists exactly the assets release.yml publishes', asy
   // The crates: every workspace member that crates.io may take (publish_crates.sh's `publish != []`).
   const manifest = await readRepo('Cargo.toml');
   const members = [...manifest.match(/^members = \[([\s\S]*?)^\]/m)[1].matchAll(/^\s*"([^"]+)"/gm)].map(match => match[1]);
+  // A crate whose manifest sets its own version, not `version.workspace = true`,
+  // versions on its own (#1768); release_version.py's INDEPENDENT names the same ones.
   const crates = [];
+  const independent = [];
   for (const member of members) {
     const toml = await readRepo(`${member}/Cargo.toml`);
-    if (!/^publish = false$/m.test(toml)) crates.push(toml.match(/^name = "([^"]+)"$/m)[1]);
+    if (/^publish = false$/m.test(toml)) continue;
+    const name = toml.match(/^name = "([^"]+)"$/m)[1];
+    crates.push(name);
+    if (!/^version\.workspace = true$/m.test(toml)) independent.push(name);
   }
+  const script = await readRepo('scripts/release/release_version.py');
+  const exempt = script.match(/^INDEPENDENT = \(([^)]*)\)$/m)?.[1];
+  assert.ok(exempt !== undefined, 'release_version.py names its independently versioned crates');
+  assert.deepEqual([...exempt.matchAll(/"([^"]+)"/g)].map(match => match[1]).sort(), [...independent].sort());
   const listed = page.match(/^The release publishes these crates to crates\.io, all at the same version: (.*?)\. /m)?.[1];
   assert.ok(listed, `${install} lists the crates`);
-  assert.deepEqual([...listed.matchAll(/`([^`]+)`/g)].map(match => match[1]).sort(), crates.sort());
-  assert.ok(page.includes(`the ${word(crates.length)} crates listed under Rust`));
+  assert.deepEqual([...listed.matchAll(/`([^`]+)`/g)].map(match => match[1]).sort(), crates.filter(name => !independent.includes(name)).sort());
+  for (const name of independent) assert.ok(page.includes(`\`${name}\` versions on its own`), `${install} says ${name} versions on its own`);
+  assert.ok(page.includes(`the ${word(crates.length - independent.length)} crates listed under Rust at version {release}`));
+  for (const name of independent) assert.ok(page.includes(`\`${name}\` at its own version`), `${install} publishes ${name} at its own version`);
 });

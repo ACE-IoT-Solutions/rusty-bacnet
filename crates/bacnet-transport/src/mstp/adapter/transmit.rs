@@ -69,7 +69,9 @@ impl<S: SerialPort> Mac<S> {
             return Ok(());
         };
         let started = Instant::now();
-        if let Err(error) = core.on_transmit_started(outgoing.id, self.clock.at(started)) {
+        if let Err(error) =
+            core.on_transmit_started(outgoing.id, self.clock.instant(started.into_std()))
+        {
             debug!(?error, "MS/TP transmit start refused");
             return Ok(());
         }
@@ -124,7 +126,7 @@ impl<S: SerialPort> Mac<S> {
 
     /// Report the frame complete, stamped with its end.
     fn complete(&mut self, core: &mut Core<'_>, outgoing: &Outgoing, ended: Instant) {
-        match core.on_transmit_complete(outgoing.id, self.clock.at(ended)) {
+        match core.on_transmit_complete(outgoing.id, self.clock.instant(ended.into_std())) {
             Ok(()) => self.count_sent(outgoing.kind),
             Err(error) => debug!(?error, "MS/TP completion refused"),
         }

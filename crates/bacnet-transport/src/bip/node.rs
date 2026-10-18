@@ -12,8 +12,8 @@
 //! be awaited, as when a request is dropped, so never has to send.
 //!
 //! Two clocks, which never meet: the node runs on Tokio time from the start
-//! ([`HostClock`]), which paused-time tests rely on, and the BBMD on std
-//! time (`bbmd/clock.rs`), as before. No time on one is compared with a
+//! ([`tokio_clock`]), which paused-time tests rely on, and the BBMD on std
+//! time, as before. No time on one is compared with a
 //! time on the other, and the management rate limit keeps its own std
 //! clock, as before.
 
@@ -28,6 +28,7 @@ use bacnet_bip_core::node::{
     NodeCounters, Policy, RegistrationEvent, Response, SendRefusal,
 };
 use bacnet_bip_core::{Duration as CoreDuration, Instant as CoreInstant};
+use bacnet_time::HostClock;
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{oneshot, Notify};
@@ -40,6 +41,7 @@ use super::send_counters::SendRefusals;
 use super::BipSocket;
 use crate::bbmd;
 use crate::bvll::{bvll_error, encode_bvll, BvllMessage};
+use crate::runtime_clock::tokio_clock;
 
 /// Exchange slots, which the management helpers and a foreign device's
 /// registration share. Each holds one exchange per peer and operation, so
@@ -50,38 +52,6 @@ const SLOTS: usize = 8;
 
 /// The engine as the hosted transport runs it.
 pub(super) type HostNode = Node<SLOTS>;
-
-/// Tokio time mapped onto the engine's nanosecond timeline, from the
-/// moment the node started. Every call into the node reads it, so the
-/// engine's deadlines are Tokio deadlines and paused time drives them.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct HostClock {
-    origin: tokio::time::Instant,
-}
-
-impl HostClock {
-    fn new() -> Self {
-        Self {
-            origin: tokio::time::Instant::now(),
-        }
-    }
-
-    /// The engine's time now.
-    pub(super) fn now(&self) -> CoreInstant {
-        let elapsed = tokio::time::Instant::now().saturating_duration_since(self.origin);
-        // Saturates some 584 years after the node started.
-        CoreInstant::ZERO + CoreDuration::saturating_from_core(elapsed)
-    }
-
-    /// The Tokio instant of an engine time. Both ways are exact, so a timer
-    /// set here never wakes before the engine's deadline is due.
-    fn instant(&self, at: CoreInstant) -> tokio::time::Instant {
-        let offset = Duration::from_nanos(at.as_nanos());
-        self.origin
-            .checked_add(offset)
-            .unwrap_or_else(|| self.origin + Duration::from_secs(86_400 * 365))
-    }
-}
 
 /// The host's rules [`Link::receive`] consults: the management rate limit,
 /// and the size limit on a table ACK.
@@ -282,7 +252,7 @@ impl NodeHandle {
         record: Arc<ClientRecord>,
         refusals: Arc<SendRefusals>,
     ) -> Result<Self, Error> {
-        let clock = HostClock::new();
+        let clock = tokio_clock();
         let node = HostNode::new(link, clock.now()).map_err(config_error)?;
         let renewal = match link.mode {
             Mode::Foreign(foreign) => Some(foreign.effective_renewal()),
@@ -491,10 +461,12 @@ impl NodeHandle {
                 self.send_attempt(attempt).await;
             }
             self.send_releases().await;
+            // A deadline past the host clock's range never comes.
             let deadline = self.lock().node.next_deadline();
+            let wake = deadline.and_then(|at| self.clock.to_std(at));
             let timer = async {
-                match deadline {
-                    Some(at) => tokio::time::sleep_until(self.clock.instant(at)).await,
+                match wake {
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
                     None => std::future::pending().await,
                 }
             };
