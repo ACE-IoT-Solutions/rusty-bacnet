@@ -553,6 +553,7 @@ client = BACnetClient(
     sc_heartbeat_timeout_ms=None,   # must be greater than interval
     min_request_interval_ms=0,   # Keyword-only; least ms between confirmed requests to one destination
     reconnect=None,              # Keyword-only; SC only, a ScReconnect configuration
+    sc_npdu_per_origin_limit=None, # Keyword-only; SC only, None uses native quota 32
 )
 ```
 
@@ -802,6 +803,40 @@ heartbeat settings; credential files are loaded at entry, not reread on each
 retry. A new connection must complete TLS and SC admission before service
 traffic resumes. Applications still handle request errors; reconnection does
 not guarantee that an interrupted operation completes.
+
+### SC ingress quotas and drop counters
+
+`BACnetClient` and `BACnetServer` accept the keyword-only
+`sc_npdu_per_origin_limit: int | None = None`. Omission or `None` preserves the
+native quota of 32 queued, unconsumed NPDUs per ingress path and source. An
+explicit value must be between 1 and 256 inclusive and requires `transport="sc"`;
+semantic violations raise `ValueError` during construction, before credential
+file access or dialing. Negative or unrepresentably large integers retain the
+usual unsigned-conversion `OverflowError`; nonintegers raise `TypeError`.
+The aggregate SC NPDU queue stays fixed at 256. This is a local receive policy,
+independent of the server's request-handler admission budgets.
+
+`await client.sc_npdu_drop_counts()` and `await server.sc_npdu_drop_counts()`
+return an owned dictionary with required integer fields:
+
+| Field | Counted NPDU admission failure |
+| --- | --- |
+| `fairness_drops` | Per-origin quota reached |
+| `full_drops` | Quota passed but aggregate queue full |
+| `closed_drops` | Receive queue closed |
+
+The counters are queue-wide lifetime totals, saturating at the native unsigned
+64-bit maximum. Each dropped NPDU increments one field, with closed checked
+before fairness and fairness before full. Reading them performs no network I/O
+and remains available while the started SC transport is disconnected or the
+client is reconnecting. Before start, after stop, or on a started non-SC owner,
+the accessor raises `RuntimeError`. A new transport on a subsequent start has
+fresh counters. Each result is an independent snapshot: retaining or mutating
+it neither keeps the transport alive nor changes later results.
+
+`ScNpduDropCounts` is a stub-only `TypedDict` for static typing, like the other
+counter shapes; it is not a runtime import. Both methods return an awaitable
+Future, so use `await` or `asyncio.ensure_future` when scheduling observations.
 
 ### Offline SC credential inspection
 

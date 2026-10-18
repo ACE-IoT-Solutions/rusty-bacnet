@@ -2191,6 +2191,7 @@ class BACnetClient:
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
         reconnect: Optional[ScReconnect] = None,
+        sc_npdu_per_origin_limit: int | None = None,
     ) -> None:
         """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
         ValueError): run the client as a BBMD, or register it with a BBMD
@@ -2204,6 +2205,13 @@ class BACnetClient:
         random VMAC at each start, and that needs a multicast-capable link at
         start, which Linux loopback is not. Another transport, or an instance
         out of range, raises ValueError.
+
+        ``sc_npdu_per_origin_limit`` (SC only, default None): maximum
+        queued, unconsumed NPDUs per ingress path and source. None keeps 32;
+        explicit values must be 1 through 256. Invalid values or a non-SC
+        transport raise ValueError before file or network I/O. Negative or
+        unrepresentably large values raise OverflowError. The aggregate
+        receive queue remains 256; see ``sc_npdu_drop_counts``.
 
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
@@ -3138,6 +3146,14 @@ class BACnetClient:
 
     # --- Lifecycle ---
 
+    def sc_npdu_drop_counts(self) -> Awaitable[ScNpduDropCounts]:
+        """Copy SC ingress counters; requires a started SC owner.
+
+        Available while disconnected. Each call returns an independent dictionary;
+        a new transport starts fresh counters. No network I/O is performed.
+        """
+        ...
+
     def sc_peer_info(self) -> Awaitable[ScPeerInfo | None]:
         """Observe the accepted active SC Hub without I/O; None while disconnected.
         RuntimeError for non-SC, stopped or closing clients. Historical results
@@ -3237,6 +3253,14 @@ class DccOutcomeCounters(TypedDict):
     password_failure_total: int
     deprecated_denied_total: int
     malformed_total: int
+
+class ScNpduDropCounts(TypedDict):
+    """Owned, queue-wide lifetime counters for one started SC transport."""
+
+    fairness_drops: int
+    full_drops: int
+    closed_drops: int
+
 
 class RequestAdmissionCounters(TypedDict):
     """Independent counter samples, not a transactionally atomic aggregate."""
@@ -3356,6 +3380,7 @@ class BACnetServer:
         apdu_segment_timeout_ms: int = 5000,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        sc_npdu_per_origin_limit: int | None = None,
     ) -> None:
         """``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
@@ -3367,6 +3392,13 @@ class BACnetServer:
         on another subnet as a foreign device (#938). See ``Bbmd`` and
         ``ForeignDevice``. A registered Network Port reports the mode in
         BACnet_IP_Mode (normal 0, foreign 1, BBMD 2).
+
+        ``sc_npdu_per_origin_limit`` (SC only, default None): maximum
+        queued, unconsumed NPDUs per ingress path and source. None keeps 32;
+        explicit values must be 1 through 256. Invalid values or a non-SC
+        transport raise ValueError before file or network I/O. Negative or
+        unrepresentably large values raise OverflowError. The aggregate
+        receive queue remains 256; see ``sc_npdu_drop_counts``.
 
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
@@ -4510,6 +4542,14 @@ class BACnetServer:
         samples are not an atomic aggregate. Excludes incomplete cancellation,
         duplicates, pre-handler rejection and timer expiry. No trace bridge or
         subscriber installation. Raises RuntimeError before start/after stop.
+        """
+        ...
+
+    def sc_npdu_drop_counts(self) -> Awaitable[ScNpduDropCounts]:
+        """Copy SC ingress counters; requires a started SC owner.
+
+        Available while disconnected. Each call returns an independent dictionary;
+        a new transport starts fresh counters. No network I/O is performed.
         """
         ...
 

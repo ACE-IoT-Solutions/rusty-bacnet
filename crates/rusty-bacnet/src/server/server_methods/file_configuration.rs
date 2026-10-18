@@ -195,6 +195,7 @@ mod tests {
             sc_hub: None,
             sc_vmac: None,
             sc_device_uuid: [0; 16],
+            sc_npdu_admission_policy: Default::default(),
             sc_ca_cert: None,
             sc_client_cert: None,
             sc_client_key: None,
