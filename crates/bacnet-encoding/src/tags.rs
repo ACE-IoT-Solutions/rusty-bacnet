@@ -7,7 +7,12 @@
 //! Tags also support opening/closing markers for constructed (nested) values.
 
 use bacnet_types::error::Error;
-use bytes::{BufMut, BytesMut};
+mod encode;
+
+pub use encode::{
+    encode_closing_tag, encode_closing_tag_to_sink, encode_opening_tag, encode_opening_tag_to_sink,
+    encode_tag, encode_tag_to_sink,
+};
 
 /// Tag class: application (datatype) or context (field identifier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,72 +95,6 @@ impl Tag {
     /// Check if this is a closing tag matching the given number.
     pub fn is_closing_tag(&self, number: u8) -> bool {
         self.class == TagClass::Context && self.number == number && self.is_closing
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Encoding
-// ---------------------------------------------------------------------------
-
-/// Encode a tag header into the buffer.
-///
-/// For application tags, `tag_number` identifies the datatype (0-12).
-/// For context tags, `tag_number` is the field identifier (0-254).
-pub fn encode_tag(buf: &mut BytesMut, tag_number: u8, class: TagClass, length: u32) {
-    let cls_bit = (class as u8) << 3;
-
-    if tag_number <= 14 && length <= 4 {
-        buf.put_u8((tag_number << 4) | cls_bit | (length as u8));
-        return;
-    }
-
-    let tag_nibble = if tag_number <= 14 {
-        tag_number << 4
-    } else {
-        0xF0
-    };
-
-    if length <= 4 {
-        buf.put_u8(tag_nibble | cls_bit | (length as u8));
-        if tag_number > 14 {
-            buf.put_u8(tag_number);
-        }
-        return;
-    }
-
-    buf.put_u8(tag_nibble | cls_bit | 5);
-    if tag_number > 14 {
-        buf.put_u8(tag_number);
-    }
-
-    if length <= 253 {
-        buf.put_u8(length as u8);
-    } else if length <= 65535 {
-        buf.put_u8(254);
-        buf.put_u16(length as u16);
-    } else {
-        buf.put_u8(255);
-        buf.put_u32(length);
-    }
-}
-
-/// Encode a context-specific opening tag.
-pub fn encode_opening_tag(buf: &mut BytesMut, tag_number: u8) {
-    if tag_number <= 14 {
-        buf.put_u8((tag_number << 4) | 0x0E);
-    } else {
-        buf.put_u8(0xFE);
-        buf.put_u8(tag_number);
-    }
-}
-
-/// Encode a context-specific closing tag.
-pub fn encode_closing_tag(buf: &mut BytesMut, tag_number: u8) {
-    if tag_number <= 14 {
-        buf.put_u8((tag_number << 4) | 0x0F);
-    } else {
-        buf.put_u8(0xFF);
-        buf.put_u8(tag_number);
     }
 }
 
@@ -448,6 +387,7 @@ pub fn extract_raw_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
 
     fn encode_to_vec(tag_number: u8, class: TagClass, length: u32) -> Vec<u8> {
         let mut buf = BytesMut::with_capacity(8);

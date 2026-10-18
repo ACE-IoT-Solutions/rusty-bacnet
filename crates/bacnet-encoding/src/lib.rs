@@ -18,6 +18,11 @@
 //!   that means its `extra-platforms` feature and a `portable-atomic` backend
 //!   the firmware picks.
 //!
+//! The optional `heapless` feature adds a sink adapter for
+//! `heapless::Vec<u8, N>`. Tag headers can also use caller slices, `Vec` or
+//! `BytesMut` through [`sink::EncodeSink`]. Choosing bounded output does not
+//! remove the crate's allocator requirement.
+//!
 //! A build with neither fails; that combination is reserved for a future
 //! allocation-free subset.
 
@@ -37,6 +42,7 @@ pub mod constructed;
 pub mod npdu;
 pub mod primitives;
 pub mod segmentation;
+pub mod sink;
 pub mod tags;
 
 #[cfg(test)]

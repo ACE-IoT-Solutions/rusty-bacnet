@@ -19,10 +19,13 @@ default = ["std"]
 std = ["alloc", "bacnet-types/std", "bytes/std", "dep:tracing"]
 # no_std with a global allocator.
 alloc = ["bacnet-types/alloc"]
+# A bounded output adapter; one of std or alloc is still required.
+heapless = ["dep:heapless"]
 
 [dependencies]
 bacnet-types = { workspace = true }
 bytes = { workspace = true }
+heapless = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [lints]

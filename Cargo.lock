@@ -348,6 +348,7 @@ version = "0.13.0"
 dependencies = [
  "bacnet-types",
  "bytes",
+ "heapless",
  "tracing",
 ]
 
