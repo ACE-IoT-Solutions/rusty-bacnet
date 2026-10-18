@@ -51,6 +51,23 @@ Forwarded-NPDU to send them. Foreign-device registration applies
 time-to-live limits, a per-address quota and reserved capacity, and asks
 your own admission check (an access list, a rate limit) in between.
 Registrations expire on your clock, with the 30-second grace period.
+`Tables::serve` answers the management requests a BBMD serves from its
+tables (Register-Foreign-Device, the two table reads and
+Delete-Foreign-Device-Table-Entry), with the result codes Annex J gives
+them, under your own rules.
+
+The `port` module is the driver that joins a node to a socket and does
+what it asks, so firmware doesn't write that loop:
+
+- `NodePort` runs a node in normal or foreign-device mode: it sends the
+  NAKs and the registrations, and holds a foreign device's broadcasts, in
+  slots you lend, until its first registration resolves.
+- `BbmdPort` runs a BBMD's link over tables you lend: it forwards each
+  broadcast where the tables say and answers each management request
+  itself.
+
+Datagrams leave through a sink you implement, which encodes each straight
+into your socket's buffer.
 
 The Tokio B/IP transport in `bacnet-transport` runs its node and its BBMD on
 this crate.

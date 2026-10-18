@@ -5,13 +5,13 @@ mod fixture;
 
 use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::router::{
-    Action, ConfigError, Discard, Event, Frame, Kind, LimitError, Limits, Options, Permissive,
-    Received, SendRefusal,
+    Action, ConfigError, ControlClass, Counters, Discard, Event, Frame, Kind, LimitError, Limits,
+    Options, Permissive, Received, SendRefusal,
 };
-use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
+use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, RouterIn, Storage};
 use fixture::{
-    apdu_to, at, deliver, drain, learn_9_via_r7, message, options, port_on, router, sent_reject,
-    two_ports, Outcome, Recorder, Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
+    apdu_to, at, deliver, drain, i_am, learn_9_via_r7, message, options, port_on, router,
+    sent_reject, two_ports, Outcome, Recorder, Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
 };
 use proptest::prelude::*;
 
@@ -66,7 +66,7 @@ fn new_refuses_what_it_cannot_route() {
     let mut ports = two_ports();
     ports[0].max_npdu = Limits::both(64);
     assert_eq!(new(&ports, hosted), Ok(()));
-    let over = options(|o| o.route_cap = 257);
+    let over = options(|o| o.route_cap = Some(257));
     assert_eq!(
         new(&two_ports(), over),
         Err(ConfigError::RouteCap {
@@ -78,7 +78,7 @@ fn new_refuses_what_it_cannot_route() {
     assert_eq!(new(&two_ports(), still), Err(ConfigError::ZeroSweep));
 
     let mut storage = Storage::<2, 1, 1>::new();
-    let options = options(|o| o.route_cap = 1);
+    let options = options(|o| o.route_cap = Some(1));
     let refused = Router::new(&mut storage, &two_ports(), options, Instant::ZERO).map(|_| ());
     assert_eq!(refused, Err(ConfigError::TableTooSmall));
 }
@@ -87,7 +87,7 @@ fn new_refuses_what_it_cannot_route() {
 #[test]
 fn new_clears_the_storage_it_is_given() {
     let mut storage = Box::new(Small::new());
-    let options = options(|o| o.route_cap = 8);
+    let options = options(|o| o.route_cap = Some(8));
     let mut router = Router::new(&mut *storage, &two_ports(), options, at(0)).unwrap();
     router
         .table_mut()
@@ -378,7 +378,7 @@ fn discovery_is_bounded() {
     let mut router = Router::new(
         &mut *storage,
         &two_ports(),
-        options(|o| o.route_cap = 8),
+        options(|o| o.route_cap = Some(8)),
         at(0),
     )
     .unwrap();
@@ -477,7 +477,7 @@ proptest! {
                         _ => "other",
                     },
                 };
-                *dropped.entry(key).or_insert(0u64) += 1;
+                *dropped.entry(key).or_insert(0u32) += 1;
             }
             drain(&mut router);
         }
@@ -494,4 +494,68 @@ proptest! {
         prop_assert_eq!(counters.unroutable_rejects, count("unroutable"));
         prop_assert_eq!(counters.undrained, 0);
     }
+}
+
+/// The router's counts drain as the link cores' do (decision D3):
+/// `take_counters` returns the counts since the last take and starts them
+/// again from zero, and `counters` looks without taking.
+#[test]
+fn counters_drain_on_take_and_a_look_takes_nothing() {
+    let mut router = router();
+    let mut host = Recorder::default();
+    let short = [0x01];
+    let malformed = Frame {
+        port: PortId(0),
+        source: NODE_A,
+        link_group: false,
+        npdu: &short,
+    };
+    let _ = router.receive(malformed, at(1), &mut host);
+    assert_eq!(router.counters().malformed, 1);
+    assert_eq!(router.counters().malformed, 1, "a look takes nothing");
+    assert_eq!(router.take_counters().malformed, 1);
+    assert_eq!(router.counters(), Counters::default(), "drained");
+    let _ = router.receive(malformed, at(2), &mut host);
+    let _ = router.receive(malformed, at(3), &mut host);
+    assert_eq!(
+        router.take_counters().malformed,
+        2,
+        "counted from zero again"
+    );
+}
+
+/// `Options::STANDARD` has no route cap of its own, so it fits storage of
+/// any size, where `HOSTED`'s 256-route cap is refused over a smaller
+/// table: learning fills the eight routes [`Small`] holds, and stops
+/// there. `RouterIn` names the router over the storage it borrows.
+#[test]
+fn standard_options_fill_the_table_the_storage_holds() {
+    let mut storage = Small::new();
+    let hosted =
+        RouterIn::<2, 8, 8, 4>::new(&mut storage, &two_ports(), Options::HOSTED, Instant::ZERO);
+    assert_eq!(
+        hosted.map(|_| ()),
+        Err(ConfigError::RouteCap {
+            cap: 256,
+            capacity: 8
+        })
+    );
+    let mut router: RouterIn<'_, 2, 8, 8, 4> =
+        Router::new(&mut storage, &two_ports(), Options::STANDARD, Instant::ZERO).unwrap();
+    let mut host = Recorder::default();
+    let offer = i_am(&[9, 10, 11, 12, 13, 14, 15]);
+    let frame = Frame {
+        port: PortId(1),
+        source: R7,
+        link_group: true,
+        npdu: &offer,
+    };
+    let _ = router.receive(frame, at(1), &mut host);
+    while router.poll_action() != Action::Idle {}
+    let networks: Vec<u16> = router.table().networks().collect();
+    assert_eq!(networks, [1, 2, 9, 10, 11, 12, 13, 14]);
+    assert!(host.events.contains(&Event::RouteCap {
+        class: ControlClass::IAm
+    }));
+    assert_eq!(Options::default(), Options::STANDARD);
 }

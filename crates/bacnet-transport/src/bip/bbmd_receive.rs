@@ -9,7 +9,7 @@ use bytes::BytesMut;
 use tracing::{debug, warn};
 
 use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll, FdtEntries};
-use bacnet_bip_core::bbmd::ForwardRefusal;
+use bacnet_bip_core::bbmd::{ForwardRefusal, Request};
 use bacnet_bip_core::node::ForBbmd;
 use bacnet_bip_core::Arrival;
 
@@ -94,26 +94,26 @@ pub(super) async fn handle(share: ForBbmd<'_>, ctx: &RecvContext) {
 
         ForBbmd::Distribute { sender, npdu } => distribute_broadcast(npdu, sender, ctx).await,
 
-        ForBbmd::Register { sender, ttl } => {
+        ForBbmd::Management(Request::Register { sender, ttl }) => {
             let result =
                 bbmd::lock(bbmd).register_foreign_device(sender.ip().octets(), sender.port(), ttl);
             debug!(%sender, ttl, "Foreign device registered");
             send_bvlc_result(ctx.socket(), sender, result).await;
         }
 
-        ForBbmd::ReadBdt { sender } => {
+        ForBbmd::Management(Request::ReadBdt { sender }) => {
             let rows = bbmd::lock(bbmd).bdt_wire_entries();
             let ack = Bvll::ReadBroadcastDistributionTableAck(BdtEntries::from_entries(&rows));
             send_table_ack(ack, sender, ctx).await;
         }
 
-        ForBbmd::ReadFdt { sender } => {
+        ForBbmd::Management(Request::ReadFdt { sender }) => {
             let rows = bbmd::lock(bbmd).fdt_wire_entries();
             let ack = Bvll::ReadForeignDeviceTableAck(FdtEntries::from_entries(&rows));
             send_table_ack(ack, sender, ctx).await;
         }
 
-        ForBbmd::DeleteFdtEntry { sender, entry } => {
+        ForBbmd::Management(Request::DeleteFdtEntry { sender, entry }) => {
             let result = {
                 // Check management ACL before accepting Delete-FDT-Entry
                 let mut state = bbmd::lock(bbmd);

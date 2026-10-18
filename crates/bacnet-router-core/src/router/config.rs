@@ -101,17 +101,17 @@ impl<G: GroupClassifier> PortConfig<G> {
 /// A router's policy values and timers.
 ///
 /// It is `#[non_exhaustive]`, so a new option isn't a breaking change:
-/// outside this crate, start from [`Options::HOSTED`] and set the fields
-/// to change.
+/// outside this crate, start from [`Options::STANDARD`] or
+/// [`Options::HOSTED`] and set the fields to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
     /// How a claim that moves a route to another port is taken.
     pub convergence: Convergence,
     /// The most routes, direct ones included, that learning, management
-    /// and I-Could-Be-Router offers may fill the table to. At most the
-    /// table's capacity.
-    pub route_cap: u16,
+    /// and I-Could-Be-Router offers may fill the table to, at most the
+    /// table's capacity; `None` lets them fill the whole table.
+    pub route_cap: Option<u16>,
     /// How long a learned route lives without confirmation.
     pub learned_age: Duration,
     /// How often the sweep runs.
@@ -126,23 +126,44 @@ pub struct Options {
 }
 
 impl Options {
-    /// The hosted router's values: standard convergence, 256 routes, 300 s
-    /// learned age, a 60 s sweep, [`Timing::DEFAULT`], and a 5 s discovery
-    /// cooldown and 30 s age.
-    pub const HOSTED: Self = Self {
+    /// The standard values, for a router over storage of any size:
+    /// standard convergence, no route cap of its own, so learning may fill
+    /// whatever table the [`Storage`](super::Storage) holds, 300 s learned
+    /// age, a 60 s sweep, [`Timing::DEFAULT`], and a 5 s discovery cooldown
+    /// and 30 s age. Firmware sizes its table with the storage's `R` and
+    /// starts here.
+    pub const STANDARD: Self = Self {
         convergence: Convergence::Standard,
-        route_cap: 256,
+        route_cap: None,
         learned_age: Duration::from_secs(300),
         sweep: Duration::from_secs(60),
         timing: Timing::DEFAULT,
         discovery_cooldown: Duration::from_secs(5),
         discovery_age: Duration::from_secs(30),
     };
+
+    /// The hosted router's values: [`STANDARD`](Self::STANDARD)'s, with
+    /// `bacnet-network`'s cap of 256 routes. The cap is checked against the
+    /// table: [`Router::new`](super::Router::new) refuses it over a table
+    /// of fewer routes, where `STANDARD` takes the table's size.
+    pub const HOSTED: Self = Self {
+        route_cap: Some(256),
+        ..Self::STANDARD
+    };
+
+    /// The route cap on a table of `capacity` routes.
+    pub(super) const fn cap(&self, capacity: usize) -> usize {
+        match self.route_cap {
+            Some(cap) => cap as usize,
+            None => capacity,
+        }
+    }
 }
 
 impl Default for Options {
+    /// [`Options::STANDARD`].
     fn default() -> Self {
-        Self::HOSTED
+        Self::STANDARD
     }
 }
 

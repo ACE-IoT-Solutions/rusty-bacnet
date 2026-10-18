@@ -302,8 +302,8 @@ impl Harness {
         }
     }
 
-    /// The engine's counts so far, as the router publishes them.
-    pub(super) fn counters(&self) -> bacnet_router_core::router::Counters {
+    /// The engine's totals so far, as the router publishes them.
+    pub(super) fn counters(&self) -> super::Counters {
         self.shared.engine.counters()
     }
 

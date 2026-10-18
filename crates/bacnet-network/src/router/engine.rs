@@ -10,8 +10,10 @@
 //! is: whatever that call left unsent is dropped, and counted as
 //! `undrained`, by the engine's next frame.
 //!
-//! The engine's counts are copied out to atomics before each lock is let
-//! go ([`EngineGuard`]), so reading them never takes the lock.
+//! The engine's counts are taken, which starts them again from zero, and
+//! added to `u64` totals in atomics before each lock is let go
+//! ([`EngineGuard`]), so reading them never takes the lock and they count
+//! from the router's start ([`Counters`]).
 //!
 //! The engine runs on Tokio time from one origin, taken when the router
 //! starts ([`RouterClock`]), so paused-time tests drive its timers as they
@@ -21,11 +23,14 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use bacnet_router_core::router::{ConfigError, Counters, Limits, Options, PortConfig};
+use bacnet_router_core::router::{
+    ConfigError, Counters as EngineCounters, Limits, Options, PortConfig,
+};
 use bacnet_router_core::{Duration, Instant, Router, Storage};
 use bacnet_transport::port::NpduLimits;
 
 use super::port_groups::PortGroups;
+use super::Counters;
 
 use crate::router_table::{HOLD_RECORDS, ROUTE_CAP};
 
@@ -56,7 +61,7 @@ const OPTIONS: Options = Options::HOSTED;
 // The engine's route cap is the table's size, which the crate publishes as
 // `ROUTE_CAP`: the two can't drift apart.
 const _: () = assert!(
-    OPTIONS.route_cap as usize == ROUTE_CAP,
+    matches!(OPTIONS.route_cap, Some(cap) if cap as usize == ROUTE_CAP),
     "the hosted route cap is ROUTE_CAP"
 );
 
@@ -142,18 +147,20 @@ impl Engine {
     /// The engine, locked. Hold the guard for one call and its drain, never
     /// across an await. The lock isn't reentrant: a thread that holds the
     /// guard and asks for it again waits for itself forever.
+    ///
+    /// Under the guard, the engine's own `counters()` are the counts since
+    /// the lock was taken: the last guard took the rest.
     pub(super) fn lock(&self) -> EngineGuard<'_> {
         let router = self.router.lock().unwrap_or_else(PoisonError::into_inner);
         EngineGuard {
-            before: router.counters(),
             router,
             published: &self.published,
         }
     }
 
-    /// The engine's counts as of the last lock to be let go. Reading them
-    /// takes no lock, so a thread that holds the guard, or a hook running
-    /// under it, may read them too.
+    /// The engine's totals since start, as of the last lock to be let go.
+    /// Reading them takes no lock, so a thread that holds the guard, or a
+    /// hook running under it, may read them too.
     pub(super) fn counters(&self) -> Counters {
         self.published.load()
     }
@@ -178,13 +185,12 @@ impl Engine {
     }
 }
 
-/// The engine, locked. Dropping it publishes the engine's counts, when the
-/// call under it changed them, and then lets the lock go.
+/// The engine, locked. Dropping it takes the engine's counts, adds them to
+/// the published totals when the call under it counted anything, and then
+/// lets the lock go.
 pub(super) struct EngineGuard<'a> {
     router: MutexGuard<'a, HostedRouter>,
     published: &'a Published,
-    /// The counts when the lock was taken.
-    before: Counters,
 }
 
 impl Deref for EngineGuard<'_> {
@@ -203,23 +209,25 @@ impl DerefMut for EngineGuard<'_> {
 
 impl Drop for EngineGuard<'_> {
     fn drop(&mut self) {
-        // Still under the lock, so publications come in the engine's order
-        // and a count never goes back.
-        let counters = self.router.counters();
-        if counters != self.before {
-            self.published.store(&counters);
+        // Still under the lock, so additions come in the engine's order
+        // and a total never goes back.
+        let counts = self.router.take_counters();
+        if counts != EngineCounters::default() {
+            self.published.add(&counts);
         }
     }
 }
 
-/// Declares [`Published`]: one atomic for each named field of [`Counters`],
-/// and the copies each way.
+/// Declares [`Published`]: one atomic total for each named field of
+/// [`Counters`], what adds the engine's taken counts to them, and the copy
+/// out.
 macro_rules! published {
     ($($field:ident),+ $(,)?) => {
-        /// The engine's counts, one atomic each. They are stored under the
-        /// engine's lock after its sends are queued (release) and read with
-        /// no lock (acquire), so a reader who sees a count also sees the
-        /// sends of the call that made it.
+        /// The engine's totals since start, one atomic each. Only a guard
+        /// being dropped changes them, under the engine's lock, so their
+        /// writers never race: each adds after its sends are queued
+        /// (release), and readers take no lock (acquire), so a reader who
+        /// sees a total also sees the sends of the call that made it.
         #[derive(Debug, Default)]
         struct Published {
             $($field: AtomicU64,)+
@@ -229,8 +237,13 @@ macro_rules! published {
             /// How many counts it keeps.
             const FIELDS: usize = [$(stringify!($field)),+].len();
 
-            fn store(&self, counters: &Counters) {
-                $(self.$field.store(counters.$field, Ordering::Release);)+
+            /// Add the counts a guard took to the totals, saturating.
+            fn add(&self, counts: &EngineCounters) {
+                $(
+                    let total = self.$field.load(Ordering::Relaxed);
+                    let total = total.saturating_add(u64::from(counts.$field));
+                    self.$field.store(total, Ordering::Release);
+                )+
             }
 
             fn load(&self) -> Counters {
@@ -261,11 +274,16 @@ published!(
     undrained,
 );
 
-// `Counters` holds only `u64` counts, so its size says how many there are:
-// a count the engine adds fails this until it is published too.
+// The engine's counts are all `u32`s and the totals all `u64`s, so their
+// sizes say how many there are: a count the engine adds fails this until it
+// is published, and totalled, too.
+const _: () = assert!(
+    std::mem::size_of::<EngineCounters>() == Published::FIELDS * std::mem::size_of::<u32>(),
+    "publish every count in the engine's Counters"
+);
 const _: () = assert!(
     std::mem::size_of::<Counters>() == Published::FIELDS * std::mem::size_of::<u64>(),
-    "publish every count in the engine's Counters"
+    "total every published count"
 );
 
 /// Zeroed storage on the heap. Built here, outside any async function, so
@@ -273,4 +291,62 @@ const _: () = assert!(
 #[inline(never)]
 fn boxed_storage() -> Box<HostedStorage> {
     Box::new(Storage::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_router_core::router::{Frame, Permissive};
+    use bacnet_router_core::{Mac, PortId};
+    use bacnet_transport::port::NpduLimits;
+
+    use super::*;
+
+    /// An engine on networks 1 and 2.
+    fn engine() -> Engine {
+        let port = |network, mac| {
+            Engine::port(
+                network,
+                Mac::from_array([mac]),
+                NpduLimits::default(),
+                PortGroups::default(),
+            )
+        };
+        Engine::new(&[port(1, 1), port(2, 2)], RouterClock::start()).unwrap()
+    }
+
+    /// Each guard takes the engine's `u32` counts as it is dropped and adds
+    /// them to the totals, so the totals count from the router's start while
+    /// the engine counts only since the last lock (decision D3).
+    #[tokio::test]
+    async fn totals_count_from_start_as_each_guard_drains_the_engine() {
+        let engine = engine();
+        let short = [0x01];
+        let malformed = Frame {
+            port: PortId(0),
+            source: &[9],
+            link_group: false,
+            npdu: &short,
+        };
+        for frames in 1..=3u64 {
+            let mut router = engine.lock();
+            assert_eq!(router.counters().malformed, 0, "the last guard took them");
+            let _ = router.receive(malformed, engine.now(), &mut Permissive);
+            assert_eq!(router.counters().malformed, 1);
+            drop(router);
+            assert_eq!(engine.counters().malformed, frames);
+        }
+    }
+
+    /// A total saturates at `u64::MAX`, however much a take adds.
+    #[test]
+    fn totals_saturate() {
+        let published = Published::default();
+        published.malformed.store(u64::MAX - 1, Ordering::Relaxed);
+        let mut counts = EngineCounters::default();
+        counts.malformed = 5;
+        counts.rejects = 2;
+        published.add(&counts);
+        let totals = published.load();
+        assert_eq!((totals.malformed, totals.rejects), (u64::MAX, 2));
+    }
 }

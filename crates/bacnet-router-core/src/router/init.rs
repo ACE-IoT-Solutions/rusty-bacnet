@@ -69,9 +69,7 @@ impl<
                 });
                 continue;
             };
-            if self.table.len() >= usize::from(options.route_cap)
-                && self.table.lookup(network).is_none()
-            {
+            if self.table.len() >= options.cap(R) && self.table.lookup(network).is_none() {
                 self.table.record_learning_cap();
                 host.observe(Event::RouteCap {
                     class: ControlClass::InitMgmt,

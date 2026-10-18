@@ -65,6 +65,7 @@
 
 mod actions;
 pub mod control_policy;
+mod counters;
 mod dispatch;
 mod engine;
 mod hosted_host;
@@ -83,13 +84,12 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-/// The engine's counts, as [`BACnetRouter::counters`] reads them.
-pub use bacnet_router_core::router::Counters;
 use bacnet_router_core::{Instant, Mac, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
+pub use counters::Counters;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -283,10 +283,13 @@ impl BACnetRouter {
     /// saturate and name no peer. The table's own counts are
     /// [`claim_counters`](crate::router_table::Table::claim_counters).
     ///
-    /// They are the counts as of the last frame, send refusal, sweep or table change the
-    /// engine finished, copied out before its lock was let go, so reading
-    /// them takes no lock: it is safe while a [`RouterTableGuard`] lives,
-    /// and so are the four drop counts below, which read them.
+    /// They are the totals as of the last frame, send refusal, sweep or
+    /// table change the engine finished: the engine's own counts are `u32`s
+    /// it starts again each time they are taken, and the router takes them,
+    /// and adds them to these `u64` totals, before it lets the engine's lock
+    /// go (#1767). So reading them takes no lock: it is safe while a
+    /// [`RouterTableGuard`] lives, and so are the four drop counts below,
+    /// which read them.
     pub fn counters(&self) -> Counters {
         self.shared.engine.counters()
     }

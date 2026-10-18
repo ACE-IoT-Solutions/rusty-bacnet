@@ -6,6 +6,7 @@ mod node_support;
 use core::net::Ipv4Addr;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll, FdtEntries};
+use bacnet_bip_core::bbmd::Request;
 use bacnet_bip_core::node::{
     Addressed, Delivery, Discard, ForBbmd, ForwardedTrust, Inbound, Link, LocalAddresses, Mode,
     Node, Path, Permissive, Received, Response,
@@ -619,25 +620,25 @@ fn bbmd_mode_hands_over_its_share() {
         ),
         (
             wire(Bvll::RegisterForeignDevice { ttl: 90 }),
-            ForBbmd::Register {
+            ForBbmd::Management(Request::Register {
                 sender: PEER,
                 ttl: 90,
-            },
+            }),
         ),
         (
             wire(Bvll::ReadBroadcastDistributionTable),
-            ForBbmd::ReadBdt { sender: PEER },
+            ForBbmd::Management(Request::ReadBdt { sender: PEER }),
         ),
         (
             wire(Bvll::ReadForeignDeviceTable),
-            ForBbmd::ReadFdt { sender: PEER },
+            ForBbmd::Management(Request::ReadFdt { sender: PEER }),
         ),
         (
             wire(Bvll::DeleteForeignDeviceTableEntry(REMOTE)),
-            ForBbmd::DeleteFdtEntry {
+            ForBbmd::Management(Request::DeleteFdtEntry {
                 sender: PEER,
                 entry: REMOTE,
-            },
+            }),
         ),
     ];
     for (payload, share) in shares {
