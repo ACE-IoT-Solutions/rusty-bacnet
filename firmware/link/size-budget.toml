@@ -208,24 +208,26 @@
 # toolchain, when both images moved onto bacnet-bip-core's port driver
 # (#1766), as text / rodata / data / bss, then flash / ram:
 #
-#   thumbv7m node      13420 /  304 / 0 / 3128   14748 / 3128
-#   thumbv6m node      14684 /  320 / 0 / 3128   15196 / 3128
-#   riscv32imc node    15212 /  760 / 0 / 3128   15994 / 3128
-#   thumbv7em node     13356 /  304 / 0 / 3128   14684 / 3128
+#   thumbv7m node      13472 /  304 / 0 /  240   14800 /  240
+#   thumbv6m node      14708 /  320 / 0 /  240   15220 /  240
+#   riscv32imc node    15256 /  760 / 0 /  240   16038 /  240
+#   thumbv7em node     13404 /  304 / 0 /  240   14732 /  240
 #   thumbv7m bbmd      10036 /  388 / 0 /  240   11448 /  240
 #   thumbv6m bbmd      11796 /  388 / 0 /  240   12376 /  240
 #   riscv32imc bbmd    12672 /  756 / 0 /  240   13450 /  240
 #   thumbv7em bbmd      9968 /  388 / 0 /  240   11380 /  240
 #
 # The node image now runs a NodePort, which holds the two broadcasts the
-# node holds for its first registration in HeldBroadcast slots of 1,500
-# octets each (a 1,497-octet NPDU, as long as the link's broadcasts may
-# be, its length and a padding octet); before, the
-# scenario kept only a count and sent a constant it knew, so its RAM never
-# showed what holding costs. The port also sends while the received
-# datagram is still borrowed, so the image has a second 64-octet datagram
-# buffer: .bss is 3,128 octets, from 64. .text grew by 0.9-1.4 KB, the
-# port's drain, hold and release code. The bbmd image now runs a BbmdPort
+# node holds for its first registration in HeldBroadcast slots; before,
+# the scenario kept only a count and sent a constant it knew, so its RAM
+# never showed what holding costs. A slot is as long as the link's
+# broadcasts may be, so the image sizes its link to what it sends: a
+# 64-octet budget, the least a link takes, for 54-octet broadcasts and
+# slots of 56 octets with their length, where the hosted transport's
+# budget of 1,507 octets would need slots of 1,500. The port also sends
+# while the received datagram is still borrowed, so the image has a second
+# 64-octet datagram buffer: .bss is 240 octets, from 64. .text grew by
+# 0.9-1.4 KB, the port's drain, hold and release code. The bbmd image now runs a BbmdPort
 # over its Link, which answers the management requests from the tables
 # (Tables::serve), Delete-Foreign-Device-Table-Entry among them, where the
 # scenario answered three of them by hand and refused the fourth; it also
@@ -300,12 +302,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.node]
-text = 15040
+text = 15088
 rodata = 352
 data = 64
-bss = 3504
-flash = 16528
-ram = 3504
+bss = 272
+flash = 16576
+ram = 272
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -377,12 +379,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.node]
-text = 16448
+text = 16480
 rodata = 368
 data = 64
-bss = 3504
-flash = 17024
-ram = 3504
+bss = 272
+flash = 17056
+ram = 272
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -454,12 +456,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.node]
-text = 17040
+text = 17088
 rodata = 864
 data = 64
-bss = 3504
-flash = 17920
-ram = 3504
+bss = 272
+flash = 17968
+ram = 272
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -531,12 +533,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.node]
-text = 14960
+text = 15024
 rodata = 352
 data = 64
-bss = 3504
-flash = 16448
-ram = 3504
+bss = 272
+flash = 16512
+ram = 272
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0

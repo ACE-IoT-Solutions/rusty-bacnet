@@ -6,8 +6,11 @@
 //! sooner, backing off; broadcasts held until the first registration
 //! attempt resolves (two here, where the transport holds 16, in
 //! [`HeldBroadcast`] slots the port borrows); Forwarded-NPDUs taken only
-//! from its own BBMD, by unicast; and a send budget that carries B/IP's
-//! largest NPDU, 1497 octets. The port carries out what the node asks, and
+//! from its own BBMD, by unicast. Its send budget is sized to what it
+//! sends, the least a link takes ([`BUDGET`]), where the hosted transport
+//! sends B/IP's largest NPDU, 1497 octets: the held slots are only as long
+//! as the link's broadcasts may be, so the budget is the knob that sizes
+//! them ([`HELD_LENGTH`]). The port carries out what the node asks, and
 //! every datagram leaves through the scenario's socket, a [`Datagrams`]
 //! that encodes it with `bacnet-bip-codec`. Time is a fixed timeline of
 //! `bacnet-time` instants, which the bip-core re-exports. It returns a
@@ -53,11 +56,11 @@ pub use expected::expected;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcResultCode, Bvll};
+use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcResultCode, Bvll, HEADER_LENGTH};
 use bacnet_bip_core::node::{
     Addressed, Admission, AttemptOutcome, Cast, Datagram, Discard, Foreign, ForwardedTrust, Link,
     Mode, Node, NodeCounters, Permissive, RegisterAttempt, RegistrationSnapshot, Retry,
-    SendRefusal,
+    SendRefusal, MIN_BUDGET,
 };
 use bacnet_bip_core::port::{Datagrams, HeldBroadcast, Ingress, NodePort};
 use bacnet_bip_core::{Duration, Instant, LocalSubnet};
@@ -70,8 +73,22 @@ pub const EXCHANGES: usize = 2;
 /// The node as the image builds it.
 pub type ForeignNode = Node<EXCHANGES>;
 
-/// The port over it, holding broadcasts in slots of B/IP's largest NPDU.
-pub type ForeignPort<'m> = NodePort<'m, EXCHANGES>;
+/// The node's datagram budget: the least a link takes, 64 octets, ample
+/// for the scenario's 8-octet Who-Is. The hosted transport's links send
+/// B/IP's largest datagram, 1507 octets, with NPDUs of up to 1497; firmware
+/// sizes its budget to the NPDUs it sends.
+pub const BUDGET: u16 = MIN_BUDGET;
+
+/// The longest broadcast the link sends, so the length of a held slot: the
+/// budget less the 4-octet header and the 6-octet originating address a
+/// BBMD adds when it forwards the broadcast ([`Link::max_npdu`] for
+/// [`Cast::Broadcast`]), 54 octets. [`NodePort::new`] refuses slots shorter
+/// than that.
+pub const HELD_LENGTH: usize = BUDGET as usize - HEADER_LENGTH - 6;
+
+/// The port over the node, holding broadcasts in slots of [`HELD_LENGTH`]
+/// octets.
+pub type ForeignPort<'m> = NodePort<'m, EXCHANGES, HELD_LENGTH>;
 
 /// The broadcasts the node holds until its first registration attempt
 /// resolves: two, where the hosted transport holds 16, since firmware keeps
@@ -108,12 +125,16 @@ pub const FOREIGN: Foreign = {
     foreign
 };
 
-/// The node's link, with [`Link::new`]'s send budget, B/IP's largest
-/// datagram ([`MAX_DATAGRAM`](bacnet_bip_core::node::MAX_DATAGRAM)), so
-/// NPDUs of up to 1497 octets go out, unicast or broadcast. It is checked
-/// when the image is built.
+/// The node's link, with a send budget of [`BUDGET`] octets in place of
+/// [`Link::new`]'s, B/IP's largest datagram
+/// ([`MAX_DATAGRAM`](bacnet_bip_core::node::MAX_DATAGRAM)), which the hosted
+/// transport keeps. It is checked when the image is built, and again by
+/// [`Node::new`].
 pub const LINK: Link = match Link::new(OWN, SUBNET, Mode::Foreign(FOREIGN)) {
-    Ok(link) => link,
+    Ok(mut link) => {
+        link.budget = Some(BUDGET);
+        link
+    }
     Err(_) => panic!("the scenario's link is invalid"),
 };
 
@@ -154,7 +175,7 @@ pub struct Memory {
     /// The datagram sent.
     tx: [u8; WIRE_LENGTH],
     /// The broadcasts held for the first registration.
-    held: [HeldBroadcast; HOLD as usize],
+    held: [HeldBroadcast<HELD_LENGTH>; HOLD as usize],
 }
 
 impl Memory {

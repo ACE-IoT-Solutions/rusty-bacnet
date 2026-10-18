@@ -89,6 +89,11 @@ pub trait Rules {
 
     /// Whether `sender` may delete `entry`'s registration; `false` answers
     /// with the Delete-Foreign-Device-Table-Entry NAK and changes nothing.
+    ///
+    /// The default admits every requester, where the hosted BBMD of
+    /// `bacnet-transport` denies every one its management access list
+    /// doesn't name, an empty list included. A firmware BBMD that wants to
+    /// fail closed overrides this.
     fn admit_delete(&mut self, sender: SocketAddrV4, entry: SocketAddrV4) -> bool {
         let _ = (sender, entry);
         true

@@ -532,11 +532,14 @@ targets, so a crate that needs one builds only with a backend such as
   1497>` and `ExtendedActionBuffers<1>`. Each more queue slot would add
   about 1.5 KB. Its scenario keeps its own NPDUs and frames on the stack,
   and only while it builds or checks them. The node image's `.bss` is
-  3,128 octets: its two 64-octet datagram buffers, one received and one
+  240 octets: its two 64-octet datagram buffers, one received and one
   sent, since the port sends while the received one is still borrowed,
-  and the two `HeldBroadcast` slots the port holds the node's broadcasts
-  in until its first registration resolves, 1,500 octets each at the
-  link's default budget (a 1,497-octet NPDU and its length). The bbmd image's is its two datagram buffers and
+  and the two `HeldBroadcast<54>` slots the port holds the node's
+  broadcasts in until its first registration resolves, 56 octets each. A
+  slot is as long as the link's broadcasts may be, so the image gives its
+  link the least budget a link takes, 64 octets, for 54-octet broadcasts;
+  at the hosted transport's budget, 1,507 octets, each slot would take
+  1,500. The bbmd image's is its two datagram buffers and
   what the port lends the tables for a decision's destinations and a
   Read-FDT-Ack's rows, 240 octets. The node and its port, 752 octets and
   a little more on these targets, and the bbmd image's port and tables

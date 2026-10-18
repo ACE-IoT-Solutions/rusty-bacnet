@@ -56,9 +56,10 @@ fn counters() -> NodeCounters {
 pub fn expected() -> Expected {
     let summary = Summary {
         // A 4-octet header for a unicast; for a broadcast, 6 octets more, the
-        // originating address a BBMD adds when it forwards it. The budget of
-        // 1507 octets leaves room for 1497 either way.
-        max_npdu: [1497, 1497],
+        // originating address a BBMD adds when it forwards it, out of the
+        // 64-octet budget. The hosted transport's 1507 leaves room for 1497
+        // either way.
+        max_npdu: [60, 54],
         // Each request only a BBMD serves draws its own NAK, which the
         // port sends back to the peer.
         naks: [

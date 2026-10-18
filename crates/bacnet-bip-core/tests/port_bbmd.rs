@@ -256,3 +256,50 @@ fn refused_datagrams_of_a_bbmd_port_are_counted() {
     assert_eq!(port.take_counters().refused, 6);
     assert_eq!(port.counters().refused, 0);
 }
+
+/// The BBMD's own broadcast goes on the subnet, then to its peer and its
+/// foreign device as Forwarded-NPDUs (Annex J.4.5). When the socket refuses
+/// the subnet's copy, the broadcast is refused and no other copy goes out:
+/// the caller's send is the caller's to count, not the port's.
+#[test]
+fn a_broadcast_the_socket_refuses_forwards_nothing() {
+    let mut tables = tables();
+    tables
+        .fdt
+        .register(
+            DEVICE,
+            60,
+            at(0),
+            &Default::default(),
+            Reservation::Ordinary,
+            || true,
+        )
+        .result
+        .unwrap();
+    let mut targets = [Target::UNUSED; Small::MAX_TARGETS];
+    let mut rows = [NO_ROW; 2];
+    let mut port = BbmdPort::new(bbmd_link(), &mut tables, &mut targets, &mut rows).unwrap();
+    let mut socket = Socket::default();
+    assert_eq!(port.broadcast(NPDU, at(1), &mut socket), Ok(()));
+    let forwarded = wire(Bvll::ForwardedNpdu {
+        origin: OWN,
+        npdu: NPDU,
+    });
+    assert_eq!(
+        socket.take(),
+        [
+            (BROADCAST, wire(Bvll::OriginalBroadcastNpdu(NPDU))),
+            (BBMD, forwarded.clone()),
+            (DEVICE, forwarded),
+        ]
+    );
+
+    socket.refuse = Some(SendRefusal::SocketFull);
+    let calls = socket.calls;
+    assert_eq!(
+        port.broadcast(NPDU, at(2), &mut socket),
+        Err(SendRefusal::SocketFull)
+    );
+    assert_eq!(socket.calls, calls + 1, "the subnet's copy alone was tried");
+    assert_eq!(port.counters().refused, 0);
+}
