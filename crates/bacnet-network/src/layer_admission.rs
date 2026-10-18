@@ -599,6 +599,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                             is_group_delivery(received.link_layer_group, npdu.destination.as_ref());
                         let global_broadcast = is_global_broadcast(npdu.destination.as_ref());
                         let apdu = ReceivedApdu {
+                            router_response: None,
                             direct_response: received.direct_response.clone(),
                             apdu: npdu.payload,
                             source_mac: received.source_mac,

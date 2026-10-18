@@ -16,7 +16,29 @@ pub struct IssuedApdu<'a> {
 }
 
 impl<T: TransportPort> NetworkLayer<T> {
-    /// Seal original-direct response issuance before joining owned server work.
+    /// Encode a prompt data-link response after checking both this network
+    /// owner and the captured router/direct authority. The caller hands these
+    /// bytes to its one-shot DER sender without an intervening await.
+    pub fn encode_response_for_handoff(
+        &self,
+        issued: IssuedApdu<'_>,
+        route: &crate::response_route::ResponseRoute,
+    ) -> Result<BytesMut, Error> {
+        if !self.response_scope.guard().is_open() {
+            return Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "response network owner unavailable",
+            )));
+        }
+        route.encode_reply_npdu(
+            issued.apdu,
+            issued.destination,
+            issued.expecting_reply,
+            issued.priority,
+        )
+    }
+
+    /// Seal original-route response issuance before joining owned server work.
     /// Queued writes observe this irreversible seal; writes already started
     /// remain bounded but cannot be retracted. Network stop/drop also seals.
     pub fn seal_responses(&self) {
@@ -57,31 +79,36 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         priority: NetworkPriority,
         on_issuance: impl FnOnce() + Send,
     ) -> Result<(), Error> {
-        self.send_response_apdu_on_issuance(
-            IssuedApdu {
-                apdu,
-                next_hop,
-                destination,
-                expecting_reply,
-                priority,
-            },
-            &crate::response_route::ResponseRoute::unverified(),
-            on_issuance,
-        )
-        .await
+        crate::response_route::check_response_destination(destination)?;
+        if destination.is_some_and(|destination| destination.mac_address.is_empty()) {
+            check_broadcast_apdu(apdu, "a destination with no DADR (a remote broadcast)")?;
+        }
+        let bytes = crate::response_route::encode_checked_response_npdu(
+            apdu,
+            destination,
+            expecting_reply,
+            priority,
+        )?;
+        on_issuance();
+        self.transport
+            .send_unicast_with_data_attributes(&bytes, next_hop, &[])
+            .await
     }
 
     /// Encode and issue a response using its immutable ingress route.
     ///
-    /// Direct responses use only the matching original direct socket. A
-    /// missing, invalid or stale capability cannot fall back to ordinary unicast.
-    /// The callback has the same local issuance contract as
+    /// Router replies use the captured port/peer and addressed source identity;
+    /// direct responses require the matching original socket as well. Missing
+    /// or retired authority never falls back to ordinary unicast. Router replies
+    /// wait for their bounded send queue: cancellation before selection sends
+    /// nothing and drops the callback. The callback is owned by that queue and
+    /// runs when its transport send starts, with the local issuance contract of
     /// [`Self::send_apdu_on_issuance`]; neither issuance nor success proves receipt.
     pub async fn send_response_apdu_on_issuance(
         &self,
         issued: IssuedApdu<'_>,
         route: &crate::response_route::ResponseRoute,
-        on_issuance: impl FnOnce() + Send,
+        on_issuance: impl FnOnce() + Send + 'static,
     ) -> Result<(), Error> {
         let IssuedApdu {
             apdu,
@@ -94,13 +121,28 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         if destination.is_some_and(|destination| destination.mac_address.is_empty()) {
             check_broadcast_apdu(apdu, "a destination with no DADR (a remote broadcast)")?;
         }
-        let buf = crate::response_route::encode_checked_response_npdu(
-            apdu,
-            destination,
-            expecting_reply,
-            priority,
-        )?;
+        let buf = route.encode(apdu, destination, expecting_reply, priority)?;
         let direct = route.direct()?;
+        if let Some(router) = route.router() {
+            // Retire the router route before either authority path; the
+            // temporary lifetime owner holds no engine, queue or socket.
+            let lifetime = router.lifetime()?;
+            if let Some(direct) = direct {
+                on_issuance();
+                return direct
+                    .send_with_owner(&buf, &self.response_scope, &lifetime.direct.guard())
+                    .await;
+            }
+            drop(lifetime);
+            return router
+                .send(
+                    buf.freeze(),
+                    priority.to_raw(),
+                    self.response_scope.guard(),
+                    on_issuance,
+                )
+                .await;
+        }
         on_issuance();
         if let Some(direct) = direct {
             return direct.send(&buf, &self.response_scope).await;

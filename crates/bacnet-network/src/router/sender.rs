@@ -33,13 +33,24 @@ pub(super) async fn run<T: TransportPort>(
                 mac,
                 data_attributes,
                 reject_origin,
+                response,
             } => {
-                if let Err(error) = transport
+                let done = match response {
+                    Some(response) => match response.start() {
+                        Some(done) => Some(done),
+                        None => continue,
+                    },
+                    None => None,
+                };
+                let result = transport
                     .send_unicast_with_data_attributes(&npdu, &mac, &data_attributes)
-                    .await
-                {
-                    refused(&shared, &outputs, &error, reject_origin, &data_attributes);
-                    warnings.unicast_failed(&error);
+                    .await;
+                if let Err(error) = &result {
+                    refused(&shared, &outputs, error, reject_origin, &data_attributes);
+                    warnings.unicast_failed(error);
+                }
+                if let Some(done) = done {
+                    let _ = done.send(result);
                 }
             }
             SendRequest::Broadcast {

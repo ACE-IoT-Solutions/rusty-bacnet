@@ -1,6 +1,28 @@
 use super::*;
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
+    /// Retire a request whose later segment targets a different local endpoint.
+    pub(super) async fn accept_segment_route(
+        network: &Arc<NetworkLayer<T>>,
+        receivers: &mut HashMap<SegRecvKey, SegmentedRequestState>,
+        key: &SegRecvKey,
+        incoming: &bacnet_network::response_route::ResponseRoute,
+    ) -> bool {
+        let Err(opening) = check_opening_response_route(receivers, key, incoming) else {
+            return true;
+        };
+        Self::send_server_abort(
+            network,
+            &opening.source_mac,
+            opening.source_network.as_ref(),
+            &opening.route,
+            key.2,
+            AbortReason::INVALID_APDU_IN_THIS_STATE,
+        )
+        .await;
+        false
+    }
+
     pub(super) async fn reap_expired_requests(
         network: &Arc<NetworkLayer<T>>,
         receivers: &mut HashMap<SegRecvKey, SegmentedRequestState>,
@@ -267,10 +289,7 @@ pub(super) fn expire_segmented_requests(
             expired.push(ExpiredRequest {
                 source_mac: state.source_mac.clone(),
                 source_network: state.source_network.clone(),
-                route: bacnet_network::response_route::ResponseRoute::new(
-                    state.provenance,
-                    state.direct_response.clone(),
-                ),
+                route: state.route.clone(),
                 invoke_id: key.2,
             });
             return false;
@@ -380,8 +399,7 @@ pub(super) fn classify_non_next_segment(
 /// Segment zero owns the immutable authorization and response snapshots.
 pub(super) fn initial_state(
     payload: RequestPayload,
-    provenance: bacnet_transport::port::TransportProvenance,
-    direct_response: Option<bacnet_transport::port::DirectResponse>,
+    route: bacnet_network::response_route::ResponseRoute,
     source_mac: MacAddr,
     source_network: Option<NpduAddress>,
     request: &ConfirmedRequestPdu,
@@ -393,8 +411,8 @@ pub(super) fn initial_state(
         source_mac,
         source_network,
         payload,
-        provenance,
-        direct_response,
+        provenance: route.provenance(),
+        route,
         last_activity: now,
         last_progress: now,
         expected_seq: 1,
@@ -415,6 +433,26 @@ pub(super) fn initial_state(
     (state, ack)
 }
 
+/// Check a segment against its opening endpoint before any ACK, Abort, or
+/// payload mutation. A conflict retires and returns the opening context for
+/// its terminal Abort. Immediate replies still check the current direct
+/// capability; completion and expiry use the complete saved opening route.
+pub(super) fn check_opening_response_route(
+    receivers: &mut HashMap<SegRecvKey, SegmentedRequestState>,
+    key: &SegRecvKey,
+    incoming: &bacnet_network::response_route::ResponseRoute,
+) -> Result<(), Box<SegmentedRequestState>> {
+    let Some(opening) = receivers.get(key) else {
+        return Ok(());
+    };
+    if opening.route.same_origin(incoming) {
+        return Ok(());
+    }
+    Err(Box::new(
+        receivers.remove(key).expect("opening session exists"),
+    ))
+}
+
 /// A client Abort retires only its matching active reassembly.
 pub(super) fn remove_peer_aborted_request(
     receivers: &mut HashMap<SegRecvKey, SegmentedRequestState>,
@@ -431,5 +469,24 @@ pub(super) fn remove_peer_aborted_request(
             );
             remove_matching_reassemblies(receivers, &key);
         }
+    }
+}
+
+/// Defensive fallback only: carries neither an original route nor DER authority.
+pub(super) fn empty_reassembled_envelope() -> bacnet_network::layer::ReceivedApdu {
+    warn!("received consumed twice - using empty fallback");
+    bacnet_network::layer::ReceivedApdu {
+        router_response: None,
+        direct_response: None,
+        apdu: Bytes::new(),
+        source_mac: MacAddr::new(),
+        ingress_network: None,
+        source_network: None,
+        link_layer_group: false,
+        is_group: false,
+        global_broadcast: false,
+        data_attributes: Vec::new(),
+        provenance: bacnet_transport::port::TransportProvenance::unverified(),
+        reply_tx: None,
     }
 }

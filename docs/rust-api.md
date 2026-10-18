@@ -2414,8 +2414,45 @@ now follows the clause, with no switch to turn back (#1679):
   arrival port's network as `ingress_network` (Clause 6.1, Figure 6-12).
   Before, only its address on the arrival network did, and one for its
   address on another network went out on that network's wire, to the router
-  itself. A reply leaves from the router's address on the arrival port, with
-  no SNET, not from the address the request named.
+  itself. A reply now returns through the captured arrival port and immediate
+  peer, with the addressed router endpoint in SNET/SADR (#1699). A request
+  received on network A for the router's address on B therefore receives a
+  response identifying B. The request's SNET/SADR, when present, becomes the
+  reply destination. Requests without DNET and group deliveries select no
+  explicit source identity.
+
+`ReceivedApdu::response_route()` saves that addressing together with ingress
+transport authority. Pass it to `NetworkLayer::send_response_apdu_on_issuance`
+for delayed replies, or to `encode_response_for_handoff` before consuming an
+MS/TP prompt-reply sender. Router replies share the captured port's bounded
+send queue. A full queue, canceled waiter, stopped router or retired network
+owner prevents an unstarted send; there is no alternate-port fallback.
+An already started transport operation cannot be retracted. The issuance
+callback owns its captured state (`Send + 'static`) and runs when the queued
+operation starts. Neither that callback nor send success proves peer receipt.
+
+The server keeps the complete opening route through segmented reassembly,
+expiry, response retries and terminal responses. A later segment naming a
+different router endpoint terminates the partial request using its opening
+route. Cached confirmed responses retain APDU bytes only, so a replay uses the
+new request's route. Direct BACnet/SC replies additionally require the matching
+original socket capability; router context never replaces that authority.
+Reply sizing includes both source and destination NPDU fields and applicable
+port/direct-peer limits. Local delivery still slices the received APDU buffer.
+
+Firmware can retain the fixed-size `bacnet_router_core::router::ReplyPlan`
+from `Local::reply`, then use its `npdu()` view for sizing and writing. It owns
+addresses and a return port without borrowing engine scratch; it supplies no
+link authority. Explicit reserved source networks and empty source addresses
+are refused. This bounded response seam does not choose a source identity for
+arbitrary locally originated requests. These are #1699 interoperability and
+lifetime guarantees, not a complete router or physical-link qualification.
+
+When manually constructing `ReceivedApdu`, set `router_response: None` for an
+ordinary envelope. Preserve `response_route()` when passing router deliveries
+through application queues; cloning the envelope retains it but still omits
+the one-shot MS/TP reply sender. Reconstructing only provenance/direct metadata
+would discard the targeted router endpoint.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

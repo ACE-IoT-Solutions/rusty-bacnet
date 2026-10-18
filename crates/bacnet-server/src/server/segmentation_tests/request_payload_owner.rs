@@ -76,7 +76,7 @@ fn state(now: Instant, first: &[u8]) -> SegmentedRequestState {
     SegmentedRequestState {
         source_mac: MacAddr::new(),
         source_network: None,
-        direct_response: None,
+        route: bacnet_network::response_route::ResponseRoute::unverified(),
         payload,
         provenance: TransportProvenance::unverified(),
         last_activity: now,

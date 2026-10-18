@@ -66,6 +66,7 @@ fn write_group() -> Vec<u8> {
 /// records go out.
 async fn send(fixture: &Fixture, source_mac: &[u8]) {
     let received = bacnet_network::layer::ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: Bytes::new(),
         source_mac: MacAddr::from_slice(source_mac),

@@ -248,6 +248,7 @@ impl Forwarding {
                 service_request: encoded(request),
             },
             &bacnet_network::layer::ReceivedApdu {
+                router_response: None,
                 direct_response: None,
                 apdu: Bytes::new(),
                 source_mac: MacAddr::from_slice(&PEER_B),
@@ -605,6 +606,7 @@ async fn malformed_unconfirmed_notification_is_ignored() {
             service_request: encoded(&notification(9)).slice(..10),
         },
         &bacnet_network::layer::ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: Bytes::new(),
             source_mac: MacAddr::from_slice(&PEER_B),

@@ -48,6 +48,7 @@ pub(super) fn drain(
                 npdu,
                 mac: MacAddr::from_slice(mac),
                 data_attributes,
+                response: None,
                 reject_origin: send.reject_origin,
             },
             Dest::Broadcast => SendRequest::Broadcast {

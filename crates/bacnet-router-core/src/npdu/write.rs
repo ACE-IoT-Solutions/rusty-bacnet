@@ -8,7 +8,7 @@ use super::{
 };
 use crate::MAX_MAC_LEN;
 
-/// Why [`Npdu::write`] wrote nothing.
+/// Why NPDU writing or [`ReplyPlan`](crate::router::ReplyPlan) validation failed.
 ///
 /// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
 /// `match` needs a wildcard arm.
@@ -26,6 +26,8 @@ pub enum WriteError {
     ReservedNetwork,
     /// An empty SADR.
     EmptySource,
+    /// An empty DADR where a reply plan requires one destination node.
+    EmptyDestination,
     /// A DADR or SADR longer than [`MAX_MAC_LEN`].
     AddressTooLong,
 }
@@ -38,6 +40,7 @@ impl fmt::Display for WriteError {
             }
             Self::ReservedNetwork => f.write_str("NPDU names a reserved network number"),
             Self::EmptySource => f.write_str("NPDU source SLEN=0 is invalid"),
+            Self::EmptyDestination => f.write_str("reply destination requires a nonempty DADR"),
             Self::AddressTooLong => write!(f, "NPDU address exceeds the {MAX_MAC_LEN}-octet limit"),
         }
     }

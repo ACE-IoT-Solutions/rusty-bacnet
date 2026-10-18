@@ -208,6 +208,7 @@ async fn overload_abort_precedes_mutation_with_zero_side_effect() {
         SOURCE,
         Apdu::ConfirmedRequest(confirmed(service, bytes, 18)),
         ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: Bytes::new(),
             source_mac: MacAddr::from_slice(SOURCE),
@@ -275,6 +276,7 @@ async fn shared_endpoint_rejects_every_mutation_choice() {
         .unwrap();
         assert!(responder
             .handle(ReceivedApdu {
+                router_response: None,
                 direct_response: None,
                 apdu: encoded.freeze(),
                 source_mac: MacAddr::from_slice(SOURCE),
@@ -304,6 +306,7 @@ async fn shared_endpoint_rejects_every_mutation_choice() {
     encode_apdu(&mut encoded, &Apdu::ConfirmedRequest(segmented)).unwrap();
     assert!(responder
         .handle(ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: encoded.freeze(),
             source_mac: MacAddr::from_slice(SOURCE),
@@ -490,6 +493,7 @@ async fn read_only_controls_unaffected_under_deny_all() {
                 service_request: Bytes::new(),
             },
             &ReceivedApdu {
+                router_response: None,
                 direct_response: None,
                 apdu: Bytes::new(),
                 source_mac: MacAddr::from_slice(SOURCE),

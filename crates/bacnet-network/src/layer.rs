@@ -155,6 +155,8 @@ pub struct ReceivedApdu {
     pub provenance: TransportProvenance,
     /// Sealed route back to this envelope's original verified direct socket.
     pub direct_response: Option<bacnet_transport::port::DirectResponse>,
+    /// Captured router endpoint and return-port authority for local delivery.
+    pub router_response: Option<crate::router::RouterResponse>,
     /// Optional reply channel for MS/TP DataExpectingReply flows.
     /// The application layer can send NPDU-wrapped reply bytes through this channel.
     /// An APDU dropped at queue admission releases this sender without sending
@@ -219,6 +221,7 @@ impl Clone for ReceivedApdu {
             data_attributes: self.data_attributes.clone(),
             provenance: self.provenance,
             direct_response: self.direct_response.clone(),
+            router_response: self.router_response.clone(),
             reply_tx: None,
         }
     }

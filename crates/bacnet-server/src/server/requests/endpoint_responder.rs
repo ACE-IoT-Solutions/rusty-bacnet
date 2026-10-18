@@ -5,7 +5,6 @@ use crate::mutation::{
     MutationAuthorizationContext, MutationAuthorizer, MutationTarget, MutationTrust,
 };
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu};
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointEgress};
 use bacnet_network::layer::ReceivedApdu;
 use bacnet_services::write_property::WritePropertyRequest;
@@ -290,8 +289,7 @@ impl EndpointResponder {
         };
 
         let response_route = received.response_route();
-        let checked_response =
-            received.provenance.is_direct_peer() || received.direct_response.is_some();
+        let checked_response = response_route.requires_original_route();
         let invoke_id = request.invoke_id;
         let reinitialization = self
             .reinitialize
@@ -371,6 +369,28 @@ impl EndpointResponder {
             encode_apdu(&mut encoded, &response)?;
         }
 
+        if !response_route.requires_direct_response() {
+            if let Some(reply_tx) = received.reply_tx.take() {
+                // An admitted ordinary DER request may still return its
+                // protocol refusal after role closure. Captured router replies
+                // additionally require this responder's original authority.
+                if checked_response {
+                    self.ensure_open()?;
+                }
+                if !self.egress.is_open() {
+                    return Err(shutdown_error());
+                }
+                let wrapped = response_route.encode_reply_npdu(
+                    &encoded,
+                    received.source_network.as_ref(),
+                    false,
+                    NetworkPriority::NORMAL,
+                )?;
+                let _ = reply_tx.send(wrapped.freeze());
+                return Ok(true);
+            }
+        }
+
         if checked_response {
             drop(received.reply_tx.take());
             self.egress
@@ -383,23 +403,6 @@ impl EndpointResponder {
                 .complete()
                 .await
                 .result?;
-            return Ok(true);
-        }
-
-        if let Some(reply_tx) = received.reply_tx.take() {
-            let apdu = encoded.freeze();
-            let npdu = Npdu {
-                is_network_message: false,
-                expecting_reply: false,
-                priority: NetworkPriority::NORMAL,
-                destination: received.source_network,
-                source: None,
-                payload: apdu,
-                ..Npdu::default()
-            };
-            let mut wrapped = BytesMut::new();
-            encode_npdu(&mut wrapped, &npdu)?;
-            let _ = reply_tx.send(wrapped.freeze());
             return Ok(true);
         }
 

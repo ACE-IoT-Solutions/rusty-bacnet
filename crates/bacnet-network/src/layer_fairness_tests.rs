@@ -481,6 +481,7 @@ async fn concurrent_dispatch_and_dequeues_keep_source_and_depth_accounting_in_st
 
 fn router_apdu(ingress_network: u16, source: &[u8], id: u16) -> ReceivedApdu {
     ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: Bytes::copy_from_slice(&id.to_be_bytes()),
         source_mac: MacAddr::from_slice(source),

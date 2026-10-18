@@ -27,7 +27,9 @@ use bacnet_encoding::apdu::{
     self, encode_apdu, validate_max_apdu_length, validate_max_segments, AbortPdu, Apdu,
     ConfirmedRequest as ConfirmedRequestPdu, RejectPdu, SegmentAck as SegmentAckPdu, SimpleAck,
 };
-use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::NpduAddress;
+#[cfg(test)]
+use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordinator};
 use bacnet_network::layer::NetworkLayer;
 use bacnet_services::cov::COVNotificationRequest;

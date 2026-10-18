@@ -156,6 +156,7 @@ impl bacnet_transport::port::TransportPort for MemTransport {
                 mac: MacAddr::from_slice(mac),
                 data_attributes: data_attributes.to_vec(),
 
+                response: None,
                 reject_origin: None,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))

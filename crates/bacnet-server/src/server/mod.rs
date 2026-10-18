@@ -873,3 +873,5 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 mod cov_identity_completion_tests;
 
 mod broadcaster;
+#[cfg(test)]
+mod r7_reply_tests;

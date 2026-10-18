@@ -51,6 +51,7 @@ impl TransportPort for IngressTransport {
                 mac: MacAddr::from_slice(mac),
                 data_attributes: data_attributes.to_vec(),
 
+                response: None,
                 reject_origin: None,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))

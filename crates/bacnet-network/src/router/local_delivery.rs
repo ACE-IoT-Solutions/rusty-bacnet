@@ -11,6 +11,8 @@ use crate::layer::ReceivedApdu;
 /// What a [`Local`] result says, owned, so the frame it borrowed can move.
 #[derive(Debug, Clone)]
 pub(super) struct Delivery {
+    reply: bacnet_router_core::router::ReplyPlan,
+    max_npdu: u16,
     /// Where the APDU starts in the frame's NPDU.
     offset: usize,
     /// SNET and SADR, when a router relayed it.
@@ -23,8 +25,10 @@ pub(super) struct Delivery {
 
 impl Delivery {
     /// The delivery `local` describes.
-    pub(super) fn of(local: &Local<'_>) -> Self {
+    pub(super) fn of(local: &Local<'_>, max_npdu: u16) -> Self {
         Self {
+            reply: local.reply,
+            max_npdu,
             offset: local.apdu_offset,
             source: local.source.map(|source| NpduAddress {
                 network: source.network,
@@ -42,9 +46,19 @@ impl Delivery {
     /// sent as one, is also passed back out that port, and its delivery
     /// keeps no MS/TP reply channel, as before the engine: it is a copy of
     /// the frame the router relays. Every other delivery keeps it.
-    pub(super) fn application(self, received: ReceivedNpdu, port_network: u16) -> ReceivedApdu {
+    pub(super) fn application(
+        self,
+        received: ReceivedNpdu,
+        port_network: u16,
+        outputs: &std::sync::Arc<super::dispatch::Outputs>,
+    ) -> ReceivedApdu {
         let relayed_too = self.group && !self.global && has_destination(&received.npdu);
         ReceivedApdu {
+            router_response: Some(super::RouterResponse::new(
+                self.reply,
+                self.max_npdu,
+                outputs,
+            )),
             apdu: received.npdu.slice(self.offset..),
             source_mac: received.source_mac,
             ingress_network: Some(port_network),

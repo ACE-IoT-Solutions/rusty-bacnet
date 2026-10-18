@@ -44,6 +44,7 @@ fn received(request: ConfirmedRequestPdu) -> ReceivedApdu {
     let mut bytes = BytesMut::new();
     encode_apdu(&mut bytes, &Apdu::ConfirmedRequest(request)).unwrap();
     ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: bytes.freeze(),
         source_mac: MacAddr::from_slice(&[2]),

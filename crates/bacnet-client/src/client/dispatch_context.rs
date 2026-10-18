@@ -32,8 +32,8 @@ pub(super) struct InboundApdu<'a> {
     pub(super) source_network: &'a Option<NpduAddress>,
     /// Transport provenance snapshot for this APDU.
     pub(super) provenance: TransportProvenance,
-    /// Sealed direct-response handle for an accepted direct request.
-    pub(super) direct_response: Option<bacnet_transport::port::DirectResponse>,
+    /// Complete original response context for an accepted request.
+    pub(super) response_route: bacnet_network::response_route::ResponseRoute,
     /// Whether the APDU was addressed to a group (broadcast or multicast).
     pub(super) is_group: bool,
     /// Channel for handing a reply to the transport, when it supplied one.

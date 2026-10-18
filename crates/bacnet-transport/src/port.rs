@@ -8,7 +8,7 @@
 //! - MS/TP (Clause 9): 1 byte (station address 0-254)
 //! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
-pub use crate::direct_response::{DirectResponse, DirectResponseScope};
+pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseScopeGuard};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
