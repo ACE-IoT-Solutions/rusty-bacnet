@@ -163,6 +163,20 @@ and any crate in a build can turn that on, so a match written against the
 
 ASN.1/BER tag encoding, APDU/NPDU codecs, property value serialization, and segmentation.
 
+### Tag header output
+
+`tags::encode_tag_to_sink`, `encode_opening_tag_to_sink` and
+`encode_closing_tag_to_sink` append a complete header through `sink::EncodeSink`
+and return its length. Caller slices and `heapless::Vec<u8, N>` (with the
+`heapless` feature) have bounded capacity; `Vec<u8>` and `BytesMut` can grow.
+A failed header append preserves previous output. The existing `BytesMut`
+entrypoints use the same implementation and keep their signatures and bytes.
+
+Only this encoder family uses the sink contract. The crate still needs `std`
+or `alloc`, and the new functions do not add tag-number or datatype validation.
+See [the sink design](encoding-sinks.md) for append semantics, capacity errors
+and the limits on multi-write atomicity.
+
 ### Property Value Encoding
 
 ```rust

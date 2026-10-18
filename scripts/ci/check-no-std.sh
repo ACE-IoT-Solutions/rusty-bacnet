@@ -60,6 +60,7 @@ checks=(
   "bacnet-types alloc"
   "bacnet-types serde"
   "bacnet-encoding alloc"
+  "bacnet-encoding alloc,heapless"
   "bacnet-services alloc"
 )
 default_targets=(thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf)
