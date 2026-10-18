@@ -203,9 +203,9 @@ impl ApduHeader {
     ///
     /// Refuses, at offset 0 unless noted: an empty APDU; one whose header is
     /// cut short ([`Error::BufferTooShort`]); a reserved max-APDU code (at
-    /// offset 1); a segmented Confirmed-Request or ComplexACK, and any other
-    /// PDU type, with [`DecodingKind::Unsupported`]; and a PDU type nibble
-    /// past 7. The more-follows bit of an unsegmented PDU is ignored, as
+    /// offset 1), segmented or not; a segmented Confirmed-Request or
+    /// ComplexACK, and any other PDU type, with [`DecodingKind::Unsupported`];
+    /// and a PDU type nibble past 7. The more-follows bit of an unsegmented PDU is ignored, as
     /// Clause 20.1.2.2 asks.
     pub fn decode(apdu: &[u8]) -> Result<(Self, &[u8]), Error> {
         let Some(&first) = apdu.first() else {
@@ -217,9 +217,8 @@ impl ApduHeader {
             let [_, fields, invoke_id, service, ..] = *apdu else {
                 return Err(Error::buffer_too_short(4, apdu.len()));
             };
-            if segmented {
-                return Err(segmented_refusal("segmented ConfirmedRequest"));
-            }
+            // A reserved size code is malformed whether or not the request is
+            // segmented, as the owned decoder judges it.
             let Some(max_apdu) = MaxApdu::from_bits(fields) else {
                 return Err(DecodeError::new(
                     DecodingKind::InvalidEncoding,
@@ -229,6 +228,9 @@ impl ApduHeader {
                 .with_value(u64::from(fields & 0x0F))
                 .into());
             };
+            if segmented {
+                return Err(segmented_refusal("segmented ConfirmedRequest"));
+            }
             let header = ConfirmedRequestHeader {
                 segmented_response_accepted: first & 0x02 != 0,
                 max_segments: MaxSegments::from_bits(fields >> 4),

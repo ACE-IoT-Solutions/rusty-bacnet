@@ -77,9 +77,9 @@ default_targets=(thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-no
 host_only=(tracing tracing-core tokio socket2)
 # The firmware stand-in for ARMv6-M builds that use bytes; see above.
 harness=nostd-harness
-# The crates whose build without features is their allocation-free profile
-# (#1614), and the packages that allocate, which none of those builds' graphs
-# may hold.
+# The crates whose builds without `alloc` (or `std` or `serde`, which turn it
+# on) are their allocation-free profile (#1614), and the packages that
+# allocate, which none of those builds' graphs may hold.
 alloc_free=(bacnet-types bacnet-encoding bacnet-services)
 allocating=(bytes smallvec)
 
@@ -118,17 +118,18 @@ check_backend() {
 }
 
 # Fails if <tree>, the graph of <crate> with <features> on <target>, is an
-# allocation-free profile's (features `-` for a crate in `alloc_free`) and
-# holds a package that allocates. Clippy doesn't link, so a dependency that
-# allocates would otherwise compile there unseen.
+# allocation-free profile's (a crate in `alloc_free` without `alloc`, `std`
+# or `serde`, as `-` and `heapless` are) and holds a package that allocates.
+# Clippy doesn't link, so a dependency that allocates would otherwise
+# compile there unseen.
 check_alloc_free() {
   local crate=$1 features=$2 triple=$3 tree=$4 bad alloc_re
-  [ "$features" = - ] || return 0
+  case ",$features," in *,alloc,* | *,std,* | *,serde,*) return 0 ;; esac
   case " ${alloc_free[*]} " in *" $crate "*) ;; *) return 0 ;; esac
   alloc_re=$(IFS='|'; echo "${allocating[*]}")
   bad=$(grep -E "^($alloc_re) v" <<<"$tree" || true)
   if [ -n "$bad" ]; then
-    echo "error: $crate (no features; $triple) is the allocation-free profile," \
+    echo "error: $crate (features: $features; $triple) is the allocation-free profile," \
       "but its graph holds a package that allocates:" >&2
     sort -u <<<"$bad" >&2
     return 1

@@ -173,8 +173,13 @@ pub fn misplaced_kind(data: &[u8], at: usize, found: &Tag, expected: Option<u8>)
 
 /// Whether a closing tag `number` at `at` closes the innermost frame open
 /// there, found by walking the tags of `data` from its start. A walk that
-/// doesn't land on `at` (contents that aren't tags), or that nests deeper
-/// than [`MAX_CONTEXT_NESTING_DEPTH`], which no decoder takes, says no.
+/// doesn't land on `at` (contents that aren't tags) says no, and so does one
+/// that finds more than [`MAX_CONTEXT_NESTING_DEPTH`] frames open at once.
+/// The depth counts from the start of `data`, the frames around the member's
+/// production included, so well-formed input nested less than that deep in
+/// its own production can still reach past it. Saying no is the safe
+/// answer: the tag is then [`DecodingKind::InvalidTag`] rather than
+/// [`DecodingKind::Missing`], and the input is refused either way.
 fn closes_open_frame(data: &[u8], at: usize, number: u8) -> bool {
     let mut open = [0u8; MAX_CONTEXT_NESTING_DEPTH];
     let mut depth = 0;

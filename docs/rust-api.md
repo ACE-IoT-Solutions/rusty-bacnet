@@ -135,8 +135,8 @@ and builds its text only when displayed, so firmware that never displays it
 links no formatting code (#1646); every decoder in the allocation-free profile
 uses it. With `alloc`, `Error::DecodingMessage { offset, kind, message }`
 holds a message formatted when the error was made, as the decoders outside
-that profile still word some refusals. `Error::decode_fault()` reads the
-offset and kind of either. A checked constructor's refusal, such as
+that profile still word some refusals until they move to `Error::Decoding`
+(#1776). `Error::decode_fault()` reads the offset and kind of either. A checked constructor's refusal, such as
 `ObjectIdentifier::new`'s, is likewise static: `Error::Range(RangeError)`.
 
 | Fault | Reported as | Reject reason |

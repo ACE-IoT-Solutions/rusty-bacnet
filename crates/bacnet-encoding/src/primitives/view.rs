@@ -131,9 +131,11 @@ pub enum ApplicationValueRef<'a> {
 /// without copying it; returns the value and the offset past it.
 ///
 /// It refuses what the owned decoder, `decode_application_value`, refuses
-/// in an application-tagged value, at the same offsets: a fixed-size value
-/// whose header gives another length is [`Error::Decoding`], contents that run
-/// past the end of `data` are [`Error::BufferTooShort`]. It also refuses a
+/// in an application-tagged value: a fixed-size value whose header gives
+/// another length is [`Error::Decoding`], contents that run past the end of
+/// `data` are [`Error::BufferTooShort`]. Every offset it reports indexes
+/// `data`, a fault inside the contents included, where the owned decoder
+/// reports one of those from the contents' start. It also refuses a
 /// context-tagged element, which only the owned decoder keeps (as its raw
 /// octets), with [`DecodingKind::InvalidTag`]. A CharacterString is checked
 /// as [`CharacterStringRef::decode`] checks it, so one in a character set the
@@ -162,18 +164,34 @@ pub fn decode_application_value_ref(
             "expected an application-tagged value, found a context tag",
         ));
     }
-    let (value, end) = decode_application_primitive(data, offset, tag, content_start)?;
+    let (value, end) = decode_application_primitive::<true>(data, offset, tag, content_start)?;
     if let ApplicationValueRef::CharacterString(text) = value {
-        let checked = CharacterStringRef::decode(text.contents())?;
+        let checked =
+            CharacterStringRef::decode(text.contents()).map_err(rebased(content_start))?;
         return Ok((ApplicationValueRef::CharacterString(checked), end));
     }
     Ok((value, end))
 }
 
+/// A refusal of contents that start at `base` in the data, its offset moved
+/// from the contents' start to the data's.
+fn rebased(base: usize) -> impl Fn(Error) -> Error {
+    move |error| match error {
+        Error::Decoding(mut refused) => {
+            refused.offset = refused.offset.saturating_add(base);
+            refused.into()
+        }
+        other => other,
+    }
+}
+
 /// Decode the application-tagged value whose header `tag`, at `offset`, has
 /// its contents at `content_start`. A CharacterString comes back unchecked:
-/// the owned decoder converts it, and the view checks it.
-pub(super) fn decode_application_primitive(
+/// the owned decoder converts it, and the view checks it. A fault inside the
+/// contents is reported at its offset in `data` when `IN_DATA`, and from the
+/// contents' start otherwise, as the owned decoder always has. A const
+/// parameter, so the owned decoder's code carries no offset arithmetic.
+pub(super) fn decode_application_primitive<const IN_DATA: bool>(
     data: &[u8],
     offset: usize,
     tag: Tag,
@@ -215,29 +233,36 @@ pub(super) fn decode_application_primitive(
         return Err(Error::buffer_too_short(content_end, data.len()));
     }
     let content = &data[content_start..content_end];
+    let at = |error| {
+        if IN_DATA {
+            rebased(content_start)(error)
+        } else {
+            error
+        }
+    };
     let value = match tag.number {
         app_tag::NULL => ApplicationValueRef::Null,
-        app_tag::UNSIGNED => ApplicationValueRef::Unsigned(decode_unsigned(content)?),
-        app_tag::SIGNED => ApplicationValueRef::Signed(decode_signed(content)?),
-        app_tag::REAL => ApplicationValueRef::Real(decode_real(content)?),
-        app_tag::DOUBLE => ApplicationValueRef::Double(decode_double(content)?),
+        app_tag::UNSIGNED => ApplicationValueRef::Unsigned(decode_unsigned(content).map_err(at)?),
+        app_tag::SIGNED => ApplicationValueRef::Signed(decode_signed(content).map_err(at)?),
+        app_tag::REAL => ApplicationValueRef::Real(decode_real(content).map_err(at)?),
+        app_tag::DOUBLE => ApplicationValueRef::Double(decode_double(content).map_err(at)?),
         app_tag::OCTET_STRING => ApplicationValueRef::OctetString(content),
         app_tag::CHARACTER_STRING => {
             ApplicationValueRef::CharacterString(CharacterStringRef::unchecked(content))
         }
         app_tag::BIT_STRING => {
-            let (unused_bits, data) = decode_bit_string_ref(content)?;
+            let (unused_bits, data) = decode_bit_string_ref(content).map_err(at)?;
             ApplicationValueRef::BitString { unused_bits, data }
         }
         app_tag::ENUMERATED => {
-            let value = u32::try_from(decode_unsigned(content)?)
+            let value = u32::try_from(decode_unsigned(content).map_err(at)?)
                 .map_err(|_| Error::out_of_range(content_start, "ENUMERATED exceeds u32"))?;
             ApplicationValueRef::Enumerated(value)
         }
-        app_tag::DATE => ApplicationValueRef::Date(Date::decode(content)?),
-        app_tag::TIME => ApplicationValueRef::Time(Time::decode(content)?),
+        app_tag::DATE => ApplicationValueRef::Date(Date::decode(content).map_err(at)?),
+        app_tag::TIME => ApplicationValueRef::Time(Time::decode(content).map_err(at)?),
         app_tag::OBJECT_IDENTIFIER => {
-            ApplicationValueRef::ObjectIdentifier(ObjectIdentifier::decode(content)?)
+            ApplicationValueRef::ObjectIdentifier(ObjectIdentifier::decode(content).map_err(at)?)
         }
         other => {
             return Err(DecodeError::new(

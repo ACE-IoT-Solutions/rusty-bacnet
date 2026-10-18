@@ -116,7 +116,7 @@ fn malformed_values_are_refused() {
         ),
         (
             &[0x25, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            "decoding error at offset 0: unsigned requires 1-8 bytes, got 9",
+            "decoding error at offset 2: unsigned requires 1-8 bytes, got 9",
         ),
         (
             &[0x95, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00],
@@ -124,15 +124,15 @@ fn malformed_values_are_refused() {
         ),
         (
             &[0x81, 0x08],
-            "decoding error at offset 0: BitString unused_bits must be 0-7, got 8",
+            "decoding error at offset 1: BitString unused_bits must be 0-7, got 8",
         ),
         (
             &[0x72, 0x06, b'a'],
-            "decoding error at offset 0: unknown charset: 6",
+            "decoding error at offset 1: unknown charset: 6",
         ),
         (
             &[0x73, 0x00, b'a', 0xFF],
-            "decoding error at offset 1: invalid UTF-8 after 1 valid octets",
+            "decoding error at offset 2: invalid UTF-8 after 1 valid octets",
         ),
         (
             &[0xD1, 0x00],
@@ -142,6 +142,32 @@ fn malformed_values_are_refused() {
     ] {
         assert_eq!(refusal(wire), text, "{wire:02X?}");
     }
+}
+
+/// A fault inside the contents is reported at its offset in the data, past
+/// the header and any value before it, not from the contents' start.
+#[test]
+fn content_faults_index_the_data() {
+    let at = |data: &[u8], offset| {
+        decode_application_value_ref(data, offset)
+            .unwrap_err()
+            .decode_fault()
+    };
+    // UTF-8 X'C3' then '(': the fault is the octet after the character set.
+    assert_eq!(
+        at(&[0x73, 0x00, 0xC3, 0x28], 0),
+        Some((2, DecodingKind::InvalidEncoding))
+    );
+    // An Unsigned of no octets, after an Unsigned 7.
+    assert_eq!(
+        at(&[0x21, 0x07, 0x20], 2),
+        Some((3, DecodingKind::InvalidEncoding))
+    );
+    // A BIT STRING whose unused-bit count is 9, after a NULL.
+    assert_eq!(
+        at(&[0x00, 0x81, 0x09], 1),
+        Some((2, DecodingKind::InvalidEncoding))
+    );
 }
 
 #[test]
@@ -243,7 +269,23 @@ fn the_view_agrees_with_the_owned_decoder() {
                 );
             }
             (Err(owned), Err(view)) => {
-                assert_eq!(owned.to_string(), view.to_string(), "{wire:02X?}")
+                // The same fault and wording; the view reports a fault inside
+                // the contents at its offset in the data, the owned decoder
+                // from the contents' start.
+                let (owned_fault, view_fault) = (owned.decode_fault(), view.decode_fault());
+                let content_start = tags::decode_tag(wire, 0).map_or(0, |(_, start)| start);
+                match (owned, view) {
+                    (Error::Decoding(owned), Error::Decoding(view)) => {
+                        assert_eq!(owned.message().to_string(), view.message().to_string());
+                        assert_eq!(owned.kind, view.kind, "{wire:02X?}");
+                        assert!(
+                            view.offset == owned.offset
+                                || view.offset == owned.offset + content_start,
+                            "{wire:02X?}: {owned_fault:?} {view_fault:?}"
+                        );
+                    }
+                    _ => assert_eq!(owned.to_string(), view.to_string(), "{wire:02X?}"),
+                }
             }
             _ => panic!("{wire:02X?}: owned {owned:?}, view {view:?}"),
         }

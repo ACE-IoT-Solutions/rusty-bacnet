@@ -683,3 +683,25 @@ fn fixed_size_application_items_check_their_length_first() {
         )
     );
 }
+
+/// A closing `[0]` after `depth` opening `[0]`s: whether it closes an open
+/// frame, as `misplaced_kind` judges it. The walk keeps 32 frames; past that
+/// it says no, so the tag is an invalid one rather than a missing member,
+/// which still refuses the input, and nothing panics.
+#[test]
+fn a_frame_walk_past_its_depth_answers_safely() {
+    use crate::tags::{decode_tag, MAX_CONTEXT_NESTING_DEPTH};
+    use bacnet_types::error::DecodingKind;
+
+    let kind_at = |depth: usize| {
+        let mut data = std::vec![0x0E; depth];
+        data.push(0x0F);
+        let (closing, _) = decode_tag(&data, depth).unwrap();
+        misplaced_kind(&data, depth, &closing, Some(0))
+    };
+    assert_eq!(MAX_CONTEXT_NESTING_DEPTH, 32);
+    assert_eq!(kind_at(1), DecodingKind::Missing);
+    assert_eq!(kind_at(32), DecodingKind::Missing);
+    assert_eq!(kind_at(33), DecodingKind::InvalidTag);
+    assert_eq!(kind_at(300), DecodingKind::InvalidTag);
+}

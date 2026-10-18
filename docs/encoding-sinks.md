@@ -187,11 +187,15 @@ literals cover each form; a comparison at every length where the header's form
 changes, up to 70,000 octets, checks the `BytesMut` encoders' bytes, which are
 unchanged; refusal tests cover every shortfall of room.
 
-One difference, reachable only with more than 4 GiB in one value: a value
-whose contents a header's 32-bit length can't express is refused with
-`SinkFull`, whose `needed` is its encoded length and `available` the sink's
-room, or `u32::MAX` for a sink that advertises none. The `BytesMut` OCTET and
-BIT STRING encoders write such a value with its length saturated instead.
+A value whose contents a header's 32-bit length can't express, reachable
+only with more than 4 GiB in one value, is refused with `SinkFull`, whose
+`needed` is its encoded length and `available` the sink's room, or
+`u32::MAX` for a sink that advertises none. The CharacterString `BytesMut`
+encoders, and the contents-only BIT STRING one, delegate to these sink
+encoders: a too-long CharacterString is still `Error::Encoding` with nothing
+written, which a test shows with a 4 GiB string in untouched zeroed memory.
+The tagged OCTET and BIT STRING `BytesMut` encoders keep their own code,
+since they write such a value with its length saturated instead.
 
 ## APDU header and services
 

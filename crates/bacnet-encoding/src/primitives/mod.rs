@@ -217,11 +217,11 @@ pub mod charset {
     pub const ISO_8859_1: u8 = 5;
 }
 
-/// Encode a UTF-8 character string with leading charset byte.
+/// Encode a UTF-8 character string with leading charset byte. Delegates to
+/// [`encode_character_string_to_sink`].
 #[cfg(feature = "alloc")]
 pub fn encode_character_string(buf: &mut BytesMut, value: &str) {
-    buf.put_u8(charset::UTF8);
-    buf.put_slice(value.as_bytes());
+    encode_character_string_to_sink(buf, value).expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Return the encoded length of a character string (charset byte + UTF-8
@@ -232,7 +232,14 @@ pub fn character_string_len(value: &str) -> Result<u32, Error> {
     u32::try_from(value.len())
         .ok()
         .and_then(|n| n.checked_add(1))
-        .ok_or_else(|| Error::Encoding("CharacterString too long for BACnet encoding".into()))
+        .ok_or_else(character_string_too_long)
+}
+
+/// A CharacterString whose contents a header's 32-bit length can't express.
+#[cfg(feature = "alloc")]
+#[cold]
+fn character_string_too_long() -> Error {
+    Error::Encoding("CharacterString too long for BACnet encoding".into())
 }
 
 /// Decode a character string from content bytes.
@@ -313,10 +320,11 @@ fn unknown_charset(charset: u8) -> Error {
 // --- Bit String ---
 
 /// Encode a bit string: leading unused-bits count followed by data bytes.
+/// Delegates to [`encode_bit_string_to_sink`].
 #[cfg(feature = "alloc")]
 pub fn encode_bit_string(buf: &mut BytesMut, unused_bits: u8, data: &[u8]) {
-    buf.put_u8(unused_bits);
-    buf.put_slice(data);
+    encode_bit_string_to_sink(buf, unused_bits, data)
+        .expect("the BytesMut sink cannot return SinkFull");
 }
 
 /// Decode a bit string from content bytes.
@@ -353,7 +361,9 @@ pub fn decode_bit_string_ref(data: &[u8]) -> Result<(u8, &[u8]), Error> {
 // Application-tagged encode helpers
 // ===========================================================================
 
-/// Encode an application-tagged OctetString.
+/// Encode an application-tagged OctetString. It keeps its own code rather
+/// than delegating to [`encode_app_octet_string_to_sink`]: past `u32::MAX`
+/// octets it saturates the length, where the sink encoder refuses.
 #[cfg(feature = "alloc")]
 pub fn encode_app_octet_string(buf: &mut BytesMut, data: &[u8]) {
     let data_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
@@ -361,16 +371,19 @@ pub fn encode_app_octet_string(buf: &mut BytesMut, data: &[u8]) {
     buf.put_slice(data);
 }
 
-/// Encode an application-tagged CharacterString (UTF-8).
+/// Encode an application-tagged CharacterString (UTF-8). Delegates to
+/// [`encode_app_character_string_to_sink`]; a string too long for a header's
+/// 32-bit length is [`Error::Encoding`], with nothing written.
 #[cfg(feature = "alloc")]
 pub fn encode_app_character_string(buf: &mut BytesMut, value: &str) -> Result<(), Error> {
-    let len = character_string_len(value)?;
-    tags::encode_tag(buf, app_tag::CHARACTER_STRING, TagClass::Application, len);
-    encode_character_string(buf, value);
+    // A BytesMut never refuses a write, so the only refusal is the length.
+    encode_app_character_string_to_sink(buf, value).map_err(|_| character_string_too_long())?;
     Ok(())
 }
 
-/// Encode an application-tagged BitString.
+/// Encode an application-tagged BitString. It keeps its own code rather than
+/// delegating to [`encode_app_bit_string_to_sink`]: past `u32::MAX` octets it
+/// saturates the length, where the sink encoder refuses.
 #[cfg(feature = "alloc")]
 pub fn encode_app_bit_string(buf: &mut BytesMut, unused_bits: u8, data: &[u8]) {
     let data_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
@@ -383,7 +396,9 @@ pub fn encode_app_bit_string(buf: &mut BytesMut, unused_bits: u8, data: &[u8]) {
 // Context-tagged encode helpers
 // ===========================================================================
 
-/// Encode a context-tagged OctetString.
+/// Encode a context-tagged OctetString. It keeps its own code rather than
+/// delegating to [`encode_ctx_octet_string_to_sink`]: past `u32::MAX` octets
+/// it saturates the length, where the sink encoder refuses.
 #[cfg(feature = "alloc")]
 pub fn encode_ctx_octet_string(buf: &mut BytesMut, tag: u8, data: &[u8]) {
     let data_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
@@ -391,16 +406,20 @@ pub fn encode_ctx_octet_string(buf: &mut BytesMut, tag: u8, data: &[u8]) {
     buf.put_slice(data);
 }
 
-/// Encode a context-tagged CharacterString (UTF-8).
+/// Encode a context-tagged CharacterString (UTF-8). Delegates to
+/// [`encode_ctx_character_string_to_sink`]; a string too long for a header's
+/// 32-bit length is [`Error::Encoding`], with nothing written.
 #[cfg(feature = "alloc")]
 pub fn encode_ctx_character_string(buf: &mut BytesMut, tag: u8, value: &str) -> Result<(), Error> {
-    let len = character_string_len(value)?;
-    tags::encode_tag(buf, tag, TagClass::Context, len);
-    encode_character_string(buf, value);
+    // A BytesMut never refuses a write, so the only refusal is the length.
+    encode_ctx_character_string_to_sink(buf, tag, value)
+        .map_err(|_| character_string_too_long())?;
     Ok(())
 }
 
-/// Encode a context-tagged BitString.
+/// Encode a context-tagged BitString. It keeps its own code rather than
+/// delegating to [`encode_ctx_bit_string_to_sink`]: past `u32::MAX` octets it
+/// saturates the length, where the sink encoder refuses.
 #[cfg(feature = "alloc")]
 pub fn encode_ctx_bit_string(buf: &mut BytesMut, tag: u8, unused_bits: u8, data: &[u8]) {
     let data_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
@@ -476,7 +495,7 @@ pub fn decode_application_value(
             content_end,
         ));
     }
-    let (value, end) = view::decode_application_primitive(data, offset, tag, new_offset)?;
+    let (value, end) = view::decode_application_primitive::<false>(data, offset, tag, new_offset)?;
     let value = match value {
         ApplicationValueRef::Null => PropertyValue::Null,
         ApplicationValueRef::Boolean(value) => PropertyValue::Boolean(value),

@@ -146,6 +146,12 @@ fn what_the_header_does_not_read_is_refused() {
             std::format!("decoding error at offset 1: reserved max-APDU-length field value {code}")
         );
     }
+    // A reserved code in a segmented request is malformed first, as the
+    // owned decoder finds it.
+    assert_eq!(
+        refused(&[0x0A, 0x06, 0x2A, 0x00, 0x01, 0x0C]).decode_fault(),
+        Some((1, DecodingKind::InvalidEncoding))
+    );
     // The other PDU types, then nibbles past 7.
     for first in [0x20, 0x40, 0x50, 0x60, 0x70] {
         assert_eq!(

@@ -192,9 +192,9 @@ pub enum Error {
 
     /// Error decoding received data, with a message formatted when the error
     /// was made. Only with `alloc`: decoders outside the allocation-free
-    /// profile still word some refusals this way, and [`Error::Decoding`] is
-    /// the form they move to. [`Error::decode_fault`] reads the offset and
-    /// kind of either form.
+    /// profile still word some refusals this way until they move to
+    /// [`Error::Decoding`] (#1776). [`Error::decode_fault`] reads the offset
+    /// and kind of either form.
     #[cfg(feature = "alloc")]
     #[error("decoding error at offset {offset}: {message}")]
     DecodingMessage {

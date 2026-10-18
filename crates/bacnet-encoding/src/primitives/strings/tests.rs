@@ -133,3 +133,34 @@ fn the_sink_encoders_match_the_bytes_mut_encoders() {
         }
     }
 }
+
+/// A CharacterString too long for a header's 32-bit length is still an
+/// error through the delegating `BytesMut` encoders, with nothing written.
+/// The string is `u32::MAX` NUL octets in zeroed memory the test never
+/// reads, so it costs address space rather than RAM; a 64-bit Unix host
+/// maps such memory lazily.
+#[cfg(all(feature = "alloc", target_pointer_width = "64", unix))]
+#[allow(unsafe_code)]
+#[test]
+fn an_over_long_character_string_errors_through_the_bytes_mut_encoders() {
+    use bacnet_types::error::Error;
+    use bytes::BytesMut;
+
+    use crate::primitives::{encode_app_character_string, encode_ctx_character_string};
+
+    let zeros = std::vec![0u8; u32::MAX as usize];
+    // SAFETY: every octet is NUL, which is valid UTF-8.
+    let value = unsafe { core::str::from_utf8_unchecked(&zeros) };
+    let mut buf = BytesMut::from(&[0xA5][..]);
+    for refused in [
+        encode_app_character_string(&mut buf, value),
+        encode_ctx_character_string(&mut buf, 3, value),
+    ] {
+        assert!(
+            matches!(&refused, Err(Error::Encoding(message))
+                if message == "CharacterString too long for BACnet encoding"),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(buf[..], [0xA5]);
+}
