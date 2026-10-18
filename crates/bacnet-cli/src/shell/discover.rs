@@ -81,10 +81,10 @@ pub(super) async fn handle_discover<T: TransportPort + 'static>(
     }
 
     let result = if let Some(target_str) = &target {
-        match resolve::address_mac(
+        match target::address_mac(
             client.transport(),
             target_str,
-            resolve::TARGET_NOT_AN_ADDRESS,
+            target::TARGET_NOT_AN_ADDRESS,
         )
         .await
         {

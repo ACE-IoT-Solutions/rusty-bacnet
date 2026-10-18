@@ -17,9 +17,11 @@ use rustyline::{CompletionType, Config, Context, Editor, Helper};
 
 use owo_colors::OwoColorize;
 
+use crate::core::destination::{self, Destination};
+use crate::core::target;
 use crate::output::OutputFormat;
 use crate::session::Session;
-use crate::{commands, output, parse, resolve, timestamp};
+use crate::{commands, output, parse, timestamp};
 
 use self::admin::{
     handle_ack_alarm, handle_create_object, handle_delete_object, handle_read_range,
@@ -244,7 +246,7 @@ fn maybe_prepend_default_target(args: &[String], session: &Session) -> Vec<Strin
         return vec![];
     }
     // If the first arg is NOT a valid target, prepend the default.
-    if resolve::parse_target(&args[0]).is_err() {
+    if target::parse_target(&args[0]).is_err() {
         if let Some(ref display) = session.default_target_display {
             let mut new_args = vec![display.clone()];
             new_args.extend_from_slice(args);
@@ -272,7 +274,7 @@ fn handle_target(args: &[String], session: &mut Session) {
         return;
     }
     let target_str = &args[0];
-    match resolve::parse_target(target_str) {
+    match target::parse_target(target_str) {
         Ok(_) => {
             session.set_target(vec![], target_str.clone());
             println!("Default target set to: {}", target_str.cyan());
@@ -291,7 +293,7 @@ async fn handle_status<T: TransportPort + 'static>(
 ) {
     println!("{} {}", "Transport:".dimmed(), transport_name);
 
-    let bound = resolve::as_bip6(client.transport()).and_then(|bip6| bip6.local_address());
+    let bound = target::as_bip6(client.transport()).and_then(|bip6| bip6.local_address());
     let (label, local) = local_address_line(client.local_mac(), bound);
     println!("{} {}", label.dimmed(), local.cyan());
 
@@ -334,57 +336,22 @@ fn local_address_line(mac: &[u8], bip6: Option<SocketAddrV6>) -> (&'static str, 
     }
 }
 
-/// Resolve a target string to a MAC address, looking up device instances from
-/// the client's discovered device table and B/IPv6 addresses with
-/// Virtual-Address-Resolution.
+/// Resolve a target string to a MAC on this network, for commands without a
+/// routed client call (see [`destination::resolve_mac`]).
 async fn resolve_target_mac<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Vec<u8>, String> {
-    match resolve::parse_target_on(client.transport(), target_str)? {
-        resolve::Target::Mac(mac) => Ok(mac),
-        resolve::Target::Bip6(peer) => resolve::bip6_vmac(client.transport(), peer).await,
-        resolve::Target::Instance(n) => match client.get_device(n).await {
-            Some(d) => Ok(d.mac_address.to_vec()),
-            None => Err(format!(
-                "Device {} not found. Run 'discover' first or use an IP address.",
-                n
-            )),
-        },
-        resolve::Target::Routed(dnet, instance) => match client.get_device(instance).await {
-            Some(d) => {
-                if d.source_network == Some(dnet) {
-                    // Routed targets require DNET/DADR routing information, which is
-                    // not available through this MAC-only resolution helper. The shell
-                    // commands that use resolve_target_mac() call client.read_property()
-                    // with ConfirmedTarget::Local, so returning the router MAC here
-                    // would result in an unrouted request that the router will not
-                    // forward. Use the routed APIs (e.g. read_property_from_device)
-                    // instead of resolve_target_mac() for routed devices.
-                    Err(format!(
-                        "Device {} is behind router on DNET {}. Routed access is not supported via this command; use a routed API (e.g. 'read_property_from_device') instead.",
-                        instance, dnet
-                    ))
-                } else if d.source_network.is_none() {
-                    Err(format!(
-                        "Device {} is local (not behind a router on DNET {}). Use '{}' directly.",
-                        instance, dnet, instance
-                    ))
-                } else {
-                    Err(format!(
-                        "Device {} is on DNET {}, not DNET {}.",
-                        instance,
-                        d.source_network.unwrap(),
-                        dnet
-                    ))
-                }
-            }
-            None => Err(format!(
-                "Device {} not found. Run 'discover' first.",
-                instance
-            )),
-        },
-    }
+    destination::resolve_mac(client, target_str).await
+}
+
+/// Resolve a target string for read, readm, write, writem and subscribe,
+/// which also reach routed devices (`dnet:instance`, `dnet:0xMAC`).
+async fn resolve_destination<T: TransportPort + 'static>(
+    client: &BACnetClient<T>,
+    target_str: &str,
+) -> Result<Destination, String> {
+    destination::resolve(client, target_str, destination::ROUTED_DISCOVERY_WAIT).await
 }
 
 /// Print the help message listing all available shell commands.

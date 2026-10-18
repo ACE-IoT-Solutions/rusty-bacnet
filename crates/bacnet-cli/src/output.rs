@@ -10,6 +10,8 @@ use bacnet_types::primitives::PropertyValue;
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
+use crate::core::target::AddressStyle;
+
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -59,11 +61,12 @@ pub fn format_mac(mac: &[u8]) -> String {
     }
 }
 
-/// Convert a `DiscoveredDevice` into a `DeviceInfo` for display.
-pub fn device_info(d: &DiscoveredDevice) -> DeviceInfo {
+/// Convert a `DiscoveredDevice` into a `DeviceInfo` for display, its
+/// address in `style` (a BACnet/SC VMAC as hex octets, not as `ip:port`).
+pub fn device_info(d: &DiscoveredDevice, style: AddressStyle) -> DeviceInfo {
     DeviceInfo {
         instance: d.object_identifier.instance_number(),
-        address: format_mac(d.mac_address.as_slice()),
+        address: style.format(d.mac_address.as_slice()),
         vendor_id: d.vendor_id,
         max_apdu: d.max_apdu_length,
         segmentation: format!("{}", d.segmentation_supported),
@@ -417,8 +420,8 @@ mod tests {
         assert_eq!(format_mac(&[0x00, 0x04, 0xD2]), "bip6:0x0004D2");
         assert_eq!(format_mac(&[7]), "07");
         for mac in [vec![10, 0, 0, 1, 0xBA, 0xC0], vec![0x40, 0xAB, 0xCD]] {
-            match crate::resolve::parse_target(&format_mac(&mac)) {
-                Ok(crate::resolve::Target::Mac(parsed)) => assert_eq!(parsed, mac),
+            match crate::core::target::parse_target(&format_mac(&mac)) {
+                Ok(crate::core::target::Target::Mac(parsed)) => assert_eq!(parsed, mac),
                 _ => panic!("{} does not read back", format_mac(&mac)),
             }
         }

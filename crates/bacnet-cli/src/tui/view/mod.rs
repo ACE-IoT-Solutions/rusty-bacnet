@@ -4,6 +4,7 @@
 //! 80x24 is the smallest supported terminal and 120x40 the full layout.
 //! Below the minimum only a notice is drawn.
 
+mod browser;
 mod chrome;
 mod connection;
 mod devices;
@@ -60,7 +61,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     .areas(area);
     chrome::status_bar(frame, status, app, &theme);
     devices::banner(frame, banner_area, banner, &theme);
-    devices::table(frame, body, app, &theme);
+    match &app.browser {
+        Some(open) => browser::draw(frame, body, open, &theme),
+        None => devices::table(frame, body, app, &theme),
+    }
     if app.show_log {
         chrome::log_pane(frame, log, app, &theme);
     }

@@ -254,6 +254,11 @@ impl DeviceTable {
             .filter_map(|i| self.rows.get(i))
     }
 
+    /// The selected row. Call [`settle`](Self::settle) first.
+    pub(crate) fn selected_row(&self) -> Option<&DeviceRow> {
+        self.rows.get(&self.selected?)
+    }
+
     /// Index of the selected row among the visible rows.
     pub(crate) fn selected_index(&self) -> Option<usize> {
         self.selected_index

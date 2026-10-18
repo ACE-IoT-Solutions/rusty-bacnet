@@ -71,10 +71,20 @@ Commands that take a `<target>` argument accept several formats:
 | B/IPv6 VMAC | `bip6:0x40ABCD` | Any 3-octet VMAC, as the CLI prints B/IPv6 addresses |
 | IPv6 bracket | `[2001:db8::10]` | B/IPv6 address (port 47808), resolved to the VMAC of the node there |
 | IPv6:port | `[fe80::1%3]:47809` | The same with a port; a link-local address takes a numeric zone |
+| 6-octet MAC or SC VMAC | `02:00:00:00:00:01`, `020000000001` | A MAC as six hex octets, such as a BACnet/SC VMAC; not on B/IPv6 |
 | Device instance | `1234` | Looks up address from discovered device cache |
 | DNET:instance | `2:1234` | Routed device (network:instance) |
+| DNET:0xMAC | `2:0x05` | Routed station by its MAC on that network (MS/TP station 5 here) |
 
 When using a device instance number, the device must have been previously found via `discover`. In the shell, you can set a default target with the `target` command to omit the target argument from subsequent commands.
+
+**Routed targets.** `read`, `readm`, `write`, `writem` and `subscribe` take
+`DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
+yet, the CLI sends a Who-Is to that network and waits up to three seconds for
+the device to answer, then sends the request through the router that answered
+for it. Other commands refuse a routed target, since the client has routed
+calls only for those services. On BACnet/SC, device tables show a VMAC as hex
+octets (`02:00:00:00:00:01`), which every target argument takes back.
 
 **B/IPv6 targets are VMACs.** A B/IPv6 node is addressed by its 3-octet VMAC,
 not its IPv6 address (Clause U.1.3), and a device's VMAC is its device instance
@@ -299,12 +309,31 @@ client's discovery table afterwards.
 | `x` | Disconnect or cancel connection; wait for resources to be released |
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
+| `Enter` | Browse the selected device |
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
 | `?` | Help |
 | `Ctrl-C` | Close a dialog or cancel the running Who-Is/connection attempt; press again within 2 s to quit |
 | `q` | Quit |
+
+**Device browser.** Enter on a device opens its card (vendor, model, firmware,
+protocol revision, supported services and object types, Max APDU,
+segmentation, Database_Revision), its Object_List grouped by object type, and
+the selected object's properties. From 120 columns the panes sit side by side;
+below that only the focused pane is shown and Tab switches between them. Enter
+on an object reads it; `/` filters the objects, `r` reads again and Esc goes
+back to the devices. A commandable object also shows its 16 command
+priorities with the one in control marked `>`, Relinquish_Default and
+Present_Value. Status is shown as text badges as well as colour: `[ALM]` in
+alarm, `[FLT]` fault, `[OVR]` overridden and `[OOS]` out of service.
+
+The browser reads with one ReadPropertyMultiple per object, falling back to
+ReadProperty for each property when a device refuses it, and reads an
+Object_List too large for one answer element by element. A device never has
+more than one of the browser's requests outstanding, and `--max-rate N` caps
+the requests a second across all devices (default 20; 0 for no cap). The
+browser only reads.
 
 The `tui` cargo feature is off by default until the terminal UI ships in
 0.14.0 (#975), so the release binaries and a plain `cargo install bacnet-cli`

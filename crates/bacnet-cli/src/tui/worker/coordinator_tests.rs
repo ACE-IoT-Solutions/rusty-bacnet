@@ -174,3 +174,25 @@ fn outer_cancel_refusal_uses_the_same_identity_and_retry_contract() {
     );
     assert!(!app.quit);
 }
+
+/// A browse read that can't reach a session fails at once under its
+/// request id, scoped to the generation, so the browser stops waiting.
+#[tokio::test]
+async fn a_browse_read_without_a_session_fails_under_its_request() {
+    let (sink, mut events) = EventSink::channel(4);
+    let read = Command::Browse {
+        req: 9,
+        device: 100,
+        read: crate::tui::point::BrowseRead::Device,
+    };
+    forward_browse(None, read, 9, 3, &sink).await;
+    let WorkerEvent::Session { generation, event } = events.recv().await.unwrap() else {
+        panic!("unscoped event");
+    };
+    assert_eq!(generation, 3);
+    assert!(matches!(
+        *event,
+        WorkerEvent::Browse { req: 9, result: BrowseResult::Failed(ref error) }
+            if error == "no active connection"
+    ));
+}

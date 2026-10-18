@@ -13,14 +13,17 @@
 //! - [`terminal`]: the TTY guard, raw mode, the panic hook and signals.
 //! - [`log_layer`]: tracing into an in-memory ring for the log pane.
 //!
-//! This milestone is read-only: discovery and finite foreign-device
-//! registrations, with no device application writes.
+//! - [`point`]: the device browser's data, shared by the worker and the app.
+//!
+//! The TUI is read-only: discovery, the device browser's reads and finite
+//! foreign-device registrations, with no device application writes.
 
 mod app;
 mod event_loop;
 mod keymap;
 mod log_layer;
 mod message;
+mod point;
 mod profile;
 mod terminal;
 mod view;
@@ -61,9 +64,14 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("{hint}");
         std::process::exit(1);
     }
-    let (fps, log_file) = match &cli.command {
-        Some(Command::Tui { fps, log_file, .. }) => (*fps, log_file.clone()),
-        _ => (20, None),
+    let (fps, log_file, max_rate) = match &cli.command {
+        Some(Command::Tui {
+            fps,
+            log_file,
+            max_rate,
+            ..
+        }) => (*fps, log_file.clone(), *max_rate),
+        _ => (20, None, worker::browse::DEFAULT_MAX_RATE),
     };
     let kind = if cli.sc {
         TransportKind::Sc
@@ -132,7 +140,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let dropped = sink.dropped_counter();
     let (commands, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-    let mut worker = coordinator::spawn(plan, profiles, sink, command_rx);
+    let mut worker = coordinator::spawn(plan, profiles, sink, command_rx, max_rate);
     let mut io = LoopIo {
         input: EventStream::new(),
         events,

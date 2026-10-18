@@ -15,9 +15,8 @@ use bacnet_transport::port::TransportPort;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use crate::tui::message::{
-    AddressStyle, Command, DirectedTo, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent,
-};
+use crate::core::target::AddressStyle;
+use crate::tui::message::{Command, DirectedTo, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent};
 use crate::tui::worker::{session, EventSink, EVENT_CHANNEL_CAPACITY};
 
 /// Long enough for any step here, short of a hang.
@@ -74,6 +73,7 @@ async fn a_directed_bip6_who_is_resolves_beside_the_loop() {
         AddressStyle::Bip6,
         sink,
         command_rx,
+        0,
     )));
 
     // The status line: the VMAC instance 4321 gives (H.7.2) and where the

@@ -9,6 +9,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 
+use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 /// Encode a `PropertyValue` into raw application-tagged bytes.
@@ -44,7 +45,7 @@ pub type ObjectWrites = (ObjectType, u32, Vec<PropertyWrite>);
 /// Write a single property value.
 pub async fn write_property_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     args: WritePropertyArgs,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -59,8 +60,7 @@ pub async fn write_property_cmd<T: TransportPort + 'static>(
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let encoded = encode_value(&value)?;
 
-    client
-        .write_property(mac, oid, property, index, encoded, priority)
+    to.write_property(client, oid, property, index, encoded, priority)
         .await?;
 
     output::print_success("OK", format);
@@ -70,7 +70,7 @@ pub async fn write_property_cmd<T: TransportPort + 'static>(
 /// Write multiple properties to one or more objects.
 pub async fn write_property_multiple_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     specs: Vec<ObjectWrites>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -98,7 +98,7 @@ pub async fn write_property_multiple_cmd<T: TransportPort + 'static>(
         })
         .collect::<Result<Vec<_>, bacnet_types::error::Error>>()?;
 
-    client.write_property_multiple(mac, access_specs).await?;
+    to.write_property_multiple(client, access_specs).await?;
 
     output::print_success("OK", format);
     Ok(())

@@ -118,7 +118,7 @@ What M0 draws (80x24):
 | Screen | Contents |
 |---|---|
 | Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, address, network, vendor, max APDU, segmentation, last seen); sort and filter; duplicate-instance banner. **Planned:** Who-Has search and a Networks tab |
-| Browse (planned) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type; property pane; priority-array pane |
+| Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with a filter; property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (planned) | Watched points with value, flags, COV or polled, last-update age, sparkline |
 | Network, B/IP (planned) | Foreign-device panel, BDT, FDT, BDT consistency matrix, "what the BBMD sees me as" |
 | SC (planned) | Hub connector status, connection-doctor phase timeline, local and peer certificates, VMAC and UUID |
@@ -139,6 +139,9 @@ M0 keys:
 | `d` | Devices | open the Who-Is form |
 | `/` | Devices | filter rows (substring of instance, address, network or vendor); Enter keeps it, Esc clears it |
 | `s` / `S` | Devices | next sort column / reverse the order |
+| `Enter` | Devices / Browse | browse the selected device / read the selected object |
+| `Tab`, `Shift-Tab` | Browse | next or previous pane (below 120 columns only the focused pane is drawn) |
+| `/`, `r`, `Esc` | Browse | filter objects; read again; back to the devices |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End`, `g`/`G` | Devices | move |
 | `Tab`, `Shift-Tab`, Up, Down | Who-Is form | next or previous field |
 | Left, Right, Space | Who-Is form | change the scope |

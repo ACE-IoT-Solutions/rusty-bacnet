@@ -20,7 +20,6 @@ mod decode;
 mod foreign;
 mod output;
 mod parse;
-mod resolve;
 mod sc_check;
 mod session;
 mod shell;
@@ -29,7 +28,9 @@ mod transport;
 #[cfg(feature = "tui")]
 mod tui;
 
+use crate::core::destination::{self, Destination};
 use crate::core::range::parse_discover_range;
+use crate::core::target;
 use args::{Cli, Command};
 use output::OutputFormat;
 
@@ -70,32 +71,22 @@ fn resolve_format(cli: &Cli) -> OutputFormat {
     }
 }
 
-/// Resolve a target string to a MAC address, looking up device instances from
-/// the client's discovered device table and B/IPv6 addresses with
-/// Virtual-Address-Resolution.
+/// Resolve a target string to a MAC on this network, for commands without a
+/// routed client call (see [`destination::resolve_mac`]).
 async fn resolve_target_mac<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    match resolve::parse_target_on(client.transport(), target_str)? {
-        resolve::Target::Mac(mac) => Ok(mac),
-        resolve::Target::Bip6(peer) => Ok(resolve::bip6_vmac(client.transport(), peer).await?),
-        resolve::Target::Instance(n) => match client.get_device(n).await {
-            Some(d) => Ok(d.mac_address.to_vec()),
-            None => Err(format!(
-                "Device {} not found. Use an IP address or run 'discover' first.",
-                n
-            )
-            .into()),
-        },
-        resolve::Target::Routed(dnet, instance) => Err(format!(
-            "Routed target {}:{} is not supported by this command path. \
-             Use a direct MAC/IP target or run 'discover' and use the device instance \
-             without DNET.",
-            dnet, instance
-        )
-        .into()),
-    }
+    Ok(destination::resolve_mac(client, target_str).await?)
+}
+
+/// Resolve a target string for a command with a routed client call: read,
+/// readm, write and subscribe also take `dnet:instance` and `dnet:0xMAC`.
+async fn resolve_destination<T: TransportPort + 'static>(
+    client: &BACnetClient<T>,
+    target_str: &str,
+) -> Result<Destination, Box<dyn std::error::Error>> {
+    Ok(destination::resolve(client, target_str, destination::ROUTED_DISCOVERY_WAIT).await?)
 }
 
 /// Execute a one-shot CLI command.
@@ -121,10 +112,10 @@ async fn execute_command<T: TransportPort + 'static>(
             }
             let range = parse_discover_range(range.as_deref())?;
             if let Some(target_str) = target {
-                let mac = resolve::address_mac(
+                let mac = target::address_mac(
                     client.transport(),
                     target_str,
-                    resolve::TARGET_NOT_AN_ADDRESS,
+                    target::TARGET_NOT_AN_ADDRESS,
                 )
                 .await?;
                 commands::discover::discover_directed(client, &mac, range, *wait, format).await?;
@@ -148,12 +139,12 @@ async fn execute_command<T: TransportPort + 'static>(
             object,
             property,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
             let (prop, index) = parse::parse_property(property)?;
             commands::read::read_property_cmd(
                 client,
-                &mac,
+                &to,
                 object_type,
                 instance,
                 prop,
@@ -163,8 +154,8 @@ async fn execute_command<T: TransportPort + 'static>(
             .await?;
         }
         Command::Readm { target, specs } => {
-            let mac = resolve_target_mac(client, target).await?;
-            commands::read::read_multiple_cmd(client, &mac, specs, format).await?;
+            let to = resolve_destination(client, target).await?;
+            commands::read::read_multiple_cmd(client, &to, specs, format).await?;
         }
         Command::Write {
             target,
@@ -173,14 +164,14 @@ async fn execute_command<T: TransportPort + 'static>(
             value,
             priority,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
             let (prop, index) = parse::parse_property(property)?;
             let (val, inline_priority) = parse::parse_value_with_priority(value)?;
             let pri = priority.or(inline_priority);
             commands::write::write_property_cmd(
                 client,
-                &mac,
+                &to,
                 commands::write::WritePropertyArgs {
                     object_type,
                     instance,
@@ -199,11 +190,11 @@ async fn execute_command<T: TransportPort + 'static>(
             lifetime,
             confirmed,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
             commands::subscribe::subscribe_cmd(
                 client,
-                &mac,
+                &to,
                 object_type,
                 instance,
                 *lifetime,
@@ -371,7 +362,7 @@ async fn execute_bip_command(
             bbmd: Some(bbmd_addr),
             dnet,
         } => {
-            let bbmd_mac = resolve::address_mac(
+            let bbmd_mac = target::address_mac(
                 client.transport(),
                 bbmd_addr,
                 "--bbmd requires an IP address, not a device instance",
@@ -383,10 +374,10 @@ async fn execute_bip_command(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let range = parse_discover_range(range.as_deref())?;
             if let Some(target_str) = target {
-                let mac = resolve::address_mac(
+                let mac = target::address_mac(
                     client.transport(),
                     target_str,
-                    resolve::TARGET_NOT_AN_ADDRESS,
+                    target::TARGET_NOT_AN_ADDRESS,
                 )
                 .await?;
                 commands::discover::discover_directed(client, &mac, range, *wait, format).await?;
