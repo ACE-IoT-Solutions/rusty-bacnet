@@ -6,6 +6,7 @@ mod dcc_mtls_tests;
 
 impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>> {
     /// Create an SC-specific builder that connects to a BACnet/SC hub.
+    #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
     pub fn sc_builder() -> ScServerBuilder {
         ScServerBuilder {
             config: ServerConfig::default(),
@@ -27,6 +28,7 @@ impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
 /// Created by [`BACnetServer::sc_builder()`]. Requires the `sc-tls` feature.
 /// A caller-provisioned, nonzero [`device_uuid`](Self::device_uuid) and validated
 /// [`tls_config`](Self::tls_config) are required before `build` can connect.
+#[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
 pub struct ScServerBuilder {
     pub(super) config: ServerConfig,
     db: Option<ObjectDatabase>,

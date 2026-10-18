@@ -1,4 +1,5 @@
-//! BACnet server: APDU dispatch and service handlers.
+#![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod audit_notification;
 mod command_lists;
