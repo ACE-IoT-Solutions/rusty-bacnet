@@ -9,7 +9,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 
-use bacnet_transport::port::{NpduLimits, ReceivedNpdu, TransportPort};
+use bacnet_npdu::NpduLimits;
+use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;

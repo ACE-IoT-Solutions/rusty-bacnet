@@ -84,7 +84,8 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use bacnet_router_core::{Instant, Mac, PortId};
+use bacnet_npdu::Mac;
+use bacnet_router_core::{Instant, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -109,8 +110,8 @@ use port_groups::PortGroups;
 #[cfg(test)]
 use {
     bacnet_encoding::npdu::{encode_npdu, Npdu},
+    bacnet_npdu::NetworkMessageType,
     bacnet_transport::port::TransportProvenance,
-    bacnet_types::enums::NetworkMessageType,
     bytes::BytesMut,
     std::time::Duration,
 };
@@ -239,7 +240,7 @@ impl BACnetRouter {
     /// ([`RouterPort::network_number`]), or if two ports share one, all
     /// before any transport starts; and if a transport fails to start, or
     /// if a transport's own MAC is longer than
-    /// [`NpduAddress::MAX_MAC_LEN`](bacnet_encoding::npdu::NpduAddress::MAX_MAC_LEN)
+    /// [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN)
     /// octets.
     pub async fn start<T, A, C>(
         ports: Vec<RouterPort<T>>,
@@ -295,7 +296,7 @@ impl BACnetRouter {
     }
 
     /// NPDUs refused on any port since start because an address in them was
-    /// past [`NpduAddress::MAX_MAC_LEN`](bacnet_encoding::npdu::NpduAddress::MAX_MAC_LEN):
+    /// past [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN):
     /// their DLEN or SLEN (#1141), or the link-layer source MAC the port's
     /// transport reported (#1198). Saturates at `u64::MAX`.
     ///
@@ -414,7 +415,7 @@ impl BACnetRouter {
                 Error::Encoding(format!(
                     "Router port on network {} has a MAC longer than {} octets",
                     port.network_number,
-                    bacnet_router_core::MAX_MAC_LEN
+                    bacnet_npdu::MAX_MAC_LEN
                 ))
             })?;
             // Read once the transport has started: MS/TP's grows with the

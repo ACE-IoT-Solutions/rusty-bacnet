@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
+use bacnet_npdu::NpduLimits;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
@@ -17,9 +18,7 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::LoopbackSerial;
-use bacnet_transport::port::{
-    DataAttribute, GroupDestinations, NpduLimits, ReceivedNpdu, TransportPort,
-};
+use bacnet_transport::port::{DataAttribute, GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;

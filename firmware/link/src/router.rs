@@ -97,10 +97,11 @@ use bacnet_router_core::mstp_core::{
     Action as MstpAction, Duration, ExtendedStorage, FixedQueues, MasterCore, MstpCoreConfig,
     RequestId, TransmitId,
 };
+use bacnet_router_core::npdu::MAX_NPDU;
 use bacnet_router_core::router::{
     Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received,
 };
-use bacnet_router_core::{Instant, PortId, RouterIn, Storage, MAX_NPDU};
+use bacnet_router_core::{Instant, PortId, RouterIn, Storage};
 
 use crate::tally::Sent;
 

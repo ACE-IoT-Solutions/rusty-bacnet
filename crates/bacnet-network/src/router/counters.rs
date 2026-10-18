@@ -18,7 +18,7 @@
 #[non_exhaustive]
 pub struct Counters {
     /// Frames refused because the link source, the DLEN or the SLEN was
-    /// past [`MAX_MAC_LEN`](bacnet_router_core::MAX_MAC_LEN) (#1141,
+    /// past [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) (#1141,
     /// #1198).
     pub address_length_drops: u64,
     /// Frames dropped for a DADR beside DNET 0xFFFF (#1379).

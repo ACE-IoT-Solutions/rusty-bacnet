@@ -7,7 +7,7 @@ and is meant to join their ports in firmware, and to run under the hosted
 `BACnetRouter` of `bacnet-network`.
 
 - `#![no_std]`, no allocator, and by default no dependencies besides
-  `bacnet-time`.
+  `bacnet-time` and `bacnet-npdu`.
 - NPDUs are read in place from your frame and written into your buffer.
 - The routing table, the discovery state and the router's output scratch
   live in arrays whose size you pick with const generics, all zero bits
@@ -25,14 +25,14 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
 
 ## What it has
 
-- `npdu`: a borrowed view of an NPDU's control information and a writer.
-  The view accepts and refuses exactly what `bacnet-encoding`'s decoder
-  does, field for field, which a property test checks; an address longer
-  than any data link uses is reported apart, with what a router needs to
-  address its reject.
-- `message`: the network-layer message types and reject reasons, and views
-  and writers for the messages' data: network lists, rejects, routing-table
-  entries and the rest.
+- `npdu`: `bacnet-npdu`, re-exported, the network-layer vocabulary: a
+  borrowed view of an NPDU's control information and its encoder, the one
+  NPDU codec of the stack (`bacnet-encoding`'s owned NPDU goes through it
+  too); the message types, reject reasons and network priority; the port
+  limits; and the bounded `Mac`. An address longer than any data link uses
+  is reported apart, with what a router needs to address its reject.
+- `message`: views and writers for the network-layer messages' data:
+  network lists, rejects, routing-table entries and the rest.
 - `table`: the routing table, sorted by network number, with direct and
   learned routes, standard and hardened convergence, busy and unreachable
   marks, a hold-down on reject-driven changes, and aging that keys off
@@ -93,9 +93,9 @@ every combination builds on bare-metal targets.
 ## Example
 
 ```rust
-use bacnet_router_core::npdu::{Address, Npdu};
+use bacnet_router_core::npdu::{Address, Mac, Npdu};
 use bacnet_router_core::table::{Reachability, Table};
-use bacnet_router_core::{Instant, Mac, PortId};
+use bacnet_router_core::{Instant, PortId};
 
 // Network 1 is on port 0; network 9 lies behind router 0x07 on port 1.
 let now = Instant::from_secs(1);
@@ -105,7 +105,7 @@ assert!(table.learn(9, PortId(1), Mac::from_array([0x07]), now).applied());
 
 // Node 0x0A on network 1 sends an APDU to node 0x05 on network 9.
 let frame = [0x01, 0x20, 0x00, 0x09, 0x01, 0x05, 0xFF, 0x10, 0x08];
-let npdu = Npdu::parse(&frame).unwrap();
+let npdu = Npdu::decode(&frame).unwrap();
 let dnet = npdu.destination.unwrap().network;
 let route = table.lookup(dnet).unwrap();
 assert_eq!(route.port(), PortId(1));
@@ -119,7 +119,7 @@ let relayed = Npdu {
     ..npdu
 };
 let mut out = [0u8; 32];
-let len = relayed.write(&mut out).unwrap();
+let len = relayed.encode_into(&mut out).unwrap();
 assert_eq!(len, relayed.encoded_len());
 assert_eq!(
     &out[..len],

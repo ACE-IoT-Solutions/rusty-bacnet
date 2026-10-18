@@ -1,7 +1,7 @@
 //! Explicit reply identities, independent byte fixtures, and scratch lifetime.
 mod fixture;
-use bacnet_router_core::npdu::{Address, Npdu, WriteError};
-use bacnet_router_core::router::{Action, Frame, Permissive, Received, ReplyPlan};
+use bacnet_router_core::npdu::{Address, EncodeError, NetworkPriority, Npdu};
+use bacnet_router_core::router::{Action, Frame, Permissive, Received, ReplyPlan, ReplyPlanError};
 use bacnet_router_core::{Instant, PortId};
 use fixture::{router, NODE_A, OWN_0, OWN_1};
 
@@ -43,9 +43,9 @@ fn r7_owned_reply_keeps_target_return_peer_and_remote_origin_after_scratch_reuse
     while !matches!(router.poll_action(), Action::Idle) {}
     drop(router);
     let mut output = [0; 32];
-    let prepared = reply.npdu(&[0x20, 0x37, 12], false, 2);
+    let prepared = reply.npdu(&[0x20, 0x37, 12], false, NetworkPriority::CriticalEquipment);
     assert_eq!(prepared.encoded_len(), 15);
-    let length = prepared.write(&mut output).unwrap();
+    let length = prepared.encode_into(&mut output).unwrap();
     assert_eq!(
         &output[..length],
         &[1, 0x2a, 0, 9, 2, 7, 8, 0, 2, 1, 1, 255, 0x20, 0x37, 12]
@@ -97,9 +97,17 @@ fn r7_no_destination_and_groups_have_no_specific_reply_source_but_own_unicasts_d
 #[test]
 fn r7_explicit_invalid_source_is_refused_and_short_output_is_atomic() {
     for (network, mac, error) in [
-        (0, &[1][..], WriteError::ReservedNetwork),
-        (65535, &[1][..], WriteError::ReservedNetwork),
-        (2, &[][..], WriteError::EmptySource),
+        (
+            0,
+            &[1][..],
+            ReplyPlanError::Npdu(EncodeError::ReservedNetwork),
+        ),
+        (
+            65535,
+            &[1][..],
+            ReplyPlanError::Npdu(EncodeError::ReservedNetwork),
+        ),
+        (2, &[][..], ReplyPlanError::Npdu(EncodeError::EmptySource)),
     ] {
         assert_eq!(
             ReplyPlan::new(PortId(0), NODE_A, Some(Address { network, mac }), None),
@@ -107,9 +115,17 @@ fn r7_explicit_invalid_source_is_refused_and_short_output_is_atomic() {
         );
     }
     for (network, mac, error) in [
-        (0, &[1][..], WriteError::ReservedNetwork),
-        (65535, &[1][..], WriteError::ReservedNetwork),
-        (2, &[][..], WriteError::EmptyDestination),
+        (
+            0,
+            &[1][..],
+            ReplyPlanError::Npdu(EncodeError::ReservedNetwork),
+        ),
+        (
+            65535,
+            &[1][..],
+            ReplyPlanError::Npdu(EncodeError::ReservedNetwork),
+        ),
+        (2, &[][..], ReplyPlanError::EmptyDestination),
     ] {
         assert_eq!(
             ReplyPlan::new(PortId(0), NODE_A, None, Some(Address { network, mac })),
@@ -126,11 +142,11 @@ fn r7_explicit_invalid_source_is_refused_and_short_output_is_atomic() {
         None,
     )
     .unwrap();
-    let prepared = plan.npdu(&[0x20, 7, 12], false, 0);
+    let prepared = plan.npdu(&[0x20, 7, 12], false, NetworkPriority::Normal);
     let mut out = [0xa5; 8];
     assert!(matches!(
-        prepared.write(&mut out),
-        Err(WriteError::NoRoom {
+        prepared.encode_into(&mut out),
+        Err(EncodeError::NoRoom {
             needed: 9,
             available: 8
         })
@@ -138,6 +154,6 @@ fn r7_explicit_invalid_source_is_refused_and_short_output_is_atomic() {
     assert_eq!(out, [0xa5; 8]);
     // Independent parser confirms the source field, not merely the plan getter.
     let mut out = [0; 9];
-    prepared.write(&mut out).unwrap();
-    assert_eq!(Npdu::parse(&out).unwrap().source.unwrap().network, 2);
+    prepared.encode_into(&mut out).unwrap();
+    assert_eq!(Npdu::decode(&out).unwrap().source.unwrap().network, 2);
 }

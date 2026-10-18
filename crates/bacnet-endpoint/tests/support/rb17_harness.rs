@@ -19,13 +19,13 @@ use bacnet_encoding::primitives::encode_property_value;
 use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
 use bacnet_endpoint::mstp::MstpEndpointBuilder;
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::mstp::{LoopbackSerial, MstpExecutionMode, MstpTransport, SerialPort};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
-    ServiceSupported,
+    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -306,9 +306,8 @@ pub fn local_npdu(apdu: Bytes, expecting_reply: bool) -> Bytes {
     encode_npdu(
         &mut npdu,
         &Npdu {
-            is_network_message: false,
             expecting_reply,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: apdu,

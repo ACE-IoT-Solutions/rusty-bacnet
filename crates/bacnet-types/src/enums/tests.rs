@@ -137,12 +137,6 @@ fn segmentation_values() {
 }
 
 #[test]
-fn network_message_type_values() {
-    assert_eq!(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw(), 0x00);
-    assert_eq!(NetworkMessageType::NETWORK_NUMBER_IS.to_raw(), 0x13);
-}
-
-#[test]
 fn bacnet_sc_error_code_values() {
     assert_eq!(ErrorClass::COMMUNICATION.to_raw(), 7);
     assert_eq!(ErrorCode::MESSAGE_INCOMPLETE.to_raw(), 147);

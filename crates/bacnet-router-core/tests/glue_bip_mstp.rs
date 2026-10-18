@@ -18,10 +18,12 @@ use bacnet_mstp_codec::{Frame as MstpFrame, FrameType};
 use bacnet_mstp_core::{Action, Instant};
 use bacnet_router_core::bip::BipPort;
 use bacnet_router_core::mstp::MstpPort;
+use bacnet_router_core::npdu::NpduLimits;
 use bacnet_router_core::npdu::{Address, Npdu};
-use bacnet_router_core::router::{Limits, Options, PortConfig, Received, SendRefusal};
+use bacnet_router_core::router::{Options, PortConfig, Received, SendRefusal};
 use bacnet_router_core::PortId;
 
+use bacnet_router_core::npdu::NetworkPriority;
 use fixture::{apdu_to, router_with, TestRouter, CONFIRMED, UNCONFIRMED};
 use glue::*;
 
@@ -151,7 +153,7 @@ fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
     let mut held_to_501 = bacnet_router_core::mstp::port_config(&config(true), MSTP_NET).unwrap();
-    held_to_501.max_npdu = Limits::both(501);
+    held_to_501.max_npdu = NpduLimits::both(501);
     let mut router = router(&bip, Some(held_to_501), Options::HOSTED);
     let mut host = bacnet_router_core::router::Permissive;
     let (mut bus, mut out) = (Bus::<1>::new(), Wire::default());
@@ -181,7 +183,7 @@ fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
         (wire[0].to, wire[0].function),
         (PEER, BvlcFunction::ORIGINAL_UNICAST_NPDU)
     );
-    let reject = Npdu::parse(&wire[0].npdu).unwrap();
+    let reject = Npdu::decode(&wire[0].npdu).unwrap();
     assert_eq!(reject.payload, [4, 0, MSTP_NET as u8]);
     let (results, _) = relay(&mut router, &mut port, 501);
     assert_eq!(results, [(1, Err(SendRefusal::Full))]);
@@ -236,8 +238,8 @@ fn mstp_delivery_becomes_bip_original_unicast_with_reply_postponed() {
         (wire[0].to, wire[0].function),
         (DEVICE_44, BvlcFunction::ORIGINAL_UNICAST_NPDU)
     );
-    let relayed = Npdu::parse(&wire[0].npdu).unwrap();
-    assert_eq!(relayed.priority, 3);
+    let relayed = Npdu::decode(&wire[0].npdu).unwrap();
+    assert_eq!(relayed.priority, NetworkPriority::LifeSafety);
     assert!(relayed.expecting_reply);
     assert_eq!(
         relayed.source,
@@ -487,7 +489,7 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
             (sent.to, sent.function),
             (SUBNET.broadcast, BvlcFunction::ORIGINAL_BROADCAST_NPDU)
         );
-        let relayed = Npdu::parse(&sent.npdu).unwrap();
+        let relayed = Npdu::decode(&sent.npdu).unwrap();
         assert_eq!(relayed.payload, UNCONFIRMED);
         assert_eq!(
             relayed.source,

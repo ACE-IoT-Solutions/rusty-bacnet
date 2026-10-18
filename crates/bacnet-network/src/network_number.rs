@@ -1,6 +1,7 @@
 //! Shared packet contract for the two local nonrouter Network Number controls.
 use crate::layer::ReceivedNetworkControl;
-use bacnet_types::{enums::NetworkMessageType, network_number::NetworkNumber};
+use bacnet_npdu::NetworkMessageType;
+use bacnet_types::network_number::NetworkNumber;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
@@ -21,18 +22,17 @@ impl NumberControl {
     /// Refuse routed, malformed or ineligible controls without changing state.
     pub fn parse(control: &ReceivedNetworkControl) -> Option<Self> {
         let npdu = &control.npdu;
-        if !npdu.is_network_message || npdu.source.is_some() || npdu.destination.is_some() {
+        if !npdu.is_network_message() || npdu.source.is_some() || npdu.destination.is_some() {
             return None;
         }
         match npdu.message_type {
             Some(t)
-                if t == NetworkMessageType::WHAT_IS_NETWORK_NUMBER.to_raw()
-                    && npdu.payload.is_empty() =>
+                if t == NetworkMessageType::WHAT_IS_NETWORK_NUMBER && npdu.payload.is_empty() =>
             {
                 Some(Self::WhatIs)
             }
             Some(t)
-                if t == NetworkMessageType::NETWORK_NUMBER_IS.to_raw()
+                if t == NetworkMessageType::NETWORK_NUMBER_IS
                     && control.link_layer_group
                     && npdu.payload.len() == 3 =>
             {

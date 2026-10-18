@@ -4,9 +4,9 @@
 //! rewrite's unit cases moved to `bacnet-router-core`'s `tests/forward.rs`.
 
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::{DataAttribute, TransportPort};
-use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
 use bacnet_types::MacAddr;
 use bytes::{BufMut, Bytes, BytesMut};
 use std::net::Ipv4Addr;
@@ -64,9 +64,8 @@ async fn router_forwards_between_networks() {
 
     let apdu = vec![0x10, 0x08];
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: bacnet_types::enums::NetworkPriority::NORMAL,
+        priority: bacnet_npdu::NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 2000,
             mac_address: MacAddr::from_slice(device_b.local_mac()),
@@ -215,10 +214,10 @@ fn announcements(networks: &[u16]) -> Vec<Vec<Announced>> {
                     } => {
                         assert!(data_attributes.is_empty());
                         let decoded = decode_npdu(data).unwrap();
-                        assert!(decoded.is_network_message);
+                        assert!(decoded.is_network_message());
                         assert!(decoded.destination.is_none() && decoded.source.is_none());
                         let payload = &decoded.payload;
-                        match decoded.message_type.map(NetworkMessageType::from_raw) {
+                        match decoded.message_type {
                             Some(NetworkMessageType::NETWORK_NUMBER_IS) => {
                                 let [high, low, flag] = payload[..] else {
                                     panic!("three octets");
@@ -345,10 +344,10 @@ async fn who_is_router_with_specific_network() {
     match sent {
         SendRequest::Broadcast { npdu: data, .. } => {
             let decoded = decode_npdu(data.clone()).unwrap();
-            assert!(decoded.is_network_message);
+            assert!(decoded.is_network_message());
             assert_eq!(
                 decoded.message_type,
-                Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
+                Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK)
             );
             assert_eq!(decoded.payload.len(), 2);
             let net = u16::from_be_bytes([decoded.payload[0], decoded.payload[1]]);

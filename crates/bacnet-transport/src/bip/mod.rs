@@ -27,7 +27,7 @@ use crate::bvll::BvllMessage;
 use crate::bvll::{
     decode_bip_mac, decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame,
 };
-use crate::port::{BipPort, NpduLimits, ReceivedNpdu, TransportPort};
+use crate::port::{BipPort, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::udp_metadata::{DestinationReceiver, IpVersion};
 use bacnet_bip_codec as codec;
@@ -35,6 +35,7 @@ use bacnet_bip_codec as codec;
 use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Cast, Link, Mode};
 use bacnet_bip_core::LocalSubnet;
+use bacnet_npdu::NpduLimits;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
 use bacnet_types::constructed::BACnetHostNPort;
 use bacnet_types::error::Error;

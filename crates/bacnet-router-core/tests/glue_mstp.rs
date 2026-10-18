@@ -8,17 +8,17 @@ mod glue;
 
 use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH};
 use bacnet_mstp_core::{
-    Action, DequeuedNpdu, ExtendedActionBuffers, Instant, MasterCore, NetworkPriority,
-    QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage, ReplyDecision,
-    RequestError, RequestId,
+    Action, DequeuedNpdu, ExtendedActionBuffers, Instant, MasterCore, QueueCounters, QueueItemInfo,
+    QueueKind, QueueRefusal, QueueStorage, ReplyDecision, RequestError, RequestId,
 };
 use bacnet_router_core::mstp::{MstpPort, NotExtended, PortAction};
+use bacnet_router_core::npdu::Mac;
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{
-    Dest, Group, GroupClassifier, Limits, Options, Received, SendRefusal,
-};
-use bacnet_router_core::{Mac, PortId};
+use bacnet_router_core::npdu::NpduLimits;
+use bacnet_router_core::router::{Dest, Group, GroupClassifier, Options, Received, SendRefusal};
+use bacnet_router_core::PortId;
 
+use bacnet_router_core::npdu::NetworkPriority;
 use fixture::*;
 use glue::*;
 
@@ -33,7 +33,7 @@ fn router() -> TestRouter {
 fn apdu_at(dnet: u16, dadr: &[u8], apdu: &[u8], priority: u8) -> Vec<u8> {
     let mut npdu = Npdu::apdu(apdu);
     npdu.destination = Some(addr(dnet, dadr));
-    npdu.priority = priority;
+    npdu.priority = NetworkPriority::try_from(priority).unwrap();
     bytes(&npdu)
 }
 
@@ -72,7 +72,7 @@ fn config_needs_extended_frames() {
     let port = bacnet_router_core::mstp::port_config(&config(true), 2).unwrap();
     assert_eq!(port.network, 2);
     assert_eq!(port.mac, Mac::from_array([STATION]));
-    assert_eq!(port.max_npdu, Limits::both(1497));
+    assert_eq!(port.max_npdu, NpduLimits::both(1497));
 }
 
 /// The port owns its core: built only over one with extended frames, it
@@ -568,7 +568,7 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
 
     // The router's own check, on a port held to 501 octets.
     let mut held_to_501 = bacnet_router_core::mstp::port_config(&config(true), 2).unwrap();
-    held_to_501.max_npdu = Limits::both(501);
+    held_to_501.max_npdu = NpduLimits::both(501);
     let mut router = router_with(&[port_on(1, OWN_0), held_to_501], Options::HOSTED);
     let mut bus = Bus::<1>::new();
     let mut port = bus.port();
@@ -588,7 +588,7 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
     assert_eq!(results, [(0, Ok(()))]);
     let (to, reject) = &rejects[0];
     assert_eq!(to.as_deref(), Some(NODE_A));
-    let reject = Npdu::parse(reject).unwrap();
+    let reject = Npdu::decode(reject).unwrap();
     assert_eq!(reject.payload, [4, 0, 2]);
     assert_eq!(router.counters().egress_too_long, 1);
     assert_eq!(port.core_mut().counters().unicast.depth, 0);
@@ -621,7 +621,7 @@ fn saturated_queue_backpressures_network_control() {
     let mut bus = Bus::<1>::new();
     let mut port = bus.port();
     let query = message(
-        bacnet_router_core::message::MessageType::INITIALIZE_ROUTING_TABLE,
+        bacnet_router_core::npdu::NetworkMessageType::INITIALIZE_ROUTING_TABLE,
         &[0],
     );
     let arrived = mstp_arrived(7, STATION, &query);

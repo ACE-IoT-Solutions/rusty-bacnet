@@ -3,6 +3,7 @@
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::apdu::{encode_apdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu};
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::database::ObjectDatabase;
@@ -11,8 +12,7 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-    Segmentation,
+    AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;

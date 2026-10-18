@@ -128,7 +128,7 @@ pub use actions::Action;
 pub use addressing::{Addressed, Groups, LocalAddresses};
 pub use config::{
     ConfigError, Foreign, ForwardedTrust, Link, Mode, Retry, DEFAULT_RESPONSE_TIMEOUT,
-    MAX_DATAGRAM, MAX_NPDU, MIN_BUDGET, MIN_RENEWAL,
+    MAX_DATAGRAM, MIN_BUDGET, MIN_RENEWAL,
 };
 pub use counters::{ExchangeCounters, NodeCounters, RegisterAttempt};
 pub use engine::{Inbound, Node};

@@ -1,5 +1,5 @@
-//! The wire codes of network-layer messages: [`MessageType`] and
-//! [`RejectReason`].
+//! The wire codes of network-layer messages: [`NetworkMessageType`] and
+//! [`RejectMessageReason`].
 
 /// An open set of wire codes with named constants, the shape the codecs
 /// give `BvlcFunction` and `FrameType`: any raw value converts, and the
@@ -89,7 +89,7 @@ named_codes! {
     /// A network-layer message type: the octet after an NPDU's addresses
     /// that says which message it carries (Clause 6.2.4).
     ///
-    /// The set is open, so [`Npdu::parse`](crate::npdu::Npdu::parse) hands
+    /// The set is open, so [`Npdu::decode`](crate::Npdu::decode) hands
     /// on every octet as it arrived, and a router matches the constants with
     /// a `_` arm for the rest. The constants name the types a router reads
     /// and sends, grouped by what a router does with them and by name within
@@ -101,17 +101,17 @@ named_codes! {
     /// are reserved. Two message types are equal when their octets are.
     ///
     /// ```
-    /// use bacnet_router_core::message::MessageType;
+    /// use bacnet_npdu::NetworkMessageType;
     ///
-    /// assert_eq!(MessageType::from_raw(0x13), MessageType::NETWORK_NUMBER_IS);
-    /// assert_eq!(MessageType::NETWORK_NUMBER_IS.name(), Some("NETWORK_NUMBER_IS"));
+    /// assert_eq!(NetworkMessageType::from_raw(0x13), NetworkMessageType::NETWORK_NUMBER_IS);
+    /// assert_eq!(NetworkMessageType::NETWORK_NUMBER_IS.name(), Some("NETWORK_NUMBER_IS"));
     ///
     /// // A proprietary type has no name, but keeps its octet.
-    /// let proprietary = MessageType::from_raw(0x80);
+    /// let proprietary = NetworkMessageType::from_raw(0x80);
     /// assert!(proprietary.is_proprietary() && !proprietary.is_defined());
-    /// assert_eq!(format!("{proprietary:?}"), "MessageType(128)");
+    /// assert_eq!(format!("{proprietary:?}"), "NetworkMessageType(128)");
     /// ```
-    pub struct MessageType(u8);
+    pub struct NetworkMessageType(u8);
 
     // Routing discovery: finding the router that reaches a network, and
     // the refusal a router sends when it can't route a message.
@@ -149,7 +149,7 @@ named_codes! {
     const WHAT_IS_NETWORK_NUMBER = 0x12;
 }
 
-impl MessageType {
+impl NetworkMessageType {
     /// Whether this is a vendor-proprietary type, 0x80 and up, which an NPDU
     /// follows with a two-octet vendor ID.
     #[must_use]
@@ -175,13 +175,13 @@ named_codes! {
     /// their octets are.
     ///
     /// ```
-    /// use bacnet_router_core::message::RejectReason;
+    /// use bacnet_npdu::RejectMessageReason;
     ///
-    /// assert_eq!(RejectReason::from_raw(4), RejectReason::MESSAGE_TOO_LONG);
-    /// assert_eq!(format!("{}", RejectReason::ROUTER_BUSY), "ROUTER_BUSY");
-    /// assert_eq!(format!("{:?}", RejectReason::from_raw(5)), "RejectReason(5)");
+    /// assert_eq!(RejectMessageReason::from_raw(4), RejectMessageReason::MESSAGE_TOO_LONG);
+    /// assert_eq!(format!("{}", RejectMessageReason::ROUTER_BUSY), "ROUTER_BUSY");
+    /// assert_eq!(format!("{:?}", RejectMessageReason::from_raw(5)), "RejectMessageReason(5)");
     /// ```
-    pub struct RejectReason(u8);
+    pub struct RejectMessageReason(u8);
 
     /// Some other error.
     const OTHER = 0;

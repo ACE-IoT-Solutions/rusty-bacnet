@@ -177,7 +177,7 @@ async fn loopback_shared_runtime_routes_same_invoke_id_by_admitted_role() {
     let mut peer_rx = peer.start().await.unwrap();
     let (responder_wire_tx, responder_wire_rx) = oneshot::channel();
     let peer_task = tokio::spawn(async move {
-        peer.send_apdu(&read_request(0), &[0x01], true, NetworkPriority::NORMAL)
+        peer.send_apdu(&read_request(0), &[0x01], true, NetworkPriority::Normal)
             .await
             .unwrap();
 
@@ -191,7 +191,7 @@ async fn loopback_shared_runtime_routes_same_invoke_id_by_admitted_role() {
             &read_ack(&requester_request, 12.5),
             &[0x01],
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
         )
         .await
         .unwrap();
@@ -248,7 +248,7 @@ async fn loopback_shared_runtime_routes_same_invoke_id_by_admitted_role() {
                 vec![0x20, 0x00, 0x0c],
                 MacAddr::from_slice(&[0x02]),
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
             )
             .await,
         Err(Error::Encoding(message)) if message == "endpoint shutdown"

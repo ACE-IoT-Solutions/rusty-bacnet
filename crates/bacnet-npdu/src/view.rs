@@ -1,47 +1,27 @@
-//! A borrowed view of an NPDU (Clause 6.2), and its writer.
+//! The borrowed view of an NPDU (Clause 6.2): [`Npdu`] and
+//! [`Npdu::decode`].
 //!
-//! [`Npdu::parse`] reads the protocol control information in place and
+//! [`Npdu::decode`] reads the protocol control information in place and
 //! borrows every variable field from the frame: the DADR and SADR, and the
 //! payload behind the NPCI, with its offset so a host can slice its own
-//! buffer. It accepts and refuses exactly what `bacnet-encoding`'s
-//! `decode_npdu` does, and reports the same fields; a property test against
-//! that decoder keeps the two equal. As there, a DLEN or SLEN past
-//! [`MAX_MAC_LEN`] is refused before its address is read, apart from every
-//! other fault ([`ParseError::AddressTooLong`]), with what a router needs to
-//! address its reject.
-//!
-//! [`Npdu::write`] goes the other way, into the caller's buffer, after
-//! [`Npdu::encoded_len`] has told the caller how long the result will be.
-//! Like the decoder, the view keeps no reserved control bits, so writing a
-//! parsed NPDU gives the octets `bacnet-encoding` would encode for it.
-
-mod mac;
-mod write;
+//! buffer. A DLEN or SLEN past [`MAX_MAC_LEN`] is refused before its
+//! address is read, apart from every other fault
+//! ([`DecodeError::AddressTooLong`]), with what a router needs to address
+//! its reject. The view keeps no reserved control bits, so encoding a
+//! decoded NPDU gives the canonical octets for it.
 
 use core::fmt;
 
-pub use mac::{Mac, MacTooLong};
-pub use write::WriteError;
-
-use crate::message::MessageType;
-use crate::MAX_MAC_LEN;
-
-/// The protocol version every NPDU starts with.
-pub const VERSION: u8 = 1;
-
-/// The DNET of a global broadcast.
-pub const GLOBAL_NETWORK: u16 = 0xFFFF;
+use crate::{NetworkMessageType, NetworkPriority, GLOBAL_NETWORK, MAX_MAC_LEN, VERSION};
 
 /// Control octet: a network-layer message, not an APDU.
-const NETWORK_MESSAGE: u8 = 0x80;
+pub(crate) const NETWORK_MESSAGE: u8 = 0x80;
 /// Control octet: DNET, DLEN, DADR and the hop count are present.
-const DESTINATION: u8 = 0x20;
+pub(crate) const DESTINATION: u8 = 0x20;
 /// Control octet: SNET, SLEN and SADR are present.
-const SOURCE: u8 = 0x08;
+pub(crate) const SOURCE: u8 = 0x08;
 /// Control octet: the sender expects a reply.
-const EXPECTING_REPLY: u8 = 0x04;
-/// Control octet: the network priority, 0 to 3.
-const PRIORITY: u8 = 0x03;
+pub(crate) const EXPECTING_REPLY: u8 = 0x04;
 
 /// A network and a MAC on it: a DNET and DADR, or an SNET and SADR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,38 +35,37 @@ pub struct Address<'a> {
 
 /// An NPDU's control information, with its payload, borrowed from a frame.
 ///
-/// The fields are those of `bacnet-encoding`'s `Npdu`, without its owned
-/// buffers: a network-layer message is one whose [`message_type`] is set.
+/// A network-layer message is one whose [`message_type`] is set; without
+/// it the payload is an APDU. `bacnet-encoding`'s owned `Npdu` holds the
+/// same fields in owned buffers and decodes and encodes through this view.
 ///
 /// [`message_type`]: Self::message_type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Npdu<'a> {
     /// Whether the sender expects a reply.
     pub expecting_reply: bool,
-    /// The network priority, 0 (normal) to 3 (life safety): the control
-    /// octet's two low bits. A parsed NPDU never has more than 3, and the
-    /// writer writes only those two bits.
-    pub priority: u8,
+    /// The network priority: the control octet's two low bits.
+    pub priority: NetworkPriority,
     /// DNET and DADR, for a remote destination or a global broadcast.
     pub destination: Option<Address<'a>>,
     /// SNET and SADR, which a router adds to what it relays.
     pub source: Option<Address<'a>>,
     /// The hop count. Only an NPDU with a destination carries one; without
-    /// it this is 255, as in `bacnet-encoding`.
+    /// it this is 255, and the encoder leaves it out.
     pub hop_count: u8,
     /// The network-layer message type, or `None` for an APDU.
-    pub message_type: Option<MessageType>,
+    pub message_type: Option<NetworkMessageType>,
     /// The vendor ID of a proprietary message type
-    /// ([`MessageType::is_proprietary`]).
+    /// ([`NetworkMessageType::is_proprietary`]).
     pub vendor_id: Option<u16>,
     /// The APDU, or the message's data, behind the NPCI.
     pub payload: &'a [u8],
     /// Where [`payload`](Self::payload) starts in the frame. Ignored by the
-    /// writer.
+    /// encoder.
     pub payload_offset: usize,
 }
 
-/// Which address a [`ParseError::AddressTooLong`] concerns.
+/// Which address a [`DecodeError::AddressTooLong`] concerns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AddressField {
     /// DLEN and DADR.
@@ -95,13 +74,34 @@ pub enum AddressField {
     Source,
 }
 
-/// Why [`Npdu::parse`] refused a frame.
+impl AddressField {
+    /// The name of this address's length octet: `DLEN` or `SLEN`.
+    #[must_use]
+    pub const fn length_octet(self) -> &'static str {
+        match self {
+            Self::Destination => "DLEN",
+            Self::Source => "SLEN",
+        }
+    }
+}
+
+/// `destination` or `source`.
+impl fmt::Display for AddressField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Destination => "destination",
+            Self::Source => "source",
+        })
+    }
+}
+
+/// Why [`Npdu::decode`] refused a frame.
 ///
-/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
-/// `match` needs a wildcard arm.
+/// The two cases are the split a router acts on: an over-long address draws
+/// a reject, anything else is dropped. So the enum is exhaustive, and a new
+/// fault joins [`Malformed`], which is `#[non_exhaustive]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ParseError<'a> {
+pub enum DecodeError<'a> {
     /// A DLEN or SLEN past [`MAX_MAC_LEN`]: an address no data link uses,
     /// which draws reject reason 6 (Clause 6.4.4) if the frame names a DNET.
     AddressTooLong {
@@ -137,7 +137,7 @@ pub enum Malformed {
     EmptySource,
 }
 
-impl From<Malformed> for ParseError<'_> {
+impl From<Malformed> for DecodeError<'_> {
     fn from(fault: Malformed) -> Self {
         Self::Malformed(fault)
     }
@@ -156,25 +156,20 @@ impl fmt::Display for Malformed {
 
 impl core::error::Error for Malformed {}
 
-impl fmt::Display for ParseError<'_> {
+impl fmt::Display for DecodeError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AddressTooLong { field, length, .. } => {
-                let octet = match field {
-                    AddressField::Destination => "DLEN",
-                    AddressField::Source => "SLEN",
-                };
-                write!(
-                    f,
-                    "NPDU {octet}={length} exceeds the {MAX_MAC_LEN}-octet address limit"
-                )
-            }
+            Self::AddressTooLong { field, length, .. } => write!(
+                f,
+                "NPDU {}={length} exceeds the {MAX_MAC_LEN}-octet address limit",
+                field.length_octet()
+            ),
             Self::Malformed(fault) => fault.fmt(f),
         }
     }
 }
 
-impl core::error::Error for ParseError<'_> {}
+impl core::error::Error for DecodeError<'_> {}
 
 impl<'a> Npdu<'a> {
     /// An APDU for the local network: no addresses, normal priority.
@@ -182,7 +177,7 @@ impl<'a> Npdu<'a> {
     pub const fn apdu(payload: &'a [u8]) -> Self {
         Self {
             expecting_reply: false,
-            priority: 0,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             hop_count: 255,
@@ -196,7 +191,7 @@ impl<'a> Npdu<'a> {
     /// A network-layer message of a standard type for the local network: no
     /// addresses, normal priority, no vendor ID.
     #[must_use]
-    pub const fn message(message_type: MessageType, payload: &'a [u8]) -> Self {
+    pub const fn message(message_type: NetworkMessageType, payload: &'a [u8]) -> Self {
         let mut npdu = Self::apdu(payload);
         npdu.message_type = Some(message_type);
         npdu
@@ -217,9 +212,9 @@ impl<'a> Npdu<'a> {
 
     /// Read the NPDU at the start of `frame`, borrowing from it.
     ///
-    /// The checks run in the order the fields come, as in `bacnet-encoding`,
-    /// so the two report the same fault for every frame.
-    pub fn parse(frame: &'a [u8]) -> Result<Self, ParseError<'a>> {
+    /// The checks run in the order the fields come, so a frame with several
+    /// faults reports the first one. Reserved control bits are read past.
+    pub fn decode(frame: &'a [u8]) -> Result<Self, DecodeError<'a>> {
         let [version, control, ..] = *frame else {
             return Err(Malformed::Truncated.into());
         };
@@ -237,7 +232,7 @@ impl<'a> Npdu<'a> {
             }
             at += 3;
             if usize::from(length) > MAX_MAC_LEN {
-                return Err(ParseError::AddressTooLong {
+                return Err(DecodeError::AddressTooLong {
                     field: AddressField::Destination,
                     length,
                     dnet: Some(network),
@@ -264,7 +259,7 @@ impl<'a> Npdu<'a> {
                 return Err(Malformed::EmptySource.into());
             }
             if usize::from(length) > MAX_MAC_LEN {
-                return Err(ParseError::AddressTooLong {
+                return Err(DecodeError::AddressTooLong {
                     field: AddressField::Source,
                     length,
                     dnet: destination.map(|destination| destination.network),
@@ -285,7 +280,7 @@ impl<'a> Npdu<'a> {
         let mut message_type = None;
         let mut vendor_id = None;
         if control & NETWORK_MESSAGE != 0 {
-            let kind = MessageType::from_raw(*frame.get(at).ok_or(Malformed::Truncated)?);
+            let kind = NetworkMessageType::from_raw(*frame.get(at).ok_or(Malformed::Truncated)?);
             at += 1;
             if kind.is_proprietary() {
                 let vendor = octets(frame, at, 2)?;
@@ -297,7 +292,7 @@ impl<'a> Npdu<'a> {
 
         Ok(Self {
             expecting_reply: control & EXPECTING_REPLY != 0,
-            priority: control & PRIORITY,
+            priority: NetworkPriority::from_control(control),
             destination,
             source,
             hop_count,
@@ -325,7 +320,7 @@ fn octets(frame: &[u8], at: usize, length: u8) -> Result<&[u8], Malformed> {
 }
 
 /// The SNET and SADR at `at`, behind a DADR too long to read: only one the
-/// parser would accept, complete, so a router's reject reaches a real node.
+/// decoder would accept, complete, so a router's reject reaches a real node.
 fn source_behind(frame: &[u8], at: usize) -> Option<Address<'_>> {
     let (network, length) = network_and_length(frame, at).ok()?;
     if network == 0 || network == GLOBAL_NETWORK || length == 0 {

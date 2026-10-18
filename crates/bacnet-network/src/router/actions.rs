@@ -8,7 +8,7 @@
 //! logged before the engine, and tells the engine, which ends a chunked
 //! Initialize-Routing-Table-Ack answer there.
 
-use bacnet_router_core::message::MessageType;
+use bacnet_npdu::NetworkMessageType;
 use bacnet_router_core::router::{Action, Cause, Dest, Kind, SendRefusal};
 use bacnet_transport::port::DataAttribute;
 use bacnet_types::MacAddr;
@@ -76,14 +76,14 @@ fn refused(kind: Kind, error: &TrySendError<()>) {
         Kind::Forward => warn!(%error, "Router dropped message: output channel full"),
         Kind::Global => warn!(%error, "Router dropped broadcast: output channel full"),
         Kind::Reject(_) => warn!(%error, "Router dropped reject message: output channel full"),
-        Kind::Answer(MessageType::I_AM_ROUTER_TO_NETWORK) => {
+        Kind::Answer(NetworkMessageType::I_AM_ROUTER_TO_NETWORK) => {
             warn!(%error, "Router dropped I-Am-Router response: output channel full")
         }
-        Kind::Answer(MessageType::INITIALIZE_ROUTING_TABLE_ACK) => {
+        Kind::Answer(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK) => {
             warn!(%error, "Router dropped Init-Routing-Table-ACK: output channel full")
         }
         Kind::Answer(_) => warn!(%error, "Router dropped Network-Number-Is: output channel full"),
-        Kind::Announce(MessageType::NETWORK_NUMBER_IS) => {
+        Kind::Announce(NetworkMessageType::NETWORK_NUMBER_IS) => {
             warn!(%error, "Router dropped Network-Number-Is announcement: output channel full")
         }
         Kind::Announce(_) => {

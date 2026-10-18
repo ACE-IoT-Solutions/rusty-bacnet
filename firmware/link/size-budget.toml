@@ -91,6 +91,10 @@
 # counts and sizes plus 12%. The text and flash budgets stay as they were:
 # the sizes plus 12% would be looser.
 #
+# apdu's fmt_functions dropped from 12 to 11 on every target when
+# bacnet-encoding's owned NPDU began decoding through bacnet-npdu's view
+# (#1770): its address field no longer formats itself.
+#
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
 # a little smaller than thumbv7m's:
@@ -303,7 +307,7 @@ data = 64
 bss = 1184
 flash = 48864
 ram = 1184
-fmt_functions = 12
+fmt_functions = 11
 div64_functions = 0
 memmove_functions = 2
 
@@ -380,7 +384,7 @@ data = 64
 bss = 1184
 flash = 50608
 ram = 1184
-fmt_functions = 12
+fmt_functions = 11
 div64_functions = 0
 memmove_functions = 2
 
@@ -457,7 +461,7 @@ data = 64
 bss = 1184
 flash = 57232
 ram = 1184
-fmt_functions = 12
+fmt_functions = 11
 div64_functions = 0
 memmove_functions = 2
 
@@ -534,7 +538,7 @@ data = 64
 bss = 1184
 flash = 48752
 ram = 1184
-fmt_functions = 12
+fmt_functions = 11
 div64_functions = 0
 memmove_functions = 2
 

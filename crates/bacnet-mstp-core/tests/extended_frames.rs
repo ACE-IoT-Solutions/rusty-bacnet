@@ -10,11 +10,12 @@ use bacnet_mstp_codec::{
     MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
     MAX_STANDARD_MPDU_DATA,
 };
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, ActionBuffers, ConfigError, CoreBuffer, DequeuedNpdu, Direction, Duration,
     ExtendedActionBuffers, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
-    ReplyDecision, RequestError, RequestId,
+    QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage, ReplyDecision,
+    RequestError, RequestId,
 };
 
 type Queues = FixedQueues<4, 4, MAX_EXTENDED_MPDU_DATA>;

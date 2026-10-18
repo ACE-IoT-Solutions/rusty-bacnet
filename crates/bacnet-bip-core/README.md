@@ -4,8 +4,9 @@ Portable BACnet/IP behaviour from Annex J of ASHRAE 135, for
 [rusty-bacnet](https://github.com/jscott3201/rusty-bacnet). It sits above
 `bacnet-bip-codec`, which has the wire format, and below a socket.
 
-- `#![no_std]`, no allocator, no dependencies besides `bacnet-bip-codec`
-  and `bacnet-time`. The codec is re-exported as `bacnet_bip_core::codec`,
+- `#![no_std]`, no allocator, no dependencies besides `bacnet-bip-codec`,
+  `bacnet-npdu` (for `MAX_NPDU`, the longest NPDU B/IP carries) and
+  `bacnet-time`. The codec is re-exported as `bacnet_bip_core::codec`,
   since the API speaks its types.
 - Tables live in arrays whose size you pick with a const generic.
 - Time is an `Instant` you pass to each call; the crate reads no clock. It

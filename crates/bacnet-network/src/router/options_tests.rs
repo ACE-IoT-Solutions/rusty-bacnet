@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
+use bacnet_npdu::NetworkMessageType;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::enums::NetworkMessageType;
 use tokio::time::{timeout, Duration};
 
 use super::*;
@@ -50,7 +50,7 @@ async fn ports() -> (
 async fn one_start_combines_admission_tracking_a_control_policy_and_the_control_receiver() {
     let (ports, [(mut peer_a, _), (mut peer_b, _)]) = ports().await;
     // Hardened, with an authorizer that admits rejects and nothing else.
-    let reject = NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw();
+    let reject = NetworkMessageType::REJECT_MESSAGE_TO_NETWORK;
     let options = RouterOptions::new()
         .track_admission()
         .control_policy(ControlPolicy::Hardened)

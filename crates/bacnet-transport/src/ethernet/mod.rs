@@ -271,6 +271,11 @@ mod transport {
     /// Max NPDU size for Ethernet: 1518 (max frame) - 14 (eth header) - 3 (LLC) - 4 (FCS by NIC) = 1497.
     pub const MAX_ETHERNET_NPDU: usize = 1497;
 
+    const _: () = assert!(
+        MAX_ETHERNET_NPDU == bacnet_npdu::MAX_NPDU,
+        "an Ethernet frame carries the longest NPDU any data link carries"
+    );
+
     /// BACnet Ethernet transport over raw LLC frames.
     ///
     /// Uses Linux AF_PACKET raw sockets. Requires `CAP_NET_RAW` or root.

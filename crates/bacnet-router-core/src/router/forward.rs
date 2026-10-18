@@ -5,9 +5,9 @@ use super::host::{Event, Host};
 use super::ingress::{Arrival, Discard, Received};
 use super::output::{Kind, Target};
 use super::Storage;
-use super::MIN_LIMIT;
-use crate::message::{MessageType, RejectReason};
+use super::MIN_PORT_LIMIT;
 use crate::npdu::{Address, Npdu};
+use crate::npdu::{NetworkMessageType, RejectMessageReason};
 use crate::table::Route;
 use crate::MAX_MAC_LEN;
 
@@ -22,11 +22,11 @@ fn source_of<'f>(at: &Arrival<'f>, npdu: &Npdu<'f>) -> Option<Address<'f>> {
 
 /// The longest reject that can arrive: both addresses at
 /// [`MAX_MAC_LEN`], the hop count, the type and three octets of data. A
-/// port carries at least [`MIN_LIMIT`], so its NPDU alone fits. Link data
+/// port carries at least [`MIN_PORT_LIMIT`], so its NPDU alone fits. Link data
 /// attributes are outside this bound; eligibility for a later rejection
 /// must also exclude the reject's message type.
 pub(super) const LONGEST_REJECT: usize = 2 + 2 * (3 + MAX_MAC_LEN) + 1 + 1 + 3;
-const _: () = assert!(LONGEST_REJECT < MIN_LIMIT as usize);
+const _: () = assert!(LONGEST_REJECT < MIN_PORT_LIMIT as usize);
 
 impl<
         const P: usize,
@@ -100,7 +100,7 @@ impl<
         };
         let limit = limits.get(to.is_empty());
         let octets = rewritten.encoded_len();
-        let eligible = npdu.message_type != Some(MessageType::REJECT_MESSAGE_TO_NETWORK);
+        let eligible = npdu.message_type != Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK);
         // A route is found by DNET, so retain that DNET before the rewrite.
         let dnet = npdu
             .destination
@@ -114,7 +114,13 @@ impl<
                 rejected: eligible.then_some(dnet),
             });
             if eligible {
-                self.reject(at, npdu.source, dnet, RejectReason::MESSAGE_TOO_LONG, host);
+                self.reject(
+                    at,
+                    npdu.source,
+                    dnet,
+                    RejectMessageReason::MESSAGE_TOO_LONG,
+                    host,
+                );
             }
             return Received::Handled;
         }

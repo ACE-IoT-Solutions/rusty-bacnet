@@ -23,6 +23,7 @@ bip = ["dep:bacnet-bip-core"]
 mstp = ["dep:bacnet-mstp-core"]
 
 [dependencies]
+bacnet-npdu = { workspace = true }
 bacnet-time = { workspace = true }
 bacnet-bip-core = { workspace = true, optional = true }
 bacnet-mstp-core = { workspace = true, optional = true }

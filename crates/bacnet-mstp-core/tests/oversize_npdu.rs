@@ -2,10 +2,11 @@
 //! refused at the queue, or dropped and counted when it gets in anyway.
 
 use bacnet_mstp_codec::{Frame, FrameHeader, FrameType, MAX_EXTENDED_MPDU_DATA};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, DequeuedNpdu, Direction, ExtendedActionBuffers, FixedQueues, Instant, MasterCore,
-    MasterState, MstpCoreConfig, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind,
-    QueueRefusal, QueueStorage,
+    MasterState, MstpCoreConfig, QueueCounters, QueueItemInfo, QueueKind, QueueRefusal,
+    QueueStorage,
 };
 
 /// Queues whose slots hold more than a standard frame's data.

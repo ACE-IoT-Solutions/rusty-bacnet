@@ -1,6 +1,7 @@
 //! What the router asks of its caller during a call: the [`Host`] hooks.
 
-use crate::message::{MessageType, Networks, RejectReason, RoutingEntries};
+use crate::message::{Networks, RoutingEntries};
+use crate::npdu::{NetworkMessageType, RejectMessageReason};
 use crate::table::RejectEffect;
 use crate::PortId;
 
@@ -109,7 +110,7 @@ pub struct Claim<'c> {
     /// The link-layer address of the node that sent it.
     pub source: &'c [u8],
     /// Its message type.
-    pub message_type: MessageType,
+    pub message_type: NetworkMessageType,
     /// Its vendor ID, for a proprietary type.
     pub vendor_id: Option<u16>,
     /// The SNET it claims, if any.
@@ -158,7 +159,7 @@ pub enum Event {
         /// The network it names.
         network: u16,
         /// Its reason.
-        reason: RejectReason,
+        reason: RejectMessageReason,
         /// What it did to the route.
         effect: RejectEffect,
     },
@@ -216,13 +217,13 @@ pub enum Event {
     /// rejected.
     SecurityMessage {
         /// Its type.
-        message_type: MessageType,
+        message_type: NetworkMessageType,
     },
     /// A message of a type this router doesn't handle arrived for it; it
     /// draws reject reason 3.
     UnknownMessage {
         /// Its type.
-        message_type: MessageType,
+        message_type: NetworkMessageType,
     },
     /// A Network-Number-Is reported a number other than the port's.
     NumberConflict {

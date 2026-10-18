@@ -17,9 +17,10 @@ use std::collections::BTreeMap;
 use bacnet_mstp_codec::{
     FrameHeader, StreamDecoder, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
 };
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    AllocQueues, Duration, Instant, MasterCore, MasterState, NetworkPriority, QueueRefusal,
-    RequestId, Storage, TransmitId, DEFAULT_DELIVERY_SLOTS,
+    AllocQueues, Duration, Instant, MasterCore, MasterState, QueueRefusal, RequestId, Storage,
+    TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
 
 use crate::event::{Class, Key, Queue};

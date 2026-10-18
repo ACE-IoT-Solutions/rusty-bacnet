@@ -129,7 +129,7 @@ async fn write_group_sends_the_request_to_a_device_or_a_broadcast() {
         assert_eq!(frame.to.as_deref(), to, "{destination:?}");
         let npdu = decode_npdu(frame.npdu).unwrap();
         assert!(!npdu.expecting_reply, "{destination:?}");
-        assert_eq!(npdu.priority, NetworkPriority::NORMAL);
+        assert_eq!(npdu.priority, NetworkPriority::Normal);
         match network {
             Some(network) => {
                 let dnet = npdu.destination.expect("a DNET");

@@ -6,7 +6,7 @@ use super::ingress::{Arrival, Discard, Received};
 use super::tasks::Task;
 use super::Group;
 use super::Storage;
-use crate::message::RejectReason;
+use crate::npdu::RejectMessageReason;
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::{Mac, PortId};
 
@@ -54,7 +54,7 @@ impl RejectOrigin {
         }
     }
 
-    fn task(self, reason: RejectReason) -> Task {
+    fn task(self, reason: RejectMessageReason) -> Task {
         let destination = (self.destination_network != 0).then_some(Address {
             network: self.destination_network,
             mac: self.destination.as_slice(),
@@ -105,7 +105,7 @@ impl<
         at: &Arrival<'_>,
         origin: Option<Address<'_>>,
         network: u16,
-        reason: RejectReason,
+        reason: RejectMessageReason,
         host: &mut impl Host,
     ) {
         if let Some(origin) = self.reject_origin(at, origin, network) {
@@ -139,7 +139,7 @@ impl<
     }
 
     /// Append a rejection without replacing any already waiting output.
-    pub(super) fn queue_reject(&mut self, origin: RejectOrigin, reason: RejectReason) {
+    pub(super) fn queue_reject(&mut self, origin: RejectOrigin, reason: RejectMessageReason) {
         bump(&mut self.counters.rejects);
         self.out.push(origin.task(reason));
     }

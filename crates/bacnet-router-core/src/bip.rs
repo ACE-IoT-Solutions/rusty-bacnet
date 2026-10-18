@@ -63,7 +63,8 @@ use bacnet_bip_core::codec::{address_from_slice, address_to_octets};
 use bacnet_bip_core::node::{self, Cast, Delivery, Link};
 use bacnet_bip_core::port::{BbmdPort, Datagrams, NodePort};
 
-use crate::router::{Dest, Groups, Limits, PortConfig, Send, SendRefusal};
+use crate::npdu::NpduLimits;
+use crate::router::{Dest, Groups, PortConfig, Send, SendRefusal};
 use crate::{Arrived, Instant, Mac, PortId, MAX_NPDU};
 
 /// A router port on a B/IP link, by its index: the translator between the
@@ -97,7 +98,7 @@ impl BipPort {
         PortConfig::new(
             network,
             Mac::from_array(address_to_octets(link.address)),
-            Limits {
+            NpduLimits {
                 unicast: limit(Cast::Unicast),
                 broadcast: limit(Cast::Broadcast),
             },

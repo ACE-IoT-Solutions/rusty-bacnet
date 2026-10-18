@@ -156,7 +156,7 @@ impl PreparedEndpointOperation {
                 self.encoded.clone(),
                 self.destination.clone(),
                 true,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
                 self.data_attributes.clone(),
             );
             let send_result = match send {

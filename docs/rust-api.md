@@ -20,9 +20,16 @@ bacnet-types → bacnet-encoding → bacnet-services → bacnet-transport → ba
 ```
 
 The portable `no_std` crates sit apart, below `bacnet-transport` and
-`bacnet-network`: `bacnet-time` and the two codecs depend on nothing,
-`bacnet-mstp-core` and `bacnet-bip-core` take `bacnet-time` and their codec,
-and `bacnet-router-core` takes all of them. The Tokio MS/TP and B/IP transports
+`bacnet-network`: `bacnet-time`, `bacnet-npdu` and the two codecs depend on
+nothing, `bacnet-mstp-core` and `bacnet-bip-core` take `bacnet-time`,
+`bacnet-npdu` and their codec, and `bacnet-router-core` takes all of them.
+`bacnet-npdu` is the network-layer vocabulary every layer shares, one
+definition of each: the borrowed NPDU view (`Npdu::decode`,
+`Npdu::encoded_len`, `Npdu::encode_into`), `NetworkMessageType`,
+`RejectMessageReason`, the closed `NetworkPriority`, `NpduLimits`, `Mac`,
+`MAX_NPDU` (1,497) and `MAX_MAC_LEN` (18). `bacnet-types` takes it for
+`BACnetAddress::MAX_MAC_LEN`, and `bacnet-encoding`'s owned `Npdu` decodes and
+encodes through its view. The Tokio MS/TP and B/IP transports
 run on the MS/TP and B/IP cores, and `BACnetRouter` on the router core.
 
 ---
@@ -404,20 +411,28 @@ use bacnet_encoding::apdu::*;
 
 ```rust
 use bacnet_encoding::npdu::{Npdu, NpduAddress, NpduDecodeError, encode_npdu, decode_npdu};
+use bacnet_npdu::{NetworkMessageType, NetworkPriority};
 
 // Handles source/destination network addresses, hop count, priority
 ```
 
-DADR and SADR are capped at `NpduAddress::MAX_MAC_LEN` (18) octets, the same
+DADR and SADR are capped at `bacnet_npdu::MAX_MAC_LEN` (18) octets, the same
 limit as `BACnetAddress::MAX_MAC_LEN` (#1141). No built-in data link uses more
 than 6; the bound is defensive. `encode_npdu` refuses a longer address with
 `Error::Encoding`. `decode_npdu` returns `NpduDecodeError`: a DLEN or SLEN past
 the cap is `AddressTooLong { field, length, dnet, source }`, checked before the
-address octets are read, and every other malformation is `Malformed(Error)`.
-For an over-long DADR, `source` is the SNET/SADR behind it when the frame holds
-a complete, valid one, which a router needs to address its reject (#1158). The
-error converts into `Error` (an over-long address becomes `Error::OutOfRange`),
-so `?` still works in functions that return `Result<_, Error>`.
+address octets are read, and every other malformation is
+`Malformed(bacnet_npdu::Malformed)`. For an over-long DADR, `source` is the
+SNET/SADR behind it when the frame holds a complete, valid one, which a router
+needs to address its reject (#1158). The error converts into `Error` (an
+over-long address becomes `Error::Range`, anything else `Error::Decoding`), so
+`?` still works in functions that return `Result<_, Error>`.
+
+The owned `Npdu` decodes and encodes through `bacnet-npdu`'s borrowed view, so
+it accepts and refuses exactly the frames the router core does. Its
+`priority` is a `NetworkPriority` and its `message_type` an
+`Option<NetworkMessageType>`; a network-layer message is one whose
+`message_type` is set (`is_network_message()`).
 
 ---
 
@@ -1999,7 +2014,8 @@ build, or match without `..`: `MstpCounters`, `QueueCounters` and
 `LocalDurationField`, `LocalLimitField`, `TransmitFailure` and
 `ReceiveError`. The enums an adapter acts on case by case, and the closed
 sets, stay exhaustive: `Action`, `ReplyDecision`, `Direction`,
-`MasterState`, `NetworkPriority` and `QueueKind`.
+`MasterState` and `QueueKind`, and `bacnet-npdu`'s `NetworkPriority`, which
+the queues order by (re-exported as `bacnet_mstp_core::npdu`).
 
 Counters drain: `MasterCore::take_counters()` returns the counts since the
 last take, the queues' with them, and starts them again; each is a `u32`
@@ -2012,8 +2028,8 @@ take). Receive errors and transmit aborts count by kind (`framing_errors`,
 
 The Clause 9 values a station can't change are constants: `N_POLL`,
 `N_RETRY_TOKEN`, `N_MIN_OCTETS`, `T_NO_TOKEN` and `T_SLOT`.
-`NetworkPriority` converts with `try_from` (refusing with `PriorityError`)
-and `u8::from`. The queues' starvation limit is
+`NetworkPriority` converts with `try_from` (refusing with `PriorityError`),
+`from_control` (the control octet's two low bits) and `u8::from`. The queues' starvation limit is
 `MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to them;
 queues used without a core start at its default, 8. A broadcast's
 destination is the codec's `BROADCAST_MAC`. The longest NPDU a
@@ -2425,8 +2441,8 @@ live `RouterTable`: the core's `Table`, re-exported in
 `HOLD_RECORDS` (1,024) reject hold-down records. A lookup returns a `Route`
 by value, a copy of the table's row read through its getters (`port()`,
 `is_direct()`, `next_hop()`, `reachability()` and the timestamps); a route
-changes only through the table's own calls. `router_table` also re-exports
-`RejectReason`, which `apply_reject` takes. Times in the
+changes only through the table's own calls. `apply_reject` takes
+`bacnet_npdu::RejectMessageReason`, and routes hold `bacnet_npdu::Mac`. Times in the
 table are the router's own, Tokio time since `start`, which `now()` reads, so
 paused-time tests drive the sweep too. Calls on the table are local
 management, which no wire-control policy sees; drop the guard soon, since
@@ -2452,7 +2468,7 @@ drop(table);
 The control authorizer runs under the same lock, one call at a time, so it
 must not block or call into the router. A router has 1 to 255 ports, each
 on a network from 1 to 65534 and with a MAC of at most
-`NpduAddress::MAX_MAC_LEN` octets, and `start` refuses anything else, the
+`bacnet_npdu::MAX_MAC_LEN` octets, and `start` refuses anything else, the
 network numbers before it starts any transport. Network 0 is no network, and
 0xFFFF, the global broadcast DNET, can't be the SNET the router puts in what
 it relays from the port (Clause 6.2.2.1); the core's `Router::new` refuses
@@ -2562,7 +2578,7 @@ through application queues; cloning the envelope retains it but still omits
 the one-shot MS/TP reply sender. Reconstructing only provenance/direct metadata
 would discard the targeted router endpoint.
 
-An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
+An inbound NPDU whose DLEN or SLEN is past `bacnet_npdu::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it
 and counts it in `address_length_drops()`; a non-router has no reject message
 to send. `BACnetRouter` neither forwards nor delivers it, counts it in its own
@@ -2572,7 +2588,7 @@ that DNET, as it does a DNET it cannot reach. A global broadcast or an NPDU
 without a DNET is dropped without a reject.
 
 Both also drop a frame whose link-layer source MAC, as the transport reports
-it, is longer than `NpduAddress::MAX_MAC_LEN`, before decoding it, and count it
+it, is longer than `bacnet_npdu::MAX_MAC_LEN`, before decoding it, and count it
 in the same `address_length_drops()` (#1198). Nothing answers such a frame, and
 a router learns no route from it. No built-in transport reports a MAC that long
 (B/IP, BACnet/SC and Ethernet use 6 octets, B/IPv6 3, MS/TP 1), so only a
@@ -2803,25 +2819,30 @@ crate builds them like this:
   the counts.
 
 The crate builds the rest, which a caller reads but can't build, or match
-without `..`: `Claim`, `Send`, `Pending` and `MacTooLong`; and a `Route`
-only through its two constructors above. A
-`match` on these enums needs a wildcard arm: `npdu::ParseError`,
-`Malformed`, `WriteError`, `message::DataError`, `router::ConfigError`,
-`Discard`, `Event`, `Kind`, `SendRefusal`, `ControlClass`,
-`table::LearnRefusal`, `Learned` and `RejectEffect`. The enums a host acts
-on case by case, and the closed sets, stay exhaustive: `Action`,
-`Received`, `Dest`, `Cause`, `Group`, `Targets`, `Reachability`,
-`Convergence`, `AddressField` and `WhoIsRouter`.
+without `..`: `Claim`, `Send`, `Pending` and `npdu::MacTooLong`; and a
+`Route` only through its two constructors above. A
+`match` on these enums needs a wildcard arm: `npdu::Malformed`,
+`npdu::EncodeError`, `router::ReplyPlanError`, `message::DataError`,
+`router::ConfigError`, `Discard`, `Event`, `Kind`, `SendRefusal`,
+`ControlClass`, `table::LearnRefusal`, `Learned` and `RejectEffect`. The
+enums a host acts on case by case, and the closed sets, stay exhaustive:
+`Action`, `Received`, `Dest`, `Cause`, `Group`, `Targets`, `Reachability`,
+`Convergence`, `npdu::DecodeError` (an over-long address or `Malformed`),
+`npdu::AddressField`, `npdu::NetworkPriority` and `WhoIsRouter`.
 
-The wire codes are open newtypes, the shape the codecs give `BvlcFunction`
-and `FrameType`: `message::MessageType(u8)` and `RejectReason(u8)`, with
-named constants, `from_raw`, `to_raw`, `name` and `is_defined`.
+The NPDU vocabulary is `bacnet-npdu`'s, re-exported as
+`bacnet_router_core::npdu` so a router image needs this crate alone: the
+view and its encoder, `NpduLimits` (a port's limits; `router::MIN_PORT_LIMIT`
+is the least a port may have), `Mac`, `MAX_NPDU` and `MAX_MAC_LEN`. The wire
+codes are open newtypes, the shape the codecs give `BvlcFunction` and
+`FrameType`: `npdu::NetworkMessageType(u8)` and `npdu::RejectMessageReason(u8)`,
+with named constants, `from_raw`, `to_raw`, `name` and `is_defined`.
 `Npdu::message_type`, `Npdu::message`, `Reject::reason`,
 `Claim::message_type`, the `Event`s and `Kind`s that carry a code, and
 `Table::apply_reject` take them. Match the constants with a wildcard arm
-for the rest (`Kind::Answer(MessageType::I_AM_ROUTER_TO_NETWORK) => ..`), or
-compare `to_raw()`; `MessageType::is_proprietary` and `is_removed_security`
-cover the ranges.
+for the rest (`Kind::Answer(NetworkMessageType::I_AM_ROUTER_TO_NETWORK) => ..`),
+or compare `to_raw()`; `NetworkMessageType::is_proprietary` and
+`is_removed_security` cover the ranges.
 
 A `Route` is a copy of the table's row, read through its getters:
 `port()`, `is_direct()`, `next_hop()`, `last_seen()`, `last_used()`,
@@ -5580,7 +5601,7 @@ client
 client.clear_routed_path_limit(&router_mac, dnet).await?;
 ```
 
-Every MAC on a routed path holds to `NpduAddress::MAX_MAC_LEN` (18 octets), the
+Every MAC on a routed path holds to `bacnet_npdu::MAX_MAC_LEN` (18 octets), the
 longest address the NPDU codec carries and the network layer delivers (#1267).
 A routed request refuses a longer DADR or local source MAC, and a router MAC
 that is empty or longer, with `Error::Encoding` before it reserves or waits on

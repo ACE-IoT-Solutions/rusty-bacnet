@@ -1,8 +1,9 @@
 //! Original-ingress authority for an application response.
 use crate::layer::ReceivedApdu;
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{DirectResponse, TransportProvenance};
-use bacnet_types::{enums::NetworkPriority, error::Error};
+use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 
 /// Saved transport authority and addressing for a response.
@@ -49,7 +50,7 @@ impl ResponseRoute {
         destination: Option<&NpduAddress>,
     ) -> Result<u16, Error> {
         let direct = self.direct()?;
-        let header = self.encode(&[], destination, false, NetworkPriority::NORMAL)?;
+        let header = self.encode(&[], destination, false, NetworkPriority::Normal)?;
         let mut npdu_limit = usize::MAX;
         if let Some(router) = &self.router {
             npdu_limit = usize::from(router.max_npdu);
@@ -118,9 +119,9 @@ impl ResponseRoute {
         priority: NetworkPriority,
     ) -> Result<BytesMut, Error> {
         if let Some(router) = &self.router {
-            let npdu = router.plan.npdu(apdu, expecting_reply, priority.to_raw());
+            let npdu = router.plan.npdu(apdu, expecting_reply, priority);
             let mut encoded = BytesMut::zeroed(npdu.encoded_len());
-            npdu.write(&mut encoded)
+            npdu.encode_into(&mut encoded)
                 .map_err(|error| Error::Encoding(error.to_string()))?;
             return Ok(encoded);
         }

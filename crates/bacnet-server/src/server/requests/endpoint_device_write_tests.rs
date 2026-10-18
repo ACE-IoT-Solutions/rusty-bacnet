@@ -543,7 +543,7 @@ async fn endpoint_device_write_direct_and_routed_egress_preserve_destination() {
         let npdu = decode_npdu(sent.npdu).unwrap();
         assert_eq!(npdu.destination, destination);
         assert!(!npdu.expecting_reply);
-        assert_eq!(npdu.priority, NetworkPriority::NORMAL);
+        assert_eq!(npdu.priority, NetworkPriority::Normal);
         assert!(
             matches!(decode_apdu(npdu.payload).unwrap(),Apdu::SimpleAck(ack) if ack.invoke_id == 71)
         );

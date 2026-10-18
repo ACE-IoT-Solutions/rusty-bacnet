@@ -66,26 +66,23 @@ mod tasks;
 use core::borrow::BorrowMut;
 use core::fmt;
 
-pub use config::{ConfigError, LimitError, Limits, Options, PortConfig};
+pub use config::{ConfigError, LimitError, Options, PortConfig, MIN_PORT_LIMIT};
 pub use counters::Counters;
 pub use groups::{Group, GroupClassifier, Groups};
 pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 pub use reject::RejectOrigin;
-pub use reply::ReplyPlan;
+pub use reply::{ReplyPlan, ReplyPlanError};
 
 use counters::bump;
 use output::Outputs;
 use tasks::Task;
 
 use crate::discovery::Discovery;
-use crate::npdu::GLOBAL_NETWORK;
+use crate::npdu::{NpduLimits, GLOBAL_NETWORK};
 use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
-
-/// The NPDU limits a port may have: at least this.
-pub(crate) const MIN_LIMIT: u16 = Limits::MIN;
 
 /// Everything large a [`Router`] keeps: up to `P` ports, a table of `R`
 /// routes and `H` hold-down records, `D` searches, and an output scratch of
@@ -214,15 +211,16 @@ pub struct Router<
 /// storage's sizes are said once, in the alias.
 ///
 /// ```
-/// use bacnet_router_core::router::{Groups, Limits, Options, PortConfig};
-/// use bacnet_router_core::{Instant, Mac, RouterIn, Storage};
+/// use bacnet_router_core::npdu::{Mac, NpduLimits};
+/// use bacnet_router_core::router::{Groups, Options, PortConfig};
+/// use bacnet_router_core::{Instant, RouterIn, Storage};
 ///
 /// /// Two ports, 8 routes and 8 hold-down records.
 /// type Engine<'s> = RouterIn<'s, 2, 8, 8>;
 ///
 /// let ports = [
-///     PortConfig::new(1, Mac::from_array([1]), Limits::both(501), Groups::None),
-///     PortConfig::new(2, Mac::from_array([2]), Limits::both(501), Groups::None),
+///     PortConfig::new(1, Mac::from_array([1]), NpduLimits::both(501), Groups::None),
+///     PortConfig::new(2, Mac::from_array([2]), NpduLimits::both(501), Groups::None),
 /// ];
 /// let mut storage = Storage::new();
 /// let router = Engine::new(&mut storage, &ports, Options::STANDARD, Instant::ZERO)?;
@@ -311,7 +309,7 @@ where
             {
                 return Err(ConfigError::DuplicateNetwork(port.network));
             }
-            if !port.max_npdu.fit(N) {
+            if !config::limits_fit(port.max_npdu, N) {
                 return Err(ConfigError::Limit(id));
             }
         }
@@ -414,7 +412,7 @@ where
         if why == SendRefusal::TooLong {
             bump(&mut store.counters.egress_too_long);
             if let Some(origin) = origin {
-                store.queue_reject(origin, crate::message::RejectReason::MESSAGE_TOO_LONG);
+                store.queue_reject(origin, crate::npdu::RejectMessageReason::MESSAGE_TOO_LONG);
             }
         }
         bump(&mut store.counters.refused);
@@ -434,15 +432,19 @@ where
     /// don't change.
     ///
     /// Refused, changing nothing, for a port the router doesn't have, or a
-    /// limit under [`Limits::MIN`] or over the scratch, as
+    /// limit under [`MIN_PORT_LIMIT`] or over the scratch, as
     /// [`new`](Self::new) refuses one.
-    pub fn set_port_max_npdu(&mut self, port: PortId, limits: Limits) -> Result<(), LimitError> {
+    pub fn set_port_max_npdu(
+        &mut self,
+        port: PortId,
+        limits: NpduLimits,
+    ) -> Result<(), LimitError> {
         let store = self.store();
         let count = store.port_count;
         let Some(config) = store.ports[..count].get_mut(usize::from(port.0)) else {
             return Err(LimitError::UnknownPort);
         };
-        if !limits.fit(N) {
+        if !config::limits_fit(limits, N) {
             return Err(LimitError::OutOfRange);
         }
         config.max_npdu = limits;

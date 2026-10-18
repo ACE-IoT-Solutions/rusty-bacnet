@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use bacnet_encoding::apdu::{decode_apdu, Apdu};
 use bacnet_network::layer::{IssuedApdu, NetworkLayer, ReceivedApdu, RoutedTarget};
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{DataAttribute, TransportPort};
-use bacnet_types::enums::NetworkPriority;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use tokio::sync::{mpsc, oneshot};

@@ -316,7 +316,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
-    fn max_npdu(&self) -> crate::port::NpduLimits {
+    fn max_npdu(&self) -> bacnet_npdu::NpduLimits {
         match self {
             Self::Bip(t) => t.max_npdu(),
             Self::Mstp(t) => t.max_npdu(),
@@ -330,7 +330,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
-    fn max_npdu_changes(&self) -> Option<tokio::sync::watch::Receiver<crate::port::NpduLimits>> {
+    fn max_npdu_changes(&self) -> Option<tokio::sync::watch::Receiver<bacnet_npdu::NpduLimits>> {
         match self {
             Self::Bip(t) => t.max_npdu_changes(),
             Self::Mstp(t) => t.max_npdu_changes(),
@@ -528,7 +528,7 @@ mod tests {
     /// prepared it (#1665); B/IP's 1497 both ways.
     #[test]
     fn any_transport_reports_its_variants_npdu_limits() {
-        use crate::port::NpduLimits;
+        use bacnet_npdu::NpduLimits;
         let (serial, _) = LoopbackSerial::pair();
         let mstp = MstpTransport::new(serial, MstpConfig::default());
         let mut any: AnyTransport<LoopbackSerial> = mstp.into();

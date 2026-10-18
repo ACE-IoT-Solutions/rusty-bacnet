@@ -17,10 +17,11 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportPort};
+use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::sc_frame::{decode_sc_bvlc_result, ScMessage};
 use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, Vmac, BROADCAST_VMAC};
+use bacnet_npdu::NpduLimits;
 use bacnet_types::error::Error;
 
 mod address_resolution;

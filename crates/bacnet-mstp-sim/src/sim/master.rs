@@ -2,10 +2,10 @@
 //! the application behind it.
 
 use bacnet_mstp_codec::{FrameHeader, FrameType};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, AllocQueues, Direction, Instant, MasterCore, MasterState, MstpCounters,
-    NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestError, RequestId,
-    TransmitError, TransmitId,
+    Action, AllocQueues, Direction, Instant, MasterCore, MasterState, MstpCounters, QueueRefusal,
+    ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
 };
 
 use super::{decode_whole, describe, leak_core_storage, Event, NodeKind, Sim, SimCore};

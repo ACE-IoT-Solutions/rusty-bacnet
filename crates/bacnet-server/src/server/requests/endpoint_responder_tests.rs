@@ -151,7 +151,7 @@ async fn responder_routes_reply_to_original_source_via_immediate_router() {
     let npdu = decode_npdu(sent.npdu).unwrap();
     assert_eq!(npdu.destination, Some(routed_source));
     assert!(!npdu.expecting_reply);
-    assert_eq!(npdu.priority, NetworkPriority::NORMAL);
+    assert_eq!(npdu.priority, NetworkPriority::Normal);
     match decode_apdu(npdu.payload).unwrap() {
         Apdu::ComplexAck(ack) => assert_eq!(ack.invoke_id, 0x41),
         other => panic!("expected ComplexAck, got {other:?}"),

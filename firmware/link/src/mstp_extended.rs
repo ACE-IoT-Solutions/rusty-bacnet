@@ -40,9 +40,10 @@ mod expected;
 pub use expected::EXPECTED;
 
 use bacnet_mstp_codec::{decode_frame_in_place, Frame, FrameType, MAX_EXTENDED_MPDU_DATA};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, Duration, ExtendedStorage, FixedQueues, Instant, MasterCore, MasterState,
-    MstpCoreConfig, NetworkPriority, TransmitId,
+    MstpCoreConfig, TransmitId,
 };
 
 /// Unicast slots in the transmit queue: one, so the image fits a 16 KiB

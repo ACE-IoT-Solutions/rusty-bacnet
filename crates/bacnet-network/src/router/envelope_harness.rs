@@ -13,9 +13,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_npdu::NetworkMessageType;
+use bacnet_npdu::NpduLimits;
 use bacnet_router_core::Instant;
-use bacnet_transport::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportProvenance};
-use bacnet_types::enums::NetworkMessageType;
+use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportProvenance};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
@@ -28,12 +29,12 @@ use super::port_groups::PortGroups;
 use super::send_queue;
 use super::{RouterTableGuard, SendRequest};
 use crate::layer::{AdmissionReceiver, ReceivedApdu, ReceivedNetworkControl};
-use crate::router_table::{ClaimCounters, Convergence, Mac, PortId};
+use crate::router_table::{ClaimCounters, Convergence, PortId};
+use bacnet_npdu::Mac;
 
 pub(super) fn control_npdu(message_type: NetworkMessageType, payload: &[u8]) -> Npdu {
     Npdu {
-        is_network_message: true,
-        message_type: Some(message_type.to_raw()),
+        message_type: Some(message_type),
         payload: Bytes::copy_from_slice(payload),
         ..Npdu::default()
     }

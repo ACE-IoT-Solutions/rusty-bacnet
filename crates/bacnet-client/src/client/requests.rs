@@ -107,7 +107,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///
     /// A confirmed request goes to one device, so `dest_network` must be in
     /// 1..=65534 and `dest_mac` must hold 1 to
-    /// [`NpduAddress::MAX_MAC_LEN`] octets. DNET 0 names no network, DNET
+    /// [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) octets. DNET 0 names no network, DNET
     /// 65535 and an empty DADR address a broadcast, and any of them fails
     /// with [`Error::Encoding`] before path or transaction state is taken.
     /// Every routed confirmed entry point, such as the `_to_device` and
@@ -594,7 +594,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         match target {
             ConfirmedTarget::Local { mac } => {
                 self.network
-                    .send_apdu(apdu, mac, true, NetworkPriority::NORMAL)
+                    .send_apdu(apdu, mac, true, NetworkPriority::Normal)
                     .await
             }
             ConfirmedTarget::Routed {
@@ -609,7 +609,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         dest_mac,
                         router_mac,
                         true,
-                        NetworkPriority::NORMAL,
+                        NetworkPriority::Normal,
                     )
                     .await
             }
@@ -649,7 +649,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         encode_apdu(&mut buf, &pdu)?;
 
         self.network
-            .send_apdu(&buf, destination_mac, false, NetworkPriority::NORMAL)
+            .send_apdu(&buf, destination_mac, false, NetworkPriority::Normal)
             .await
     }
 
@@ -668,7 +668,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         encode_apdu(&mut buf, &pdu)?;
 
         self.network
-            .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+            .broadcast_apdu(&buf, false, NetworkPriority::Normal)
             .await
     }
 
@@ -687,7 +687,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         encode_apdu(&mut buf, &pdu)?;
 
         self.network
-            .broadcast_global_apdu(&buf, false, NetworkPriority::NORMAL)
+            .broadcast_global_apdu(&buf, false, NetworkPriority::Normal)
             .await
     }
 
@@ -713,11 +713,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         if self.network.local_network_number().get() == Some(dest_network) {
             return self
                 .network
-                .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                 .await;
         }
         self.network
-            .broadcast_to_network(&buf, dest_network, false, NetworkPriority::NORMAL)
+            .broadcast_to_network(&buf, dest_network, false, NetworkPriority::Normal)
             .await
     }
 }

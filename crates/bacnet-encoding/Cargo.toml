@@ -27,6 +27,7 @@ alloc = ["bacnet-types/alloc", "dep:bytes"]
 heapless = ["dep:heapless"]
 
 [dependencies]
+bacnet-npdu = { workspace = true }
 bacnet-types = { workspace = true }
 bytes = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }

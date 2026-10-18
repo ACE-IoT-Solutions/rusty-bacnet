@@ -137,7 +137,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
             return router
                 .send(
                     buf.freeze(),
-                    priority.to_raw(),
+                    priority,
                     self.response_scope.guard(),
                     on_issuance,
                 )

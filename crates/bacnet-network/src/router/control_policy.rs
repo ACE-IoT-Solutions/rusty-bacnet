@@ -73,8 +73,8 @@ pub struct ControlAuthContext {
     /// Channel-level trust derived from `provenance`; says nothing about the leaf sender's
     /// identity.
     pub trust: ControlTrust,
-    /// Network-layer message type code of the control, as received.
-    pub message_type: u8,
+    /// The control's network-layer message type, as received.
+    pub message_type: bacnet_npdu::NetworkMessageType,
     /// Vendor ID from a proprietary network message, if present.
     pub vendor_id: Option<u16>,
     /// Source network number claimed in the NPDU, if any.

@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bacnet_router_core::Mac;
-use bacnet_transport::port::{NpduLimits, ReceivedNpdu, TransportPort};
+use bacnet_npdu::Mac;
+use bacnet_npdu::NpduLimits;
+use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
@@ -60,7 +61,9 @@ impl ReadyPort {
         // fixture cannot hang the runtime when testing its original behavior.
         if count < REFILL_LIMIT {
             if let Some(refill) = &self.refill {
-                refill.try_send(0, request()).unwrap();
+                refill
+                    .try_send(bacnet_npdu::NetworkPriority::Normal, request())
+                    .unwrap();
             }
         }
     }
@@ -98,7 +101,8 @@ impl TransportPort for ReadyPort {
 async fn ready_transport_yields_before_draining_a_full_backlog() {
     let (tx, rx) = send_queue::channel(send_queue::CAPACITY);
     for _ in 0..send_queue::CAPACITY {
-        tx.try_send(0, request()).unwrap();
+        tx.try_send(bacnet_npdu::NetworkPriority::Normal, request())
+            .unwrap();
     }
     let calls = Arc::new(AtomicUsize::new(0));
     let port = ReadyPort {
@@ -121,7 +125,7 @@ async fn ready_transport_yields_before_draining_a_full_backlog() {
         "one poll sent all {sent} items"
     );
     assert!(matches!(
-        tx.try_send(0, request()),
+        tx.try_send(bacnet_npdu::NetworkPriority::Normal, request()),
         Err(TrySendError::Closed(_))
     ));
 }
@@ -129,7 +133,8 @@ async fn ready_transport_yields_before_draining_a_full_backlog() {
 #[tokio::test]
 async fn a_replenished_ready_sender_can_be_aborted_and_joined_before_exhaustion() {
     let (tx, rx) = send_queue::channel(send_queue::CAPACITY);
-    tx.try_send(0, request()).unwrap();
+    tx.try_send(bacnet_npdu::NetworkPriority::Normal, request())
+        .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let (started, observe) = oneshot::channel();
     let port = ReadyPort {
@@ -153,7 +158,7 @@ async fn a_replenished_ready_sender_can_be_aborted_and_joined_before_exhaustion(
     );
     assert_eq!(calls.load(Ordering::SeqCst), sent_before_abort);
     assert!(matches!(
-        tx.try_send(0, request()),
+        tx.try_send(bacnet_npdu::NetworkPriority::Normal, request()),
         Err(TrySendError::Closed(_))
     ));
 }

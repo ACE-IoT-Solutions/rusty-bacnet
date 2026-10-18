@@ -1,7 +1,7 @@
 use super::*;
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
 use std::net::Ipv4Addr;
 use tokio::time::{timeout, Duration};
 
@@ -45,7 +45,7 @@ async fn send_receive_apdu_unicast_is_not_marked_as_group_delivery() {
             &test_apdu,
             net_b.local_mac(),
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
         )
         .await
         .unwrap();
@@ -67,9 +67,8 @@ async fn send_receive_apdu_unicast_is_not_marked_as_group_delivery() {
 
 fn encoded_npdu(destination: Option<NpduAddress>) -> Bytes {
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: NetworkPriority::NORMAL,
+        priority: NetworkPriority::Normal,
         destination,
         source: None,
         hop_count: 255,
@@ -83,8 +82,7 @@ fn encoded_npdu(destination: Option<NpduAddress>) -> Bytes {
 
 fn encoded_reject_message_to_network(reason: RejectMessageReason, dnet: u16) -> Bytes {
     let npdu = Npdu {
-        is_network_message: true,
-        message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw()),
+        message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK),
         payload: Bytes::from(vec![reason.to_raw(), (dnet >> 8) as u8, dnet as u8]),
         ..Npdu::default()
     };
@@ -117,7 +115,7 @@ async fn opted_in_network_control_stream_preserves_start_apdu_receiver() {
     assert_eq!(network.network_control_ingress_sequence(), 1);
     assert_eq!(
         received.npdu.message_type,
-        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
     assert!(timeout(Duration::from_millis(25), apdus.recv())
         .await
@@ -247,12 +245,11 @@ async fn router_preserves_link_group_for_ultimate_network_unicast() {
 #[test]
 fn global_broadcast_npdu_has_dnet_ffff() {
     use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
-    use bacnet_types::enums::NetworkPriority;
+    use bacnet_npdu::NetworkPriority;
 
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: NetworkPriority::NORMAL,
+        priority: NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 0xFFFF,
             mac_address: MacAddr::new(),
@@ -275,12 +272,11 @@ fn global_broadcast_npdu_has_dnet_ffff() {
 #[test]
 fn routed_send_encodes_dnet_dadr() {
     use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
-    use bacnet_types::enums::NetworkPriority;
+    use bacnet_npdu::NetworkPriority;
 
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: true,
-        priority: NetworkPriority::NORMAL,
+        priority: NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 100,
             mac_address: MacAddr::from_slice(&[1, 2, 3, 4, 5, 6]),
@@ -304,12 +300,11 @@ fn routed_send_encodes_dnet_dadr() {
 #[test]
 fn broadcast_to_network_encodes_specific_dnet() {
     use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
-    use bacnet_types::enums::NetworkPriority;
+    use bacnet_npdu::NetworkPriority;
 
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: NetworkPriority::NORMAL,
+        priority: NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 42,
             mac_address: MacAddr::new(),
@@ -340,7 +335,7 @@ fn broadcast_to_network_rejects_dnet_ffff() {
         .build()
         .unwrap();
     let result = runtime.block_on(async {
-        net.broadcast_to_network(&[0xAA], 0xFFFF, false, NetworkPriority::NORMAL)
+        net.broadcast_to_network(&[0xAA], 0xFFFF, false, NetworkPriority::Normal)
             .await
     });
     assert!(result.is_err());
@@ -359,7 +354,7 @@ async fn sends_naming_network_zero_are_refused_before_any_frame() {
     let mut frames = peer.start().await.unwrap();
     let net = NetworkLayer::new(transport);
     let apdu = [0x10, 0x08];
-    let priority = NetworkPriority::NORMAL;
+    let priority = NetworkPriority::Normal;
     let network_zero = NpduAddress {
         network: 0,
         mac_address: MacAddr::from_slice(&[7]),
@@ -420,7 +415,7 @@ async fn sends_naming_the_global_network_are_refused_before_any_frame() {
     let mut frames = peer.start().await.unwrap();
     let net = NetworkLayer::new(transport);
     let apdu = [0x10, 0x08];
-    let priority = NetworkPriority::NORMAL;
+    let priority = NetworkPriority::Normal;
     fn target(network: u16, mac: &[u8]) -> RoutedTarget<'_> {
         RoutedTarget {
             network,

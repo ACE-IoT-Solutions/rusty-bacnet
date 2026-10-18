@@ -15,12 +15,11 @@ use bacnet_endpoint::bip::BipEndpointBuilder;
 use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
 use bacnet_endpoint::session::SessionRole;
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
-use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-};
+use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
@@ -99,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )?;
     peer_net
-        .send_apdu(&enc, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&enc, &endpoint_mac, false, NetworkPriority::Normal)
         .await?;
     let ack = tokio::time::timeout(WAIT, pending).await???;
     assert_eq!(ack.object_identifier, oid(ObjectType::ANALOG_INPUT, 1));
@@ -130,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )?;
     peer_net
-        .send_apdu(&enc, &endpoint_mac, true, NetworkPriority::NORMAL)
+        .send_apdu(&enc, &endpoint_mac, true, NetworkPriority::Normal)
         .await?;
     let reply = tokio::time::timeout(WAIT, peer_rx.recv())
         .await?

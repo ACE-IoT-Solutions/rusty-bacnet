@@ -51,11 +51,12 @@ use core::fmt;
 
 use bacnet_mstp_core::codec::{BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA};
 use bacnet_mstp_core::{
-    Action, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage, ReplyDecision,
-    RequestError, RequestId,
+    Action, MasterCore, MstpCoreConfig, QueueRefusal, QueueStorage, ReplyDecision, RequestError,
+    RequestId,
 };
 
-use crate::router::{Dest, Groups, Limits, PortConfig, Send, SendRefusal};
+use crate::npdu::NpduLimits;
+use crate::router::{Dest, Groups, PortConfig, Send, SendRefusal};
 use crate::{Arrived, Instant, Mac, PortId};
 
 /// A core configuration without extended frames, which a router's MS/TP
@@ -127,7 +128,7 @@ const fn extended_port_config(config: &MstpCoreConfig, network: u16) -> PortConf
         network,
         Mac::from_array([config.station]),
         // 1497 with extended frames on, so the cast is exact.
-        Limits::both(config.max_npdu() as u16),
+        NpduLimits::both(config.max_npdu() as u16),
         Groups::Mstp,
     )
 }
@@ -234,9 +235,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MstpPort<'rx, Q, NPDU> {
             Dest::Unicast(&[station]) if station != BROADCAST_MAC => station,
             Dest::Unicast(_) => return Err(SendRefusal::Other),
         };
-        let priority = NetworkPriority::try_from(send.priority).map_err(|_| SendRefusal::Other)?;
         self.core
-            .enqueue_npdu(destination, send.npdu, priority, now)
+            .enqueue_npdu(destination, send.npdu, send.priority, now)
             .map_err(|why| match why {
                 QueueRefusal::Full => SendRefusal::Full,
                 QueueRefusal::Oversize => SendRefusal::TooLong,

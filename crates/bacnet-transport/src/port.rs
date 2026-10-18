@@ -9,6 +9,7 @@
 //! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
 pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseScopeGuard};
+use bacnet_npdu::NpduLimits;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
@@ -332,37 +333,6 @@ pub struct BipPort {
     pub endpoint: std::net::SocketAddrV4,
     /// The B/IP mode, with what its Network Port properties need.
     pub mode: bacnet_types::bip_port::BipPortMode,
-}
-
-/// The longest NPDU a link carries, in octets, to one node and to every
-/// node on it ([`TransportPort::max_npdu`]; Table 6-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NpduLimits {
-    /// To one node.
-    pub unicast: u16,
-    /// To every node on the link.
-    pub broadcast: u16,
-}
-
-impl NpduLimits {
-    /// 1,497 octets each way: what B/IP, B/IPv6, Ethernet and MS/TP with
-    /// extended frames carry (Table 6-1).
-    pub const STANDARD: Self = Self::both(1497);
-
-    /// The same limit both ways.
-    pub const fn both(octets: u16) -> Self {
-        Self {
-            unicast: octets,
-            broadcast: octets,
-        }
-    }
-}
-
-/// [`NpduLimits::STANDARD`].
-impl Default for NpduLimits {
-    fn default() -> Self {
-        Self::STANDARD
-    }
 }
 
 /// Trait for BACnet data-link transports.

@@ -21,7 +21,8 @@
 //! an error, a refusal, a [`ReceiveError`] or a [`TransmitFailure`] a
 //! wildcard arm. The enums an adapter acts on case by case,
 //! [`Action`], [`ReplyDecision`] and [`Direction`], stay exhaustive, as do
-//! the closed sets [`MasterState`], [`NetworkPriority`] and [`QueueKind`].
+//! the closed sets [`MasterState`] and [`QueueKind`]. Queues order by
+//! `bacnet-npdu`'s closed [`NetworkPriority`](npdu::NetworkPriority).
 //!
 //! # Time
 //!
@@ -194,7 +195,16 @@ pub use actions::{
     TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
 pub use bacnet_mstp_codec as codec;
+/// `bacnet-npdu`, the network-layer vocabulary: the core queues each NPDU
+/// at its [`NetworkPriority`](npdu::NetworkPriority).
+pub use bacnet_npdu as npdu;
 pub use bacnet_time::{Duration, Instant};
+
+// An MS/TP extended frame carries the longest NPDU any data link carries.
+const _: () = assert!(
+    codec::MAX_EXTENDED_MPDU_DATA == npdu::MAX_NPDU,
+    "the MS/TP codec's extended-frame limit is bacnet-npdu's MAX_NPDU"
+);
 pub use config::{
     ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig, MAX_FRAME_ABORT,
     MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS,
@@ -204,10 +214,7 @@ pub use counters::{MstpCounters, QueueCounters};
 pub use errors::{RequestError, TransmitError};
 #[cfg(feature = "alloc")]
 pub use queue::AllocQueues;
-pub use queue::{
-    DequeuedNpdu, FixedQueues, NetworkPriority, PriorityError, QueueItemInfo, QueueKind,
-    QueueRefusal, QueueStorage,
-};
+pub use queue::{DequeuedNpdu, FixedQueues, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage};
 pub use state::{
     MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,
     MIN_RX_STORAGE,
