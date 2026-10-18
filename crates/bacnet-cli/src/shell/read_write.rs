@@ -10,8 +10,8 @@ pub(super) async fn handle_read<T: TransportPort + 'static>(
         return;
     }
 
-    let mac = match resolve_target_mac(client, &args[0]).await {
-        Ok(m) => m,
+    let to = match resolve_destination(client, &args[0]).await {
+        Ok(to) => to,
         Err(e) => {
             output::print_error(&e);
             return;
@@ -36,7 +36,7 @@ pub(super) async fn handle_read<T: TransportPort + 'static>(
 
     if let Err(e) = commands::read::read_property_cmd(
         client,
-        &mac,
+        &to,
         object_type,
         instance,
         property,
@@ -59,8 +59,8 @@ pub(super) async fn handle_readm<T: TransportPort + 'static>(
         return;
     }
 
-    let mac = match resolve_target_mac(client, &args[0]).await {
-        Ok(m) => m,
+    let to = match resolve_destination(client, &args[0]).await {
+        Ok(to) => to,
         Err(e) => {
             output::print_error(&e);
             return;
@@ -68,7 +68,7 @@ pub(super) async fn handle_readm<T: TransportPort + 'static>(
     };
 
     let specs: Vec<String> = args[1..].to_vec();
-    if let Err(e) = commands::read::read_multiple_cmd(client, &mac, &specs, format).await {
+    if let Err(e) = commands::read::read_multiple_cmd(client, &to, &specs, format).await {
         output::print_error(&e.to_string());
     }
 }
@@ -83,8 +83,8 @@ pub(super) async fn handle_write<T: TransportPort + 'static>(
         return;
     }
 
-    let mac = match resolve_target_mac(client, &args[0]).await {
-        Ok(m) => m,
+    let to = match resolve_destination(client, &args[0]).await {
+        Ok(to) => to,
         Err(e) => {
             output::print_error(&e);
             return;
@@ -145,7 +145,7 @@ pub(super) async fn handle_write<T: TransportPort + 'static>(
 
     if let Err(e) = commands::write::write_property_cmd(
         client,
-        &mac,
+        &to,
         commands::write::WritePropertyArgs {
             object_type,
             instance,

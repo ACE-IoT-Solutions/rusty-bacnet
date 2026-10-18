@@ -65,6 +65,10 @@ fn main(key: KeyEvent) -> Option<Action> {
     }
     Some(match key.code {
         KeyCode::Esc => Action::Escape,
+        KeyCode::Enter => Action::Open,
+        KeyCode::Tab => Action::CyclePane { back: false },
+        KeyCode::BackTab => Action::CyclePane { back: true },
+        KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('?') => Action::ToggleHelp,
         KeyCode::Char('L') => Action::ToggleLog,

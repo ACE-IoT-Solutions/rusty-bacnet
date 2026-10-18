@@ -10,8 +10,8 @@ pub(super) async fn handle_subscribe<T: TransportPort + 'static>(
         return;
     }
 
-    let mac = match resolve_target_mac(client, &args[0]).await {
-        Ok(m) => m,
+    let to = match resolve_destination(client, &args[0]).await {
+        Ok(to) => to,
         Err(e) => {
             output::print_error(&e);
             return;
@@ -56,7 +56,7 @@ pub(super) async fn handle_subscribe<T: TransportPort + 'static>(
 
     if let Err(e) = commands::subscribe::subscribe_cmd(
         client,
-        &mac,
+        &to,
         object_type,
         instance,
         lifetime,

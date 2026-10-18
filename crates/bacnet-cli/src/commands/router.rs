@@ -6,6 +6,7 @@ use bacnet_client::client::BACnetClient;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::TransportPort;
 
+use crate::core::target::AddressStyle;
 use crate::output::{self, device_info, DeviceInfo, OutputFormat};
 
 /// Display all cached discovered devices from the client's device table.
@@ -14,7 +15,11 @@ pub async fn devices_cmd<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let devices = client.discovered_devices().await;
-    let infos: Vec<DeviceInfo> = devices.iter().map(device_info).collect();
+    let style = AddressStyle::of(client.transport());
+    let infos: Vec<DeviceInfo> = devices
+        .iter()
+        .map(|device| device_info(device, style))
+        .collect();
     output::print_devices(&infos, format);
     Ok(())
 }

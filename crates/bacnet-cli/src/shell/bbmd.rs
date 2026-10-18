@@ -243,7 +243,7 @@ pub(super) async fn handle_bip_discover(
     }
 
     if let Some(bbmd_addr) = &bbmd {
-        let bbmd_mac = match resolve::address_mac(
+        let bbmd_mac = match target::address_mac(
             client.transport(),
             bbmd_addr,
             "--bbmd requires an IP address, not a device instance",
@@ -272,10 +272,10 @@ pub(super) async fn handle_bip_discover(
     }
 
     let result = if let Some(target_str) = &target {
-        match resolve::address_mac(
+        match target::address_mac(
             client.transport(),
             target_str,
-            resolve::TARGET_NOT_AN_ADDRESS,
+            target::TARGET_NOT_AN_ADDRESS,
         )
         .await
         {

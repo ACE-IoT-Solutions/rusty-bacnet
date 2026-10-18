@@ -5,6 +5,7 @@ use bacnet_services::who_has::WhoHasObject;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::port::TransportPort;
 
+use crate::core::target::AddressStyle;
 use crate::output::{self, device_info, DeviceInfo, OutputFormat};
 
 /// Collect device infos from the client's discovered device table,
@@ -20,7 +21,7 @@ async fn collect_devices<T: TransportPort + 'static>(
             let inst = d.object_identifier.instance_number();
             range.is_none_or(|range| range.contains(inst))
         })
-        .map(device_info)
+        .map(|device| device_info(device, AddressStyle::of(client.transport())))
         .collect()
 }
 

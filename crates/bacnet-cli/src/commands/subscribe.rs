@@ -6,12 +6,13 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 
+use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 /// Subscribe to COV notifications for an object on a remote device.
 pub async fn subscribe_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     object_type: ObjectType,
     instance: u32,
     lifetime: Option<u32>,
@@ -21,8 +22,7 @@ pub async fn subscribe_cmd<T: TransportPort + 'static>(
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let process_id = std::process::id(); // Use PID instead of hardcoded 1
 
-    client
-        .subscribe_cov(mac, process_id, oid, confirmed, lifetime)
+    to.subscribe_cov(client, process_id, oid, confirmed, lifetime)
         .await?;
 
     output::print_success(
@@ -168,7 +168,7 @@ fn decode_cov_value(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::format_mac;
-    use crate::resolve::{parse_target, Target};
+    use crate::core::target::{parse_target, Target};
 
     /// A COV source on B/IPv6 prints as the `bip6:` VMAC a target takes back;
     /// other MACs print as hex.

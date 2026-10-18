@@ -1,0 +1,245 @@
+//! The browser's request limits: one job per device at a time, so a device
+//! never has more than one of our confirmed requests outstanding, and a
+//! global cap on how many requests a second leave across every device.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use tokio::time::Instant;
+
+use crate::tui::point::{BrowseRead, ReqId};
+
+/// Spaces requests evenly: at most `per_second` a second across every job.
+/// Each caller takes the next free slot and sleeps until it; the lock is
+/// held only to take the slot, never across the sleep.
+pub(crate) struct RateCap {
+    interval: Duration,
+    next: Mutex<Option<Instant>>,
+}
+
+impl RateCap {
+    /// A cap of `per_second` requests a second; 0 means no cap.
+    pub(crate) fn new(per_second: u32) -> Self {
+        let interval = match per_second {
+            0 => Duration::ZERO,
+            n => Duration::from_secs(1) / n,
+        };
+        Self {
+            interval,
+            next: Mutex::new(None),
+        }
+    }
+
+    /// The instant this request may go, reserving it.
+    fn reserve(&self, now: Instant) -> Instant {
+        let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = next.map_or(now, |next| next.max(now));
+        *next = Some(slot + self.interval);
+        slot
+    }
+
+    /// Wait for this request's turn.
+    pub(crate) async fn acquire(&self) {
+        if self.interval.is_zero() {
+            return;
+        }
+        let slot = self.reserve(Instant::now());
+        tokio::time::sleep_until(slot).await;
+    }
+}
+
+/// A browse request waiting for, or holding, its device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Job {
+    /// Request id.
+    pub(crate) req: ReqId,
+    /// What it reads.
+    pub(crate) read: BrowseRead,
+}
+
+/// A job the caller should start now.
+#[derive(Debug)]
+pub(crate) struct Started {
+    /// Its device.
+    pub(crate) device: u32,
+    /// The job.
+    pub(crate) job: Job,
+    /// Set to stop the job before its next request.
+    pub(crate) cancel: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct Slot {
+    /// The running job: whether it reads the device, and its stop flag.
+    running: Option<(bool, Arc<AtomicBool>)>,
+    /// The newest device read waiting.
+    device: Option<Job>,
+    /// The newest object read waiting.
+    object: Option<Job>,
+}
+
+/// Which job each device runs next. A device runs one job at a time; a
+/// newer request replaces an older waiting one of its kind, and stops a
+/// running one it makes pointless: a device read stops anything, an object
+/// read stops only another object read.
+#[derive(Default)]
+pub(crate) struct Scheduler {
+    slots: HashMap<u32, Slot>,
+}
+
+impl Scheduler {
+    /// Queue `job` for `device`, returning it to start when the device is idle.
+    pub(crate) fn submit(&mut self, device: u32, job: Job) -> Option<Started> {
+        let slot = self.slots.entry(device).or_default();
+        let reads_device = job.read == BrowseRead::Device;
+        let Some((running_device, cancel)) = &slot.running else {
+            return Some(Self::start(slot, device, job));
+        };
+        if reads_device || !running_device {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if reads_device {
+            slot.object = None;
+            slot.device = Some(job);
+        } else {
+            slot.object = Some(job);
+        }
+        None
+    }
+
+    /// The running job for `device` ended; the next one to start, if any.
+    pub(crate) fn finished(&mut self, device: u32) -> Option<Started> {
+        let slot = self.slots.get_mut(&device)?;
+        slot.running = None;
+        match slot.device.take().or_else(|| slot.object.take()) {
+            Some(job) => Some(Self::start(slot, device, job)),
+            None => {
+                self.slots.remove(&device);
+                None
+            }
+        }
+    }
+
+    /// Stop everything for `device`: drop its waiting jobs and stop the
+    /// running one before its next request.
+    pub(crate) fn stop(&mut self, device: u32) {
+        if let Some(slot) = self.slots.get_mut(&device) {
+            slot.device = None;
+            slot.object = None;
+            if let Some((_, cancel)) = &slot.running {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn start(slot: &mut Slot, device: u32, job: Job) -> Started {
+        let cancel = Arc::new(AtomicBool::new(false));
+        slot.running = Some((job.read == BrowseRead::Device, Arc::clone(&cancel)));
+        Started {
+            device,
+            job,
+            cancel,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_types::enums::ObjectType;
+    use bacnet_types::primitives::ObjectIdentifier;
+
+    use super::*;
+
+    fn object(req: ReqId, instance: u32) -> Job {
+        Job {
+            req,
+            read: BrowseRead::Object(
+                ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap(),
+            ),
+        }
+    }
+
+    fn device(req: ReqId) -> Job {
+        Job {
+            req,
+            read: BrowseRead::Device,
+        }
+    }
+
+    /// A device never runs two jobs: a second request waits, the newest of
+    /// its kind wins, and it starts only when the running one finishes.
+    #[test]
+    fn one_job_per_device_and_the_newest_waiting_wins() {
+        let mut scheduler = Scheduler::default();
+        let first = scheduler.submit(7, device(1)).expect("idle device starts");
+        assert!(scheduler.submit(7, object(2, 1)).is_none());
+        assert!(scheduler.submit(7, object(3, 2)).is_none());
+        assert!(
+            !first.cancel.load(Ordering::Relaxed),
+            "an object read doesn't stop the device read"
+        );
+        // Another device is independent.
+        assert!(scheduler.submit(8, object(4, 1)).is_some());
+        let next = scheduler.finished(7).expect("the waiting object read");
+        assert_eq!(next.job, object(3, 2));
+        assert!(scheduler.finished(7).is_none());
+        assert!(scheduler.submit(7, object(5, 3)).is_some(), "idle again");
+    }
+
+    #[test]
+    fn a_newer_read_stops_the_running_one_it_replaces() {
+        let mut scheduler = Scheduler::default();
+        let running = scheduler.submit(7, object(1, 1)).unwrap();
+        assert!(scheduler.submit(7, object(2, 2)).is_none());
+        assert!(running.cancel.load(Ordering::Relaxed));
+        // A device read replaces a waiting object read too.
+        assert!(scheduler.submit(7, device(3)).is_none());
+        assert_eq!(scheduler.finished(7).unwrap().job, device(3));
+        let running = scheduler.finished(7);
+        assert!(running.is_none(), "the object read was dropped");
+    }
+
+    #[test]
+    fn stop_drops_waiting_jobs_and_stops_the_running_one() {
+        let mut scheduler = Scheduler::default();
+        let running = scheduler.submit(7, device(1)).unwrap();
+        scheduler.submit(7, object(2, 1));
+        scheduler.stop(7);
+        assert!(running.cancel.load(Ordering::Relaxed));
+        assert!(scheduler.finished(7).is_none());
+    }
+
+    /// Requests are spaced `1 / per_second` apart, whatever the caller,
+    /// and a cap of zero never waits.
+    #[tokio::test(start_paused = true)]
+    async fn the_rate_cap_spaces_requests_evenly() {
+        let cap = RateCap::new(4);
+        let start = Instant::now();
+        let mut slots = Vec::new();
+        for _ in 0..3 {
+            cap.acquire().await;
+            slots.push(Instant::now() - start);
+        }
+        assert_eq!(
+            slots,
+            [
+                Duration::ZERO,
+                Duration::from_millis(250),
+                Duration::from_millis(500)
+            ]
+        );
+        // After an idle second the next request goes at once.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let before = Instant::now();
+        cap.acquire().await;
+        assert_eq!(Instant::now(), before);
+        let none = RateCap::new(0);
+        let before = Instant::now();
+        for _ in 0..10 {
+            none.acquire().await;
+        }
+        assert_eq!(Instant::now(), before);
+    }
+}
