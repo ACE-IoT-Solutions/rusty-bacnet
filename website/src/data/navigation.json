@@ -25,6 +25,10 @@
       {
         "label": "Embed with Rust",
         "slug": "start/rust"
+      },
+      {
+        "label": "Run on a microcontroller",
+        "slug": "start/embedded"
       }
     ]
   },

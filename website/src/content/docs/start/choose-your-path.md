@@ -27,9 +27,15 @@ Choose Python for scripts, data collection, integration prototypes, or a small t
 
 ## Embed with Rust
 
-Choose Rust when BACnet belongs inside your application. The workspace has separate crates for clients, servers, types, encoding, services, transports, networking, objects and shared endpoints, plus `no_std` codecs and cores (MS/TP, BACnet/IP and a router) for firmware. You do not need every crate for a property read.
+Choose Rust when BACnet belongs inside your application. The workspace has separate crates for clients, servers, types, encoding, services, transports, networking, objects and shared endpoints, plus `no_std` codecs and cores (MS/TP, BACnet/IP and a router) for firmware, which the next section covers. You do not need every crate for a property read.
 
 [Start with the Rust client](/rusty-bacnet/start/rust/). The reviewed release declares Rust 1.93 as its minimum; this documentation project does not raise the library's minimum Rust version.
+
+## Run on a microcontroller
+
+Choose the portable crates when BACnet runs on firmware with no operating system and no heap: an MS/TP or B/IP device, a BBMD, or a router between B/IP and MS/TP. They read no clock and own no hardware; your firmware feeds them the line and the time.
+
+[Run on a microcontroller](/rusty-bacnet/start/embedded/) lists the crates each product needs, the clock they share, measured flash and RAM, the rules your adapter follows, and what still needs an allocator.
 
 ## Pick the network path separately
 
