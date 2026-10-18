@@ -334,7 +334,7 @@ impl Sim {
         match effects {
             Ok(effects) => self.apply_effects(node, effects, answering),
             Err(count) => self.violation(
-                ViolationKind::CoreError,
+                ViolationKind::ContractBroken,
                 format!("station {station}: {count} actions from one event"),
             ),
         }
@@ -390,7 +390,7 @@ impl Sim {
             );
         } else {
             self.violation(
-                ViolationKind::CoreError,
+                ViolationKind::ContractBroken,
                 format!("station {station}: unexpected {error:?}"),
             );
         }
@@ -407,9 +407,6 @@ impl Sim {
         let mut wrong = Vec::new();
         if counters.adapter_errors != 0 {
             wrong.push(format!("adapter_errors {}", counters.adapter_errors));
-        }
-        if counters.internal_errors != 0 {
-            wrong.push(format!("internal_errors {}", counters.internal_errors));
         }
         if counters.internal_errors != 0 {
             wrong.push(format!("internal_errors {}", counters.internal_errors));
@@ -499,7 +496,7 @@ impl Sim {
                     let incarnation = master.incarnation;
                     if replaced {
                         self.violation(
-                            ViolationKind::CoreError,
+                            ViolationKind::ContractBroken,
                             format!("station {station}: a transmit before the last one started"),
                         );
                     }
@@ -705,7 +702,7 @@ impl Sim {
                     && pending.octets.len() == pending.length;
                 if !named {
                     self.violation(
-                        ViolationKind::CoreError,
+                        ViolationKind::ContractBroken,
                         format!(
                             "station {station}: the start handed over {}, not the {} the action named",
                             describe(&pending.octets),

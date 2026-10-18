@@ -6,9 +6,11 @@
 mod fixture;
 mod glue;
 
-use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC};
+use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH};
 use bacnet_mstp_core::{
-    Action, Instant, NetworkPriority, QueueStorage, ReplyDecision, RequestError, RequestId,
+    Action, DequeuedNpdu, ExtendedActionBuffers, Instant, MasterCore, NetworkPriority,
+    QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage, ReplyDecision,
+    RequestError, RequestId,
 };
 use bacnet_router_core::mstp::{MstpPort, NotExtended, PortAction};
 use bacnet_router_core::npdu::Npdu;
@@ -23,7 +25,7 @@ use glue::*;
 /// The router, its MS/TP port (port 1, on network 2) configured from the
 /// core's configuration. Port 0 is a B/IP-like port on network 1.
 fn router() -> TestRouter {
-    let mstp = MstpPort::config(&config(true), 2).unwrap();
+    let mstp = bacnet_router_core::mstp::port_config(&config(true), 2).unwrap();
     router_with(&[port_on(1, OWN_0), mstp], Options::HOSTED)
 }
 
@@ -63,8 +65,11 @@ fn delivered<const U: usize>(port: &mut Port<'_, U>) -> (u8, u8, Option<RequestI
 
 #[test]
 fn config_needs_extended_frames() {
-    assert_eq!(MstpPort::config(&config(false), 2), Err(NotExtended));
-    let port = MstpPort::config(&config(true), 2).unwrap();
+    assert_eq!(
+        bacnet_router_core::mstp::port_config(&config(false), 2),
+        Err(NotExtended)
+    );
+    let port = bacnet_router_core::mstp::port_config(&config(true), 2).unwrap();
     assert_eq!(port.network, 2);
     assert_eq!(port.mac, Mac::from_array([STATION]));
     assert_eq!(port.max_npdu, Limits::both(1497));
@@ -84,7 +89,7 @@ fn the_port_owns_its_core() {
     assert_eq!(port.port(), PortId(1));
     assert_eq!(
         port.port_config(2),
-        MstpPort::config(&config(true), 2).unwrap()
+        bacnet_router_core::mstp::port_config(&config(true), 2).unwrap()
     );
     let now = Instant::from_millis(1);
     let npdu = [0x01, 0x00, 0x10, 0x08];
@@ -109,21 +114,21 @@ fn the_port_owns_its_core() {
 #[test]
 fn the_broadcast_station_is_the_only_group() {
     assert_eq!(
-        MstpPort::config(&config(true), 2)
+        bacnet_router_core::mstp::port_config(&config(true), 2)
             .unwrap()
             .groups
             .classify(&[BROADCAST_MAC]),
         Group::Broadcast
     );
     assert_eq!(
-        MstpPort::config(&config(true), 2)
+        bacnet_router_core::mstp::port_config(&config(true), 2)
             .unwrap()
             .groups
             .classify(&[5]),
         Group::No
     );
     assert_eq!(
-        MstpPort::config(&config(true), 2)
+        bacnet_router_core::mstp::port_config(&config(true), 2)
             .unwrap()
             .groups
             .classify(&[]),
@@ -326,7 +331,7 @@ fn priority_reaches_the_queue() {
 fn refusals_map_to_the_routers() {
     let now = Instant::from_millis(1);
     // Deliberately omit the group rule to exercise the link's defense too.
-    let mut mstp = MstpPort::config(&config(true), 2).unwrap();
+    let mut mstp = bacnet_router_core::mstp::port_config(&config(true), 2).unwrap();
     mstp.groups = bacnet_router_core::router::Groups::None;
     let mut router = router_with(&[port_on(1, OWN_0), mstp], Options::HOSTED);
     let mut host = Recorder::default();
@@ -461,6 +466,86 @@ fn extended_profile_admits_the_first_extended_boundary() {
     relayed_in_one_extended_frame(502);
 }
 
+/// Queues that claim extended slots but refuse an NPDU over 1,000 octets as
+/// oversize: queue storage of the caller's own whose limit is below what
+/// the router's port carries.
+struct Narrow(Queues<1>);
+
+impl QueueStorage for Narrow {
+    fn set_starvation_limit(&mut self, limit: u8) {
+        self.0.set_starvation_limit(limit);
+    }
+    fn max_npdu(&self) -> usize {
+        self.0.max_npdu()
+    }
+    fn enqueue_npdu(
+        &mut self,
+        destination: u8,
+        payload: &[u8],
+        priority: NetworkPriority,
+        now: Instant,
+        expires_at: Option<Instant>,
+    ) -> Result<(), QueueRefusal> {
+        if payload.len() > 1000 {
+            return Err(QueueRefusal::Oversize);
+        }
+        self.0
+            .enqueue_npdu(destination, payload, priority, now, expires_at)
+    }
+    fn expire(&mut self, now: Instant) -> usize {
+        self.0.expire(now)
+    }
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
+        self.0.peek(now)
+    }
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
+        self.0.peek_kind(kind, now)
+    }
+    fn dequeue_kind(
+        &mut self,
+        kind: QueueKind,
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
+        self.0.dequeue_kind(kind, now, max_len)
+    }
+    fn depth(&self, kind: QueueKind) -> usize {
+        self.0.depth(kind)
+    }
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.0.counters(kind)
+    }
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.0.take_counters(kind)
+    }
+}
+
+/// A queue refusal as oversize reaches the router as
+/// [`SendRefusal::TooLong`], and nothing is queued: here from queues of the
+/// caller's own that take less than the 1,497 octets the port carries.
+#[test]
+fn an_oversize_queue_refusal_is_too_long_for_the_router() {
+    let now = Instant::from_millis(1);
+    let mut router = router();
+    let mut rx = vec![0; MAX_EXTENDED_FRAME_LENGTH];
+    let mut actions: Box<ExtendedActionBuffers<1>> = Box::default();
+    let core = MasterCore::from_parts(
+        config(true),
+        Narrow(Queues::new()),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    let mut port = MstpPort::new(PortId(1), core).unwrap();
+    let npdu = relayed_as(1100);
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut Recorder::default());
+    let results = pump(&mut router, |send| port.send(send, now));
+    assert_eq!(results, [(1, Err(SendRefusal::TooLong))]);
+    assert_eq!(port.core().counters().unicast.depth, 0);
+    assert_eq!(router.counters().egress_too_long, 1);
+}
+
 /// A router's MS/TP port has no standard-frame profile: a core
 /// configuration without extended frames is refused (Clause 9.3). Where a
 /// port is held to 501 octets anyway, the router keeps a 502-octet NPDU from it
@@ -475,11 +560,14 @@ fn extended_profile_admits_the_first_extended_boundary() {
 fn standard_profile_rejects_502_bytes_before_queue_mutation() {
     let now = Instant::from_millis(1);
     let mut host = Recorder::default();
-    assert_eq!(MstpPort::config(&config(false), 2), Err(NotExtended));
+    assert_eq!(
+        bacnet_router_core::mstp::port_config(&config(false), 2),
+        Err(NotExtended)
+    );
     let npdu = relayed_as(502);
 
     // The router's own check, on a port held to 501 octets.
-    let mut held_to_501 = MstpPort::config(&config(true), 2).unwrap();
+    let mut held_to_501 = bacnet_router_core::mstp::port_config(&config(true), 2).unwrap();
     held_to_501.max_npdu = Limits::both(501);
     let mut router = router_with(&[port_on(1, OWN_0), held_to_501], Options::HOSTED);
     let mut bus = Bus::<1>::new();

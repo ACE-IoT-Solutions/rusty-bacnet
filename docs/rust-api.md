@@ -1975,9 +1975,9 @@ nothing: an input that breaks the contract is ignored and counted in
 octets come only from `on_transmit_started(id, now)`, which returns them
 when it confirms the start (decision D10, #1769). A refused start has no
 octets, so the line is never driven for one, and an adapter that can send
-from the core's frame buffer copies nothing. The `inspect` feature adds
-`handed_over_frame()`, a view of the frame before its start, for test
-oracles only.
+from the core's frame buffer copies nothing. The `inspect` feature adds a
+hidden view of the frame before its start, a test and fuzz hook outside
+the crate's semver.
 
 The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
 crate builds them like this:
@@ -2851,7 +2851,7 @@ refusals it maps to the router's. The MS/TP port, `mstp::MstpPort`, owns
 its master core, as a `NodePort` owns its node (#1769):
 `MstpPort::new(port, core)` refuses a core without extended frames,
 `port_config(network)` gives the router's `PortConfig` (or
-`MstpPort::config(&core_config, network)` before the core exists),
+`mstp::port_config(&core_config, network)` before the core exists),
 `poll_action()` hands each NPDU the core delivers up as a
 `PortAction::Arrived` and every other action as `PortAction::Core`,
 `release(request, now)` answers a relayed request Reply Postponed, and

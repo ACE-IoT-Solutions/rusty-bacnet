@@ -166,10 +166,10 @@
 //! `AllocQueues`, which reserves its capacity when built; no feature needs
 //! `std`. A caller may also implement [`QueueStorage`] itself.
 //!
-//! The `inspect` feature adds `MasterCore::handed_over_frame`, which shows
-//! a frame handed over and not yet started, for a test oracle that checks
-//! what the core will send. An adapter never needs it: it gets the octets
-//! from [`MasterCore::on_transmit_started`].
+//! The `inspect` feature adds a hidden view of a frame handed over and not
+//! yet started, for a test oracle that checks what the core will send. It
+//! is a test and fuzz hook, not covered by semver. An adapter never needs
+//! it: it gets the octets from [`MasterCore::on_transmit_started`].
 
 #![no_std]
 #![forbid(unsafe_code)]

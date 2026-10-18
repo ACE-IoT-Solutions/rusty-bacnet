@@ -60,10 +60,10 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
 
 ## Port group rules
 
-Use `BipPort::config`, or `MstpPort::config` (`port_config` on a port
-already built over its core), to build the router's port
-configuration. Each carries
-its link's group rules, so `router::Permissive` handles group destinations
+Use `BipPort::config`, or `mstp::port_config` (the `port_config` method on
+a port already built over its core), to build the router's port
+configuration. Each carries its link's group rules, so
+`router::Permissive` handles group destinations
 without an extra hook. An Unconfirmed-Request for a directly attached
 port's own group leaves as a local broadcast. Other APDUs and network
 messages for groups, and B/IP groups at another UDP port, are dropped and

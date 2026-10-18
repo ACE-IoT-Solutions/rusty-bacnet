@@ -3,7 +3,7 @@
 //!
 //! A router's MS/TP port takes extended frames: Clause 9.3 asks them of a
 //! routing node, and they carry the 1,497-octet NPDUs that B/IP carries
-//! (Table 6-1). [`MstpPort::new`] and [`MstpPort::config`] refuse a core
+//! (Table 6-1). [`MstpPort::new`] and [`port_config`] refuse a core
 //! configuration without them. The port owns its [`MasterCore`], as
 //! bip-core's `NodePort` owns its node, and translates between it and the
 //! router.
@@ -31,7 +31,7 @@
 //!   priority, so the core's queues serve the most urgent first.
 //! - **Line and timers:** feed the line's events and deadlines to the core
 //!   through [`MstpPort::core_mut`], as any adapter does.
-//! - **Groups:** [`MstpPort::config`] installs the rule that station 255
+//! - **Groups:** [`port_config`] installs the rule that station 255
 //!   is the port's broadcast.
 //!
 //! # Clause 6, for a router's MS/TP port
@@ -108,23 +108,21 @@ impl<Q: QueueStorage, const NPDU: usize> fmt::Debug for MstpPort<'_, Q, NPDU> {
     }
 }
 
-impl MstpPort<'_, (), 0> {
-    /// The [`PortConfig`] of an MS/TP port on `network` whose core runs
-    /// with `config`: the router's MAC is the station, and it carries
-    /// [`MstpCoreConfig::max_npdu`] octets, 1,497, each way.
-    /// Refused without extended frames. A port already built gives the
-    /// same with [`MstpPort::port_config`].
-    pub const fn config(config: &MstpCoreConfig, network: u16) -> Result<PortConfig, NotExtended> {
-        if !config.extended_frames {
-            return Err(NotExtended);
-        }
-        Ok(port_config(config, network))
+/// The [`PortConfig`] of an MS/TP port on `network` whose core runs with
+/// `config`, for building the router before the core exists: the router's
+/// MAC is the station, and it carries [`MstpCoreConfig::max_npdu`] octets,
+/// 1,497, each way. Refused without extended frames. A port already built
+/// gives the same with [`MstpPort::port_config`].
+pub const fn port_config(config: &MstpCoreConfig, network: u16) -> Result<PortConfig, NotExtended> {
+    if !config.extended_frames {
+        return Err(NotExtended);
     }
+    Ok(extended_port_config(config, network))
 }
 
 /// The [`PortConfig`] of a port whose core runs with `config`, which has
 /// extended frames.
-const fn port_config(config: &MstpCoreConfig, network: u16) -> PortConfig {
+const fn extended_port_config(config: &MstpCoreConfig, network: u16) -> PortConfig {
     PortConfig::new(
         network,
         Mac::from_array([config.station]),
@@ -149,12 +147,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MstpPort<'rx, Q, NPDU> {
         self.port
     }
 
-    /// The port's [`PortConfig`] on `network`, as [`MstpPort::config`]
-    /// builds it from the core's configuration.
+    /// The port's [`PortConfig`] on `network`, as the free
+    /// [`port_config`](fn@port_config) builds it from the core's
+    /// configuration.
     #[must_use]
     pub fn port_config(&self, network: u16) -> PortConfig {
         // `new` took only a core with extended frames.
-        port_config(self.core.config(), network)
+        extended_port_config(self.core.config(), network)
     }
 
     /// The core.

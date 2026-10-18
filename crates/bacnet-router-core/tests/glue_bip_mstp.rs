@@ -43,7 +43,8 @@ fn bip_port(link: Link) -> NodePort<'static> {
 /// The router over `bip`, with the MS/TP port as the core's configuration
 /// gives it, or as `mstp` overrides it.
 fn router(bip: &NodePort<'_>, mstp: Option<PortConfig>, options: Options) -> TestRouter {
-    let mstp = mstp.unwrap_or_else(|| MstpPort::config(&config(true), MSTP_NET).unwrap());
+    let mstp = mstp
+        .unwrap_or_else(|| bacnet_router_core::mstp::port_config(&config(true), MSTP_NET).unwrap());
     router_with(
         &[BipPort::config(bip.node().link(), BIP_NET), mstp],
         options,
@@ -149,7 +150,7 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
 fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
-    let mut held_to_501 = MstpPort::config(&config(true), MSTP_NET).unwrap();
+    let mut held_to_501 = bacnet_router_core::mstp::port_config(&config(true), MSTP_NET).unwrap();
     held_to_501.max_npdu = Limits::both(501);
     let mut router = router(&bip, Some(held_to_501), Options::HOSTED);
     let mut host = bacnet_router_core::router::Permissive;

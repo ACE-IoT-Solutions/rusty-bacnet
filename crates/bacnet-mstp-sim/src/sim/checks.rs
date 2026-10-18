@@ -313,7 +313,7 @@ impl Sim {
         let station = self.nodes[node].station;
         let Some(request) = pending.reply_to else {
             self.violation(
-                ViolationKind::CoreError,
+                ViolationKind::ContractBroken,
                 format!("host station {station}: answer lacks an accepted wire request"),
             );
             return;

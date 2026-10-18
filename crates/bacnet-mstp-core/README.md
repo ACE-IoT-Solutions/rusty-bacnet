@@ -55,8 +55,8 @@ The Tokio MS/TP transport in `bacnet-transport` and the MS/TP simulator in
 ## Features
 
 - `alloc`: `AllocQueues`, which reserve their capacity when built.
-- `inspect`: `MasterCore::handed_over_frame`, a view of a frame handed over
-  and not yet started, for test oracles. Adapters never need it.
+- `inspect`: a hidden view of a frame handed over and not yet started, a
+  test and fuzz hook outside the crate's semver. Adapters never need it.
 
 None is on by default, and none needs `std`.
 

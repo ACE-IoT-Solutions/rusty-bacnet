@@ -219,8 +219,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// before the adapter starts it (feature `inspect`). Never drive the
     /// line from it: an adapter gets the octets to send from
     /// [`Self::on_transmit_started`], and only when the start is confirmed.
+    ///
+    /// A test and fuzz hook, hidden from the docs and not covered by the
+    /// crate's semver: it may change or go in any release.
     #[cfg(feature = "inspect")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "inspect")))]
+    #[doc(hidden)]
     #[must_use]
     pub fn handed_over_frame(&self) -> Option<(TransmitId, &[u8])> {
         self.active_transmit

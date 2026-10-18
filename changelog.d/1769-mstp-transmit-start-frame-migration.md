@@ -2,6 +2,7 @@
 section: Migration notes
 ---
 - **MS/TP transmit (Rust API, #1769):** match
-  `Action::Transmit { id, header, length }` and take the octets to send from
-  `let frame = core.on_transmit_started(id, now)?`, right before enabling the
-  line driver; stop copying the frame at the poll.
+  `Action::Transmit { id, header, length }`; right before enabling the line
+  driver call `on_transmit_started(id, now)`, send the octets in its
+  `Ok(frame)`, and send nothing on `Err` (a deferred frame comes back as a
+  new `Transmit` action). Stop copying the frame at the poll.
