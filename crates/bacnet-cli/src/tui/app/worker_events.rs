@@ -105,12 +105,16 @@ impl App {
                     op.replies += usize::from(op.spec.wants(row.instance));
                 }
                 self.devices.upsert(row);
+                self.resolve_capture_devices();
             }
             WorkerEvent::Lost(row) => self.devices.remove(row.instance),
             WorkerEvent::Collision { retained, incoming } => {
                 self.duplicates.record(&retained, &incoming);
             }
-            WorkerEvent::Snapshot(rows) => self.devices.replace_all(rows),
+            WorkerEvent::Snapshot(rows) => {
+                self.devices.replace_all(rows);
+                self.resolve_capture_devices();
+            }
             WorkerEvent::WhoIsSent { op } => {
                 let now = self.now;
                 if let Some(op) = self.running_op_mut(op) {

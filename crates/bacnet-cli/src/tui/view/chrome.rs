@@ -221,57 +221,62 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-const HELP: &[(&str, &[(&str, &str)])] = &[
-    (
-        "Global",
-        &[
-            ("?  q  L", "Help; quit (guards open changes); log pane"),
-            ("Ctrl-C", "Cancel the running operation; twice quits"),
-            ("p  c  x", "Profiles; connect; disconnect/cancel"),
-            ("W  u", "Arm or disarm writes; the session ledger"),
-        ],
-    ),
-    (
-        "Devices",
-        &[
-            ("d  Enter", "Who-Is form; browse the selected device"),
-            ("Up Down j k", "Move; PgUp PgDn Home End jump"),
-            ("s  S  /", "Sort column; reverse; filter (Esc clears)"),
-        ],
-    ),
-    (
-        "Browser",
-        &[
-            ("Tab  Enter", "Next pane; read the selected object"),
-            ("/  r  a  Esc", "Filter; read again; watch the object; back"),
-            ("w  n", "Write; relinquish a slot (writes armed)"),
-        ],
-    ),
-    (
-        "Screens",
-        &[
-            ("3-7  1  x", "Watch/net/SC/MS-TP/capture; devices; unwatch"),
-            (":", "watch DEV OBJ [PROP]; csv on|off; find NAME"),
-            ("r  m  Tab", "Network: read BBMD/routers; survey; next tab"),
-        ],
-    ),
-    (
-        "Who-Is form",
-        &[
-            ("Tab Up Down", "Next or previous field"),
-            ("Left Rt Space", "Change the scope"),
-            ("Enter  Esc", "Send (again past a warning); close"),
-        ],
-    ),
-];
+/// A help section: a heading and its keys.
+type Section = (&'static str, &'static [(&'static str, &'static str)]);
+
+const GLOBAL: Section = (
+    "Global",
+    &[
+        ("?  q  L", "Help; quit (guards open changes); log pane"),
+        ("Ctrl-C", "Cancel the running operation; twice quits"),
+        ("p  c  x", "Profiles; connect; disconnect/cancel"),
+        ("W  u", "Arm or disarm writes; the session ledger"),
+    ],
+);
+
+const DEVICES: Section = (
+    "Devices",
+    &[
+        ("d  Enter", "Who-Is form; browse the selected device"),
+        ("Up Down j k", "Move; PgUp PgDn Home End jump"),
+        ("s  S  /", "Sort column; reverse; filter (Esc clears)"),
+    ],
+);
+
+const BROWSER: Section = (
+    "Browser",
+    &[
+        ("Tab  Enter", "Next pane; read the selected object"),
+        ("/  r  a  Esc", "Filter; read again; watch the object; back"),
+        ("w  n", "Write; relinquish a slot (writes armed)"),
+    ],
+);
+
+const SCREENS: Section = (
+    "Screens",
+    &[
+        ("3-7  1  x", "Watch/net/SC/MS-TP/capture; devices; unwatch"),
+        (":", "watch DEV OBJ [PROP]; csv on|off; find NAME"),
+        ("r  m  Tab", "Network: read BBMD/routers; survey; next tab"),
+    ],
+);
+
+const WHO_IS: Section = (
+    "Who-Is form",
+    &[
+        ("Tab Up Down", "Next or previous field"),
+        ("Left Rt Space", "Change the scope"),
+        ("Enter  Esc", "Send (again past a warning); close"),
+    ],
+);
 
 /// The Capture screen's keys, shown in place of the device and form
 /// sections there, so the overlay still fits 24 rows.
-const CAPTURE_HELP: (&str, &[(&str, &str)]) = (
+const CAPTURE: Section = (
     "Capture",
     &[
         ("Space  Tab", "Pause or follow; list, tree, hex"),
-        ("Enter Left Rt", "To the tree; open or close a node"),
+        ("Enter Left Rt", "To the tree; close or open a node"),
         ("/", "Filter dev: mac: net: svc: pdu: errors bcast"),
         ("z  Esc", "Forget every frame; clear the filter, back"),
     ],
@@ -279,11 +284,10 @@ const CAPTURE_HELP: (&str, &[(&str, &str)]) = (
 
 /// The `?` overlay.
 pub(super) fn help(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let capture = [HELP[0], HELP[3], CAPTURE_HELP];
-    let sections: &[(&str, &[(&str, &str)])] = if app.screen == Screen::Capture {
-        &capture
+    let sections: &[Section] = if app.screen == Screen::Capture {
+        &[GLOBAL, SCREENS, CAPTURE]
     } else {
-        HELP
+        &[GLOBAL, DEVICES, BROWSER, SCREENS, WHO_IS]
     };
     let mut lines = Vec::new();
     for (section, keys) in sections {

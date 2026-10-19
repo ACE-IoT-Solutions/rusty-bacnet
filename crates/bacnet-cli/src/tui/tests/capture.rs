@@ -18,9 +18,9 @@ use crate::decode::frame::summarize_frame;
 use crate::decode::testing;
 use crate::tui::app::capture::{CaptureKey, CaptureState, Focus};
 use crate::tui::app::watch::Screen;
-use crate::tui::capture::worker::{pump, Source};
+use crate::tui::capture::worker::{pump, route, Source};
 use crate::tui::capture::{Batch, CaptureCommand, CaptureEvent, CaptureFrame, Direction, Framing};
-use crate::tui::worker::{EventSink, EVENT_CHANNEL_CAPACITY};
+use crate::tui::worker::EventSink;
 
 /// A fixed wall-clock time, `ms` after 2025-10-09 08:53:20 UTC.
 pub(super) fn wall(ms: u64) -> SystemTime {
@@ -28,7 +28,7 @@ pub(super) fn wall(ms: u64) -> SystemTime {
 }
 
 const ME: &str = "10.0.0.1:47808";
-const PEER: &str = "10.0.0.2:47808";
+pub(super) const PEER: &str = "10.0.0.2:47808";
 
 /// A B/IP frame carrying `apdu`, sent (`out`) to or received from `PEER`.
 pub(super) fn bip_frame(ms: u64, out: bool, apdu: &Apdu, broadcast: bool) -> CaptureFrame {
@@ -37,18 +37,29 @@ pub(super) fn bip_frame(ms: u64, out: bool, apdu: &Apdu, broadcast: bool) -> Cap
     raw_bip(ms, out, bytes)
 }
 
-fn raw_bip(ms: u64, out: bool, bytes: Vec<u8>) -> CaptureFrame {
+pub(super) fn raw_bip(ms: u64, out: bool, bytes: Vec<u8>) -> CaptureFrame {
     let (me, peer): (SocketAddr, SocketAddr) = (ME.parse().unwrap(), PEER.parse().unwrap());
     let (source, destination) = if out { (me, peer) } else { (peer, me) };
+    let summary = summarize_frame(Framing::Bip, &bytes);
+    // As the worker does: a routed NPDU's ends are routed stations.
+    let (source, destination, via) =
+        route(source.to_string(), destination.to_string(), &summary, out);
     CaptureFrame {
         time: wall(ms),
         framing: Framing::Bip,
         direction: if out { Direction::Out } else { Direction::In },
-        source: source.to_string(),
-        destination: destination.to_string(),
-        summary: summarize_frame(Framing::Bip, &bytes),
+        source,
+        destination,
+        via,
+        summary,
         bytes: Bytes::from(bytes),
     }
+}
+
+/// `apdu` relayed to us by PEER, a router, from station 0x05 on network 2.
+pub(super) fn routed_in(ms: u64, apdu: &Apdu) -> CaptureFrame {
+    let npdu = testing::routed_npdu(apdu, false, Some((2, &[0x05])));
+    raw_bip(ms, false, testing::bip(&npdu, false))
 }
 
 /// A mixed session: two ReadProperty exchanges (one answered with an
@@ -80,11 +91,11 @@ pub(super) fn capturing() -> App {
     app
 }
 
-fn shown(app: &App) -> Vec<u64> {
+pub(super) fn shown(app: &App) -> Vec<u64> {
     app.capture.visible().collect()
 }
 
-fn filter(app: &mut App, text: &str) {
+pub(super) fn filter(app: &mut App, text: &str) {
     press(app, KeyCode::Char('/'));
     type_text(app, text);
     press(app, KeyCode::Enter);
@@ -277,7 +288,7 @@ fn the_tree_selects_a_field_and_the_hex_view_marks_its_octets() {
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.capture.focus, Focus::Hex);
     let text = screen(&mut app, 80, 24);
-    assert!(text.contains("Hex: octets 8-8"), "{text}");
+    assert!(text.contains("Hex: octet 8 "), "{text}");
     // Left closes the APDU's node, or climbs to it.
     press(&mut app, KeyCode::BackTab);
     press(&mut app, KeyCode::Left);
@@ -320,8 +331,10 @@ async fn five_thousand_frames_a_second_stay_bounded_and_every_loss_is_counted() 
         rx,
         lost: lost.clone(),
     };
-    // The UI's event channel, which fills while the UI stalls.
-    let (sink, mut events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
+    // Batches go out full or every 250 ms, so a few a second; a small
+    // event channel fills with them while the UI stalls.
+    let (sink, mut events) = EventSink::channel(8);
+    let status_bar = sink.dropped_counter();
     let (_commands, mut command_rx) = mpsc::channel::<CaptureCommand>(1);
     let pumping = tokio::spawn(async move { pump(source, &sink, &mut command_rx).await });
     let template = bip_frame(0, true, &testing::rp_request(1), false);
@@ -360,6 +373,11 @@ async fn five_thousand_frames_a_second_stay_bounded_and_every_loss_is_counted() 
     let arrived = app.capture.ring.next() - 1;
     assert!(app.capture.lost > 0, "the stall lost frames");
     assert_eq!(arrived + app.capture.lost, RATE * SECONDS, "exact");
+    assert_eq!(
+        status_bar.load(Ordering::Relaxed),
+        0,
+        "capture's refusals stay out of the status bar's drop count"
+    );
     assert_eq!(app.capture.ring.len(), 2_000);
     let text = screen(&mut app, 80, 24);
     assert!(

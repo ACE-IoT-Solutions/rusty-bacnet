@@ -14,11 +14,11 @@ use std::ops::Range;
 use bacnet_encoding::apdu::{decode_apdu, Apdu};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_encoding::tags::{decode_tag, TagClass, MAX_CONTEXT_NESTING_DEPTH};
-use bacnet_npdu::Npdu as NpduView;
+use bacnet_npdu::{NetworkPriority, Npdu as NpduView};
 use bacnet_types::primitives::PropertyValue;
 use bytes::Bytes;
 
-use super::frame::{link, Framing, Link, Npdu};
+use super::frame::{kebab, link, Framing, Link, Npdu};
 
 /// One decoded field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +125,7 @@ fn bvll(frame: &[u8], npdu_start: usize, link: &Link) -> Field {
                 let code = u16::from_be_bytes([*hi, *lo]);
                 let name = bacnet_transport::bvll::BvlcResultCode::from_raw(code);
                 kids.push(Field::leaf(
-                    format!("Result code: {name} (0x{code:04X})"),
+                    format!("Result code: {} (0x{code:04X})", kebab(name)),
                     4..6,
                 ));
                 // The code says it all.
@@ -271,7 +271,7 @@ fn npdu(npdu: &[u8], base: usize) -> Vec<Field> {
         Ok(view) => view,
         Err(error) => {
             return vec![Field::leaf(
-                format!("NPDU: malformed ({error:?})"),
+                format!("NPDU: malformed ({error})"),
                 at(0..npdu.len()),
             )]
         }
@@ -288,7 +288,13 @@ fn npdu(npdu: &[u8], base: usize) -> Vec<Field> {
             flags.push(name.to_string());
         }
     }
-    flags.push(format!("priority {:?}", view.priority));
+    let priority = match view.priority {
+        NetworkPriority::Normal => "normal",
+        NetworkPriority::Urgent => "urgent",
+        NetworkPriority::CriticalEquipment => "critical-equipment",
+        NetworkPriority::LifeSafety => "life-safety",
+    };
+    flags.push(format!("priority {priority}"));
     let mut kids = vec![
         Field::leaf(format!("Version: {}", npdu[0]), at(0..1)),
         Field::leaf(
@@ -326,7 +332,7 @@ fn npdu(npdu: &[u8], base: usize) -> Vec<Field> {
     }
     if let Some(kind) = view.message_type {
         kids.push(Field::leaf(
-            format!("Message type: {kind}"),
+            format!("Message type: {}", kebab(kind)),
             at(pos..pos + 1),
         ));
         pos += 1;
@@ -342,7 +348,7 @@ fn npdu(npdu: &[u8], base: usize) -> Vec<Field> {
     let rest = at(payload..npdu.len());
     match view.message_type {
         Some(kind) if !view.payload.is_empty() => fields.push(Field::leaf(
-            format!("{kind}: {} octets", view.payload.len()),
+            format!("{}: {} octets", kebab(kind), view.payload.len()),
             rest,
         )),
         Some(_) => {}
@@ -398,17 +404,20 @@ fn apdu(apdu: &[u8], base: usize) -> Field {
                 leaf(format!("Proposed window size: {}", apdu[4]), 4..5);
                 pos = 5;
             }
-            leaf(format!("Service: {}", request.service_choice), pos..pos + 1);
-            (request.service_choice.to_string(), pos + 1, None)
+            leaf(
+                format!("Service: {}", kebab(request.service_choice)),
+                pos..pos + 1,
+            );
+            (kebab(request.service_choice), pos + 1, None)
         }
         Apdu::UnconfirmedRequest(request) => {
-            leaf(format!("Service: {}", request.service_choice), 1..2);
-            (request.service_choice.to_string(), 2, None)
+            leaf(format!("Service: {}", kebab(request.service_choice)), 1..2);
+            (kebab(request.service_choice), 2, None)
         }
         Apdu::SimpleAck(ack) => {
             leaf(format!("Invoke ID: {}", ack.invoke_id), 1..2);
-            leaf(format!("Service: {}", ack.service_choice), 2..3);
-            (ack.service_choice.to_string(), 3, None)
+            leaf(format!("Service: {}", kebab(ack.service_choice)), 2..3);
+            (kebab(ack.service_choice), 3, None)
         }
         Apdu::ComplexAck(ack) => {
             leaf(format!("Invoke ID: {}", ack.invoke_id), 1..2);
@@ -418,8 +427,11 @@ fn apdu(apdu: &[u8], base: usize) -> Field {
                 leaf(format!("Proposed window size: {}", apdu[3]), 3..4);
                 pos = 4;
             }
-            leaf(format!("Service: {}", ack.service_choice), pos..pos + 1);
-            (ack.service_choice.to_string(), pos + 1, None)
+            leaf(
+                format!("Service: {}", kebab(ack.service_choice)),
+                pos..pos + 1,
+            );
+            (kebab(ack.service_choice), pos + 1, None)
         }
         Apdu::SegmentAck(ack) => {
             leaf(format!("Invoke ID: {}", ack.invoke_id), 1..2);
@@ -432,18 +444,25 @@ fn apdu(apdu: &[u8], base: usize) -> Field {
         }
         Apdu::Error(error) => {
             leaf(format!("Invoke ID: {}", error.invoke_id), 1..2);
-            leaf(format!("Service: {}", error.service_choice), 2..3);
-            let problem = format!("Error: {}:{}", error.error_class, error.error_code);
-            (error.service_choice.to_string(), 3, Some(problem))
+            leaf(format!("Service: {}", kebab(error.service_choice)), 2..3);
+            let problem = format!(
+                "Error: {}:{}",
+                kebab(error.error_class),
+                kebab(error.error_code)
+            );
+            (kebab(error.service_choice), 3, Some(problem))
         }
         Apdu::Reject(reject) => {
             leaf(format!("Invoke ID: {}", reject.invoke_id), 1..2);
-            leaf(format!("Reject reason: {}", reject.reject_reason), 2..3);
+            leaf(
+                format!("Reject reason: {}", kebab(reject.reject_reason)),
+                2..3,
+            );
             (String::new(), apdu.len(), None)
         }
         Apdu::Abort(abort) => {
             leaf(format!("Invoke ID: {}", abort.invoke_id), 1..2);
-            leaf(format!("Abort reason: {}", abort.abort_reason), 2..3);
+            leaf(format!("Abort reason: {}", kebab(abort.abort_reason)), 2..3);
             (String::new(), apdu.len(), None)
         }
     };
@@ -471,9 +490,33 @@ const APPLICATION_TAGS: [&str; 13] = [
     "Object identifier",
 ];
 
+/// An application value as the screen writes it: enumerations and object
+/// types in kebab-case, an object as `analog-input 1`.
+fn value_text(value: &PropertyValue) -> String {
+    match value {
+        PropertyValue::Enumerated(n) => n.to_string(),
+        PropertyValue::ObjectIdentifier(object) => {
+            format!(
+                "{} {}",
+                kebab(object.object_type()),
+                object.instance_number()
+            )
+        }
+        // TODO(#1888): the TUI's float cap applies here once it lands.
+        value => crate::output::format_property_value(value),
+    }
+}
+
 /// The tagged values in `data[start..end]`, opening and closing tags as
 /// nodes. Stops at the first tag it can't read, with a leaf saying so.
 fn tags(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> Vec<Field> {
+    walk(data, base, start, end, depth).0
+}
+
+/// [`tags`], and where the walk stopped: just past the closing tag that
+/// ended this level, or `end`. Every tag header's length comes from
+/// `decode_tag`, since tag numbers from 15 up take a second octet.
+fn walk(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> (Vec<Field>, usize) {
     let mut fields = Vec::new();
     let mut pos = start;
     while pos < end {
@@ -481,24 +524,21 @@ fn tags(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> Vec
             Ok(read) if depth < MAX_CONTEXT_NESTING_DEPTH => read,
             Ok(_) => {
                 fields.push(Field::leaf("Nested too deeply", base + pos..base + end));
-                return fields;
+                return (fields, end);
             }
             Err(error) => {
                 fields.push(Field::leaf(
                     format!("Malformed tag: {error}"),
                     base + pos..base + end,
                 ));
-                return fields;
+                return (fields, end);
             }
         };
         if tag.is_closing {
-            return fields;
+            return (fields, content);
         }
         if tag.is_opening {
-            let inner = tags(data, base, content, end, depth + 1);
-            // The closing tag follows the last inner field.
-            let close = inner.last().map_or(content, |field| field.range.end - base);
-            let after = (close + 1).min(end);
+            let (inner, after) = walk(data, base, content, end, depth + 1);
             fields.push(Field::node(
                 format!("[{}] opening", tag.number),
                 base + pos..base + after,
@@ -507,25 +547,26 @@ fn tags(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> Vec
             pos = after;
             continue;
         }
-        let after = content
-            .saturating_add(tag.length as usize)
-            .min(end)
-            .max(content);
-        let label = match tag.class {
-            TagClass::Application => match decode_application_value(&data[..end], pos) {
-                Ok((value, _)) => format!(
-                    "{}: {}",
-                    APPLICATION_TAGS
-                        .get(usize::from(tag.number))
-                        .unwrap_or(&"Application"),
-                    match value {
-                        PropertyValue::Enumerated(n) => n.to_string(),
-                        value => crate::output::format_property_value(&value),
-                    }
-                ),
-                Err(error) => format!("Application tag {}: {error}", tag.number),
-            },
-            TagClass::Context => {
+        // An application Boolean holds its value in the header and has no
+        // content octets; the value decoder knows where each one ends.
+        let decoded = (tag.class == TagClass::Application)
+            .then(|| decode_application_value(&data[..end], pos));
+        let after = match &decoded {
+            Some(Ok((_, after))) => *after,
+            _ => content.saturating_add(tag.length as usize),
+        }
+        .min(end)
+        .max(content);
+        let label = match decoded {
+            Some(Ok((value, _))) => format!(
+                "{}: {}",
+                APPLICATION_TAGS
+                    .get(usize::from(tag.number))
+                    .unwrap_or(&"Application"),
+                value_text(&value)
+            ),
+            Some(Err(error)) => format!("Application tag {}: {error}", tag.number),
+            None => {
                 let octets = &data[content..after];
                 let number = (octets.len() <= 4)
                     .then(|| octets.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b)));
@@ -540,7 +581,7 @@ fn tags(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> Vec
         fields.push(Field::leaf(label, base + pos..base + after));
         pos = after;
     }
-    fields
+    (fields, end)
 }
 
 #[cfg(test)]

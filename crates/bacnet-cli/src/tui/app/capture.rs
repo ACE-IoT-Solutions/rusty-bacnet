@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use ratatui::text::Text;
 use tui_tree_widget::{TreeItem, TreeState};
 
-use super::devices::Movement;
+use super::devices::{DeviceTable, Movement};
 use super::watch::Screen;
 use super::{App, FilterKey, Link, FLASH_FOR};
 use crate::decode::tree::{decode_tree, Field};
@@ -147,10 +147,18 @@ impl CaptureState {
         (index < self.shown()).then_some(index)
     }
 
-    /// Frames that arrived while paused.
-    pub(crate) fn held_back(&self) -> u64 {
-        self.paused
-            .map_or(0, |at| (self.ring.next() - 1).saturating_sub(at))
+    /// Frames the filter keeps that arrived while paused.
+    pub(crate) fn held_back(&self) -> usize {
+        self.ring.kept().len() - self.shown()
+    }
+
+    /// Stop following, at the newest frame shown, keeping the selection.
+    fn pause(&mut self) {
+        if self.paused.is_none() {
+            let newest = self.visible().next_back();
+            self.selected = newest;
+            self.paused = Some(self.ring.next() - 1);
+        }
     }
 
     /// The selected frame's number: the newest shown while following, or
@@ -340,8 +348,16 @@ impl App {
                     (Focus::Tree, false) | (Focus::List, true) => Focus::Hex,
                     (Focus::Hex, false) | (Focus::Tree, true) => Focus::List,
                 };
+                // Reading a frame's fields pauses, so a new frame doesn't
+                // replace the tree under the cursor.
+                if capture.focus != Focus::List {
+                    capture.pause();
+                }
             }
-            CaptureKey::Toggle if capture.focus == Focus::List => capture.focus = Focus::Tree,
+            CaptureKey::Toggle if capture.focus == Focus::List => {
+                capture.focus = Focus::Tree;
+                capture.pause();
+            }
             CaptureKey::Toggle => {
                 capture.tree.get_mut().toggle_selected();
             }
@@ -357,16 +373,8 @@ impl App {
                 let selected = tree.selected().to_vec();
                 tree.open(selected);
             }
-            CaptureKey::Pause => {
-                capture.paused = match capture.paused {
-                    Some(_) => None,
-                    None => {
-                        let newest = capture.visible().next_back();
-                        capture.selected = newest;
-                        Some(capture.ring.next() - 1)
-                    }
-                };
-            }
+            CaptureKey::Pause if capture.paused.is_some() => capture.paused = None,
+            CaptureKey::Pause => capture.pause(),
             CaptureKey::Clear => {
                 capture.ring.clear();
                 capture.paused = None;
@@ -395,7 +403,7 @@ impl App {
                 match Filter::parse(&self.capture.filter) {
                     Ok(mut filter) => {
                         let devices = &self.devices;
-                        filter.resolve(|instance| devices.get(instance).map(|r| r.address.clone()));
+                        filter.resolve(|instance| device_addresses(devices, instance));
                         self.capture.ring.set_filter(filter);
                     }
                     Err(error) => self.flash(error, FLASH_FOR),
@@ -407,5 +415,34 @@ impl App {
                 self.capture.ring.set_filter(Filter::default());
             }
         }
+    }
+
+    /// Look the filter's `dev:` terms up again after the device table
+    /// changed, and filter the ring again only when an address did.
+    pub(crate) fn resolve_capture_devices(&mut self) {
+        if !self.capture.ring.filter().has_devices() {
+            return;
+        }
+        let mut filter = self.capture.ring.filter().clone();
+        let devices = &self.devices;
+        if filter.resolve(|instance| device_addresses(devices, instance)) {
+            self.capture.ring.set_filter(filter);
+        }
+    }
+}
+
+/// Where device `instance` is, as a captured frame would name it: its
+/// address, or for a routed device its routed station (`2:0x05`), from the
+/// SNET and SADR of its I-Am.
+fn device_addresses(devices: &DeviceTable, instance: u32) -> Vec<String> {
+    let Some(row) = devices.get(instance) else {
+        return Vec::new();
+    };
+    match (row.network, row.address.split_once(" via ")) {
+        (Some(network), Some((station, _))) => {
+            let hex = station.replace(':', "").to_uppercase();
+            vec![format!("{network}:0x{hex}")]
+        }
+        _ => vec![row.address.clone()],
     }
 }

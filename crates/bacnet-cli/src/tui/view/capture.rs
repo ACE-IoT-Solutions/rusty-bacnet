@@ -32,21 +32,20 @@ fn clock(time: SystemTime) -> String {
 /// A short name for the link message.
 fn link_short(link: &str) -> &str {
     match link {
-        "ORIGINAL_UNICAST_NPDU" => "Unicast",
-        "ORIGINAL_BROADCAST_NPDU" => "Bcast",
-        "FORWARDED_NPDU" => "Fwd",
-        "DISTRIBUTE_BROADCAST_TO_NETWORK" => "Dist-Bcast",
-        "BVLC_RESULT" => "Result",
-        "REGISTER_FOREIGN_DEVICE" => "Reg-FD",
-        "EncapsulatedNpdu" => "Encap",
-        "BACNET_DATA_EXPECTING_REPLY" | "BACNET_EXTENDED_DATA_EXPECTING_REPLY" => "Data-ER",
-        "BACNET_DATA_NOT_EXPECTING_REPLY" | "BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY" => {
-            "Data-NER"
+        "original-unicast-npdu" => "unicast",
+        "original-broadcast-npdu" => "bcast",
+        "forwarded-npdu" => "fwd",
+        "distribute-broadcast-to-network" => "dist-bcast",
+        "bvlc-result" => "result",
+        "register-foreign-device" => "reg-fd",
+        "encapsulated-npdu" => "encap",
+        "bacnet-data-expecting-reply" | "bacnet-extended-data-expecting-reply" => "data-er",
+        "bacnet-data-not-expecting-reply" | "bacnet-extended-data-not-expecting-reply" => {
+            "data-ner"
         }
-        "POLL_FOR_MASTER" => "PFM",
-        "REPLY_TO_POLL_FOR_MASTER" => "Reply-PFM",
-        "TOKEN" => "Token",
-        "REPLY_POSTPONED" => "Postponed",
+        "poll-for-master" => "pfm",
+        "reply-to-poll-for-master" => "reply-pfm",
+        "reply-postponed" => "postponed",
         other => other,
     }
 }
@@ -54,11 +53,14 @@ fn link_short(link: &str) -> &str {
 /// A short name for the APDU type.
 fn pdu_short(pdu: &str) -> &str {
     match pdu {
-        "Confirmed-Request" => "Conf-Req",
-        "Unconfirmed-Request" => "Unconf-Req",
-        "Simple-ACK" => "Simple-ACK",
-        "Complex-ACK" => "Cmplx-ACK",
-        "Segment-ACK" => "Seg-ACK",
+        "Confirmed-Request" => "conf-req",
+        "Unconfirmed-Request" => "unconf-req",
+        "Simple-ACK" => "simple-ack",
+        "Complex-ACK" => "cmplx-ack",
+        "Segment-ACK" => "seg-ack",
+        "Error" => "error",
+        "Reject" => "reject",
+        "Abort" => "abort",
         other => other,
     }
 }
@@ -68,27 +70,51 @@ fn pdu_text(frame: &CaptureFrame) -> String {
     let summary = &frame.summary;
     match (&summary.pdu, &summary.network_message) {
         (Some(pdu), _) => pdu_short(pdu).to_string(),
-        (None, Some(message)) => format!("NL {message}"),
+        (None, Some(message)) => format!("nl {message}"),
         (None, None) => String::new(),
     }
 }
 
-/// Fixed columns: (header, wide width, narrow width); 0 hides it. The
-/// last column takes what is left.
-const COLUMNS: [(&str, u16, u16); 10] = [
-    ("No.", 6, 5),
-    ("Time", 12, 12),
-    ("Link", 4, 0),
-    ("Dir", 3, 0),
-    ("Source", 19, 15),
-    ("Destination", 19, 15),
-    ("Message", 9, 0),
-    ("PDU", 10, 0),
-    ("Inv", 3, 0),
-    ("Service", 0, 0),
+/// How much of the list fits: below 120 columns the link, direction,
+/// message, APDU type, invoke ID and service fold into a direction mark and
+/// one `Info` column; from 150 a `Via` column shows a routed frame's link
+/// peer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Width {
+    Narrow,
+    Wide,
+    Widest,
+}
+
+/// From this many columns the list shows `Via`.
+const VIA_WIDTH: u16 = 150;
+
+/// Columns: (header, narrow, wide, widest width); 0 hides it. The last
+/// column takes what is left.
+const COLUMNS: [(&str, u16, u16, u16); 12] = [
+    ("No.", 5, 6, 6),
+    ("Time", 12, 12, 12),
+    ("Link", 0, 4, 4),
+    ("Dir", 0, 3, 3),
+    ("", 1, 0, 0),
+    ("Source", 15, 19, 21),
+    ("Destination", 15, 19, 21),
+    ("Via", 0, 0, 21),
+    ("Message", 0, 9, 9),
+    ("PDU", 0, 10, 10),
+    ("Inv", 0, 3, 3),
+    ("Service", 0, 0, 0),
 ];
 
-fn cells(number: u64, frame: &CaptureFrame, wide: bool) -> Vec<String> {
+fn width_of(column: &(&str, u16, u16, u16), width: Width) -> u16 {
+    match width {
+        Width::Narrow => column.1,
+        Width::Wide => column.2,
+        Width::Widest => column.3,
+    }
+}
+
+fn cells(number: u64, frame: &CaptureFrame, width: Width) -> Vec<String> {
     let summary = &frame.summary;
     let invoke = summary
         .invoke_id
@@ -97,13 +123,20 @@ fn cells(number: u64, frame: &CaptureFrame, wide: bool) -> Vec<String> {
     let service = summary.service.clone().unwrap_or_default();
     let device = summary.device.map(|d| format!("device {d}"));
     let problem = summary.problem.clone().or(device).unwrap_or_default();
+    let mark = match frame.direction {
+        crate::tui::capture::Direction::In => "←",
+        crate::tui::capture::Direction::Out => "→",
+        crate::tui::capture::Direction::Wire => "-",
+    };
     let fixed = [
         number.to_string(),
         clock(frame.time),
         frame.framing.label().to_string(),
         frame.direction.label().to_string(),
+        mark.to_string(),
         frame.source.clone(),
         frame.destination.clone(),
+        frame.via.clone().unwrap_or_default(),
         link_short(&summary.link).to_string(),
         pdu_text(frame),
         invoke.clone(),
@@ -111,25 +144,26 @@ fn cells(number: u64, frame: &CaptureFrame, wide: bool) -> Vec<String> {
     let mut out: Vec<String> = fixed
         .into_iter()
         .zip(COLUMNS)
-        .filter(|(_, (_, w, n))| if wide { *w > 0 } else { *n > 0 })
+        .filter(|(_, column)| width_of(column, width) > 0)
         .map(|(text, _)| text)
         .collect();
-    let last = if wide {
-        [service, problem].join(" ").trim().to_string()
-    } else {
-        // The link message only when nothing above it says more.
+    let last = if width == Width::Narrow {
+        // The invoke ID first, so it survives a cut; the link message only
+        // when nothing above it says more.
         let pdu = pdu_text(frame);
-        let mut parts = match pdu.is_empty() {
-            true => vec![link_short(&summary.link).to_string()],
-            false => vec![pdu],
-        };
-        parts.push(service);
+        let mut parts = Vec::new();
         if !invoke.is_empty() {
             parts.push(format!("#{invoke}"));
         }
-        parts.push(problem);
+        parts.push(match pdu.is_empty() {
+            true => link_short(&summary.link).to_string(),
+            false => pdu,
+        });
+        parts.extend([service, problem]);
         parts.retain(|part| !part.is_empty());
         parts.join(" ")
+    } else {
+        [service, problem].join(" ").trim().to_string()
     };
     out.push(last);
     out
@@ -248,9 +282,14 @@ fn list(frame: &mut Frame, area: Rect, app: &App, wide: bool, theme: &Theme) {
         offset = index + 1 - height;
     }
     capture.offset.set(offset);
+    let width = match (wide, area.width >= VIA_WIDTH) {
+        (false, _) => Width::Narrow,
+        (true, false) => Width::Wide,
+        (true, true) => Width::Widest,
+    };
     let fixed: Vec<(&str, u16)> = COLUMNS
         .iter()
-        .map(|(h, w, n)| (*h, if wide { *w } else { *n }))
+        .map(|column| (column.0, width_of(column, width)))
         .filter(|(h, w)| *w > 0 || *h == "Service")
         .collect();
     let mut widths = vec![Constraint::Length(1)];
@@ -270,7 +309,7 @@ fn list(frame: &mut Frame, area: Rect, app: &App, wide: bool, theme: &Theme) {
         .map(|(n, f)| {
             let mark = if Some(n) == selected { ">" } else { " " };
             let mut texts = vec![mark.to_string()];
-            texts.extend(cells(n, f, wide));
+            texts.extend(cells(n, f, width));
             let row = Row::new(texts);
             match (Some(n) == selected, f.summary.problem.is_some()) {
                 (true, _) => row.style(theme.selected()),
@@ -335,6 +374,7 @@ fn hex(
 ) {
     let field = capture.selected_field();
     let title = match field {
+        Some(f) if f.range.len() == 1 => format!(" Hex: octet {} ", f.range.start),
         Some(f) if !f.range.is_empty() => {
             format!(" Hex: octets {}-{} ", f.range.start, f.range.end - 1)
         }

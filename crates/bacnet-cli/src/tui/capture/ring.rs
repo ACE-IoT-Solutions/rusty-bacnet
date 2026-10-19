@@ -78,6 +78,11 @@ impl Ring {
         &self.kept
     }
 
+    /// The filter applied.
+    pub(crate) fn filter(&self) -> &Filter {
+        &self.filter
+    }
+
     /// Apply a new filter to every frame held.
     pub(crate) fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;

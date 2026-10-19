@@ -21,13 +21,25 @@ use bytes::{Bytes, BytesMut};
 
 /// `apdu` in an NPDU without routing.
 pub(crate) fn npdu(apdu: &Apdu, expecting_reply: bool) -> Vec<u8> {
+    routed_npdu(apdu, expecting_reply, None)
+}
+
+/// `apdu` in an NPDU a router relayed from `source`, SNET and SADR.
+pub(crate) fn routed_npdu(
+    apdu: &Apdu,
+    expecting_reply: bool,
+    source: Option<(u16, &[u8])>,
+) -> Vec<u8> {
     let mut payload = BytesMut::new();
     encode_apdu(&mut payload, apdu).unwrap();
     let npdu = Npdu {
         expecting_reply,
         priority: NetworkPriority::Normal,
         destination: None,
-        source: None,
+        source: source.map(|(network, mac)| bacnet_encoding::npdu::NpduAddress {
+            network,
+            mac_address: bacnet_types::MacAddr::from_slice(mac),
+        }),
         hop_count: 255,
         message_type: None,
         vendor_id: None,
@@ -63,12 +75,25 @@ pub(crate) fn rp_request(invoke_id: u8) -> Apdu {
 
 /// Its answer: the value 72.5.
 pub(crate) fn rp_ack(invoke_id: u8) -> Apdu {
+    rp_ack_with(invoke_id, vec![0x44, 0x42, 0x91, 0x00, 0x00])
+}
+
+/// An unconfirmed request whose parameters are `octets`, as given.
+pub(crate) fn unconfirmed(octets: &[u8]) -> Apdu {
+    Apdu::UnconfirmedRequest(UnconfirmedRequest {
+        service_choice: UnconfirmedServiceChoice::UNCONFIRMED_PRIVATE_TRANSFER,
+        service_request: Bytes::copy_from_slice(octets),
+    })
+}
+
+/// A ReadProperty answer carrying `value`, application-tagged as given.
+pub(crate) fn rp_ack_with(invoke_id: u8, value: Vec<u8>) -> Apdu {
     let mut ack = BytesMut::new();
     ReadPropertyACK {
         object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
         property_identifier: PropertyIdentifier::PRESENT_VALUE,
         property_array_index: None,
-        property_value: vec![0x44, 0x42, 0x91, 0x00, 0x00],
+        property_value: value,
     }
     .encode(&mut ack);
     Apdu::ComplexAck(ComplexAck {

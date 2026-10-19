@@ -1,8 +1,9 @@
 //! The Capture screen's filter: space-separated terms, all of which a
 //! frame must match.
 //!
-//! - `dev:N`: frames from or to device N's address in the device table, and
-//!   N's I-Am. The address is looked up when the filter is applied.
+//! - `dev:N`: frames from or to device N's address in the device table (a
+//!   routed device's as `NET:0xMAC`), and N's I-Am. Addresses are looked up
+//!   again as the device table learns them.
 //! - `mac:TEXT`: a source or destination address containing TEXT.
 //! - `net:N`: an NPDU with SNET or DNET N.
 //! - `svc:NAME`: that service's requests, ACKs and errors. Case, `-` and
@@ -20,8 +21,9 @@ use super::CaptureFrame;
 /// One term.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Term {
-    /// A device instance, and its address once looked up.
-    Device(u32, Option<String>),
+    /// A device instance, and its addresses as the device table has them:
+    /// its own, or for a routed device its routed station, `2:0x05`.
+    Device(u32, Vec<String>),
     Mac(String),
     Net(u16),
     Service(String),
@@ -56,7 +58,7 @@ impl Filter {
         let mut terms = Vec::new();
         for word in text.split_whitespace() {
             let term = match word.split_once(':') {
-                Some(("dev" | "device", value)) => Term::Device(number("dev", value)?, None),
+                Some(("dev" | "device", value)) => Term::Device(number("dev", value)?, Vec::new()),
                 Some(("mac", value)) if !value.is_empty() => Term::Mac(value.to_lowercase()),
                 Some(("net", value)) => Term::Net(
                     u16::try_from(number("net", value)?)
@@ -75,13 +77,23 @@ impl Filter {
         Ok(Self { terms })
     }
 
-    /// Look up the address of each `dev:` term's device.
-    pub(crate) fn resolve(&mut self, address: impl Fn(u32) -> Option<String>) {
+    /// Look up the addresses of each `dev:` term's device; true when one
+    /// changed, so the ring must be filtered again.
+    pub(crate) fn resolve(&mut self, addresses: impl Fn(u32) -> Vec<String>) -> bool {
+        let mut changed = false;
         for term in &mut self.terms {
             if let Term::Device(instance, found) = term {
-                *found = address(*instance);
+                let now = addresses(*instance);
+                changed |= *found != now;
+                *found = now;
             }
         }
+        changed
+    }
+
+    /// Whether a `dev:` term waits on the device table.
+    pub(crate) fn has_devices(&self) -> bool {
+        self.terms.iter().any(|t| matches!(t, Term::Device(..)))
     }
 
     /// Whether `frame` passes every term.
@@ -93,11 +105,11 @@ impl Filter {
 fn term_matches(term: &Term, frame: &CaptureFrame) -> bool {
     let summary = &frame.summary;
     match term {
-        Term::Device(instance, address) => {
+        Term::Device(instance, addresses) => {
             summary.device == Some(*instance)
-                || address
-                    .as_ref()
-                    .is_some_and(|a| frame.source == *a || frame.destination == *a)
+                || addresses
+                    .iter()
+                    .any(|a| frame.source == *a || frame.destination == *a)
         }
         Term::Mac(text) => {
             frame.source.to_lowercase().contains(text)
@@ -133,6 +145,10 @@ fn row_text(frame: &CaptureFrame) -> String {
         summary.link,
         frame.direction.label()
     );
+    if let Some(via) = &frame.via {
+        text.push_str(" via ");
+        text.push_str(via);
+    }
     for part in [
         &summary.pdu,
         &summary.service,

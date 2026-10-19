@@ -21,6 +21,39 @@ fn find(fields: &[Field], prefix: &str) -> Range<usize> {
         .1
 }
 
+/// An application Boolean keeps its value in the tag header: it is one
+/// octet, and the closing tag after it stays the opening node's.
+#[test]
+fn a_boolean_is_one_octet_and_leaves_the_closing_tag_alone() {
+    let frame = bip(&npdu(&rp_ack_with(7, vec![0x11]), false), false);
+    assert_eq!(&frame[frame.len() - 3..], &[0x3E, 0x11, 0x3F]);
+    let fields = decode_tree(Framing::Bip, &frame);
+    assert_eq!(
+        find(&fields, "Boolean: true"),
+        frame.len() - 2..frame.len() - 1
+    );
+    assert_eq!(find(&fields, "[3] opening"), frame.len() - 3..frame.len());
+    // A false Boolean likewise.
+    let frame = bip(&npdu(&rp_ack_with(7, vec![0x10]), false), false);
+    let fields = decode_tree(Framing::Bip, &frame);
+    assert_eq!(
+        find(&fields, "Boolean: false"),
+        frame.len() - 2..frame.len() - 1
+    );
+}
+
+/// Tag numbers from 15 up take a second header octet, closing tags too.
+#[test]
+fn a_two_octet_closing_tag_ends_its_node() {
+    let params = [0xFE, 0x15, 0x09, 0x01, 0xFF, 0x15, 0x19, 0x02];
+    let frame = bip(&npdu(&unconfirmed(&params), false), false);
+    let at = frame.len() - params.len();
+    let fields = decode_tree(Framing::Bip, &frame);
+    assert_eq!(find(&fields, "[21] opening"), at..at + 6);
+    assert_eq!(find(&fields, "[0] 01 (1)"), at + 2..at + 4);
+    assert_eq!(find(&fields, "[1] 02 (2)"), at + 6..at + 8);
+}
+
 #[test]
 fn a_bip_read_property_decodes_layer_by_layer_with_its_octets() {
     let frame = bip(&npdu(&rp_request(7), true), false);
@@ -29,17 +62,17 @@ fn a_bip_read_property_decodes_layer_by_layer_with_its_octets() {
     assert_eq!(
         labels,
         [
-            "BVLL: ORIGINAL_UNICAST_NPDU",
+            "BVLL: original-unicast-npdu",
             "NPDU",
             "APDU: Confirmed-Request"
         ]
     );
-    assert_eq!(find(&fields, "Function: ORIGINAL_UNICAST_NPDU"), 1..2);
+    assert_eq!(find(&fields, "Function: original-unicast-npdu"), 1..2);
     assert_eq!(find(&fields, "Length: "), 2..4);
     // BVLL 4 octets, NPDU 2: the APDU starts at 6.
     assert_eq!(find(&fields, "Control: 0x04"), 5..6);
     assert_eq!(find(&fields, "Invoke ID: 7"), 8..9);
-    assert_eq!(find(&fields, "Service: READ_PROPERTY"), 9..10);
+    assert_eq!(find(&fields, "Service: read-property"), 9..10);
     assert_eq!(&frame[8], &7);
     // The parameters: an object identifier [0] and a property [1].
     let object = find(&fields, "[0] 00000001");
@@ -63,7 +96,7 @@ fn an_ack_value_and_an_error_decode_to_their_tags() {
     let frame = bip(&npdu(&error(9, service), false), false);
     let fields = decode_tree(Framing::Bip, &frame);
     assert_eq!(
-        find(&fields, "Error: PROPERTY:UNKNOWN_PROPERTY").end,
+        find(&fields, "Error: property:unknown-property").end,
         frame.len()
     );
     find(&fields, "Enumerated: 2");
@@ -80,7 +113,7 @@ fn an_mstp_frame_shows_its_header_and_crcs() {
     assert_eq!(find(&fields, "Header CRC"), 7..8);
     assert_eq!(find(&fields, "Data CRC"), frame.len() - 2..frame.len());
     assert_eq!(find(&fields, "NPDU"), 8..10);
-    find(&fields, "Object identifier: DEVICE:5");
+    find(&fields, "Object identifier: device 5");
 }
 
 #[test]
