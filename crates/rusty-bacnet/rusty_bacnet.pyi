@@ -1512,7 +1512,9 @@ class PropertyValue:
       single Trend Log Log_DeviceObjectProperty or Averaging and Event
       Enrollment Object_Property_Reference
       (``"device_object_property_reference"``: a
-      ``DeviceObjectPropertyReference`` with every key), a Global Group's
+      ``DeviceObjectPropertyReference`` with every key),
+      Event_Algorithm_Inhibit_Ref (``"object_property_reference"``: the same
+      mapping without ``device_identifier``), a Global Group's
       Present_Value (``"property_access_result"``),
       Audit_Notification_Recipient (``"recipient"``: an
       ``AuditRecipientInput``), Weekly_Schedule (``"daily_schedule"``),
@@ -1626,7 +1628,7 @@ class PropertyValue:
         'read_access_specification', 'read_access_result', 'action_list',
         'device_object_reference', 'authentication_factor_format',
         'stage_limit_value', 'access_rule', 'device_object_property_reference',
-        'property_access_result', 'recipient', 'daily_schedule',
+        'object_property_reference', 'property_access_result', 'recipient', 'daily_schedule',
         'special_event', 'calendar_entry', 'date_range', 'timestamp',
         'cov_subscription', 'value_source', 'scale', 'prescale',
         'address_binding', 'shed_level', 'authentication_factor',
