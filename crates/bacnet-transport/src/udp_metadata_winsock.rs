@@ -40,6 +40,9 @@ pub(super) const IPV6_PKTINFO: i32 = 19;
 const _: () = {
     use windows_sys::Win32::Networking::WinSock as ws;
     assert!(size_of::<CmsgHeader>() == size_of::<ws::CMSGHDR>());
+    assert!(align_of::<CmsgHeader>() == align_of::<ws::CMSGHDR>());
+    assert!(align_of::<InPacketInfo>() == align_of::<ws::IN_PKTINFO>());
+    assert!(align_of::<In6PacketInfo>() == align_of::<ws::IN6_PKTINFO>());
     assert!(offset_of!(CmsgHeader, cmsg_len) == offset_of!(ws::CMSGHDR, cmsg_len));
     assert!(offset_of!(CmsgHeader, cmsg_level) == offset_of!(ws::CMSGHDR, cmsg_level));
     assert!(offset_of!(CmsgHeader, cmsg_type) == offset_of!(ws::CMSGHDR, cmsg_type));

@@ -38,6 +38,18 @@ fn kind_of(result: io::Result<(IpAddr, Option<u32>)>) -> io::ErrorKind {
 }
 
 #[test]
+fn the_data_offset_matches_winsock_alignment() {
+    // WSA_CMSGDATA_ALIGN pads the header to the pointer size. Pinned here
+    // because the other tests build messages from DATA_OFFSET itself.
+    let expected = if cfg!(target_pointer_width = "64") {
+        16
+    } else {
+        12
+    };
+    assert_eq!(DATA_OFFSET, expected);
+}
+
+#[test]
 fn packet_info_is_read_for_either_family() {
     let v4 = Ipv4Addr::new(192, 168, 1, 7);
     assert_eq!(
