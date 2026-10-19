@@ -19,6 +19,8 @@ pub(crate) enum Request {
         name: String,
         profile: Profile,
         attest: bool,
+        /// The check warnings the operator confirmed on the preview.
+        accepted: Vec<String>,
     },
 }
 
@@ -132,12 +134,15 @@ impl Service {
     }
     /// Validate the displayed snapshot and its files, persist the SC identity
     /// and the authorization when missing, and prepare the workspace. Any
-    /// failure returns before a client exists, so nothing is sent.
+    /// failure returns before a client exists, so nothing is sent. A check
+    /// warning not in `accepted` (fresh, so a file changed since the preview
+    /// counts) refuses too.
     pub(crate) fn prepare(
         &self,
         name: &str,
         displayed: &Profile,
         attest: bool,
+        accepted: &[String],
     ) -> Result<Prepared, String> {
         let store = self.store()?;
         let mut profile = store.load(name)?;
@@ -151,7 +156,9 @@ impl Service {
             changed |= sc.assign_identity()?;
         }
         let resolved = self.overrides.resolve(&profile)?;
-        checks::inspect(&resolved).refusal()?;
+        let checks = checks::inspect(&resolved);
+        checks.refusal()?;
+        checks.unconfirmed(accepted)?;
         if profile.authorized_at_unix.is_none() {
             if !attest {
                 return Err("explicit authorization is required before first use".into());

@@ -186,9 +186,10 @@ Output is human-readable in a terminal and JSON through a pipe, with explicit
 `--format table|json` and `--json` overrides. Exit 0 permits warnings, 1 reports
 local inspection errors, 2 rejects usage, and 3 means inspection/output could
 not complete. Transport flags such as `--sc` and `--sc-url` are rejected even
-though credential paths use the existing global flags. Read the
-[command contract and examples](sc-check.md) for diagnostics, JSON fields and
-the limits of this advisory result.
+though credential paths use the existing global flags. With `--sc-ca`, it also
+reports whether a CA in that file issued the certificate directly. Read the
+[command contract and examples](sc-check.md) for diagnostics, JSON fields, the
+same checks before every SC dial, and an OpenSSL recipe for a lab PKI.
 
 ### Interactive Shell
 
@@ -330,8 +331,13 @@ when the primary can't be reached.
 
 Before a connection is attempted, the preview checks that each named file
 opens for reading, and on Unix warns when the key file is readable by group or
-others. A failed check names the path and refuses the connection; nothing is
-sent until it passes.
+others. With `sc-tls` it also runs the credential lint of
+[`bacnet sc-check`](sc-check.md#before-a-dial) on them: an expired or
+not-yet-valid operational certificate, or a key that does not match it, is an
+error; expiry within 30 days, or a certificate no CA in the CA file issued
+directly, is a warning. An error names the problem and refuses the connection;
+nothing is sent until it passes. Warnings hold the connection until `y`
+accepts the ones shown, and the check runs again just before the dial.
 
 The preview shows the settings after CLI overrides. Explicit values win even
 when equal to defaults, such as `--port 47808`, `--timeout 6000` or
@@ -512,9 +518,14 @@ for itself.
 use (primary or failover) and its VMAC, the latest reconnect attempt and its
 backoff, and how long ago the hub was last heard with the latest heartbeat
 round trip. Beside it are the local VMAC, the profile's device UUID, the hub
-VMAC and any duplicate-VMAC refusals. Tab switches the middle panel between
-the connected hub's certificate chain (subject, issuer, expiry) and the
-connection doctor. The doctor walks a failed dial through its phases (URL,
+VMAC and any duplicate-VMAC refusals. Tab and Shift-Tab switch the middle
+panel between the connected hub's certificate chain (subject, issuer, expiry),
+the connection doctor, and **My credentials**: this node's own certificate,
+chain and CA file as the pre-dial lint read them (subject, issuer, key
+algorithm, SAN, EKU, days to expiry with a warning at 30 and an alarm at 7),
+the key match, whether a CA in the CA file issued the certificate directly,
+and every finding, with a note on where the hub name check is stricter than
+the Annex AB.7.4 default. A dial the lint refused opens that view. The doctor walks a failed dial through its phases (URL,
 DNS, TCP, TLS, the WebSocket upgrade with the hub subprotocol, and
 Connect-Request/Accept), marks the one that failed and says what to try: an
 untrusted CA, an expired or future-dated certificate (with clock skew when it
@@ -1036,8 +1047,12 @@ SC construction rejects missing/empty CA paths, unreadable/empty/malformed or
 unusable CA PEM, and invalid or mismatched local cert/key before DNS/TCP dialing.
 Failures retain nonzero exit status and stderr diagnostics, not a successful JSON
 result. SC tracing (including connection-close warnings) also goes to stderr so
-it cannot corrupt JSON stdout. Peer trust and certificate validity dates are
-checked during TLS, not by an eager local date/issuer check. Help/version, capture
+it cannot corrupt JSON stdout. Before any DNS or TCP, the credential lint of
+[`bacnet sc-check`](sc-check.md#before-a-dial) refuses an expired or
+not-yet-valid operational certificate, an unreadable one, and a key that does
+not match it, with the reason on stderr; its warnings (expiry within 30 days, a
+certificate no `--sc-ca` CA issued directly) are logged on stderr and the
+command goes on. The hub's certificate is still verified during TLS. Help/version, capture
 paths that do not construct a client, and non-SC transports do not load SC files.
 A build without `sc-tls` still reports its rebuild advice without opening them.
 

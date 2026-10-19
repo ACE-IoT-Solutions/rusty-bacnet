@@ -11,7 +11,7 @@ expression: text
 "│                                                                    ││                                                │"
 "│                                                                    ││                                                │"
 "└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────┘"
-"┌ Hub certificates [Doctor] | last failure 3s ago ─────────────────────────────────────────────────────────────────────┐"
+"┌ Hub certificates [Doctor] My credentials | last failure 3s ago ──────────────────────────────────────────────────────┐"
 "│[ ok ] URL       wss scheme and hub host (AB.7.2)                                                                     │"
 "│[ ok ] DNS       host name to addresses                                                                               │"
 "│[ ok ] TCP       TCP connection to the hub port                                                                       │"

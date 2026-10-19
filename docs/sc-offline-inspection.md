@@ -26,8 +26,11 @@ required. Omitting peer trust or the key means that input is not assessed;
 supplying an empty value raises an input error. Certificates retain their original
 order within each role. Identity entries precede peer-trust entries in the report.
 The first identity certificate is the leaf for key comparison; there is no chain
-sorting or path construction. Peer-trust input does not identify the issuer
-authorized to sign the local identity.
+sorting or path construction. In Rust, `direct_issuer` says whether one
+peer-trust certificate signed that leaf directly (its subject is the leaf's
+issuer name and the leaf's signature verifies with its key): `direct`, with
+`direct_issuer_index`, `not_direct`, `unknown`, or `not_assessed` without peer
+trust. The Python report does not expose it yet.
 
 Each entry contains SHA-256 of the exact decoded DER and optional bounded metadata.
 Malformed DER produces a `certificate/malformed` finding, unavailable validity and
@@ -59,8 +62,9 @@ fixed AWS-LC Rustls provider. Other outcomes are `mismatch`, `unusable`, `unknow
 and `not_assessed`. Recognized unencrypted PKCS#1, SEC1 and PKCS#8 keys use the
 first-key semantics of existing loaders; the tail after the first recognized key
 is not inspected. Encrypted-key decryption is unsupported. A malformed identity
-leaf can make comparison unknown. None of these outcomes establishes chain trust,
-direct-issuer authorization, remote acceptance or BACnet/SC admission.
+leaf can make comparison unknown. None of these outcomes, nor a `direct`
+issuer, establishes that remote peers trust that issuer, remote acceptance or
+BACnet/SC admission.
 
 File inspection opens and bounded-reads identity, optional trust and optional key
 once each. Unix group/world readability comes from the opened key file's mode bits;
@@ -85,6 +89,5 @@ credential files, or the packaged [Rust example](../crates/bacnet-transport/exam
 with `cargo run -p bacnet-transport --features sc-tls --example sc_inspect_pem -- node.pem site-ca.pem node.key`.
 The development CLI exposes these observations through
 [`bacnet sc-check`](sc-check.md), adding documented local diagnostic severities
-and exit statuses. TUI/profile consumption, direct-local-issuer evidence and the
-separate mandatory pre-dial policy decision remain tracked in
-[#968](https://github.com/jscott3201/rusty-bacnet/issues/968).
+and exit statuses, and runs the same checks before every SC dial (see
+[Before a dial](sc-check.md#before-a-dial)).

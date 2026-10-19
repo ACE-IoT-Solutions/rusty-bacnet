@@ -6,7 +6,12 @@
 //! and the app, the views and the doctor see only these.
 //!
 //! - [`doctor`]: which phase of a hub dial failed, and a plain-language hint.
+//! - [`credentials`]: this node's own certificates and key, as the pre-dial
+//!   lint read them (#968).
 
+// Only an `sc-tls` build inspects credentials; without it the view says so.
+#[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
+pub(crate) mod credentials;
 pub(crate) mod doctor;
 
 use std::time::Duration;
@@ -330,6 +335,10 @@ pub(crate) enum ScReport {
     },
     /// The certificates the connected hub presented, leaf first.
     Chain(Vec<CertSummary>),
+    /// This node's credentials as the pre-dial lint read them, or why the
+    /// lint could not read them. Sent before the dial.
+    #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
+    Credentials(Box<Result<credentials::Credentials, String>>),
 }
 
 /// `hub` in words.
