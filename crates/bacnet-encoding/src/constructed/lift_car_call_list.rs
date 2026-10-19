@@ -41,7 +41,7 @@ pub fn encode_lift_car_call_list(buf: &mut BytesMut, value: &BACnetLiftCarCallLi
 /// Unsigned, an empty or truncated entry, or more than 10,000 floors) fails
 /// with [`Error::Decoding`] or [`Error::BufferTooShort`], and a well-formed
 /// value with a floor number above an Unsigned8 fails with
-/// [`Error::OutOfRange`]. A malformed entry anywhere in the value takes
+/// [`Error::Range`]. A malformed entry anywhere in the value takes
 /// precedence over an oversized one.
 pub fn decode_lift_car_call_list(
     data: &[u8],

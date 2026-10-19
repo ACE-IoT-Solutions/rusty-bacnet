@@ -1,6 +1,7 @@
 use bacnet_encoding::constructed::tagged::{decode_ctx_boolean, misplaced_kind};
 use bacnet_encoding::tags;
 use bacnet_types::enums::{PropertyIdentifier, RejectReason};
+use crate::common::refused_value;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, Time};
 use bytes::BytesMut;
@@ -77,18 +78,14 @@ pub(super) fn actual_time_is_valid(time: &Time) -> bool {
 
 pub(super) fn validate_actual_date_time(date: &Date, time: &Time) -> Result<(), Error> {
     if !actual_date_is_valid(date) || !actual_time_is_valid(time) {
-        return Err(Error::Encoding(
-            "COVNotificationMultiple requires a specific actual DateTime".into(),
-        ));
+        return Err(Error::encode("COVNotificationMultiple requires a specific actual DateTime"));
     }
     Ok(())
 }
 
 pub(super) fn validate_actual_time(time: &Time) -> Result<(), Error> {
     if !actual_time_is_valid(time) {
-        return Err(Error::Encoding(
-            "COVNotificationMultiple time-of-change must be a specific actual Time".into(),
-        ));
+        return Err(Error::encode("COVNotificationMultiple time-of-change must be a specific actual Time"));
     }
     Ok(())
 }
@@ -100,14 +97,13 @@ fn property_identifier_is_forbidden(property_identifier: PropertyIdentifier) -> 
     )
 }
 
+/// Refuse ALL, OPTIONAL and REQUIRED; `label` is the whole refusal.
 pub(super) fn validate_property_identifier(
     property_identifier: PropertyIdentifier,
-    field: &'static str,
+    label: &'static str,
 ) -> Result<(), Error> {
     if property_identifier_is_forbidden(property_identifier) {
-        return Err(Error::Encoding(format!(
-            "{field} cannot be ALL, OPTIONAL, or REQUIRED"
-        )));
+        return Err(Error::encode(label));
     }
     Ok(())
 }
@@ -127,9 +123,7 @@ pub(super) fn validate_decoded_property_identifier(
 
 pub(super) fn validate_raw_property_value(value: &[u8]) -> Result<(), Error> {
     if value.is_empty() {
-        return Err(Error::Encoding(
-            "COVNotificationMultiple property value must not be empty".into(),
-        ));
+        return Err(Error::encode("COVNotificationMultiple property value must not be empty"));
     }
     let mut framed = BytesMut::new();
     tags::encode_opening_tag(&mut framed, 2);
@@ -137,11 +131,9 @@ pub(super) fn validate_raw_property_value(value: &[u8]) -> Result<(), Error> {
     framed.extend_from_slice(value);
     tags::encode_closing_tag(&mut framed, 2);
     let (_, end) = tags::extract_context_value(&framed, content_start, 2)
-        .map_err(|error| Error::Encoding(format!("invalid property value: {error}")))?;
+        .map_err(|error| refused_value(error, "invalid property value"))?;
     if end != framed.len() {
-        return Err(Error::Encoding(
-            "COVNotificationMultiple property value has unbalanced tags".into(),
-        ));
+        return Err(Error::encode("COVNotificationMultiple property value has unbalanced tags"));
     }
     Ok(())
 }

@@ -630,7 +630,7 @@ fn cov_multiple_public_encode_late_invalid_never_panics_or_appends() {
             result.is_ok(),
             "public request encoding must report errors instead of panicking"
         );
-        assert!(matches!(result.unwrap(), Err(Error::Encoding(_))));
+        assert!(matches!(result.unwrap(), Err(Error::Encode(_))));
         assert_eq!(bytes.as_ref(), b"sentinel");
     }
 }

@@ -205,11 +205,7 @@ fn syntax_faults_name_their_reject_reasons() {
 #[cfg(feature = "alloc")]
 #[test]
 fn owned_variants_take_no_reject_reason() {
-    for error in [
-        Error::Encoding("x".into()),
-        Error::OutOfRange("x".into()),
-        Error::Segmentation("x".into()),
-    ] {
+    for error in [Error::Encoding("x".into()), Error::OutOfRange("x".into())] {
         assert_eq!(error.reject_reason(), None, "{error}");
     }
     assert_eq!(
@@ -222,6 +218,19 @@ fn owned_variants_take_no_reject_reason() {
         Error::OutOfRange("x".into()).into_request_reject(),
         Error::OutOfRange(_)
     ));
+}
+
+/// The static encoder and segmenter refusals take no Reject reason either
+/// (#1802), with or without `alloc`.
+#[test]
+fn static_refusals_take_no_reject_reason() {
+    for error in [
+        Error::encode("x"),
+        Error::Segmentation(SegmentationError::ZeroSegmentSize),
+    ] {
+        assert_eq!(error.reject_reason(), None, "{error:?}");
+        assert!(!matches!(error.into_request_reject(), Error::Reject { .. }));
+    }
 }
 
 #[test]

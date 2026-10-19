@@ -489,8 +489,8 @@ fn encode_error(buf: &mut BytesMut, pdu: &ErrorPdu) -> Result<(), Error> {
         formal_error::decode_formal_body(pdu.service_choice, &pdu.error_data).unwrap_or(None);
     if let Some((error_class, error_code)) = formal {
         if error_class != pdu.error_class || error_code != pdu.error_code {
-            return Err(Error::Encoding(
-                "formal Error body disagrees with ErrorPdu class/code".into(),
+            return Err(Error::encode(
+                "formal Error body disagrees with ErrorPdu class/code",
             ));
         }
     }

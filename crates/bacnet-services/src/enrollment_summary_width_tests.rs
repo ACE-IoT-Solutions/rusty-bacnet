@@ -562,7 +562,7 @@ fn enrollment_filter_recipient_mac_holds_to_the_bacnet_address_bound() {
     let mut output = BytesMut::new();
     assert!(matches!(
         request(longest + 1).try_encode(&mut output),
-        Err(Error::Encoding(_))
+        Err(Error::Encode(_))
     ));
     assert!(output.is_empty());
 }

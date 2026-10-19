@@ -342,10 +342,14 @@ jobs:
         run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
       # Without alloc either (#1614): the allocation-free profile's code, and
       # tests/no_alloc_subset.rs, which counts the subset's allocations: none.
-      # Its doctests aren't run: most examples build values with alloc.
       - name: no_std crates' tests (without alloc)
         if: ${{ !cancelled() }}
         run: cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked --profile ci
+      # The examples that build values with alloc are gated on it, or write
+      # to sinks, so the allocation-free profile's doctests run too (#1779).
+      - name: no_std crates' doctests (without alloc)
+        if: ${{ !cancelled() }}
+        run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked
       - *disk
 
   python:

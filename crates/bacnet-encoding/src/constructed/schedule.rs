@@ -50,9 +50,7 @@ use crate::tags::{self, TagClass};
 /// `ApplicationData`), which no time-value can carry.
 pub fn encode_time_value(buf: &mut BytesMut, time_value: &BACnetTimeValue) -> Result<(), Error> {
     if !time_value.value.is_primitive() {
-        return Err(Error::Encoding(
-            "time-value: the value must be of a primitive datatype".into(),
-        ));
+        return Err(Error::encode("time-value: the value must be of a primitive datatype"));
     }
     primitives::encode_app_time(buf, &time_value.time);
     primitives::encode_property_value(buf, &time_value.value)

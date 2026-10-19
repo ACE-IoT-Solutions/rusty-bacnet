@@ -152,7 +152,7 @@ fn too_wide(field: &'static str) -> Error {
 ///   or a target colour that isn't two four-octet application REALs closed
 ///   by tag 1, a frame cut off at a tag boundary included): [`Error::Decoding`];
 /// - a well-formed command whose operation or an Unsigned field needs more
-///   than 32 bits: [`Error::OutOfRange`], naming the first such field. A
+///   than 32 bits: [`Error::Range`], naming the first such field. A
 ///   malformed field anywhere takes precedence.
 ///
 /// Up to four contents octets, an Unsigned or ENUMERATED may open with zero
@@ -173,7 +173,7 @@ pub fn decode_color_command(
 ///
 /// Fails as [`decode_color_command`] does, and with [`Error::Decoding`] when
 /// octets follow the last field. A field too wide for its type is
-/// [`Error::OutOfRange`] only when the rest of `data` is one well-formed
+/// [`Error::Range`] only when the rest of `data` is one well-formed
 /// command, so a broken input is always reported as broken.
 pub fn decode_color_command_value(data: &[u8]) -> Result<BACnetColorCommand, Error> {
     let (command, end, oversized) = decode_fields(data, 0)?;

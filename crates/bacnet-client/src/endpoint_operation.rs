@@ -128,9 +128,7 @@ impl PreparedEndpointOperation {
         let mut attempted = false;
         let result = self.execute_inner(&mut attempted).await.and_then(|bytes| {
             if bytes.len() + 3 > usize::from(self.guard.inner.max_apdu_length) {
-                return Err(Error::Segmentation(
-                    "endpoint operation ACK exceeds configured max APDU".into(),
-                ));
+                return Err(bacnet_types::error::SegmentationError::EndpointAckTooLong.into());
             }
             self.request.decode(&bytes)
         });
