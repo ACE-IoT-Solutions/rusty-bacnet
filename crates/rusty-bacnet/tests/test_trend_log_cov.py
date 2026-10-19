@@ -129,6 +129,13 @@ class TrendLogConfigurationTests(unittest.TestCase):
                 )
         with self.assertRaises(ValueError):
             server.add_trend_log(1, "TL-1", logging_type="sometimes")
+        # Polled with a zero interval would switch to COV (Clause 12.25.9),
+        # so the pair is refused and the reason named.
+        with self.assertRaises(ValueError) as raised:
+            server.add_trend_log(1, "TL-1", logging_type="polled", log_interval=0)
+        self.assertIn("COV", str(raised.exception))
+        # A zero interval alone is accepted, as before.
+        server.add_trend_log(2, "TL-2", log_interval=0)
         with self.assertRaises(TypeError):
             server.add_trend_log(1, "TL-1", reference=ObjectType.ANALOG_VALUE)
 

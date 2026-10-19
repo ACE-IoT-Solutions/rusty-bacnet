@@ -228,8 +228,10 @@ impl TrendLogObject {
     /// While COV, the database's trend poller looks at the referenced
     /// property on each pass and logs it, with the monitored object's
     /// Status_Flags, whenever its change passes the Clause 13.1 COV test
-    /// (held to Client_COV_Increment when set) or those flags have changed. The first
-    /// pass after the log starts collecting logs the current value. Only
+    /// (held to Client_COV_Increment when set) or those flags have changed.
+    /// The first pass after the log starts collecting logs the current value;
+    /// Enable turned off and on within one pass (about 100 ms) isn't seen
+    /// and restarts nothing. Only
     /// references to this device are followed: one naming another device
     /// logs PROPERTY / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED once, since no
     /// COV subscription is made to a peer.

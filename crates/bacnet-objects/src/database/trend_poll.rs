@@ -215,13 +215,17 @@ impl ObjectDatabase {
                 continue;
             };
             eligible.insert(oid);
-            if self
-                .trend_poll
-                .0
-                .get(&oid)
-                .is_none_or(|entry| entry.configuration != configuration)
-            {
-                self.trend_poll.0.insert(oid, Schedule::new(configuration));
+            match self.trend_poll.0.get_mut(&oid) {
+                Some(entry) if entry.configuration == configuration => {}
+                // A COV log whose Client_COV_Increment alone changed keeps
+                // its baseline: the next look measures from the last logged
+                // value with the new increment, so nothing is logged twice.
+                Some(entry) if only_increment_changed(&entry.configuration, &configuration) => {
+                    entry.configuration = configuration;
+                }
+                _ => {
+                    self.trend_poll.0.insert(oid, Schedule::new(configuration));
+                }
             }
             self.poll_one(oid, local, &*monotonic);
         }
@@ -394,6 +398,13 @@ fn failure(class: ErrorClass, code: ErrorCode) -> LogValue {
         error_class: class,
         error_code: code,
     }
+}
+
+/// Whether `new` differs from `old` only in a COV log's increment.
+fn only_increment_changed(old: &Configuration, new: &Configuration) -> bool {
+    matches!((old.mode, new.mode), (Mode::Cov { .. }, Mode::Cov { .. }))
+        && old.reference == new.reference
+        && old.members == new.members
 }
 
 /// What a log's properties ask of the poller now; `None` when nothing.

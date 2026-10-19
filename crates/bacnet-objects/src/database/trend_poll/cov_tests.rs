@@ -137,9 +137,26 @@ fn a_null_increment_uses_the_targets_cov_increment() {
         PropertyValue::Real(0.25),
     );
     db.poll_trend_logs();
+    assert_eq!(logged(&db, oid).len(), 2);
     set_value(&mut db, 2.25);
     db.poll_trend_logs();
-    assert_eq!(logged(&db, oid).last(), Some(&real(2.25)));
+    assert_eq!(logged(&db, oid), [real(0.0), real(2.0), real(2.25)]);
+}
+
+#[test]
+fn an_increment_change_alone_keeps_the_baseline() {
+    let (mut db, oid, _) = cov_fixture(PropertyValue::Real(1.0));
+    db.poll_trend_logs();
+    // The new increment is measured from the last logged value: nothing is
+    // logged again for the change itself.
+    for increment in [PropertyValue::Real(5.0), PropertyValue::Null] {
+        write(&mut db, oid, P::CLIENT_COV_INCREMENT, increment);
+        db.poll_trend_logs();
+        assert_eq!(logged(&db, oid), [real(0.0)]);
+    }
+    set_value(&mut db, 0.5);
+    db.poll_trend_logs();
+    assert_eq!(logged(&db, oid), [real(0.0), real(0.5)]);
 }
 
 #[test]
@@ -149,13 +166,15 @@ fn enable_gates_cov_records_and_restarts_from_the_current_value() {
     write(&mut db, oid, P::LOG_ENABLE, PropertyValue::Boolean(false));
     set_value(&mut db, 5.0);
     db.poll_trend_logs();
-    set_value(&mut db, 7.0);
+    // Back within the increment of the last logged 0.0.
+    set_value(&mut db, 0.5);
     db.poll_trend_logs();
     assert_eq!(
         logged(&db, oid),
         [real(0.0), status(LogStatus::LOG_DISABLED)]
     );
-    // Collection resumes with the value as it stands.
+    // Collection resumes with the value as it stands, though it is short
+    // of the increment from the last one logged.
     write(&mut db, oid, P::LOG_ENABLE, PropertyValue::Boolean(true));
     db.poll_trend_logs();
     assert_eq!(
@@ -164,15 +183,17 @@ fn enable_gates_cov_records_and_restarts_from_the_current_value() {
             real(0.0),
             status(LogStatus::LOG_DISABLED),
             status(LogStatus::empty()),
-            real(7.0),
+            real(0.5),
         ]
     );
 }
 
 #[test]
-fn the_window_gates_cov_records() {
+fn the_window_gates_cov_records_and_restarts_from_the_current_value() {
     let (mut db, oid, clock) = cov_fixture(PropertyValue::Real(1.0));
-    // The window opens at 12:30; the clock reads 12:00.
+    db.poll_trend_logs();
+    assert_eq!(logged(&db, oid), [real(0.0)]);
+    // The window now opens at 12:30; the clock reads 12:00.
     let start = at(12, 30, 0, 0);
     write(
         &mut db,
@@ -186,18 +207,25 @@ fn the_window_gates_cov_records() {
     db.poll_trend_logs();
     set_value(&mut db, 3.0);
     db.poll_trend_logs();
-    assert_eq!(logged(&db, oid), [status(LogStatus::LOG_DISABLED)]);
+    set_value(&mut db, 0.5);
+    db.poll_trend_logs();
+    assert_eq!(
+        logged(&db, oid),
+        [real(0.0), status(LogStatus::LOG_DISABLED)]
+    );
+    // It opens: the value is logged as it stands, short of the increment.
     set_clock(&clock, Some(at(12, 30, 0, 0)));
     db.poll_trend_logs();
     assert_eq!(
         logged(&db, oid),
         [
+            real(0.0),
             status(LogStatus::LOG_DISABLED),
             status(LogStatus::empty()),
-            real(3.0),
+            real(0.5),
         ]
     );
-    assert_eq!(records(&db, oid)[2].time, start.local_time);
+    assert_eq!(records(&db, oid)[3].time, start.local_time);
 }
 
 #[test]
@@ -250,4 +278,105 @@ fn a_cov_log_without_a_clock_looks_again_after_the_retry_delay() {
     *time.lock().unwrap() = RECONCILE;
     db.poll_trend_logs();
     assert_eq!(logged(&db, oid), [real(0.0)]);
+}
+
+/// A second COV Trend Log, instance 2, of `object`'s Present_Value.
+fn cov_log_of(db: &mut ObjectDatabase, object: ObjectIdentifier) -> ObjectIdentifier {
+    let mut log = TrendLogObject::new(2, "Second", 16).unwrap();
+    log.set_log_device_object_property(Some(BACnetDeviceObjectPropertyReference::new_local(
+        object,
+        P::PRESENT_VALUE.to_raw(),
+    )))
+    .unwrap();
+    log.set_logging_type(LoggingType::COV).unwrap();
+    let oid = log.object_identifier();
+    db.add(Box::new(log)).unwrap();
+    oid
+}
+
+fn set_present_value(db: &mut ObjectDatabase, object: ObjectIdentifier, value: PropertyValue) {
+    db.get_mut(&object)
+        .unwrap()
+        .set_present_value_internal(value)
+        .unwrap();
+}
+
+#[test]
+fn a_binary_value_logs_every_change() {
+    let (mut db, _, _) = cov_fixture(PropertyValue::Real(1.0));
+    let bv = crate::binary::BinaryValueObject::with_access(
+        1,
+        "BV",
+        crate::present_value_access::PresentValueAccess::Writable,
+    )
+    .unwrap();
+    let bv_oid = bv.object_identifier();
+    db.add(Box::new(bv)).unwrap();
+    let oid = cov_log_of(&mut db, bv_oid);
+    db.poll_trend_logs();
+    db.poll_trend_logs();
+    // Not numeric, so the increment doesn't apply: each change logs.
+    for value in [1, 0, 1] {
+        set_present_value(&mut db, bv_oid, PropertyValue::Enumerated(value));
+        db.poll_trend_logs();
+        db.poll_trend_logs();
+    }
+    let values: Vec<_> = logged(&db, oid)
+        .into_iter()
+        .map(|(datum, _)| datum)
+        .collect();
+    assert_eq!(values, [0, 1, 0, 1].map(LogDatum::EnumValue));
+}
+
+#[test]
+fn a_target_without_a_cov_increment_logs_every_change_under_a_null_increment() {
+    let (mut db, _, _) = cov_fixture(PropertyValue::Real(1.0));
+    let msv = crate::multistate::MultiStateValueObject::with_access(
+        1,
+        "MSV",
+        4,
+        crate::present_value_access::PresentValueAccess::Writable,
+    )
+    .unwrap();
+    let msv_oid = msv.object_identifier();
+    assert_eq!(msv.cov_increment(), None);
+    db.add(Box::new(msv)).unwrap();
+    // The log's own Client_COV_Increment is NULL by default.
+    let oid = cov_log_of(&mut db, msv_oid);
+    db.poll_trend_logs();
+    for value in [2, 3] {
+        set_present_value(&mut db, msv_oid, PropertyValue::Unsigned(value));
+        db.poll_trend_logs();
+    }
+    let values: Vec<_> = logged(&db, oid)
+        .into_iter()
+        .map(|(datum, _)| datum)
+        .collect();
+    assert_eq!(values, [1, 2, 3].map(LogDatum::UnsignedValue));
+}
+
+#[test]
+fn a_target_removed_logs_its_failure_once_then_its_value_again() {
+    let (mut db, oid, _) = cov_fixture(PropertyValue::Real(1.0));
+    db.poll_trend_logs();
+    let removed = db.remove(&target()).unwrap().unwrap();
+    db.poll_trend_logs();
+    db.poll_trend_logs();
+    db.add(removed).unwrap();
+    db.poll_trend_logs();
+    db.poll_trend_logs();
+    assert_eq!(
+        logged(&db, oid),
+        [
+            real(0.0),
+            (
+                LogDatum::Failure {
+                    error_class: ErrorClass::OBJECT,
+                    error_code: ErrorCode::UNKNOWN_OBJECT,
+                },
+                None,
+            ),
+            real(0.0),
+        ]
+    );
 }

@@ -24,7 +24,9 @@ impl BACnetServer {
     /// increment a COV log holds a numeric value to, `None` (NULL) for the
     /// property's own criteria; `cov_resubscription_interval` is in seconds.
     /// The window, alignment and `total_record_count` are as on
-    /// `add_trend_log_multiple`.
+    /// `add_trend_log_multiple`. `"polled"` with `log_interval=0` raises
+    /// ValueError: the Clause 12.25.9 switch would make that a COV log.
+    /// `log_interval=0` alone leaves the new log polled and idle.
     #[pyo3(signature = (
         instance,
         name,
@@ -57,6 +59,12 @@ impl BACnetServer {
         interval_offset: Option<u32>,
         total_record_count: u32,
     ) -> PyResult<()> {
+        if logging_type == Some("polled") && log_interval == Some(0) {
+            return Err(PyValueError::new_err(
+                "logging_type 'polled' with log_interval 0 would make a COV log \
+                 (Clause 12.25.9); pass logging_type='cov', or a nonzero log_interval",
+            ));
+        }
         let reference = reference
             .map(|value| {
                 let mut reference = vec![crate::types::property_reference_from_py(

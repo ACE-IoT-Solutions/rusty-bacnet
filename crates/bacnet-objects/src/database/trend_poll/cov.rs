@@ -14,9 +14,13 @@
 //! notification does. While Enable is FALSE or the Start_Time / Stop_Time
 //! window is shut nothing is read, and the next look once collection resumes
 //! starts over with the current value, as Clause 12.25.10 has a remote
-//! subscription restart when Enable goes TRUE. A reference this device can't
-//! read (another device's, or a missing object) logs its failure once, and
-//! again only when the failure changes.
+//! subscription restart when Enable goes TRUE. Collection is judged once per
+//! pass, so Enable turned off and on again (or a window shut and reopened)
+//! within one pass, about 100 ms, isn't seen and starts nothing over. A
+//! change of Client_COV_Increment alone keeps the last logged value as the
+//! baseline: the next look measures from it with the new increment. A
+//! reference this device can't read (another device's, or a missing object)
+//! logs its failure once, and again only when the failure changes.
 
 use bacnet_types::bitstring::status_flags_from_bacnet;
 use bacnet_types::constructed::{BACnetLogRecord, LogDatum, LogValue};

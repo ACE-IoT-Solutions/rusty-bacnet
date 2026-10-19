@@ -3534,11 +3534,14 @@ class BACnetServer:
         zeroes Log_Interval and makes it read-only, so a ``log_interval``
         with it raises BacnetProtocolError (WRITE_ACCESS_DENIED); ``"cov"``
         zeroes it too, and a nonzero ``log_interval`` then turns the log back
-        to polled (Clause 12.25.9). Any other string raises ValueError.
+        to polled (Clause 12.25.9). Any other string raises ValueError, and
+        so does ``"polled"`` with ``log_interval=0``, a pair that would make a
+        COV log; ``log_interval=0`` alone leaves the new log polled and idle.
 
         While COV, the poller looks at the referenced property of this
         device on each pass and logs it, with its object's Status_Flags,
-        whenever it changes as a COV notification would report it.
+        whenever it changes as a COV notification would report it. Enable
+        turned off and on again within one pass (about 100 ms) isn't seen.
         ``client_cov_increment`` (a REAL) is the increment a numeric value is
         held to; None, the default, is NULL: the object's own COV_Increment
         for a numeric Present_Value, any change otherwise. A negative or

@@ -419,8 +419,6 @@ fn log_datum(datum: &LogDatum) -> String {
     }
 }
 
-/// An error class and code by name, or by number when one doesn't fit the
-/// enumeration.
 /// Notify type, event type, event object and transition, then the message.
 fn event_notification(notification: &EventNotificationRequest) -> String {
     let transition = if notification.notify_type == NotifyType::ACK_NOTIFICATION {

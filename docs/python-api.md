@@ -2488,7 +2488,10 @@ two more for COV logging (#1480):
   in the record: a numeric value by at least the increment, anything else by
   any change, and any change of those flags. The first look logs the current
   value, and so does the first look after Enable goes TRUE again or the
-  window reopens. A change that comes and goes between two looks isn't seen.
+  window reopens. A change that comes and goes between two looks isn't seen,
+  and neither is Enable turned off and on again within one pass, which logs
+  nothing new. Changing `client_cov_increment` alone logs nothing by itself:
+  the next change is measured from the last logged value.
   Only properties of this device are followed: a reference to another device
   logs one OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED failure, since the server
   doesn't subscribe to peers.
@@ -2502,7 +2505,11 @@ two more for COV logging (#1480):
 
 As older clients do, writing Log_Interval switches a Trend Log between the
 two modes: from nonzero to 0 on a polled log makes it COV, and a nonzero
-value on a COV log makes it poll at that interval.
+value on a COV log makes it poll at that interval. `add_trend_log` refuses
+`logging_type="polled"` with `log_interval=0` with a ValueError, since that
+pair would make a COV log; ask for `"cov"` instead. `log_interval=0` with no
+`logging_type` leaves a new log polled with no interval, polling nothing, as
+before.
 
 `add_event_log` takes none of the other keyword arguments, but its object
 serves Start_Time and Stop_Time over the network and through
