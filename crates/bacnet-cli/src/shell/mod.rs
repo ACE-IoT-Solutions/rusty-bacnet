@@ -18,6 +18,7 @@ use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use owo_colors::OwoColorize;
 
 use crate::core::destination::{self, Destination};
+use crate::core::guard::{self, Policy};
 use crate::core::target;
 use crate::output::OutputFormat;
 use crate::session::Session;
@@ -38,7 +39,7 @@ use self::read_write::{handle_read, handle_readm, handle_write};
 use self::writem::handle_writem;
 
 /// All recognized shell commands.
-const COMMANDS: &[&str] = &[
+pub(crate) const COMMANDS: &[&str] = &[
     "discover",
     "whois",
     "find",
@@ -485,9 +486,76 @@ async fn dispatch_common<T: TransportPort + 'static>(
     true
 }
 
+type ShellEditor = Editor<ShellHelper, rustyline::history::DefaultHistory>;
+
+/// A device-management confirmation typed at the shell's own prompt.
+struct ShellConfirm<'a>(&'a mut ShellEditor);
+
+impl guard::Confirm for ShellConfirm<'_> {
+    fn interactive(&self) -> bool {
+        std::io::IsTerminal::is_terminal(&std::io::stdin())
+    }
+
+    fn ask(&mut self, prompt: &str) -> Option<String> {
+        self.0.readline(prompt).ok()
+    }
+}
+
+/// The write guard for one shell command, under the flags the shell was
+/// started with (#972); true when it may run. A word with no class is
+/// reported as unknown here, so the dispatchers only see classified ones.
+fn allowed(
+    cmd: &str,
+    args: &[String],
+    session: &Session,
+    policy: Policy,
+    confirm: &mut dyn guard::Confirm,
+) -> bool {
+    let Some(class) = crate::core::class::of(cmd) else {
+        output::print_error(&format!(
+            "Unknown command: '{cmd}'. Type 'help' for available commands."
+        ));
+        return false;
+    };
+    let args = maybe_prepend_default_target(args, session);
+    let class = if matches!(cmd, "subscribe" | "cov") {
+        // A malformed option is the handler's to report; it sends nothing.
+        cov_control::subscribe_options(args.get(2..).unwrap_or(&[]))
+            .map_or(class, |(lifetime, _)| {
+                crate::core::class::of_subscribe(lifetime)
+            })
+    } else {
+        class
+    };
+    if !class.mutates() {
+        return true;
+    }
+    let target = args.first().map(String::as_str);
+    match guard::check(cmd, Some(class), target, policy, confirm) {
+        Ok(()) => true,
+        Err(refusal) => {
+            output::print_error(&shell_refusal(&refusal));
+            false
+        }
+    }
+}
+
+/// A refusal as the shell says it: the flags go on the command line that
+/// starts the shell.
+fn shell_refusal(refusal: &guard::Refusal) -> String {
+    if refusal.missing.is_empty() {
+        refusal.message.clone()
+    } else {
+        format!(
+            "{}. The shell takes it at launch: bacnet {} shell",
+            refusal.message,
+            refusal.missing.join(" ")
+        )
+    }
+}
+
 /// Set up the readline editor with history and tab completion.
-fn setup_readline(
-) -> Result<Editor<ShellHelper, rustyline::history::DefaultHistory>, Box<dyn std::error::Error>> {
+fn setup_readline() -> Result<ShellEditor, Box<dyn std::error::Error>> {
     let config = Config::builder()
         .completion_type(CompletionType::List)
         .behavior(rustyline::Behavior::PreferTerm)
@@ -514,6 +582,7 @@ pub async fn run_shell<T: TransportPort + 'static>(
     mut client: BACnetClient<T>,
     is_sc: bool,
     format: OutputFormat,
+    policy: Policy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = setup_readline()?;
     let mut session = Session::new();
@@ -537,6 +606,9 @@ pub async fn run_shell<T: TransportPort + 'static>(
                 let tokens = tokenize(&line);
                 let cmd = tokens[0].to_ascii_lowercase();
                 let args = &tokens[1..];
+                if !allowed(&cmd, args, &session, policy, &mut ShellConfirm(&mut rl)) {
+                    continue;
+                }
 
                 match cmd.as_str() {
                     "exit" | "quit" => break,
@@ -578,6 +650,7 @@ pub async fn run_bip_shell(
     client: BACnetClient<BipTransport>,
     foreign_bbmd: Option<std::net::SocketAddrV4>,
     format: OutputFormat,
+    policy: Policy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = setup_readline()?;
     let mut session = Session::new();
@@ -603,6 +676,9 @@ pub async fn run_bip_shell(
                 let tokens = tokenize(&line);
                 let cmd = tokens[0].to_ascii_lowercase();
                 let args = &tokens[1..];
+                if !allowed(&cmd, args, &session, policy, &mut ShellConfirm(&mut rl)) {
+                    continue;
+                }
 
                 match cmd.as_str() {
                     "exit" | "quit" => break,

@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use self::ledger::Entry;
 use super::profile::Safety;
+use crate::core::class::Class;
 
 /// Default write session length, in minutes.
 pub(crate) const DEFAULT_MINUTES: u32 = 15;
@@ -50,6 +51,20 @@ pub(crate) enum Level {
 }
 
 impl Level {
+    /// Whether a command of `class` may run at this level. The classes are
+    /// the ones the one-shot guard uses (#972): reads from read-only up,
+    /// writes in an armed session, device management only in a dangerous
+    /// one, and nothing passive.
+    pub(crate) fn permits(self, class: Class) -> bool {
+        match (self, class) {
+            (Self::Passive, _) => false,
+            (_, Class::Read) => true,
+            (Self::Armed { .. }, Class::Write) => true,
+            (Self::Armed { dangerous }, Class::DeviceManagement) => dangerous,
+            (Self::ReadOnly | Self::Expired, _) => false,
+        }
+    }
+
     /// The name in audit records.
     pub(crate) fn audit_name(self) -> &'static str {
         match self {
@@ -443,4 +458,26 @@ pub(crate) enum SafetyEvent {
         /// Entries that could not be reverted.
         failed: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The TUI's levels and the one-shot guard share one classification.
+    #[test]
+    fn levels_permit_the_shared_classes() {
+        use Class::{DeviceManagement, Read, Write};
+        let table = [
+            (Level::Passive, [false, false, false]),
+            (Level::ReadOnly, [true, false, false]),
+            (Level::Expired, [true, false, false]),
+            (Level::Armed { dangerous: false }, [true, true, false]),
+            (Level::Armed { dangerous: true }, [true, true, true]),
+        ];
+        for (level, permits) in table {
+            let got = [Read, Write, DeviceManagement].map(|class| level.permits(class));
+            assert_eq!(got, permits, "{level:?}");
+        }
+    }
 }

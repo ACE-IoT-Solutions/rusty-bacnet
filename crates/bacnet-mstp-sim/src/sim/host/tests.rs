@@ -267,7 +267,7 @@ fn old_application_decision_cannot_answer_a_new_request() {
     sim.add_master(
         MasterSpec::new(0, 1, 38_400)
             .host(HostSpec::default())
-            .reply(crate::ReplyPolicy::Answer {
+            .application(crate::ReplyPolicy::Answer {
                 delay: Duration::from_millis(100),
                 payload: vec![1, 0, 0xAD],
             }),

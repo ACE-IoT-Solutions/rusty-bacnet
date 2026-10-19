@@ -24,6 +24,10 @@ pub enum RejectEffect {
     /// For a learned route, with a reason other than 1 or 2, which changes
     /// no route (Clause 6.6.3.5).
     Kept,
+    /// For a learned route through another router than the reject's
+    /// sender, under the router's next-hop policy (#1698): the router
+    /// didn't apply it. [`Table::apply_reject`] itself never returns this.
+    NotNextHop,
 }
 
 /// When a reject from one arrival port last changed one network's route.

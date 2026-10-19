@@ -29,6 +29,7 @@ use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
 use super::browse::limits::RateCap;
 use super::browse::read::{Halt, Reader, Wanted};
 use super::EventSink;
+use crate::core::class::Class;
 use crate::tui::message::WorkerEvent;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::audit::{utc_now, Audit, Context};
@@ -313,7 +314,7 @@ impl<'a> Runner<'a> {
             Some(PASSIVE.into())
         } else if self.ledger.is_none() {
             Some(self.missing.clone())
-        } else if !self.armed() {
+        } else if !self.level().permits(Class::Write) {
             Some("read-only: press W to arm a write session".into())
         } else {
             None

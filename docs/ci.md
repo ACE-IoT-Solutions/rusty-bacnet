@@ -687,15 +687,16 @@ schedule runs it, and no required check depends on it.
   measured with Rust 1.99.0 and QEMU 10.0.13 when the mstp-extended, node
   and bbmd images joined (#1664, #1667), the two MS/TP images' again
   when the core stopped copying a queued NPDU onto its stack (#1691), and
-  the router's when it joined (#1679), in octets, and on the two 16 KiB
-  boards the stack's room, all of RAM above the statics:
+  the node, bbmd and router images' again after their ports changed
+  (#1774), in octets, and on the two 16 KiB boards the stack's room, all
+  of RAM above the statics:
 
   | Target (board) | mstp | mstp-extended | bip | node | bbmd | router | apdu |
   | --- | --- | --- | --- | --- | --- | --- | --- |
-  | `thumbv6m-none-eabi` (`microbit`) | 2,040 (10,840) | 3,020 (8,672) | 2,220 (16,252) | 4,716 (16,320) | 2,300 (16,144) | not run (880) | 2,768 (15,328) |
-  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 1,824 | 2,868 | 2,100 | 4,188 | 2,228 | 5,648 | 2,536 |
-  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 1,832 | 2,868 | 2,100 | 4,188 | 2,228 | 5,640 | 2,536 |
-  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 1,712 (10,840) | 2,732 (8,672) | 2,020 (16,252) | 4,008 (16,320) | 2,132 (16,144) | not run (880) | 2,464 (15,328) |
+  | `thumbv6m-none-eabi` (`microbit`) | 2,040 (10,840) | 3,020 (8,672) | 2,220 (16,252) | 5,444 (16,144) | 2,380 (16,144) | not run (880) | 2,768 (15,328) |
+  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 1,824 | 2,868 | 2,100 | 4,972 | 2,260 | 4,456 | 2,536 |
+  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 1,832 | 2,868 | 2,100 | 4,972 | 2,260 | 4,456 | 2,536 |
+  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 1,712 (10,840) | 2,732 (8,672) | 2,020 (16,252) | 4,808 (16,144) | 2,132 (16,144) | not run (880) | 2,464 (15,328) |
 
   So on ARMv6-M the MS/TP image needs about 7.6 KB of RAM: 5,544 octets of
   statics and 2.0 KB of stack. With extended frames on it needs about
@@ -706,15 +707,15 @@ schedule runs it, and no required check depends on it.
   scenario's, taking in the peer's 600-octet reply with about 1.2 KB of
   the scenario's own buffers for it live. Until #1691 the core copied the
   NPDU onto its stack, and the image peaked at 6,136 octets there.
-  The node image's peak is mostly the scenario's own: on ARMv6-M its frame
-  is 2.8 KB, holding the 800-octet summary, the 752-octet node and the
-  result `Node::new` builds it in, and the reset entry keeps the 0.8 KB
-  summary it gets back; the engine's calls go about 1.1 KB deeper.
-  The router image needs about 21 KB: 15,504 octets of statics and 5.6 KB
-  of stack. Its scenario's frame is 3.8 KB on ARMv7-M, holding the
-  704-octet summary, the MS/TP core (528), the BBMD port with its node
-  (712), the router (88) and the BBMD's tables (72); the router's receive
-  and the B/IP port's send go about 1.8 KB deeper. On the 16 KiB boards
+  The node image's peak is mostly the scenario's own. When it joined
+  (#1667), its ARMv6-M frame was 2.8 KB, holding the 800-octet summary,
+  the 752-octet node and the result `Node::new` builds it in, and the
+  reset entry kept the 0.8 KB summary it got back; the engine's calls went
+  about 1.1 KB deeper. Driving the node through a `NodePort` (#1766)
+  made it 0.7-0.8 KB deeper.
+  The router image needs about 20 KB: 15,504 octets of statics and 4.5 KB
+  of stack. When it joined (#1679), its BBMD port held a node, and the
+  image peaked 1.2 KB deeper; the port no longer holds one (#1767). On the 16 KiB boards
   the statics leave 880 octets, so `emulate-firmware.sh` builds the image
   for them and doesn't run it; run anyway, it faults on both as its stack
   reaches the statics. The extended frames Clause 9.3 asks of a router's

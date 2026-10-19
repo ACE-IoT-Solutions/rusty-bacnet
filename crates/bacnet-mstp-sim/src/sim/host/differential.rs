@@ -316,7 +316,7 @@ async fn paired_ready_answer_during_echo_wait_keeps_wire_deadline() {
                 echo_grace: Some(CoreDuration::from_millis(40)),
                 ..HostSpec::default()
             })
-            .reply(crate::ReplyPolicy::Answer {
+            .application(crate::ReplyPolicy::Answer {
                 delay: CoreDuration::from_millis(240),
                 payload: PAYLOAD.to_vec(),
             }),
@@ -389,7 +389,7 @@ async fn paired_buffered_token_after_drain(echo: Echo, expected_kind: FrameType)
                 },
                 ..HostSpec::default()
             })
-            .reply(crate::ReplyPolicy::Answer {
+            .application(crate::ReplyPolicy::Answer {
                 delay: CoreDuration::from_millis(240),
                 payload: PAYLOAD.to_vec(),
             }),
