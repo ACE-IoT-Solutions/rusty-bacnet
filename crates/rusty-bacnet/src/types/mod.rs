@@ -36,6 +36,7 @@ mod date;
 mod destination;
 mod device;
 mod enums;
+mod event_parameter_py;
 mod mapping;
 mod object_identifier;
 mod object_profile;
@@ -43,6 +44,7 @@ mod property_reference;
 mod property_value;
 mod read_value;
 mod rpm_wpm;
+mod schedule;
 mod timestamp;
 
 pub(crate) use access_rule::{access_rules_from_py, device_object_reference};
@@ -69,6 +71,9 @@ pub(crate) use read_value::{decode_read_ack, decode_read_value};
 pub(crate) use rpm_wpm::{
     py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyDeviceWrite, PyPropertyWrite,
     PyReadAccessSpec, PyWriteAccessSpec,
+};
+pub(crate) use schedule::{
+    calendar_entries_from_py, date_range_from_py, special_events_from_py, weekly_schedule_from_py,
 };
 pub use timestamp::PyBACnetTimeStamp;
 pub(crate) use timestamp::{date_time_tuple, time_value};

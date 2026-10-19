@@ -4,16 +4,62 @@ use bacnet_types::enums::EngineeringUnits;
 #[pymethods]
 impl BACnetServer {
     /// Add a Calendar object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_calendar(&self, instance: u32, name: &str) -> PyResult<()> {
-        let cal = CalendarObject::new(instance, name).map_err(to_py_err)?;
+    ///
+    /// `date_list` seeds Date_List with calendar entry mappings, the form a
+    /// typed read of it gives (#1499): `kind` `date` with `date`,
+    /// `date_range` with `start_date` and `end_date`, or `week_n_day` with
+    /// `month`, `week_of_month` and `day_of_week`. An entry the Calendar
+    /// refuses raises BacnetProtocolError and nothing is registered.
+    #[pyo3(signature = (instance, name, *, date_list=None))]
+    fn add_calendar(
+        &self,
+        instance: u32,
+        name: &str,
+        date_list: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let entries = date_list
+            .map(crate::types::calendar_entries_from_py)
+            .transpose()?
+            .unwrap_or_default();
+        let mut cal = CalendarObject::new(instance, name).map_err(to_py_err)?;
+        for entry in entries {
+            cal.add_date_entry(entry).map_err(to_py_err)?;
+        }
         self.push_pending(Box::new(cal))
     }
 
     /// Add a Schedule object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_schedule(&self, instance: u32, name: &str) -> PyResult<()> {
-        let sched = ScheduleObject::new(instance, name, PropertyValue::Null).map_err(to_py_err)?;
+    ///
+    /// The keywords take the forms typed reads of the properties give
+    /// (#1499): `weekly_schedule` seven lists of `(time, value)` pairs,
+    /// Monday first; `exception_schedule` a list of mappings of `period` (a
+    /// calendar entry mapping or a Calendar's ObjectIdentifier),
+    /// `time_values` and `priority`; `effective_period` a `(start_date,
+    /// end_date)` pair. What the Schedule refuses, such as a time given
+    /// twice in a day or a priority outside 1 to 16, raises
+    /// BacnetProtocolError and nothing is registered.
+    #[pyo3(signature = (
+        instance, name, *, weekly_schedule=None, exception_schedule=None, effective_period=None
+    ))]
+    fn add_schedule(
+        &self,
+        instance: u32,
+        name: &str,
+        weekly_schedule: Option<&Bound<'_, PyAny>>,
+        exception_schedule: Option<&Bound<'_, PyAny>>,
+        effective_period: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let week = weekly_schedule
+            .map(crate::types::weekly_schedule_from_py)
+            .transpose()?;
+        let exceptions = exception_schedule
+            .map(crate::types::special_events_from_py)
+            .transpose()?
+            .unwrap_or_default();
+        let period = effective_period
+            .map(|period| crate::types::date_range_from_py(period, "effective_period"))
+            .transpose()?;
+        let sched = schedule(instance, name, week, exceptions, period).map_err(to_py_err)?;
         self.push_pending(Box::new(sched))
     }
 
@@ -169,9 +215,25 @@ impl BACnetServer {
     }
 
     /// Add a Global Group object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_global_group(&self, instance: u32, name: &str) -> PyResult<()> {
-        let obj = GlobalGroupObject::new(instance, name).map_err(to_py_err)?;
+    ///
+    /// `members` seeds Group_Members with property references, each a
+    /// `(object, property)` or `(object, property, array_index)` tuple or a
+    /// `DeviceObjectPropertyReference` mapping, the form a typed read of it
+    /// gives (#1499). A member naming this server's Device is stored in its
+    /// local form; a device identifier that isn't a Device raises ValueError.
+    #[pyo3(signature = (instance, name, *, members=None))]
+    fn add_global_group(
+        &self,
+        instance: u32,
+        name: &str,
+        members: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let members = members
+            .map(|members| self.members_from_py(members, "members"))
+            .transpose()?
+            .unwrap_or_default();
+        let mut obj = GlobalGroupObject::new(instance, name).map_err(to_py_err)?;
+        obj.set_group_members(members).map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 
@@ -502,6 +564,28 @@ fn elevator_group(
         obj.set_machine_room_id(oid)?;
     }
     Ok(obj)
+}
+
+/// Build a Schedule, applying the optional Weekly_Schedule, Exception_Schedule
+/// and Effective_Period through the object's own validating setters.
+fn schedule(
+    instance: u32,
+    name: &str,
+    week: Option<Vec<Vec<bacnet_types::constructed::BACnetTimeValue>>>,
+    exceptions: Vec<bacnet_types::constructed::BACnetSpecialEvent>,
+    period: Option<bacnet_types::constructed::BACnetDateRange>,
+) -> Result<ScheduleObject, bacnet_types::error::Error> {
+    let mut sched = ScheduleObject::new(instance, name, PropertyValue::Null)?;
+    for (day, entries) in week.into_iter().flatten().enumerate() {
+        sched.set_weekly_schedule(day, entries)?;
+    }
+    for event in exceptions {
+        sched.add_exception(event)?;
+    }
+    if let Some(period) = period {
+        sched.set_effective_period(period)?;
+    }
+    Ok(sched)
 }
 
 /// Build a Command, applying the optional Action lists and Action_Text through

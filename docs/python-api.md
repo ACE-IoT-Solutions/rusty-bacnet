@@ -344,7 +344,7 @@ port.tag, port.value  # ("port_permission", (1, False))
 #### Typed constructed values
 
 These properties hold constructed values, or lists or arrays of them, that
-read back typed (#1310, #1344, #1345). Where the binding also takes the
+read back typed (#1310, #1344, #1345, #1499). Where the binding also takes the
 property as a typed value, the read comes back in that form, so a script can
 usually hand it back to the write. The exceptions are a Target_References
 `(device, object)` pair, which `add_staging` refuses because it takes local
@@ -352,8 +352,9 @@ targets only, and a value the object's own checks refuse, which raises as it
 would if written by hand. Where it has no typed write, the form is the one
 the table gives. A whole read of a list or array is a list of the elements,
 and a read of a single value (Accompaniment, Audit_Notification_Recipient,
-Effective_Period, Last_Command_Time, Value_Source, Scale, Prescale) the
-element itself. An
+Effective_Period, Last_Command_Time, Value_Source, Scale, Prescale, the shed
+levels, Event_Parameters and the others marked "one value") the element
+itself. An
 empty collection is `PropertyValue.list([])`. Each element keeps the octets it
 was read from, so writing the value back (`write_property`,
 `write_property_local`) sends them unchanged. `PropertyValue.list` of
@@ -377,18 +378,23 @@ its octets.
 | Access Rights | Accompaniment (one value) | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` | `add_access_rights(accompaniment=...)` |
 | Access Zone, Access User | Entry_Points, Exit_Points; Credentials, Members, Member_Of | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` | `add_access_zone(entry_points=..., exit_points=...)`, `add_access_user(credentials=..., members=..., member_of=...)` |
 | Life Safety Point, Life Safety Zone | Member_Of; Zone_Members | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` | none |
-| Global Group, Schedule, Channel, Trend Log Multiple | Group_Members; List_Of_Object_Property_References; Log_DeviceObjectProperty | `"device_object_property_reference"` | a `DeviceObjectPropertyReference` mapping with every key | `add_channel(members=...)`, `add_trend_log_multiple(members=...)` |
+| Structured View | Subordinate_List | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` | none |
+| Global Group, Schedule, Channel, Trend Log Multiple | Group_Members; List_Of_Object_Property_References; Log_DeviceObjectProperty | `"device_object_property_reference"` | a `DeviceObjectPropertyReference` mapping with every key | `add_global_group(members=...)`, `add_channel(members=...)`, `add_trend_log_multiple(members=...)` |
 | Trend Log; Averaging, Event Enrollment | Log_DeviceObjectProperty; Object_Property_Reference (one value) | `"device_object_property_reference"` | a `DeviceObjectPropertyReference` mapping with every key | existing property writes where writable |
 | Access Point; Lift, Escalator | Access_Event_Credential; Energy_Meter_Ref (one value) | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` | none |
 | Global Group | Present_Value | `"property_access_result"` | the member's `DeviceObjectPropertyReference` keys, then `"value"` (shaped as a read of the member) and `"error"` (`(ErrorClass, ErrorCode)`), one of them `None` | none |
 | Device | Audit_Notification_Recipient (one value) | `"recipient"` | an `AuditRecipientInput` mapping | `configure_audit_recipient(...)` |
 | Device | Active_COV_Subscriptions | `"cov_subscription"` | `{"recipient", "process_identifier", "object_identifier", "property_identifier", "property_array_index", "issue_confirmed_notifications", "time_remaining", "cov_increment"}`; `recipient` an `AuditRecipientInput` mapping, `cov_increment` a `float` or `None` | none |
 | Device | Device_Address_Binding | `"address_binding"` | `{"device_identifier", "network_number", "mac_address"}`; `network_number` 0 for a device on this network, `mac_address` its own MAC, not a router's | none |
-| Schedule | Weekly_Schedule | `"daily_schedule"` | one day: `[(time, value), ...]`, `time` an `(hour, minute, second, hundredths)` tuple and `value` a `PropertyValue` | none |
-| Schedule | Exception_Schedule | `"special_event"` | `{"period", "time_values", "priority"}`; `period` a calendar entry mapping or a Calendar's `ObjectIdentifier`, `time_values` as for a day | none |
-| Schedule | Effective_Period (one value) | `"date_range"` | `(start_date, end_date)` | none |
-| Calendar | Date_List | `"calendar_entry"` | `{"kind": "date", "date"}`, `{"kind": "date_range", "start_date", "end_date"}` or `{"kind": "week_n_day", "month", "week_of_month", "day_of_week"}` | none |
+| Schedule | Weekly_Schedule | `"daily_schedule"` | one day: `[(time, value), ...]`, `time` an `(hour, minute, second, hundredths)` tuple and `value` a `PropertyValue` | `add_schedule(weekly_schedule=...)`, all seven days, Monday first |
+| Schedule | Exception_Schedule | `"special_event"` | `{"period", "time_values", "priority"}`; `period` a calendar entry mapping or a Calendar's `ObjectIdentifier`, `time_values` as for a day | `add_schedule(exception_schedule=...)` |
+| Schedule | Effective_Period (one value) | `"date_range"` | `(start_date, end_date)` | `add_schedule(effective_period=...)` |
+| Calendar | Date_List | `"calendar_entry"` | `{"kind": "date", "date"}`, `{"kind": "date_range", "start_date", "end_date"}` or `{"kind": "week_n_day", "month", "week_of_month", "day_of_week"}` | `add_calendar(date_list=...)` |
 | any | Event_Time_Stamps, Command_Time_Array; Last_Command_Time (one value) | `"timestamp"` | a `BACnetTimeStamp` | none |
+| Access Point; Device | Access_Event_Time; Last_Restore_Time (one value) | `"timestamp"` | a `BACnetTimeStamp`; every field 255 until an event or a restore | `report_access_event_local(time=...)` |
+| Access Point; Credential Data Input | Access_Event_Authentication_Factor; Present_Value (one value) | `"authentication_factor"` | `(format_type, format_class, value)`, `value` `bytes`; `(0, 0, b"")` (UNDEFINED) until set | `report_access_event_local(authentication_factor=...)`, `report_credential_read_local(factor)` |
+| Load Control | Requested_Shed_Level, Expected_Shed_Level, Actual_Shed_Level (one value) | `"shed_level"` | `{"kind": "percent" or "level", "value": int}` or `{"kind": "amount", "value": float}` | existing property writes where writable |
+| Event Enrollment | Event_Parameters (one value) | `"event_parameter"` | a mapping whose `kind` names the algorithm (below) | existing property writes |
 | any | Value_Source_Array; Value_Source (one value) | `"value_source"` | `None` (none), an `ObjectIdentifier` or `(device, object)` (an object), or an `AuditRecipientAddress` mapping, `{"kind": "address", "network_number", "mac_address"}` (an address) | none |
 | Accumulator | Scale (one value) | `"scale"` | a `float` for a float scale, an `int` for a power-of-ten scale | `add_accumulator(scale=...)` |
 | Accumulator | Prescale (one value) | `"prescale"` | `(multiplier, modulo_divide)` | `add_accumulator(prescale=...)` |
@@ -423,6 +429,22 @@ A date in these forms is a `(year, month, day, day_of_week)` tuple as
 unspecified. An Access Rights rule whose specifiers disagree with the
 references it carries, which no typed write makes, has no `AccessRule` form,
 so its array reads as `application_data`.
+
+An Event_Parameters mapping carries `kind` and the algorithm's members:
+`change_of_bitstring` (`time_delay`, `bitmask`, `list_of_values`, each bit
+string a `{"unused_bits", "data"}` mapping as a `bit_string` value reads),
+`change_of_state` (`time_delay`, `list_of_values` of `(choice_tag, value)`
+pairs: a bool for tag 0, an int for the enumerated and numeric tags, the
+contents as `bytes` for a vendor tag), `change_of_value` (`time_delay`, then
+`bitmask` or `referenced_property_increment`, the other `None`),
+`floating_limit` (`time_delay`, `setpoint_reference` as a
+`DeviceObjectPropertyReference` mapping, `low_diff_limit`, `high_diff_limit`,
+`deadband`), `out_of_range` (`time_delay`, `low_limit`, `high_limit`,
+`deadband`), `extended` (`vendor_id`, `extended_event_type`, `parameters` as
+encoded `bytes`), `none`, or `other` (`tag` and `data`, the encoded contents)
+for an algorithm the stack keeps as octets. There is no typed write; the read
+value writes back as its octets. An enrollment whose parameters were never set
+serves an empty `octet_string`, which reads as one.
 
 A Group's Present_Value results, and an `ActionCommand`'s `property_value`,
 are themselves read results: each value is shaped as a read of the property it
@@ -2452,6 +2474,25 @@ from rusty_bacnet import EventType
 
 server.add_calendar(instance=1, name="Holiday Calendar")
 server.add_schedule(instance=1, name="Occupancy Schedule")
+# The typed keywords take the forms typed reads give (#1499), so a read's
+# `.value` builds the same Calendar or Schedule.
+server.add_calendar(
+    instance=2,
+    name="Closures",
+    date_list=[{"kind": "date", "date": (2026, 12, 25, 5)},
+               {"kind": "week_n_day", "month": 255, "week_of_month": 255,
+                "day_of_week": 7}],
+)
+server.add_schedule(
+    instance=2,
+    name="Office hours",
+    weekly_schedule=[[((7, 0, 0, 0), PropertyValue.real(21.0)),
+                      ((18, 0, 0, 0), PropertyValue.null())]] * 5 + [[], []],
+    exception_schedule=[{"period": ObjectIdentifier(ObjectType.CALENDAR, 2),
+                         "time_values": [((0, 0, 0, 0), PropertyValue.null())],
+                         "priority": 3}],
+    effective_period=((2026, 1, 1, 255), (2026, 12, 31, 255)),
+)
 server.add_notification_class(
     instance=1,
     name="Critical Alarms",
@@ -3771,6 +3812,13 @@ server.add_group(
                (PropertyIdentifier.OBJECT_NAME, None)])],
 )
 server.add_global_group(instance=1, name="All Temps")
+# members: reference tuples or DeviceObjectPropertyReference mappings, the form
+# a typed Group_Members read gives (#1499).
+server.add_global_group(
+    instance=2,
+    name="Zone temps",
+    members=[(ObjectIdentifier(ObjectType.ANALOG_INPUT, 1), PropertyIdentifier.PRESENT_VALUE)],
+)
 server.add_structured_view(instance=1, name="Floor Plan")
 ```
 

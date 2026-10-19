@@ -1243,6 +1243,47 @@ class NameValue(TypedDict):
     value: NotRequired[PropertyValue | None]
 
 
+# A date ``(year, month, day, day_of_week)`` with the full year, and a time
+# ``(hour, minute, second, hundredths)``; 255 marks an unspecified field.
+BACnetDate = tuple[int, int, int, int]
+BACnetTime = tuple[int, int, int, int]
+# One Weekly_Schedule or exception entry: the time and the value from then.
+TimeValue = tuple[BACnetTime, PropertyValue]
+
+
+class CalendarDate(TypedDict):
+    kind: Literal["date"]
+    date: BACnetDate
+
+
+class CalendarDateRange(TypedDict):
+    kind: Literal["date_range"]
+    start_date: BACnetDate
+    end_date: BACnetDate
+
+
+class CalendarWeekNDay(TypedDict):
+    kind: Literal["week_n_day"]
+    # Each 255 for any.
+    month: int
+    week_of_month: int
+    day_of_week: int
+
+
+# One Date_List entry, or an exception's own period (``BACnetCalendarEntry``).
+CalendarEntry = CalendarDate | CalendarDateRange | CalendarWeekNDay
+
+
+class SpecialEvent(TypedDict):
+    """One Exception_Schedule event (``BACnetSpecialEvent``): its period, a
+    calendar entry or a Calendar's ``ObjectIdentifier``, its time-values and
+    its priority, 1 (highest) to 16."""
+
+    period: CalendarEntry | ObjectIdentifier
+    time_values: list[TimeValue]
+    priority: int
+
+
 class AuditReporterConfiguration(TypedDict):
     """Owned pre-start target Reporter settings; no Python callbacks."""
     instance: int
@@ -1481,10 +1522,21 @@ class PropertyValue:
       (``"cov_subscription"``), Device_Address_Binding
       (``"address_binding"``: ``device_identifier``, ``network_number`` and
       ``mac_address``), Value_Source and Value_Source_Array
-      (``"value_source"``), and an Accumulator's Scale (``"scale"``: a
+      (``"value_source"``), an Accumulator's Scale (``"scale"``: a
       ``float`` or an ``int``) and Prescale (``"prescale"``: ``(multiplier,
-      modulo_divide)``). Tags elements are ``"name_value"`` mappings with
-      ``"name": str`` and ``"value": None | PropertyValue``. Semantic tags
+      modulo_divide)``), Load Control's Requested_Shed_Level,
+      Expected_Shed_Level and Actual_Shed_Level (``"shed_level"``: a mapping
+      of ``kind``, ``percent``, ``level`` or ``amount``, and ``value``), an
+      Access Point's Access_Event_Authentication_Factor and a Credential
+      Data Input's Present_Value (``"authentication_factor"``:
+      ``(format_type, format_class, value)``, what
+      ``report_access_event_local`` and ``report_credential_read_local``
+      take), and an Event Enrollment's Event_Parameters
+      (``"event_parameter"``: a mapping whose ``kind`` names the algorithm;
+      see docs/python-api.md). Access_Event_Time and Last_Restore_Time read
+      as ``"timestamp"``, and Subordinate_List as a list of
+      ``"device_object_reference"``. Tags elements are ``"name_value"``
+      mappings with ``"name": str`` and ``"value": None | PropertyValue``. Semantic tags
       have ``None``; valued NULL is ``PropertyValue.null()``. Date and Time
       are separate primitive values, not a combined pair. Whole Tags reads
       are lists, indexed reads one element, and index zero an unsigned count.
@@ -1577,7 +1629,8 @@ class PropertyValue:
         'property_access_result', 'recipient', 'daily_schedule',
         'special_event', 'calendar_entry', 'date_range', 'timestamp',
         'cov_subscription', 'value_source', 'scale', 'prescale',
-        'address_binding'."""
+        'address_binding', 'shed_level', 'authentication_factor',
+        'event_parameter'."""
         ...
 
     @property
@@ -3889,8 +3942,34 @@ class BACnetServer:
         ...
 
     # --- Date/time/pattern objects ---
-    def add_calendar(self, instance: int, name: str) -> None: ...
-    def add_schedule(self, instance: int, name: str) -> None: ...
+    def add_calendar(self, instance: int, name: str, *, date_list: Optional[list[CalendarEntry]] = None) -> None:
+        """``date_list`` seeds Date_List with calendar entries, the form a typed
+        read of it gives. An entry the Calendar refuses, such as a month
+        outside 1 to 14 or 255, raises BacnetProtocolError (VALUE_OUT_OF_RANGE)
+        and nothing is registered; wrong shapes raise TypeError or
+        ValueError."""
+        ...
+    def add_schedule(
+        self,
+        instance: int,
+        name: str,
+        *,
+        weekly_schedule: Optional[list[list[TimeValue]]] = None,
+        exception_schedule: Optional[list[SpecialEvent]] = None,
+        effective_period: Optional[tuple[BACnetDate, BACnetDate]] = None,
+    ) -> None:
+        """Add a Schedule object; Schedule_Default is NULL.
+
+        The keywords take the forms typed reads of the properties give, so a
+        read's ``.value`` builds the same Schedule: ``weekly_schedule`` seven
+        days, Monday first, each a list of ``(time, value)`` pairs;
+        ``exception_schedule`` a list of ``SpecialEvent`` mappings;
+        ``effective_period`` a ``(start_date, end_date)`` pair, each date
+        specific or wholly unspecified (the default covers every date). What
+        the Schedule refuses, such as a time given twice in a day, a value
+        that isn't primitive or a priority outside 1 to 16, raises
+        BacnetProtocolError and nothing is registered."""
+        ...
     def add_date_value(self, instance: int, name: str) -> None: ...
     def add_time_value(self, instance: int, name: str) -> None: ...
     def add_date_time_value(self, instance: int, name: str) -> None: ...
@@ -4400,7 +4479,24 @@ class BACnetServer:
         OverflowError.
         """
         ...
-    def add_global_group(self, instance: int, name: str) -> None: ...
+    def add_global_group(
+        self,
+        instance: int,
+        name: str,
+        *,
+        members: Optional[
+            list[
+                tuple[ObjectIdentifier, PropertyIdentifier]
+                | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]]
+                | DeviceObjectPropertyReference
+            ]
+        ] = None,
+    ) -> None:
+        """Add a Global Group object; ``members`` seeds Group_Members, in the
+        form a typed read of it gives. A member naming this server's Device
+        is stored in its local form, and a device identifier that isn't a
+        Device raises ValueError."""
+        ...
     def add_structured_view(self, instance: int, name: str) -> None: ...
 
     # --- Access control ---
