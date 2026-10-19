@@ -7222,9 +7222,11 @@ let server = BACnetServer::sc_builder()
     .build()
     .await?;
 
-// Access the database at runtime
-let db = server.database().lock().await;
+// Access the database at runtime: a Tokio RwLock, so take a read guard
+// (`.write().await` for a write guard) and drop it before the next await.
+let db = server.database().read().await;
 let value = db.get(&oid).unwrap().read_property(pid, None)?;
+drop(db);
 
 // Check communication state
 let state = server.comm_state(); // DccState::Enable or DccState::DisableInitiation

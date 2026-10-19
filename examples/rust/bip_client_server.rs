@@ -6,17 +6,18 @@
 //! - ReadPropertyMultiple for efficient bulk reads
 //! - Device discovery via WhoIs/IAm
 //!
-//! Run with: cargo run --example bip_client_server
+//! Run from the workspace root with:
+//! `cargo run -p bacnet-integration-tests --example bip_client_server`
+
+#![allow(clippy::print_stdout)] // an example demonstrates itself by printing
 
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::primitives::decode_application_value;
-use bacnet_objects::analog_input::AnalogInputObject;
-use bacnet_objects::analog_output::AnalogOutputObject;
-use bacnet_objects::binary_value::BinaryValueObject;
+use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject};
+use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
-use bacnet_transport::bip::BipTransport;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -38,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     db.add(Box::new(device))?;
 
-    let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS)?;
+    let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_FAHRENHEIT)?;
     ai.set_present_value(72.5);
     db.add(Box::new(ai))?;
 
@@ -49,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.add(Box::new(bv))?;
 
     // --- Start the server ---
-    let server = BACnetServer::bip_builder().device(identity)
+    let mut server = BACnetServer::bip_builder().device(identity)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0) // auto-assign
         .broadcast_address(Ipv4Addr::LOCALHOST)
@@ -61,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Server started, MAC: {:?}", server_mac);
 
     // --- Start the client ---
-    let client = BACnetClient::bip_builder()
+    let mut client = BACnetClient::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)
@@ -78,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let (value, _) = decode_application_value(&ack.property_value, 0)?;
     println!("Zone Temp: {:?}", value);
+    assert_eq!(value, PropertyValue::Real(72.5));
 
     // --- Write a property ---
     let mut buf = BytesMut::new();
@@ -88,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ao_oid,
             PropertyIdentifier::PRESENT_VALUE,
             None,
-            buf.freeze(),
+            buf.to_vec(),
             Some(8),
         )
         .await?;
@@ -123,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for result in &rpm_ack.list_of_read_access_results {
         println!("  Object: {:?}", result.object_identifier);
         for prop_result in &result.list_of_results {
-            if let Some(ref value_bytes) = prop_result.read_result {
+            if let Some(ref value_bytes) = prop_result.property_value {
                 if let Ok((val, _)) = decode_application_value(value_bytes, 0) {
                     println!("    {:?}: {:?}", prop_result.property_identifier, val);
                 }
@@ -132,17 +134,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- WhoIs discovery ---
-    client.who_is(None).await?;
+    // Both ends share 127.0.0.1 on ports the OS picked, so a broadcast Who-Is
+    // would go to the client's own port. Direct it at the server instead; on a
+    // real subnet, `client.who_is(None)` broadcasts it.
+    client.who_is_directed(&server_mac, None).await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let devices = client.discovered_devices().await;
+    assert!(devices
+        .iter()
+        .any(|dev| dev.object_identifier.instance_number() == 1234));
     println!("\nDiscovered {} device(s):", devices.len());
     for dev in &devices {
-        println!("  Device {} vendor={}", dev.device_instance, dev.vendor_id);
+        println!(
+            "  Device {} vendor={}",
+            dev.object_identifier.instance_number(),
+            dev.vendor_id
+        );
     }
 
     // Cleanup
-    client.stop().await;
-    server.stop().await;
+    client.stop().await?;
+    server.stop().await?;
     println!("\nDone.");
 
     Ok(())
