@@ -54,8 +54,8 @@ fn counters(scale: u64) -> MstpDiagnosticsSnapshot {
     c
 }
 
-fn sample(scale: u64, sole_master: bool) -> Sample {
-    Sample {
+fn sample(scale: u64, sole_master: bool) -> Box<Sample> {
+    Box::new(Sample {
         node: Some(NodeView {
             state: "USE_TOKEN",
             holds_token: true,
@@ -64,7 +64,7 @@ fn sample(scale: u64, sole_master: bool) -> Sample {
             sole_master,
         }),
         counters: counters(scale),
-    }
+    })
 }
 
 /// An app on the trunk, with one reading, on the MS/TP screen.
@@ -267,10 +267,10 @@ async fn the_sampler_reports_the_handle_each_second() {
         };
         assert_eq!(
             *event,
-            WorkerEvent::Mstp(MstpReport::Sample(Sample {
+            WorkerEvent::Mstp(MstpReport::Sample(Box::new(Sample {
                 node: None,
                 counters: MstpDiagnosticsSnapshot::default(),
-            }))
+            })))
         );
     }
     cancel.send_replace(true);

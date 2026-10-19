@@ -49,9 +49,9 @@ impl MstpState {
                 };
             }
             MstpReport::Sample(sample) => {
-                self.latest = Some(sample);
+                self.latest = Some(*sample);
                 if !self.paused {
-                    self.shown = Some(sample);
+                    self.shown = Some(*sample);
                 }
             }
         }

@@ -43,7 +43,7 @@ pub(crate) struct Profile {
     pub(crate) sc: Option<Box<Sc>>,
     /// MS/TP settings, present for `transport = "mstp"` (#969).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) mstp: Option<Mstp>,
+    pub(crate) mstp: Option<Box<Mstp>>,
     /// Recorded policy. The current TUI always remains read-only.
     pub(crate) safety: Safety,
     /// Explicit first-use authorization, persisted before connecting.
@@ -186,7 +186,7 @@ impl Profile {
         Self {
             transport: Transport::Mstp,
             bip: None,
-            mstp: Some(Mstp::default()),
+            mstp: Some(Box::default()),
             ..Self::default()
         }
     }

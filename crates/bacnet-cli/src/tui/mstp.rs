@@ -81,7 +81,7 @@ pub(crate) enum MstpReport {
     /// The session joined the trunk with these settings.
     Joined(MstpArgs),
     /// A new reading.
-    Sample(Sample),
+    Sample(Box<Sample>),
 }
 
 /// Report a sample of `handle` every [`SAMPLE_EVERY`] until the session is
@@ -92,7 +92,7 @@ pub(crate) async fn sample(handle: MstpDiagnostics, sink: EventSink) {
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         every.tick().await;
-        let report = WorkerEvent::Mstp(MstpReport::Sample(Sample::of(&handle)));
+        let report = WorkerEvent::Mstp(MstpReport::Sample(Box::new(Sample::of(&handle))));
         if let super::worker::Offer::Closed = sink.offer(report) {
             return std::future::pending().await;
         }
