@@ -8,8 +8,9 @@
 //! runs once per address field, and an NPDU sent right after the refused one
 //! is the first thing to come out, which shows the refused one went nowhere.
 
-use bacnet_encoding::npdu::{Npdu, NpduAddress, RejectMessageToNetwork};
+use bacnet_encoding::npdu::{Npdu, NpduAddress};
 use bacnet_npdu::AddressField;
+use bacnet_npdu::RejectMessageToNetwork;
 use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
@@ -125,7 +126,7 @@ async fn router_rejects_an_over_long_address_toward_a_dnet_with_reason_6() {
             reject_of(&reject),
             RejectMessageToNetwork {
                 reason: RejectMessageReason::ADDRESSING_ERROR,
-                dnet: REMOTE,
+                network: REMOTE,
             },
             "{field}"
         );

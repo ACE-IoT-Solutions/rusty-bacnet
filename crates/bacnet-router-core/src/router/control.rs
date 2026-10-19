@@ -14,11 +14,11 @@ use super::tasks::Task;
 use super::Group;
 use super::Storage;
 use crate::message::{
-    DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks, Reject,
+    DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks,
     WhoIsRouter,
 };
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
-use crate::npdu::{NetworkMessageType, RejectMessageReason};
+use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use crate::swap_apart;
 use crate::table::{Learned, RejectEffect};
 
@@ -371,7 +371,7 @@ impl<
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Ok(reject) = Reject::parse(npdu.payload) else {
+        let Ok(reject) = RejectMessageToNetwork::decode(npdu.payload) else {
             return self.bad_message();
         };
         let named = Networks::parse(&npdu.payload[1..]).unwrap_or(Networks::EMPTY);
