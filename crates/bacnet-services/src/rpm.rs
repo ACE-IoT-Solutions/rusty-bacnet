@@ -41,9 +41,7 @@ impl ReadPropertyMultipleRequest {
                 .iter()
                 .any(|spec| spec.list_of_property_references.is_empty())
         {
-            return Err(Error::Encoding(
-                "RPM requires nonempty object and property lists".into(),
-            ));
+            return Err(Error::encode("RPM requires nonempty object and property lists"));
         }
         for spec in &self.list_of_read_access_specs {
             encode_read_access_specification(buf, spec);

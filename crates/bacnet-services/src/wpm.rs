@@ -81,24 +81,18 @@ impl WritePropertyMultipleRequest {
     pub fn validate(&self) -> Result<(), Error> {
         use bacnet_types::enums::PropertyIdentifier as P;
         if self.list_of_write_access_specs.is_empty() {
-            return Err(Error::Encoding(
-                "WPM requires at least one object specification".into(),
-            ));
+            return Err(Error::encode("WPM requires at least one object specification"));
         }
         for spec in &self.list_of_write_access_specs {
             if spec.list_of_properties.is_empty() {
-                return Err(Error::Encoding(
-                    "WPM requires at least one property per object".into(),
-                ));
+                return Err(Error::encode("WPM requires at least one property per object"));
             }
             for property in &spec.list_of_properties {
                 if matches!(
                     property.property_identifier,
                     P::ALL | P::REQUIRED | P::OPTIONAL
                 ) {
-                    return Err(Error::Encoding(
-                        "WPM does not accept ALL, REQUIRED or OPTIONAL selectors".into(),
-                    ));
+                    return Err(Error::encode("WPM does not accept ALL, REQUIRED or OPTIONAL selectors"));
                 }
                 crate::write_property::validate_priority(property.priority)?;
             }

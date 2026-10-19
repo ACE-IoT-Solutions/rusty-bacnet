@@ -474,10 +474,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
         if let Some(max_seg) = remote_max_segments {
             if total_segments > max_seg as usize {
-                return Err(Error::Segmentation(format!(
-                    "request requires {} segments but remote accepts at most {}",
-                    total_segments, max_seg
-                )));
+                return Err(bacnet_types::error::SegmentationError::PeerSegmentLimit {
+                    segments: total_segments,
+                    max: max_seg,
+                }
+                .into());
             }
         }
 
@@ -731,9 +732,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 if ack.negative_ack {
                     neg_ack_retries += 1;
                     if neg_ack_retries > MAX_NEG_ACK_RETRIES {
-                        return Err(Error::Segmentation(
-                            "too many negative SegmentAck retransmissions".into(),
-                        ));
+                        return Err(
+                            bacnet_types::error::SegmentationError::NegativeAckRetriesExhausted
+                                .into(),
+                        );
                     }
                 } else {
                     neg_ack_retries = 0;

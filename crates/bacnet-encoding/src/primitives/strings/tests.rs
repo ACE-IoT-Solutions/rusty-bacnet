@@ -157,8 +157,8 @@ fn an_over_long_character_string_errors_through_the_bytes_mut_encoders() {
         encode_ctx_character_string(&mut buf, 3, value),
     ] {
         assert!(
-            matches!(&refused, Err(Error::Encoding(message))
-                if message == "CharacterString too long for BACnet encoding"),
+            matches!(&refused, Err(Error::Encode(refused))
+                if refused.label == "CharacterString too long for BACnet encoding"),
             "{refused:?}"
         );
     }

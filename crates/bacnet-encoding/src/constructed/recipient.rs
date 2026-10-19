@@ -38,7 +38,7 @@ use alloc::vec::Vec;
 
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, EncodeError, Error};
 use bacnet_types::primitives::Time;
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
@@ -84,11 +84,12 @@ pub fn check_encoded_mac_len(mac: &[u8], what: &'static str) -> Result<(), Error
     if !mac_len_excess(mac.len()) {
         return Ok(());
     }
-    Err(Error::Encoding(format!(
-        "{what}: mac-address of {} octets exceeds the {}-octet limit",
-        mac.len(),
-        BACnetAddress::MAX_MAC_LEN
-    )))
+    Err(
+        EncodeError::new("mac-address of {} octets exceeds the {}-octet limit")
+            .within(what)
+            .with_values(mac.len() as u32, BACnetAddress::MAX_MAC_LEN as u32)
+            .into(),
+    )
 }
 
 /// [`check_encoded_mac_len`] for the address form of a recipient; the device

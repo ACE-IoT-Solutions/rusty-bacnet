@@ -493,11 +493,26 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   owns the serial port (#958). Live capture of our own traffic needs a
   link-level tap (#957).
 
-### 6.6 Profiles and workspaces (B/IP portion of #962)
+### 6.6 Profiles and workspaces (#962)
 
-B/IP profiles are implemented behind `tui`. The entry flow, schema and keys are
-in the [CLI reference](../CLI.md#terminal-ui). SC UUID/TLS/failover persistence,
-MS/TP profiles and shell-history migration remain separate work in #962.
+B/IP and BACnet/SC profiles are implemented behind `tui`. The entry flow,
+schema and keys are in the [CLI reference](../CLI.md#terminal-ui). MS/TP
+profiles (#969) add a `transport` value and their own table. An SC profile's
+failover hub goes to the client builder with the default reconnect policy,
+which the builder needs for failover; the SC status screen is #967. The shell
+history lives in the platform data directory.
+
+- Each transport keeps its settings in its own table (`[bip]` or `[sc]`), and
+  exactly the one `transport` names is present. B/IP files from before SC
+  support have that shape already and load unchanged.
+- SC profiles hold the hub URLs, the CA, certificate and key paths, the VMAC
+  and the device UUID. The VMAC and UUID are generated once, when the profile
+  is first saved or first connected, and persisted: Annex AB.1.5.3 has the
+  device UUID stay fixed for the life of the device.
+- File checks (readable CA, certificate and key; on Unix a warning for a
+  group- or world-readable key) run at the coordinator boundary for the
+  preview, and again before a connection attempt, which a failure refuses
+  before any client exists.
 
 - Version 1 TOML files live at `profiles/NAME.toml` under
   `directories::ProjectDirs::from("", "", "bacnet").config_dir()`. Set

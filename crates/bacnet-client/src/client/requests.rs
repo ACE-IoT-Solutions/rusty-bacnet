@@ -266,10 +266,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     bacnet_types::enums::Segmentation::NONE
                         | bacnet_types::enums::Segmentation::TRANSMIT
                 ) {
-                    return Err(Error::Segmentation(format!(
-                        "request requires segmentation but the peer advertised \
-                         {capability:?} and cannot receive segmented requests"
-                    )));
+                    return Err(bacnet_types::error::SegmentationError::PeerCannotReceive {
+                        capability,
+                    }
+                    .into());
                 }
             }
             return self

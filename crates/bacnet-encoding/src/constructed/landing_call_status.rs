@@ -77,7 +77,7 @@ pub fn encode_landing_call_status_list(
 /// [`Error::Decoding`] or [`Error::BufferTooShort`]. A value whose members are
 /// all well formed, but where floor-number or destination exceeds an
 /// Unsigned8 or the direction exceeds 32 bits, fails with
-/// [`Error::OutOfRange`] naming the first oversized member. A malformed member
+/// [`Error::Range`] naming the first oversized member. A malformed member
 /// anywhere in the value takes precedence over an oversized one. Within 32
 /// bits the direction is kept as received, reserved and proprietary values
 /// included, for the receiver to judge.

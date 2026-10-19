@@ -3,10 +3,9 @@
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-// `format!` and `vec!` without std's prelude. Without `alloc` the crate
-// links no allocator at all (#1614).
+// Without `alloc` the crate links no allocator at all (#1614). The library
+// builds no `format!` text (#1802).
 #[cfg(feature = "alloc")]
-#[macro_use]
 extern crate alloc;
 
 /// Items only the `alloc` profile has: each gets `#[cfg(feature = "alloc")]`.

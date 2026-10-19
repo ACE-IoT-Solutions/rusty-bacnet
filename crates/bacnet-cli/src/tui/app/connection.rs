@@ -1,8 +1,10 @@
 //! The profile picker, editor and resolved preview. No filesystem or network I/O.
 
 use crate::tui::message::Command;
+use crate::tui::profile::checks::Checks;
 use crate::tui::profile::service::{Reply, Request};
-use crate::tui::profile::{Overrides, Profile, Writes};
+use crate::tui::profile::{Overrides, Profile, Transport, Writes};
+use std::path::PathBuf;
 
 /// Editing keys have no transport effects until a request is emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +15,10 @@ pub(crate) enum Key {
     Backspace,
     Discard,
     Submit,
+    /// Start a new B/IP profile.
     New,
+    /// Start a new BACnet/SC profile.
+    NewSc,
     Edit,
     Reload,
     List,
@@ -29,11 +34,8 @@ pub(crate) enum Screen {
     Preview,
 }
 
-/// Number of editor fields.
-pub(crate) const FIELDS: usize = 11;
-
-/// Text fields have a fixed order shared by the editor and its renderer.
-pub(crate) const LABELS: [&str; FIELDS] = [
+/// B/IP editor fields, in the order the editor and its renderer share.
+pub(crate) const BIP_LABELS: [&str; 11] = [
     "Name",
     "Interface",
     "UDP port",
@@ -47,6 +49,27 @@ pub(crate) const LABELS: [&str; FIELDS] = [
     "Dangerous",
 ];
 
+/// BACnet/SC editor fields. Files are paths; their contents are never read here.
+pub(crate) const SC_LABELS: [&str; 12] = [
+    "Name",
+    "Hub URL",
+    "Failover URL",
+    "CA file",
+    "Cert file",
+    "Key file",
+    "VMAC",
+    "Device UUID",
+    "Timeout ms",
+    "Pacing ms",
+    "Writes",
+    "Dangerous",
+];
+
+/// Positions of the VMAC and device UUID in [`SC_LABELS`].
+pub(crate) const VMAC_FIELD: usize = 6;
+/// See [`VMAC_FIELD`].
+pub(crate) const UUID_FIELD: usize = 7;
+
 /// State retained while a connection is running or the dialog is closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Connection {
@@ -56,13 +79,33 @@ pub(crate) struct Connection {
     pub(crate) screen: Screen,
     pub(crate) name: String,
     pub(crate) saved: Option<Profile>,
-    pub(crate) fields: [String; FIELDS],
+    /// File checks of the saved profile's resolved settings.
+    pub(crate) checks: Checks,
+    /// The transport the editor's fields belong to.
+    pub(crate) transport: Transport,
+    pub(crate) fields: Vec<String>,
     pub(crate) focus: usize,
     pub(crate) creating: bool,
     pub(crate) error: Option<String>,
     pub(crate) overrides: Overrides,
     /// A queued disk operation disables further mutations until its reply.
     pub(crate) pending: bool,
+}
+
+fn optional<T: std::str::FromStr>(text: &str, error: &str) -> Result<Option<T>, String> {
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        text.parse().map(Some).map_err(|_| error.to_owned())
+    }
+}
+
+fn writes_text(writes: Writes) -> String {
+    match writes {
+        Writes::Never => "never",
+        Writes::Session => "session",
+    }
+    .into()
 }
 
 impl Connection {
@@ -74,12 +117,34 @@ impl Connection {
             screen: Screen::List,
             name: String::new(),
             saved: None,
-            fields: Default::default(),
+            checks: Checks::default(),
+            transport: Transport::Bip,
+            fields: Vec::new(),
             focus: 0,
             creating: false,
             error: None,
             overrides,
             pending: false,
+        }
+    }
+    /// Whether editor field `i` shows an SC identity that is already
+    /// assigned, and so can't be edited here (Annex AB.1.5.3).
+    pub(crate) fn identity_locked(&self, i: usize) -> bool {
+        let Some(sc) = self.saved.as_ref().and_then(|p| p.sc.as_ref()) else {
+            return false;
+        };
+        self.transport == Transport::Sc
+            && match i {
+                VMAC_FIELD => sc.vmac.is_some(),
+                UUID_FIELD => sc.device_uuid.is_some(),
+                _ => false,
+            }
+    }
+    /// The editor's field labels.
+    pub(crate) fn labels(&self) -> &'static [&'static str] {
+        match self.transport {
+            Transport::Bip => &BIP_LABELS,
+            Transport::Sc => &SC_LABELS,
         }
     }
     pub(crate) fn reply(&mut self, reply: Result<Reply, String>) {
@@ -92,88 +157,130 @@ impl Connection {
                 self.selected = self.selected.min(self.names.len().saturating_sub(1));
                 self.screen = Screen::List;
             }
-            Ok(Reply::Loaded { name, profile }) => {
+            Ok(Reply::Loaded {
+                name,
+                profile,
+                checks,
+            }) => {
                 if !self.names.contains(&name) {
                     self.names.push(name.clone());
                     self.names.sort();
                 }
                 self.name = name;
                 self.saved = Some(profile);
+                self.checks = checks;
                 self.creating = false;
                 self.screen = Screen::Preview;
             }
             Err(error) => self.error = Some(error),
         }
     }
+    /// Open the editor on a new B/IP profile.
     pub(crate) fn new_profile(&mut self) {
+        self.create(Profile::default());
+    }
+    fn create(&mut self, profile: Profile) {
         self.name.clear();
         self.saved = None;
+        self.checks = Checks::default();
         self.creating = true;
-        self.edit(Profile::default());
+        self.edit(profile);
     }
     fn edit(&mut self, p: Profile) {
-        let b = p.bip;
-        self.fields = [
-            self.name.clone(),
-            b.interface.to_string(),
-            b.port.to_string(),
-            b.broadcast.to_string(),
-            b.timeout_ms.to_string(),
-            b.min_interval_ms.to_string(),
-            b.bbmd.map(|v| v.to_string()).unwrap_or_default(),
-            b.ttl.to_string(),
-            b.renewal_secs.map(|v| v.to_string()).unwrap_or_default(),
-            match p.safety.writes {
-                Writes::Never => "never",
-                Writes::Session => "session",
-            }
-            .into(),
-            p.safety.dangerous.to_string(),
-        ];
+        self.transport = p.transport;
+        let mut fields = vec![self.name.clone()];
+        if let Some(b) = &p.bip {
+            fields.extend([
+                b.interface.to_string(),
+                b.port.to_string(),
+                b.broadcast.to_string(),
+                b.timeout_ms.to_string(),
+                b.min_interval_ms.to_string(),
+                b.bbmd.map(|v| v.to_string()).unwrap_or_default(),
+                b.ttl.to_string(),
+                b.renewal_secs.map(|v| v.to_string()).unwrap_or_default(),
+            ]);
+        }
+        if let Some(s) = &p.sc {
+            fields.extend([
+                s.hub_url.clone(),
+                s.failover_hub_url.clone().unwrap_or_default(),
+                s.ca.display().to_string(),
+                s.cert.display().to_string(),
+                s.key.display().to_string(),
+                s.vmac.map(|v| v.to_string()).unwrap_or_default(),
+                s.device_uuid.map(|v| v.to_string()).unwrap_or_default(),
+                s.timeout_ms.to_string(),
+                s.min_interval_ms.to_string(),
+            ]);
+        }
+        fields.push(writes_text(p.safety.writes));
+        fields.push(p.safety.dangerous.to_string());
+        self.fields = fields;
         self.focus = usize::from(!self.creating);
         self.screen = Screen::Edit;
         self.error = None;
     }
     fn edited(&self) -> Result<Profile, String> {
         super::super::profile::store::validate_name(&self.fields[0])?;
-        let mut profile = self.saved.clone().unwrap_or_default();
+        let mut profile = self.saved.clone().unwrap_or_else(|| match self.transport {
+            Transport::Bip => Profile::default(),
+            Transport::Sc => Profile::sc_default(),
+        });
         let f = &self.fields;
-        profile.bip.interface = f[1]
-            .parse()
-            .map_err(|_| "Interface must be an IPv4 address")?;
-        profile.bip.port = f[2].parse().map_err(|_| "UDP port must be 0-65535")?;
-        profile.bip.broadcast = f[3]
-            .parse()
-            .map_err(|_| "Broadcast must be an IPv4 address")?;
-        profile.bip.timeout_ms = f[4]
-            .parse()
-            .map_err(|_| "Timeout must be an unsigned number")?;
-        profile.bip.min_interval_ms = f[5]
-            .parse()
-            .map_err(|_| "Pacing must be an unsigned number")?;
-        profile.bip.bbmd = if f[6].is_empty() {
-            None
-        } else {
-            Some(crate::foreign::parse_bbmd_arg(&f[6])?)
-        };
-        profile.bip.ttl = f[7].parse().map_err(|_| "TTL must be 0-65535")?;
-        profile.bip.renewal_secs = if f[8].is_empty() {
-            None
-        } else {
-            Some(
-                f[8].parse()
-                    .map_err(|_| "Renewal must be an unsigned number")?,
-            )
-        };
-        if profile.bip.bbmd.is_none() {
-            profile.bip.renewal_secs = None;
+        if let Some(b) = &mut profile.bip {
+            b.interface = f[1]
+                .parse()
+                .map_err(|_| "Interface must be an IPv4 address")?;
+            b.port = f[2].parse().map_err(|_| "UDP port must be 0-65535")?;
+            b.broadcast = f[3]
+                .parse()
+                .map_err(|_| "Broadcast must be an IPv4 address")?;
+            b.timeout_ms = f[4]
+                .parse()
+                .map_err(|_| "Timeout must be an unsigned number")?;
+            b.min_interval_ms = f[5]
+                .parse()
+                .map_err(|_| "Pacing must be an unsigned number")?;
+            b.bbmd = if f[6].is_empty() {
+                None
+            } else {
+                Some(crate::foreign::parse_bbmd_arg(&f[6])?)
+            };
+            b.ttl = f[7].parse().map_err(|_| "TTL must be 0-65535")?;
+            b.renewal_secs = optional(&f[8], "Renewal must be an unsigned number")?;
+            if b.bbmd.is_none() {
+                b.renewal_secs = None;
+            }
         }
-        profile.safety.writes = match f[9].as_str() {
+        if let Some(s) = &mut profile.sc {
+            s.hub_url = f[1].clone();
+            s.failover_hub_url = Some(f[2].clone()).filter(|v| !v.is_empty());
+            s.ca = PathBuf::from(&f[3]);
+            s.cert = PathBuf::from(&f[4]);
+            s.key = PathBuf::from(&f[5]);
+            // An assigned identity is read-only here (it came from `saved`);
+            // only a new profile's blank or typed values are taken.
+            if !self.identity_locked(VMAC_FIELD) {
+                s.vmac = optional(&f[6], "VMAC must be 6 hex bytes, not all 0 or all FF")?;
+            }
+            if !self.identity_locked(UUID_FIELD) {
+                s.device_uuid = optional(&f[7], "Device UUID must be a nonzero UUID")?;
+            }
+            s.timeout_ms = f[8]
+                .parse()
+                .map_err(|_| "Timeout must be an unsigned number")?;
+            s.min_interval_ms = f[9]
+                .parse()
+                .map_err(|_| "Pacing must be an unsigned number")?;
+        }
+        let n = f.len();
+        profile.safety.writes = match f[n - 2].as_str() {
             "never" => Writes::Never,
             "session" => Writes::Session,
             _ => return Err("Writes must be never or session".into()),
         };
-        profile.safety.dangerous = match f[10].as_str() {
+        profile.safety.dangerous = match f[n - 1].as_str() {
             "false" => false,
             "true" => true,
             _ => return Err("Dangerous must be true or false".into()),
@@ -181,7 +288,7 @@ impl Connection {
         if self
             .saved
             .as_ref()
-            .is_some_and(|saved| saved.bip != profile.bip)
+            .is_some_and(|saved| saved.bip != profile.bip || saved.sc != profile.sc)
         {
             profile.authorized_at_unix = None;
             profile.authorized_safety = None;
@@ -202,23 +309,31 @@ impl Connection {
             return None;
         }
         self.error = None;
+        let count = self.fields.len();
         let request = match (&self.screen, key) {
             (Screen::Edit, Key::Next) => {
-                self.focus = (self.focus + 1) % FIELDS;
+                self.focus = (self.focus + 1) % count;
                 if !self.creating && self.focus == 0 {
                     self.focus = 1;
                 }
                 None
             }
             (Screen::Edit, Key::Prev) => {
-                self.focus = (self.focus + FIELDS - 1) % FIELDS;
+                self.focus = (self.focus + count - 1) % count;
                 if !self.creating && self.focus == 0 {
-                    self.focus = FIELDS - 1;
+                    self.focus = count - 1;
                 }
                 None
             }
+            (Screen::Edit, Key::Char(_) | Key::Backspace) if self.identity_locked(self.focus) => {
+                self.error = Some(
+                    "The VMAC and device UUID are kept for good; change them by editing the profile file."
+                        .into(),
+                );
+                None
+            }
             (Screen::Edit, Key::Char(ch)) => {
-                if self.fields[self.focus].len() < 128 && ch.is_ascii() && !ch.is_control() {
+                if self.fields[self.focus].len() < 256 && ch.is_ascii() && !ch.is_control() {
                     self.fields[self.focus].push(ch);
                 }
                 None
@@ -228,7 +343,7 @@ impl Connection {
                 None
             }
             (Screen::Edit, Key::Discard) => {
-                self.fields = Default::default();
+                self.fields.clear();
                 self.creating = false;
                 self.screen = if self.saved.is_some() {
                     Screen::Preview
@@ -253,6 +368,10 @@ impl Connection {
                 self.new_profile();
                 None
             }
+            (_, Key::NewSc) => {
+                self.create(Profile::sc_default());
+                None
+            }
             (Screen::Preview, Key::Edit) => {
                 if let Some(profile) = &self.saved {
                     self.edit(profile.clone());
@@ -273,6 +392,8 @@ impl Connection {
                 self.names.get(self.selected).cloned().map(Request::Load)
             }
             (Screen::Preview, Key::Reload) => Some(Request::Load(self.name.clone())),
+            // A failed file check is refused again (freshly) by the
+            // coordinator, so the request goes out and names the path.
             (Screen::Preview, key @ (Key::Submit | Key::Connect | Key::Attest)) => {
                 match self.resolved() {
                     Err(error) => {

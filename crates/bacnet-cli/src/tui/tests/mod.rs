@@ -14,6 +14,9 @@
 //! - `event_loop`: the `select!` loop on a `TestBackend` with scripted input.
 //! - `network`: the Network screen against real B/IP transports and BBMDs
 //!   on loopback; `network_frames`: its frames from synthetic events.
+//! - `sc_profiles`: profiles created through the screen and reloaded, the
+//!   refusal of an invalid SC profile before any dial, the flags-only path,
+//!   and the SC connection screen's frames.
 //!
 //! Snapshot workflow: CI runs plain `cargo nextest run -p bacnet-cli`, where a
 //! changed frame fails the test. After an intended UI change, run
@@ -37,6 +40,7 @@ mod load;
 mod network;
 mod network_frames;
 mod profile_ui;
+mod sc_profiles;
 mod site;
 mod watch;
 mod writes;

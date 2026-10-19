@@ -32,7 +32,7 @@
 //! accepts all four.
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::ToString, vec::Vec};
+use alloc::vec::Vec;
 
 use bacnet_types::constructed::FaultParameters;
 use bacnet_types::enums::LifeSafetyState;
@@ -56,7 +56,7 @@ pub fn encode_fault_parameters(buf: &mut BytesMut, value: &FaultParameters) -> R
     let mut encoded = BytesMut::new();
     encode_fault_parameters_into(&mut encoded, value)?;
     super::validate_tlv_sequence(&encoded, "FaultParameters")
-        .map_err(|error| Error::Encoding(error.to_string()))?;
+        .map_err(Error::into_encode_refusal)?;
     buf.extend_from_slice(&encoded);
     Ok(())
 }
@@ -83,7 +83,7 @@ fn encode_fault_parameters_into(buf: &mut BytesMut, value: &FaultParameters) -> 
             parameters,
         } => {
             validate_extended_parameters(parameters, "fault-extended")
-                .map_err(|error| Error::Encoding(error.to_string()))?;
+                .map_err(Error::into_encode_refusal)?;
             tags::encode_opening_tag(buf, 2);
             primitives::encode_ctx_unsigned(buf, 0, *vendor_id as u64);
             primitives::encode_ctx_unsigned(buf, 1, *extended_fault_type as u64);
