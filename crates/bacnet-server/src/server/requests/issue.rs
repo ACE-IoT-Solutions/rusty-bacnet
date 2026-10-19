@@ -81,11 +81,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             source_network,
             route,
         } = target;
+        let encoded = confirmed_response::encoded_apdu(response);
         if let Apdu::ComplexAck(ack) = response {
-            let mut full_buf = BytesMut::new();
-            encode_apdu(&mut full_buf, response).expect("valid APDU encoding");
-
-            if full_buf.len() > params.client_max_apdu as usize {
+            if encoded.len() > params.client_max_apdu as usize {
                 // Clause 5.4.5.3 CannotSendSegmentedComplexACK reads both
                 // sides of the exchange: case (a), no local capability to
                 // transmit segmented messages, and case
@@ -136,16 +134,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // deferred until the complete response exists and that guard is gone.
         // Segmentation/post-execution transport divergence does not add records.
         audit.admit_reads(db, read_audits).await;
-        confirmed_response::send_unsegmented_response(
-            network,
-            response,
-            source_mac,
-            source_network,
-            route,
-            reply_tx,
-            pending,
-        )
-        .await;
+        confirmed_response::send_unsegmented_response(network, encoded, target, reply_tx, pending)
+            .await;
         Issued::Unsegmented
     }
 }
