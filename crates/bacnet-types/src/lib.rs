@@ -20,6 +20,7 @@ pub mod constructed;
 pub mod data_link;
 pub mod enums;
 pub mod error;
+pub mod map_hash;
 pub mod network_number;
 pub mod primitives;
 

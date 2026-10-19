@@ -1,30 +1,32 @@
-//! A cheap hasher for the TSM's maps (#1713).
+//! A cheap hasher for small maps a program fills itself (#1713).
 //!
-//! The TSM keys its maps by the peers this client sends requests to, and
-//! hashes a key several times for every request. SipHash, the standard
-//! map's hasher, guards a map whose keys an attacker can insert; nobody
-//! else inserts here: an answer from the network only looks a key up, and
-//! a lookup can't grow a map to force collisions. So these maps use the
-//! multiply-and-rotate scheme rustc's own maps use, at a fraction of the
-//! cost.
+//! SipHash, the standard map's hasher, guards a map an attacker can fill
+//! with colliding keys. Some of this stack's per-request maps can't be
+//! filled that way: the client's transaction table holds only the peers the
+//! client sent requests to, since an answer from the network only looks a
+//! key up, and the server's admission table holds at most one entry per
+//! request it is running, which its in-flight limit caps. Such a map can
+//! hash with the multiply-and-rotate scheme rustc's own maps use, at a
+//! fraction of SipHash's cost. Don't use it for a map remote input can grow.
 
-use std::hash::{BuildHasherDefault, Hasher};
+use core::hash::{BuildHasherDefault, Hasher};
 
 /// The odd multiplier rustc-hash 2 uses.
 const K: u64 = 0xf135_7aea_2e62_a9c5;
 
-/// Multiply-and-rotate hasher over 64-bit words.
-#[derive(Default, Clone, Copy)]
-pub(crate) struct PeerHasher(u64);
+/// Multiply-and-rotate hasher over 64-bit words. See the module
+/// documentation for the maps it suits.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MapHasher(u64);
 
-impl PeerHasher {
+impl MapHasher {
     #[inline]
     fn add(&mut self, word: u64) {
         self.0 = self.0.wrapping_add(word).wrapping_mul(K);
     }
 }
 
-impl Hasher for PeerHasher {
+impl Hasher for MapHasher {
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
         let (words, rest) = bytes.as_chunks::<8>();
@@ -72,17 +74,18 @@ impl Hasher for PeerHasher {
     }
 }
 
-/// The TSM's map type.
-pub(crate) type PeerMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<PeerHasher>>;
+/// Builds a [`MapHasher`]: the `S` of a `HashMap<K, V, S>`.
+pub type BuildMapHasher = BuildHasherDefault<MapHasher>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_types::MacAddr;
-    use std::hash::BuildHasher;
+    use crate::MacAddr;
+    use core::hash::BuildHasher;
+    use std::collections::HashMap;
 
     fn hash(key: &(MacAddr, u8)) -> u64 {
-        BuildHasherDefault::<PeerHasher>::default().hash_one(key)
+        BuildMapHasher::default().hash_one(key)
     }
 
     #[test]
@@ -105,7 +108,7 @@ mod tests {
 
     #[test]
     fn a_map_finds_what_it_holds() {
-        let mut map = PeerMap::default();
+        let mut map: HashMap<_, _, BuildMapHasher> = HashMap::default();
         for station in 0..=255u8 {
             for invoke in 0..4u8 {
                 map.insert(

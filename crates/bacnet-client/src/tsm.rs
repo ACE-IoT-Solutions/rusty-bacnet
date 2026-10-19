@@ -4,8 +4,10 @@
 //! (0-255) scoped per destination MAC. Responses are delivered via oneshot channels.
 
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
+use bacnet_types::map_hash::BuildMapHasher;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
@@ -17,13 +19,11 @@ mod segmented_response;
 pub(crate) use segmented_response::SegmentedResponseAdmission;
 mod completion;
 mod coordinated;
-mod peer_hash;
 mod progress;
 pub(crate) use coordinated::{
     CoordinatedCompletion, CoordinatedTerminalPhase, SegmentedAckArrival,
 };
 use coordinated::{PendingLease, PendingRelease};
-use peer_hash::PeerMap;
 use progress::TransactionShared;
 pub(crate) use progress::{ProgressReceiver, TransactionProgress};
 
@@ -247,8 +247,9 @@ struct PendingTransaction {
 /// asked for.
 pub struct Tsm {
     config: TsmConfig,
-    allocators: PeerMap<MacAddr, InvokeIdAllocator>,
-    pending: PeerMap<(MacAddr, u8), PendingTransaction>,
+    // Only this client inserts: see bacnet_types::map_hash (#1713).
+    allocators: HashMap<MacAddr, InvokeIdAllocator, BuildMapHasher>,
+    pending: HashMap<(MacAddr, u8), PendingTransaction, BuildMapHasher>,
     coordinator: Option<Arc<bacnet_endpoint_core::coordinator::OutboundTransactionCoordinator>>,
 }
 
@@ -257,8 +258,8 @@ impl Tsm {
     pub fn new(config: TsmConfig) -> Self {
         Self {
             config,
-            allocators: PeerMap::default(),
-            pending: PeerMap::default(),
+            allocators: HashMap::default(),
+            pending: HashMap::default(),
             coordinator: None,
         }
     }

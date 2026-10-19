@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use super::request_peer::CanonicalRequester;
 
 use bacnet_types::error::Error;
+use bacnet_types::map_hash::BuildMapHasher;
 use tokio::sync::Semaphore;
 
 #[path = "recovery_classifier.rs"]
@@ -159,7 +160,9 @@ struct Pool {
     limit: usize,
     held: AtomicUsize,
     peer_limit: usize,
-    peers: Mutex<HashMap<CanonicalRequester, usize>>,
+    // Holds only requests running here, so the pool's limit bounds it and
+    // the cheap hasher is safe (#1713; see bacnet_types::map_hash).
+    peers: Mutex<HashMap<CanonicalRequester, usize, BuildMapHasher>>,
     active: AtomicUsize,
     admitted: AtomicU64,
     overloaded: AtomicU64,
@@ -174,7 +177,7 @@ impl Pool {
             limit,
             held: AtomicUsize::new(0),
             peer_limit,
-            peers: Mutex::new(HashMap::new()),
+            peers: Mutex::new(HashMap::default()),
             active: AtomicUsize::new(0),
             admitted: AtomicU64::new(0),
             overloaded: AtomicU64::new(0),
@@ -310,7 +313,13 @@ impl Admission {
             None
         } else {
             let mut peers = pool.peers.lock().unwrap_or_else(|e| e.into_inner());
-            if peers.get(&peer).copied().unwrap_or(0) >= pool.peer_limit {
+            // One lookup for the check and the registration.
+            let count = peers.entry(peer.clone()).or_insert(0);
+            if *count >= pool.peer_limit {
+                // Only a zero limit refuses a new entry; leave none behind.
+                if *count == 0 {
+                    peers.remove(&peer);
+                }
                 pool.overloaded.fetch_add(1, Ordering::Relaxed);
                 pool.peer_overloaded.fetch_add(1, Ordering::Relaxed);
                 if let Some(total) = aggregate {
@@ -320,7 +329,7 @@ impl Admission {
                 pool.held.fetch_sub(1, Ordering::Release);
                 return Err(Rejection::Overloaded);
             }
-            *peers.entry(peer.clone()).or_default() += 1;
+            *count += 1;
             Some(peer)
         };
         pool.active.fetch_add(1, Ordering::Relaxed);
