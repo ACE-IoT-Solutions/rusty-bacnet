@@ -133,10 +133,10 @@ pub struct BipTransport {
     node_task: Option<JoinHandle<()>>,
     /// This transport's own management exchanges, across restarts.
     client_record: Arc<ClientRecord>,
-    /// Optional path for loading an externally provisioned persisted BDT
-    /// (wire format, 10 bytes per entry) at startup. Inbound Write-BDT does
-    /// not update this file.
-    bdt_persist_path: Option<std::path::PathBuf>,
+    /// Optional persisted-BDT file (wire format, 10 bytes per entry): loaded
+    /// at startup, and rewritten when a Network Port activation changes the
+    /// BDT. Inbound Write-BDT does not update it.
+    bdt_file: Option<Arc<bbmd::BdtFile>>,
     /// Management request and response rate limiter.
     management_limiter: Arc<std::sync::Mutex<ManagementRateLimiter>>,
     /// Broadcast forwarding fanout policy.
@@ -206,7 +206,7 @@ impl BipTransport {
             node: None,
             node_task: None,
             client_record: Arc::default(),
-            bdt_persist_path: None,
+            bdt_file: None,
             management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
             fanout_policy,
             fanout_task: None,
@@ -292,12 +292,15 @@ impl BipTransport {
         self.enable_foreign_device_registration(policy);
     }
 
-    /// Set the path for loading an externally provisioned persisted BDT
-    /// (wire format, 10 bytes per entry) at startup.
-    /// Must be called before `start()`. Inbound Write-BDT does not update
-    /// this file — no additional serialization dependencies needed.
+    /// Set the path of a persisted BDT (wire format, 10 bytes per entry) to
+    /// load at startup. Must be called before `start()`. A BDT written to
+    /// the registered Network Port object and activated by
+    /// ReinitializeDevice is saved there (#1826), replacing the file whole,
+    /// so a restart keeps it; a failed save is logged and counted
+    /// ([`bdt_persist_failures`](Self::bdt_persist_failures)) and leaves
+    /// the new BDT in use. Inbound Write-BDT never updates it.
     pub fn set_bdt_persist_path(&mut self, path: std::path::PathBuf) {
-        self.bdt_persist_path = Some(path);
+        self.bdt_file = Some(Arc::new(bbmd::BdtFile::new(path)));
     }
 
     /// Set the management ACL for BBMD Delete-FDT-Entry.
@@ -350,13 +353,6 @@ impl BipTransport {
             self.broadcast_address,
             self.interface,
         )));
-    }
-
-    /// The foreign-device registration in effect: the one configured, or
-    /// the one a Network Port activation moved it to. `None` outside
-    /// foreign-device mode.
-    pub fn foreign_device_config(&self) -> Option<ForeignDeviceConfig> {
-        self.foreign_device.as_ref().map(|target| target.config())
     }
 
     /// Get the BBMD state (if BBMD mode is enabled). It appears when
@@ -569,7 +565,10 @@ impl TransportPort for BipTransport {
             // start, so only started, current state is lent.
             (None, true) => BipPortMode::Bbmd {
                 tables: self.bbmd.as_ref().filter(|_| !staged_bbmd).map(|state| {
-                    Arc::new(bbmd::LiveTables(Arc::clone(state))) as Arc<dyn BbmdTables>
+                    Arc::new(bbmd::LiveTables {
+                        state: Arc::clone(state),
+                        file: self.bdt_file.clone(),
+                    }) as Arc<dyn BbmdTables>
                 }),
             },
             (None, false) => BipPortMode::Normal,
@@ -654,8 +653,8 @@ impl TransportPort for BipTransport {
         // before it consumes the configuration, so a start cancelled at the
         // lookup is retried whole.
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
-            let mut state =
-                initial_bbmd_state(config, self.bdt_persist_path.as_deref(), &own_address)?;
+            let path = self.bdt_file.as_deref().map(bbmd::BdtFile::path);
+            let mut state = initial_bbmd_state(config, path, &own_address)?;
             let (ip, _) = state.local_address();
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
@@ -942,6 +941,8 @@ mod unanswerable_tests;
 #[cfg(test)]
 mod wildcard_ingress_tests;
 
+#[cfg(test)]
+mod bdt_activation_persist_tests;
 #[cfg(test)]
 mod client_management_tests;
 #[cfg(test)]

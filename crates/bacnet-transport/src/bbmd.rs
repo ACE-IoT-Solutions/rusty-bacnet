@@ -25,10 +25,12 @@ use crate::bvll::bvll_error;
 
 mod activation;
 mod forward;
+mod persist;
 mod policy;
 mod serve;
 mod tables;
 pub(crate) use forward::Forward;
+pub(crate) use persist::BdtFile;
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use serve::Reply;

@@ -1867,7 +1867,8 @@ class Bbmd:
     ``management_acl`` lists the IPv4 addresses allowed to delete Foreign
     Device Table entries (default: none). ``bdt_persist_path`` names a file
     holding a BDT, 10 octets per row, to start with instead of ``bdt`` when
-    it loads. ``alone_on_subnet`` says this BBMD is the only device of its
+    it loads; a BDT activated through the registered Network Port is saved
+    there. ``alone_on_subnet`` says this BBMD is the only device of its
     B/IP network on its subnet, as behind a NAT router: forwarded and
     distributed broadcasts then go only to its peers and foreign devices,
     not to its own subnet (default False). Write-BDT from the network is

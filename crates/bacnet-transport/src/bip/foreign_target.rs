@@ -164,3 +164,12 @@ impl ForeignRegistration for ForeignTarget {
         Ok(())
     }
 }
+
+impl super::BipTransport {
+    /// The foreign-device registration in effect: the one configured, or
+    /// the one a Network Port activation moved it to. `None` outside
+    /// foreign-device mode.
+    pub fn foreign_device_config(&self) -> Option<ForeignDeviceConfig> {
+        self.foreign_device.as_ref().map(|target| target.config())
+    }
+}

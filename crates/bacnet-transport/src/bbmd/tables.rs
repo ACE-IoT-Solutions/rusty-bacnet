@@ -12,6 +12,7 @@ use bacnet_types::bip_port::{BbmdChanges, BbmdTables};
 use bacnet_types::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
 use bacnet_types::error::Error;
 
+use super::persist::BdtFile;
 use super::BbmdState;
 
 /// Lock shared BBMD state. Every holder keeps the guard for a short,
@@ -66,28 +67,49 @@ impl BbmdState {
 
 /// The live view a B/IP transport lends a Network Port object in BBMD mode:
 /// the transport's own shared state, not a copy. Each read takes the lock
-/// for one copy of a table and releases it.
-pub(crate) struct LiveTables(pub(crate) Arc<Mutex<BbmdState>>);
+/// for one copy of a table and releases it. With a persisted-BDT file, an
+/// activated BDT is saved there too (#1826).
+pub(crate) struct LiveTables {
+    pub(crate) state: Arc<Mutex<BbmdState>>,
+    pub(crate) file: Option<Arc<BdtFile>>,
+}
 
 impl BbmdTables for LiveTables {
     fn broadcast_distribution_table(&self) -> Vec<BACnetBDTEntry> {
-        lock(&self.0).bdt_entries()
+        lock(&self.state).bdt_entries()
     }
 
     fn accepts_foreign_device_registrations(&self) -> bool {
-        lock(&self.0).accepts_foreign_device_registrations()
+        lock(&self.state).accepts_foreign_device_registrations()
     }
 
     fn foreign_device_table(&self) -> Vec<BACnetFDTEntry> {
         let now = Instant::now();
-        lock(&self.0).fdt_entries_at(now)
+        lock(&self.state).fdt_entries_at(now)
     }
 
     fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
-        lock(&self.0).check_written_bdt(table)
+        lock(&self.state).check_written_bdt(table)
     }
 
+    /// A new BDT is saved to the persisted-BDT file once it is in effect,
+    /// outside the BBMD lock; a failed save is logged and counted and
+    /// doesn't undo the activation.
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
-        lock(&self.0).activate(changes)
+        let file = self
+            .file
+            .as_ref()
+            .filter(|_| changes.broadcast_distribution_table.is_some());
+        let Some(file) = file else {
+            return lock(&self.state).activate(changes);
+        };
+        let _order = file.order();
+        let rows = {
+            let mut state = lock(&self.state);
+            state.activate(changes)?;
+            state.configured_bdt()
+        };
+        file.save(&rows);
+        Ok(())
     }
 }

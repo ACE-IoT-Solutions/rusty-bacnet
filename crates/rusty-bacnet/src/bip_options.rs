@@ -115,7 +115,8 @@ impl PyForeignDevice {
 /// devices register (default False: every registration is refused).
 /// `management_acl` lists the IPv4 addresses allowed to delete Foreign
 /// Device Table entries (default: none). `bdt_persist_path` names a file
-/// holding a BDT to start with instead, when it loads. `alone_on_subnet`
+/// holding a BDT to start with instead, when it loads, and where a BDT
+/// activated through the registered Network Port is saved. `alone_on_subnet`
 /// says this BBMD is the only device of its B/IP network on its subnet, as
 /// behind a NAT router: it then skips the local rebroadcast of forwarded and
 /// distributed broadcasts (default False).

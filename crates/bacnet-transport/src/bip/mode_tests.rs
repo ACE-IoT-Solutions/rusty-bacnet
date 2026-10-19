@@ -54,7 +54,7 @@ fn bbmd_mode_maps_every_option_onto_its_setter() {
     assert_eq!(config.foreign_device_policy, Some(policy));
     assert_eq!(config.management_acl, [[10, 0, 0, 9]]);
     assert_eq!(
-        transport.bdt_persist_path.as_deref(),
+        transport.bdt_persist_path(),
         Some(std::path::Path::new("bdt.bin"))
     );
     // Sanitized, as `set_fanout_policy` leaves it.
@@ -89,7 +89,7 @@ async fn a_mode_replaces_the_one_before_it() {
     transport.set_mode(BipMode::Normal);
     assert!(transport.bbmd_config.is_none());
     assert!(transport.foreign_device.is_none());
-    assert!(transport.bdt_persist_path.is_none());
+    assert!(transport.bdt_persist_path().is_none());
     assert_eq!(transport.fanout_policy, FanoutPolicy::default());
     let _rx = transport.start().await.unwrap();
     assert!(transport.bbmd_state().is_none());

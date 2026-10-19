@@ -635,7 +635,8 @@ unicast) or `("ip:port", "mask")` pairs; the BBMD's own row is added when
 missing. Without `accept_foreign_devices=True` every registration is
 refused, and `management_acl` lists the addresses allowed to delete Foreign
 Device Table entries (none by default). `bdt_persist_path` names a file
-holding a BDT, 10 octets per row, to start with instead when it loads;
+holding a BDT, 10 octets per row, to start with instead when it loads; a
+BDT activated through the registered Network Port is saved there (#1826).
 Write-BDT from the network is always refused. Both classes check their
 values when built and raise `ValueError`, or `OverflowError` for an integer
 out of range (a `ttl` outside 1 to 65535, say).
