@@ -397,7 +397,7 @@ fn decode_rejects_oversized_change_list() {
 
 fn assert_encode_error(req: &WriteGroupRequest) {
     let mut buf = BytesMut::new();
-    assert!(matches!(req.encode(&mut buf), Err(Error::Encoding(_))));
+    assert!(matches!(req.encode(&mut buf), Err(Error::Encode(_))));
     assert!(
         buf.is_empty(),
         "failed encode must not write partial output"

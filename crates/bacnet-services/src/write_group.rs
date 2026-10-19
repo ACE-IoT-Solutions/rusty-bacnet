@@ -4,14 +4,14 @@
 //! BACnetGroupChannelValue / BACnetChannelValue productions in Clause 21.6.
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 use core::num::NonZeroU32;
 
 use bacnet_encoding::constructed::channel_value_end;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, EncodeError, Error};
 use bytes::BytesMut;
 
 use crate::common::MAX_DECODED_ITEMS;
@@ -26,15 +26,12 @@ use bacnet_encoding::constructed::tagged::{
 /// Range of a write priority or overriding priority (Clauses 15.11.1.1.2 and 21.6).
 const PRIORITY_RANGE: core::ops::RangeInclusive<u64> = 1..=16;
 
-fn priority_message(field: &'static str, value: u64) -> String {
-    format!("WriteGroup {field} {value} out of range 1-16")
-}
-
-fn check_priority(field: &'static str, value: u64) -> Result<u8, Error> {
-    if PRIORITY_RANGE.contains(&value) {
-        Ok(value as u8)
+/// `label` names the priority, with a placeholder for its value.
+fn check_priority(label: &'static str, value: u8) -> Result<u8, Error> {
+    if PRIORITY_RANGE.contains(&u64::from(value)) {
+        Ok(value)
     } else {
-        Err(Error::Encoding(priority_message(field, value)))
+        Err(EncodeError::new(label).with_value(value.into()).into())
     }
 }
 
@@ -104,23 +101,28 @@ impl WriteGroupRequest {
     /// 1-16, the change list is empty, or an entry's value is not a single well-formed
     /// BACnetChannelValue.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
-        check_priority("write-priority", u64::from(self.write_priority))?;
+        check_priority(
+            "WriteGroup write-priority {} out of range 1-16",
+            self.write_priority,
+        )?;
         if self.change_list.is_empty() {
-            return Err(Error::Encoding(
-                "WriteGroup change list must contain at least one entry".into(),
-            ));
+            return Err(Error::encode("WriteGroup change list must contain at least one entry"));
         }
         for entry in &self.change_list {
             if let Some(priority) = entry.override_priority {
-                check_priority("override-priority", u64::from(priority))?;
+                check_priority(
+                    "WriteGroup override-priority {} out of range 1-16",
+                    priority,
+                )?;
             }
             let well_formed =
                 channel_value_end(&entry.value, 0).is_ok_and(|end| end == entry.value.len());
             if !well_formed {
-                return Err(Error::Encoding(format!(
+                return Err(EncodeError::new(
                     "WriteGroup value for channel {} is not a single BACnetChannelValue",
-                    entry.channel
-                )));
+                )
+                .with_value(entry.channel.into())
+                .into());
             }
         }
 

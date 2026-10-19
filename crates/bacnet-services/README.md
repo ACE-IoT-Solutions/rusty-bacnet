@@ -28,7 +28,6 @@ created by this example.
 use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
-use bytes::BytesMut;
 
 fn main() -> Result<(), bacnet_types::error::Error> {
     let request = ReadPropertyRequest {
@@ -36,14 +35,19 @@ fn main() -> Result<(), bacnet_types::error::Error> {
         property_identifier: PropertyIdentifier::PRESENT_VALUE,
         property_array_index: None,
     };
-    let mut wire = BytesMut::new();
-    request.encode(&mut wire);
-    assert_eq!(&wire[..], &[0x0C, 0, 0, 0, 7, 0x19, 85]);
-    assert_eq!(ReadPropertyRequest::decode(&wire)?, request);
+    let mut storage = [0; 16];
+    let mut tail = &mut storage[..];
+    let written = request.encode_to_sink(&mut tail).expect("16 octets hold the request");
+    let wire = &storage[..written];
+    assert_eq!(wire, &[0x0C, 0, 0, 0, 7, 0x19, 85]);
+    assert_eq!(ReadPropertyRequest::decode(wire)?, request);
     assert!(ReadPropertyRequest::decode(&wire[..1]).is_err());
     Ok(())
 }
 ```
+
+With `alloc`, `request.encode(&mut wire)` appends the same octets to a
+`bytes::BytesMut`.
 
 ## Without an allocator
 

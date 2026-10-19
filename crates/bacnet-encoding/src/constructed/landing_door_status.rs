@@ -48,7 +48,7 @@ pub fn encode_landing_door_status(buf: &mut BytesMut, value: &BACnetLandingDoorS
 /// or more than 10,000 landing doors) fails with [`Error::Decoding`] or
 /// [`Error::BufferTooShort`]. A value that is well formed throughout, but
 /// where a floor-number exceeds an Unsigned8 or a door-status exceeds 32
-/// bits, fails with [`Error::OutOfRange`] naming the first oversized member.
+/// bits, fails with [`Error::Range`] naming the first oversized member.
 /// A malformed member anywhere in the value takes precedence over an
 /// oversized one. Within 32 bits a door-status is kept as received, reserved
 /// and proprietary values included, for the receiver to judge.

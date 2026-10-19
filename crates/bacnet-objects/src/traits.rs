@@ -1458,6 +1458,17 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         false
     }
 
+    /// Whether a log keeps the ordinary records it is given now: Enable is
+    /// TRUE and its Start_Time / Stop_Time window admitted the local time at
+    /// the last look. A Trend Log logging by COV starts over from the
+    /// current value when collection resumes, so the trend poller asks this
+    /// before each look (#1480). The default, for objects that aren't logs,
+    /// says yes and leaves the gate to the insertion hook.
+    #[doc(hidden)]
+    fn log_collecting_internal(&self) -> bool {
+        true
+    }
+
     /// Whether this Event Log takes the event notifications the device
     /// receives, through
     /// [`ObjectDatabase::log_received_event_notification`](crate::database::ObjectDatabase::log_received_event_notification).

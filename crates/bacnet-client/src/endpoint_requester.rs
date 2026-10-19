@@ -414,9 +414,7 @@ impl EndpointRequester {
         let mut service_data = BytesMut::new();
         request.encode(&mut service_data)?;
         if 4 + service_data.len() > usize::from(self.inner.max_apdu_length) {
-            return Err(Error::Segmentation(
-                "endpoint requester supports only unsegmented requests".into(),
-            ));
+            return Err(bacnet_types::error::SegmentationError::EndpointRequestTooLong.into());
         }
         Ok(service_data)
     }

@@ -139,23 +139,6 @@ impl BACnetServer {
         self.push_pending(Box::new(nc))
     }
 
-    /// Add a Trend Log object to the server (before starting).
-    /// `total_record_count` seeds Total_Record_Count: the first record is
-    /// numbered one past it, going from 2^32 - 1 on to 1 (#1537).
-    #[pyo3(signature = (instance, name, buffer_size=100, *, total_record_count=0))]
-    fn add_trend_log(
-        &self,
-        instance: u32,
-        name: &str,
-        buffer_size: u32,
-        total_record_count: u32,
-    ) -> PyResult<()> {
-        let mut tl = TrendLogObject::new(instance, name, buffer_size).map_err(to_py_err)?;
-        tl.restore_log_buffer(total_record_count, [])
-            .map_err(to_py_err)?;
-        self.push_pending(Box::new(tl))
-    }
-
     /// Add an Audit Log object to the server (before starting).
     #[pyo3(signature = (instance, name, storage_path, buffer_size=100))]
     fn add_audit_log(

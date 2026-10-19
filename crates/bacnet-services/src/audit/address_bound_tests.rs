@@ -88,7 +88,7 @@ fn audit_log_query_address_filter_holds_to_the_bacnet_address_bound() {
         let mut output = BytesMut::from(&b"prefix"[..]);
         assert!(matches!(
             too_long.try_encode(&mut output),
-            Err(Error::Encoding(_))
+            Err(Error::Encode(_))
         ));
         assert_eq!(output.as_ref(), b"prefix");
     }
@@ -139,7 +139,7 @@ fn audit_notification_recipients_hold_to_the_bacnet_address_bound() {
         let mut output = BytesMut::from(&b"prefix"[..]);
         assert!(matches!(
             too_long.try_encode(&mut output),
-            Err(Error::Encoding(_))
+            Err(Error::Encode(_))
         ));
         assert_eq!(output.as_ref(), b"prefix");
     }

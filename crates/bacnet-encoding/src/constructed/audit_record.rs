@@ -161,9 +161,7 @@ fn validate_date_time(date: &Date, time: &Time) -> Result<(), Error> {
         && (time.second == Time::UNSPECIFIED || time.second <= 59)
         && (time.hundredths == Time::UNSPECIFIED || time.hundredths <= 99);
     if !date_valid || !time_valid {
-        return Err(Error::Encoding(
-            "BACnetAuditLogRecord timestamp contains an invalid Date or Time component".into(),
-        ));
+        return Err(Error::encode("BACnetAuditLogRecord timestamp contains an invalid Date or Time component"));
     }
     Ok(())
 }
