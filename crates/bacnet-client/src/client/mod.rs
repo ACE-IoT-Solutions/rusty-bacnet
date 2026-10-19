@@ -632,6 +632,7 @@ impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
             device_uuid: [0; 16],
             heartbeat_interval_ms: 30_000,
             heartbeat_timeout_ms: 60_000,
+            connect_timeout_ms: 10_000,
             reconnect: None,
             npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy::default(),
         }
@@ -653,6 +654,7 @@ pub struct ScClientBuilder {
     device_uuid: [u8; 16],
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
+    connect_timeout_ms: u64,
     reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
     npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
 }
@@ -723,6 +725,14 @@ impl ScClientBuilder {
         self
     }
 
+    /// Set the connect timeout in milliseconds (default 10 000). It bounds
+    /// each hub dial (TCP, TLS and WebSocket upgrade), including the ones
+    /// `build()` makes, and each Connect-Request handshake.
+    pub fn connect_timeout_ms(mut self, ms: u64) -> Self {
+        self.connect_timeout_ms = ms;
+        self
+    }
+
     /// Set the maximum queued, unconsumed NPDUs per ingress path and source.
     ///
     /// Defaults to 32. The accepted range is 1 through 256; checked before
@@ -786,6 +796,7 @@ impl ScClientBuilder {
             .with_npdu_per_origin_limit(self.npdu_admission_policy.per_origin_limit)
             .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
             .with_heartbeat_timeout_ms(self.heartbeat_timeout_ms)
+            .with_connect_timeout_ms(self.connect_timeout_ms)
     }
 
     #[cfg(test)]

@@ -91,6 +91,8 @@ async fn publish_connected_ws<W: WebSocketPort>(
 enum Step<W> {
     Up(Arc<W>),
     Failed,
+    /// This target can never be dialled in this episode.
+    Dead,
     Stop,
 }
 
@@ -103,6 +105,8 @@ struct Attempt<'a, W> {
     attempt: u32,
     delay: Duration,
     backoff: Duration,
+    /// Set to `attempt` once a dial actually starts.
+    dialled: &'a mut u32,
 }
 
 pub(super) struct Recovery<'a, W: WebSocketPort> {
@@ -135,9 +139,9 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         // Losing the failover hub sends each attempt to the primary first,
         // then back to the failover hub, so the connector keeps working toward
         // the primary (Annex AB.5.2). Losing the primary retries the primary.
-        let targets: &[ScActiveHub] = match active_hub {
-            ScActiveHub::Primary => &[ScActiveHub::Primary],
-            ScActiveHub::Failover => &[ScActiveHub::Primary, ScActiveHub::Failover],
+        let mut targets = match active_hub {
+            ScActiveHub::Primary => vec![ScActiveHub::Primary],
+            ScActiveHub::Failover => vec![ScActiveHub::Primary, ScActiveHub::Failover],
         };
         'attempts: for attempt in 1..=self.config.max_retries {
             let delay = jittered_backoff(backoff, initial_backoff, max_backoff);
@@ -148,8 +152,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 }
                 break;
             }
-            attempts = attempt;
-            for &target in targets {
+            for target in targets.clone() {
                 let lost = target == active_hub;
                 let try_hub = Attempt {
                     target,
@@ -158,12 +161,19 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                     attempt,
                     delay,
                     backoff,
+                    dialled: &mut attempts,
                 };
                 match self.try_hub(try_hub).await {
                     Step::Up(ws) => return Some((ws, target)),
                     Step::Failed => {}
+                    // The lost hub can't be dialled again; any other target
+                    // (the primary, after losing the failover) still can.
+                    Step::Dead => targets.retain(|t| *t != target),
                     Step::Stop => break 'attempts,
                 }
+            }
+            if targets.is_empty() {
+                break;
             }
             backoff = (backoff * 2).min(max_backoff);
         }
@@ -229,6 +239,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             attempt,
             delay,
             backoff,
+            dialled,
         } = at;
         let connector = match target {
             ScActiveHub::Primary => self.primary_connector,
@@ -241,10 +252,11 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 if let Some(suppressed) = self.retry_diagnostic() {
                     warn!(suppressed, "SC retired socket cannot be reused without a fresh connector (suppressed {suppressed} reconnect diagnostics)");
                 }
-                return Step::Stop;
+                return Step::Dead;
             }
             return Step::Failed;
         }
+        *dialled = attempt;
         self.observer.reconnect_attempt(target, attempt, delay);
         {
             let mut c = self.conn.lock().await;

@@ -684,6 +684,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         self.stop_owned().await
     }
 
+    /// Unlike `stop()`, abort (and drop) cannot join the receive task, so a
+    /// reconnect finishing on another worker may still report `Connected`
+    /// after the `LocalClose` this sends.
     fn abort(&mut self) {
         self.seal_direct_listener();
         self.direct_intake = advertisement::DirectIntake::default();

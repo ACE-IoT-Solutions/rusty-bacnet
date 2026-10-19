@@ -5585,7 +5585,9 @@ client options before dialing. Reconnect remains opt-in through `.reconnect(...)
 each retry uses the builder's TLS policy. `.failover_hub_url(...)` adds a
 failover hub with the same TLS policy. It requires `.reconnect(...)`, and both
 URLs are checked before dialling. When the primary cannot be dialled, `build()`
-starts on the failover hub and the transport restores the primary later. Use `client.stop().await` to shut down
+starts on the failover hub and the transport restores the primary later.
+Each build-time dial is bounded by `.connect_timeout_ms(...)` (default 10 s),
+like the transport's own redials. Use `client.stop().await` to shut down
 the selected transport and its background work.
 
 ### Transport access and BBMD helpers

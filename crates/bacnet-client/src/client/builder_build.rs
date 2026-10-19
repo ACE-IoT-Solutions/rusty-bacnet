@@ -142,15 +142,29 @@ impl ScClientBuilder {
         }
         // An unreachable primary starts the client on the failover hub; the
         // transport restores the primary once it answers (Annex AB.5.2).
-        let (ws, hub) = match Box::pin(TlsWebSocket::connect(&self.hub_url, tls_config.clone()))
-            .await
-        {
+        // Bounded like the transport's own redials: a blackholed or stalled
+        // hub must not hold up build() or the failover fallback.
+        let limit = std::time::Duration::from_millis(self.connect_timeout_ms);
+        let dial = |url: &str| {
+            let tls = tls_config.clone();
+            let url = url.to_owned();
+            async move {
+                tokio::time::timeout(limit, Box::pin(TlsWebSocket::connect(&url, tls)))
+                    .await
+                    .unwrap_or(Err(Error::Timeout(limit)))
+            }
+        };
+        let (ws, hub) = match dial(&self.hub_url).await {
             Ok(ws) => (ws, ScActiveHub::Primary),
             Err(primary) => match &self.failover_hub_url {
-                Some(url) => match Box::pin(TlsWebSocket::connect(url, tls_config.clone())).await {
-                    Ok(ws) => (ws, ScActiveHub::Failover),
-                    Err(_) => return Err(primary),
-                },
+                Some(url) => {
+                    // No transport (or event stream) exists yet to report it.
+                    tracing::warn!(error = %primary, "BACnet/SC primary hub dial failed; trying the failover hub");
+                    match dial(url).await {
+                        Ok(ws) => (ws, ScActiveHub::Failover),
+                        Err(_) => return Err(primary),
+                    }
+                }
                 None => return Err(primary),
             },
         };

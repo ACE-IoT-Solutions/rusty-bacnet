@@ -284,6 +284,47 @@ async fn an_unreachable_primary_builds_on_the_failover_hub_and_restores_later() 
     failover.stop().await;
 }
 
+/// A primary that accepts TCP and never answers TLS is given up on within the
+/// connect timeout, and the client starts on the failover hub.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_primary_times_out_and_builds_on_the_failover_hub() {
+    let pki = Pki::new();
+    let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stalled_port = stalled.local_addr().unwrap().port();
+    let holder = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = stalled.accept().await {
+            held.push(socket); // keep it open, say nothing
+        }
+    });
+    let mut failover = pki.hub(1, "127.0.0.1:0", FAILOVER_VMAC).await.unwrap();
+    let started = tokio::time::Instant::now();
+    let mut client = tokio::time::timeout(
+        WAIT,
+        BACnetClient::sc_builder()
+            .hub_url(&format!("wss://localhost:{stalled_port}"))
+            .failover_hub_url(&url(&failover))
+            .reconnect(ScReconnectConfig::default())
+            .connect_timeout_ms(300)
+            .tls_config(pki.node.clone())
+            .vmac([0x02, 0, 0, 0, 0, 0x25])
+            .device_uuid([0x25; 16])
+            .build(),
+    )
+    .await
+    .expect("build() must not hang on a stalled primary")
+    .unwrap();
+    // Well under the OS connect timeout; the bound is the 300 ms limit plus load.
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(
+        client.transport().connection_status().active_hub,
+        Some(ScActiveHub::Failover)
+    );
+    client.stop().await.unwrap();
+    failover.stop().await;
+    holder.abort();
+}
+
 #[tokio::test]
 async fn failover_settings_are_checked_before_any_dial() {
     let pki = Pki::new();
