@@ -13,9 +13,14 @@ pub const BITS_PER_OCTET: u64 = 10;
 /// frame: contiguous octet `i` of a transmission that starts at `t` occupies
 /// `t + boundary(i) .. t + boundary(i + 1)`. A captured extra gap shifts both
 /// boundaries by `i * gap` without changing this original character grid.
+///
+/// A node whose UART runs off its nominal rate sends on a grid of its own
+/// ([`Self::with_rate_error`]); the limits below stay at the nominal rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireTiming {
     baud: u32,
+    /// The bit rate's error, in parts per million: positive is fast.
+    ppm: i32,
 }
 
 impl WireTiming {
@@ -27,7 +32,17 @@ impl WireTiming {
     #[must_use]
     pub fn new(baud: u32) -> Self {
         assert!(baud > 0, "the simulated line needs a non-zero baud rate");
-        Self { baud }
+        Self { baud, ppm: 0 }
+    }
+
+    /// The same nominal rate, sent `ppm` parts per million fast (or slow,
+    /// when negative): the grid a node with that UART error sends on.
+    #[must_use]
+    pub const fn with_rate_error(self, ppm: i32) -> Self {
+        Self {
+            baud: self.baud,
+            ppm,
+        }
     }
 
     /// The baud rate.
@@ -36,10 +51,18 @@ impl WireTiming {
         self.baud
     }
 
-    /// `bits` bit times, rounded up to a whole microsecond.
+    /// `bits` bit times at this grid's rate, rounded up to a whole
+    /// microsecond.
     #[must_use]
     pub fn bits(self, bits: u64) -> Duration {
-        Duration::from_micros((bits * 1_000_000).div_ceil(u64::from(self.baud)))
+        if self.ppm == 0 {
+            return Duration::from_micros((bits * 1_000_000).div_ceil(u64::from(self.baud)));
+        }
+        // bits / (baud * (1 + ppm / 10^6)) seconds, in microseconds.
+        let rate =
+            u128::from(self.baud) * u128::try_from(1_000_000 + i64::from(self.ppm)).unwrap_or(1);
+        let micros = (u128::from(bits) * 1_000_000_000_000).div_ceil(rate);
+        Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
     }
 
     /// Time from the start of a contiguous transmission to the start of its octet
@@ -170,6 +193,21 @@ mod tests {
             WireTiming::new(38_400).bits(40),
             Duration::from_micros(1_042)
         );
+    }
+
+    #[test]
+    fn a_rate_error_scales_the_grid_and_keeps_the_limits() {
+        let nominal = WireTiming::new(9_600);
+        let fast = nominal.with_rate_error(10_000);
+        let slow = nominal.with_rate_error(-10_000);
+        // 10 bits at 9696 and at 9504 baud.
+        assert_eq!(fast.octet(), Duration::from_micros(1_032));
+        assert_eq!(slow.octet(), Duration::from_micros(1_053));
+        assert_eq!(fast.boundary(96), Duration::from_micros(99_010));
+        assert_eq!(slow.boundary(95), Duration::from_micros(99_958));
+        assert_eq!(nominal.with_rate_error(0), nominal);
+        assert_eq!(fast.max_post_drive(), nominal.max_post_drive());
+        assert_eq!(slow.max_inter_octet_gap(), nominal.max_inter_octet_gap());
     }
 
     #[test]

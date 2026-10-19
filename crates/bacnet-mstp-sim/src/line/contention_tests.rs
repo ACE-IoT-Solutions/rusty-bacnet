@@ -8,6 +8,7 @@ fn us(value: u64) -> Instant {
 
 fn tx(line: &mut Line, station: u8, at: u64, corruption: Option<Corruption>) -> TxId {
     let tx = line.begin(
+        line.timing,
         Driver::Station(station),
         vec![0x55],
         us(at),

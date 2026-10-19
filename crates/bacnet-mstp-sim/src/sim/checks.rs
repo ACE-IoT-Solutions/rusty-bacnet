@@ -193,6 +193,11 @@ impl Sim {
     /// character on the line, its own included, and its core hands the frame
     /// over no sooner than that either. Every character reaches the core
     /// before it confirms a start, so neither has an excuse (#1625).
+    ///
+    /// Both are measured on the node's own clock, which is all its core can
+    /// keep time by: at a one percent clock error that moves the start by
+    /// under half a bit time, far inside the 25 bit times by which
+    /// Tturnaround exceeds Tpostdrive.
     pub(super) fn check_turnaround(&mut self, node: usize, pending: &PendingTx) {
         let now = self.now;
         let station = self.nodes[node].station;
@@ -200,12 +205,13 @@ impl Sim {
             return;
         };
         let turnaround = master.spec.config.t_turnaround;
+        let clock = master.clock;
         let unread_until = master
             .host
             .as_ref()
             .and_then(super::host::HostState::unread_until);
         if let Some(before) = pending.activity_at_dispatch {
-            if pending.dispatched - before < turnaround {
+            if clock.span(before, pending.dispatched) < turnaround {
                 self.violation(
                     ViolationKind::Turnaround,
                     format!(
@@ -221,7 +227,7 @@ impl Sim {
         let Some(last) = self.line.last_activity() else {
             return;
         };
-        if now - last >= turnaround {
+        if clock.span(last, now) >= turnaround {
             return;
         }
         let mut detail = format!(

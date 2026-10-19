@@ -249,7 +249,8 @@ impl Sim {
     /// # Panics
     ///
     /// If the station is taken or the spec's baud rate differs from the
-    /// line's, or the inter-octet gap or post-drive hold exceeds its limit.
+    /// line's, or the inter-octet gap, post-drive hold or skew exceeds its
+    /// limit.
     pub fn add_master(&mut self, spec: MasterSpec) -> &mut Self {
         let station = spec.station();
         self.claim_station(station);
@@ -258,6 +259,7 @@ impl Sim {
             "station {station}: core baud rate differs from the line's"
         );
         let powered = spec.powered;
+        spec.skew.validate();
         self.timing.validate_post_drive(spec.adapter.post_drive);
         self.timing
             .validate_inter_octet_gap(spec.adapter.inter_octet_gap);

@@ -129,6 +129,8 @@ pub struct MasterSpec {
     /// Whether the node is powered at the start. A node added unpowered
     /// joins with [`Fault::PowerOn`].
     pub powered: bool,
+    /// How far its UART and its clock run from nominal. None by default.
+    pub skew: crate::Skew,
 }
 
 impl MasterSpec {
@@ -151,6 +153,7 @@ impl MasterSpec {
             adapter: AdapterSpec::default(),
             application: crate::app::Shared::new(crate::ReplyPolicy::default()),
             powered: true,
+            skew: crate::Skew::default(),
         }
     }
 
@@ -205,6 +208,19 @@ impl MasterSpec {
     #[must_use]
     pub fn application(mut self, application: impl crate::Application + 'static) -> Self {
         self.application = crate::app::Shared::new(application);
+        self
+    }
+
+    /// Run the node's UART and clock off nominal, within the one percent
+    /// Clause 9.2.3 allows; see [`Skew`](crate::Skew).
+    ///
+    /// # Panics
+    ///
+    /// If either rate is off by more than one percent.
+    #[must_use]
+    pub fn skew(mut self, skew: crate::Skew) -> Self {
+        skew.validate();
+        self.skew = skew;
         self
     }
 

@@ -13,6 +13,7 @@ use crate::app::{Answer, Outbox, Received};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
+use crate::skew::Clock;
 use crate::spec::MasterSpec;
 use crate::trace::{TraceKind, Who};
 
@@ -27,7 +28,11 @@ pub(crate) struct MasterNode {
     pub(super) incarnation: u64,
     pub(super) spec: MasterSpec,
     pub(super) core: Option<Box<SimCore>>,
-    /// The core's next deadline, as it last reported it.
+    /// The clock the core reads, which starts at the line's time at each
+    /// boot and runs at the spec's clock error. Every time the core sees is
+    /// on it; the simulator's own records stay on the line's clock.
+    pub(super) clock: Clock,
+    /// The core's next deadline, as it last reported it, on its clock.
     pub(super) deadline: Option<Instant>,
     /// When the adapter services it: the deadline plus its lateness and a
     /// jitter drawn once per deadline.
@@ -81,6 +86,7 @@ impl MasterNode {
             incarnation: 0,
             spec,
             core: None,
+            clock: Clock::PERFECT,
             deadline: None,
             fire_at: None,
             pending: None,
@@ -107,6 +113,9 @@ impl MasterNode {
             super::host::HostState::new(self.spec.config.t_frame_abort)
         });
         let queues = AllocQueues::new(self.spec.unicast_capacity, self.spec.broadcast_capacity);
+        // The clock reads `now` at boot, so the core starts at the line's
+        // time and drifts from it.
+        self.clock = Clock::starting(now, self.spec.skew.clock_ppm);
         let core: SimCore = MasterCore::new(self.spec.config, leak_core_storage(queues), now)
             .expect("a valid master spec");
         self.deadline = core.next_deadline();
@@ -243,6 +252,7 @@ impl Sim {
         let NodeKind::Master(master) = &mut self.nodes[node].kind else {
             return Ok(());
         };
+        let now = master.clock.local(now);
         let Some(core) = master.core.as_mut() else {
             return Ok(());
         };
@@ -267,8 +277,8 @@ impl Sim {
                 .on_transmit_started(*id, now)
                 .map(|frame| started = Some(frame.to_vec()))
                 .map_err(Refused::Start),
-            Input::Complete(id, stamp) => {
-                core.on_transmit_complete(*id, *stamp);
+            Input::Complete(id, _) => {
+                core.on_transmit_complete(*id, now);
                 Ok(())
             }
             Input::Decide(request, Some(data)) => core
@@ -363,9 +373,13 @@ impl Sim {
             self.jitter.range(0, jitter)
         };
         let master = self.master_mut(node).expect("a master");
+        // The deadline is on the node's clock: service it once that clock
+        // reaches it.
         master.fire_at = Some(
-            (deadline + adapter.deadline_lateness + bacnet_mstp_core::Duration::from_micros(drawn))
-                .max(now),
+            (master.clock.line_time(deadline)
+                + adapter.deadline_lateness
+                + bacnet_mstp_core::Duration::from_micros(drawn))
+            .max(now),
         );
     }
 
@@ -664,11 +678,12 @@ impl Sim {
         let Some(master) = self.master_mut(node) else {
             return;
         };
+        let local = master.clock.local(now);
         let Some(core) = master.core.as_mut() else {
             master.rejects.push((now, QueueRefusal::Full));
             return;
         };
-        if let Err(reason) = core.enqueue_npdu(destination, npdu, priority, now) {
+        if let Err(reason) = core.enqueue_npdu(destination, npdu, priority, local) {
             master.rejects.push((now, reason));
             self.note(
                 Who::Station(station),

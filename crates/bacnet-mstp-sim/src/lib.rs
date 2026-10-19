@@ -199,6 +199,17 @@
 //! invariant failure. Host state is discarded on power loss; delayed starts
 //! and application decisions carry an incarnation fence across reboot.
 //!
+//! **Baud and clock error** ([`MasterSpec::skew`], #1772). Clause 9.2.3
+//! lets a node's bit rate sit up to one percent off nominal; the simulator
+//! holds each master's UART and protocol clock to that band (see [`Skew`]).
+//! A master sends its frames on its own bit grid. Its core reads a clock
+//! that matches the line's at each boot and then runs at its own rate:
+//! every time the adapter hands the core is on that clock, and each
+//! deadline is serviced once that clock reaches it. The turnaround check
+//! measures on the same clock, since it checks a timer the core keeps; the
+//! usage-delay and reply-delay checks, and every record, stay on the line's
+//! clock, since they are what the node's peers rely on.
+//!
 //! **Scripted stations** decode the line with the codec's stream decoder
 //! and react to frames through a [`Script`]: a minimal master that answers
 //! polls and sends test frames, a slave, a misbehaving device. Each
@@ -242,7 +253,7 @@
 //!    and counts multiple frames coalesced into one read.
 //! 2. **Turnaround.** A master's core hands a frame over, and its adapter
 //!    starts it, no sooner than its Tturnaround after the last character on
-//!    the line, its own included.
+//!    the line, its own included, as the master's own clock measures it.
 //! 3. **Collisions.** Every overlap of two drivers is explained or fails.
 //!    Noise and a generation race are tolerated. A slow adapter is tolerated
 //!    only under [`Tolerance::slow_adapter_collisions`], and only when its
@@ -283,21 +294,24 @@
 //!
 //! # What it models and what it does not
 //!
-//! It models bit-time framing at any baud rate, collisions and the framing
-//! errors they cause, the core's Clause 9 timers against real line
-//! activity, adapter latency and timer jitter, inter-octet gaps, post-drive
-//! ownership, local watchdog expiry in octet mode, and power loss.
+//! It models bit-time framing at any baud rate, each node's baud and clock
+//! error within the tolerance, collisions and the framing errors they
+//! cause, the core's Clause 9 timers against real line activity, adapter
+//! latency and timer jitter, inter-octet gaps, post-drive ownership, local
+//! watchdog expiry in octet mode, and power loss.
 //!
 //! It does not model:
 //!
 //! - **Electrical behaviour.** There is no biasing, reflection, analog driver
 //!   edge or hardware watchdog qualification. Inter-octet gaps and post-drive
 //!   hold model ownership and receiver eligibility, not voltage or current.
-//! - **Propagation and drift.** Propagation is instantaneous. Every node
-//!   runs at exactly the line's baud rate, with no ±1% tolerance. Seeded
-//!   [`AdapterSpec::deadline_jitter`] stands in for clock and timer
-//!   variation. Serial baud tolerance and protocol-clock drift are separate
-//!   unmodeled quantities; no recovery bound is inferred.
+//! - **Propagation, and skew past the tolerance.** Propagation is
+//!   instantaneous. A node's [`Skew`] stays within one percent; a node
+//!   further off, and the bit errors its receivers would see, are not
+//!   modeled. A skewed character is received whole, as a UART takes one
+//!   whose rate is a couple of percent off. Clocks run at a constant rate:
+//!   there is no wander, and seeded [`AdapterSpec::deadline_jitter`] stands
+//!   in for timer variation.
 //! - **Noise at bit level.** Noise on an idle line arrives as clean random
 //!   octets; noise over a frame follows the selected contention policy. There are no
 //!   overruns, parity errors or breaks.
@@ -346,6 +360,7 @@ mod line;
 mod report;
 mod rng;
 mod sim;
+mod skew;
 mod spec;
 mod trace;
 mod wire;
@@ -360,6 +375,7 @@ pub use report::{
 };
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};
+pub use skew::{Skew, MAX_SKEW_PPM};
 pub use spec::{
     AdapterSpec, Corruption, Fault, HostSpec, MasterSpec, Script, ScriptSend, SeenFrame,
 };
