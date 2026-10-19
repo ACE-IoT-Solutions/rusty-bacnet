@@ -1,14 +1,20 @@
 //! The device browser: device card, object list, properties and priority
 //! array. From the full width the panes sit side by side; below it they
 //! stack, and only the focused one is drawn under a strip naming them all.
+//! From the wide width the object list grows and the priority array moves
+//! beside the properties.
+//!
+//! The properties pane sizes its name column from the longest name, keeps
+//! a gap before each value, and wraps long values under the value column.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
+use unicode_segmentation::UnicodeSegmentation;
 
-use super::{Theme, FULL_WIDTH};
+use super::{Theme, FULL_WIDTH, WIDE_WIDTH};
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
 use crate::tui::app::objects::{kebab, object_label, ListRow};
 use crate::tui::point::{priority_label, ObjectView, PriorityView, ReadVia, PRIORITIES};
@@ -18,12 +24,29 @@ const LEFT_WIDTH: u16 = 46;
 /// Height of the priority pane: every slot, Relinquish_Default and
 /// Present_Value, and the border.
 const PRIORITY_HEIGHT: u16 = PRIORITIES as u16 + 4;
+/// Narrowest priority pane beside the properties.
+const PRIORITY_WIDTH: u16 = 38;
+/// Columns a priority row uses before its value: marker, slot and label.
+const PRIORITY_LABEL: usize = 27;
+/// Columns between a property name and its value.
+const NAME_GAP: usize = 2;
+/// The value column always keeps at least this many columns, and at least
+/// a third of the pane.
+const MIN_VALUE_WIDTH: usize = 12;
+/// Width of a card label.
+const CARD_LABEL: usize = 18;
 
 /// Draw the browser in `area`.
 pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
     if area.width >= FULL_WIDTH {
+        let wide = area.width >= WIDE_WIDTH;
+        let left_width = if wide {
+            wide_left_width(area.width, browser)
+        } else {
+            LEFT_WIDTH
+        };
         let [left, right] =
-            Layout::horizontal([Constraint::Length(LEFT_WIDTH), Constraint::Min(40)]).areas(area);
+            Layout::horizontal([Constraint::Length(left_width), Constraint::Min(40)]).areas(area);
         let card_height = browser
             .card
             .as_ref()
@@ -32,7 +55,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
             Layout::vertical([Constraint::Length(card_height), Constraint::Min(5)]).areas(left);
         card_pane(frame, card, browser, theme);
         objects_pane(frame, objects, browser, theme);
-        object_panes(frame, right, browser, theme, false);
+        object_panes(frame, right, browser, theme, wide);
         return;
     }
     let [strip, pane] = Layout::vertical([Constraint::Length(1), Constraint::Min(5)]).areas(area);
@@ -42,6 +65,20 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
         Pane::Objects => objects_pane(frame, pane, browser, theme),
         Pane::Properties => object_panes(frame, pane, browser, theme, true),
     }
+}
+
+/// The left column in the wide layout: fitted to the card's values, from
+/// three tenths of the width up to a third.
+fn wide_left_width(width: u16, browser: &Browser) -> u16 {
+    let card = browser.card.as_ref().map_or(0, |card| {
+        card.rows
+            .iter()
+            .map(|(_, value)| 1 + CARD_LABEL + text_width(value) + 3)
+            .max()
+            .unwrap_or(0)
+    });
+    let card = u16::try_from(card).unwrap_or(u16::MAX);
+    card.clamp(width / 10 * 3, width / 3).max(LEFT_WIDTH)
 }
 
 fn tab_strip(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
@@ -85,8 +122,8 @@ fn card_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
             .iter()
             .map(|(label, value)| {
                 Line::from(vec![
-                    Span::styled(format!(" {label:<18}"), theme.dim()),
-                    Span::raw(value.clone()),
+                    Span::styled(format!(" {label:<CARD_LABEL$}"), theme.dim()),
+                    Span::raw(sanitize(value)),
                 ])
             })
             .collect(),
@@ -171,7 +208,10 @@ fn object_panes(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme,
         return;
     };
     let [properties, slots] = if beside {
-        Layout::horizontal([Constraint::Min(30), Constraint::Length(38)]).areas(area)
+        let width = priority_width(priority)
+            .min(area.width / 2)
+            .max(PRIORITY_WIDTH);
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(width)]).areas(area)
     } else {
         Layout::vertical([Constraint::Min(5), Constraint::Length(PRIORITY_HEIGHT)]).areas(area)
     };
@@ -181,6 +221,8 @@ fn object_panes(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme,
 
 fn properties_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
     let focused = browser.focus == Pane::Properties;
+    // Inside the border.
+    let inner = usize::from(area.width.saturating_sub(2));
     let (title, lines) = match &browser.view {
         ViewState::Empty => (
             " Properties ".to_string(),
@@ -195,12 +237,13 @@ fn properties_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
         ),
         ViewState::Failed(object, error) => (
             format!(" {} ", object_label(*object)),
-            vec![Line::styled(
-                format!(" Read failed: {error}"),
-                theme.danger(),
-            )],
+            // A space each side, as for a property row.
+            wrap(&format!("Read failed: {error}"), inner.saturating_sub(2))
+                .into_iter()
+                .map(|line| Line::styled(format!(" {line}"), theme.danger()))
+                .collect(),
         ),
-        ViewState::Ready(view) => (title(view), property_lines(view, theme)),
+        ViewState::Ready(view) => (title(view), property_lines(view, inner, theme)),
     };
     let block = pane_block(title, focused, theme);
     let height = usize::from(block.inner(area).height).max(1);
@@ -218,7 +261,99 @@ fn title(view: &ObjectView) -> String {
     format!(" {}{via} ", object_label(view.object))
 }
 
-fn property_lines(view: &ObjectView, theme: &Theme) -> Vec<Line<'static>> {
+/// Display width of `text`.
+fn text_width(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
+/// Width of the name column for names `widths` wide in a pane `inner`
+/// columns wide: the longest name, capped so the value column keeps its
+/// room. A longer name puts its value on the next line.
+fn name_width(widths: impl Iterator<Item = usize>, inner: usize) -> usize {
+    let value_room = (inner / 3).max(MIN_VALUE_WIDTH);
+    // A space each side of the row.
+    let cap = inner.saturating_sub(2 + NAME_GAP + value_room);
+    widths.max().unwrap_or(0).min(cap)
+}
+
+/// `text` with each control character (a newline, a tab, an escape) as a
+/// space, as the log pane shows them: a device-supplied value must not
+/// move the cursor or break a row.
+fn sanitize(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
+/// How good a break at the space at `at` is: after `; ` best, then after
+/// `, `, then any space.
+fn break_rank(graphemes: &[(&str, usize)], at: usize) -> u8 {
+    match at.checked_sub(1).map(|before| graphemes[before].0) {
+        Some(";") => 2,
+        Some(",") => 1,
+        _ => 0,
+    }
+}
+
+/// `text` (sanitized) broken into lines at most `width` columns wide.
+/// A line breaks at the last `; ` that fits, else the last `, `, as long
+/// as the line keeps at least half the width; else at the last space;
+/// and inside a word, between grapheme clusters, only when no space fits.
+/// Leading spaces stay on the first line; trailing spaces are dropped.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let text = sanitize(text);
+    let graphemes: Vec<(&str, usize)> = text
+        .trim_end()
+        .graphemes(true)
+        .map(|g| (g, text_width(g)))
+        .collect();
+    let line_text = |from: usize, to: usize| -> String {
+        graphemes[from..to].iter().map(|(g, _)| *g).collect()
+    };
+    let mut lines = Vec::new();
+    let mut start = 0;
+    loop {
+        // The most graphemes from `start` that fit, at least one.
+        let mut used = 0;
+        let mut fit = start;
+        while fit < graphemes.len() && (fit == start || used + graphemes[fit].1 <= width) {
+            used += graphemes[fit].1;
+            fit += 1;
+        }
+        if fit == graphemes.len() {
+            lines.push(line_text(start, fit));
+            return lines;
+        }
+        // A space at `at` ends the line before it; the one just past the
+        // fit counts too.
+        let spaces: Vec<usize> = (start + 1..=fit)
+            .filter(|&at| graphemes[at].0 == " ")
+            .collect();
+        let half =
+            |at: usize| graphemes[start..at].iter().map(|(_, w)| w).sum::<usize>() * 2 >= width;
+        let preferred = [2, 1].iter().find_map(|&rank| {
+            spaces
+                .iter()
+                .rev()
+                .find(|&&at| break_rank(&graphemes, at) == rank && half(at))
+        });
+        let (end, next) = match preferred.or(spaces.last()) {
+            Some(&at) => (at, at + 1),
+            None => (fit, fit),
+        };
+        lines.push(line_text(start, end).trim_end().to_string());
+        start = next;
+        // A continuation line starts with the next word.
+        while start < graphemes.len() && graphemes[start].0 == " " {
+            start += 1;
+        }
+    }
+}
+
+/// The status line and one row per property for a pane `inner` columns
+/// wide, long values wrapped under the value column.
+fn property_lines(view: &ObjectView, inner: usize, theme: &Theme) -> Vec<Line<'static>> {
     let badges = view.health.badges();
     let mut status = vec![Span::styled(" Status: ", theme.dim())];
     if badges.is_empty() {
@@ -233,15 +368,49 @@ fn property_lines(view: &ObjectView, theme: &Theme) -> Vec<Line<'static>> {
         status.push(Span::raw(" "));
     }
     let mut lines = vec![Line::from(status)];
-    for row in &view.properties {
-        let name = Span::styled(format!(" {:<28}", kebab(row.property)), theme.dim());
-        let value = match &row.value {
-            Ok(value) => Span::raw(value.clone()),
-            Err(error) => Span::styled(format!("({error})"), theme.dim()),
+    let names: Vec<String> = view
+        .properties
+        .iter()
+        .map(|row| kebab(row.property))
+        .collect();
+    let column = name_width(names.iter().map(|name| text_width(name)), inner);
+    // A space each side of the row.
+    let value_width = inner.saturating_sub(2 + column + NAME_GAP);
+    let indent = " ".repeat(1 + column + NAME_GAP);
+    for (row, name) in view.properties.iter().zip(names) {
+        let (text, style) = match &row.value {
+            Ok(value) => (value.clone(), Style::new()),
+            Err(error) => (format!("({error})"), theme.dim()),
         };
-        lines.push(Line::from(vec![name, value]));
+        let mut chunks = wrap(&text, value_width).into_iter();
+        let pad = column.checked_sub(text_width(&name));
+        let mut first = vec![Span::styled(format!(" {name}"), theme.dim())];
+        if let Some(pad) = pad {
+            first.push(Span::raw(" ".repeat(pad + NAME_GAP)));
+            first.push(Span::styled(chunks.next().unwrap_or_default(), style));
+        }
+        lines.push(Line::from(first));
+        for chunk in chunks {
+            lines.push(Line::from(vec![
+                Span::raw(indent.clone()),
+                Span::styled(chunk, style),
+            ]));
+        }
     }
     lines
+}
+
+/// Width of the priority pane beside the properties, fitted to its values.
+fn priority_width(priority: &PriorityView) -> u16 {
+    let longest = priority
+        .slots
+        .iter()
+        .chain([&priority.relinquish_default, &priority.present_value])
+        .map(|value| value.as_deref().map_or(1, text_width))
+        .max()
+        .unwrap_or(1);
+    // A space after the value, and the border.
+    u16::try_from(PRIORITY_LABEL + longest + 3).unwrap_or(u16::MAX)
 }
 
 fn priority_pane(frame: &mut Frame, area: Rect, priority: &PriorityView, theme: &Theme) {
@@ -289,4 +458,77 @@ fn priority_pane(frame: &mut Frame, area: Rect, priority: &PriorityView, theme: 
         priority.present_value.as_deref().unwrap_or("-")
     )));
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_column_fits_the_longest_name_up_to_its_cap() {
+        // Room for every name.
+        assert_eq!(name_width([17, 30, 12].into_iter(), 72), 30);
+        // A wide pane never pads past the longest name.
+        assert_eq!(name_width([5].into_iter(), 200), 5);
+        // Narrow: the value keeps a third of the pane (at least 12).
+        assert_eq!(name_width([60].into_iter(), 72), 72 - 2 - NAME_GAP - 24);
+        assert_eq!(name_width([30].into_iter(), 30), 30 - 2 - NAME_GAP - 12);
+        assert_eq!(name_width(std::iter::empty(), 72), 0);
+    }
+
+    #[test]
+    fn wrap_breaks_at_spaces_and_inside_long_words() {
+        assert_eq!(wrap("", 10), [""]);
+        assert_eq!(wrap("short", 10), ["short"]);
+        assert_eq!(wrap("one two three", 7), ["one two", "three"]);
+        assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("72.5 °F", 4), ["72.5", "°F"]);
+        assert_eq!(wrap("ab    ", 2), ["ab"]);
+        // Leading spaces stay; a continuation line starts with a word.
+        assert_eq!(wrap("  lead", 10), ["  lead"]);
+        assert_eq!(wrap("  lead on", 6), ["  lead", "on"]);
+        // Control characters become spaces.
+        assert_eq!(wrap("a\nb\tc\u{1b}", 10), ["a b c"]);
+        for line in wrap("[a, bb, ccc, dddd, eeeee, ffffff]", 9) {
+            assert!(text_width(&line) <= 9, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn wrap_prefers_entry_boundaries() {
+        let week = "[Mon 07:00 = 1, 18:00 = 0; Tue 07:00 = 1, 18:00 = 0; Wed none]";
+        assert_eq!(
+            wrap(week, 30),
+            [
+                "[Mon 07:00 = 1, 18:00 = 0;",
+                "Tue 07:00 = 1, 18:00 = 0;",
+                "Wed none]"
+            ]
+        );
+        // A `, ` that would leave less than half a line loses to a space.
+        assert_eq!(wrap("a, bbbbb ccccc", 12), ["a, bbbbb", "ccccc"]);
+    }
+
+    #[test]
+    fn wrap_splits_words_between_grapheme_clusters() {
+        let width = |line: &str| line.graphemes(true).map(text_width).sum::<usize>();
+        // A ZWJ family and a combining accent are each one cluster.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let text = format!("ab{family}cde\u{301}fe\u{301}");
+        for columns in 1..8 {
+            let lines = wrap(&text, columns);
+            assert_eq!(lines.concat(), text, "{columns}: {lines:?}");
+            for line in &lines {
+                assert!(
+                    width(line) <= columns.max(text_width(family)),
+                    "{columns}: {lines:?}"
+                );
+                assert!(!line.starts_with('\u{200D}') && !line.starts_with('\u{301}'));
+            }
+        }
+        assert_eq!(
+            wrap("e\u{301}e\u{301}e\u{301}", 2),
+            ["e\u{301}e\u{301}", "e\u{301}"]
+        );
+    }
 }

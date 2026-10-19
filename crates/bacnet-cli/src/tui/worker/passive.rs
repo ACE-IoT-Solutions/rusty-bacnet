@@ -94,9 +94,10 @@ pub(crate) async fn refuse(sink: &EventSink, command: Command) {
         }
         // Capturing transmits nothing, but without a client there is no
         // transport to tap.
-        Command::Capture(_) => WorkerEvent::Capture(CaptureEvent::Ended(
-            "a passive session has no transport to tap".into(),
-        )),
+        Command::Capture(_) => WorkerEvent::Capture(CaptureEvent::Ended {
+            what: crate::tui::capture::worker::TAP.into(),
+            why: "a passive session has no transport to tap".into(),
+        }),
         _ => return,
     };
     sink.deliver(event).await;

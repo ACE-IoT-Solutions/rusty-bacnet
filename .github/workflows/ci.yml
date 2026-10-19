@@ -202,7 +202,9 @@ jobs:
           echo "missing: ${missing[*]:-none}"
           if [ ${#missing[@]} -gt 0 ]; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+            # wireshark-common (tshark, #971) asks a debconf question; sudo
+            # drops the environment, so the front end goes on its line.
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
           fi
       - *toolchain
       # Only their standard libraries: neither clippy nor rustdoc links.
@@ -302,7 +304,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      APT_PACKAGES: libpcap-dev
+      # tshark reads the Capture screen's pcap exports (#971); with
+      # REQUIRE_TSHARK its test fails rather than skips without it.
+      APT_PACKAGES: libpcap-dev tshark
+      REQUIRE_TSHARK: "1"
     steps:
       - *checkout
       - *apt

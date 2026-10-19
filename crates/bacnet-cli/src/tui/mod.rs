@@ -22,8 +22,8 @@
 //! - [`mstp`]: the MS/TP screen's messages and diagnostics sampling (#969).
 //! - [`monitor`]: the MS/TP passive monitor, its analysis and the safe-join
 //!   hand-off (#970).
-//! - [`capture`]: live capture for the Capture screen, its sources, ring
-//!   and filter (#971).
+//! - [`capture`]: live capture for the Capture screen, its sources, ring,
+//!   filter and pcap export (#971).
 //!
 //! The TUI is read-only by default: discovery, the device browser's reads,
 //! the watch list's reads and finite COV subscriptions, and finite
@@ -106,10 +106,18 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     } else {
         TransportKind::Bip
     };
-    let capture_ring = match &cli.command {
-        Some(Command::Tui { capture_ring, .. }) => *capture_ring as usize,
-        _ => capture::DEFAULT_RING,
+    let (capture_ring, capture_device) = match &cli.command {
+        Some(Command::Tui {
+            capture_ring,
+            capture_device,
+            ..
+        }) => (*capture_ring as usize, capture_device.clone()),
+        _ => (capture::DEFAULT_RING, None),
     };
+    if capture_device.is_some() && !cfg!(feature = "pcap") {
+        eprintln!("Error: --capture-device requires the 'pcap' feature. Rebuild with: cargo install bacnet-cli --features pcap");
+        std::process::exit(1);
+    }
     let (fps, log_file, mut options) = match &cli.command {
         Some(Command::Tui {
             fps,
@@ -241,6 +249,19 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let dropped = sink.dropped_counter();
     let (commands, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+    // libpcap runs for the whole TUI, beside the sessions; its task ends
+    // when the event channel closes, and is joined below.
+    #[cfg(feature = "pcap")]
+    let wire = capture_device.map(|device| {
+        let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);
+        capture::worker::spawn_pcap(Some(device), interface, cli.port, sink.clone())
+    });
+    #[cfg(not(feature = "pcap"))]
+    let wire: Option<tokio::task::JoinHandle<()>> = {
+        // Refused above: without `pcap` there is no wire capture.
+        drop(capture_device);
+        None
+    };
     let mut worker = coordinator::spawn(plan, profiles, sink, command_rx, options);
     let mut io = LoopIo {
         input: EventStream::new(),
@@ -283,6 +304,11 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
                 tracing::warn!("waiting for the network worker to release its resources");
             }
             received = signals.recv() => { signal.get_or_insert(received); }
+        }
+    }
+    if let Some(wire) = wire {
+        if let Err(error) = wire.await {
+            app.fail(format!("packet capture failed: {error}"), 1);
         }
     }
     let (error, code) = match (result, signal) {

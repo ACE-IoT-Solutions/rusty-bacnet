@@ -77,5 +77,9 @@ test-support = []
 rcgen.workspace = true
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 
+# The tests' rlimit, interface-index and packet-info oracle calls (#1881).
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["net", "resource", "uio"] }
+
 [lints]
 workspace = true

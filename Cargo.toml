@@ -166,10 +166,11 @@ semihosting = { version = "0.1.25", features = ["stdio"] }
 [workspace.lints.rust]
 # Unsafe policy (#1880). `deny` is the floor for every target. Each library
 # and binary root with no unsafe raises it to `#![forbid(unsafe_code)]`;
-# bacnet-encoding forbids it outside its unit tests until #1881. The rest
-# (bacnet-transport's OS FFI, the firmware runtime hooks, and test-only FFI
-# and counting allocators under tests/) keeps `deny`, with a narrow
-# `#[allow(unsafe_code)]` on each item that needs it, never on a module.
+# the rest (bacnet-transport's OS FFI, the firmware runtime hooks, and under
+# tests/ the global allocators and the Ethernet test's AF_PACKET calls, left
+# to #1883)
+# keeps `deny`, with a narrow `#[allow(unsafe_code)]` on each item that needs
+# it, never on a module.
 # Clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:` comment on
 # every unsafe block and impl, `missing_safety_doc` (private fns too, through
 # `check-private-items` in clippy.toml) a `# Safety` section on every unsafe

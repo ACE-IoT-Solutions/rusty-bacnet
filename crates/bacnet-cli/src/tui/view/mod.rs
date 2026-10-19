@@ -35,6 +35,8 @@ pub(crate) const MIN_WIDTH: u16 = 80;
 pub(crate) const MIN_HEIGHT: u16 = 24;
 /// Width from which the wide table columns are used.
 pub(crate) const FULL_WIDTH: u16 = 120;
+/// Width from which panes that stack at the full width sit side by side.
+pub(crate) const WIDE_WIDTH: u16 = 160;
 /// Height from which the log pane gets more room.
 pub(crate) const FULL_HEIGHT: u16 = 40;
 
@@ -46,18 +48,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         too_small(frame, area, &theme);
         return;
     }
-    let mut banner = app.duplicates.banner().to_vec();
-    banner.extend(app.network.refusal());
-    // Long addresses wrap rather than vanish off the edge.
-    let banner_height: usize = banner
+    let mut banners = app.duplicates.banner().to_vec();
+    banners.extend(app.network.registration_banner());
+    // Wrapped here, so the height is exactly what is drawn.
+    let banner: Vec<String> = banners
         .iter()
-        .map(|line| {
-            line.chars()
-                .count()
-                .div_ceil(usize::from(area.width))
-                .max(1)
-        })
-        .sum();
+        .flat_map(|text| devices::wrap_banner(text, usize::from(area.width)))
+        .collect();
+    let banner_height = banner.len();
     let log_height = match (app.show_log, area.height >= FULL_HEIGHT) {
         (false, _) => 0,
         (true, true) => 12,
@@ -85,7 +83,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     if app.show_log {
         chrome::log_pane(frame, log, app, &theme);
     }
-    chrome::footer(frame, footer, app, &theme);
+    let tab_focus = app.screen == Screen::Network && network::wide(app, body);
+    chrome::footer(frame, footer, app, &theme, tab_focus);
     match &app.overlay {
         // The command bar is the footer.
         Overlay::None | Overlay::Command(_) => {}

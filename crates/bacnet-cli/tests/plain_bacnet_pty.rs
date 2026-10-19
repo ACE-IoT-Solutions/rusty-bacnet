@@ -2,10 +2,11 @@
 //! `--no-tui` or `BACNET_NO_TUI` keep it out, with the usage and exit
 //! status 2. Unix only: the pair comes from `openpty`.
 #![cfg(all(unix, feature = "tui"))]
+#![forbid(unsafe_code)]
 
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -16,30 +17,15 @@ const ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
 const DEADLINE: Duration = Duration::from_secs(20);
 
 /// A pseudo-terminal pair, 120 by 40: (master, slave).
-#[allow(unsafe_code)]
 fn openpty() -> (OwnedFd, OwnedFd) {
-    let (mut master, mut slave) = (-1, -1);
-    let mut size = libc::winsize {
+    let size = nix::pty::Winsize {
         ws_row: 40,
         ws_col: 120,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // SAFETY: the out-pointers are valid for the call, a null name and
-    // termios are allowed, and `size` outlives the call. `size` goes as a
-    // raw pointer: macOS takes it as `*mut`, Linux as `*const`.
-    let status = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &raw mut size,
-        )
-    };
-    assert_eq!(status, 0, "openpty: {}", std::io::Error::last_os_error());
-    // SAFETY: openpty succeeded, so both are open descriptors owned by no one else.
-    unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
+    let pair = nix::pty::openpty(&size, None).expect("openpty");
+    (pair.master, pair.slave)
 }
 
 /// A `bacnet` child on the slave side of a fresh pseudo-terminal, and what

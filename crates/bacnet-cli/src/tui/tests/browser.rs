@@ -109,7 +109,7 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(priority.slots[9].as_deref(), Some("55"));
     assert_eq!(priority.relinquish_default.as_deref(), Some("0"));
     assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55 %"));
-    for (w, h) in [(120, 40), (80, 24)] {
+    for (w, h) in [(200, 50), (120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains(">10 site defined"), "{text}");
         assert!(text.contains("Relinquish_Default  0"), "{text}");
@@ -135,19 +135,88 @@ async fn ai1_out_of_service_and_in_fault_shows_both_badges() {
         stamps.starts_with("[seq 0, 20") && stamps.ends_with(", seq 0]"),
         "the to-fault stamp is a date and time: {stamps}"
     );
-    for (w, h) in [(120, 40), (80, 24)] {
+    // The to-fault stamp is the server's wall clock.
+    assert_eq!(super::values::mask_open_object(&mut site.app), 1);
+    for (w, h) in [(200, 50), (120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains("Status: [ALM] [FLT] [OOS]"), "{text}");
-        // The to-fault stamp is the server's wall clock: masked once found
-        // to be a date and time (at 80 columns it is cut off).
-        let (text, masked) = super::values::mask_date_times(&text);
-        assert_eq!(masked, usize::from(w == 120), "{text}");
         assert_snapshot!(format!("browser_ai1_{w}x{h}"), text);
     }
+    // A 30-character name keeps its gap before the value.
+    let text = screen(&mut site.app, 120, 40);
+    assert!(
+        text.contains("reliability-evaluation-inhibit  false"),
+        "{text}"
+    );
     // Colour adds nothing the text lacks.
     let plain = screen(&mut site.app, 120, 40);
     site.app.color = true;
     assert_eq!(screen(&mut site.app, 120, 40), plain);
+    site.stop().await;
+}
+
+/// At 200 columns the priority array sits beside the properties and the
+/// object list is wider than at 120.
+#[tokio::test(start_paused = true)]
+async fn a_wide_terminal_puts_the_priority_array_beside_the_properties() {
+    let mut site = Site::start_with(vec![Server::lab(100, LAB)], ClientLimits::default()).await;
+    open_device(&mut site).await;
+    open_object(&mut site, "analog-output").await;
+    let wide = screen(&mut site.app, 200, 50);
+    let full = screen(&mut site.app, 120, 40);
+    // Both panes start on the same row.
+    let row = wide
+        .lines()
+        .find(|line| line.contains("┌ analog-output 1"))
+        .expect("properties pane");
+    assert!(row.contains("┌ Priority array: 10 in control"), "{wide}");
+    let objects = |text: &str| {
+        text.lines()
+            .find(|line| line.contains("┌ Objects"))
+            .and_then(|line| line.find('┐'))
+            .expect("objects pane")
+    };
+    assert!(objects(&wide) > objects(&full), "{wide}\n{full}");
+    site.stop().await;
+}
+
+/// A long value wraps under the value column at 80 columns, and the pane
+/// scrolls through the wrapped lines to the last one.
+#[tokio::test(start_paused = true)]
+async fn a_long_value_wraps_under_its_column_at_80_columns() {
+    let mut site = Site::start_with(vec![Server::lab(100, LAB)], ClientLimits::default()).await;
+    open_device(&mut site).await;
+    let mut view = open_object(&mut site, "analog-input 1").await;
+    let long = "\"Zone 3 space temperature, north wall, beside the return grille \
+                (sensor out for calibration until the next service visit)\"";
+    for row in &mut view.properties {
+        if row.property == PropertyIdentifier::DESCRIPTION {
+            row.value = Ok(long.into());
+        }
+    }
+    let browser = site.app.browser.as_mut().unwrap();
+    browser.view = ViewState::Ready(Box::new(view));
+    let text = screen(&mut site.app, 80, 24);
+    // Continuation lines start under the value, not under the name.
+    let under_value = format!("│{}beside the return grille", " ".repeat(33));
+    assert!(text.contains(&under_value), "{text}");
+    assert!(text.contains("next service visit)\""), "{text}");
+    assert_snapshot!("browser_ai1_long_value_80x24", text);
+    // End shows the last property, past the wrapped lines.
+    site.press(KeyCode::End).await;
+    let text = screen(&mut site.app, 80, 24);
+    assert!(text.contains("event-algorithm-inhibit "), "{text}");
+    // A long read error wraps too.
+    let browser = site.app.browser.as_mut().unwrap();
+    browser.view = ViewState::Failed(
+        oid(ObjectType::ANALOG_INPUT, 1),
+        "no reply from 10.0.0.100:47808 after 3 attempts; the device may be \
+         offline or the router to its network may be down"
+            .into(),
+    );
+    let text = screen(&mut site.app, 80, 24);
+    assert!(text.contains("│ Read failed: no reply"), "{text}");
+    assert!(text.contains("network may be down"), "{text}");
     site.stop().await;
 }
 

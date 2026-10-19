@@ -28,6 +28,10 @@ socket2 = { workspace = true, features = ["all"] }
 libc.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time", "test-util", "io-util"] }
 
+# Interface indexes and the B/IPv6 packet-info oracle (#1881).
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["net", "uio"] }
+
 # The standalone Rust examples in examples/rust (#1723). They live beside the
 # Python examples, so they name their paths; CI's clippy --all-targets and
 # nextest runs compile them. Run one with

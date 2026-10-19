@@ -8,6 +8,7 @@
 //! once, in [`App::settle`].
 
 use std::cell::{Cell, RefCell};
+use std::time::UNIX_EPOCH;
 
 use ratatui::text::Text;
 use tui_tree_widget::{TreeItem, TreeState};
@@ -18,7 +19,7 @@ use super::{App, FilterKey, Link, FLASH_FOR};
 use crate::decode::tree::{decode_tree, Field};
 use crate::tui::capture::filter::Filter;
 use crate::tui::capture::ring::Ring;
-use crate::tui::capture::{CaptureCommand, CaptureEvent, DEFAULT_RING};
+use crate::tui::capture::{CaptureCommand, CaptureEvent, ExportJob, DEFAULT_RING};
 use crate::tui::message::Command;
 
 /// The focused pane.
@@ -53,6 +54,11 @@ pub(crate) enum CaptureKey {
     Pause,
     /// `z`: forget every frame.
     Clear,
+    /// `e`: export the frames the filter keeps.
+    Export {
+        /// B/IP as raw IPv4 rather than Ethernet.
+        raw_ipv4: bool,
+    },
     /// Esc: clear the filter, then go back.
     Back,
 }
@@ -271,11 +277,23 @@ impl CaptureState {
                 }
                 None
             }
-            CaptureEvent::Ended(why) => {
-                self.sources.clear();
-                let text = format!("Capture: {why}.");
-                self.ended = Some(why);
+            CaptureEvent::Ended { what, why } => {
+                // Only that source: a session ending leaves libpcap running.
+                self.sources.retain(|(source, _)| *source != what);
+                let text = format!("Capture from {what}: {why}.");
+                self.ended = Some(format!("{what}: {why}"));
                 Some(text)
+            }
+            CaptureEvent::Exported(exported) => {
+                let written = exported.written.join(", ");
+                Some(match (exported.written.is_empty(), exported.error) {
+                    (false, None) => format!("Exported {written}."),
+                    (true, Some(error)) => format!("Export failed: {error}"),
+                    (false, Some(error)) => {
+                        format!("Exported {written}, then failed: {error}")
+                    }
+                    (true, None) => "Nothing exported.".into(),
+                })
             }
         }
     }
@@ -335,7 +353,7 @@ impl App {
     }
 
     /// A key on the Capture screen.
-    pub(crate) fn capture_key(&mut self, key: CaptureKey) {
+    pub(crate) fn capture_key(&mut self, key: CaptureKey, out: &mut Vec<Command>) {
         let capture = &mut self.capture;
         match key {
             CaptureKey::Move(movement) if capture.focus == Focus::List => {
@@ -382,6 +400,7 @@ impl App {
                 capture.lost = 0;
                 self.flash("Cleared the capture.", FLASH_FOR);
             }
+            CaptureKey::Export { raw_ipv4 } => self.export_capture(raw_ipv4, out),
             CaptureKey::Back if !capture.filter.is_empty() => {
                 capture.filter.clear();
                 capture.ring.set_filter(Filter::default());
@@ -415,6 +434,28 @@ impl App {
                 self.capture.ring.set_filter(Filter::default());
             }
         }
+    }
+
+    /// Hand the frames the filter keeps to the coordinator to write.
+    pub(crate) fn export_capture(&mut self, raw_ipv4: bool, out: &mut Vec<Command>) {
+        let capture = &self.capture;
+        let frames: Vec<_> = capture
+            .visible()
+            .filter_map(|n| capture.ring.shared(n).cloned())
+            .collect();
+        let Some(last) = frames.last() else {
+            self.flash("Nothing to export.", FLASH_FOR);
+            return;
+        };
+        let since = last.time.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let time = crate::tui::safety::audit::utc(since.as_secs(), since.subsec_millis());
+        let stem = format!("capture-{}", time.replace(':', "-"));
+        self.flash(format!("Exporting {} frames...", frames.len()), FLASH_FOR);
+        out.push(Command::CaptureExport(Box::new(ExportJob {
+            frames,
+            raw_ipv4,
+            stem,
+        })));
     }
 
     /// Look the filter's `dev:` terms up again after the device table

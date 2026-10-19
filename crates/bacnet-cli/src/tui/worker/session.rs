@@ -463,7 +463,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                             }
                         }
                         Some(Command::Disconnect) => break,
-                        Some(Command::Connect { .. } | Command::JoinTrunk { .. } | Command::Reconnect | Command::Profile(_)) => {}
+                        Some(Command::Connect { .. } | Command::JoinTrunk { .. } | Command::Reconnect | Command::Profile(_) | Command::CaptureExport(_)) => {}
                         None => break,
                     },
                     vmac = resolved(&mut resolving), if resolving.is_some() => {

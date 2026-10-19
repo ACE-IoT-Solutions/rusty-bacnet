@@ -220,40 +220,44 @@ fn date_time_len(text: &str) -> Option<usize> {
     Some(at)
 }
 
-/// `text` with each date and time replaced by [`DATE_TIME_TOKEN`], for a
+/// `value` with each date and time replaced by [`DATE_TIME_TOKEN`], for a
 /// value the server stamps with its wall clock, and how many were replaced.
-/// The rest of each line stays as drawn: the length the token saves goes
-/// back as spaces just before the line's next border, so the line keeps
-/// its width whatever the time was.
-pub(super) fn mask_date_times(text: &str) -> (String, usize) {
+fn mask_date_times(value: &str) -> (String, usize) {
     let mut count = 0;
-    let lines: Vec<String> = text
-        .lines()
-        .map(|line| {
-            let mut out = String::new();
-            let mut rest = line;
-            let mut owed = 0;
-            while !rest.is_empty() {
-                if let Some(len) = date_time_len(rest) {
-                    out.push_str(DATE_TIME_TOKEN);
-                    owed += len.saturating_sub(DATE_TIME_TOKEN.len());
-                    rest = &rest[len..];
-                    count += 1;
-                    continue;
-                }
-                let c = rest.chars().next().expect("not empty");
-                if c == '│' && owed > 0 {
-                    out.push_str(&" ".repeat(owed));
-                    owed = 0;
-                }
-                out.push(c);
-                rest = &rest[c.len_utf8()..];
-            }
-            out.push_str(&" ".repeat(owed));
-            out
-        })
-        .collect();
-    (lines.join("\n"), count)
+    let mut out = String::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        if let Some(len) = date_time_len(rest) {
+            out.push_str(DATE_TIME_TOKEN);
+            rest = &rest[len..];
+            count += 1;
+            continue;
+        }
+        let c = rest.chars().next().expect("not empty");
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    (out, count)
+}
+
+/// Mask each date and time in the open object's values, before they are
+/// laid out: a wall-clock stamp's length decides where its value wraps, so
+/// masking the drawn screen afterwards would leave the wrap point to the
+/// clock. Returns how many were masked.
+pub(super) fn mask_open_object(app: &mut App) -> usize {
+    let browser = app.browser.as_mut().expect("a device is open");
+    let crate::tui::app::browser::ViewState::Ready(view) = &mut browser.view else {
+        panic!("no object is open");
+    };
+    let mut count = 0;
+    for row in &mut view.properties {
+        if let Ok(value) = &mut row.value {
+            let (masked, n) = mask_date_times(value);
+            *value = masked;
+            count += n;
+        }
+    }
+    count
 }
 
 /// No property of any of these objects shows as raw octets.
@@ -276,7 +280,8 @@ async fn the_browser_shows_constructed_and_state_values_decoded() {
         let view = open_object(&mut site, filter).await;
         // AI:3's to-offnormal stamp is the server's wall clock, so it is
         // masked once found to be a date and time.
-        let (text, masked) = mask_date_times(&screen(&mut site.app, 120, 40));
+        let masked = mask_open_object(&mut site.app);
+        let text = screen(&mut site.app, 120, 40);
         assert_eq!(masked, usize::from(name == "ai3"), "{text}");
         assert_snapshot!(format!("values_{name}_120x40"), text);
         assert_decoded(&text);
