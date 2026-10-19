@@ -97,7 +97,7 @@ pub(crate) struct Indication {
 
 impl Indication {
     /// An indication carrying only a target and condition identity.
-    fn plain(target: EventState, condition: u64) -> Self {
+    pub(crate) fn plain(target: EventState, condition: u64) -> Self {
         Self {
             target,
             condition,

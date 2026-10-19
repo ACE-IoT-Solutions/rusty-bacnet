@@ -2702,7 +2702,10 @@ Event_Algorithm_Inhibit, which suspends the event algorithm but not fault
 reporting (#1329). Write them with `write_property_local`; there are no
 `add_*` keyword arguments for them. Event_Algorithm_Inhibit_Ref makes the
 inhibit follow a local Boolean or BinaryPV property, read each time the
-server evaluates the object.
+server evaluates the object, so a read can trail it by about a second. The
+texts go out as written: there are no substitution codes. An Event
+Enrollment takes the same three properties (#1507); its notifications carry
+the configured text, or none when the entry is empty.
 
 An Audit Log's `storage_path` is application-owned and produces two sibling
 snapshot files with `.slot0` and `.slot1` suffixes. Reuse the same path when

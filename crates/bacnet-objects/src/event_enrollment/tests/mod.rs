@@ -6,6 +6,7 @@ mod enrollment_summary;
 mod fault_parameters;
 mod object_name;
 mod reliability_commit;
+mod reporting_options;
 mod status_flags;
 mod time_delay_normal;
 mod timestamps;

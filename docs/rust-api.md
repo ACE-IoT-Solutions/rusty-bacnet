@@ -4266,6 +4266,16 @@ serves Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair
 - Event_Message_Texts_Config is always three entries: the tables fix its
   size, so a write at index 0 is `PROPERTY/WRITE_ACCESS_DENIED` (Clause
   12.1.5.1).
+- A read of Event_Algorithm_Inhibit with a reference set returns the value
+  as of the object's last evaluation, at most about a second old; the read
+  path doesn't follow the reference itself (#1507).
+
+An Event Enrollment serves the same three rows, with Event_Message_Texts
+beside them (#1507). Its inhibit gates the enrollment's algorithm the same
+way, and the server also refreshes a referenced inhibit at the start of each
+enrollment evaluation pass. The server has no message text of its own for an
+enrollment: a transition sends the matching Event_Message_Texts_Config entry
+as written, and none when that entry is empty.
 
 Every Trend Log samples a BACnet property, so its Start_Time, Stop_Time,
 Log_Interval and Log_DeviceObjectProperty are classed required (Table 12-29

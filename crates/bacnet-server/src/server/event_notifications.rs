@@ -2,11 +2,8 @@ use super::event_message_policy::intrinsic_event_message_text;
 use super::event_notification_payload::{project_intrinsic_payload, CommittedNotificationPayload};
 #[path = "event_notification_profile.rs"]
 mod profile;
-pub(super) use self::profile::CommittedIntrinsicTransition;
-use self::profile::{
-    CommittedHistorySnapshot, CommittedMessageProjection, NotificationConstruction,
-    NotificationHistorySource, NotificationTransition,
-};
+use self::profile::{CommittedHistorySnapshot, NotificationConstruction, NotificationTransition};
+pub(super) use self::profile::{CommittedIntrinsicTransition, NotificationHistorySource};
 use super::event_recipient_route::system_utc_recipient_filter_time;
 use super::event_timestamp::{
     confirm_event_timestamp, sample_event_timestamp, stage_event_timestamp, SampledEventClock,
@@ -27,13 +24,12 @@ use recipient_lookup::matched_recipients_or_log;
 /// Required properties are projected while the caller still owns the database
 /// write guard. A malformed or incomplete projection is not equivalent to a
 /// missing message/timestamp: the committed transition remains local, but no
-/// outward frame can be built from an unproven history snapshot. Event
-/// Enrollment is the explicit exception for message lookup because that object
-/// intentionally has no `Event_Message_Texts` property.
+/// outward frame can be built from an unproven history snapshot. An empty
+/// Event_Message_Texts entry sends no message text: an Event Enrollment
+/// commits one unless Event_Message_Texts_Config gives it a text (#1507).
 fn read_committed_history_snapshot(
     object: &dyn BACnetObject,
     coordinate: EventTransition,
-    message_projection: CommittedMessageProjection,
 ) -> Option<CommittedHistorySnapshot> {
     let array_index = u32::try_from(coordinate.index() + 1)
         .expect("three event transition coordinates fit in u32");
@@ -48,22 +44,16 @@ fn read_committed_history_snapshot(
         return None;
     }
 
-    let message_text = match message_projection {
-        CommittedMessageProjection::RequiredProperty => {
-            let PropertyValue::CharacterString(message_text) = object
-                .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, Some(array_index))
-                .ok()?
-            else {
-                return None;
-            };
-            (!message_text.is_empty()).then_some(message_text)
-        }
-        CommittedMessageProjection::IntentionallyAbsent => None,
+    let PropertyValue::CharacterString(message_text) = object
+        .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, Some(array_index))
+        .ok()?
+    else {
+        return None;
     };
 
     Some(CommittedHistorySnapshot {
         timestamp,
-        message_text,
+        message_text: (!message_text.is_empty()).then_some(message_text),
     })
 }
 
@@ -91,13 +81,9 @@ pub(super) fn resolve_committed_event_enrollment_transition(
     };
 
     let coordinate = change.transition();
-    let history_snapshot = db.get(&oid).and_then(|object| {
-        read_committed_history_snapshot(
-            object,
-            coordinate,
-            CommittedMessageProjection::IntentionallyAbsent,
-        )
-    })?;
+    let history_snapshot = db
+        .get(&oid)
+        .and_then(|object| read_committed_history_snapshot(object, coordinate))?;
     Some((
         oid,
         distribute,
@@ -149,13 +135,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
 
         let recipient_clock = confirm_event_timestamp(db, staged_timestamp).clock;
-        let history_snapshot = match db.get(oid).and_then(|object| {
-            read_committed_history_snapshot(
-                object,
-                coordinate,
-                CommittedMessageProjection::RequiredProperty,
-            )
-        }) {
+        let history_snapshot = match db
+            .get(oid)
+            .and_then(|object| read_committed_history_snapshot(object, coordinate))
+        {
             Some(snapshot) => snapshot,
             None => {
                 debug!(

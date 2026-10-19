@@ -34,8 +34,17 @@
 //! `Acked_Transitions` bit is set/cleared per the referenced Notification
 //! Class's `Ack_Required` (Clause 13.2.3), and the transition is emitted with
 //! its `Event_Enable`-scoped `distribute` flag. What is NOT here, by design:
-//! `Event_Time_Stamps` is committed atomically with `Event_State` and
-//! `Acked_Transitions`; `Event_Message_Texts` remains intentionally absent.
+//! `Event_Time_Stamps` and `Event_Message_Texts` are committed atomically
+//! with `Event_State` and `Acked_Transitions`. The server has no message text
+//! of its own for an enrollment, so a transition's text is the matching
+//! `Event_Message_Texts_Config` entry, sent as written (no substitution
+//! codes), or none when that entry is empty (#1507).
+//!
+//! `Event_Algorithm_Inhibit` (#1507) gates the algorithm as it does the
+//! intrinsic reporters: see the gate after the algorithm arms below. With
+//! `Event_Algorithm_Inhibit_Ref` set, the value is the referenced property's
+//! as of the last refresh: each write of the enrollment, the server's
+//! one-second tick and the start of each evaluation pass.
 //! The server lifecycle projects successful commits into its shared
 //! notification sender without repeating these transition actions.
 
@@ -64,7 +73,7 @@ pub use commit::{
 use algorithms::{
     eval_change_of_bitstring_struct, eval_change_of_state_struct, eval_change_of_value_struct,
     eval_floating_limit_struct, eval_legacy_le_arm, eval_out_of_range_struct, extract_bitstring,
-    extract_property_state_value, extract_real, ArmEvaluation,
+    extract_property_state_value, extract_real, ArmEvaluation, Indication,
 };
 #[cfg(test)]
 use commit::apply_updates;
@@ -113,6 +122,11 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
 ) -> EventEnrollmentEvaluationBatch {
     let interval_secs = interval_secs.max(1);
     let oids = db.find_by_type(ObjectType::EVENT_ENROLLMENT);
+    // Event_Algorithm_Inhibit follows its reference as of this pass too, on
+    // top of the server's one-second tick (#1507).
+    for oid in &oids {
+        db.follow_event_algorithm_inhibit(oid);
+    }
     // The monitored, setpoint and fault references all resolve through this
     // one rule: unqualified or naming this device is local (#1184).
     let local_device = db.local_device();
@@ -680,6 +694,30 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
             eval_state_dirty = true;
         }
 
+        // Event_Algorithm_Inhibit (Clauses 12.12.18 and 13.2.2.1.5) sets the
+        // algorithm's result aside; fault handling above has already run. An
+        // offnormal enrollment goes back to NORMAL at once, without waiting
+        // out pTimeDelayNormal; a NORMAL one stays put. A countdown under way
+        // is dropped, so once the inhibit clears a condition has to hold for
+        // its whole delay again.
+        let inhibited = matches!(
+            enrollment.read_property(PropertyIdentifier::EVENT_ALGORITHM_INHIBIT, None),
+            Ok(PropertyValue::Boolean(true))
+        );
+        let indication = if inhibited {
+            if eval_state.pending.take().is_some() {
+                eval_state_dirty = true;
+            }
+            (current_state != EventState::NORMAL).then(|| match indication {
+                // The algorithm's own NORMAL carries its side effects (a
+                // CHANGE_OF_VALUE baseline).
+                Some(ind) if ind.target == EventState::NORMAL => ind,
+                _ => Indication::plain(EventState::NORMAL, 0),
+            })
+        } else {
+            indication
+        };
+
         let Some(ind) = indication else {
             // No condition true — or the condition that seeded the countdown
             // reverted: cancel any pending transition without firing.
@@ -696,7 +734,9 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
         // pTimeDelayNormal (already the fallback-composed effective value)
         // toward NORMAL — the Clause 13.3 split, mirroring the intrinsic
         // detectors' `delay_toward` without sharing code across the boundary.
-        let delay = if ind.target == EventState::NORMAL {
+        let delay = if inhibited {
+            0
+        } else if ind.target == EventState::NORMAL {
             normal_delay
         } else {
             time_delay
