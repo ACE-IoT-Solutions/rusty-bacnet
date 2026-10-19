@@ -10,9 +10,9 @@
 //! job waiting inside the client is never left unpolled while the session
 //! loop awaits something of its own. The loop's own arms never await.
 
-pub(crate) mod format;
 pub(crate) mod limits;
 pub(crate) mod read;
+pub(crate) mod view;
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -151,7 +151,7 @@ async fn read_device<T: TransportPort + 'static>(
 ) -> Result<(), Halt> {
     let device = reader.device_object()?;
     let (rows, via) = reader.properties(device, Wanted::List(&CARD)).await?;
-    deliver(sink, req, BrowseResult::Card(format::card(&rows, via))).await;
+    deliver(sink, req, BrowseResult::Card(view::card(&rows, via))).await;
     let read = reader
         .object_list(|done, total| {
             if done.is_multiple_of(PROGRESS_EVERY) {
@@ -183,7 +183,7 @@ async fn read_object<T: TransportPort + 'static>(
     object: ObjectIdentifier,
 ) -> Result<(), Halt> {
     let (rows, via) = reader.properties(object, Wanted::All).await?;
-    let view = format::object_view(object, &rows, via);
+    let view = view::object_view(object, &rows, via);
     deliver(sink, req, BrowseResult::Object(Box::new(view))).await;
     Ok(())
 }
