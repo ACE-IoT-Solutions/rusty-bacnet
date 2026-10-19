@@ -44,7 +44,10 @@
 //! intrinsic reporters: see `algorithms::inhibited_arm`. A pass that can't
 //! read the monitored value at all is an observation gap and changes no
 //! state, inhibited or not, so a forced return to NORMAL waits for the next
-//! readable pass: its notification carries that value. With
+//! readable pass: its notification carries that value. An enrollment whose
+//! parameters this evaluator doesn't model (Opaque or Extended) still gets
+//! the forced NORMAL, since leaving the OffNormal state under the inhibit
+//! doesn't depend on the algorithm (Clause 13.2.2.1.2). With
 //! `Event_Algorithm_Inhibit_Ref` set, the value is the referenced property's
 //! as of the last refresh: each write of the enrollment, the server's
 //! one-second tick and the start of each evaluation pass.
