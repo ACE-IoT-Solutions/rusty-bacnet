@@ -304,38 +304,63 @@ fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnro
     }
 }
 
+/// An Event Enrollment's committed Event_Message_Texts entry is its
+/// notification's message text: none for the empty entry it commits by
+/// default, the configured text otherwise (#1507). An object that doesn't
+/// serve the property sends no text, while a malformed entry or a refused
+/// read suppresses the notification.
 #[test]
-fn event_enrollment_projection_accepts_intentionally_absent_message_without_mutation() {
-    let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 77).unwrap();
-    let mut db = ObjectDatabase::new();
-    db.add(Box::new(AtomicHistoryObject {
-        oid,
-        event_type: Some(PropertyValue::Enumerated(EventType::OUT_OF_RANGE.to_raw())),
-        timestamps: repeated_timestamp_reads(BACnetTimeStamp::SequenceNumber(19)),
-        messages: std::array::from_fn(|_| IndexedHistoryRead::Missing),
-        status_flags: Some(PropertyValue::BitString {
-            unused_bits: 4,
-            data: vec![0],
-        }),
-        commits: Arc::new(AtomicUsize::new(0)),
-    }))
-    .unwrap();
+fn event_enrollment_projection_reads_committed_message_without_mutation() {
+    let configured = IndexedHistoryRead::Value(PropertyValue::CharacterString("high".into()));
+    for (instance, (message, expected)) in [
+        (empty_message_read(), Some(None)),
+        (configured, Some(Some("high".to_owned()))),
+        (IndexedHistoryRead::Missing, Some(None)),
+        (IndexedHistoryRead::Value(PropertyValue::Unsigned(7)), None),
+        (IndexedHistoryRead::Unreadable, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 77 + instance as u32).unwrap();
+        let mut db = ObjectDatabase::new();
+        let mut messages = empty_message_reads();
+        messages[0] = message;
+        db.add(Box::new(AtomicHistoryObject {
+            oid,
+            event_type: Some(PropertyValue::Enumerated(EventType::OUT_OF_RANGE.to_raw())),
+            timestamps: repeated_timestamp_reads(BACnetTimeStamp::SequenceNumber(19)),
+            messages,
+            status_flags: Some(PropertyValue::BitString {
+                unused_bits: 4,
+                data: vec![0],
+            }),
+            commits: Arc::new(AtomicUsize::new(0)),
+        }))
+        .unwrap();
 
-    let before = db.reserve_event_sequence_number().number();
-    let resolved =
-        crate::server::event_notifications::resolve_committed_event_enrollment_transition(
-            &db,
-            committed_enrollment_normal(
-                oid,
-                EventStateChange {
-                    from: EventState::NORMAL,
-                    to: EventState::HIGH_LIMIT,
-                },
-            ),
-        );
-
-    assert!(resolved.is_some());
-    assert_eq!(db.reserve_event_sequence_number().number(), before);
+        let before = db.reserve_event_sequence_number().number();
+        let resolved =
+            crate::server::event_notifications::resolve_committed_event_enrollment_transition(
+                &db,
+                committed_enrollment_normal(
+                    oid,
+                    EventStateChange {
+                        from: EventState::NORMAL,
+                        to: EventState::HIGH_LIMIT,
+                    },
+                ),
+            );
+        let message_text = resolved.map(|(_, _, transition)| match transition.history_source {
+            crate::server::event_notifications::NotificationHistorySource::Committed {
+                snapshot,
+                ..
+            } => snapshot.message_text,
+            _ => panic!("an enrollment projects its committed history"),
+        });
+        assert_eq!(message_text, expected, "{instance}");
+        assert_eq!(db.reserve_event_sequence_number().number(), before);
+    }
 }
 
 #[test]
@@ -403,7 +428,7 @@ fn committed_reliability_effective_type_does_not_reread_configured_event_type() 
             oid,
             event_type,
             timestamps: repeated_timestamp_reads(BACnetTimeStamp::SequenceNumber(23)),
-            messages: std::array::from_fn(|_| IndexedHistoryRead::Missing),
+            messages: empty_message_reads(),
             status_flags: Some(PropertyValue::BitString {
                 unused_bits: 4,
                 data: vec![0],

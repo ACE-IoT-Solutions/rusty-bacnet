@@ -1233,6 +1233,57 @@ AuthenticationPolicy = tuple[
 ]
 
 
+class NameValue(TypedDict):
+    """One Tags element (``BACnetNameValue``): a tag name, which may not
+    hold a semicolon, and a primitive value, or ``None`` (or no ``value``
+    key) for a semantic tag. The ``tags`` keyword of the object builders
+    takes a list of these, the form a typed Tags read gives."""
+
+    name: str
+    value: NotRequired[PropertyValue | None]
+
+
+# A date ``(year, month, day, day_of_week)`` with the full year, and a time
+# ``(hour, minute, second, hundredths)``; 255 marks an unspecified field.
+BACnetDate = tuple[int, int, int, int]
+BACnetTime = tuple[int, int, int, int]
+# One Weekly_Schedule or exception entry: the time and the value from then.
+TimeValue = tuple[BACnetTime, PropertyValue]
+
+
+class CalendarDate(TypedDict):
+    kind: Literal["date"]
+    date: BACnetDate
+
+
+class CalendarDateRange(TypedDict):
+    kind: Literal["date_range"]
+    start_date: BACnetDate
+    end_date: BACnetDate
+
+
+class CalendarWeekNDay(TypedDict):
+    kind: Literal["week_n_day"]
+    # Each 255 for any.
+    month: int
+    week_of_month: int
+    day_of_week: int
+
+
+# One Date_List entry, or an exception's own period (``BACnetCalendarEntry``).
+CalendarEntry = CalendarDate | CalendarDateRange | CalendarWeekNDay
+
+
+class SpecialEvent(TypedDict):
+    """One Exception_Schedule event (``BACnetSpecialEvent``): its period, a
+    calendar entry or a Calendar's ``ObjectIdentifier``, its time-values and
+    its priority, 1 (highest) to 16."""
+
+    period: CalendarEntry | ObjectIdentifier
+    time_values: list[TimeValue]
+    priority: int
+
+
 class AuditReporterConfiguration(TypedDict):
     """Owned pre-start target Reporter settings; no Python callbacks."""
     instance: int
@@ -1471,10 +1522,21 @@ class PropertyValue:
       (``"cov_subscription"``), Device_Address_Binding
       (``"address_binding"``: ``device_identifier``, ``network_number`` and
       ``mac_address``), Value_Source and Value_Source_Array
-      (``"value_source"``), and an Accumulator's Scale (``"scale"``: a
+      (``"value_source"``), an Accumulator's Scale (``"scale"``: a
       ``float`` or an ``int``) and Prescale (``"prescale"``: ``(multiplier,
-      modulo_divide)``). Tags elements are ``"name_value"`` mappings with
-      ``"name": str`` and ``"value": None | PropertyValue``. Semantic tags
+      modulo_divide)``), Load Control's Requested_Shed_Level,
+      Expected_Shed_Level and Actual_Shed_Level (``"shed_level"``: a mapping
+      of ``kind``, ``percent``, ``level`` or ``amount``, and ``value``), an
+      Access Point's Access_Event_Authentication_Factor and a Credential
+      Data Input's Present_Value (``"authentication_factor"``:
+      ``(format_type, format_class, value)``, what
+      ``report_access_event_local`` and ``report_credential_read_local``
+      take), and an Event Enrollment's Event_Parameters
+      (``"event_parameter"``: a mapping whose ``kind`` names the algorithm;
+      see docs/python-api.md). Access_Event_Time and Last_Restore_Time read
+      as ``"timestamp"``, and Subordinate_List as a list of
+      ``"device_object_reference"``. Tags elements are ``"name_value"``
+      mappings with ``"name": str`` and ``"value": None | PropertyValue``. Semantic tags
       have ``None``; valued NULL is ``PropertyValue.null()``. Date and Time
       are separate primitive values, not a combined pair. Whole Tags reads
       are lists, indexed reads one element, and index zero an unsigned count.
@@ -1567,7 +1629,8 @@ class PropertyValue:
         'property_access_result', 'recipient', 'daily_schedule',
         'special_event', 'calendar_entry', 'date_range', 'timestamp',
         'cov_subscription', 'value_source', 'scale', 'prescale',
-        'address_binding'."""
+        'address_binding', 'shed_level', 'authentication_factor',
+        'event_parameter'."""
         ...
 
     @property
@@ -1578,6 +1641,15 @@ class PropertyValue:
         the form docs/python-api.md gives it. A date is ``(year, month, day,
         day_of_week)`` with the full year, or 255 for an unspecified year,
         as in every other date the binding reads."""
+        ...
+
+    @property
+    def octets(self) -> bytes:
+        """The value's octets as a write of it carries them: a typed
+        constructed element's are the octets it was read from, a whole typed
+        collection's its elements' back to back, and any other value its
+        application-tagged encoding. Raises ValueError for a value that
+        doesn't encode."""
         ...
 
     def __repr__(self) -> str: ...
@@ -3829,27 +3901,84 @@ class BACnetServer:
         ...
 
     # --- Analog objects ---
-    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_output(self, instance: int, name: str, units: int = 62) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """``tags``, ``profile_location`` and ``profile_name`` provision the
+        optional Tags, Profile_Location and Profile_Name rows; each is served
+        only when given. Tags takes writes over the network, the other two
+        are read-only. A tag name with a semicolon, a tag value that isn't
+        primitive, a location whose URI scheme isn't http, https or bacnet,
+        or a profile name without its vendor-number prefix (``"555-room"``)
+        raises BacnetProtocolError, and wrong shapes TypeError or
+        ValueError."""
+        ...
+    def add_analog_output(self, instance: int, name: str, units: int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_analog_value(self, instance: int, name: str, units: int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+        ``present_value_access`` is ``"commandable"`` (writes go through
+        Priority_Array), ``"writable"`` (a write replaces Present_Value) or
+        ``"read_only"`` (peers write it only while out of service).
+        ``value_source_tracking`` serves Value_Source on a noncommandable
+        object: the writer of the last Present_Value write, who alone may
+        then correct it. A commandable object tracks its sources through
+        Priority_Array already, so asking it to track raises ValueError.
+        Profile keywords as on ``add_analog_input``."""
         ...
 
     # --- Binary objects ---
-    def add_binary_input(self, instance: int, name: str) -> None: ...
-    def add_binary_output(self, instance: int, name: str) -> None: ...
-    def add_binary_value(self, instance: int, name: str, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_binary_output(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on ``add_analog_value``."""
         ...
 
     # --- Multi-state objects ---
-    def add_multistate_input(self, instance: int, name: str, number_of_states: int) -> None: ...
-    def add_multistate_output(self, instance: int, name: str, number_of_states: int) -> None: ...
-    def add_multistate_value(self, instance: int, name: str, number_of_states: int) -> None: ...
+    def add_multistate_input(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_multistate_output(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_multistate_value(self, instance: int, name: str, number_of_states: int, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        ...
 
     # --- Date/time/pattern objects ---
-    def add_calendar(self, instance: int, name: str) -> None: ...
-    def add_schedule(self, instance: int, name: str) -> None: ...
+    def add_calendar(self, instance: int, name: str, *, date_list: Optional[list[CalendarEntry]] = None) -> None:
+        """``date_list`` seeds Date_List with calendar entries, the form a typed
+        read of it gives. An entry the Calendar refuses, such as a month
+        outside 1 to 14 or 255, raises BacnetProtocolError (VALUE_OUT_OF_RANGE)
+        and nothing is registered; wrong shapes raise TypeError or
+        ValueError."""
+        ...
+    def add_schedule(
+        self,
+        instance: int,
+        name: str,
+        *,
+        weekly_schedule: Optional[list[list[TimeValue]]] = None,
+        exception_schedule: Optional[list[SpecialEvent]] = None,
+        effective_period: Optional[tuple[BACnetDate, BACnetDate]] = None,
+    ) -> None:
+        """Add a Schedule object; Schedule_Default is NULL.
+
+        The keywords take the forms typed reads of the properties give, so a
+        read's ``.value`` builds the same Schedule: ``weekly_schedule`` seven
+        days, Monday first, each a list of ``(time, value)`` pairs;
+        ``exception_schedule`` a list of ``SpecialEvent`` mappings;
+        ``effective_period`` a ``(start_date, end_date)`` pair, each date
+        specific or wholly unspecified (the default covers every date). What
+        the Schedule refuses, such as a time given twice in a day, a value
+        that isn't primitive or a priority outside 1 to 16, raises
+        BacnetProtocolError and nothing is registered."""
+        ...
     def add_date_value(self, instance: int, name: str) -> None: ...
     def add_time_value(self, instance: int, name: str) -> None: ...
     def add_date_time_value(self, instance: int, name: str) -> None: ...
@@ -4186,7 +4315,21 @@ class BACnetServer:
     def add_program(self, instance: int, name: str) -> None: ...
 
     # --- Lighting ---
-    def add_lighting_output(self, instance: int, name: str) -> None:
+    def add_lighting_output(
+        self,
+        instance: int,
+        name: str,
+        *,
+        high_end_trim: Optional[float] = None,
+        low_end_trim: Optional[float] = None,
+        trim_fade_time: Optional[int] = None,
+        color_reference: Optional[ObjectIdentifier] = None,
+        color_override: Optional[bool] = None,
+        override_color_reference: Optional[ObjectIdentifier] = None,
+        tags: Optional[list[NameValue]] = None,
+        profile_location: Optional[str] = None,
+        profile_name: Optional[str] = None,
+    ) -> None:
         """Add a Lighting Output object.
 
         Its Lighting_Command reads and writes as ``application_data`` holding
@@ -4205,9 +4348,80 @@ class BACnetServer:
         VALUE_OUT_OF_RANGE, but for Present_Value's warn values -1.0 (WARN),
         -2.0 (WARN_RELINQUISH) and -3.0 (WARN_OFF). Tracking_Value reads the
         same level as Present_Value whenever no fade or ramp is running.
+
+        ``high_end_trim`` and ``low_end_trim`` (1.0 to 100.0 percent) serve
+        the trims that bound Tracking_Value, and with either one
+        Trim_Fade_Time, set in milliseconds (0 to 86400000) by
+        ``trim_fade_time``; without a trim none of the three rows is served.
+        A value out of range raises BacnetProtocolError (VALUE_OUT_OF_RANGE).
+        The colour keywords are as on ``add_binary_lighting_output``, and the
+        profile keywords as on ``add_analog_input``.
         """
         ...
-    def add_binary_lighting_output(self, instance: int, name: str) -> None: ...
+    def add_binary_lighting_output(
+        self,
+        instance: int,
+        name: str,
+        *,
+        color_reference: Optional[ObjectIdentifier] = None,
+        color_override: Optional[bool] = None,
+        override_color_reference: Optional[ObjectIdentifier] = None,
+        tags: Optional[list[NameValue]] = None,
+        profile_location: Optional[str] = None,
+        profile_name: Optional[str] = None,
+    ) -> None:
+        """Add a Binary Lighting Output object.
+
+        ``color_reference`` serves Color_Reference, the Color or Color
+        Temperature object the output takes its colour from (instance
+        4194303 names none). ``override_color_reference`` adds Color_Override
+        and Override_Color_Reference, and ``color_override=True`` turns the
+        override on; it needs an ``override_color_reference``, and both need
+        a ``color_reference`` (ValueError otherwise). ``color_override=False``
+        on its own means no override. A reference to another object type raises
+        BacnetProtocolError (VALUE_OUT_OF_RANGE). All three rows take writes;
+        ``lighting_color`` follows them. Profile keywords as on
+        ``add_analog_input``.
+        """
+        ...
+    def add_color(
+        self,
+        instance: int,
+        name: str,
+        *,
+        present_value: Optional[tuple[float, float]] = None,
+        value_source_tracking: bool = False,
+        tags: Optional[list[NameValue]] = None,
+        profile_location: Optional[str] = None,
+        profile_name: Optional[str] = None,
+    ) -> None:
+        """Add a Color object: a CIE 1931 xy colour, D65 white
+        ``(0.3127, 0.3290)`` unless ``present_value`` gives an ``(x, y)``
+        pair, each 0.0 to 1.0 (BacnetProtocolError otherwise). It reads as a
+        ``list`` of two ``real`` values. ``value_source_tracking`` serves
+        Value_Source, the writer of the last Present_Value or Color_Command
+        that set it. Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_color_temperature(
+        self,
+        instance: int,
+        name: str,
+        *,
+        present_value: Optional[int] = None,
+        min_pres_value: Optional[int] = None,
+        max_pres_value: Optional[int] = None,
+        value_source_tracking: bool = False,
+        tags: Optional[list[NameValue]] = None,
+        profile_location: Optional[str] = None,
+        profile_name: Optional[str] = None,
+    ) -> None:
+        """Add a Color Temperature object: a correlated colour temperature in
+        kelvin, 4000 unless ``present_value`` says otherwise.
+        ``min_pres_value`` and ``max_pres_value`` narrow the 1000 to 30000
+        range and come together (ValueError otherwise); ``present_value`` is
+        clamped to them. A value out of range raises BacnetProtocolError.
+        ``value_source_tracking`` is as on ``add_color``."""
+        ...
     def add_channel(
         self,
         instance: int,
@@ -4274,7 +4488,24 @@ class BACnetServer:
         OverflowError.
         """
         ...
-    def add_global_group(self, instance: int, name: str) -> None: ...
+    def add_global_group(
+        self,
+        instance: int,
+        name: str,
+        *,
+        members: Optional[
+            list[
+                tuple[ObjectIdentifier, PropertyIdentifier]
+                | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]]
+                | DeviceObjectPropertyReference
+            ]
+        ] = None,
+    ) -> None:
+        """Add a Global Group object; ``members`` seeds Group_Members, in the
+        form a typed read of it gives. A member naming this server's Device
+        is stored in its local form, and a device identifier that isn't a
+        Device raises ValueError."""
+        ...
     def add_structured_view(self, instance: int, name: str) -> None: ...
 
     # --- Access control ---
@@ -4739,6 +4970,23 @@ class BACnetServer:
         The value is encoded and decoded as a network WriteProperty's would
         be, so any value a network write takes works, including whatever
         ``read_property`` returns, and array-index errors match the network's.
+        """
+        ...
+
+    def lighting_color(
+        self, object_id: ObjectIdentifier
+    ) -> Awaitable[Optional[tuple[ObjectIdentifier, tuple[float, float] | int]]]:
+        """The colour the lighting output ``object_id`` shows now: the
+        Tracking_Value of the colour object its Color_Reference names, or its
+        Override_Color_Reference while Color_Override is TRUE, so a colour
+        fade shows as it runs.
+
+        Returns ``(source, colour)``, the colour object's identifier and an
+        ``(x, y)`` pair for a Color object or an ``int`` in kelvin for a
+        Color Temperature object, or ``None`` when the output has no
+        Color_Reference, the reference in use names no object (instance
+        4194303), or the server holds no colour object by that identifier.
+        Raises RuntimeError before ``start()``.
         """
         ...
 

@@ -95,6 +95,33 @@ pub(crate) struct Indication {
     pub new_baseline: Option<PropertyValue>,
 }
 
+/// The algorithm's stand-in while Event_Algorithm_Inhibit is TRUE (Clauses
+/// 12.12.18 and 13.2.2.1.5): no offnormal or normal indication of its own,
+/// and an enrollment not in NORMAL (fault was handled before this) indicates
+/// NORMAL so it returns there at once; the caller fires it without a delay.
+///
+/// That NORMAL is a NORMAL indication like any other, so under
+/// CHANGE_OF_VALUE it takes the current sample as the new baseline (Clause
+/// 13.3.3); a change has to be measured from it once the inhibit clears. A
+/// NORMAL enrollment keeps its baseline while inhibited, so a change made
+/// meanwhile is reported, after its delay, once the inhibit clears.
+pub(crate) fn inhibited_arm(
+    params: &bacnet_types::constructed::BACnetEventParameter,
+    monitored_value: &PropertyValue,
+    current: EventState,
+) -> ArmEvaluation {
+    ArmEvaluation::simple((current != EventState::NORMAL).then(|| {
+        Indication {
+            new_baseline: matches!(
+                params,
+                bacnet_types::constructed::BACnetEventParameter::ChangeOfValue { .. }
+            )
+            .then(|| monitored_value.clone()),
+            ..Indication::plain(EventState::NORMAL, 0)
+        }
+    }))
+}
+
 impl Indication {
     /// An indication carrying only a target and condition identity.
     fn plain(target: EventState, condition: u64) -> Self {
