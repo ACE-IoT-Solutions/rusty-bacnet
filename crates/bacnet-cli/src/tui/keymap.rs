@@ -5,6 +5,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::app::capture::{CaptureKey, Focus};
 use super::app::devices::Movement;
 use super::app::mstp::{JoinKey, MstpKey};
 use super::app::network::NetworkKey;
@@ -38,6 +39,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         Overlay::None if app.screen == Screen::Network => network(key),
         Overlay::None if app.screen == Screen::Sc => sc(key),
         Overlay::None if app.screen == Screen::Mstp => mstp(key),
+        Overlay::None if app.screen == Screen::Capture => capture(app, key),
         Overlay::None => main(key),
     }
 }
@@ -101,6 +103,7 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
         KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
+        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
         KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         _ => return None,
     })
@@ -119,6 +122,7 @@ fn watch(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
         KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
+        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
         KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
@@ -140,6 +144,7 @@ fn network(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
         KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
+        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
         KeyCode::Char('r') => Action::Network(NetworkKey::Refresh),
         KeyCode::Char('m') => Action::Network(NetworkKey::Survey),
         KeyCode::Tab => Action::Network(NetworkKey::Cycle { back: false }),
@@ -165,6 +170,7 @@ fn sc(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
+        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
         KeyCode::Tab => Action::Sc(ScKey::Cycle { back: false }),
         KeyCode::BackTab => Action::Sc(ScKey::Cycle { back: true }),
         KeyCode::Char('W') => Action::ToggleArm,
@@ -223,8 +229,47 @@ fn mstp(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
         KeyCode::Char('z') => Action::Mstp(MstpKey::Clear),
         KeyCode::Char(' ') => Action::Mstp(MstpKey::ToggleWatch),
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('p') => Action::OpenConnection,
+        KeyCode::Char('c') => Action::Reconnect,
+        KeyCode::Char('x') => Action::Disconnect,
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('L') => Action::ToggleLog,
+        _ => return None,
+    })
+}
+
+/// The Capture screen: move, Tab between the list, the tree and the hex
+/// view, Space to pause, `/` to filter, `z` to clear.
+fn capture(app: &App, key: KeyEvent) -> Option<Action> {
+    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+        return None;
+    }
+    if let Some(m) = movement(key.code) {
+        return Some(Action::Capture(CaptureKey::Move(m)));
+    }
+    let tree = app.capture.focus != Focus::List;
+    Some(match key.code {
+        KeyCode::Esc => Action::Capture(CaptureKey::Back),
+        KeyCode::Tab => Action::Capture(CaptureKey::Cycle { back: false }),
+        KeyCode::BackTab => Action::Capture(CaptureKey::Cycle { back: true }),
+        KeyCode::Enter => Action::Capture(CaptureKey::Toggle),
+        KeyCode::Left if tree => Action::Capture(CaptureKey::Collapse),
+        KeyCode::Right if tree => Action::Capture(CaptureKey::Expand),
+        KeyCode::Char(' ') => Action::Capture(CaptureKey::Pause),
+        KeyCode::Char('z') => Action::Capture(CaptureKey::Clear),
+        KeyCode::Char('/') => Action::StartFilter,
+        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,

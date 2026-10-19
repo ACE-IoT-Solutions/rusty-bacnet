@@ -159,6 +159,8 @@ pub(crate) enum Command {
     Network(super::network::NetworkCommand),
     /// A Who-Has or router discovery request.
     Discovery(super::network::discovery::DiscoveryCommand),
+    /// A capture request for the session.
+    Capture(super::capture::CaptureCommand),
 }
 
 /// One row of the device table, already formatted for display.
@@ -284,6 +286,8 @@ pub(crate) enum WorkerEvent {
     Mstp(super::mstp::MstpReport),
     /// An MS/TP monitor report (#970).
     Monitor(super::monitor::MonitorReport),
+    /// Captured frames and capture reports (#971).
+    Capture(super::capture::CaptureEvent),
 }
 
 #[cfg(test)]

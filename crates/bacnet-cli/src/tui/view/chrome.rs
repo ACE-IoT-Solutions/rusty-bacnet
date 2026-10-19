@@ -169,6 +169,14 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("?", "help"),
                 ("q", "quit"),
             ],
+            _ if app.screen == Screen::Capture => &[
+                ("Space", "pause"),
+                ("Tab", "pane"),
+                ("/", "filter"),
+                ("z", "clear"),
+                ("Esc", "back"),
+                ("?", "help"),
+            ],
             _ if app.screen == Screen::Watch => &[
                 ("x", "remove"),
                 (":", "command"),
@@ -242,7 +250,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Screens",
         &[
-            ("3-6  1  x", "Watch; network; SC; MS/TP; devices; unwatch"),
+            ("3-7  1  x", "Watch/net/SC/MS-TP/capture; devices; unwatch"),
             (":", "watch DEV OBJ [PROP]; csv on|off; find NAME"),
             ("r  m  Tab", "Network: read BBMD/routers; survey; next tab"),
         ],
@@ -257,10 +265,28 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// The Capture screen's keys, shown in place of the device and form
+/// sections there, so the overlay still fits 24 rows.
+const CAPTURE_HELP: (&str, &[(&str, &str)]) = (
+    "Capture",
+    &[
+        ("Space  Tab", "Pause or follow; list, tree, hex"),
+        ("Enter Left Rt", "To the tree; open or close a node"),
+        ("/", "Filter dev: mac: net: svc: pdu: errors bcast"),
+        ("z  Esc", "Forget every frame; clear the filter, back"),
+    ],
+);
+
 /// The `?` overlay.
-pub(super) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
+pub(super) fn help(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let capture = [HELP[0], HELP[3], CAPTURE_HELP];
+    let sections: &[(&str, &[(&str, &str)])] = if app.screen == Screen::Capture {
+        &capture
+    } else {
+        HELP
+    };
     let mut lines = Vec::new();
-    for (section, keys) in HELP {
+    for (section, keys) in sections {
         lines.push(Line::styled(format!(" {section}"), theme.accent()));
         for (key, what) in *keys {
             lines.push(Line::from(vec![
