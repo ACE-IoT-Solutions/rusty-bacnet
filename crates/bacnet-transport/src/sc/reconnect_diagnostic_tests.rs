@@ -291,9 +291,10 @@ async fn skipped_retries_are_gated_but_disconnect_and_exhaustion_always_emit() {
                 state_tx: &state_tx,
                 connect_timeout_ms: 10,
                 hub_limits: &limits,
+                observer: &super::super::ScObserver::new(),
             };
             assert!(recovery
-                .reconnect(&ws, ActiveHub::Primary, false)
+                .reconnect(&ws, ScActiveHub::Primary, false)
                 .await
                 .is_none());
             let skipped = capture.matching(if eligible {

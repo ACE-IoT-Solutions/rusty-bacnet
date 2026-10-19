@@ -133,6 +133,16 @@ impl ScClientBuilder {
         ))
         .await?;
         let mut transport = self.sc_transport(ws);
+        if let Some(failover_url) = self.failover_hub_url {
+            let tls_config = tls_config.clone();
+            transport = transport.with_failover_connector(move || {
+                let failover_url = failover_url.clone();
+                let tls_config = tls_config.clone();
+                async move {
+                    bacnet_transport::sc_tls::TlsWebSocket::connect(&failover_url, tls_config).await
+                }
+            });
+        }
         if let Some(rc) = self.reconnect {
             let hub_url = self.hub_url;
             transport = transport
@@ -155,28 +165,47 @@ impl ScClientBuilder {
     /// and drops its inputs; this does not promise generic endpoint rollback.
     ///
     /// The client's [`transport()`](BACnetClient::transport) lends the hub
-    /// connection-state watch, accepted Hub certificate observation and NPDU drop counts:
+    /// connection-state watch, hub-connector events and link status, accepted
+    /// Hub certificate observation and NPDU drop counts:
     ///
     /// ```no_run
     /// use bacnet_client::client::BACnetClient;
-    /// use bacnet_transport::sc::ScConnectionState;
+    /// use bacnet_transport::sc::{ScConnectionState, ScEvent, ScReconnectConfig};
     /// use bacnet_transport::sc_tls::ScNodeTlsConfig;
     ///
     /// async fn watch_hub(tls: ScNodeTlsConfig) -> Result<(), bacnet_types::error::Error> {
     ///     let client = BACnetClient::sc_builder()
     ///         .hub_url("wss://hub.example.com/bacnet")
+    ///         .failover_hub_url("wss://failover.example.com/bacnet")
+    ///         .reconnect(ScReconnectConfig::default())
     ///         .tls_config(tls)
     ///         .vmac([0x02, 0, 0, 0, 0, 0x01])
     ///         .device_uuid([0x42; 16])
     ///         .build()
     ///         .await?;
-    ///     // An owned receiver: it can live in its own task.
+    ///     // Owned receivers: they can live in their own tasks.
     ///     let mut state = client.transport().connection_state_changes();
     ///     tokio::spawn(async move {
     ///         while state.changed().await.is_ok() {
     ///             let _connected = *state.borrow_and_update() == ScConnectionState::Connected;
     ///         }
     ///     });
+    ///     let mut events = client.transport().connection_events();
+    ///     tokio::spawn(async move {
+    ///         use tokio::sync::broadcast::error::RecvError;
+    ///         loop {
+    ///             match events.recv().await {
+    ///                 Ok(event) => {
+    ///                     let _failover = matches!(event, ScEvent::FailoverEngaged);
+    ///                 }
+    ///                 // Fell behind: the oldest events were dropped, not waited for.
+    ///                 Err(RecvError::Lagged(_)) => continue,
+    ///                 Err(RecvError::Closed) => break,
+    ///             }
+    ///         }
+    ///     });
+    ///     // Active hub, hub VMAC and heartbeat timing: poll when redrawing.
+    ///     let _status = client.transport().connection_status();
     ///     // Owned historical TLS data, present only for an accepted active Hub.
     ///     let _peer = client.transport().hub_peer_info().await;
     ///     // A snapshot: poll it as often as needed.

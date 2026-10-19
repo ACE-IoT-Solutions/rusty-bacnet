@@ -87,6 +87,8 @@ impl<W: WebSocketPort> ScTransport<W> {
         }
         self.hub_limits.reset_apdu();
         self.state_tx.send_replace(ScConnectionState::Disconnected);
+        self.observer
+            .disconnected(super::ScDisconnectCause::LocalClose);
         self.ws_shared = None;
         self.connection = None;
         self.ws = None;

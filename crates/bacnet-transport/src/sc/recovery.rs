@@ -1,7 +1,9 @@
 //! Reconnect policy and bounded ownership of retired node sockets.
 
 use super::connector::dial_reconnect_ws;
+use super::observability::ScObserver;
 use super::*;
+use crate::sc_frame::Vmac;
 
 async fn connect_probe_from(conn: &Arc<Mutex<ScConnection>>) -> Arc<Mutex<ScConnection>> {
     Arc::new(Mutex::new(conn.lock().await.connect_probe()))
@@ -68,6 +70,24 @@ pub(super) async fn retire<W: WebSocketPort>(
     }
 }
 
+async fn publish_connected_ws<W: WebSocketPort>(
+    conn: &Arc<Mutex<ScConnection>>,
+    active_ws: &Arc<Mutex<Arc<W>>>,
+    ws: &Arc<W>,
+    probe_conn: &Arc<Mutex<ScConnection>>,
+    state_tx: &watch::Sender<ScConnectionState>,
+    hub_limits: &HubLimits,
+) -> Option<Vmac> {
+    let restored = probe_conn.lock().await.clone();
+    let mut current = active_ws.lock().await;
+    let mut c = conn.lock().await;
+    *c = restored;
+    *current = ws.clone();
+    hub_limits.publish(&c);
+    state_tx.send_replace(c.state);
+    c.hub_vmac
+}
+
 pub(super) struct Recovery<'a, W: WebSocketPort> {
     pub config: &'a ScReconnectConfig,
     /// Transport-task owned: retries and reconnect episodes share one log window.
@@ -80,27 +100,32 @@ pub(super) struct Recovery<'a, W: WebSocketPort> {
     pub state_tx: &'a watch::Sender<ScConnectionState>,
     pub connect_timeout_ms: u64,
     pub hub_limits: &'a HubLimits,
+    pub observer: &'a ScObserver,
 }
 
 impl<W: WebSocketPort> Recovery<'_, W> {
     pub(super) async fn reconnect(
         &mut self,
         current_ws: &Arc<W>,
-        active_hub: ActiveHub,
+        active_hub: ScActiveHub,
         current_reusable: bool,
-    ) -> Option<(Arc<W>, ActiveHub)> {
+    ) -> Option<(Arc<W>, ScActiveHub)> {
         warn!("SC transport disconnected, attempting reconnection");
         let initial_backoff = Duration::from_millis(self.config.initial_delay_ms);
         let mut backoff = initial_backoff;
         let max_backoff = Duration::from_millis(self.config.max_delay_ms);
+        let mut attempts = 0;
         for attempt in 1..=self.config.max_retries {
-            tokio::time::sleep(jittered_backoff(backoff, initial_backoff, max_backoff)).await;
+            let delay = jittered_backoff(backoff, initial_backoff, max_backoff);
+            self.observer.reconnect_attempt(active_hub, attempt, delay);
+            tokio::time::sleep(delay).await;
             if !self.conn.lock().await.connect_retry_allowed {
                 if let Some(suppressed) = self.retry_diagnostic() {
                     warn!(attempt, suppressed, "SC reconnection skipped without retry eligibility (suppressed {suppressed} reconnect diagnostics)");
                 }
                 break;
             }
+            attempts = attempt;
             {
                 let mut c = self.conn.lock().await;
                 c.reset_for_connect_retry();
@@ -123,6 +148,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                     break;
                 }
                 Err(e) => {
+                    self.observer.connect_failed(active_hub, &e);
                     if let Some(suppressed) = self.retry_diagnostic() {
                         warn!(%e, attempt, suppressed, "SC reconnection redial failed (suppressed {suppressed} reconnect diagnostics)");
                     }
@@ -135,12 +161,13 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 .await
             {
                 Ok(()) => {
-                    self.publish(&reconnect_ws, &probe_conn).await;
+                    self.publish(&reconnect_ws, &probe_conn, active_hub).await;
                     let suppressed = self.diagnostic_throttle.take_suppressed();
                     info!(attempt, suppressed, "SC reconnected after backoff (suppressed {suppressed} reconnect diagnostics)");
                     return Some((reconnect_ws, active_hub));
                 }
                 Err(e) => {
+                    self.observer.connect_failed(active_hub, &e);
                     absorb_failed_connect_probe(self.conn, &probe_conn).await;
                     if !self.conn.lock().await.connect_retry_allowed {
                         if let Some(suppressed) = self.retry_diagnostic() {
@@ -158,7 +185,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         // Preserve the existing order: only primary exhaustion tries failover.
         // An untouched preconfigured failover is consumed once, never poisoned
         // merely because a different (primary) socket was retired.
-        if active_hub == ActiveHub::Primary && self.conn.lock().await.connect_retry_allowed {
+        if active_hub == ScActiveHub::Primary && self.conn.lock().await.connect_retry_allowed {
             if let Some(failover) = dial_failover_ws(
                 self.failover_connector,
                 self.failover_ws,
@@ -167,6 +194,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             .await
             {
                 warn!("SC primary reconnection exhausted, attempting failover hub");
+                self.observer.failover_engaged();
                 {
                     let mut c = self.conn.lock().await;
                     c.reset_for_connect_retry();
@@ -177,12 +205,14 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                     .await
                 {
                     Ok(()) => {
-                        self.publish(&failover, &probe_conn).await;
+                        self.publish(&failover, &probe_conn, ScActiveHub::Failover)
+                            .await;
                         let suppressed = self.diagnostic_throttle.take_suppressed();
                         info!(suppressed, "SC connected to failover hub after primary reconnect exhaustion (suppressed {suppressed} reconnect diagnostics)");
-                        return Some((failover, ActiveHub::Failover));
+                        return Some((failover, ScActiveHub::Failover));
                     }
                     Err(e) => {
+                        self.observer.connect_failed(ScActiveHub::Failover, &e);
                         absorb_failed_connect_probe(self.conn, &probe_conn).await;
                         // The terminal exhaustion notice below reports suppression.
                         warn!(%e, "SC failover connection failed");
@@ -196,9 +226,12 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             suppressed,
             "SC reconnection: max retries exhausted, giving up (suppressed {suppressed} reconnect diagnostics)"
         );
-        let mut c = self.conn.lock().await;
-        c.state = ScConnectionState::Disconnected;
-        self.state_tx.send_replace(c.state);
+        {
+            let mut c = self.conn.lock().await;
+            c.state = ScConnectionState::Disconnected;
+            self.state_tx.send_replace(c.state);
+        }
+        self.observer.gave_up(attempts);
         None
     }
 
@@ -212,8 +245,8 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             .then(|| self.diagnostic_throttle.take_suppressed())
     }
 
-    async fn publish(&self, ws: &Arc<W>, probe: &Arc<Mutex<ScConnection>>) {
-        publish_connected_ws(
+    async fn publish(&self, ws: &Arc<W>, probe: &Arc<Mutex<ScConnection>>, hub: ScActiveHub) {
+        let hub_vmac = publish_connected_ws(
             self.conn,
             self.active_ws,
             ws,
@@ -222,6 +255,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             self.hub_limits,
         )
         .await;
+        self.observer.connected(hub, hub_vmac);
     }
 }
 

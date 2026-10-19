@@ -626,6 +626,7 @@ impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
             config: ClientConfig::default(),
             options: ClientOptions::default(),
             hub_url: String::new(),
+            failover_hub_url: None,
             tls_config: None,
             vmac: [0; 6],
             device_uuid: [0; 16],
@@ -646,6 +647,7 @@ pub struct ScClientBuilder {
     config: ClientConfig,
     options: ClientOptions,
     hub_url: String,
+    failover_hub_url: Option<String>,
     tls_config: Option<bacnet_transport::sc_tls::ScNodeTlsConfig>,
     vmac: bacnet_transport::sc_frame::Vmac,
     device_uuid: [u8; 16],
@@ -730,7 +732,26 @@ impl ScClientBuilder {
         self
     }
 
+    /// Set the failover hub WebSocket URL, dialled with the same TLS policy
+    /// when the primary hub cannot be reached (Annex AB.5.2).
+    ///
+    /// The connector turns to it when the primary rejects or times out the
+    /// first Connect-Request, and, with [`reconnect`](Self::reconnect), once
+    /// the reconnect attempts to the primary are used up. While on the
+    /// failover hub it keeps trying the primary and returns to it when it
+    /// can. [`build`](Self::build) still needs a TLS connection to the
+    /// primary hub. Follow it through `connection_events()` and
+    /// `connection_status()` on [`BACnetClient::transport`].
+    pub fn failover_hub_url(mut self, url: &str) -> Self {
+        self.failover_hub_url = Some(url.to_string());
+        self
+    }
+
     /// Enable automatic reconnection with the given configuration.
+    ///
+    /// Reconnects redial the hub that was in use, with exponential backoff
+    /// from `initial_delay_ms` up to `max_delay_ms`, for `max_retries`
+    /// attempts, before turning to the failover hub, if one is set.
     pub fn reconnect(mut self, config: bacnet_transport::sc::ScReconnectConfig) -> Self {
         self.reconnect = Some(config);
         self
