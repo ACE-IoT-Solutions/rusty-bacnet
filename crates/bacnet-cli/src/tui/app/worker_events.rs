@@ -138,6 +138,7 @@ impl App {
             WorkerEvent::Network(event) => self.network_event(event),
             WorkerEvent::Discovery(event) => self.discovery_event(event),
             WorkerEvent::Sc(report) => self.sc_report(report),
+            WorkerEvent::Mstp(report) => self.mstp.report(report),
         }
     }
 }

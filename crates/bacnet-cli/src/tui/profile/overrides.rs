@@ -13,6 +13,17 @@ pub(crate) struct Overrides {
     min_interval_ms: Option<u64>,
     bip: BipOverrides,
     sc: ScOverrides,
+    mstp: MstpOverrides,
+}
+
+/// Flags that only an MS/TP profile takes.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct MstpOverrides {
+    port: Option<String>,
+    baud: Option<u32>,
+    mac: Option<u8>,
+    max_master: Option<u8>,
+    max_info_frames: Option<u8>,
 }
 
 /// Flags that only a B/IP profile takes.
@@ -53,7 +64,7 @@ impl Overrides {
             .any(|key| has(key))
         {
             return Err(
-                "named profiles support BACnet/IP and BACnet/SC only; remove IPv6 flags or use --no-profile"
+                "named profiles support BACnet/IP, BACnet/SC and MS/TP only; remove IPv6 flags or use --no-profile"
                     .into(),
             );
         }
@@ -87,6 +98,13 @@ impl Overrides {
                     .filter(|_| has("sc_device_uuid"))
                     .map(DeviceUuid),
             },
+            mstp: MstpOverrides {
+                port: cli.mstp.clone().filter(|_| has("mstp")),
+                baud: has("mstp_baud").then_some(cli.mstp_baud),
+                mac: cli.mstp_mac.filter(|_| has("mstp_mac")),
+                max_master: has("mstp_max_master").then_some(cli.mstp_max_master),
+                max_info_frames: has("mstp_max_info_frames").then_some(cli.mstp_max_info_frames),
+            },
         })
     }
 
@@ -96,6 +114,23 @@ impl Overrides {
         profile.validate()?;
         let mut resolved = profile.clone();
         match profile.transport {
+            _ if profile.transport != Transport::Mstp && self.mstp != MstpOverrides::default() => {
+                return Err("MS/TP flags (--mstp, --mstp-*) apply only to an MS/TP profile".into());
+            }
+            Transport::Mstp => {
+                if self.bip != BipOverrides::default() || self.sc != ScOverrides::default() {
+                    return Err("B/IP and SC flags don't apply to an MS/TP profile".into());
+                }
+                let m = resolved.mstp.as_mut().expect("validated MS/TP profile");
+                let o = &self.mstp;
+                set(&mut m.port, o.port.clone());
+                set(&mut m.baud, o.baud);
+                set(&mut m.mac, o.mac);
+                set(&mut m.max_master, o.max_master);
+                set(&mut m.max_info_frames, o.max_info_frames);
+                set(&mut m.timeout_ms, self.timeout_ms);
+                set(&mut m.min_interval_ms, self.min_interval_ms);
+            }
             Transport::Bip => {
                 if self.sc != ScOverrides::default() {
                     return Err("SC flags (--sc, --sc-*) don't apply to a B/IP profile".into());
@@ -176,6 +211,11 @@ pub(crate) fn has_transport_flags(cli: &Cli) -> bool {
                 | "sc_key"
                 | "sc_vmac"
                 | "sc_device_uuid"
+                | "mstp"
+                | "mstp_baud"
+                | "mstp_mac"
+                | "mstp_max_master"
+                | "mstp_max_info_frames"
         )
     })
 }

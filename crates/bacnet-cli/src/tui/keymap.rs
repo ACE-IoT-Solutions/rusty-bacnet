@@ -6,6 +6,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::devices::Movement;
+use super::app::mstp::{JoinKey, MstpKey};
 use super::app::network::NetworkKey;
 use super::app::picker::PickerKey;
 use super::app::safety::ModalKey;
@@ -31,10 +32,12 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         },
         Overlay::Command(_) => command_line(key),
         Overlay::Safety(_) => safety(key),
+        Overlay::Join(_) => join(key),
         Overlay::None if app.filter_editing => filter(key),
         Overlay::None if app.screen == Screen::Watch => watch(key),
         Overlay::None if app.screen == Screen::Network => network(key),
         Overlay::None if app.screen == Screen::Sc => sc(key),
+        Overlay::None if app.screen == Screen::Mstp => mstp(key),
         Overlay::None => main(key),
     }
 }
@@ -97,6 +100,7 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
         KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         _ => return None,
     })
@@ -114,6 +118,7 @@ fn watch(key: KeyEvent) -> Option<Action> {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
         KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
@@ -134,6 +139,7 @@ fn network(key: KeyEvent) -> Option<Action> {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
         KeyCode::Char('r') => Action::Network(NetworkKey::Refresh),
         KeyCode::Char('m') => Action::Network(NetworkKey::Survey),
         KeyCode::Tab => Action::Network(NetworkKey::Cycle { back: false }),
@@ -158,6 +164,7 @@ fn sc(key: KeyEvent) -> Option<Action> {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
         KeyCode::Tab => Action::Sc(ScKey::Cycle { back: false }),
         KeyCode::BackTab => Action::Sc(ScKey::Cycle { back: true }),
         KeyCode::Char('W') => Action::ToggleArm,
@@ -184,6 +191,42 @@ fn safety(key: KeyEvent) -> Option<Action> {
         KeyCode::Backspace => ModalKey::Backspace,
         _ => ModalKey::Char(typed(key)?),
     }))
+}
+
+/// The MS/TP join confirmation: `y` joins (T2); Up and Down pick a port.
+fn join(key: KeyEvent) -> Option<Action> {
+    Some(match key.code {
+        KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::Escape,
+        KeyCode::Up | KeyCode::Char('k') => Action::Join(JoinKey::Up),
+        KeyCode::Down | KeyCode::Char('j') => Action::Join(JoinKey::Down),
+        KeyCode::Char('y') => Action::Join(JoinKey::Confirm),
+        _ => return None,
+    })
+}
+
+/// The MS/TP screen: `z` counts from now, Space pauses or follows.
+fn mstp(key: KeyEvent) -> Option<Action> {
+    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+        return None;
+    }
+    Some(match key.code {
+        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('z') => Action::Mstp(MstpKey::Clear),
+        KeyCode::Char(' ') => Action::Mstp(MstpKey::ToggleWatch),
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('p') => Action::OpenConnection,
+        KeyCode::Char('c') => Action::Reconnect,
+        KeyCode::Char('x') => Action::Disconnect,
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('L') => Action::ToggleLog,
+        _ => return None,
+    })
 }
 
 fn command_line(key: KeyEvent) -> Option<Action> {
@@ -258,6 +301,7 @@ fn connection(app: &App, key: KeyEvent) -> Option<Action> {
         _ if editing => Key::Char(typed(key)?),
         KeyCode::Char('n') => Key::New,
         KeyCode::Char('s') => Key::NewSc,
+        KeyCode::Char('m') => Key::NewMstp,
         KeyCode::Char('e') => Key::Edit,
         KeyCode::Char('r') => Key::Reload,
         KeyCode::Char('p') => Key::List,

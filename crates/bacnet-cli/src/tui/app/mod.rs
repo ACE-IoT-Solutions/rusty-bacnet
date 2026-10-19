@@ -9,6 +9,7 @@ pub(crate) mod browser;
 pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
+pub(crate) mod mstp;
 pub(crate) mod network;
 pub(crate) mod objects;
 pub(crate) mod picker;
@@ -75,6 +76,8 @@ pub(crate) enum Overlay {
     Command(String),
     /// A write session dialog.
     Safety(Box<safety::Modal>),
+    /// The MS/TP join confirmation.
+    Join(Box<mstp::JoinDialog>),
 }
 
 /// Progress of the current operation.
@@ -221,6 +224,10 @@ pub(crate) enum Action {
     Network(network::NetworkKey),
     /// A key on the SC screen.
     Sc(sc::ScKey),
+    /// A key in the MS/TP join confirmation.
+    Join(mstp::JoinKey),
+    /// A key on the MS/TP screen.
+    Mstp(mstp::MstpKey),
     /// A message from the worker.
     Worker(WorkerEvent),
 }
@@ -235,6 +242,8 @@ pub(crate) struct AppConfig {
     pub(crate) color: bool,
     /// Interfaces to pick from, when BACnet/IP has no `-i`.
     pub(crate) picker: Option<Picker>,
+    /// The MS/TP join confirmation, for a flags-only MS/TP session.
+    pub(crate) join: Option<mstp::JoinDialog>,
     /// `--passive`.
     pub(crate) passive: bool,
     /// Start time.
@@ -267,6 +276,11 @@ pub(crate) struct App {
     pub(crate) network: network::NetworkState,
     /// The SC screen: hub connector status, the doctor, certificates.
     pub(crate) sc: sc::ScState,
+    /// The MS/TP screen: this station, its token state and counters.
+    pub(crate) mstp: mstp::MstpState,
+    /// A flags-only MS/TP session's join confirmation, shown again before
+    /// every later join.
+    pub(crate) join_again: Option<Box<mstp::JoinDialog>>,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
     /// The screen in the body.
@@ -308,9 +322,11 @@ pub(crate) struct App {
 impl App {
     /// Initial state.
     pub(crate) fn new(config: AppConfig, log: LogRing) -> Self {
-        let (link, overlay) = match config.picker {
-            Some(picker) => (Link::Picking, Overlay::Picker(picker)),
-            None => (Link::Connecting, Overlay::None),
+        let join_again = config.join.clone().map(Box::new);
+        let (link, overlay) = match (config.picker, config.join) {
+            (Some(picker), _) => (Link::Picking, Overlay::Picker(picker)),
+            (None, Some(join)) => (Link::Picking, Overlay::Join(Box::new(join))),
+            (None, None) => (Link::Connecting, Overlay::None),
         };
         let log_generation = log.generation();
         Self {
@@ -326,6 +342,8 @@ impl App {
             safety: safety::SafetyState::new(config.passive),
             network: network::NetworkState::default(),
             sc: sc::ScState::default(),
+            mstp: mstp::MstpState::default(),
+            join_again,
             who_has: None,
             screen: Screen::Main,
             next_req: 0,
@@ -473,6 +491,7 @@ impl App {
             }
             // As the dialog's own Esc: a preview closed is a decline.
             Overlay::Safety(_) => self.modal_key(safety::ModalKey::Esc, out),
+            Overlay::Join(_) => self.decline_join(),
             Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
             Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
@@ -589,6 +608,7 @@ impl App {
         self.watch = WatchList::default();
         self.network = network::NetworkState::default();
         self.sc = sc::ScState::default();
+        self.mstp = mstp::MstpState::default();
         self.who_has = None;
         // A new session starts read-only; its worker reports the policy
         // and the ledger again.
@@ -633,6 +653,11 @@ impl App {
         }
         if let Some(connection) = &mut self.connection {
             if let Some(command) = connection.key(key) {
+                // Joining an MS/TP trunk is confirmed first (T2).
+                let command = match self.hold_for_join(command) {
+                    Some(command) => command,
+                    None => return,
+                };
                 if let Command::Profile(super::profile::service::Request::Connect {
                     profile, ..
                 }) = &command
@@ -690,6 +715,9 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             if matches!(app.link, Link::Down | Link::Failed(_)) {
                 if app.connection.is_some() {
                     app.open_connection();
+                } else if let Some(join) = app.join_again.clone() {
+                    // Joining again is confirmed again (T2).
+                    app.overlay = Overlay::Join(join);
                 } else {
                     app.link = Link::Connecting;
                     out.push(Command::Reconnect);
@@ -736,6 +764,8 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Modal(key) => app.modal_key(key, &mut out),
         Action::Network(key) => app.network_key(key, &mut out),
         Action::Sc(key) => app.sc_key(key),
+        Action::Join(key) => app.join_key(key, &mut out),
+        Action::Mstp(key) => app.mstp.key(key),
         Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out

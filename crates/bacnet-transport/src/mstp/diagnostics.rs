@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use bacnet_mstp_core::MstpCounters as CoreCounters;
+use bacnet_mstp_core::{MasterSnapshot, MasterState, MstpCounters as CoreCounters};
 
 use super::queues::SharedQueues;
 use super::totals::MstpCounters;
@@ -121,6 +121,45 @@ impl MstpDiagnostics {
     pub fn snapshot(&self) -> MstpDiagnosticsSnapshot {
         self.counters.snapshot()
     }
+
+    /// What the master node was doing when the transport's task last
+    /// published its counters; `None` before the task first handled an
+    /// event. It is published with the counters, after every event the task
+    /// handles, and keeps its last value once the transport stops.
+    pub fn node_state(&self) -> Option<MstpNodeState> {
+        *self
+            .counters
+            .node
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The master node's place in the token ring, as last published by the
+/// transport's task ([`MstpDiagnostics::node_state`]). Like the counters it
+/// is a sample, not a coherent view of the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MstpNodeState {
+    /// The master node's state (Clause 9.5.6).
+    pub state: MasterState,
+    /// The station this one passes the token to.
+    pub next_station: u8,
+    /// The station this one polls next for a new master.
+    pub poll_station: u8,
+    /// This station believes it is the only master on the line.
+    pub sole_master: bool,
+}
+
+impl From<MasterSnapshot> for MstpNodeState {
+    fn from(snapshot: MasterSnapshot) -> Self {
+        Self {
+            state: snapshot.state,
+            next_station: snapshot.next_station,
+            poll_station: snapshot.poll_station,
+            sole_master: snapshot.sole_master,
+        }
+    }
 }
 
 // Keep the storage and loads together; no event log or per-frame allocation.
@@ -131,6 +170,8 @@ macro_rules! counters {
             $(pub(super) $field: AtomicU64,)+
             /// The core's counters as last published by the task.
             mac: Mutex<MstpCounters>,
+            /// The node's state as last published by the task.
+            node: Mutex<Option<MstpNodeState>>,
         }
 
         impl Counters {
@@ -197,6 +238,11 @@ impl Counters {
     pub(super) fn publish(&self, take: impl FnOnce() -> CoreCounters) {
         let mut totals = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
         totals.add(take());
+    }
+
+    /// Publish the node's state, after the counters of the same event.
+    pub(super) fn publish_node(&self, snapshot: MasterSnapshot) {
+        *self.node.lock().unwrap_or_else(PoisonError::into_inner) = Some(snapshot.into());
     }
 
     /// Add the queues' counters to the totals after a send changed them.

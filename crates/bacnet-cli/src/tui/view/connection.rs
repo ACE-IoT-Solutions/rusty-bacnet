@@ -77,7 +77,7 @@ fn list<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
     }
     lines.push(Line::raw(""));
     lines.push(Line::raw(
-        "Enter preview | Up/Down choose | n new B/IP | s new SC | r reload list",
+        "Enter preview | Up/Down choose | n/s/m new B/IP, SC, MS/TP | r reload",
     ));
     lines.push(Line::styled(
         format!("Config: {}", connection.root),
@@ -90,6 +90,7 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
     let kind = match connection.transport {
         Transport::Bip => "B/IP",
         Transport::Sc => "BACnet/SC",
+        Transport::Mstp => "MS/TP",
     };
     let mut lines = vec![Line::raw(format!(
         "{} {kind} profile; Enter saves it without connecting.",
@@ -153,6 +154,14 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
                 },
             ));
         }
+        Transport::Mstp => {
+            lines.push(Line::raw(
+                "Port as bacnet mstp-ports lists it. MAC: unused on the trunk.",
+            ));
+            lines.push(Line::raw(
+                "Connecting asks you to confirm joining the token ring (y).",
+            ));
+        }
     }
     lines.push(Line::raw(
         "Writes: never or session (W arms). Dangerous: allows priority 6.",
@@ -180,6 +189,22 @@ fn sc_lines(profile: &Profile, lines: &mut Vec<Line<'_>>) {
     lines.push(Line::raw(format!(
         "APDU timeout: {} ms   Pacing: {} ms",
         s.timeout_ms, s.min_interval_ms
+    )));
+}
+
+fn mstp_lines(profile: &Profile, lines: &mut Vec<Line<'_>>) {
+    let Some(m) = &profile.mstp else { return };
+    lines.push(Line::raw(format!(
+        "Port: {}   Station (MAC): {}   Baud: {}",
+        m.port, m.mac, m.baud
+    )));
+    lines.push(Line::raw(format!(
+        "Max master: {}   Info frames: {}",
+        m.max_master, m.max_info_frames
+    )));
+    lines.push(Line::raw(format!(
+        "APDU timeout: {} ms   Pacing: {} ms",
+        m.timeout_ms, m.min_interval_ms
     )));
 }
 
@@ -229,6 +254,7 @@ fn preview<'a>(connection: &'a Connection, live: bool, theme: &Theme) -> Vec<Lin
             let kind = match profile.transport {
                 Transport::Bip => "B/IP",
                 Transport::Sc => "BACnet/SC",
+                Transport::Mstp => "MS/TP",
             };
             lines.push(Line::styled(
                 format!("{} — resolved {kind} connection", connection.name),
@@ -236,6 +262,7 @@ fn preview<'a>(connection: &'a Connection, live: bool, theme: &Theme) -> Vec<Lin
             ));
             bip_lines(&profile, &mut lines, theme);
             sc_lines(&profile, &mut lines);
+            mstp_lines(&profile, &mut lines);
             lines.push(Line::raw(format!(
                 "Writes: {}; dangerous: {}. Read-only until W arms a session.",
                 match profile.safety.writes {
@@ -296,7 +323,7 @@ fn preview<'a>(connection: &'a Connection, live: bool, theme: &Theme) -> Vec<Lin
         }
     }
     lines.push(Line::raw(
-        "e edit | r reload from disk | p profiles | n new B/IP | s new SC",
+        "e edit | r reload from disk | p profiles | n/s/m new B/IP, SC, MS/TP",
     ));
     lines
 }

@@ -18,6 +18,7 @@ mod core;
 #[allow(dead_code)] // Public API consumed by capture command handler (Task 4).
 mod decode;
 mod foreign;
+mod mstp;
 mod output;
 mod parse;
 mod paths;
@@ -98,7 +99,9 @@ async fn execute_command<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Shell | Command::Tui { .. } | Command::ScCheck { .. } => unreachable!(),
+        Command::Shell | Command::Tui { .. } | Command::ScCheck { .. } | Command::MstpPorts => {
+            unreachable!()
+        }
         Command::Discover {
             range,
             wait,
@@ -491,6 +494,15 @@ fn dispatch(
         );
         return Ok(std::process::ExitCode::from(status));
     }
+    if let Some(Command::MstpPorts) = cli.command {
+        let status = mstp::ports_cmd(
+            mstp::list_ports(),
+            resolve_format(&cli),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+        return Ok(std::process::ExitCode::from(status));
+    }
     if let Err(refusal) = guard_one_shot(&cli, confirm) {
         // Errors go to stderr and leave stdout empty, in either format.
         match resolve_format(&cli) {
@@ -552,7 +564,10 @@ async fn cli_main(cli: Cli) -> CliResult {
         // while it is in raw mode. Boxed so its state stays out of this future.
         return Box::pin(run_tui(cli)).await;
     }
-    setup_tracing(cli.verbose, cli.sc || cli.foreign_bbmd.is_some());
+    setup_tracing(
+        cli.verbose,
+        cli.sc || cli.foreign_bbmd.is_some() || cli.mstp.is_some(),
+    );
     let format = resolve_format(&cli);
 
     let mut args = transport::TransportArgs::from_cli(&cli, Ipv4Addr::UNSPECIFIED, cli.broadcast)?;
@@ -564,7 +579,12 @@ async fn cli_main(cli: Cli) -> CliResult {
     let is_shell = matches!(cli.command, None | Some(Command::Shell));
     let (interface, broadcast) = if let Some(iface) = cli.interface {
         (iface, cli.broadcast)
-    } else if is_shell && !cli.sc && !cli.ipv6 && std::io::stdin().is_terminal() {
+    } else if is_shell
+        && !cli.sc
+        && !cli.ipv6
+        && cli.mstp.is_none()
+        && std::io::stdin().is_terminal()
+    {
         pick_interface()?
     } else {
         (Ipv4Addr::UNSPECIFIED, cli.broadcast)
@@ -608,6 +628,9 @@ async fn cli_main(cli: Cli) -> CliResult {
         }
     }
 
+    if args.mstp.is_some() {
+        return mstp::run(&cli, &args, format).await;
+    }
     if args.sc {
         #[cfg(feature = "sc-tls")]
         {
