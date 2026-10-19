@@ -20,7 +20,7 @@ use bacnet_types::enums::{
     UnconfirmedServiceChoice,
 };
 #[cfg(feature = "alloc")]
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, Error, RangeError};
 #[cfg(feature = "alloc")]
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -58,10 +58,11 @@ pub fn validate_max_segments(value: Option<u8>) -> Result<(), Error> {
 fn encode_max_segments(value: Option<u8>) -> Result<u8, Error> {
     match MaxSegments::from_capacity(value) {
         Some(field) => Ok(field.bits()),
-        None => Err(Error::Encoding(format!(
+        None => Err(RangeError::new(
             "invalid max-segments-accepted {}; expected 2..=255 or unspecified",
-            value.unwrap_or(0)
-        ))),
+        )
+        .with_value(value.unwrap_or(0).into())
+        .into()),
     }
 }
 
@@ -115,7 +116,11 @@ pub const MINIMUM_MESSAGE_SIZE: u16 = 50;
 pub fn max_apdu_header_at_or_below(capacity: u32) -> Result<u16, Error> {
     MaxApdu::at_or_below(capacity)
         .map(MaxApdu::octets)
-        .ok_or_else(|| Error::Encoding(format!("local APDU capacity {capacity} is below 50")))
+        .ok_or_else(|| {
+            RangeError::new("local APDU capacity {} is below 50")
+                .with_value(capacity.into())
+                .into()
+        })
 }
 
 /// Return true when `value` is one of the BACnet max-APDU-length encodings
@@ -136,9 +141,11 @@ pub fn validate_max_apdu_length(value: u16) -> Result<(), Error> {
 fn encode_max_apdu(value: u16) -> Result<u8, Error> {
     match MaxApdu::from_octets(value) {
         Some(field) => Ok(field.bits()),
-        None => Err(Error::Encoding(format!(
-            "invalid max-APDU-length {value}; expected one of 50, 128, 206, 480, 1024, 1476"
-        ))),
+        None => Err(RangeError::new(
+            "invalid max-APDU-length {}; expected one of 50, 128, 206, 480, 1024, 1476",
+        )
+        .with_value(value.into())
+        .into()),
     }
 }
 
@@ -375,7 +382,7 @@ fn encode_confirmed_request(buf: &mut BytesMut, pdu: &ConfirmedRequest) -> Resul
     if pdu.segmented {
         buf.put_u8(pdu.sequence_number.unwrap_or(0));
         buf.put_u8(valid_window_size(
-            "ConfirmedRequest proposed-window-size",
+            "ConfirmedRequest proposed-window-size {} outside BACnet range 1..=127",
             pdu.proposed_window_size.unwrap_or(1),
         )?);
     }
@@ -415,7 +422,7 @@ fn encode_complex_ack(buf: &mut BytesMut, pdu: &ComplexAck) -> Result<(), Error>
     if pdu.segmented {
         buf.put_u8(pdu.sequence_number.unwrap_or(0));
         buf.put_u8(valid_window_size(
-            "ComplexAck proposed-window-size",
+            "ComplexAck proposed-window-size {} outside BACnet range 1..=127",
             pdu.proposed_window_size.unwrap_or(1),
         )?);
     }
@@ -438,20 +445,20 @@ fn encode_segment_ack(buf: &mut BytesMut, pdu: &SegmentAck) -> Result<(), Error>
     buf.put_u8(pdu.invoke_id);
     buf.put_u8(pdu.sequence_number);
     buf.put_u8(valid_window_size(
-        "SegmentACK actual-window-size",
+        "SegmentACK actual-window-size {} outside BACnet range 1..=127",
         pdu.actual_window_size,
     )?);
     Ok(())
 }
 
+/// `value` when it is a window size (1 to 127), or the [`Error::Range`]
+/// `label` names it in, with a placeholder for the value.
 #[cfg(feature = "alloc")]
-fn valid_window_size(field: &str, value: u8) -> Result<u8, Error> {
+fn valid_window_size(label: &'static str, value: u8) -> Result<u8, Error> {
     if (1..=127).contains(&value) {
         Ok(value)
     } else {
-        Err(Error::Encoding(format!(
-            "{field} {value} outside BACnet range 1..=127"
-        )))
+        Err(RangeError::new(label).with_value(value.into()).into())
     }
 }
 
@@ -819,6 +826,8 @@ fn decode_abort(data: Bytes) -> Result<AbortPdu, Error> {
 
 #[cfg(all(test, feature = "alloc"))]
 mod change_list_error_tests;
+#[cfg(all(test, feature = "alloc"))]
+mod encode_refusal_tests;
 #[cfg(all(test, feature = "alloc"))]
 mod structured_error_tests;
 #[cfg(all(test, feature = "alloc"))]

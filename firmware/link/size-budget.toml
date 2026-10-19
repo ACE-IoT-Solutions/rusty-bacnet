@@ -16,18 +16,17 @@
 #   isn't counted here: the manual emulation check measures it and holds it
 #   to firmware/link/stack-budget.toml (docs/ci.md, "Emulation (manual)").
 # - fmt_functions, div64_functions, memmove_functions: counts of functions,
-#   not octets. The first two are 0 for every image but apdu. A 64-bit
+#   not octets. The first two are 0 for every image. A 64-bit
 #   division by a runtime value links compiler-builtins' routine, about
 #   0.9 KB, which the 12% headroom would otherwise absorb; the MS/TP core
 #   divides in 32 bits (#1618). The apdu image's counts are what it links
 #   today, with no headroom, so a new function fails the check, and a count
 #   under its limit gets a notice to lower the limit. Its decoders' errors
 #   carry static labels, formatted only when displayed (#1646), which the
-#   image never does; the encoders' validation errors and assertion messages
-#   still format (#1777), which brings in core::fmt (12 functions). Before #1646 it
-#   was 15, and on ARMv6-M, which has no multiply with a 64-bit product,
-#   formatting a decoded u64 also linked the 64-bit division routine (3
-#   functions); now none.
+#   image never does, and since #1777 so do its encoders' validation errors,
+#   so it links no core::fmt either. Before #1646 it was 15, and on ARMv6-M,
+#   which has no multiply with a 64-bit product, formatting a decoded u64 also
+#   linked the 64-bit division routine (3 functions); now none.
 # - memmove_functions counts compiler-builtins' memmove and the entry points
 #   in front of it (memmove, __aeabi_memmove, __aeabi_memmove4 and 8),
 #   0.8-1.4 KB in all, which a whole-value copy the compiler can't prove
@@ -94,6 +93,12 @@
 # apdu's fmt_functions dropped from 12 to 11 on every target when
 # bacnet-encoding's owned NPDU began decoding through bacnet-npdu's view
 # (#1770): its address field no longer formats itself.
+#
+# apdu's fmt_functions dropped from 11 to 0 on every target, measured
+# 2026-10-18 with the same toolchain, when the owned APDU and NPDU encoders'
+# validation refusals became static range errors and ObjectIdentifier's
+# encoder lost its formatted assertions (#1777): 2.9-4.0 KB less flash. Its
+# text, rodata and flash budgets are the new sizes plus 12%.
 #
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
@@ -325,13 +330,13 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.apdu]
-text = 41904
-rodata = 5712
+text = 41072
+rodata = 5104
 data = 64
 bss = 1184
-flash = 48864
+flash = 47312
 ram = 1184
-fmt_functions = 11
+fmt_functions = 0
 div64_functions = 0
 memmove_functions = 2
 
@@ -413,13 +418,13 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.apdu]
-text = 44576
-rodata = 5712
+text = 42848
+rodata = 5104
 data = 64
 bss = 1184
-flash = 50608
+flash = 48144
 ram = 1184
-fmt_functions = 11
+fmt_functions = 0
 div64_functions = 0
 memmove_functions = 2
 
@@ -501,13 +506,13 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.apdu]
-text = 50672
-rodata = 6336
+text = 49296
+rodata = 5712
 data = 64
 bss = 1184
-flash = 57232
+flash = 55040
 ram = 1184
-fmt_functions = 11
+fmt_functions = 0
 div64_functions = 0
 memmove_functions = 2
 
@@ -589,13 +594,13 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.apdu]
-text = 41808
-rodata = 5712
+text = 40800
+rodata = 5104
 data = 64
 bss = 1184
-flash = 48752
+flash = 47040
 ram = 1184
-fmt_functions = 11
+fmt_functions = 0
 div64_functions = 0
 memmove_functions = 2
 
