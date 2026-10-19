@@ -70,7 +70,7 @@
 //! a refusal, a [`Discard`](router::Discard), an
 //! [`Event`](router::Event), a [`Kind`](router::Kind) or another of these
 //! enums a wildcard arm. The enums a host acts on case by case,
-//! [`Action`](router::Action) and [`Received`](router::Received), stay
+//! [`Action`](router::Action), [`Received`](router::Received) and a node's [`Received`](node::Received), stay
 //! exhaustive, as do the closed sets such as
 //! [`Dest`](router::Dest), [`Group`](router::Group) and
 //! [`Reachability`](table::Reachability). The wire codes,

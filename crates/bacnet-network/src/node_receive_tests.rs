@@ -9,6 +9,7 @@ use bacnet_transport::port::TransportPort;
 
 use crate::layer::{Counters, NetworkLayer};
 use crate::loopback_fixture::{recv, wire, APDU};
+use bacnet_router_core::node::Node;
 
 #[tokio::test]
 async fn npdus_for_another_network_reach_neither_receiver_and_are_counted() {
@@ -91,4 +92,33 @@ async fn malformed_npdus_are_counted() {
 
     network.stop().await.unwrap();
     peer.stop().await.unwrap();
+}
+
+/// The records the layer builds from the node's view are what the owned
+/// decoder gives for the same frame: every NPCI field of a control, and
+/// the payload of an APDU.
+#[test]
+fn records_from_the_view_match_the_owned_decoder() {
+    use crate::layer::receive::{admit, Inbound, NodeTotals};
+    use bacnet_encoding::npdu::decode_npdu;
+    use bytes::Bytes;
+
+    // SNET 9 / SADR 5, expecting a reply, urgent priority (Who-Is-Router).
+    let control = Bytes::from_static(&[1, 0x8D, 0, 9, 1, 5, 0x00, 0x0B, 0xB8]);
+    // DNET 0xFFFF, hop count 7, SNET 9 / SADR 5, critical priority.
+    let apdu = Bytes::from_static(&[1, 0x2A, 0xFF, 0xFF, 0, 0, 9, 1, 5, 7, 0x10, 0x08]);
+    let (mut node, totals) = (Node::new(), NodeTotals::default());
+
+    let Inbound::Control(Some(npdu)) =
+        admit(&mut node, &totals, &[2], false, control.clone(), true)
+    else {
+        panic!("a control");
+    };
+    assert_eq!(npdu, decode_npdu(control).unwrap());
+    let Inbound::Apdu { apdu: payload, .. } =
+        admit(&mut node, &totals, &[2], false, apdu.clone(), true)
+    else {
+        panic!("an APDU");
+    };
+    assert_eq!(payload, decode_npdu(apdu).unwrap().payload);
 }

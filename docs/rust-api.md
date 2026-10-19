@@ -2806,8 +2806,8 @@ These checks are written once, in `bacnet-router-core`'s `node` module, and
 the router engine and `NetworkLayer` both run them (#1795). Past them,
 `NetworkLayer` runs on that module's `Node`: an NPDU whose DNET names one
 network, APDU or network message, is for a router to act on, so the layer
-hands it to neither receiver (Clauses 6.5.2.1 and 6.5.2.2) and counts it in
-`counters().routed_drops`. `NetworkLayer::counters()` totals every drop by
+hands it to neither receiver (Clauses 6.5.2.1 and 6.5.2.2): the node reports
+`Discard::NotRouted`, and the layer counts it in `counters().routed_drops`. `NetworkLayer::counters()` totals every drop by
 reason, a malformed NPDU (`malformed`) included.
 
 `BACnetRouter` sends each Reject-Message-To-Network it originates to whoever

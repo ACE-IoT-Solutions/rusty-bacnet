@@ -51,6 +51,7 @@ fn local_and_global_apdus_reach_the_application() {
         npdu,
         group,
         global,
+        ..
     }) = node.receive(NODE_A, false, &global)
     else {
         panic!("an APDU");
@@ -104,7 +105,7 @@ fn a_dnet_naming_one_network_is_dropped() {
     for frame in &frames {
         assert_eq!(
             node.receive(NODE_A, false, frame),
-            Received::Discarded(Discard::Routed)
+            Received::Discarded(Discard::NotRouted)
         );
     }
     assert_eq!(

@@ -1,5 +1,7 @@
 //! What the router counts.
 
+use crate::node::Count;
+
 /// Counts of what the router dropped, sent and was refused since its
 /// counters were last taken ([`Router::take_counters`](super::Router::take_counters)).
 /// Each is a `u32` that saturates between takes; add them to your own
@@ -77,6 +79,16 @@ pub struct Counters {
 }
 
 impl Counters {
+    /// The count a refusal of the shared admission checks goes in.
+    pub(crate) fn slot(&mut self, count: Count) -> &mut u32 {
+        match count {
+            Count::AddressLength => &mut self.address_length_drops,
+            Count::GlobalDadr => &mut self.global_broadcast_dadr_drops,
+            Count::BroadcastType => &mut self.broadcast_pdu_type_drops,
+            Count::Malformed => &mut self.malformed,
+        }
+    }
+
     /// All zero.
     pub(super) const ZERO: Self = Self {
         address_length_drops: 0,

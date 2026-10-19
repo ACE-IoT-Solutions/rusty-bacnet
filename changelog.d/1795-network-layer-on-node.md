@@ -1,7 +1,7 @@
 ---
 section: Added
 ---
-- `bacnet-router-core` gains `node::Node`, the receive rules of a node that
-  doesn't route, sharing its admission checks with the router engine;
-  `NetworkLayer` runs on it and totals its drops in `NetworkLayer::counters()`,
-  now with `malformed` and `routed_drops` too (#1795).
+- `bacnet-router-core` gains `node::Node`, a non-routing node's receive
+  rules, sharing the router engine's admission checks and adding
+  `Discard::NotRouted`; `NetworkLayer` runs on it, with drop totals in
+  `NetworkLayer::counters()`, `malformed` and `routed_drops` included (#1795).

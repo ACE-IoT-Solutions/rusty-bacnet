@@ -52,7 +52,7 @@ totals!(
 );
 
 /// What one frame is for, owned, so the frame it was read from can move.
-pub(super) enum Inbound {
+pub(crate) enum Inbound {
     /// An APDU for the application.
     Apdu {
         /// The APDU: the frame, advanced past the NPCI, not a copy.
@@ -74,7 +74,7 @@ pub(super) enum Inbound {
 /// Run `frame`, from link source `source_mac`, through `node`, adding what
 /// it counted to `totals`. `controls` says whether a control receiver
 /// wants network messages.
-pub(super) fn admit(
+pub(crate) fn admit(
     node: &mut Node,
     totals: &NodeTotals,
     source_mac: &[u8],
@@ -105,7 +105,7 @@ pub(super) fn admit(
         }
         node::Received::Discarded(discard) => {
             totals.add(&node.take_counters());
-            if discard == Discard::Routed {
+            if discard == Discard::NotRouted {
                 debug!("Discarding routed message (non-router)");
             } else {
                 warn!(?discard, "Dropping an inbound NPDU");

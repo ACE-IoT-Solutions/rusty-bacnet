@@ -133,6 +133,10 @@ pub(crate) fn is_unconfirmed(apdu: &[u8]) -> bool {
 }
 
 /// What a node does with a frame.
+///
+/// Like the router's [`Received`](crate::router::Received), it stays
+/// exhaustive: a host acts on each outcome, so a new one should not compile
+/// unhandled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a frame may carry an APDU for the application"]
 pub enum Received<'f> {
@@ -146,7 +150,11 @@ pub enum Received<'f> {
 }
 
 /// An APDU for the node's application, with how it was addressed.
+///
+/// It is `#[non_exhaustive]`, so a new field isn't a breaking change; only
+/// a [`Node`] makes one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Apdu<'f> {
     /// The NPDU that carried it: its APDU is the payload, at its offset in
     /// the frame, and its SNET and SADR, when a router relayed it, are the
@@ -181,8 +189,20 @@ pub struct Counters {
     /// Frames that didn't parse as an NPDU for any other reason.
     pub malformed: u32,
     /// NPDUs whose DNET named one network, for some other device: a node
-    /// doesn't route them ([`Discard::Routed`]).
+    /// doesn't route them ([`Discard::NotRouted`]).
     pub routed_drops: u32,
+}
+
+impl Counters {
+    /// The count a refusal of the shared admission checks goes in.
+    pub(crate) fn slot(&mut self, count: Count) -> &mut u32 {
+        match count {
+            Count::AddressLength => &mut self.address_length_drops,
+            Count::GlobalDadr => &mut self.global_broadcast_dadr_drops,
+            Count::BroadcastType => &mut self.broadcast_pdu_type_drops,
+            Count::Malformed => &mut self.malformed,
+        }
+    }
 }
 
 /// The network layer's receive side at a node that doesn't route. See the
@@ -207,7 +227,7 @@ pub struct Counters {
 /// // The same request for station 5 on network 2: a router's to pass on.
 /// who_is.destination = Some(Address { network: 2, mac: &[5] });
 /// let len = who_is.encode_into(&mut frame)?;
-/// assert_eq!(node.receive(&[7], false, &frame[..len]), Received::Discarded(Discard::Routed));
+/// assert_eq!(node.receive(&[7], false, &frame[..len]), Received::Discarded(Discard::NotRouted));
 /// assert_eq!(node.take_counters().routed_drops, 1);
 /// # Ok::<(), Box<dyn core::error::Error>>(())
 /// ```
@@ -238,13 +258,7 @@ impl Node {
         let npdu = match admit(source, npdu) {
             Ok(admitted) => admitted.npdu,
             Err(refused) => {
-                let counters = &mut self.counters;
-                bump(match refused.count {
-                    Count::AddressLength => &mut counters.address_length_drops,
-                    Count::GlobalDadr => &mut counters.global_broadcast_dadr_drops,
-                    Count::BroadcastType => &mut counters.broadcast_pdu_type_drops,
-                    Count::Malformed => &mut counters.malformed,
-                });
+                bump(self.counters.slot(refused.count));
                 return Received::Discarded(refused.discard);
             }
         };
@@ -254,7 +268,7 @@ impl Node {
             Some(destination) if destination.network == GLOBAL_NETWORK => true,
             Some(_) => {
                 bump(&mut self.counters.routed_drops);
-                return Received::Discarded(Discard::Routed);
+                return Received::Discarded(Discard::NotRouted);
             }
         };
         if npdu.is_network_message() {

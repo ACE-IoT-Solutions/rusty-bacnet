@@ -6,8 +6,8 @@ use super::host::Host;
 use super::tasks::Task;
 use super::Group;
 use super::Storage;
+use crate::node::admit;
 pub(super) use crate::node::is_unconfirmed;
-use crate::node::{admit, Count};
 use crate::npdu::RejectMessageReason;
 use crate::npdu::{Address, AddressField, Malformed, NetworkPriority, Npdu, GLOBAL_NETWORK};
 use crate::table::{Reachability, Route};
@@ -68,8 +68,10 @@ pub struct Local<'f> {
     pub reply: super::ReplyPlan,
 }
 
-/// Why a frame was discarded. Each has its count in
-/// [`Counters`](super::Counters).
+/// Why a frame was discarded. Each reason the router gives has its count
+/// in its [`Counters`](super::Counters); [`NotRouted`](Self::NotRouted),
+/// which only a node gives, is counted in the node's
+/// [`Counters`](crate::node::Counters) instead.
 ///
 /// It is `#[non_exhaustive]`, so a new reason isn't a breaking change: a
 /// `match` needs a wildcard arm.
@@ -123,7 +125,7 @@ pub enum Discard {
     /// Only a [`Node`](crate::node::Node) gives this: an NPDU whose DNET
     /// names one network is for a device elsewhere, which a node that
     /// doesn't route drops (Clauses 6.5.2.1, 6.5.2.2 and 6.5.4).
-    Routed,
+    NotRouted,
 }
 
 /// What the router knows about the frame in hand.
@@ -190,13 +192,7 @@ impl<
         let admitted = match admit(frame.source, frame.npdu) {
             Ok(admitted) => admitted,
             Err(refused) => {
-                let counters = &mut self.counters;
-                bump(match refused.count {
-                    Count::AddressLength => &mut counters.address_length_drops,
-                    Count::GlobalDadr => &mut counters.global_broadcast_dadr_drops,
-                    Count::BroadcastType => &mut counters.broadcast_pdu_type_drops,
-                    Count::Malformed => &mut counters.malformed,
-                });
+                bump(self.counters.slot(refused.count));
                 // A global broadcast draws no reject, and an NPDU without a
                 // DNET has no network to name.
                 if let Some((source_mac, Some(dnet), source)) = refused.reject_to {

@@ -104,7 +104,7 @@ mod issuance;
 pub use issuance::IssuedApdu;
 
 #[path = "layer_receive.rs"]
-mod receive;
+pub(crate) mod receive;
 pub use receive::Counters;
 
 #[path = "layer_admission.rs"]
