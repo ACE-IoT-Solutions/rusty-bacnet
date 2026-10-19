@@ -34,7 +34,7 @@ fn ready_answer_during_echo_wait_preserves_idle_deadline_and_wire_start() {
                 echo_grace: Some(Duration::from_millis(40)),
                 ..HostSpec::default()
             })
-            .reply(ReplyPolicy::Answer {
+            .application(ReplyPolicy::Answer {
                 delay: Duration::from_millis(240),
                 payload: vec![1, 0, 0xA7],
             }),
@@ -73,7 +73,7 @@ fn drain_wait_defers_answers_and_reboot_discards_them() {
                     drain_duration: Duration::from_millis(60),
                     ..HostSpec::default()
                 })
-                .reply(ReplyPolicy::Answer {
+                .application(ReplyPolicy::Answer {
                     delay: Duration::from_millis(240),
                     payload: vec![1, 0, 0xA7],
                 }),
@@ -124,7 +124,7 @@ fn ready_application_backlog_is_bounded() {
                 echo_grace: Some(Duration::from_millis(40)),
                 ..HostSpec::default()
             })
-            .reply(ReplyPolicy::Ignore),
+            .application(ReplyPolicy::Ignore),
     );
     for byte in request(1).octets {
         sim.host_character(0, Character::Clean(byte));
@@ -159,7 +159,7 @@ fn reply_wire_provenance_is_fresh_after_reboot() {
     sim.add_master(
         MasterSpec::new(0, 1, 10_000)
             .host(HostSpec::default())
-            .reply(ReplyPolicy::Answer {
+            .application(ReplyPolicy::Answer {
                 delay: Duration::from_millis(5),
                 payload: vec![1, 0, 0xA7],
             }),
@@ -195,7 +195,7 @@ fn reply_wire_provenance_survives_turnaround_and_admission_retry() {
                 start_delay: Duration::from_millis(5),
                 ..AdapterSpec::default()
             })
-            .reply(ReplyPolicy::Answer {
+            .application(ReplyPolicy::Answer {
                 delay: Duration::ZERO,
                 payload: vec![1, 0, 0xA7],
             }),
@@ -255,7 +255,7 @@ fn late_reply_keeps_original_wire_request_across_intervening_frames() {
                         start_delay: Duration::from_millis(20),
                         ..AdapterSpec::default()
                     })
-                    .reply(ReplyPolicy::Ignore),
+                    .application(ReplyPolicy::Ignore),
             );
             for station in [1, 2] {
                 sim.add_scripted(station, |_: &crate::SeenFrame, _: &mut Vec<ScriptSend>| {});

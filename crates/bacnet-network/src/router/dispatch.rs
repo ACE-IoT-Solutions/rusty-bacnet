@@ -46,7 +46,7 @@ impl Shared {
     pub(super) fn announce(&self, send_txs: &[send_queue::Sender]) {
         let mut router = self.engine.lock();
         router.start();
-        drain(&mut router, &[], send_txs);
+        drain(&mut router, &[], send_txs, self.engine.now());
     }
 
     /// Run the engine's sweep if it is due, and return when the next is.
@@ -60,7 +60,7 @@ impl Shared {
         router.on_deadline(self.engine.now(), &mut host);
         // The sweep queues no sends; were one to come, it would be refused
         // here rather than left waiting.
-        drain(&mut router, &[], &[]);
+        drain(&mut router, &[], &[], self.engine.now());
         router.next_deadline()
     }
 }
@@ -140,7 +140,12 @@ impl PortDispatch {
             {
                 warn!(port = self.port, "Failed to encode forwarded NPDU");
             }
-            drain(&mut router, &received.data_attributes, &outputs.send_txs);
+            drain(
+                &mut router,
+                &received.data_attributes,
+                &outputs.send_txs,
+                shared.engine.now(),
+            );
             outcome
         };
         let network = shared

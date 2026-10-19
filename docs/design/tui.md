@@ -172,9 +172,11 @@ no accessibility layer. Mitigations:
 
 ## 5. Safety model
 
-The project README asks for authorization before use on a network. Today the
-one-shot CLI asks for no confirmation before writes, DCC or reinitialize; #972
-tracks guarding those separately, without changing the one-shot contract here.
+The project README asks for authorization before use on a network. The
+one-shot CLI and the shell guard writes with `--allow-write`, and DCC and
+reinitialize also with `--yes` or a typed confirmation (#972). Both front ends
+and the TUI take a command's class (read, write or device management) from one
+table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 
 **Session levels** (always shown in the status bar):
 
@@ -683,8 +685,8 @@ TSM counters; an opt-in SC hub admin view of connected nodes.
 - **MS/TP release status:** in the Linux CLI release for 0.12.0; experimental in
   macOS and Windows CI until there is hardware evidence for at least one USB
   adapter per OS.
-- **One-shot write guard:** a separate issue (#972); the one-shot contract is
-  untouched by this epic.
+- **One-shot write guard:** a separate issue (#972), which changed the one-shot
+  contract on purpose for 0.14.0: mutating commands need `--allow-write`.
 - **Lab PKI generator:** out of scope for v1.
 - **Release profile size tuning:** measured separately (#973) before deciding.
 - **Timing:** the TUI targets 0.14.0, so it holds up neither 0.12.0 nor

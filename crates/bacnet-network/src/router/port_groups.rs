@@ -65,6 +65,7 @@ mod tests {
                 ),
             ],
             tokio_clock(),
+            super::super::engine::OPTIONS,
         )
         .unwrap();
         let npdu = [1, 0x20, 0, 1, 1, 42, 255, 0x10, 8];

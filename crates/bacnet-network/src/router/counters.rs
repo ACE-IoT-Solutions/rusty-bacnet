@@ -60,4 +60,20 @@ pub struct Counters {
     pub refused: u64,
     /// Actions dropped because a call came before they were polled.
     pub undrained: u64,
+    /// Router-Busy announcements started for a clogged port, repeats
+    /// included ([`RouterOptions::congestion`](super::RouterOptions::congestion), #1697).
+    pub busy_announced: u64,
+    /// Router-Available announcements started for a port that drained
+    /// (#1697).
+    pub available_announced: u64,
+    /// Global broadcasts dropped as repeats
+    /// ([`RouterOptions::duplicates`](super::RouterOptions::duplicates), #1698).
+    pub duplicate_drops: u64,
+    /// Networks a received reject or flow-control message named whose
+    /// learned route goes through another router, left unchanged
+    /// ([`RouterOptions::next_hop_rejects`](super::RouterOptions::next_hop_rejects), #1698).
+    pub not_next_hop: u64,
+    /// Requests the router's own application sent through the engine
+    /// ([`BACnetRouter::originate`](super::BACnetRouter::originate), #1699).
+    pub originated: u64,
 }

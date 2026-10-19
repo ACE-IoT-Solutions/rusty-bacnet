@@ -73,6 +73,7 @@ mod limits;
 mod local_control;
 mod local_delivery;
 mod options;
+mod originate;
 mod port_groups;
 mod replies;
 mod send_queue;
@@ -85,12 +86,16 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bacnet_npdu::Mac;
+pub use bacnet_router_core::router::{
+    Congestion, Duplicates, OriginateError, Request, SourceSelection,
+};
 use bacnet_router_core::{Instant, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 pub use counters::Counters;
+pub use originate::OriginateFailure;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -171,6 +176,10 @@ pub struct RouterPort<T: TransportPort> {
 /// route answers, the hop count, and the router's own address on any port.
 pub struct BACnetRouter {
     replies: Arc<replies::ReplyLifetime>,
+    /// The port queues, for the router's own requests ([`Self::originate`]):
+    /// held weakly, as replies hold them, so stopping the dispatch tasks
+    /// still closes the local receivers.
+    outputs: std::sync::Weak<Outputs>,
     /// The engine, the gate and the ports' groups.
     shared: Arc<Shared>,
     /// Dispatch tasks (one per port).
@@ -258,8 +267,14 @@ impl BACnetRouter {
             (None, None)
         };
         let gate = Arc::new(options.control_gate());
-        let (router, rx, counters) =
-            Self::start_dispatch(ports, A::TRACKED, gate, control_tx).await?;
+        let (router, rx, counters) = Self::start_dispatch(
+            ports,
+            A::TRACKED,
+            gate,
+            control_tx,
+            options.engine_options(),
+        )
+        .await?;
         Ok(StartedRouter {
             router,
             apdus: A::from_queue(rx, counters),
@@ -371,6 +386,7 @@ impl BACnetRouter {
         track_depth: bool,
         control: Arc<control_policy::ControlGate>,
         network_control: Option<AdmissionSender<ReceivedNetworkControl>>,
+        engine_options: bacnet_router_core::router::Options,
     ) -> Result<(Self, mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
         if ports.is_empty() || ports.len() > PORTS {
             return Err(Error::Encoding(format!(
@@ -435,7 +451,7 @@ impl BACnetRouter {
             limit_changes.push(port.transport.max_npdu_changes());
             networks.push(port.network_number);
         }
-        let engine = Engine::new(&configs, tokio_clock())
+        let engine = Engine::new(&configs, tokio_clock(), engine_options)
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
@@ -464,9 +480,12 @@ impl BACnetRouter {
         let sender_tasks = ports
             .into_iter()
             .zip(send_rxs)
-            .map(|(port, send_rx)| {
+            .enumerate()
+            .map(|(index, (port, send_rx))| {
                 tokio::spawn(sender::run(
                     port.transport,
+                    // At most 255 ports, checked above.
+                    PortId(index as u8),
                     send_rx,
                     Arc::clone(&shared),
                     Arc::downgrade(&outputs),
@@ -532,6 +551,7 @@ impl BACnetRouter {
         Ok((
             Self {
                 replies,
+                outputs: Arc::downgrade(&outputs),
                 shared,
                 dispatch_tasks,
                 sender_tasks,
@@ -616,6 +636,8 @@ mod busy_scope_tests;
 #[cfg(test)]
 mod claim_tests;
 #[cfg(test)]
+mod congestion_tests;
+#[cfg(test)]
 mod corroboration_tests;
 #[cfg(test)]
 mod cutover_tests;
@@ -630,6 +652,8 @@ mod envelope_harness;
 #[cfg(test)]
 mod fixes_tests;
 #[cfg(test)]
+mod hardening_tests;
+#[cfg(test)]
 mod ingress_harness;
 #[cfg(test)]
 mod init_routing_table_tests;
@@ -639,6 +663,8 @@ mod late_refusal_tests;
 mod limit_tests;
 #[cfg(test)]
 mod mstp_extended_tests;
+#[cfg(test)]
+mod originate_tests;
 #[cfg(test)]
 mod priority_harness;
 #[cfg(test)]

@@ -33,7 +33,7 @@ fn replies_and_rotation_across_host_and_mixed_timing_budgets() {
                 for delay in [5, 240] {
                     let mut sim = Sim::new(SimConfig::new(baud));
                     for station in [0, 3] {
-                        sim.add_master(master(station, 3, baud, mixed, latency).reply(
+                        sim.add_master(master(station, 3, baud, mixed, latency).application(
                             ReplyPolicy::Answer {
                                 delay: millis(delay),
                                 payload: npdu(false, 0xA9),

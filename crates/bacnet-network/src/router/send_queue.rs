@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::sync::Notify;
 
+use bacnet_router_core::router::Backlog;
+
+use super::engine::EngineGuard;
 use super::SendRequest;
 
 pub(super) const CAPACITY: usize = 256;
@@ -24,6 +27,9 @@ struct State {
     capacity: usize,
     senders: usize,
     receiver: bool,
+    /// The engine counts the port as congested, so it wants to hear the
+    /// backlog as it drains too (#1697).
+    watched: bool,
 }
 
 struct Shared {
@@ -35,6 +41,22 @@ impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn backlog(&self) -> Backlog {
+        let state = self.lock();
+        backlog(&state)
+    }
+
+    fn set_watched(&self, watched: bool) {
+        self.lock().watched = watched;
+    }
+}
+
+/// The queue's backlog as the engine counts it. A queue holds far fewer
+/// than `u32::MAX` sends.
+fn backlog(state: &State) -> Backlog {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Backlog::new(count(state.len), count(state.capacity))
 }
 
 pub(super) struct Sender(Arc<Shared>);
@@ -50,6 +72,7 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
             capacity,
             senders: 1,
             receiver: true,
+            watched: false,
         }),
         ready: Notify::new(),
     });
@@ -78,6 +101,16 @@ impl Sender {
         }
         self.0.ready.notify_one();
         Ok(())
+    }
+
+    /// The backlog now, to report to the engine.
+    pub(super) fn backlog(&self) -> Backlog {
+        self.0.backlog()
+    }
+
+    /// Whether the receiver reports the backlog as it drains.
+    pub(super) fn set_watched(&self, watched: bool) {
+        self.0.set_watched(watched);
     }
 }
 
@@ -115,6 +148,29 @@ impl Receiver {
         } else {
             TryRecvError::Empty
         })
+    }
+
+    /// Whether the engine wants to hear the backlog as the queue drains:
+    /// a cheap look, before the engine's lock is worth taking (#1697).
+    pub(super) fn is_watched(&self) -> bool {
+        self.0.lock().watched
+    }
+
+    /// The backlog now, when the engine still wants to hear it. It takes
+    /// the engine's guard so it can only be read under the engine's lock:
+    /// read before it, a drain on another task could refill the queue
+    /// between the read and the report, and the engine would hear a stale
+    /// low backlog, announcing a full port available. Under the lock, every
+    /// admission is reported after this one, so the engine always hears
+    /// the latest. Engine, then queue: the order `drain` takes them in.
+    pub(super) fn watched_backlog(&self, _engine: &EngineGuard<'_>) -> Option<Backlog> {
+        let state = self.0.lock();
+        state.watched.then(|| backlog(&state))
+    }
+
+    /// Whether to keep reporting the backlog as it drains.
+    pub(super) fn set_watched(&self, watched: bool) {
+        self.0.set_watched(watched);
     }
 
     /// Cancellation while waiting consumes no send. Only this receiver can

@@ -287,4 +287,21 @@ impl Destination {
             }
         }
     }
+
+    /// Cancel process `process`'s subscription to `object`.
+    pub(crate) async fn unsubscribe_cov<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        process: u32,
+        object: ObjectIdentifier,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Mac(mac) => client.unsubscribe_cov(mac, process, object).await,
+            Self::Device(instance) => {
+                client
+                    .unsubscribe_cov_to_device(*instance, process, object)
+                    .await
+            }
+        }
+    }
 }

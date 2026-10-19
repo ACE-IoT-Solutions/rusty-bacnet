@@ -123,7 +123,7 @@ fn plan(seed: u64, timing: Timing) -> Plan {
             .max_info_frames(rng.range(1, 4) as u8)
             .queues(8, 8)
             .adapter(adapter)
-            .reply(reply_policy(&mut rng, extended));
+            .application(reply_policy(&mut rng, extended));
         if station == joiner {
             spec = spec.unpowered();
         }
