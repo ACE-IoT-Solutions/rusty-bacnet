@@ -541,11 +541,13 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         let counters = apdu_tx.counters.clone();
 
         let dispatch_task = tokio::spawn(async move {
-            while let Some(received) = npdu_rx.recv().await {
+            while let Some(mut received) = npdu_rx.recv().await {
                 if !link_source_fits(&received.source_mac, &address_length_drops) {
                     continue;
                 }
-                match decode_npdu(received.npdu.clone()) {
+                // Moved, not cloned: nothing below reads the frame again, and
+                // a clone of a fresh frame allocates its shared header (#1713).
+                match decode_npdu(std::mem::take(&mut received.npdu)) {
                     Ok(npdu) => {
                         if !destination_is_coherent(
                             npdu.destination.as_ref(),

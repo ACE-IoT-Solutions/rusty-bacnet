@@ -6,6 +6,14 @@ use bacnet_transport::port::{DirectResponse, TransportProvenance};
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 
+#[cfg(test)]
+#[path = "response_encode_tests.rs"]
+mod encode_tests;
+
+#[cfg(test)]
+#[path = "response_budget_tests.rs"]
+mod budget_tests;
+
 /// Saved transport authority and addressing for a response.
 ///
 /// Verified direct ingress requires a matching original-socket capability.
@@ -50,7 +58,7 @@ impl ResponseRoute {
         destination: Option<&NpduAddress>,
     ) -> Result<u16, Error> {
         let direct = self.direct()?;
-        let header = self.encode(&[], destination, false, NetworkPriority::Normal)?;
+        let header = self.header_len(destination)?;
         let mut npdu_limit = usize::MAX;
         if let Some(router) = &self.router {
             npdu_limit = usize::from(router.max_npdu);
@@ -58,7 +66,31 @@ impl ResponseRoute {
         if let Some(direct) = direct {
             npdu_limit = npdu_limit.min(direct.max_npdu_length());
         }
-        Ok(usize::from(apdu_limit).min(npdu_limit.saturating_sub(header.len())) as u16)
+        Ok(usize::from(apdu_limit).min(npdu_limit.saturating_sub(header)) as u16)
+    }
+
+    /// The NPCI octets [`Self::encode`] puts before a reply's APDU, found
+    /// without allocating (#1713). A header the encoder refuses, or one past
+    /// the scratch buffer, takes the owned path for its error or length.
+    fn header_len(&self, destination: Option<&NpduAddress>) -> Result<usize, Error> {
+        let mut scratch = [0u8; 64];
+        let written = match &self.router {
+            Some(router) => router
+                .plan
+                .npdu(&[], false, NetworkPriority::Normal)
+                .encode_into(&mut scratch),
+            None => {
+                check_response_destination(destination)?;
+                response_npdu(&[], destination, false, NetworkPriority::Normal)
+                    .encode_into(&mut scratch)
+            }
+        };
+        match written {
+            Ok(len) => Ok(len),
+            Err(_) => self
+                .encode(&[], destination, false, NetworkPriority::Normal)
+                .map(|header| header.len()),
+        }
     }
 
     /// Whether direct-socket authority must be checked, including a malformed
@@ -187,6 +219,14 @@ pub(crate) fn encode_checked_response_npdu(
     expecting_reply: bool,
     priority: NetworkPriority,
 ) -> Result<BytesMut, Error> {
+    // Encoded straight from the borrowed APDU into a buffer of the NPDU's
+    // size: no copy of the APDU first, no regrowth (#1713).
+    let npdu = response_npdu(apdu, destination, expecting_reply, priority);
+    let mut encoded = BytesMut::zeroed(npdu.encoded_len());
+    if npdu.encode_into(&mut encoded).is_ok() {
+        return Ok(encoded);
+    }
+    // A refused NPDU reports the owned encoder's error.
     let npdu = Npdu {
         destination: destination.cloned(),
         expecting_reply,
@@ -197,4 +237,21 @@ pub(crate) fn encode_checked_response_npdu(
     let mut encoded = BytesMut::new();
     encode_npdu(&mut encoded, &npdu)?;
     Ok(encoded)
+}
+
+/// The NPDU a reply carrying `apdu` to `destination` is.
+fn response_npdu<'a>(
+    apdu: &'a [u8],
+    destination: Option<&'a NpduAddress>,
+    expecting_reply: bool,
+    priority: NetworkPriority,
+) -> bacnet_npdu::Npdu<'a> {
+    let mut npdu = bacnet_npdu::Npdu::apdu(apdu);
+    npdu.destination = destination.map(|destination| bacnet_npdu::Address {
+        network: destination.network,
+        mac: &destination.mac_address,
+    });
+    npdu.expecting_reply = expecting_reply;
+    npdu.priority = priority;
+    npdu
 }
