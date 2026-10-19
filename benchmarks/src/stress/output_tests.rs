@@ -1,6 +1,6 @@
 //! The throughput and summary arithmetic of the stress output (#1714).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 
@@ -83,4 +83,41 @@ fn a_step_takes_its_rate_from_its_measured_time() {
     assert!((pt.throughput - 16.0).abs() < 1e-9);
     assert!((pt.elapsed_secs - 0.25).abs() < 1e-9);
     assert_eq!(pt.p50_us, 100);
+}
+
+#[test]
+fn a_step_is_timed_to_its_last_client_not_the_nominal_duration() {
+    let started = Instant::now();
+    let client = |ok: u64, failed: u64, micros: u64| {
+        let mut recorder = LatencyRecorder::new();
+        for _ in 0..ok {
+            recorder.record_latency(Duration::from_micros(micros));
+        }
+        for _ in 0..failed {
+            recorder.record_failure();
+        }
+        recorder
+    };
+    // Two clients stop at 1.0 and 1.25 seconds: the step ran 1.25 seconds.
+    let pt = DegradationPoint::from_clients(
+        2,
+        started,
+        [
+            (client(3, 1, 100), started + Duration::from_millis(1_000)),
+            (client(5, 0, 300), started + Duration::from_millis(1_250)),
+        ],
+    );
+    assert_eq!(pt.parameter, 2);
+    assert_eq!(pt.successful, 8);
+    assert_eq!(pt.errors, 1);
+    assert!((pt.elapsed_secs - 1.25).abs() < 1e-9);
+    assert!((pt.throughput - 6.4).abs() < 1e-9, "{}", pt.throughput);
+}
+
+#[test]
+fn a_step_with_no_clients_has_no_time_and_no_rate() {
+    let pt = DegradationPoint::from_clients(0, Instant::now(), []);
+    assert_eq!(pt.successful, 0);
+    assert_eq!(pt.elapsed_secs, 0.0);
+    assert_eq!(pt.throughput, 0.0);
 }
