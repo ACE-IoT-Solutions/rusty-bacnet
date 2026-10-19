@@ -24,13 +24,13 @@ async fn management_acl_allows_listed_sender_delete_fdt_but_write_bdt_always_nak
         port: 0xBAC0,
         broadcast_mask: [255, 255, 255, 0],
     };
-    let result = client_transport
-        .write_bdt(&bbmd_mac, std::slice::from_ref(&replacement))
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+        client_transport
+            .write_bdt(&bbmd_mac, std::slice::from_ref(&replacement))
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK)
     );
     let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
     assert!(
@@ -43,18 +43,16 @@ async fn management_acl_allows_listed_sender_delete_fdt_but_write_bdt_always_nak
     );
 
     // The same listed sender remains authorized for Delete-FDT-Entry.
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
     let (fd_ip, fd_port) = decode_bip_mac(client_transport.local_mac()).unwrap();
 
-    let result = client_transport
+    client_transport
         .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
     assert!(client_transport
         .read_fdt(&bbmd_mac)
         .await
@@ -89,13 +87,13 @@ async fn management_acl_denies_unlisted_sender_and_preserves_bdt_and_fdt() {
         port: 0xBAC0,
         broadcast_mask: [255, 255, 255, 0],
     }];
-    let result = client_transport
-        .write_bdt(&bbmd_mac, &replacement_bdt)
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+        client_transport
+            .write_bdt(&bbmd_mac, &replacement_bdt)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK)
     );
     let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
     assert!(
@@ -107,20 +105,19 @@ async fn management_acl_denies_unlisted_sender_and_preserves_bdt_and_fdt() {
         "denied Write-BDT must not apply the replacement BDT"
     );
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
     let (fd_ip, fd_port) = decode_bip_mac(client_transport.local_mac()).unwrap();
 
-    let result = client_transport
-        .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
+        client_transport
+            .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK)
     );
     let fdt = client_transport.read_fdt(&bbmd_mac).await.unwrap();
     assert_eq!(fdt.len(), 1);
@@ -143,20 +140,19 @@ async fn empty_management_acl_denies_delete_fdt_and_preserves_entry() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
     let (fd_ip, fd_port) = decode_bip_mac(client_transport.local_mac()).unwrap();
 
-    let result = client_transport
-        .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
+        client_transport
+            .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK)
     );
     let fdt = client_transport.read_fdt(&bbmd_mac).await.unwrap();
     assert_eq!(fdt.len(), 1);
@@ -182,11 +178,10 @@ async fn delete_fdt_entry_for_a_lapsed_registration_naks() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
     let (fd_ip, fd_port) = decode_bip_mac(client_transport.local_mac()).unwrap();
     {
         let state = bbmd_transport.bbmd_state().unwrap();
@@ -194,13 +189,13 @@ async fn delete_fdt_entry_for_a_lapsed_registration_naks() {
         state.backdate_foreign_device_for_test(fd_ip, fd_port, Duration::from_secs(91));
     }
 
-    let result = client_transport
-        .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
+        client_transport
+            .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK)
     );
     assert!(client_transport
         .read_fdt(&bbmd_mac)

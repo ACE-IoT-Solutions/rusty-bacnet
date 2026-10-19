@@ -1,8 +1,7 @@
 //! The transport of a built client, and the BBMD helpers that reach through it.
 
 use bacnet_transport::bbmd::{BdtEntry, FdtEntryWire};
-use bacnet_transport::bip::{AsBip, ForeignRegistrationSnapshot};
-use bacnet_transport::bvll::BvlcResultCode;
+use bacnet_transport::bip::{AsBip, BvlcExchangeError, ForeignRegistrationSnapshot};
 
 use super::*;
 
@@ -99,12 +98,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 ///
 /// They work on a client over [`BipTransport`], and on one over
 /// [`AnyTransport`](bacnet_transport::any::AnyTransport) when its variant is
-/// `Bip`. On any other variant each returns
-/// [`Error::UnsupportedTransport`] before sending anything.
+/// `Bip`. Each request fails with a [`BvlcExchangeError`]: a NAK, no reply,
+/// or a local failure. On any other variant each returns
+/// [`Error::UnsupportedTransport`], as [`BvlcExchangeError::Transport`],
+/// before sending anything.
 ///
 /// ```
 /// use bacnet_client::client::BACnetClient;
 /// use bacnet_transport::any::AnyTransport;
+/// use bacnet_transport::bip::BvlcExchangeError;
 /// use bacnet_transport::loopback::LoopbackTransport;
 /// use bacnet_transport::mstp::NoSerial;
 /// use bacnet_types::data_link::DataLink;
@@ -121,10 +123,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 ///     let bbmd = [127, 0, 0, 1, 0xBA, 0xC0];
 ///     assert!(matches!(
 ///         client.read_bdt(&bbmd).await,
-///         Err(Error::UnsupportedTransport {
+///         Err(BvlcExchangeError::Transport(Error::UnsupportedTransport {
 ///             required: DataLink::Bip,
 ///             actual: DataLink::Loopback,
-///         })
+///         }))
 ///     ));
 ///     client.stop().await?;
 ///     Ok::<_, Error>(())
@@ -147,24 +149,24 @@ impl<T: TransportPort + AsBip + 'static> BACnetClient<T> {
     }
 
     /// Read the Broadcast Distribution Table from a BBMD.
-    pub async fn read_bdt(&self, target: &[u8]) -> Result<Vec<BdtEntry>, Error> {
+    pub async fn read_bdt(&self, target: &[u8]) -> Result<Vec<BdtEntry>, BvlcExchangeError> {
         self.transport().as_bip()?.read_bdt(target).await
     }
 
     /// Write the Broadcast Distribution Table to a BBMD.
     ///
     /// A BBMD that follows the 2020 standard answers with the not-supported
-    /// result and keeps its table.
+    /// result, [`BvlcExchangeError::Nak`], and keeps its table.
     pub async fn write_bdt(
         &self,
         target: &[u8],
         entries: &[BdtEntry],
-    ) -> Result<BvlcResultCode, Error> {
+    ) -> Result<(), BvlcExchangeError> {
         self.transport().as_bip()?.write_bdt(target, entries).await
     }
 
     /// Read the Foreign Device Table from a BBMD.
-    pub async fn read_fdt(&self, target: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
+    pub async fn read_fdt(&self, target: &[u8]) -> Result<Vec<FdtEntryWire>, BvlcExchangeError> {
         self.transport().as_bip()?.read_fdt(target).await
     }
 
@@ -174,14 +176,15 @@ impl<T: TransportPort + AsBip + 'static> BACnetClient<T> {
         target: &[u8],
         ip: [u8; 4],
         port: u16,
-    ) -> Result<BvlcResultCode, Error> {
+    ) -> Result<(), BvlcExchangeError> {
         self.transport()
             .as_bip()?
             .delete_fdt_entry(target, ip, port)
             .await
     }
 
-    /// Register as a foreign device with a BBMD and return the result code.
+    /// Register as a foreign device with a BBMD; `Ok` when it accepts,
+    /// [`BvlcExchangeError::Nak`] when it refuses.
     ///
     /// This sends one registration. It does not make the transport a
     /// foreign device for broadcasts or renew the registration.
@@ -189,7 +192,7 @@ impl<T: TransportPort + AsBip + 'static> BACnetClient<T> {
         &self,
         target: &[u8],
         ttl: u16,
-    ) -> Result<BvlcResultCode, Error> {
+    ) -> Result<(), BvlcExchangeError> {
         self.transport()
             .as_bip()?
             .register_foreign_device_bvlc(target, ttl)

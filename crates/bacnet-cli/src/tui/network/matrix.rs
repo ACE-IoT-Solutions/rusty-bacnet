@@ -16,6 +16,8 @@
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
+use bacnet_transport::bvll::BvlcResultCode;
+
 use super::BdtRow;
 
 /// What reading one BBMD's BDT gave.
@@ -23,8 +25,8 @@ use super::BdtRow;
 pub(crate) enum Probe {
     /// Its table.
     Table(Vec<BdtRow>),
-    /// It answered with a NAK result.
-    Nak(String),
+    /// It answered with this NAK result.
+    Nak(BvlcResultCode),
     /// It did not answer, or the request could not be sent.
     Unreachable(String),
     /// Not read: the survey had reached its limit.
@@ -84,8 +86,8 @@ pub(crate) enum Finding {
     Nak {
         /// The BBMD.
         bbmd: SocketAddrV4,
-        /// Its answer.
-        reason: String,
+        /// The NAK it answered with.
+        code: BvlcResultCode,
     },
     /// The BBMD could not be read.
     Unreachable {
@@ -115,7 +117,7 @@ impl Finding {
                     masks.join(", ")
                 )
             }
-            Self::Nak { bbmd, reason } => format!("{bbmd} refused the BDT read ({reason})"),
+            Self::Nak { bbmd, code } => format!("{bbmd} refused the BDT read ({code})"),
             Self::Unreachable { bbmd, reason } => format!("{bbmd} could not be read ({reason})"),
         }
     }
@@ -168,9 +170,9 @@ impl Matrix {
         let mut findings = Vec::new();
         for (bbmd, probe) in probes {
             match probe {
-                Probe::Nak(reason) => findings.push(Finding::Nak {
+                Probe::Nak(code) => findings.push(Finding::Nak {
                     bbmd: *bbmd,
-                    reason: reason.clone(),
+                    code: *code,
                 }),
                 Probe::Unreachable(reason) => findings.push(Finding::Unreachable {
                     bbmd: *bbmd,
@@ -323,7 +325,10 @@ mod tests {
     fn unread_peers_are_unknown_and_named() {
         let matrix = Matrix::build(&[
             (at(1), table(&[(1, UNICAST), (2, UNICAST), (3, UNICAST)])),
-            (at(2), Probe::Nak("BVLC-Result: NAK".into())),
+            (
+                at(2),
+                Probe::Nak(BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK),
+            ),
             (at(3), Probe::Unreachable("no answer".into())),
         ]);
         assert_eq!(matrix.cells[1], [Cell::Unknown; 3]);
