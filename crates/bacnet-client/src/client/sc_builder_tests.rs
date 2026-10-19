@@ -94,7 +94,7 @@ async fn sc_client_builder_rejects_invalid_max_segments_before_connect() {
 
     assert!(matches!(
         result,
-        Err(Error::Encoding(message)) if message.contains("max-segments-accepted")
+        Err(Error::Range(refused)) if refused.label.contains("max-segments-accepted")
     ));
 }
 

@@ -17,11 +17,11 @@ use bacnet_types::enums::{
     AccessEvent, EventState, EventType, LifeSafetyMode, LifeSafetyOperation, LifeSafetyState,
     NotifyType, Reliability, TimerState, TimerTransition,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, StatusFlags, Time};
 use bytes::BytesMut;
 
-use super::tagged::{misplaced_tag, unclosed_kind};
+use super::tagged::{misplaced, misplaced_tag, unclosed_kind};
 use super::{
     decode_bacnet_property_value_in_list, encode_bacnet_property_value, validate_tlv_sequence,
     MAX_FRAMED_ITEMS,

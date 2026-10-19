@@ -348,7 +348,7 @@ fn an_application_peek_matches_only_its_own_type() {
     // A reserved application length is a malformed tag, not a mismatch.
     assert!(matches!(
         next_is_application(&[0x26, 0x01], 0, 2),
-        Err(Error::Decoding(_) | Error::DecodingMessage { .. })
+        Err(Error::Decoding(_))
     ));
 }
 

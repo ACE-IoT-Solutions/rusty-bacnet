@@ -97,8 +97,7 @@ fn a_who_has_with_one_limit_or_an_empty_range_is_refused() {
     ] {
         let error = WhoHasRequest::decode(&[limits, av_1].concat()).unwrap_err();
         assert!(
-            matches!(&error, Error::Decoding(_) | Error::DecodingMessage { .. })
-                && error.to_string().contains(fault),
+            matches!(&error, Error::Decoding(_)) && error.to_string().contains(fault),
             "{limits:02X?}: {error:?}"
         );
     }

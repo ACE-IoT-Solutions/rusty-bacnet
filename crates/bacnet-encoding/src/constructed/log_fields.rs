@@ -16,7 +16,7 @@ use super::tagged::{contents, decode_ctx_constructed, expect_end};
 use super::validate_tlv_sequence;
 use crate::{primitives, tags};
 use bacnet_types::bitstring::LogStatus;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::{Date, Time};
 use bytes::BytesMut;
 
@@ -53,14 +53,17 @@ pub(super) fn encode_log_status(buf: &mut BytesMut, tag: u8, status: LogStatus) 
 pub(super) fn decode_log_status(
     contents: &[u8],
     offset: usize,
-    record: &str,
+    record: &'static str,
 ) -> Result<LogStatus, Error> {
     match contents {
         [5, bits] if bits & 0x1f == 0 => Ok(LogStatus::from_bacnet(&[*bits])),
-        _ => Err(Error::decoding(
+        _ => Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("{record} log-status must be a canonical three-bit BitString"),
-        )),
+            "log-status must be a canonical three-bit BitString",
+        )
+        .within(record)
+        .into()),
     }
 }
 
@@ -84,10 +87,13 @@ pub(super) fn encode_ctx_integer(buf: &mut BytesMut, tag: u8, value: i64) {
 /// 32 bits but need not, so a record read from a peer can carry more.
 pub(super) fn decode_integer(contents: &[u8], offset: usize) -> Result<i64, Error> {
     if contents.is_empty() || contents.len() > 8 {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("integer-value needs 1 to 8 octets, got {}", contents.len()),
-        ));
+            "integer-value needs 1 to 8 octets, got {}",
+        )
+        .with_value(contents.len() as u64)
+        .into());
     }
     let fill = if contents[0] & 0x80 != 0 { 0xFF } else { 0x00 };
     let mut octets = [fill; 8];
@@ -161,10 +167,14 @@ fn application<'a>(
         || tag.number != number
         || (length != 0 && tag.length != length)
     {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("{what}: expected application tag {number}"),
-        ));
+            "expected application tag {}",
+        )
+        .within(what)
+        .with_value(number.into())
+        .into());
     }
     contents(data, start, tag.length)
 }

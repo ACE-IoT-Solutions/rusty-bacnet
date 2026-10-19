@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::VTClass;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use crate::common::MAX_DECODED_ITEMS;
@@ -185,10 +185,13 @@ impl VTDataRequest {
             0 => false,
             1 => true,
             other => {
-                return Err(Error::decoding(
+                return Err(DecodeError::new(
+                    DecodingKind::InvalidEncoding,
                     flag_offset,
-                    format!("VTData data-flag {other} is outside 0..1"),
-                ))
+                    "VTData data-flag {} is outside 0..1",
+                )
+                .with_value(other)
+                .into())
             }
         };
         expect_end(data, offset, offset, "VTData")?;

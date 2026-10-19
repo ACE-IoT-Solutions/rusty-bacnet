@@ -20,7 +20,8 @@ const NAMES: PairNames = PairNames {
     frame: "assigned landing calls landing-calls",
     floor: "landing call floor-number",
     second: "landing call direction",
-    second_oversized: "direction [1] exceeds 32 bits",
+    floor_oversized: "assigned landing calls floor-number [0] exceeds an Unsigned8",
+    second_oversized: "assigned landing calls direction [1] exceeds 32 bits",
 };
 
 /// Encode one `BACnetAssignedLandingCalls` SEQUENCE.

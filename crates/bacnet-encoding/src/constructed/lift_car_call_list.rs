@@ -11,7 +11,7 @@
 use alloc::vec::Vec;
 
 use bacnet_types::constructed::BACnetLiftCarCallList;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RangeError};
 use bytes::BytesMut;
 
 use super::members::{narrow, unsigned_member};
@@ -54,7 +54,7 @@ pub fn decode_lift_car_call_list(
         let (tag, content) = tags::decode_tag(data, offset)?;
         if tag.is_closing_tag(0) {
             if let Some(member) = oversized {
-                return Err(Error::OutOfRange(format!("lift car call list {member}")));
+                return Err(RangeError::new(member).into());
             }
             return Ok((BACnetLiftCarCallList { floor_numbers }, content));
         }
@@ -73,7 +73,7 @@ pub fn decode_lift_car_call_list(
         let (floor, next) = contents(data, content, tag.length)?;
         floor_numbers.push(narrow(
             unsigned_member(floor, content)?,
-            "floor number exceeds an Unsigned8",
+            "lift car call list floor number exceeds an Unsigned8",
             &mut oversized,
         ));
         offset = next;

@@ -288,14 +288,11 @@ Error PDU, and each body has its own type for encoding and decoding:
 
 A decoding error carries the `DecodingKind` of the fault a decoder found, and
 `Error::reject_reason()` names the Reject reason it draws when it refuses a
-confirmed request (#1446). It comes in two forms. `Error::Decoding(DecodeError)`
-holds the offset, the kind, a static context and label and up to two numbers,
-and builds its text only when displayed, so firmware that never displays it
-links no formatting code (#1646); every decoder in the allocation-free profile
-uses it. With `alloc`, `Error::DecodingMessage { offset, kind, message }`
-holds a message formatted when the error was made, as the decoders outside
-that profile still word some refusals until they move to `Error::Decoding`
-(#1776). `Error::decode_fault()` reads the offset and kind of either. A checked constructor's refusal, such as
+confirmed request (#1446). Every decoder reports it as
+`Error::Decoding(DecodeError)`, which holds the offset, the kind, a static
+context and label and up to two numbers, and builds its text only when
+displayed, so firmware that never displays it links no formatting code
+(#1646, #1776). `Error::decode_fault()` reads its offset and kind. A checked constructor's refusal, such as
 `ObjectIdentifier::new`'s, is likewise static: `Error::Range(RangeError)`.
 
 | Fault | Reported as | Reject reason |

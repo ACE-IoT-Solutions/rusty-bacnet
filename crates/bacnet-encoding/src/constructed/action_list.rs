@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 
 use bacnet_types::constructed::{BACnetActionCommand, BACnetActionList};
 use bacnet_types::enums::PropertyIdentifier;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use super::tagged::{
@@ -99,10 +99,13 @@ pub fn decode_action_command(
                 .ok()
                 .filter(|p| (1..=16).contains(p))
                 .ok_or_else(|| {
-                    Error::decoding(
+                    DecodeError::new(
+                        DecodingKind::InvalidEncoding,
                         offset,
-                        format!("{WHAT}: priority {value} is outside 1..=16"),
+                        "priority {} is outside 1..=16",
                     )
+                    .within(WHAT)
+                    .with_value(value.into())
                 })
         })
         .transpose()?;
