@@ -6,9 +6,9 @@
 //! link status is polled once a second. The transport's broadcast never
 //! waits for this worker: when the worker falls behind and the stream
 //! reports `Lagged`, it reports a gap and resyncs from `connection_status()`.
-//! The hub's certificates are read after each connect, under a timeout, so
-//! a busy connection lock cannot hold the worker; nothing else is locked or
-//! awaited meanwhile.
+//! The hub's certificates are read after each connect under a timeout, and
+//! the read races the stop, so neither a busy connection lock nor the read
+//! holds up the end of a session. No lock is held across another await.
 
 use std::future::Future;
 use std::time::Duration;
@@ -83,13 +83,22 @@ pub(crate) async fn pump<S, C, F>(
     let snapshot = || {
         sink.offer(WorkerEvent::Sc(ScReport::Status(status())));
     };
-    let certificates = || async {
-        if let Some(chain) = chain().await {
+    // Read the chain, racing the stop: true when the session ended first.
+    let certificates = async |stop: &mut mpsc::Receiver<()>| -> bool {
+        let read = tokio::select! {
+            biased;
+            _ = stop.recv() => return true,
+            read = chain() => read,
+        };
+        if let Some(chain) = read {
             sink.deliver(WorkerEvent::Sc(ScReport::Chain(chain))).await;
         }
+        false
     };
     snapshot();
-    certificates().await;
+    if certificates(&mut stop).await {
+        return;
+    }
     let mut poll = tokio::time::interval(STATUS_EVERY);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut open = true;
@@ -104,8 +113,8 @@ pub(crate) async fn pump<S, C, F>(
                     log(&event);
                     let connected = matches!(event, LinkEvent::Connected { .. });
                     sink.deliver(WorkerEvent::Sc(ScReport::Event(event))).await;
-                    if connected {
-                        certificates().await;
+                    if connected && certificates(&mut stop).await {
+                        break;
                     }
                 }
                 Err(RecvError::Lagged(missed)) => {
@@ -113,7 +122,9 @@ pub(crate) async fn pump<S, C, F>(
                     sink.add_dropped(missed);
                     sink.deliver(WorkerEvent::Sc(ScReport::Gap { missed })).await;
                     snapshot();
-                    certificates().await;
+                    if certificates(&mut stop).await {
+                        break;
+                    }
                 }
                 Err(RecvError::Closed) => open = false,
             },
@@ -135,6 +146,23 @@ mod tests {
             heartbeat_age: None,
             heartbeat_rtt: None,
         }
+    }
+
+    /// A chain read that never finishes does not hold up the end of the
+    /// session: the read races the stop.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_chain_read_does_not_hold_the_stop() {
+        let (_tx, events) = broadcast::channel(2);
+        let (sink, _ui) = EventSink::channel(64);
+        let (stop_tx, stop) = mpsc::channel(1);
+        drop(stop_tx);
+        let stalled = || std::future::pending::<Option<Vec<CertSummary>>>();
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            pump(events, snapshot, stalled, &sink, stop),
+        )
+        .await
+        .expect("the stop ends the worker");
     }
 
     /// A worker that fell behind reports the gap, then resyncs the status,

@@ -310,8 +310,8 @@ fn doctor<'a>(sc: &ScState, theme: &Theme) -> Vec<Line<'a>> {
         lines.push(Line::from(vec![
             Span::styled("Hub sent ", theme.dim()),
             Span::raw(format!(
-                "subject {}, issued by {}, expires {}",
-                leaf.subject, leaf.issuer, leaf.not_after
+                "subject {}, issued by {}, expires {}, signature algorithm {}",
+                leaf.subject, leaf.issuer, leaf.not_after, leaf.signature_algorithm
             )),
         ]));
     }

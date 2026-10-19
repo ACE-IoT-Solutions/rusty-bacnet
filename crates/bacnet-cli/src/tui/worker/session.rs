@@ -191,8 +191,9 @@ async fn connect(
     }
 }
 
-/// What an SC session dials, for the SC screen; `None` until the settings
-/// are complete, when the build refuses them anyway.
+/// What an SC session dials, for the SC screen. `build_sc_client` needs the
+/// VMAC and device UUID (a flag or the profile's persisted identity; there
+/// is no random-VMAC path), so `None` only when the build refuses anyway.
 #[cfg(feature = "sc-tls")]
 fn sc_identity(args: &TransportArgs) -> Option<ScIdentity> {
     Some(ScIdentity {

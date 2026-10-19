@@ -1,7 +1,7 @@
 ---
-section: Added
+section: Changed
 ---
-- **Rust API:** BACnet/SC connect errors carry a typed TLS reason
-  (`ScConnectError::tls_failure`, `ScDisconnectCause::Tls`), and a host name
-  that does not resolve reports `ScWebSocketErrorKind::HostLookup` rather than
-  a TCP dial failure (#967).
+- **Rust API:** BACnet/SC connect errors carry the TLS library's reason
+  (`ScConnectError::tls_failure`), and a classified handshake failure now
+  reports `ScDisconnectCause::Tls` instead of `WebSocket(TlsHandshake)`. A host
+  that does not resolve reports `ScWebSocketErrorKind::HostLookup` (#967).

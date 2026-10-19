@@ -124,6 +124,9 @@ pub enum ScCertificateRejection {
     /// The signature does not verify: signed by a different key than the CA
     /// it names.
     BadSignature,
+    /// Signed with an algorithm this node does not support, so the
+    /// signature could not be checked at all.
+    UnsupportedSignatureAlgorithm,
     /// The certificate does not name the host the URL dials.
     NameMismatch,
     /// The certificate's extended key usage does not allow its role.

@@ -158,9 +158,7 @@ fn read(fault: &Fault) -> (Option<Phase>, String, String) {
         Fault::WebSocket(K::TlsHandshake) => (
             Phase::Tls,
             "the TLS handshake failed",
-            "Check that the URL's port serves TLS (not plain HTTP) and that both sides use \
-             TLS 1.3."
-                .into(),
+            HANDSHAKE_HINT.into(),
         ),
         Fault::WebSocket(K::WebSocketHandshake) => (
             Phase::WebSocket,
@@ -245,6 +243,10 @@ fn read(fault: &Fault) -> (Option<Phase>, String, String) {
     (Some(phase), summary.into(), hint)
 }
 
+/// Advice for a TLS failure with no narrower reason.
+const HANDSHAKE_HINT: &str = "Check that the URL's port serves TLS (not plain HTTP) and that \
+     both sides use TLS 1.3.";
+
 /// Days, hours or minutes, for a skew or an expiry.
 fn span(by: Duration) -> String {
     let secs = by.as_secs();
@@ -276,16 +278,16 @@ pub(crate) fn tls(failure: ScTlsFailure) -> (String, String) {
                 by.map_or("hub certificate expired".into(), |by| {
                     format!("hub certificate expired {} ago", span(by))
                 }),
-                "The hub's certificate is past its not-after date. The hub's owner needs to \
-                 renew it."
+                "The hub's certificate is past its not-after date: its owner needs to renew \
+                 it, or this computer's clock is far ahead."
                     .into(),
             ),
         },
         ScTlsFailure::PeerCertificate(R::NotYetValid { by }) => match by {
             Some(by) if by <= SKEW_WINDOW => (
                 format!("hub certificate valid only in {}", span(by)),
-                "Clock skew: the certificate starts so soon that this computer's clock is \
-                 probably behind. Check it (NTP)."
+                "The certificate starts within a day: often clock skew. Check this \
+                 computer's clock and NTP."
                     .into(),
             ),
             _ => (
@@ -302,6 +304,13 @@ pub(crate) fn tls(failure: ScTlsFailure) -> (String, String) {
             "Key mismatch: the hub's certificate names this site's CA but was not signed by \
              that CA's key. The CA may have been re-keyed, or the certificate signed by \
              another CA with the same name."
+                .into(),
+        ),
+        ScTlsFailure::PeerCertificate(R::UnsupportedSignatureAlgorithm) => (
+            "hub certificate uses an unsupported signature".into(),
+            "This node cannot check the signature algorithm of the hub's certificate (the \
+             one it sent is below). Have it reissued with a common algorithm such as ECDSA \
+             P-256 with SHA-256, RSA with SHA-256, or Ed25519."
                 .into(),
         ),
         ScTlsFailure::PeerCertificate(R::NameMismatch) => (
@@ -328,10 +337,8 @@ pub(crate) fn tls(failure: ScTlsFailure) -> (String, String) {
             "no TLS version in common".into(),
             "BACnet/SC needs TLS 1.3 (AB.7.4); the hub may offer only TLS 1.2.".into(),
         ),
-        _ => (
-            "the TLS handshake failed".into(),
-            "TLS failed for a reason the TLS library did not narrow down; see the detail.".into(),
-        ),
+        // No narrower reason: the same advice as a TLS failure with none.
+        _ => ("the TLS handshake failed".into(), HANDSHAKE_HINT.into()),
     };
     (summary, hint)
 }
@@ -350,14 +357,14 @@ fn refused_by_hub(alert: ScTlsAlert) -> (String, String) {
              Check the certificate's dates, then both clocks (NTP) if they look right.",
         ),
         ScTlsAlert::UnsupportedCertificate => (
-            "this node's certificate lacks client-auth",
-            "The hub refused this node's certificate for its key usage: it needs the TLS \
-             client-authentication extended key usage.",
+            "hub refused this node's certificate type",
+            "Often: this node's certificate lacks the TLS client-authentication extended \
+             key usage. Some hubs also send this for a key type they do not support.",
         ),
         ScTlsAlert::DecryptError => (
             "hub could not verify this node's signature",
-            "Key mismatch: this node's certificate was not signed by the key of the CA it \
-             names, or the private key is not the certificate's.",
+            "Often a key mismatch on our side: this node's certificate was not signed by \
+             the key of the CA it names, or the private key is not the certificate's.",
         ),
         ScTlsAlert::CertificateRequired => (
             "hub wants a client certificate",
@@ -466,11 +473,11 @@ mod tests {
         assert_eq!(expired.summary, "hub certificate expired 3 h ago");
         assert!(expired.hint.contains("clock"));
         let early = diagnose(&tls_fault(ScCertificateRejection::NotYetValid { by: near }));
-        assert!(early.hint.starts_with("Clock skew"));
+        assert!(early.hint.contains("often clock skew"));
         // Just past the window: no longer called skew.
         let day = Some(SKEW_WINDOW + Duration::from_secs(1));
         let late = diagnose(&tls_fault(ScCertificateRejection::NotYetValid { by: day }));
-        assert!(!late.hint.starts_with("Clock skew"));
+        assert!(!late.hint.contains("clock skew"));
     }
 
     #[test]
@@ -481,7 +488,7 @@ mod tests {
             .contains("client-authentication"));
         assert!(alert(ScTlsAlert::DecryptError)
             .hint
-            .starts_with("Key mismatch"));
+            .starts_with("Often a key mismatch"));
         assert!(alert(ScTlsAlert::CertificateExpired)
             .hint
             .contains("clocks"));
@@ -490,6 +497,22 @@ mod tests {
             .contains("this node's CA"));
         let incompatible = diagnose(&Fault::Tls(ScTlsFailure::PeerIncompatible));
         assert!(incompatible.hint.contains("TLS 1.3"));
+    }
+
+    /// A TLS failure the library did not narrow down reads like one with no
+    /// reason at all; an unsupported signature algorithm is not a key mismatch.
+    #[test]
+    fn unexplained_tls_and_unsupported_algorithms_get_their_own_hints() {
+        let plain = diagnose(&Fault::WebSocket(ScWebSocketErrorKind::TlsHandshake));
+        let other = diagnose(&Fault::Tls(ScTlsFailure::Other));
+        assert_eq!((other.failed, &other.hint), (Some(Phase::Tls), &plain.hint));
+        let algorithm = diagnose(&tls_fault(
+            ScCertificateRejection::UnsupportedSignatureAlgorithm,
+        ));
+        let mismatch = diagnose(&tls_fault(ScCertificateRejection::BadSignature));
+        assert_eq!(algorithm.failed, Some(Phase::Tls));
+        assert!(algorithm.hint.contains("Ed25519"), "{}", algorithm.hint);
+        assert_ne!(algorithm.hint, mismatch.hint);
     }
 
     #[test]

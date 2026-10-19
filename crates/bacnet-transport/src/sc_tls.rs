@@ -177,7 +177,7 @@ impl TlsWebSocket {
                         chain,
                     ))
                 }),
-                tls: Some(tls_failure::classify(&e).unwrap_or(crate::sc::ScTlsFailure::Other)),
+                tls: tls_failure::classify(&e),
                 kind: ScWebSocketErrorKind::TlsHandshake,
                 message: format!("WebSocket TLS handshake with {addr} failed: {e}"),
             }
@@ -766,13 +766,20 @@ mod tests {
             Err(err) => err,
         };
 
+        // The peer closed mid-handshake: the TLS library gave no reason, so
+        // none is attached and the cause stays the plain handshake kind.
         assert!(matches!(
             ScConnectError::from_error(&err),
             Some(ScConnectError::WebSocket {
                 kind: ScWebSocketErrorKind::TlsHandshake,
+                tls: None,
                 ..
             })
         ));
+        assert_eq!(
+            crate::sc::ScDisconnectCause::from_error(&err),
+            crate::sc::ScDisconnectCause::WebSocket(ScWebSocketErrorKind::TlsHandshake)
+        );
         accept_task.await.unwrap();
     }
 

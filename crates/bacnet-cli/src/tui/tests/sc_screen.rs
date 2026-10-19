@@ -69,12 +69,14 @@ fn hub_chain() -> Vec<CertSummary> {
             issuer: "CN=site CA".into(),
             not_after_unix: 1_924_992_000,
             not_after: "2031-01-01T00:00:00Z (Unix 1924992000)".into(),
+            signature_algorithm: "1.2.840.10045.4.3.2".into(),
         },
         CertSummary {
             subject: "CN=site CA".into(),
             issuer: "CN=site CA".into(),
             not_after_unix: 2_240_524_800,
             not_after: "2041-01-01T00:00:00Z (Unix 2240524800)".into(),
+            signature_algorithm: "1.2.840.10045.4.3.2".into(),
         },
     ]
 }
@@ -316,6 +318,7 @@ fn sc_doctor_frame_at_120x40() {
             issuer: "CN=site CA".into(),
             not_after_unix: 1_735_689_600,
             not_after: "2025-01-01T00:00:00Z (Unix 1735689600)".into(),
+            signature_algorithm: "1.2.840.10045.4.3.2".into(),
         }],
     };
     sc(&mut app, ScReport::Failed(Box::new(failure)));

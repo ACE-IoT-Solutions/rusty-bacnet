@@ -169,6 +169,8 @@ pub(crate) struct CertSummary {
     pub(crate) not_after_unix: i64,
     /// Not-after as a UTC date.
     pub(crate) not_after: String,
+    /// The signature algorithm, as an OID.
+    pub(crate) signature_algorithm: String,
 }
 
 /// A failed client build, for the doctor.
@@ -220,12 +222,14 @@ pub(crate) fn summarize(
                 issuer: meta.issuer().to_string(),
                 not_after_unix: meta.not_after_unix(),
                 not_after: crate::sc_check::date(meta.not_after_unix()),
+                signature_algorithm: meta.signature_algorithm_oid().to_string(),
             },
             None => CertSummary {
                 subject: "(unparsed certificate)".into(),
                 issuer: String::new(),
                 not_after_unix: 0,
                 not_after: String::new(),
+                signature_algorithm: String::new(),
             },
         })
         .collect()

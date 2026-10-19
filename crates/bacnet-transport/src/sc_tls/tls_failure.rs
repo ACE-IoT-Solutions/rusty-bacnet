@@ -43,12 +43,12 @@ fn rejection(problem: &CertificateError) -> ScCertificateRejection {
         C::NotValidYetContext { time, not_before } => ScCertificateRejection::NotYetValid {
             by: gap(not_before.as_secs(), time.as_secs()),
         },
+        C::BadSignature => ScCertificateRejection::BadSignature,
         #[allow(deprecated)]
-        C::BadSignature
-        | C::UnsupportedSignatureAlgorithm
+        C::UnsupportedSignatureAlgorithm
         | C::UnsupportedSignatureAlgorithmContext { .. }
         | C::UnsupportedSignatureAlgorithmForPublicKeyContext { .. } => {
-            ScCertificateRejection::BadSignature
+            ScCertificateRejection::UnsupportedSignatureAlgorithm
         }
         C::NotValidForName | C::NotValidForNameContext { .. } => {
             ScCertificateRejection::NameMismatch
@@ -84,6 +84,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn certificate_problems_keep_their_reason() {
         let at = |secs| UnixTime::since_unix_epoch(Duration::from_secs(secs));
         let cases = [
@@ -112,6 +113,11 @@ mod tests {
             (
                 CertificateError::BadSignature,
                 ScCertificateRejection::BadSignature,
+            ),
+            // An algorithm this node can't check is not a key mismatch.
+            (
+                CertificateError::UnsupportedSignatureAlgorithm,
+                ScCertificateRejection::UnsupportedSignatureAlgorithm,
             ),
             (
                 CertificateError::NotValidForName,

@@ -447,6 +447,17 @@ async fn refused_hub_certificates_each_land_on_tls_with_their_own_hint() {
         let app = refused(&site, &node, &url).await;
         task.abort();
         let last = app.sc.failure.as_ref().unwrap();
+        // rustls reports the context variants: how far off is known.
+        if let Fault::Tls(ScTlsFailure::PeerCertificate(
+            ScCertificateRejection::Expired { by } | ScCertificateRejection::NotYetValid { by },
+        )) = &last.failure.fault
+        {
+            assert!(
+                by.is_some(),
+                "{name}: no distance in {:?}",
+                last.failure.fault
+            );
+        }
         // The dates are measured from the run's clock, so compare the kind.
         let kind = |fault: &Fault| match fault {
             Fault::Tls(ScTlsFailure::PeerCertificate(ScCertificateRejection::Expired {
