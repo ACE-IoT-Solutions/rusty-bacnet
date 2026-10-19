@@ -14,10 +14,20 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 | Read one or several properties | `read`, `readm` | Handle object/property errors individually |
 | Read log/list ranges | `read-range` | Bound request size and result volume |
 | Observe changes | `subscribe` | Creates remote subscription state |
-| Write a value | `write` | Requires explicit site authorization and cleanup |
+| Write a value | `write` | Requires explicit site authorization and cleanup; after v0.13.0 also `--allow-write` |
 | Inspect BBMD tables | `bdt`, `fdt` | Table inspection is different from changing registration |
 | Packet analysis | `capture` | In the Linux release executables; a source build needs the `pcap` feature |
 | Alarm/device/file operations | See the full reference | Not ordinary read-only onboarding |
+
+## Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | The command completed |
+| 1 | It failed while running, for example a timeout or an error from the device |
+| 2 | The arguments did not parse; nothing is sent |
+| 3 | `sc-check` could not complete |
+| 4 | After v0.13.0: the write guard refused the command (`--allow-write` or `--yes` missing); nothing is sent |
 
 ## Names and aliases
 
