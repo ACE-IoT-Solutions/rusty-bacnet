@@ -136,7 +136,9 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(until_after(), 20)
         self.assertEqual(got[-1].object_name, "after")
         self.assertGreater(lagging.missed, 0)
-        self.assertLessEqual(len(got), 256)
+        # The marker may land after the reader has skipped to the oldest
+        # retained item, so it can come on top of a full 256.
+        self.assertLessEqual(len(got) - 1, 256)
         # What was left is the newest, in order, after the gap.
         numbers = [item.object_identifier.instance for item in got]
         self.assertEqual(numbers, sorted(numbers))
