@@ -17,6 +17,8 @@ pub enum ScWebSocketErrorKind {
     UnsupportedScheme,
     /// The configured WebSocket URL did not include a hub host.
     MissingHubHost,
+    /// The host name in the URL did not resolve to any address.
+    HostLookup,
     /// The TCP dial failed before TLS or WebSocket negotiation began.
     TcpDial,
     /// TLS negotiation failed after the TCP dial succeeded.
@@ -45,6 +47,7 @@ impl ScWebSocketErrorKind {
             Self::InvalidUrl | Self::UnsupportedScheme | Self::MissingHubHost => {
                 io::ErrorKind::InvalidInput
             }
+            Self::HostLookup => io::ErrorKind::NotFound,
             Self::TcpDial => io::ErrorKind::ConnectionRefused,
             Self::TlsHandshake
             | Self::WebSocketHandshake
@@ -65,6 +68,7 @@ impl fmt::Display for ScWebSocketErrorKind {
             Self::InvalidUrl => "invalid-url",
             Self::UnsupportedScheme => "unsupported-scheme",
             Self::MissingHubHost => "missing-hub-host",
+            Self::HostLookup => "host-lookup",
             Self::TcpDial => "tcp-dial",
             Self::TlsHandshake => "tls-handshake",
             Self::WebSocketHandshake => "websocket-handshake",
@@ -78,6 +82,85 @@ impl fmt::Display for ScWebSocketErrorKind {
         };
         f.write_str(name)
     }
+}
+
+/// Why a TLS handshake for BACnet/SC failed, from the TLS library's own
+/// error rather than its text. Under Annex AB.7.4 both peers vet each
+/// other's certificate (its encoding, its dates, revocation where known,
+/// and a signature from a configured CA); this says which check failed,
+/// and on which side.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScTlsFailure {
+    /// This node refused the certificate the peer presented.
+    PeerCertificate(ScCertificateRejection),
+    /// The peer ended the handshake with this alert, most often refusing
+    /// this node's certificate. With TLS 1.3 the alert can arrive after the
+    /// client's side of the handshake is done, during the WebSocket upgrade.
+    AlertReceived(ScTlsAlert),
+    /// The peer offered no TLS version or cipher suite in common, such as a
+    /// hub that speaks only TLS 1.2 (BACnet/SC needs TLS 1.3).
+    PeerIncompatible,
+    /// Any other TLS failure.
+    Other,
+}
+
+/// Why this node refused a peer's certificate.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScCertificateRejection {
+    /// Not issued by any configured CA.
+    UnknownIssuer,
+    /// Past its validity window.
+    Expired {
+        /// How long ago the not-after date passed, when known.
+        by: Option<std::time::Duration>,
+    },
+    /// Before its validity window.
+    NotYetValid {
+        /// How long until the not-before date, when known.
+        by: Option<std::time::Duration>,
+    },
+    /// The signature does not verify: signed by a different key than the CA
+    /// it names.
+    BadSignature,
+    /// Signed with an algorithm this node does not support, so the
+    /// signature could not be checked at all.
+    UnsupportedSignatureAlgorithm,
+    /// The certificate does not name the host the URL dials.
+    NameMismatch,
+    /// The certificate's extended key usage does not allow its role.
+    WrongPurpose,
+    /// Revoked.
+    Revoked,
+    /// Any other certificate problem, such as a malformed one.
+    Other,
+}
+
+/// A TLS alert the peer sent, for the alerts that explain a refusal.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScTlsAlert {
+    /// The peer does not trust the CA that issued this node's certificate.
+    UnknownCa,
+    /// This node's certificate is outside its validity window by the peer's
+    /// clock: expired or not yet valid.
+    CertificateExpired,
+    /// The peer refused this node's certificate for its key usage.
+    UnsupportedCertificate,
+    /// A signature did not verify: often a certificate signed by a different
+    /// key than its issuer's, or a certificate and private key that differ.
+    DecryptError,
+    /// The peer requires a client certificate and got none.
+    CertificateRequired,
+    /// This node's certificate is revoked.
+    CertificateRevoked,
+    /// The peer found this node's certificate malformed or unacceptable.
+    BadCertificate,
+    /// The peer allows no TLS version this node offered.
+    ProtocolVersion,
+    /// Another alert, by its TLS alert number.
+    Other(u8),
 }
 
 /// Typed BACnet/SC connect-path error carried inside [`Error::Transport`].
@@ -140,6 +223,9 @@ pub enum ScConnectError {
         kind: ScWebSocketErrorKind,
         /// Human-readable detail from the underlying driver.
         message: String,
+        /// The TLS library's reason when TLS failed: in the handshake, or as
+        /// an alert read during the WebSocket upgrade.
+        tls: Option<ScTlsFailure>,
         /// Untrusted certificate evidence from this failed outbound TLS attempt.
         /// Absent when no verifier callback was observed, including failures
         /// before that point or resumed handshakes. Requires `sc-tls`.
@@ -159,6 +245,15 @@ impl ScConnectError {
     pub fn untrusted_peer_info(&self) -> Option<&crate::sc_tls::ScUntrustedPeerInfo> {
         match self {
             Self::WebSocket { untrusted_peer, .. } => untrusted_peer.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Why TLS failed, when this is a TLS failure the TLS library explained;
+    /// `None` for every other error.
+    pub fn tls_failure(&self) -> Option<ScTlsFailure> {
+        match self {
+            Self::WebSocket { tls, .. } => *tls,
             _ => None,
         }
     }

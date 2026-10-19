@@ -6,7 +6,7 @@ use super::{
 };
 use std::io::{self, Write};
 
-pub(super) fn date(seconds: i64) -> String {
+pub(crate) fn date(seconds: i64) -> String {
     let formatted = time::OffsetDateTime::from_unix_timestamp(seconds)
         .ok()
         .and_then(|value| {

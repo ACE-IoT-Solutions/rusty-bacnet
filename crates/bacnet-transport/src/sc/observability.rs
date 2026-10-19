@@ -17,8 +17,8 @@ use tokio::time::Instant;
 use crate::sc_frame::{decode_sc_bvlc_result, ScBvlcResult, ScFunction, ScMessage, Vmac};
 
 use super::{
-    ScConnectError, ScConnection, ScConnectionState, ScTransport, ScWebSocketErrorKind,
-    WebSocketPort,
+    ScConnectError, ScConnection, ScConnectionState, ScTlsFailure, ScTransport,
+    ScWebSocketErrorKind, WebSocketPort,
 };
 
 /// Events a subscriber can fall behind by before it starts losing the oldest.
@@ -49,6 +49,9 @@ pub enum ScDisconnectCause {
     HeartbeatTimeout,
     /// A TCP, TLS or WebSocket failure of the given kind.
     WebSocket(ScWebSocketErrorKind),
+    /// A TLS failure the TLS library explained: a certificate this node
+    /// refused, or an alert from the hub refusing this node (Annex AB.7.4).
+    Tls(ScTlsFailure),
     /// The hub answered with a BVLC-Result NAK: to the Connect-Request while
     /// connecting, or a NAK that ends a live connection (Annex AB.6).
     #[non_exhaustive]
@@ -96,6 +99,7 @@ impl ScDisconnectCause {
             Some(
                 ScConnectError::UnexpectedResultAck { .. } | ScConnectError::ConnectAcceptMismatch,
             ) => Self::UnexpectedConnectReply,
+            Some(ScConnectError::WebSocket { tls: Some(tls), .. }) => Self::Tls(*tls),
             Some(ScConnectError::WebSocket {
                 kind: ScWebSocketErrorKind::Closed | ScWebSocketErrorKind::StreamEnded,
                 ..
