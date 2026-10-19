@@ -103,6 +103,10 @@ use tokio::task::JoinHandle;
 mod issuance;
 pub use issuance::IssuedApdu;
 
+#[path = "layer_network_message.rs"]
+mod network_message;
+pub use network_message::{NetworkReport, ReceivedNetworkReport};
+
 #[path = "layer_receive.rs"]
 pub(crate) mod receive;
 pub use receive::Counters;

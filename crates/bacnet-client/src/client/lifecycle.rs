@@ -104,6 +104,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let (device_collision_tx, _) =
             broadcast::channel::<DeviceCollisionEvent>(DEVICE_EVENT_CHANNEL_CAPACITY);
         let device_collision_tx_dispatch = device_collision_tx.clone();
+        let (i_have_tx, _) = broadcast::channel::<ReceivedIHave>(I_HAVE_CHANNEL_CAPACITY);
+        let i_have_tx_dispatch = i_have_tx.clone();
+        let (network_report_tx, _) = broadcast::channel(NETWORK_REPORT_CHANNEL_CAPACITY);
+        let network_report_tx_dispatch = network_report_tx.clone();
         let seg_ack_senders: Arc<Mutex<HashMap<SegAckKey, SegmentAckRoute>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let seg_ack_senders_dispatch = Arc::clone(&seg_ack_senders);
@@ -133,6 +137,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     control = network_control_rx.recv(), if network_control_open => {
                         match control {
                             Some(control) => {
+                                // Subscribers first; a broadcast send never waits.
+                                network_reports::publish(&network_report_tx_dispatch, &control);
                                 if let Some((tx, parsed)) = number_tx
                                     .as_ref()
                                     .zip(bacnet_network::network_number::NumberControl::parse(&control))
@@ -235,6 +241,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         confirmed_cov_ack_policy: &confirmed_cov_ack_policy,
                                         device_tx: &device_tx_dispatch,
                                         device_collision_tx: &device_collision_tx_dispatch,
+                                        i_have_tx: &i_have_tx_dispatch,
                                         seg_ack_senders: &seg_ack_senders_dispatch,
                                     },
                                     &mut seg_state,
@@ -273,6 +280,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             event_tx,
             device_tx,
             device_collision_tx,
+            i_have_tx,
+            network_report_tx,
             dispatch_task: Some(dispatch_task),
             network_number_task,
             seg_ack_senders,
