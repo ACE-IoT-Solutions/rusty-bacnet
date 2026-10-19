@@ -59,7 +59,7 @@ mod mutation_wpm_tests;
 #[cfg(test)]
 mod notification_class_durable_tests;
 
-mod read_property;
+pub(super) mod read_property;
 mod read_range;
 #[cfg(test)]
 mod recipient_mac_bound_tests;
@@ -94,15 +94,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         ownership: Option<ConfirmedRequestOwnership>,
     ) {
         if req.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
-            return Self::handle_admitted_read_property(
-                services,
-                request_tasks,
-                origin,
+            let admitted = read_property::AdmittedRequest {
+                services: services.clone(),
+                request_tasks: request_tasks.clone(),
+                source_mac: MacAddr::from_slice(origin.mac),
+                source_network: origin.network,
+                route: origin.route,
                 req,
                 reply_tx,
                 ownership,
-            )
-            .await;
+            };
+            return Self::handle_admitted_read_property(admitted).await;
         }
         let RequestServices {
             db,

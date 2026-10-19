@@ -9,50 +9,76 @@
 use super::issue::ResponsePlan;
 use super::*;
 
+/// An admitted confirmed request and everything its handler owns.
+pub(in crate::server) struct AdmittedRequest<T: TransportPort + 'static> {
+    pub(in crate::server) services: RequestServices<T>,
+    pub(in crate::server) request_tasks: super::super::request_tasks::RequestTaskSpawner,
+    pub(in crate::server) source_mac: MacAddr,
+    pub(in crate::server) source_network: Option<NpduAddress>,
+    pub(in crate::server) route: bacnet_network::response_route::ResponseRoute,
+    pub(in crate::server) req: bacnet_encoding::apdu::ConfirmedRequest,
+    pub(in crate::server) reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
+    pub(in crate::server) ownership: Option<ConfirmedRequestOwnership>,
+}
+
 impl<T: TransportPort + 'static> BACnetServer<T> {
-    /// Run admitted work with its single response owner: ReadProperty on its
-    /// own path, every other service in the general handler, boxed so that
-    /// handler's size isn't carried by a ReadProperty.
-    pub(in crate::server) async fn run_admitted_confirmed_request(
-        services: &RequestServices<T>,
-        request_tasks: &super::super::request_tasks::RequestTaskSpawner,
-        origin: RequestOrigin<'_>,
-        req: bacnet_encoding::apdu::ConfirmedRequest,
-        reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
-        ownership: Option<ConfirmedRequestOwnership>,
-    ) {
-        if req.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
-            Self::handle_admitted_read_property(
-                services,
-                request_tasks,
-                origin,
-                req,
-                reply_tx,
-                ownership,
-            )
-            .await;
+    /// The task that runs admitted work with its single response owner:
+    /// ReadProperty on its own path, every other service in the general
+    /// handler, boxed so that handler's size isn't carried by a ReadProperty.
+    ///
+    /// No async wrapper sits between the spawn and the handler: a wrapper
+    /// would hold its own copy of everything it hands the handler.
+    pub(in crate::server) fn run_admitted_confirmed_request(
+        admitted: AdmittedRequest<T>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        use futures_util::future::Either;
+        if admitted.req.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
+            Either::Left(Self::handle_admitted_read_property(admitted))
         } else {
-            Box::pin(Self::handle_admitted_confirmed_request(
-                services,
-                request_tasks,
-                origin,
-                req,
-                reply_tx,
-                ownership,
-            ))
-            .await;
+            Either::Right(Box::pin(async move {
+                let AdmittedRequest {
+                    services,
+                    request_tasks,
+                    source_mac,
+                    source_network,
+                    route,
+                    req,
+                    reply_tx,
+                    ownership,
+                } = admitted;
+                let origin = RequestOrigin {
+                    mac: &source_mac,
+                    network: source_network,
+                    route,
+                };
+                Self::handle_admitted_confirmed_request(
+                    &services,
+                    &request_tasks,
+                    origin,
+                    req,
+                    reply_tx,
+                    ownership,
+                )
+                .await;
+            }))
         }
     }
 
-    /// Execute an admitted ReadProperty and send its response.
-    pub(super) async fn handle_admitted_read_property(
-        services: &RequestServices<T>,
-        request_tasks: &super::super::request_tasks::RequestTaskSpawner,
-        origin: RequestOrigin<'_>,
-        req: bacnet_encoding::apdu::ConfirmedRequest,
-        reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
-        ownership: Option<ConfirmedRequestOwnership>,
-    ) {
+    /// Execute an admitted ReadProperty and send its response. The fields of
+    /// `admitted` are borrowed where they sit, not moved into locals the
+    /// future would hold a second copy of.
+    pub(super) async fn handle_admitted_read_property(mut admitted: AdmittedRequest<T>) {
+        let reply_tx = admitted.reply_tx.take();
+        let ownership = admitted.ownership.take();
+        let AdmittedRequest {
+            services,
+            request_tasks,
+            source_mac,
+            source_network,
+            route,
+            req,
+            ..
+        } = &admitted;
         let RequestServices {
             db,
             network,
@@ -61,11 +87,6 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             config,
             ..
         } = services;
-        let RequestOrigin {
-            mac: source_mac,
-            network: source_network,
-            route,
-        } = origin;
         // Only a LifeSafetyOperation carries replay ownership; dropping one
         // here completes nothing, as the general handler's drop did.
         let pending = match ownership {
@@ -73,7 +94,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             _ => None,
         };
         let (effective_max_apdu, segmented_response_available) =
-            issue::response_limits(config, &route, &req, source_network.as_ref());
+            issue::response_limits(config, route, req, source_network.as_ref());
         let invoke_id = req.invoke_id;
         let local_network = network.local_network_number().get();
         let audit = super::audit_reporter::WriteAudit::new(
@@ -99,7 +120,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 work_limit: config.read_property_multiple_budget.max_result_elements,
                 identity: Some(&config.device),
             },
-            &req,
+            req,
             |db, oid, req, result| {
                 let result = match result {
                     Ok(()) => None,
@@ -122,7 +143,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             target: ResponseTarget {
                 source_mac,
                 source_network: source_network.as_ref(),
-                route: &route,
+                route,
             },
             ack: ComplexAckParams {
                 invoke_id,

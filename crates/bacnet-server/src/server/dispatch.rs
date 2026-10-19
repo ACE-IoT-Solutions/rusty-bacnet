@@ -239,22 +239,16 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     &req.service_request,
                 );
                 let result = request_tasks.try_spawn(class, peer.clone(), || {
-                    let reply_tx = reply_tx.take();
-                    async move {
-                        Self::run_admitted_confirmed_request(
-                            &services,
-                            &descendants,
-                            RequestOrigin {
-                                mac: &source_mac,
-                                network: source_network,
-                                route,
-                            },
-                            req,
-                            reply_tx,
-                            Some(ConfirmedRequestOwnership::Generic(pending)),
-                        )
-                        .await;
-                    }
+                    Self::run_admitted_confirmed_request(requests::read_property::AdmittedRequest {
+                        services,
+                        request_tasks: descendants,
+                        source_mac,
+                        source_network,
+                        route,
+                        req,
+                        reply_tx: reply_tx.take(),
+                        ownership: Some(ConfirmedRequestOwnership::Generic(pending)),
+                    })
                 });
                 if result == Err(Rejection::Overloaded) {
                     // ASHRAE 135-2020 §§5.4.5.3, 18.10: resource exhaustion
