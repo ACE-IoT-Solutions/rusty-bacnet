@@ -286,9 +286,8 @@ pub(crate) enum Outcome {
 impl Outcome {
     /// From a client result.
     pub(crate) fn of(result: &Result<(), Error>) -> Self {
-        let denied = |class: u32, code: u32| {
-            class == u32::from(ErrorClass::SERVICES.to_raw())
-                && code == u32::from(ErrorCode::SERVICE_REQUEST_DENIED.to_raw())
+        let denied = |class: ErrorClass, code: ErrorCode| {
+            class == ErrorClass::SERVICES && code == ErrorCode::SERVICE_REQUEST_DENIED
         };
         match result {
             Ok(()) => Self::Ack,
@@ -297,18 +296,18 @@ impl Outcome {
                     Self::Denied
                 } else {
                     Self::Error {
-                        class: *class,
-                        code: *code,
+                        class: u32::from(class.to_raw()),
+                        code: u32::from(code.to_raw()),
                     }
                 }
             }
-            Err(Error::Reject { reason }) => Self::Reject(*reason),
+            Err(Error::Reject { reason }) => Self::Reject(reason.to_raw()),
             Err(Error::Abort { reason })
-                if *reason == bacnet_types::enums::AbortReason::TSM_TIMEOUT.to_raw() =>
+                if *reason == bacnet_types::enums::AbortReason::TSM_TIMEOUT =>
             {
                 Self::Timeout
             }
-            Err(Error::Abort { reason }) => Self::Abort(*reason),
+            Err(Error::Abort { reason }) => Self::Abort(reason.to_raw()),
             Err(Error::Timeout(_)) => Self::Timeout,
             Err(other) => Self::Failed(other.to_string()),
         }

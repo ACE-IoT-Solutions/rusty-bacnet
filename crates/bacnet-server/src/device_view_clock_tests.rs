@@ -4,6 +4,7 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_types::bitstring::ServicesSupported;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::{Date, Time};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -100,7 +101,7 @@ fn context_and_ordinary_reads_do_not_sample_the_clock() {
     let db = database(Some(clock.clone()));
     let context = DeviceReadContext::new(&db, DeviceExecution::FullServer);
     assert_eq!(clock.reads(), 0, "construction does not need availability");
-    let analog = AnalogInputObject::new(1, "AI", 62).unwrap();
+    let analog = AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     context
         .object(&analog)
         .read_property(P::PRESENT_VALUE, None)

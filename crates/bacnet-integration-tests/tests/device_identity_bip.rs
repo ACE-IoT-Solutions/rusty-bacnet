@@ -309,7 +309,7 @@ async fn bip_identity_matches_discovery_reads_and_preserves_supplied_device_stat
             ] {
                 assert!(
                     matches!(result, Err(Error::Protocol { class, code })
-                    if class == u32::from(ErrorClass::OBJECT.to_raw()) && code == u32::from(ErrorCode::UNKNOWN_OBJECT.to_raw())),
+                    if class == ErrorClass::OBJECT && code == ErrorCode::UNKNOWN_OBJECT),
                     "{result:?}"
                 );
             }

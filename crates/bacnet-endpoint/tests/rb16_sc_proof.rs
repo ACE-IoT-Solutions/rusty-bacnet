@@ -37,8 +37,8 @@ use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
 use bacnet_transport::sc_hub::{ScHub, ScHubTlsConfig};
 use bacnet_transport::sc_tls::{ScNodeTlsConfig, TlsWebSocket};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
-    UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier, Segmentation,
+    ServiceSupported, UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::primitives::PropertyValue;
@@ -111,7 +111,12 @@ fn db_with_analog(
     instance: u32,
     value: f32,
 ) -> bacnet_objects::database::ObjectDatabase {
-    let mut o = AnalogInputObject::new(instance, format!("sc-ai-{instance}"), 0).unwrap();
+    let mut o = AnalogInputObject::new(
+        instance,
+        format!("sc-ai-{instance}"),
+        EngineeringUnits::SQUARE_METERS,
+    )
+    .unwrap();
     o.set_present_value(value);
     build_database_with_extra(id, vec![Box::new(o)]).unwrap()
 }

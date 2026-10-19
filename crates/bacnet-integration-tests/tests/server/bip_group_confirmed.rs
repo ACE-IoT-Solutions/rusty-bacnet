@@ -21,7 +21,8 @@ use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bvll::{decode_bip_mac, decode_bvll, BvlcFunction};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+    UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
@@ -137,8 +138,10 @@ async fn server() -> BACnetServer<BipTransport> {
         .unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     BACnetServer::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)

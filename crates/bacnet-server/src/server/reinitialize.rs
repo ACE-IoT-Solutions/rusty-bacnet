@@ -289,8 +289,8 @@ fn activate_network_ports(state: ReinitializedState, db: &mut ObjectDatabase) ->
 
 fn services_error(code: ErrorCode) -> Error {
     Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: code.to_raw() as u32,
+        class: ErrorClass::SERVICES,
+        code,
     }
 }
 

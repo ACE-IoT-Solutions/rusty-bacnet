@@ -25,6 +25,7 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
 };
+use bacnet_types::enums::EngineeringUnits;
 /// Helper: create an EventEnrollment monitoring an AnalogInput with OUT_OF_RANGE.
 fn setup_out_of_range(
     present_value: f32,
@@ -35,7 +36,7 @@ fn setup_out_of_range(
     let mut db = ObjectDatabase::new();
 
     // Monitored analog input
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(present_value);
     let ai_oid = ai.object_identifier();
     db.add(Box::new(ai)).unwrap();
@@ -73,13 +74,13 @@ fn setup_floating_limit(
 ) -> (ObjectDatabase, ObjectIdentifier, ObjectIdentifier) {
     let mut db = ObjectDatabase::new();
 
-    let mut ai = AnalogInputObject::new(2, "AI-2", 62).unwrap();
+    let mut ai = AnalogInputObject::new(2, "AI-2", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(present_value);
     let ai_oid = ai.object_identifier();
     db.add(Box::new(ai)).unwrap();
 
     // Separate setpoint object the floating-limit reference resolves to.
-    let mut sp = AnalogInputObject::new(3, "AI-SP", 62).unwrap();
+    let mut sp = AnalogInputObject::new(3, "AI-SP", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     sp.set_present_value(setpoint);
     let sp_oid = sp.object_identifier();
     db.add(Box::new(sp)).unwrap();

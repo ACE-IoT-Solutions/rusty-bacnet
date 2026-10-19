@@ -44,8 +44,15 @@ pub(super) fn database() -> ObjectDatabase {
         .unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(
+            1,
+            "AV-1",
+            bacnet_types::enums::EngineeringUnits::DEGREES_CELSIUS,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
     db
 }
 

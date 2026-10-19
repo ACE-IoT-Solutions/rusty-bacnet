@@ -7,6 +7,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 
 use super::*;
 use bacnet_transport::port::TransportProvenance;
+use bacnet_types::enums::EngineeringUnits;
 
 fn read_property_request(invoke_id: u8) -> Bytes {
     let mut service_request = BytesMut::new();
@@ -40,7 +41,8 @@ async fn responder_moves_reply_sender_once_and_preserves_routed_destination() {
     let mut endpoint = EndpointIngress::new(endpoint_transport, 2);
     let ingress = endpoint.start().await.unwrap();
     let mut db = ObjectDatabase::new();
-    let mut analog = AnalogInputObject::new(7, "shared-runtime-input", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(7, "shared-runtime-input", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(42.0);
     db.add(Box::new(analog)).unwrap();
     let responder = EndpointResponder::new(Arc::new(RwLock::new(db)), ingress.egress.clone());
@@ -116,7 +118,8 @@ async fn responder_routes_reply_to_original_source_via_immediate_router() {
     let mut endpoint = EndpointIngress::new(endpoint_transport, 2);
     let ingress = endpoint.start().await.unwrap();
     let mut db = ObjectDatabase::new();
-    let mut analog = AnalogInputObject::new(7, "routed-input", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(7, "routed-input", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(42.0);
     db.add(Box::new(analog)).unwrap();
     let responder = EndpointResponder::new(Arc::new(RwLock::new(db)), ingress.egress);

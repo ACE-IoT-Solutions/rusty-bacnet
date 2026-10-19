@@ -24,6 +24,7 @@ use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_types::constructed::BACnetNameValue;
+use bacnet_types::enums::EngineeringUnits;
 use std::sync::atomic::Ordering;
 
 #[derive(Default)]
@@ -125,13 +126,13 @@ fn object(kind: Case, storage: &Arc<Storage>) -> Box<dyn BACnetObject> {
             object.set_profile(profile).unwrap();
             Box::new(object)
         }
-        ObjectType::ANALOG_OUTPUT => build!(AnalogOutputObject, 95),
+        ObjectType::ANALOG_OUTPUT => build!(AnalogOutputObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_OUTPUT => build!(BinaryOutputObject),
         ObjectType::MULTI_STATE_OUTPUT => build!(MultiStateOutputObject, 3),
-        ObjectType::ANALOG_INPUT => build!(AnalogInputObject, 95),
+        ObjectType::ANALOG_INPUT => build!(AnalogInputObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_INPUT => build!(BinaryInputObject),
         ObjectType::MULTI_STATE_INPUT => build!(MultiStateInputObject, 3),
-        ObjectType::ANALOG_VALUE => value!(AnalogValueObject, 95),
+        ObjectType::ANALOG_VALUE => value!(AnalogValueObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_VALUE => value!(BinaryValueObject),
         ObjectType::MULTI_STATE_VALUE => value!(MultiStateValueObject, 3),
         ObjectType::COLOR => build!(ColorObject),

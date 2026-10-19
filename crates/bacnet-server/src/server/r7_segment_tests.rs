@@ -4,6 +4,7 @@ use crate::server::segmented_receive::{
     check_opening_response_route, initial_state, RequestPayload,
 };
 use crate::server::segmented_send::{segmented_receive_key, segmented_transaction_key};
+use bacnet_types::enums::EngineeringUnits;
 
 fn open(
     received: &ReceivedApdu,
@@ -50,8 +51,10 @@ async fn send_ack(
 async fn r7_segment_opening_context_drives_ack_reassembly_and_retarget_abort() {
     let mut routed = Routed::new().await;
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(7, "input", 0).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(7, "input", EngineeringUnits::SQUARE_METERS).unwrap(),
+    ))
+    .unwrap();
     let context = context(db, ServerConfig::default());
     let Apdu::ConfirmedRequest(mut first) = read(4) else {
         unreachable!()
@@ -281,8 +284,10 @@ async fn r7_segment_alternate_return_paths_keep_opening_reply_plan() {
     for arrival_port in [0, 2] {
         let mut routed = Routed::new().await;
         let mut db = ObjectDatabase::new();
-        db.add(Box::new(AnalogInputObject::new(7, "input", 0).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogInputObject::new(7, "input", EngineeringUnits::SQUARE_METERS).unwrap(),
+        ))
+        .unwrap();
         let context = context(db, ServerConfig::default());
         let Apdu::ConfirmedRequest(mut first) = read(17) else {
             unreachable!()

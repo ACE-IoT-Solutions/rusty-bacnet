@@ -11,6 +11,7 @@ use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, EventLogDatum, LogDatum};
 use std::sync::Arc;
 
+use bacnet_types::enums::EngineeringUnits;
 use PropertyIdentifier as P;
 
 fn tl1() -> ObjectIdentifier {
@@ -25,7 +26,7 @@ fn el1() -> ObjectIdentifier {
 /// both clocks bound.
 fn database() -> ObjectDatabase {
     let mut db = crate::server::clocked_test_database();
-    let mut av = AnalogValueObject::new(1, "AV-1", 95).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(21.5).unwrap();
     db.add(Box::new(av)).unwrap();
     let mut tl = TrendLogObject::new(1, "TL-1", 8).unwrap();
@@ -78,7 +79,7 @@ fn rp(db: &ObjectDatabase, oid: ObjectIdentifier, property: P) -> Vec<u8> {
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
         matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }

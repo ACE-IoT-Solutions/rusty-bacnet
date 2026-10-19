@@ -25,15 +25,15 @@ struct Tables {
 
 fn refusal() -> Error {
     Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw().into(),
-        code: ErrorCode::VALUE_OUT_OF_RANGE.to_raw().into(),
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::VALUE_OUT_OF_RANGE,
     }
 }
 
 fn is_refusal(error: &Error) -> bool {
     matches!(error, Error::Protocol { class, code }
-        if *class == u32::from(ErrorClass::PROPERTY.to_raw())
-            && *code == u32::from(ErrorCode::VALUE_OUT_OF_RANGE.to_raw()))
+        if *class == ErrorClass::PROPERTY
+            && *code == ErrorCode::VALUE_OUT_OF_RANGE)
 }
 
 impl BbmdTables for Tables {

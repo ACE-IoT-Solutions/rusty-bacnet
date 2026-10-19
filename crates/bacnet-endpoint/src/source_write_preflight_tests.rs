@@ -210,6 +210,7 @@ async fn endpoint_write_non_bip_without_reporter_is_refused_and_reads_remain_ava
 async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error() {
     use bacnet_objects::{analog::AnalogValueObject, notification_class::NotificationClass};
     use bacnet_server::server::{BACnetServer, ServerConfig};
+    use bacnet_types::enums::EngineeringUnits;
     let (mut sink, mut records) = network().await;
     let mut db = crate::DeviceIdentity::new(456, 42)
         .unwrap()
@@ -217,8 +218,10 @@ async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error
         .unwrap();
     db.add(Box::new(NotificationClass::new(1, "empty-list").unwrap()))
         .unwrap();
-    db.add(Box::new(AnalogValueObject::new(7, "scalar", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(7, "scalar", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     let mut remote = BACnetServer::start_clockless(
         ServerConfig {
             device: bacnet_objects::DeviceIdentity::new(456, 42).unwrap(),

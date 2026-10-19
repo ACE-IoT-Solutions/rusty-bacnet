@@ -19,7 +19,7 @@ use bacnet_services::cov_multiple::{
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use bacnet_types::constructed::PropertyReference;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use bacnet_types::primitives::{Date, Time};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex as StdMutex;
@@ -219,8 +219,8 @@ impl Harness {
             .unwrap(),
         ))
         .unwrap();
-        db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-            .unwrap();
+        let av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS);
+        db.add(Box::new(av.unwrap())).unwrap();
         extend(&mut db);
         let frames = Arc::new(StdMutex::new(Vec::new()));
         let clock = SharedClock(Arc::new(StdMutex::new(at(0))));

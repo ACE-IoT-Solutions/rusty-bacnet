@@ -337,10 +337,7 @@ pub(super) fn element(
                     .map(|()| encoded.to_vec())
                     .map_err(|_| (ErrorClass::PROPERTY, ErrorCode::OTHER))
             }
-            Err(Error::Protocol { class, code }) => Err((
-                ErrorClass::from_raw(class as u16),
-                ErrorCode::from_raw(code as u16),
-            )),
+            Err(Error::Protocol { class, code }) => Err((class, code)),
             Err(_) => Err((ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)),
         },
     };

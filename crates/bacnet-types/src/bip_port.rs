@@ -51,8 +51,8 @@ pub trait BbmdTables: Send + Sync {
     fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
         let _ = table;
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw().into(),
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
 
@@ -62,8 +62,8 @@ pub trait BbmdTables: Send + Sync {
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
         let _ = changes;
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw().into(),
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
 }

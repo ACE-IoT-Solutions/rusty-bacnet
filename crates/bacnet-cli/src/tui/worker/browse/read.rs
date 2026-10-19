@@ -80,16 +80,12 @@ pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
         AbortReason::APDU_TOO_LONG,
     ];
     match error {
-        Error::Reject { reason } if *reason == RejectReason::BUFFER_OVERFLOW.to_raw() => {
+        Error::Reject { reason } if *reason == RejectReason::BUFFER_OVERFLOW => {
             RpmFailure::TooLarge
         }
         Error::Reject { .. } => RpmFailure::Refused,
-        Error::Protocol { class, .. } if *class == u32::from(ErrorClass::SERVICES.to_raw()) => {
-            RpmFailure::Refused
-        }
-        Error::Abort { reason } if too_large.iter().any(|r| r.to_raw() == *reason) => {
-            RpmFailure::TooLarge
-        }
+        Error::Protocol { class, .. } if *class == ErrorClass::SERVICES => RpmFailure::Refused,
+        Error::Abort { reason } if too_large.contains(reason) => RpmFailure::TooLarge,
         _ => RpmFailure::Other,
     }
 }
@@ -98,7 +94,7 @@ pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
 /// timeout or a transport failure. Reading on would only time out again.
 pub(crate) fn unreachable(error: &Error) -> bool {
     match error {
-        Error::Abort { reason } => *reason == AbortReason::TSM_TIMEOUT.to_raw(),
+        Error::Abort { reason } => *reason == AbortReason::TSM_TIMEOUT,
         Error::Timeout(_) | Error::Transport(_) => true,
         _ => false,
     }

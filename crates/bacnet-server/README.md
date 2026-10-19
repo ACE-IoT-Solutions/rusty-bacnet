@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut analog = AnalogInputObject::new(
         7,
         "supply-temperature",
-        EngineeringUnits::DEGREES_CELSIUS.to_raw(),
+        EngineeringUnits::DEGREES_CELSIUS,
     )?;
     analog.set_present_value(42.0);
     let database = build_database_with_extra(&identity, vec![Box::new(analog)])?;

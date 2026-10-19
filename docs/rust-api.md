@@ -250,15 +250,20 @@ let val = PropertyValue::Null;
 ### Error
 
 ```rust
+use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::{Error, ErrorDetail};
 
-// Protocol error from a remote device
-let e = Error::Protocol { class: 2, code: 31 }; // ErrorClass(2)=PROPERTY, ErrorCode(31)=UNKNOWN_PROPERTY
+// Protocol error from a remote device: the class and code are typed.
+let e = Error::Protocol { class: ErrorClass::PROPERTY, code: ErrorCode::UNKNOWN_OBJECT };
 
 // A structured error body: here an AddListElement/RemoveListElement
 // ChangeList-Error naming the failed element. Error::protocol builds
 // Error::Structured with a detail, Error::Protocol without one.
-let e = Error::protocol(5, 81, Some(ErrorDetail::FirstFailedElementNumber(2))); // SERVICES / LIST_ELEMENT_NOT_FOUND
+let e = Error::protocol(
+    ErrorClass::SERVICES,
+    ErrorCode::LIST_ELEMENT_NOT_FOUND,
+    Some(ErrorDetail::FirstFailedElementNumber(2)),
+);
 if let Error::Structured { detail, .. } = &e {
     assert_eq!(**detail, ErrorDetail::FirstFailedElementNumber(2));
 }
@@ -7477,13 +7482,13 @@ let server = BACnetServer::bip_builder()
             ReinitializedState::WARMSTART | ReinitializedState::COLDSTART => {
                 // Accept now; the task above restarts after its delay.
                 restart_tx.try_send(request.state).map_err(|_| Error::Protocol {
-                    class: ErrorClass::DEVICE.to_raw() as u32,
-                    code: ErrorCode::CONFIGURATION_IN_PROGRESS.to_raw() as u32,
+                    class: ErrorClass::DEVICE,
+                    code: ErrorCode::CONFIGURATION_IN_PROGRESS,
                 })
             }
             _ => Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+                class: ErrorClass::SERVICES,
+                code: ErrorCode::SERVICE_REQUEST_DENIED,
             }),
         }
     })
@@ -7813,11 +7818,11 @@ All async operations return `Result<T, bacnet_types::error::Error>`. Key variant
 
 | Variant | Meaning |
 |---------|---------|
-| `Error::Protocol { class, code }` | Remote BACnet error response |
+| `Error::Protocol { class, code }` | Remote BACnet error response, as an `ErrorClass` and an `ErrorCode` |
 | `Error::Structured { class, code, detail }` | Remote error whose Clause 21 body adds fields (ChangeList-Error, CreateObject-Error, WritePropertyMultiple-Error and others): `detail` is the boxed `ErrorDetail` |
 | `Error::Timeout(msg)` | APDU retry exhausted |
-| `Error::Reject { reason }` | Remote device rejected request |
-| `Error::Abort { reason }` | Remote device aborted request |
+| `Error::Reject { reason }` | Remote device rejected request, with its `RejectReason` |
+| `Error::Abort { reason }` | Remote device aborted request, with its `AbortReason` |
 | `Error::RoutedPathTooLong { dnet }` | Router rejected the active message as too long for DNET |
 | `Error::RoutedPathCapacityExceeded { capacity }` | No routed-path entry can be allocated without discarding protected safety state |
 | `Error::UnsupportedTransport { required, actual }` | The client's data link cannot carry the operation (a BBMD helper on a non-B/IP transport) |
@@ -8638,7 +8643,7 @@ Device accepts `DeviceObject::with_tags_persistence(config, storage)`; the exist
 `DeviceConfig` and `DeviceObject::new(config)` keep their defaults.
 
 For example, construct a writable Analog Value with
-`AnalogValueObject::with_tags_persistence(1, "Temperature", 62, PresentValueAccess::Writable, storage)?`,
+`AnalogValueObject::with_tags_persistence(1, "Temperature", EngineeringUnits::DEGREES_CELSIUS, PresentValueAccess::Writable, storage)?`,
 then call `set_profile` to provision the desired rows. `storage` is an
 `Arc<dyn TagsPersistence>` supplied by the application. The shared
 `bacnet_objects::object_profile::{TagsPersistence, TagsSnapshot,

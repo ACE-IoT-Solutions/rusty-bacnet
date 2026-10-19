@@ -18,10 +18,7 @@ fn shutdown_error() -> Error {
 }
 
 fn property_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::Protocol { class, code }
 }
 
 /// Check existence, scope and typed authority under the database write guard.
@@ -188,8 +185,8 @@ impl EndpointResponder {
         }
         if write.property_array_index.is_some() {
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
             });
         }
         // Description and Audit_Notification_Recipient, the only targets
@@ -207,8 +204,8 @@ impl EndpointResponder {
             )
         {
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         let context = MutationAuthorizationContext {

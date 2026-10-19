@@ -7,7 +7,7 @@ use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_services::cov_multiple::{COVNotificationItem, COVNotificationValue};
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use bacnet_types::primitives::{Date, Time};
 use bytes::Bytes;
 use std::sync::Arc as StdArc;
@@ -258,8 +258,10 @@ async fn cov_property_multiple_subscription_uses_multiple_notification_on_change
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let db = Arc::new(RwLock::new(db));
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));
@@ -372,8 +374,10 @@ async fn capture_timestamped_cov_multiple(
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let db = Arc::new(RwLock::new(db));
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));
@@ -502,8 +506,10 @@ async fn confirmed_cov_single_and_multiple_retries_retain_their_leases() {
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let db = Arc::new(RwLock::new(db));
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));

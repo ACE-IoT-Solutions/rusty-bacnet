@@ -608,8 +608,8 @@ async fn audit_query_matches_address_recipient_and_unknown_audit_log_errors() {
         matches!(
             error,
             Error::Protocol { class, code }
-                if class == u32::from(ErrorClass::OBJECT.to_raw())
-                    && code == u32::from(ErrorCode::UNKNOWN_OBJECT.to_raw())
+                if class == ErrorClass::OBJECT
+                    && code == ErrorCode::UNKNOWN_OBJECT
         ),
         "unexpected error: {error}"
     );

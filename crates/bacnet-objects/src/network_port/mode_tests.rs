@@ -94,7 +94,7 @@ fn read(db: &ObjectDatabase, property: P) -> Result<PropertyValue, Error> {
 fn assert_code(result: Result<impl std::fmt::Debug, Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
         matches!(&result, Err(Error::Protocol { class: c, code: e })
-            if *c == class.to_raw() as u32 && *e == code.to_raw() as u32),
+            if *c == class && *e == code),
         "{result:?}"
     );
 }

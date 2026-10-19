@@ -3,7 +3,9 @@
 //! Tracks in-flight confirmed requests. Each request gets a unique invoke_id
 //! (0-255) scoped per destination MAC. Responses are delivered via oneshot channels.
 
-use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
+use bacnet_types::enums::{
+    AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
+};
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -63,10 +65,10 @@ pub enum TsmResponse {
     },
     /// Error PDU.
     Error {
-        /// Raw BACnetErrorClass enumeration value.
-        class: u32,
-        /// Raw BACnetErrorCode enumeration value.
-        code: u32,
+        /// Error class the PDU reports.
+        class: ErrorClass,
+        /// Error code the PDU reports.
+        code: ErrorCode,
         /// What the PDU's structured Clause 21 body adds to the class and
         /// code (ChangeList-Error, CreateObject-Error, WPM-Error and the
         /// others); `None` for a plain error.
@@ -74,13 +76,13 @@ pub enum TsmResponse {
     },
     /// Reject PDU.
     Reject {
-        /// Raw BACnetRejectReason value.
-        reason: u8,
+        /// Reject reason the PDU reports.
+        reason: RejectReason,
     },
     /// Abort PDU.
     Abort {
-        /// Raw BACnetAbortReason value.
-        reason: u8,
+        /// Abort reason the PDU reports.
+        reason: AbortReason,
     },
     /// A router rejected the active message as too long for its routed path.
     NetworkPathTooLong {
@@ -95,8 +97,8 @@ impl TsmResponse {
     /// WritePropertyMultiple's first failed write attempt.
     pub(crate) fn from_error_pdu(pdu: &bacnet_encoding::apdu::ErrorPdu) -> Self {
         Self::Error {
-            class: pdu.error_class.to_raw() as u32,
-            code: pdu.error_code.to_raw() as u32,
+            class: pdu.error_class,
+            code: pdu.error_code,
             detail: bacnet_services::structured_error::detail(pdu),
         }
     }
@@ -701,7 +703,7 @@ impl Tsm {
             owner,
             None,
             TsmResponse::Abort {
-                reason: AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw(),
+                reason: AbortReason::INVALID_APDU_IN_THIS_STATE,
             },
         );
     }

@@ -243,6 +243,7 @@ async fn server_enrollment_task_evaluates_at_startup_on_its_configured_interval(
     use bacnet_objects::event_enrollment::EventEnrollmentObject;
     use bacnet_objects::traits::BACnetObject;
     use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
+    use bacnet_types::enums::EngineeringUnits;
     use bacnet_types::enums::{EventState, EventType, PropertyIdentifier};
 
     // Exercises the spawned task, not `tokio::time::interval` in isolation. Two
@@ -251,7 +252,7 @@ async fn server_enrollment_task_evaluates_at_startup_on_its_configured_interval(
     // the period so the config field is silently ignored.
     let mut db = ObjectDatabase::new();
 
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(150.0); // above high_limit
     let ai_oid = ai.object_identifier();
     db.add(Box::new(ai)).unwrap();
@@ -522,7 +523,7 @@ fn service_reject_error_preserves_reason_on_wire_response() {
         0x31,
         ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY,
         &Error::Reject {
-            reason: RejectReason::UNDEFINED_ENUMERATION.to_raw(),
+            reason: RejectReason::UNDEFINED_ENUMERATION,
         },
     );
     assert_eq!(

@@ -12,7 +12,8 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation,
+    AbortReason, ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+    Segmentation,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
@@ -43,7 +44,7 @@ async fn make_server_with_dcc_policy(
     .unwrap();
 
     // AnalogInput (instance 1, present-value = 72.5)
-    let mut ai = AnalogInputObject::new(1, "Zone Temp", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(72.5);
 
     // BinaryValue (instance 1, default = inactive)

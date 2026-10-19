@@ -15,8 +15,8 @@ use super::BbmdState;
 /// The WriteProperty refusal of a value the BBMD can't take.
 fn out_of_range() -> Error {
     Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw().into(),
-        code: ErrorCode::VALUE_OUT_OF_RANGE.to_raw().into(),
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::VALUE_OUT_OF_RANGE,
     }
 }
 

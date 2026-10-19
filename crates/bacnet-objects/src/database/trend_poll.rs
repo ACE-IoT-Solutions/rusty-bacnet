@@ -341,10 +341,7 @@ impl ObjectDatabase {
         match target.read_property(property, index) {
             Ok(value) => property_value_to_log_value(&value),
             Err(Error::Protocol { class, code } | Error::Structured { class, code, .. }) => {
-                LogValue::Failure {
-                    error_class: class,
-                    error_code: code,
-                }
+                failure(class, code)
             }
             // An error with no BACnet class and code reports as ReadProperty
             // would answer it.
