@@ -42,8 +42,10 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
     /// The next item, or `None` once every sender is gone. A lag adds the
     /// count lost to `missed` and goes on to the oldest item still held.
     ///
-    /// Cancel-safe: dropping the future (a cancelled `__anext__`) loses no
-    /// item, since both the lock and `recv` are. The lock only orders this
+    /// Dropping this future before it yields loses no item, since both the
+    /// lock and `recv` are cancel-safe. A Python cancel that lands after it
+    /// yields, while `future_into_py` is delivering the item, drops that
+    /// item without counting it in `missed`. The lock only orders this
     /// iterator's own concurrent `__anext__` calls; no Python thread waits
     /// on it.
     pub(crate) fn next(&self) -> impl std::future::Future<Output = Option<T>> + Send + 'static {

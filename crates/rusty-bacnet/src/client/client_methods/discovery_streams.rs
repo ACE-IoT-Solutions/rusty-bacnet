@@ -25,7 +25,9 @@ impl BACnetClient {
     /// Broadcast a Who-Has for `object` (an `ObjectIdentifier`, or a name
     /// as `str`) and collect the I-Haves that answer it for `timeout_ms`:
     /// one per device and object, in the order they came. No answer is an
-    /// empty list. The limits follow `who_has_by_id()`'s rule.
+    /// empty list. The limits follow `who_has_by_id()`'s rule. It holds the
+    /// started client for the whole wait, so `stop()` (or leaving
+    /// `async with`) waits up to `timeout_ms` for it.
     #[pyo3(signature = (object, low_limit=None, high_limit=None, timeout_ms=3000))]
     fn who_has_replies<'py>(
         &self,
@@ -64,7 +66,9 @@ impl BACnetClient {
     /// network) and collect the routers that answer for `timeout_ms`: one
     /// `DiscoveredRouter` per router MAC, in the order first heard. For a
     /// `network`, only the routers that list it. No answer is an empty
-    /// list. `network` 0 and 65535 raise `BacnetError`.
+    /// list. `network` 0 and 65535 raise `BacnetError`. It holds the
+    /// started client for the whole wait, so `stop()` (or leaving
+    /// `async with`) waits up to `timeout_ms` for it.
     #[pyo3(signature = (network=None, timeout_ms=3000))]
     fn discover_routers<'py>(
         &self,

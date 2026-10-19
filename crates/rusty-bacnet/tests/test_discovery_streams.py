@@ -113,31 +113,33 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         router = await self.router_peer()
         client = await self.foreign_client(router.address)
         lagging = await client.i_have_events()
-        for n in range(400):  # past the 256 the stream holds
+        # Past the 256 the stream holds, paced so a small loopback receive
+        # buffer (Windows) keeps up; how many arrive doesn't matter.
+        for n in range(400):
             router.send(i_have(77, n, f"AI-{n}"))
+            if n % 25 == 24:
+                await asyncio.sleep(0.02)
         # The client keeps working while nobody reads: discovery answers.
         [found] = await client.discover_routers(timeout_ms=1500)
         self.assertEqual(found.networks, [5, 7])
+        router.send(i_have(77, 1000, "after"))
 
+        # Read with async for, not polling timeouts, up to the marker: a
+        # stream that ended at the gap would never reach it.
         got = []
 
-        async def drain():
-            while True:
-                try:
-                    got.append(await asyncio.wait_for(lagging.__anext__(), 1))
-                except asyncio.TimeoutError:
+        async def until_after():
+            async for item in lagging:
+                got.append(item)
+                if item.object_name == "after":
                     return
-        await asyncio.wait_for(drain(), 20)
+        await asyncio.wait_for(until_after(), 20)
+        self.assertEqual(got[-1].object_name, "after")
         self.assertGreater(lagging.missed, 0)
         self.assertLessEqual(len(got), 256)
-        self.assertLessEqual(lagging.missed + len(got), 400)
-        # What is left is the newest, in order, after the gap.
+        # What was left is the newest, in order, after the gap.
         numbers = [item.object_identifier.instance for item in got]
         self.assertEqual(numbers, sorted(numbers))
-        self.assertEqual(numbers[-1], 399)
-        router.send(i_have(77, 1000, "after"))
-        after = await asyncio.wait_for(lagging.__anext__(), 5)
-        self.assertEqual(after.object_name, "after")
 
     async def test_routers_and_network_reports_from_a_raw_router(self):
         router = await self.router_peer()

@@ -884,8 +884,11 @@ The connector never waits for Python. An iterator more than 64 events behind
 loses the oldest and adds their count to its `missed`, then goes on with the
 oldest event it still has; after a gap, `connection_status()` says where the
 link stands. Each `connection_events()` call is an independent subscription.
-A cancelled `__anext__` loses no event. Iteration ends (`StopAsyncIteration`)
-once the client stops; the iterator holds no reference to the client.
+A cancel before an event arrives loses nothing, but one that lands while an
+event is being delivered can drop it without counting it in `missed`: prefer
+`async for` over polling `__anext__` with short timeouts. Iteration ends
+(`StopAsyncIteration`) once the client stops; the iterator holds no reference
+to the client.
 
 `await client.connection_status()` returns a frozen `ScLinkStatus`: `state`
 (`disconnected`, `connecting`, `connected` or `disconnecting`), `active_hub`,
@@ -1342,8 +1345,14 @@ iterator of frozen `NetworkReport`: `kind` is `i_am_router_to_network` (with
 Like `connection_events()`, both iterators are independent subscriptions
 that the client never waits for. One that falls behind (256 I-Haves, 64
 network reports) loses the oldest, adds their count to its `missed` and
-goes on with the oldest it still has. A cancelled `__anext__` loses
-nothing, and iteration ends once the client stops.
+goes on with the oldest it still has. As with `connection_events()`, a
+cancel before an item arrives loses nothing, while one that lands as an item
+is being delivered can drop it uncounted, so prefer `async for` over polling
+with short timeouts. Iteration ends once the client stops.
+
+`who_has_replies()` and `discover_routers()` hold the started client for
+their whole `timeout_ms`, so `stop()`, or leaving `async with`, waits for them
+to finish.
 
 #### `discovered_devices() -> list[DiscoveredDevice]`
 

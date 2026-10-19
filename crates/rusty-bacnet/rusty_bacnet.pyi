@@ -1689,8 +1689,9 @@ class IHave:
 class IHaveIterator:
     """Async iterator over every I-Have from one ``i_have_events()`` call.
     The client never waits for it: one more than 256 behind loses the
-    oldest and adds them to ``missed``. Iteration ends when the client
-    stops."""
+    oldest and adds them to ``missed``. A cancel that lands while an item
+    is being delivered can drop it uncounted; prefer ``async for``.
+    Iteration ends when the client stops."""
 
     def __aiter__(self) -> IHaveIterator: ...
     def __anext__(self) -> Awaitable[IHave]: ...
@@ -1754,8 +1755,9 @@ class NetworkReport:
 class NetworkReportIterator:
     """Async iterator over the network reports from one
     ``network_reports()`` call. The client never waits for it: one more
-    than 64 behind loses the oldest and adds them to ``missed``. Iteration
-    ends when the client stops."""
+    than 64 behind loses the oldest and adds them to ``missed``. A cancel
+    that lands while an item is being delivered can drop it uncounted;
+    prefer ``async for``. Iteration ends when the client stops."""
 
     def __aiter__(self) -> NetworkReportIterator: ...
     def __anext__(self) -> Awaitable[NetworkReport]: ...
@@ -2336,7 +2338,9 @@ class ScEventIterator:
     """Async iterator over ``ScEvent`` from one ``connection_events()`` call.
 
     The connector never waits for it: an iterator more than 64 events behind
-    loses the oldest and adds them to ``missed``. Iteration ends when the
+    loses the oldest and adds them to ``missed``. A cancel that lands while
+    an event is being delivered can drop it uncounted: prefer ``async for``
+    over polling ``__anext__`` with short timeouts. Iteration ends when the
     client stops.
     """
     def __aiter__(self) -> ScEventIterator: ...
@@ -2732,7 +2736,9 @@ class BACnetClient:
         """Broadcast a Who-Has for ``object`` (an identifier, or a name) and
         collect the I-Haves that answer it for ``timeout_ms``: one per device
         and object, in arrival order; an empty list when none answer. The
-        limits follow ``who_has_by_id()``'s rule (#1850)."""
+        limits follow ``who_has_by_id()``'s rule (#1850). It holds the
+        started client for the whole wait, so ``stop()`` waits up to
+        ``timeout_ms`` for it."""
         ...
 
     def i_have_events(self) -> Awaitable[IHaveIterator]:
@@ -2748,7 +2754,8 @@ class BACnetClient:
         network) and collect the routers that answer for ``timeout_ms``, one
         per router MAC in the order first heard; for a ``network``, only the
         routers listing it. An empty list when none answer. ``network`` 0 or
-        65535 raises BacnetError (#1850)."""
+        65535 raises BacnetError (#1850). It holds the started client for
+        the whole wait, so ``stop()`` waits up to ``timeout_ms`` for it."""
         ...
 
     def network_reports(self) -> Awaitable[NetworkReportIterator]:
