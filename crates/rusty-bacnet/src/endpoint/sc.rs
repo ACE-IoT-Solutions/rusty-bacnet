@@ -40,6 +40,7 @@ struct ScEndpointConfig {
     queue_capacity: usize,
     read_work_limit: usize,
     min_request_interval_ms: u64,
+    reinitialize: crate::reinitialize::EndpointReinitialize,
 }
 
 impl ScEndpointConfig {
@@ -66,7 +67,7 @@ impl ScEndpointConfig {
             .device(config.identity.clone())
             .build_hub_session(ws)
             .map_err(to_py_err)?;
-        Ok(session)
+        Ok(config.reinitialize.install(session))
     }
 }
 
@@ -133,6 +134,9 @@ impl PyScEndpoint {
     ///     min_request_interval_ms: Least time between the client role's
     ///         confirmed requests to one destination (default 0, no pacing;
     ///         at most 3600000), as for `BACnetClient`.
+    ///     on_reinitialize / after_reinitialize / reinit_password: Execute
+    ///         ReinitializeDevice, as `BACnetServer`'s keywords of the same
+    ///         names do (#1566).
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -154,7 +158,10 @@ impl PyScEndpoint {
         services=None,
         queue_capacity=16,
         read_work_limit=256,
-        min_request_interval_ms=0
+        min_request_interval_ms=0,
+        on_reinitialize=None,
+        after_reinitialize=None,
+        reinit_password=None
     ))]
     fn new(
         device_instance: u32,
@@ -176,7 +183,15 @@ impl PyScEndpoint {
         queue_capacity: usize,
         read_work_limit: usize,
         min_request_interval_ms: u64,
+        on_reinitialize: Option<&Bound<'_, PyAny>>,
+        after_reinitialize: Option<&Bound<'_, PyAny>>,
+        reinit_password: Option<String>,
     ) -> PyResult<Self> {
+        let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
+            on_reinitialize,
+            after_reinitialize,
+            reinit_password,
+        )?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
@@ -248,6 +263,7 @@ impl PyScEndpoint {
                 queue_capacity,
                 read_work_limit,
                 min_request_interval_ms,
+                reinitialize,
             },
         })
     }
@@ -356,6 +372,7 @@ impl PyScEndpoint {
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
@@ -381,6 +398,7 @@ impl PyScEndpoint {
             let borrowed = slf.borrow();
             (borrowed.lifecycle.clone(), borrowed.config.clone())
         };
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
@@ -426,6 +444,7 @@ impl PyScEndpoint {
     /// Clone the server role.
     fn server<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.lifecycle.session.clone();
+        let reinitialize = self.config.reinitialize.enabled();
         crate::py_async::future_into_py(py, async move {
             let handle = {
                 let guard = inner.lock().await;
@@ -440,7 +459,7 @@ impl PyScEndpoint {
                     )
                 })?
             };
-            Ok(PyEndpointServer::new(handle))
+            Ok(PyEndpointServer::new(handle, reinitialize))
         })
     }
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 import os
 import pathlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
 
 UNSPECIFIED: Literal[255]
@@ -3291,6 +3291,49 @@ class RequestAdmissionCounters(TypedDict):
     confirmed_fallback_dropped_total: int
     abort_shutdown_rejected_total: int
 
+class ReinitializeRequest:
+    """A ReinitializeDevice request handed to ``on_reinitialize`` and
+    ``after_reinitialize`` (#1566). The addresses are what the request
+    claims, not an authenticated identity. Not copyable or picklable."""
+
+    @property
+    def state(self) -> ReinitializedState:
+        """The requested state."""
+        ...
+
+    @property
+    def source_mac(self) -> bytes:
+        """The immediate link source: the requester, or the last router."""
+        ...
+
+    @property
+    def source_network(self) -> Optional[int]:
+        """The originating network of a routed request, else None."""
+        ...
+
+    @property
+    def source_address(self) -> Optional[bytes]:
+        """The originating MAC of a routed request, else None."""
+        ...
+
+    @property
+    def invoke_id(self) -> int: ...
+
+    def __repr__(self) -> str: ...
+
+
+ReinitializeHandler = Callable[
+    [ReinitializeRequest], Union[None, bool, tuple[ErrorClass, ErrorCode]]
+]
+"""``on_reinitialize``: None or True accepts, False refuses with SERVICES /
+SERVICE_REQUEST_DENIED, an ``(ErrorClass, ErrorCode)`` tuple refuses with
+those. It must return at once; it runs while the device's objects are locked."""
+
+AfterReinitialize = Callable[[ReinitializeRequest], Optional[Awaitable[None]]]
+"""``after_reinitialize``: runs on the event loop once an accepted request's
+SimpleACK has been handed to the transport; a returned coroutine runs as a task."""
+
+
 class BACnetServer:
     """BACnet server that hosts objects and responds to client requests.
 
@@ -3388,8 +3431,29 @@ class BACnetServer:
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
         sc_npdu_per_origin_limit: int | None = None,
+        on_reinitialize: Optional[ReinitializeHandler] = None,
+        after_reinitialize: Optional[AfterReinitialize] = None,
     ) -> None:
-        """``share_port_by_address`` (B/IP only, default False): bind the
+        """``on_reinitialize`` (default None): carry out ReinitializeDevice
+        (#1566). It is called with a ``ReinitializeRequest`` once a request
+        has passed its password and state checks, while the server holds its
+        object database, so it must return at once: no awaiting, no blocking,
+        and no other ``rusty_bacnet`` call (one would raise RuntimeError).
+        Return None or True to accept, False to refuse with SERVICES /
+        SERVICE_REQUEST_DENIED, or an ``(ErrorClass, ErrorCode)`` tuple to
+        refuse with those. An exception, or any other return value, answers
+        SERVICES / OTHER and goes to ``sys.unraisablehook``. Without it every
+        request is refused. With it, a registered BBMD port's BDT and
+        foreign-device rows take writes, which ACTIVATE_CHANGES or WARMSTART
+        puts into effect.
+
+        ``after_reinitialize`` (default None; needs ``on_reinitialize``):
+        called with the ``ReinitializeRequest`` on the event loop that
+        started the server, once the accepted request's SimpleACK has been
+        handed to the transport. Restart, back up or restore here. It never
+        runs for a refused request. A coroutine it returns runs as a task.
+
+        ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
         can share the port. Needs an explicit interface and a nonzero port;
         broadcasts and unicast then arrive in no fixed order.
@@ -4420,6 +4484,13 @@ class BACnetServer:
         """
         ...
 
+    def report_device_reset_local(self) -> Awaitable[None]:
+        """Record a reset the application makes for its own reasons: a
+        DEVICE_RESET Audit record from this device, with no invoke ID
+        (#1564). A peer's accepted restart is recorded already. RuntimeError
+        when the server is not running."""
+        ...
+
     def purge_audit_log(self, object_id: ObjectIdentifier) -> Awaitable[None]:
         """Purge an Audit Log: clear its records and append a BUFFER_PURGED status record.
 
@@ -4960,9 +5031,10 @@ class EndpointClient:
 class EndpointServer:
     """Server role cloned from a running endpoint (no lifecycle).
 
-    The responder executes ``read_property`` automatically; this handle
-    exposes liveness plus the MS/TP deferred-reply seam. No Python
-    callbacks run under native locks.
+    The responder executes ``read_property`` automatically, and
+    ReinitializeDevice through the owner's ``on_reinitialize``, the one
+    Python callback that runs under a native lock; this handle exposes
+    liveness plus the MS/TP deferred-reply seam.
     """
 
     def is_session_alive(self) -> bool:
@@ -4974,7 +5046,8 @@ class EndpointServer:
         ...
 
     def service_scope(self) -> dict[str, Any]:
-        """Narrow scope: executes ``read_property`` only."""
+        """Narrow scope: executes ``read_property``, plus
+        ``reinitialize_device`` when the owner has ``on_reinitialize``."""
         ...
 
 class BipEndpoint:
@@ -5024,8 +5097,16 @@ class BipEndpoint:
         min_request_interval_ms: int = 0,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        on_reinitialize: Optional[ReinitializeHandler] = None,
+        after_reinitialize: Optional[AfterReinitialize] = None,
+        reinit_password: Optional[str] = None,
     ) -> None:
-        """``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
+        """``on_reinitialize`` / ``after_reinitialize``: execute
+        ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
+        ``reinit_password`` (needs ``on_reinitialize``, else ValueError) is
+        the password a request must carry. The callable runs on the session's
+        one dispatch task, so a slow one stalls every request.
+        ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
         the endpoint as a BBMD, or register it as a foreign device (#938).
         ``read_work_limit``: result rows one ReadProperty served by the
         server role may expand, a Group's member rows included; a read past it
@@ -5142,9 +5223,13 @@ class ScEndpoint:
         queue_capacity: int = 16,
         read_work_limit: int = 256,
         min_request_interval_ms: int = 0,
+        on_reinitialize: Optional[ReinitializeHandler] = None,
+        after_reinitialize: Optional[AfterReinitialize] = None,
+        reinit_password: Optional[str] = None,
     ) -> None:
-        """``read_work_limit`` and ``min_request_interval_ms`` are as for
-        ``BipEndpoint``."""
+        """``read_work_limit``, ``min_request_interval_ms``,
+        ``on_reinitialize``, ``after_reinitialize`` and ``reinit_password``
+        are as for ``BipEndpoint``."""
         ...
 
     def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
@@ -5247,9 +5332,13 @@ class MstpEndpoint:
         mstp_transmit_latency_pad_ms: Optional[int] = None,
         mstp_usage_timeout_ms: Optional[int] = None,
         mstp_reply_timeout_ms: Optional[int] = None,
+        on_reinitialize: Optional[ReinitializeHandler] = None,
+        after_reinitialize: Optional[AfterReinitialize] = None,
+        reinit_password: Optional[str] = None,
     ) -> None:
-        """``read_work_limit`` and ``min_request_interval_ms`` are as for
-        ``BipEndpoint``.
+        """``read_work_limit``, ``min_request_interval_ms``,
+        ``on_reinitialize``, ``after_reinitialize`` and ``reinit_password``
+        are as for ``BipEndpoint``.
 
         ``max_apdu`` must fit the link: 480 by default, or 1476 with
         ``mstp_extended_frames=True``, which turns on extended frames (Types
