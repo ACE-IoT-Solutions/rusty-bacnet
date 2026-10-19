@@ -225,8 +225,15 @@ async fn the_status_reaches_connected_on_the_primary_with_its_chain() {
         .unwrap();
     let url = format!("wss://{}", primary.local_addr().unwrap());
     let dir = tempfile::tempdir().unwrap();
+    // The first connect reaches the timeline: the session subscribed to the
+    // connector's events before the dial (#1890).
     let mut app = session(args(dir.path(), &site, &client_leaf(&site), &url), |app| {
         is_on(app, ScActiveHub::Primary)
+            && app
+                .sc
+                .timeline
+                .iter()
+                .any(|e| e.text == "connected to the primary hub (hub VMAC 10:10:10:10:10:10)")
     })
     .await;
     let (link, _) = app.sc.link.unwrap();

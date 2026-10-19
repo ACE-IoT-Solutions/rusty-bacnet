@@ -5683,6 +5683,8 @@ tokio::spawn(async move {
         // update the status bar
     }
 });
+// Subscribed after build(): misses the first Connected, which went out
+// while build() ran. Use build_with_events() (below) to see it.
 let mut events = sc_client.transport().connection_events(); // ScEvent: failover, restore, causes
 let link = sc_client.transport().connection_status(); // ScLinkStatus: active hub, hub VMAC, heartbeat
 let drops = sc_client.transport().npdu_drop_counts();
@@ -5701,6 +5703,23 @@ let diagnostics = mstp_client.transport().diagnostics();
 
 // B/IP, B/IPv6, BACnet/SC and MS/TP: every link-layer frame, in and out.
 let mut frames = bip_client.transport().frame_tap().subscribe();
+```
+
+The first `ScEvent::Connected` goes out while `build()` starts the
+transport, before any caller of `transport().connection_events()` can
+subscribe. To see it, build with `build_with_events()` instead: it returns
+the client and a receiver subscribed before the start, so the first event
+on it is that connect.
+
+```rust
+let (sc_client, mut events) = BACnetClient::sc_builder()
+    .hub_url("wss://hub.example.com/bacnet")
+    .tls_config(tls)
+    .vmac([0x02, 0, 0, 0, 0, 0x01])
+    .device_uuid([0x42; 16])
+    .build_with_events()
+    .await?;
+assert!(matches!(events.recv().await, Ok(ScEvent::Connected { .. })));
 ```
 
 Reading state and diagnostics is what the borrow supports. Two things go around

@@ -1,7 +1,16 @@
 //! The SC screen: the hub connector and identity panels on top, the hub's
 //! certificate chain, the connection doctor or this node's own credentials
-//! in the middle (Tab switches), and the event timeline below. Every state is marked by text as well as
-//! colour.
+//! in the middle (Tab switches), and the event timeline below. Every state
+//! is marked by text as well as colour.
+//!
+//! Panes fit their content (#1890): the top row splits where its panels
+//! wrap least, the middle takes what its view needs, and the timeline gets
+//! the rest. From [`WIDE_WIDTH`] columns the credentials sit beside the
+//! hub's chain or the doctor.
+
+mod layout;
+
+use std::time::Instant;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -11,17 +20,27 @@ use ratatui::Frame;
 
 use bacnet_transport::sc::ScConnectionState;
 
-use super::Theme;
+use super::{Theme, WIDE_WIDTH};
 use crate::tui::app::devices::age_label;
 use crate::tui::app::sc::{ScState, Severity, View};
 use crate::tui::app::App;
+use crate::tui::sc::credentials::signature_algorithm;
 use crate::tui::sc::doctor::{Diagnosis, Mark, CONNECTED, PHASES};
 use crate::tui::sc::{hub_name, uuid_text, vmac_text, CertSummary};
+pub(super) use layout::Row;
 
-/// Height of the status and identity panels, borders included.
-const PANEL_HEIGHT: u16 = 8;
-/// Height of the chain or doctor block, borders included.
-const MIDDLE_HEIGHT: u16 = 15;
+/// The timeline's least height, borders included: one event line.
+const EVENTS_MIN: u16 = 3;
+/// Label width in the hub connector panel.
+const STATUS_LABEL: usize = 11;
+/// Label width in the identity panel.
+const IDENTITY_LABEL: usize = 12;
+/// Where a phase's text starts in the doctor: mark and label.
+const PHASE_INDENT: usize = 17;
+/// Where a certificate's details start in the chain.
+const CERT_INDENT: usize = 10;
+/// Where Hint, Detail and Hub sent text starts in the doctor.
+const NOTE_INDENT: usize = 9;
 
 /// The SC screen.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -35,49 +54,149 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(lines.block(block), area);
         return;
     }
-    // The credentials list is the longest view: it takes the room the
-    // timeline would, leaving a few event lines.
-    let (middle, events) = match app.sc.view {
-        View::Credentials => (Constraint::Min(MIDDLE_HEIGHT), Constraint::Length(5)),
-        _ => (Constraint::Length(MIDDLE_HEIGHT), Constraint::Min(3)),
+    let status = status_rows(app, theme);
+    let identity = identity_rows(&app.sc, app.now, theme);
+    let (identity_width, top_height) = layout::split(area.width, &status, &identity);
+    let top_height = top_height.min(area.height.saturating_sub(2 * EVENTS_MIN));
+    let [top, rest] =
+        Layout::vertical([Constraint::Length(top_height), Constraint::Min(0)]).areas(area);
+    let [status_area, identity_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(identity_width)]).areas(top);
+    panel(frame, status_area, " Hub connector ", &status, theme);
+    panel(frame, identity_area, " VMAC and UUID ", &identity, theme);
+    // The middle takes what its view needs; the timeline gets the rest.
+    let room = rest.height.saturating_sub(EVENTS_MIN);
+    let wide = area.width >= WIDE_WIDTH;
+    let middle_height = if wide {
+        wide_middle(frame, rest, room, app, theme)
+    } else {
+        narrow_middle(frame, rest, room, app, theme)
     };
-    let [top, middle, events] =
-        Layout::vertical([Constraint::Length(PANEL_HEIGHT), middle, events]).areas(area);
-    let [status, identity] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
-    status_panel(frame, status, app, theme);
-    identity_panel(frame, identity, app, theme);
-    let sc = &app.sc;
-    let title = tabs(app, theme);
-    let block = Block::bordered().title(title).border_style(theme.dim());
-    let inner = block.inner(middle);
-    frame.render_widget(block, middle);
-    let lines = match sc.view {
-        View::Status => chain(&sc.chain, theme),
-        View::Doctor => doctor(sc, theme),
-        View::Credentials => super::sc_credentials::lines(sc.credentials.as_ref(), theme),
-    };
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    let [_, events] =
+        Layout::vertical([Constraint::Length(middle_height), Constraint::Min(0)]).areas(rest);
     timeline(frame, events, app, theme);
 }
 
-fn tabs<'a>(app: &App, theme: &Theme) -> Line<'a> {
+/// The middle as one pane with three views; returns its height.
+fn narrow_middle(frame: &mut Frame, rest: Rect, room: u16, app: &App, theme: &Theme) -> u16 {
+    let inner = usize::from(rest.width.saturating_sub(2));
+    let rows = view_rows(&app.sc, app.sc.view, inner, room, theme);
+    let height = fit(&rows, inner, room);
+    let area = Rect { height, ..rest };
+    let names = [
+        (View::Status, "Hub certificates"),
+        (View::Doctor, "Doctor"),
+        (View::Credentials, credentials_name(&app.sc)),
+    ];
+    let title = tabs(app, &names, app.sc.view, theme);
+    framed(frame, area, title, &rows, theme);
+    height
+}
+
+/// The middle at [`WIDE_WIDTH`] and up: the chain or the doctor, with the
+/// credentials beside it; returns its height.
+fn wide_middle(frame: &mut Frame, rest: Rect, room: u16, app: &App, theme: &Theme) -> u16 {
     let sc = &app.sc;
-    let mut spans = vec![Span::raw(" ")];
-    let credentials = if sc.lint_refused() {
+    // Tab still steps through all three; on the credentials, the chain shows.
+    let left_view = match sc.view {
+        View::Doctor => View::Doctor,
+        View::Status | View::Credentials => View::Status,
+    };
+    let credentials = super::sc_credentials::rows(sc.credentials.as_ref(), theme);
+    let natural = |rows: &[Row]| u16::try_from(layout::natural(rows) + 2).unwrap_or(u16::MAX);
+    let half = rest.width / 2;
+    let probe = view_rows(sc, left_view, usize::from(half), room, theme);
+    let left_width = match (natural(&probe), natural(&credentials)) {
+        (left, _) if left < half => left,
+        (_, right) if right < half => rest.width - right,
+        _ => half,
+    };
+    let left_inner = usize::from(left_width.saturating_sub(2));
+    let right_inner = usize::from((rest.width - left_width).saturating_sub(2));
+    let left = view_rows(sc, left_view, left_inner, room, theme);
+    let height = fit(&left, left_inner, room).max(fit(&credentials, right_inner, room));
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
+            .areas(Rect { height, ..rest });
+    let names = [(View::Status, "Hub certificates"), (View::Doctor, "Doctor")];
+    let selected = if sc.view == View::Credentials {
+        None
+    } else {
+        Some(sc.view)
+    };
+    let title = tabs(app, &names, selected.unwrap_or(View::Credentials), theme);
+    framed(frame, left_area, title, &left, theme);
+    let name = credentials_name(sc);
+    let title = if selected.is_none() {
+        Line::styled(format!(" [{name}] "), theme.accent())
+    } else {
+        Line::styled(format!(" {name} "), theme.dim())
+    };
+    framed(frame, right_area, title, &credentials, theme);
+    height
+}
+
+/// The height `rows` need at `inner` columns, borders included, within `room`.
+fn fit(rows: &[Row], inner: usize, room: u16) -> u16 {
+    let lines = u16::try_from(layout::height(rows, inner)).unwrap_or(u16::MAX);
+    lines.saturating_add(2).min(room)
+}
+
+/// A view's rows at `inner` columns. The doctor folds the phases it passed
+/// or never reached into one line each when its whole reading would not
+/// fit in `room`, so the error text stays on screen.
+fn view_rows<'a>(sc: &ScState, view: View, inner: usize, room: u16, theme: &Theme) -> Vec<Row<'a>> {
+    match view {
+        View::Status => chain(&sc.chain, theme),
+        View::Credentials => super::sc_credentials::rows(sc.credentials.as_ref(), theme),
+        View::Doctor => {
+            let full = doctor(sc, false, theme);
+            if layout::height(&full, inner) + 2 > usize::from(room) {
+                doctor(sc, true, theme)
+            } else {
+                full
+            }
+        }
+    }
+}
+
+fn credentials_name(sc: &ScState) -> &'static str {
+    if sc.lint_refused() {
         "My credentials (FAIL)"
     } else {
         "My credentials"
-    };
-    for (view, name) in [
-        (View::Status, "Hub certificates"),
-        (View::Doctor, "Doctor"),
-        (View::Credentials, credentials),
-    ] {
-        if view == sc.view {
+    }
+}
+
+/// A bordered pane of `rows`, wrapped to its width. Lines past its height
+/// give way to a `+N more` line, so a cut pane says so.
+fn framed(frame: &mut Frame, area: Rect, title: Line, rows: &[Row], theme: &Theme) {
+    let block = Block::bordered().title(title).border_style(theme.dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let mut lines = layout::wrap_all(rows, usize::from(inner.width));
+    let height = usize::from(inner.height);
+    if lines.len() > height && height > 0 {
+        let hidden = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(Line::styled(format!("+{hidden} more"), theme.warn()));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn panel(frame: &mut Frame, area: Rect, title: &str, rows: &[Row], theme: &Theme) {
+    let title = Line::styled(title.to_string(), theme.accent());
+    framed(frame, area, title, rows, theme);
+}
+
+fn tabs<'a>(app: &App, names: &[(View, &str)], selected: View, theme: &Theme) -> Line<'a> {
+    let sc = &app.sc;
+    let mut spans = vec![Span::raw(" ")];
+    for (view, name) in names {
+        if *view == selected {
             spans.push(Span::styled(format!("[{name}]"), theme.accent()));
         } else {
-            spans.push(Span::styled(name, theme.dim()));
+            spans.push(Span::styled(name.to_string(), theme.dim()));
         }
         spans.push(Span::raw(" "));
     }
@@ -94,11 +213,13 @@ fn tabs<'a>(app: &App, theme: &Theme) -> Line<'a> {
     Line::from(spans)
 }
 
-fn field<'a>(label: &str, value: String, style: Style, theme: &Theme) -> Line<'a> {
-    Line::from(vec![
-        Span::styled(format!("{label:<12}"), theme.dim()),
+/// A labelled field whose value wraps under itself.
+fn field<'a>(label: &str, width: usize, value: String, style: Style, theme: &Theme) -> Row<'a> {
+    let line = Line::from(vec![
+        Span::styled(format!("{label:<width$}"), theme.dim()),
         Span::styled(value, style),
-    ])
+    ]);
+    Row::hang(line, width)
 }
 
 fn state_word(state: ScConnectionState) -> &'static str {
@@ -110,19 +231,15 @@ fn state_word(state: ScConnectionState) -> &'static str {
     }
 }
 
-fn status_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = Block::bordered()
-        .title(Line::styled(" Hub connector ", theme.accent()))
-        .border_style(theme.dim());
+/// The hub connector panel. The hub's VMAC is in the identity panel.
+fn status_rows<'a>(app: &App, theme: &Theme) -> Vec<Row<'a>> {
     let sc = &app.sc;
     let Some((link, _)) = &sc.link else {
         let text = match &app.sc.failure {
             Some(_) => "Not connected: the doctor (Tab) shows where the dial failed.",
             None => "Waiting for the hub connector's first report.",
         };
-        let lines = Paragraph::new(Line::styled(text, theme.dim())).wrap(Wrap { trim: true });
-        frame.render_widget(lines.block(block), area);
-        return;
+        return vec![Row::flow(Line::styled(text, theme.dim()))];
     };
     let style = match link.state {
         ScConnectionState::Connected => theme.accent(),
@@ -136,12 +253,16 @@ fn status_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             .unwrap_or("")
             .to_string()
     };
-    let hub = match link.hub {
-        Some(hub) => format!("{:<9}{}", hub_name(hub), url(hub)),
-        None => "none dialled yet".into(),
+    // The hub's name goes with the state, so the URL has its line to itself.
+    let (state, hub) = match link.hub {
+        Some(hub) => (
+            format!("{}, {} hub", state_word(link.state), hub_name(hub)),
+            url(hub),
+        ),
+        None => (state_word(link.state).into(), "none dialled yet".into()),
     };
     let standby = match sc.identity.as_ref().and_then(|i| i.failover.as_ref()) {
-        Some(url) => format!("configured: {url}"),
+        Some(url) => url.clone(),
         None => "none configured".into(),
     };
     let attempt = match sc.attempt {
@@ -154,37 +275,24 @@ fn status_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     };
     let heartbeat = match (sc.heartbeat_age(app.now), link.heartbeat_rtt) {
         (Some(age), Some(rtt)) => format!(
-            "last heard {} s ago, round trip {} ms",
+            "heard {} s ago, round trip {} ms",
             age.as_secs(),
             rtt.as_millis()
         ),
-        (Some(age), None) => format!(
-            "last heard {} s ago, no heartbeat answered yet",
-            age.as_secs()
-        ),
+        (Some(age), None) => format!("heard {} s ago, no heartbeat answered yet", age.as_secs()),
         (None, _) => "not connected".into(),
     };
-    let lines = vec![
-        field("State", state_word(link.state).into(), style, theme),
-        field("Hub", hub, theme.accent(), theme),
-        field(
-            "Hub VMAC",
-            link.hub_vmac.map_or("unknown".into(), |v| vmac_text(&v)),
-            theme.accent(),
-            theme,
-        ),
-        field("Reconnect", attempt, Style::new(), theme),
-        field("Heartbeat", heartbeat, Style::new(), theme),
-        field("Failover", standby, theme.dim(), theme),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let w = STATUS_LABEL;
+    vec![
+        field("State", w, state, style, theme),
+        field("Hub", w, hub, theme.accent(), theme),
+        field("Reconnect", w, attempt, Style::new(), theme),
+        field("Heartbeat", w, heartbeat, Style::new(), theme),
+        field("Failover", w, standby, theme.dim(), theme),
+    ]
 }
 
-fn identity_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = Block::bordered()
-        .title(Line::styled(" VMAC and UUID ", theme.accent()))
-        .border_style(theme.dim());
-    let sc = &app.sc;
+fn identity_rows<'a>(sc: &ScState, now: Instant, theme: &Theme) -> Vec<Row<'a>> {
     let (vmac, uuid) = match &sc.identity {
         Some(identity) => (vmac_text(&identity.vmac), uuid_text(&identity.uuid)),
         None => ("unknown".into(), "unknown".into()),
@@ -194,62 +302,73 @@ fn identity_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .as_ref()
         .and_then(|(link, _)| link.hub_vmac)
         .map_or("unknown".into(), |v| vmac_text(&v));
-    let mut lines = vec![
-        field("Local VMAC", vmac, theme.accent(), theme),
-        field("Device UUID", uuid, theme.accent(), theme),
-        field("Hub VMAC", hub_vmac, theme.accent(), theme),
+    let w = IDENTITY_LABEL;
+    let mut rows = vec![
+        field("Local VMAC", w, vmac, theme.accent(), theme),
+        field("Device UUID", w, uuid, theme.accent(), theme),
+        field("Hub VMAC", w, hub_vmac, theme.accent(), theme),
     ];
     match sc.duplicates.back() {
-        None => lines.push(field("Dup. VMAC", "no NAK seen".into(), theme.dim(), theme)),
+        None => rows.push(field(
+            "Dup. VMAC",
+            w,
+            "no NAK seen".into(),
+            theme.dim(),
+            theme,
+        )),
         Some(last) => {
-            lines.push(field(
-                "Dup. VMAC",
-                format!(
-                    "{} NAK(s), last {} ago",
-                    sc.duplicates.len(),
-                    age_label(app.now, last.at)
-                ),
-                theme.danger(),
-                theme,
-            ));
+            let count = format!(
+                "{} NAK(s), last {} ago",
+                sc.duplicates.len(),
+                age_label(now, last.at)
+            );
+            rows.push(field("Dup. VMAC", w, count, theme.danger(), theme));
             let next = if last.reseeded {
                 "a new random VMAC was drawn"
             } else {
                 "VMAC kept"
             };
-            lines.push(Line::styled(format!("{:12}{next}", ""), theme.dim()));
+            rows.push(field("", w, next.into(), theme.dim(), theme));
         }
     }
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    rows
 }
 
-fn certificate<'a>(index: usize, cert: &CertSummary, theme: &Theme) -> Vec<Line<'a>> {
+fn certificate<'a>(index: usize, cert: &CertSummary, theme: &Theme) -> Vec<Row<'a>> {
     let role = if index == 0 { "leaf" } else { "issuer" };
+    let detail = |text: String| Row::hang(format!("{:CERT_INDENT$}{text}", ""), CERT_INDENT);
     vec![
-        Line::from(vec![
-            Span::styled(format!("{index} {role:<7}"), theme.dim()),
-            Span::styled(format!("subject {}", cert.subject), theme.accent()),
-        ]),
-        Line::styled(format!("{:10}issued by {}", "", cert.issuer), Style::new()),
-        Line::styled(format!("{:10}expires {}", "", cert.not_after), Style::new()),
+        Row::hang(
+            Line::from(vec![
+                Span::styled(format!("{index} {role:<8}"), theme.dim()),
+                Span::styled(format!("subject {}", cert.subject), theme.accent()),
+            ]),
+            CERT_INDENT,
+        ),
+        detail(format!("issued by {}", cert.issuer)),
+        detail(format!("expires {}", cert.not_after)),
+        detail(format!(
+            "signed with {}",
+            signature_algorithm(&cert.signature_algorithm)
+        )),
     ]
 }
 
-fn chain<'a>(chain: &[CertSummary], theme: &Theme) -> Vec<Line<'a>> {
+fn chain<'a>(chain: &[CertSummary], theme: &Theme) -> Vec<Row<'a>> {
     if chain.is_empty() {
-        return vec![Line::styled(
+        return vec![Row::flow(Line::styled(
             "No hub certificate: not connected to a hub.",
             theme.dim(),
-        )];
+        ))];
     }
-    let mut lines = vec![Line::styled(
+    let mut rows = vec![Row::flow(Line::styled(
         "As the connected hub presented them, leaf first. Display only: TLS verified the chain.",
         theme.dim(),
-    )];
+    ))];
     for (index, cert) in chain.iter().enumerate() {
-        lines.extend(certificate(index, cert, theme));
+        rows.extend(certificate(index, cert, theme));
     }
-    lines
+    rows
 }
 
 fn mark<'a>(mark: Mark, theme: &Theme) -> Span<'a> {
@@ -261,118 +380,175 @@ fn mark<'a>(mark: Mark, theme: &Theme) -> Span<'a> {
     }
 }
 
-fn phases<'a>(marks: &[Mark; 6], failed: Option<&Diagnosis>, theme: &Theme) -> Vec<Line<'a>> {
-    PHASES
-        .iter()
-        .zip(marks)
-        .map(|(phase, m)| {
-            let what = match failed {
-                Some(d) if d.failed == Some(*phase) => {
-                    Span::styled(d.summary.clone(), theme.danger())
+/// One row per phase; `compact` folds runs of phases with the same mark,
+/// other than the failed one, into one row naming them.
+fn phases<'a>(
+    marks: &[Mark; 6],
+    failed: Option<&Diagnosis>,
+    compact: bool,
+    theme: &Theme,
+) -> Vec<Row<'a>> {
+    let mut rows: Vec<Row> = Vec::new();
+    let mut run: Option<(Mark, Vec<&str>)> = None;
+    let flush = |run: &mut Option<(Mark, Vec<&str>)>, rows: &mut Vec<Row<'a>>| {
+        if let Some((m, names)) = run.take() {
+            let line = Line::from(vec![
+                mark(m, theme),
+                Span::styled(names.join(", "), theme.accent()),
+            ]);
+            rows.push(Row::hang(line, 7));
+        }
+    };
+    for (phase, m) in PHASES.iter().zip(marks) {
+        let failing = failed.filter(|d| d.failed == Some(*phase));
+        if compact && failing.is_none() {
+            match &mut run {
+                Some((last, names)) if last == m => names.push(phase.label()),
+                _ => {
+                    flush(&mut run, &mut rows);
+                    run = Some((*m, vec![phase.label()]));
                 }
-                _ => Span::styled(phase.what(), theme.dim()),
-            };
-            Line::from(vec![
-                mark(*m, theme),
-                Span::styled(format!("{:<10}", phase.label()), theme.accent()),
-                what,
-            ])
-        })
-        .collect()
+            }
+            continue;
+        }
+        flush(&mut run, &mut rows);
+        let what = match failing {
+            Some(d) => Span::styled(d.summary.clone(), theme.danger()),
+            None => Span::styled(phase.what(), theme.dim()),
+        };
+        let line = Line::from(vec![
+            mark(*m, theme),
+            Span::styled(format!("{:<10}", phase.label()), theme.accent()),
+            what,
+        ]);
+        rows.push(Row::hang(line, PHASE_INDENT));
+    }
+    flush(&mut run, &mut rows);
+    rows
 }
 
-fn doctor<'a>(sc: &ScState, theme: &Theme) -> Vec<Line<'a>> {
+fn doctor<'a>(sc: &ScState, compact: bool, theme: &Theme) -> Vec<Row<'a>> {
     let connected = sc
         .link
         .as_ref()
         .is_some_and(|(link, _)| link.state == ScConnectionState::Connected);
     let Some(last) = &sc.failure else {
         if connected {
-            let mut lines = phases(&CONNECTED, None, theme);
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(
+            let mut rows = phases(&CONNECTED, None, compact, theme);
+            rows.push(Row::flow(""));
+            rows.push(Row::flow(Line::styled(
                 "Connected: every phase passed.",
                 theme.accent(),
-            ));
-            return lines;
+            )));
+            return rows;
         }
-        return vec![Line::styled(
+        return vec![Row::flow(Line::styled(
             "No failure recorded. A failed connect shows here, phase by phase.",
             theme.dim(),
-        )];
+        ))];
     };
     let d = &last.diagnosis;
-    let mut lines = phases(&d.marks, Some(d), theme);
+    let mut rows = phases(&d.marks, Some(d), compact, theme);
     if d.failed.is_none() {
-        lines.push(Line::styled(
+        rows.push(Row::flow(Line::styled(
             format!("Not tied to one phase: {}", d.summary),
             theme.warn(),
-        ));
+        )));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("Hint    ", theme.warn()),
-        Span::raw(d.hint.clone()),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("Detail  ", theme.dim()),
-        Span::styled(last.failure.detail.clone(), theme.dim()),
-    ]));
+    rows.push(Row::flow(""));
+    let note = |label: &str, style: Style, text: Span<'a>| {
+        let label = Span::styled(format!("{label:<NOTE_INDENT$}"), style);
+        Row::hang(Line::from(vec![label, text]), NOTE_INDENT)
+    };
+    rows.push(note("Hint", theme.warn(), Span::raw(d.hint.clone())));
+    // The error in full: the footer has room for a line only.
+    let detail = Span::styled(last.failure.detail.clone(), theme.dim());
+    rows.push(note("Detail", theme.dim(), detail));
     if let Some(leaf) = last.failure.presented.first() {
-        lines.push(Line::from(vec![
-            Span::styled("Hub sent ", theme.dim()),
+        rows.push(note(
+            "Hub sent",
+            theme.dim(),
             Span::raw(format!(
-                "subject {}, issued by {}, expires {}, signature algorithm {}",
-                leaf.subject, leaf.issuer, leaf.not_after, leaf.signature_algorithm
+                "subject {}, issued by {}, expires {}, signed with {}",
+                leaf.subject,
+                leaf.issuer,
+                leaf.not_after,
+                signature_algorithm(&leaf.signature_algorithm)
             )),
-        ]));
+        ));
     }
     if connected {
-        lines.push(Line::styled(
+        rows.push(Row::flow(Line::styled(
             "Connected again since: every phase passes now.",
             theme.accent(),
-        ));
+        )));
     }
-    lines
+    rows
 }
 
 fn timeline(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let sc = &app.sc;
-    let title = if sc.missed > 0 {
-        format!(" Events ({} missed) ", sc.missed)
-    } else {
-        " Events ".into()
-    };
-    let block = Block::bordered()
-        .title(Line::styled(title, theme.accent()))
-        .border_style(theme.dim());
-    let rows = usize::from(block.inner(area).height);
-    let skip = sc.timeline.len().saturating_sub(rows);
-    let lines: Vec<Line> = if sc.timeline.is_empty() {
-        vec![Line::styled(
+    let inner = Block::bordered().inner(area);
+    let width = usize::from(inner.width);
+    let rows: Vec<Row> = if sc.timeline.is_empty() {
+        vec![Row::flow(Line::styled(
             "Connects, losses, reconnect attempts, failover and the primary's return show here.",
             theme.dim(),
-        )]
+        ))]
     } else {
         sc.timeline
             .iter()
-            .skip(skip)
             .map(|entry| {
                 let level = match entry.severity {
-                    Severity::Info => Span::raw("INFO "),
-                    Severity::Warn => Span::styled("WARN ", theme.warn()),
-                    Severity::Error => Span::styled("ERROR", theme.danger()),
+                    Severity::Info => Span::raw("info "),
+                    Severity::Warn => Span::styled("warn ", theme.warn()),
+                    Severity::Error => Span::styled("error", theme.danger()),
                 };
-                Line::from(vec![
-                    Span::styled(
-                        format!("{:>5} ago ", age_label(app.now, entry.at)),
-                        theme.dim(),
-                    ),
+                let age = format!("{:>5} ago ", age_label(app.now, entry.at));
+                // The text hangs after the age and the level, however wide.
+                let indent = layout::cols(&age) + level.width() + 1;
+                let line = Line::from(vec![
+                    Span::styled(age, theme.dim()),
                     level,
                     Span::raw(format!(" {}", entry.text)),
-                ])
+                ]);
+                Row::hang(line, indent)
             })
             .collect()
     };
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    // The newest events that fit, each wrapped whole; the title counts the
+    // older ones that don't, so a cut timeline costs no line to say so.
+    let (lines, shown) = newest(&rows, width, usize::from(inner.height));
+    let mut title = vec![Span::styled(" Events ", theme.accent())];
+    if sc.missed > 0 {
+        title.push(Span::styled(
+            format!("({} missed) ", sc.missed),
+            theme.accent(),
+        ));
+    }
+    if shown < rows.len() {
+        let earlier = format!("+{} earlier ", rows.len() - shown);
+        title.push(Span::styled(earlier, theme.warn()));
+    }
+    let block = Block::bordered()
+        .title(Line::from(title))
+        .border_style(theme.dim());
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The newest `rows` that fit in `height` lines, each wrapped whole, oldest
+/// first, and how many there are.
+fn newest<'a>(rows: &[Row<'a>], width: usize, height: usize) -> (Vec<Line<'a>>, usize) {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut shown = 0;
+    for row in rows.iter().rev() {
+        let wrapped = layout::wrap(row, width);
+        if !lines.is_empty() && lines.len() + wrapped.len() > height {
+            break;
+        }
+        lines.splice(0..0, wrapped);
+        shown += 1;
+    }
+    (lines, shown)
 }

@@ -18,7 +18,7 @@ use crate::tui::sc::{
     CertSummary, Fault, LinkEvent, LinkSnapshot, ScFailure, ScIdentity, ScReport,
 };
 
-const PRIMARY_VMAC: [u8; 6] = [0x10; 6];
+pub(super) const PRIMARY_VMAC: [u8; 6] = [0x10; 6];
 const FAILOVER_VMAC: [u8; 6] = [0x20; 6];
 
 /// An SC app before connecting, without colour.
@@ -49,11 +49,11 @@ pub(super) fn identity() -> ScIdentity {
     }
 }
 
-fn sc(app: &mut App, report: ScReport) {
+pub(super) fn sc(app: &mut App, report: ScReport) {
     worker(app, WorkerEvent::Sc(report));
 }
 
-fn connected(hub: ScActiveHub, vmac: [u8; 6]) -> LinkSnapshot {
+pub(super) fn connected(hub: ScActiveHub, vmac: [u8; 6]) -> LinkSnapshot {
     LinkSnapshot {
         state: ScConnectionState::Connected,
         hub: Some(hub),
@@ -63,7 +63,7 @@ fn connected(hub: ScActiveHub, vmac: [u8; 6]) -> LinkSnapshot {
     }
 }
 
-fn hub_chain() -> Vec<CertSummary> {
+pub(super) fn hub_chain() -> Vec<CertSummary> {
     vec![
         CertSummary {
             subject: "CN=primary hub".into(),
@@ -300,8 +300,8 @@ fn sc_status_frame_at_120x40() {
     assert_snapshot!("sc_status_120x40", text);
 }
 
-#[test]
-fn sc_doctor_frame_at_120x40() {
+/// A session whose dial the hub's expired certificate refused.
+pub(super) fn refused() -> App {
     let mut app = sc_app();
     sc(&mut app, ScReport::Dialing(identity()));
     tick(&mut app, at(5));
@@ -331,6 +331,12 @@ fn sc_doctor_frame_at_120x40() {
     );
     tick(&mut app, at(8));
     press(&mut app, KeyCode::Char('5'));
+    app
+}
+
+#[test]
+fn sc_doctor_frame_at_120x40() {
+    let mut app = refused();
     let text = screen(&mut app, 120, 40);
     assert!(
         text.contains("[FAIL] TLS       hub certificate expired 400 days ago"),

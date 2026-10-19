@@ -88,7 +88,7 @@
       "severity": "error",
       "role": "identity",
       "index": 0,
-      "message": "The identity leaf is outside its stated interval or has invalid dates. Check the inspection time and replace it as needed."
+      "message": "The identity leaf has expired, is not valid yet, or has invalid dates. Check the inspection time and replace it as needed."
     },
     {
       "code": "validity.expired",

@@ -85,6 +85,23 @@ fn key_algorithm(oid: &str) -> String {
     }
 }
 
+/// A certificate signature algorithm's usual name, or its dotted OID.
+pub(crate) fn signature_algorithm(oid: &str) -> &str {
+    match oid {
+        "1.2.840.10045.4.3.2" => "ecdsa-with-SHA256",
+        "1.2.840.10045.4.3.3" => "ecdsa-with-SHA384",
+        "1.2.840.10045.4.3.4" => "ecdsa-with-SHA512",
+        "1.2.840.113549.1.1.5" => "sha1WithRSAEncryption",
+        "1.2.840.113549.1.1.11" => "sha256WithRSAEncryption",
+        "1.2.840.113549.1.1.12" => "sha384WithRSAEncryption",
+        "1.2.840.113549.1.1.13" => "sha512WithRSAEncryption",
+        "1.2.840.113549.1.1.10" => "RSASSA-PSS",
+        "1.3.101.112" => "Ed25519",
+        "1.3.101.113" => "Ed448",
+        other => other,
+    }
+}
+
 #[cfg(feature = "sc-tls")]
 mod build {
     use super::*;
@@ -159,7 +176,8 @@ mod build {
             issuer: meta.issuer().into(),
             san: values(&entry.san, "none"),
             key_algorithm: key_algorithm(meta.public_key_algorithm_oid()),
-            eku: values(&entry.extended_key_usage, "none (any purpose)"),
+            // Kebab-case, as the TUI writes enumerations (`client-auth`).
+            eku: values(&entry.extended_key_usage, "none (any purpose)").replace('_', "-"),
             not_after: crate::sc_check::date(meta.not_after_unix()),
             window,
             level,
@@ -233,6 +251,15 @@ mod tests {
         assert_eq!(days(86_399), 0);
         assert_eq!(key_algorithm("1.2.840.10045.2.1"), "EC");
         assert_eq!(key_algorithm("1.2.3"), "OID 1.2.3");
+        assert_eq!(
+            signature_algorithm("1.2.840.10045.4.3.2"),
+            "ecdsa-with-SHA256"
+        );
+        assert_eq!(
+            signature_algorithm("1.2.840.113549.1.1.11"),
+            "sha256WithRSAEncryption"
+        );
+        assert_eq!(signature_algorithm("1.2.3.4"), "1.2.3.4");
     }
 
     #[cfg(feature = "sc-tls")]
@@ -259,7 +286,7 @@ mod tests {
             ("25 days left", Level::Warning)
         );
         assert_eq!(leaf.san, "DNS:node.site");
-        assert_eq!(leaf.eku, "client_auth");
+        assert_eq!(leaf.eku, "client-auth");
         assert_eq!(view.certificates[1].label, "CA 0");
         assert_eq!(view.key.0, Level::Ok);
         assert_eq!(

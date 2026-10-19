@@ -211,7 +211,7 @@ pub(super) fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
                 validity.as_str(),
                 date_severity,
                 if date_severity == "error" {
-                    "The identity leaf is outside its stated interval or has invalid dates. Check the inspection time and replace it as needed."
+                    "The identity leaf has expired, is not valid yet, or has invalid dates. Check the inspection time and replace it as needed."
                 } else {
                     "This inventory certificate has a date problem. Review its intended role; no certificate path or trust anchor was selected."
                 },
@@ -219,9 +219,9 @@ pub(super) fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
         }
         match cert.expiry {
             ScExpiry::Alarm => add("expiry", "alarm", "warning",
-                "At most seven days remain in the stated interval. Arrange renewal; this notice does not itself make the certificate invalid."),
+                "It expires within seven days. Arrange renewal; this notice does not itself make the certificate invalid."),
             ScExpiry::Warning => add("expiry", "warning", "warning",
-                "At most thirty days remain in the stated interval. Plan renewal."),
+                "It expires within thirty days. Plan renewal."),
             _ => {},
         }
         if cert
