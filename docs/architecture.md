@@ -231,15 +231,32 @@ The core decides; the transport does the I/O and keeps the host's policy:
   registered foreign device's Distribute-Broadcast-To-Network to the local
   subnet, the peers and the other foreign devices, or its NAK; the BBMD's own
   broadcasts. Each decision writes its destinations into storage the caller
-  passes.
-- **In the transport**: the foreign-device source list and registration rate
-  limit (the core asks them through its admission check), the
-  Delete-FDT-Entry list, the FDT and fan-out counters, BDT persistence, the
-  management rate limiter, the fan-out queue and its budgets, and the sockets.
+  passes. The answers to the four management requests a BBMD serves
+  (Register-Foreign-Device, Read-BDT, Read-FDT, Delete-FDT-Entry) come from
+  `Tables::serve` too.
+- **In the transport**: the foreign-device policy, source list and
+  registration rate limit and the Delete-FDT-Entry list, which reach the
+  core through its `bbmd::Rules` trait (a refused registration doesn't use up
+  the rate limit), the FDT and fan-out counters, BDT persistence, the
+  management rate limiter (applied to a table ACK after `serve` built it),
+  the fan-out queue and its budgets, and the sockets.
 
 At start the transport asks the host for the mask of the subnet the BBMD's
 own address is on, for the last of those conditions; where the host doesn't
 report one, a forward from the BBMD's own subnet is rebroadcast.
+
+A BBMD that is the only device of its B/IP network on its subnet, as a BBMD
+behind a NAT router usually is (Annex J.7.5), can say so
+(`BbmdOptions::alone_on_subnet`, `LocalSubnet::alone` in the core). It then
+skips the local rebroadcast of a peer's Forwarded-NPDU, as Annex J.4.5
+permits, and also of a foreign device's Distribute-Broadcast-To-Network. The
+clause grants the skip for the Forwarded-NPDU only; extending it is harmless,
+since nothing else on the subnet would receive the broadcast and the BBMD's
+own application still gets the message. Peers and foreign devices get both
+as before. It is
+off by default: any other device of the network on that subnet would stop
+hearing remote broadcasts. Running a BBMD under its public NAT address is
+#940's work, not this setting's.
 
 `BbmdState` maps `std::time::Instant` onto the core's nanosecond clock
 (`bacnet-time`'s `Instant`, which `bacnet-mstp-core` takes too) with a
@@ -381,7 +398,10 @@ handler set with `on_reinitialize`, which carries it out with the object
 database write-locked; an error the handler returns is sent in place of the
 SimpleACK. Without a handler, or for a state Clause 16.4 does not define, the
 request is refused with `SERVICES / SERVICE_REQUEST_DENIED`. Password failures
-and malformed-request errors keep their precedence. The SimpleACK leaves only
+and malformed-request errors keep their precedence. Once the handler accepts
+ACTIVATE_CHANGES or WARMSTART, the server activates the values written to
+Network Port objects under the same lock (a BBMD's BDT and registration
+setting, #1578); a refusal from the transport becomes the reply. The SimpleACK leaves only
 after the handler returns, so a handler schedules any restart for after the
 reply and hands slow work to a task. The mutation policy doesn't cover this
 service; the handler restricts sources through its context. A handler panic

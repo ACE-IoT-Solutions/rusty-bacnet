@@ -58,6 +58,7 @@ impl BbmdState {
     fn local_subnet(&self, broadcast: SocketAddrV4) -> LocalSubnet {
         let mut subnet = LocalSubnet::new(broadcast);
         subnet.mask = self.subnet_mask;
+        subnet.alone = self.alone_on_subnet;
         subnet
     }
 

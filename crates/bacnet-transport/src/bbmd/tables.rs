@@ -8,8 +8,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use bacnet_types::bip_port::BbmdTables;
+use bacnet_types::bip_port::{BbmdChanges, BbmdTables};
 use bacnet_types::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
+use bacnet_types::error::Error;
 
 use super::BbmdState;
 
@@ -80,5 +81,13 @@ impl BbmdTables for LiveTables {
     fn foreign_device_table(&self) -> Vec<BACnetFDTEntry> {
         let now = Instant::now();
         lock(&self.0).fdt_entries_at(now)
+    }
+
+    fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
+        lock(&self.0).check_written_bdt(table)
+    }
+
+    fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        lock(&self.0).activate(changes)
     }
 }
