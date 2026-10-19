@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use super::write::{keep_offline, ready_offline, SafetyOptions, PASSIVE};
 use super::EventSink;
+use crate::tui::capture::CaptureEvent;
 use crate::tui::message::{Command, OpOutcome, WorkerEvent};
 use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
@@ -91,6 +92,11 @@ pub(crate) async fn refuse(sink: &EventSink, command: Command) {
         Command::Safety(SafetyCommand::Arm { .. }) => {
             WorkerEvent::Safety(SafetyEvent::Refused { req: None, reason })
         }
+        // Capturing transmits nothing, but without a client there is no
+        // transport to tap.
+        Command::Capture(_) => WorkerEvent::Capture(CaptureEvent::Ended(
+            "a passive session has no transport to tap".into(),
+        )),
         _ => return,
     };
     sink.deliver(event).await;

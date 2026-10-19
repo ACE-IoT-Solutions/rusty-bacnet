@@ -324,6 +324,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "tui-tree-widget",
 ]
 
 [[package]]
@@ -3670,6 +3671,17 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tui-tree-widget"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "246c1142baa1e7a42b94f0fb2b60d838fc884c16281e330bf8624da65ed8f89a"
+dependencies = [
+ "ratatui-core",
+ "ratatui-widgets",
+ "unicode-width",
+]
 
 [[package]]
 name = "tungstenite"

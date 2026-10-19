@@ -26,6 +26,7 @@ use super::{
     Lines, MonitorPlan, MonitorReport, MonitorSample, LOST_TOKEN_HISTORY, ROTATION_HISTORY,
     SAMPLE_EVERY,
 };
+use crate::tui::capture::{self, CaptureCommand};
 use crate::tui::message::{Command, WorkerEvent};
 use crate::tui::worker::{passive, EventSink, Offer};
 
@@ -66,7 +67,16 @@ pub(crate) async fn serve(
     if sink.deliver(WorkerEvent::Passive).await && sink.deliver(WorkerEvent::Monitor(report)).await
     {
         let mut watcher = Watcher::new(monitor.statistics(), monitor.frames());
-        ended = Box::pin(watcher.run(sink, commands)).await;
+        // The Capture screen's own subscription (#971) runs beside the
+        // watcher, which hands it the session's capture commands; it ends
+        // when the watcher drops that channel.
+        let (capture, capture_rx) = mpsc::channel(4);
+        let started = watcher.started;
+        let capturing = capture::worker::run_monitor(&monitor, sink, capture_rx, started);
+        (ended, ()) = tokio::join!(
+            Box::pin(watcher.run(sink, commands, capture)),
+            Box::pin(capturing)
+        );
     }
     // Wait for the monitor's task: once it returns, the port is closed.
     let stopped = monitor.stop().await;
@@ -114,7 +124,12 @@ impl Watcher {
 
     /// Follow the monitor until the session ends (`None`) or the monitor
     /// does (`Some`).
-    async fn run(&mut self, sink: &EventSink, mut commands: mpsc::Receiver<Command>) -> Option<()> {
+    async fn run(
+        &mut self,
+        sink: &EventSink,
+        mut commands: mpsc::Receiver<Command>,
+        capture: mpsc::Sender<CaptureCommand>,
+    ) -> Option<()> {
         let mut every = tokio::time::interval(SAMPLE_EVERY);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -123,6 +138,13 @@ impl Watcher {
                 () = sink.cancelled() => return None,
                 command = commands.recv() => match command {
                     None | Some(Command::Disconnect) => return None,
+                    // Polled beside this loop, so waiting for room can't
+                    // deadlock; it fails only once the capture has ended.
+                    Some(Command::Capture(command)) => {
+                        if capture.send(command).await.is_err() {
+                            tracing::debug!("the monitor capture has ended");
+                        }
+                    }
                     // Listen only: answer whatever would transmit.
                     Some(command) => passive::refuse(sink, command).await,
                 },

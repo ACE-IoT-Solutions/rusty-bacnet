@@ -366,6 +366,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
         let (safety, safety_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (network, network_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (discovery, discovery_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        let (capture, capture_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         // Dropped with the session loop, which ends the SC worker.
         let (sc_stop, sc_stop_rx) = mpsc::channel::<()>(1);
         let quiet = options.safety.passive;
@@ -378,6 +379,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
             let safety = safety;
             let network = network;
             let discovery = discovery;
+            let capture = capture;
             let _sc_stop = sc_stop;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
@@ -454,6 +456,12 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                                 tracing::debug!("the discovery worker has ended");
                             }
                         }
+                        Some(Command::Capture(command)) => {
+                            // Polled beside this loop too; a Start is one subscription.
+                            if capture.send(command).await.is_err() {
+                                tracing::debug!("the capture has ended");
+                            }
+                        }
                         Some(Command::Disconnect) => break,
                         Some(Command::Connect { .. } | Command::JoinTrunk { .. } | Command::Reconnect | Command::Profile(_)) => {}
                         None => break,
@@ -516,7 +524,10 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
             )),
             Box::pin(super::network::run(&client, &sink, network_rx)),
             Box::pin(super::discovery::run(&client, &sink, discovery_rx, style)),
-            Box::pin(super::sc::run(&client, &sink, sc_stop_rx))
+            Box::pin(super::sc::run(&client, &sink, sc_stop_rx)),
+            Box::pin(crate::tui::capture::worker::run(
+                &*client, &sink, capture_rx, style
+            ))
         );
     }
     stop_shared(client).await;

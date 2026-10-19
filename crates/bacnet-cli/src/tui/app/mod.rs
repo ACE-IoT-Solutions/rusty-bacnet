@@ -6,6 +6,7 @@
 //! terminal or a transport.
 
 pub(crate) mod browser;
+pub(crate) mod capture;
 pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
@@ -229,6 +230,8 @@ pub(crate) enum Action {
     Join(mstp::JoinKey),
     /// A key on the MS/TP screen.
     Mstp(mstp::MstpKey),
+    /// A key on the Capture screen.
+    Capture(capture::CaptureKey),
     /// A message from the worker.
     Worker(WorkerEvent),
 }
@@ -284,6 +287,8 @@ pub(crate) struct App {
     pub(crate) join_again: Option<Box<mstp::JoinDialog>>,
     /// The MS/TP monitor (`--mstp-monitor`), until the session joins.
     pub(crate) monitor: Option<Box<monitor::MonitorState>>,
+    /// The Capture screen: its frames outlive sessions.
+    pub(crate) capture: capture::CaptureState,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
     /// The screen in the body.
@@ -348,6 +353,7 @@ impl App {
             mstp: mstp::MstpState::default(),
             join_again,
             monitor: None,
+            capture: capture::CaptureState::default(),
             who_has: None,
             screen: Screen::Main,
             next_req: 0,
@@ -375,6 +381,10 @@ impl App {
     /// Rebuild derived state (the visible table order) before drawing.
     pub(crate) fn settle(&mut self) {
         self.devices.settle();
+        // Only a frame on screen is decoded.
+        if self.screen == Screen::Capture {
+            self.capture.settle();
+        }
     }
 
     /// End the TUI with an error, keeping the first reason if there are two.
@@ -393,6 +403,9 @@ impl App {
 
     /// The filter of the list on screen: the browser's objects or the devices.
     pub(crate) fn filter_text(&self) -> &str {
+        if self.screen == Screen::Capture {
+            return &self.capture.filter;
+        }
         match &self.browser {
             Some(browser) => browser.objects.filter(),
             None => self.devices.filter(),
@@ -528,6 +541,9 @@ impl App {
     }
 
     fn filter_key(&mut self, key: FilterKey) {
+        if self.screen == Screen::Capture {
+            return self.capture_filter_key(key);
+        }
         if let Some(browser) = self.browser.as_deref_mut() {
             let objects = &mut browser.objects;
             match key {
@@ -614,6 +630,8 @@ impl App {
         self.sc = sc::ScState::default();
         self.mstp = mstp::MstpState::default();
         self.who_has = None;
+        // Captured frames stay; the session's tap went with it.
+        self.capture.sources.retain(|(_, session)| !session);
         // A new session starts read-only; its worker reports the policy
         // and the ledger again.
         self.safety.armed = None;
@@ -733,6 +751,9 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         }
         Action::Move(movement) => match app.browser.as_deref_mut() {
             _ if app.screen == Screen::Watch => app.watch.move_selection(movement),
+            _ if app.screen == Screen::Capture => {
+                app.capture_key(capture::CaptureKey::Move(movement));
+            }
             Some(browser) => browser.move_selection(movement),
             None => app.devices.move_selection(movement),
         },
@@ -760,6 +781,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Filter(key) => app.filter_key(key),
         Action::Form(key) => app.form_key(key, &mut out),
         Action::Picker(key) => app.picker_key(key, &mut out),
+        Action::ShowScreen(Screen::Capture) => app.show_capture(&mut out),
         Action::ShowScreen(screen) => app.screen = screen,
         Action::AddWatch => app.watch_selected(&mut out),
         Action::RemoveWatch => app.unwatch_selected(&mut out),
@@ -773,6 +795,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Sc(key) => app.sc_key(key),
         Action::Join(key) => app.join_key(key, &mut out),
         Action::Mstp(key) => app.mstp_key(key),
+        Action::Capture(key) => app.capture_key(key),
         Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out

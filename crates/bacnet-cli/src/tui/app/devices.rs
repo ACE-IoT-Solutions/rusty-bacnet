@@ -142,7 +142,6 @@ impl DeviceTable {
     }
 
     /// Row for an instance.
-    #[cfg(test)]
     pub(crate) fn get(&self, instance: u32) -> Option<&DeviceRow> {
         self.rows.get(&instance)
     }
