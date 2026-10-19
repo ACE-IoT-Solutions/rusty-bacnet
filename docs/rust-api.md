@@ -5765,18 +5765,32 @@ at once, registered or not; one sent with no live lease is counted in
 The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,
 `register_foreign_device_bvlc`) work on any client whose transport implements
 `AsBip`: a client over `BipTransport`, or one over `AnyTransport` whose variant
-is `Bip`. On any other variant they return `Error::UnsupportedTransport`
-before sending anything:
+is `Bip`. Each fails with a `BvlcExchangeError` (#1822): `Nak` with the
+result code a peer refused with, `NoReply` when nothing answered within the
+three-second wait, `UnexpectedResponse`, or `Transport` for a local failure.
+The three a success answers return `Ok(())` on success, so a refusal is
+always an error. On any other variant they return
+`BvlcExchangeError::Transport(Error::UnsupportedTransport { .. })` before
+sending anything:
 
 ```rust
-use bacnet_transport::bip::AsBip;
+use bacnet_transport::bip::{AsBip, BvlcExchangeError};
 
-let client = BACnetClient::generic_builder()
-    .transport(AnyTransport::<NoSerial>::from(BipTransport::new(ip, 0, broadcast)))
-    .build()
-    .await?;
-let bdt = client.read_bdt(&bbmd_mac).await?;
-let counters = client.transport().as_bip()?.bvlc_client_snapshot();
+// `?` takes both `Error` and `BvlcExchangeError` into the boxed error.
+async fn tables(ip: Ipv4Addr, broadcast: Ipv4Addr, bbmd_mac: &[u8])
+    -> Result<(), Box<dyn std::error::Error>> {
+    let client = BACnetClient::generic_builder()
+        .transport(AnyTransport::<NoSerial>::from(BipTransport::new(ip, 0, broadcast)))
+        .build()
+        .await?;
+    match client.read_bdt(bbmd_mac).await {
+        Ok(bdt) => println!("{} entries", bdt.len()),
+        Err(BvlcExchangeError::Nak(code)) => println!("refused: {code}"),
+        Err(other) => return Err(other.into()),
+    }
+    let counters = client.transport().as_bip()?.bvlc_client_snapshot();
+    Ok(())
+}
 ```
 
 ### Routed Confirmed-Request Limits

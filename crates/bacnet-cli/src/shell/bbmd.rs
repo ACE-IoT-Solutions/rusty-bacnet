@@ -41,6 +41,12 @@ pub(super) async fn handle_bip_register(
         }
         i += 1;
     }
+    if ttl == 0 {
+        // A zero TTL asks the BBMD to drop the entry at once; there is
+        // nothing to keep renewed. `unregister` removes a registration.
+        output::print_error("--ttl must be at least 1 second; use unregister to leave the BBMD");
+        return;
+    }
 
     if let Err(e) = commands::router::register_cmd(client, &mac, ttl, format).await {
         output::print_error(&e.to_string());
@@ -58,7 +64,6 @@ pub(super) async fn handle_bip_register(
             client
                 .register_foreign_device_bvlc(&mac, ttl)
                 .await
-                .map(|_| ())
                 .map_err(|e| e.to_string())
         })
     });
@@ -257,11 +262,8 @@ pub(super) async fn handle_bip_discover(
             }
         };
         match client.register_foreign_device_bvlc(&bbmd_mac, ttl).await {
-            Ok(result) => {
-                eprintln!(
-                    "{}",
-                    format!("Registered as foreign device with BBMD: {result:?}").green()
-                );
+            Ok(()) => {
+                eprintln!("{}", "Registered as foreign device with the BBMD".green());
             }
             Err(e) => {
                 output::print_error(&format!("BBMD registration failed: {e}"));
@@ -340,3 +342,7 @@ pub(super) fn print_foreign_status(
         state.dimmed()
     );
 }
+
+#[cfg(test)]
+#[path = "bbmd_tests.rs"]
+mod tests;

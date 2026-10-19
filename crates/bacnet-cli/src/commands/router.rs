@@ -131,11 +131,8 @@ pub async fn register_cmd(
     ttl: u16,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = client.register_foreign_device_bvlc(mac, ttl).await?;
-    output::print_success(
-        &format!("Register-Foreign-Device result: {result:?}"),
-        format,
-    );
+    client.register_foreign_device_bvlc(mac, ttl).await?;
+    output::print_success("Register-Foreign-Device accepted", format);
     Ok(())
 }
 
@@ -153,10 +150,7 @@ pub async fn unregister_cmd(
     }
     let ip = [local_mac[0], local_mac[1], local_mac[2], local_mac[3]];
     let port = u16::from_be_bytes([local_mac[4], local_mac[5]]);
-    let result = client.delete_fdt_entry(mac, ip, port).await?;
-    output::print_success(
-        &format!("Delete-Foreign-Device-Table-Entry result: {result:?}"),
-        format,
-    );
+    client.delete_fdt_entry(mac, ip, port).await?;
+    output::print_success("Delete-Foreign-Device-Table-Entry accepted", format);
     Ok(())
 }
