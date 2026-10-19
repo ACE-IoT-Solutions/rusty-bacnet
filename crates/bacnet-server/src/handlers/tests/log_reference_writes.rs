@@ -424,8 +424,8 @@ fn trend_log_multiple_index_0_write_resizes_the_array() {
     assert_eq!(
         multiple_data(&db, 1),
         LogData::Values(vec![LogValue::Failure {
-            error_class: ErrorClass::PROPERTY.to_raw() as u32,
-            error_code: ErrorCode::NO_PROPERTY_SPECIFIED.to_raw() as u32,
+            error_class: ErrorClass::PROPERTY,
+            error_code: ErrorCode::NO_PROPERTY_SPECIFIED,
         }])
     );
 }

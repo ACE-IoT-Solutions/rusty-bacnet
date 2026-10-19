@@ -3509,9 +3509,47 @@ class BACnetServer:
         name: str,
         buffer_size: int = 100,
         *,
+        reference: tuple[ObjectIdentifier, PropertyIdentifier]
+        | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]]
+        | DeviceObjectPropertyReference
+        | None = None,
+        log_interval: int | None = None,
+        logging_type: Literal["polled", "triggered", "cov"] | None = None,
+        client_cov_increment: float | None = None,
+        cov_resubscription_interval: int | None = None,
+        start_time: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None,
+        stop_time: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None,
+        align_intervals: bool | None = None,
+        interval_offset: int | None = None,
         total_record_count: int = 0,
     ) -> None:
-        """Add a Trend Log (Clause 12.25) to the server (before starting).
+        """Add a Trend Log (Clause 12.25) that the server polls, triggers or
+        logs by COV (before starting).
+
+        ``reference`` sets Log_DeviceObjectProperty, one element in any form
+        ``add_trend_log_multiple`` takes for ``members``. ``log_interval``,
+        ``start_time``, ``stop_time``, ``align_intervals`` and
+        ``interval_offset`` are as there. ``logging_type`` ``"polled"`` with
+        no ``log_interval`` takes a one-minute interval; ``"triggered"``
+        zeroes Log_Interval and makes it read-only, so a ``log_interval``
+        with it raises BacnetProtocolError (WRITE_ACCESS_DENIED); ``"cov"``
+        zeroes it too, and a nonzero ``log_interval`` then turns the log back
+        to polled (Clause 12.25.9). Any other string raises ValueError, and
+        so does ``"polled"`` with ``log_interval=0``, a pair that would make a
+        COV log; ``log_interval=0`` alone leaves the new log polled and idle.
+
+        While COV, the poller looks at the referenced property of this
+        device on each pass and logs it, with its object's Status_Flags,
+        whenever it changes as a COV notification would report it. Enable
+        turned off and on again within one pass (about 100 ms) isn't seen.
+        ``client_cov_increment`` (a REAL) is the increment a numeric value is
+        held to; None, the default, is NULL: the object's own COV_Increment
+        for a numeric Present_Value, any change otherwise. A negative or
+        non-finite one raises BacnetProtocolError (VALUE_OUT_OF_RANGE).
+        ``cov_resubscription_interval`` is in seconds, nonzero; it is served
+        but unused, since the server doesn't subscribe to other devices: a
+        reference to one logs a single OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
+        failure.
 
         Log_DeviceObjectProperty reads as one
         ``device_object_property_reference`` value whose mapping includes all
@@ -3561,8 +3599,8 @@ class BACnetServer:
         ``"triggered"`` zeroes Log_Interval and makes it read-only, so a
         ``log_interval`` with it raises BacnetProtocolError
         (WRITE_ACCESS_DENIED). ``"cov"`` raises BacnetProtocolError
-        (VALUE_OUT_OF_RANGE), as a client's write of COV does; any other
-        string raises ValueError. With neither, Log_Interval stays 0 and
+        (VALUE_OUT_OF_RANGE), as a client's write of COV does, since a Trend
+        Log Multiple never logs by COV; any other string raises ValueError. With neither, Log_Interval stays 0 and
         nothing is polled.
 
         ``start_time`` and ``stop_time`` bound when records are kept, each a

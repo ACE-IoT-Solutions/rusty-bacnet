@@ -2389,7 +2389,14 @@ evaluator or notification-generation flow.
 #### Logging & Trending
 
 ```python
-server.add_trend_log(instance=1, name="Temp Log", buffer_size=1000)
+server.add_trend_log(
+    instance=1,
+    name="Temp Log",
+    buffer_size=1000,
+    reference=(ObjectIdentifier(ObjectType.ANALOG_INPUT, 1), PropertyIdentifier.PRESENT_VALUE),
+    logging_type="cov",         # a record per change, as COV reports it
+    client_cov_increment=0.5,   # None (the default) uses the object's COV_Increment
+)
 server.add_trend_log_multiple(
     instance=1,
     name="Multi Log",
@@ -2470,14 +2477,43 @@ logging four billion records first. A value outside Unsigned32 raises
 `OverflowError`. Restoring saved records is Rust-only, through
 `restore_log_buffer`.
 
-`add_trend_log` and `add_event_log` take none of the other keyword arguments,
-but their objects serve the same rows over the network and through
-`write_property_local`: a Trend Log has Logging_Type (POLLED or TRIGGERED),
-Log_Interval, Start_Time, Stop_Time, Align_Intervals, Interval_Offset and
-Trigger, and an Event Log has Start_Time and Stop_Time. The server can't log
-by COV yet (#1480), so a Trend Log refuses a COV Logging_Type, and a polled
-log's Log_Interval written from nonzero to zero (the older way to ask for
-COV), with OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+`add_trend_log` takes the same keyword arguments as `add_trend_log_multiple`,
+with `reference` (one member, in the same forms) in place of `members`, and
+two more for COV logging (#1480):
+
+- `logging_type` may also be `"cov"`: Log_Interval goes to 0 and stays
+  writable. The server's poller then looks at the referenced property on each
+  pass, about every 100 ms, and logs a record whenever it changes the way a
+  COV notification would report it, with the monitored object's Status_Flags
+  in the record: a numeric value by at least the increment, anything else by
+  any change, and any change of those flags. The first look logs the current
+  value, and so does the first look after Enable goes TRUE again or the
+  window reopens. A change that comes and goes between two looks isn't seen,
+  and neither is Enable turned off and on again within one pass, which logs
+  nothing new. Changing `client_cov_increment` alone logs nothing by itself:
+  the next change is measured from the last logged value.
+  Only properties of this device are followed: a reference to another device
+  logs one OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED failure, since the server
+  doesn't subscribe to peers.
+- `client_cov_increment` is Client_COV_Increment, a REAL; `None`, the
+  default, is NULL and uses the referenced property's own criteria (its
+  object's COV_Increment for a numeric Present_Value). A negative or
+  non-finite value raises VALUE_OUT_OF_RANGE.
+- `cov_resubscription_interval` is COV_Resubscription_Interval in seconds,
+  one hour by default; 0 raises VALUE_OUT_OF_RANGE. It is served and
+  writable, but unused until the server subscribes to other devices.
+
+As older clients do, writing Log_Interval switches a Trend Log between the
+two modes: from nonzero to 0 on a polled log makes it COV, and a nonzero
+value on a COV log makes it poll at that interval. `add_trend_log` refuses
+`logging_type="polled"` with `log_interval=0` with a ValueError, since that
+pair would make a COV log; ask for `"cov"` instead. `log_interval=0` with no
+`logging_type` leaves a new log polled with no interval, polling nothing, as
+before.
+
+`add_event_log` takes none of the other keyword arguments, but its object
+serves Start_Time and Stop_Time over the network and through
+`write_property_local`.
 
 A Trend Log's Log_DeviceObjectProperty reads as one
 `device_object_property_reference` value with a `DeviceObjectPropertyReference`

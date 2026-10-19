@@ -168,8 +168,8 @@ fn read_range_multiple_records_decode_back_to_the_polled_values() {
     let (db, oid) = polled_log();
     let ack = call(&db, oid, PropertyIdentifier::LOG_BUFFER, None).unwrap();
     let failure = |class: ErrorClass, code: ErrorCode| LogValue::Failure {
-        error_class: class.to_raw().into(),
-        error_code: code.to_raw().into(),
+        error_class: class,
+        error_code: code,
     };
     let mut offset = 0;
     for hour in 2..=4 {

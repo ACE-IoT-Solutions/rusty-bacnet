@@ -501,6 +501,9 @@ impl BACnetObject for DeviceReadView<'_> {
     fn logs_received_event_notifications_internal(&self) -> bool {
         self.object.logs_received_event_notifications_internal()
     }
+    fn log_collecting_internal(&self) -> bool {
+        self.object.log_collecting_internal()
+    }
     fn buffer_ready_report_internal(&self) -> Option<BufferReadyReport> {
         self.object.buffer_ready_report_internal()
     }

@@ -597,6 +597,10 @@ impl BACnetObject for SourceReporter {
         self.wrapped.refresh_log_window_internal()
     }
 
+    fn log_collecting_internal(&self) -> bool {
+        self.wrapped.log_collecting_internal()
+    }
+
     fn logs_received_event_notifications_internal(&self) -> bool {
         self.wrapped.logs_received_event_notifications_internal()
     }
