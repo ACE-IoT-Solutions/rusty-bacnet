@@ -16,6 +16,8 @@ layer, and the owned NPDU codec of `bacnet-encoding`.
 - `NetworkMessageType` and `RejectMessageReason`: open sets of wire codes
   with named constants. Any octet converts, so a `match` on them needs a
   wildcard arm.
+- `RejectMessageToNetwork`: a reject's reason and network, read and written
+  in place.
 - `NetworkPriority`: the closed, two-bit network priority.
 - `NpduLimits` and `MAX_NPDU` (1,497 octets): the longest NPDU a link
   carries each way.
