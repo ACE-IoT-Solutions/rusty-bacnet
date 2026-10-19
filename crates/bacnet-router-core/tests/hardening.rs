@@ -4,9 +4,12 @@
 mod fixture;
 
 use bacnet_router_core::npdu::{NetworkMessageType, Npdu, RejectMessageReason};
-use bacnet_router_core::router::{Discard, Duplicates, Event, Options, Permissive, Router};
+use bacnet_router_core::router::{
+    Action, ConfigError, Congestion, Discard, Duplicates, Event, Frame, Groups, Options,
+    Permissive, Received, Router,
+};
 use bacnet_router_core::table::{Reachability, RejectEffect};
-use bacnet_router_core::{Instant, PortId, Storage};
+use bacnet_router_core::{Duration, Instant, PortId, Storage};
 use fixture::{
     addr, at, at_ms, bytes, deliver, deliver_broadcast, learn_9_via_r7, message, networks,
     reject_data, router_with, two_ports, Outcome, Recorder, TestRouter, NODE_A, R7, UNCONFIRMED,
@@ -160,14 +163,21 @@ fn a_looped_copy_within_the_ttl_is_dropped() {
     assert_eq!(sent.len(), 1);
     let looped = global(UNCONFIRMED, Some((1, NODE_A)));
     let (outcome, sent) =
-        deliver_broadcast(&mut router, &mut Permissive, 1, R7, &looped, at_ms(11_999));
+        deliver_broadcast(&mut router, &mut Permissive, 1, R7, &looped, at_ms(10_999));
     assert_eq!(outcome, Outcome::Discarded(Discard::Duplicate));
     assert!(sent.is_empty(), "not relayed");
     assert_eq!(router.counters().duplicate_drops, 1);
     // At the time to live it is new again, and remembered from then.
-    let (outcome, _) = deliver_broadcast(&mut router, &mut Permissive, 1, R7, &looped, at(12));
+    let (outcome, _) = deliver_broadcast(&mut router, &mut Permissive, 1, R7, &looped, at(11));
     assert!(matches!(outcome, Outcome::Local { .. }));
-    let (outcome, _) = deliver_broadcast(&mut router, &mut Permissive, 0, NODE_A, &first, at(13));
+    let (outcome, _) = deliver_broadcast(
+        &mut router,
+        &mut Permissive,
+        0,
+        NODE_A,
+        &first,
+        at_ms(11_500),
+    );
     assert_eq!(outcome, Outcome::Discarded(Discard::Duplicate));
 }
 
@@ -214,17 +224,24 @@ fn the_record_forgets_its_oldest_when_full() {
 }
 
 #[test]
-fn a_record_of_zero_suppresses_nothing() {
-    type Small = Storage<2, 8, 8, 4, 1497, bacnet_router_core::router::Groups, 0>;
-    let mut storage = Small::new();
-    let options = fixture::options(|options| options.duplicates = Some(Duplicates::DEFAULT));
-    let mut options = options;
-    options.route_cap = None;
-    let mut router = Router::new(&mut storage, &two_ports(), options, Instant::ZERO).unwrap();
+fn a_record_of_zero_refuses_duplicates_and_keeps_none() {
+    type NoRecord = Storage<2, 8, 8, 4, 1497, Groups, 0>;
+    let mut storage = NoRecord::new();
+    let on = fixture::options(|options| {
+        options.route_cap = None;
+        options.duplicates = Some(Duplicates::DEFAULT);
+    });
+    assert_eq!(
+        Router::new(&mut storage, &two_ports(), on, Instant::ZERO).err(),
+        Some(ConfigError::NoDuplicateRecord)
+    );
+    // Off, it builds; and the same broadcast passes every time.
+    let off = fixture::options(|options| options.route_cap = None);
+    let mut router = Router::new(&mut storage, &two_ports(), off, Instant::ZERO).unwrap();
     let frame = global(UNCONFIRMED, None);
     for _ in 0..3 {
         let received = router.receive(
-            bacnet_router_core::router::Frame {
+            Frame {
                 port: PortId(0),
                 source: NODE_A,
                 link_group: true,
@@ -233,10 +250,41 @@ fn a_record_of_zero_suppresses_nothing() {
             at(1),
             &mut Permissive,
         );
-        assert!(matches!(
-            received,
-            bacnet_router_core::router::Received::Local(_)
-        ));
-        while router.poll_action() != bacnet_router_core::router::Action::Idle {}
+        assert!(matches!(received, Received::Local(_)));
+        while router.poll_action() != Action::Idle {}
+    }
+}
+
+#[test]
+fn router_new_refuses_a_congestion_policy_it_cannot_run() {
+    let base = Congestion::DEFAULT;
+    let mut cases = Vec::new();
+    for percent in [0, 100, 255] {
+        let mut policy = base;
+        policy.drain_below_percent = percent;
+        cases.push(policy);
+    }
+    let mut policy = base;
+    policy.repeat = Duration::ZERO;
+    cases.push(policy);
+    let mut policy = base;
+    policy.clog_after = Duration::ZERO;
+    cases.push(policy);
+    for policy in cases {
+        assert!(!policy.is_valid(), "{policy:?}");
+        let options = fixture::options(|options| options.congestion = Some(policy));
+        let refused = Router::new(
+            Box::new(fixture::Store::new()),
+            &two_ports(),
+            options,
+            Instant::ZERO,
+        );
+        assert_eq!(refused.err(), Some(ConfigError::Congestion), "{policy:?}");
+    }
+    for percent in [1, 50, 99] {
+        let mut policy = base;
+        policy.drain_below_percent = percent;
+        let options = fixture::options(|options| options.congestion = Some(policy));
+        let _ = router_with(&two_ports(), options);
     }
 }

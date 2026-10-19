@@ -286,6 +286,28 @@
 # 17,376 octets, as they were: these sizes plus 12% round up to 17,408,
 # and a budget doesn't rise for an image whose RAM shrank.
 #
+# The router rows were measured again on 2026-10-18, same toolchain, after
+# the router's own Router-Busy (#1697), its next-hop and duplicate
+# options (#1698) and its application's requests (#1699), as text /
+# rodata / data / bss, then flash / ram:
+#
+#   thumbv7m router     40028 / 1348 / 0 / 15616   42400 / 15616
+#   thumbv6m router     43148 / 1356 / 0 / 15616   44696 / 15616
+#   riscv32imc router   45888 / 1876 / 0 / 15616   47786 / 15616
+#   thumbv7em router    39832 / 1348 / 0 / 15616   42204 / 15616
+#
+# Against dev before them (ab81fafb), .text is 1,156 / 1,328 / 1,132 /
+# 1,152 octets larger on thumbv7m / thumbv6m / riscv32imc / thumbv7em:
+# the congestion state machine and its announcements, linked although the
+# image leaves the policy off, and the duplicate check; origination isn't
+# called, so it isn't linked. .bss is 80 octets larger, 15,616 in all: the
+# router's Storage<2, 8, 8, 4, 1497, Groups, 0> is now 3,336 octets (from
+# 3,216: each port's congestion state, the sweep deadline and the latest
+# time, moved there from the Router to keep the on-stack Router under 128
+# octets). The image names a duplicate record of 0 entries, since it
+# leaves duplicate suppression off; Router::new refuses the option over
+# such storage. The budgets are unchanged.
+#
 # The device rows are from when that image joined, on 2026-10-18, same
 # toolchain (#1771), as text / rodata / data / bss, then flash / ram:
 #

@@ -68,6 +68,12 @@ impl BACnetRouter {
     /// Who-Is-Router for it goes out on every port, once per cooldown;
     /// retry once it is learned. After [`Self::stop`] every call fails with
     /// [`OriginateFailure::Stopped`].
+    ///
+    /// A global broadcast (DNET 0xFFFF) has no path here yet and is refused
+    /// with [`OriginateError::ReservedNetwork`]: send a remote broadcast
+    /// (an empty DADR) to each network the router reaches instead, its own
+    /// ports' networks included, where each leaves as that port's local
+    /// broadcast.
     pub fn originate(&self, request: &Request<'_>) -> Result<(), OriginateFailure> {
         // Only the dispatch tasks own the queues: once `stop` has ended
         // them, nothing is left to send on.
@@ -76,16 +82,16 @@ impl BACnetRouter {
         let now = shared.engine.now();
         let mut router = shared.engine.lock();
         let result = router.originate(request, now);
-        let refused = router.counters().refused;
-        // A search for a missing route is polled too.
-        drain(&mut router, &[], &outputs.send_txs, now);
-        let queued = router.counters().refused == refused;
+        // A search for a missing route is polled too. Only the request's
+        // own refusal fails it: a Router-Busy or search refused in the
+        // same drain doesn't.
+        let drained = drain(&mut router, &[], &outputs.send_txs, now);
         drop(router);
         result?;
-        if queued {
-            Ok(())
-        } else {
+        if drained.originate_refused {
             Err(OriginateFailure::QueueFull)
+        } else {
+            Ok(())
         }
     }
 }

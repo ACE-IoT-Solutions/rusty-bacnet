@@ -11,8 +11,13 @@
 //! [`Counters::duplicate_drops`](super::Counters::duplicate_drops).
 //!
 //! The record is a ring of `B` entries in the [`Storage`](super::Storage),
-//! all zero bits when empty; a full ring gives up its oldest entry. The
-//! hashes are 32-bit FNV-1a: multiplications only, no division. A
+//! all zero bits when empty; a full ring gives up its oldest entry, so `B`
+//! must cover the global broadcasts the router sees within one time to
+//! live, or a looped copy can outlast its record. The hashes are 32-bit
+//! FNV-1a: multiplications only, no division. Two different broadcasts
+//! from one origin whose hashes collide within the time to live are taken
+//! as one, and the second is wrongly dropped; a collision never lets a
+//! looped copy through, since a real repeat always hashes the same. A
 //! legitimate sender that repeats the same broadcast within the time to
 //! live, a client retrying a Who-Is say, loses the repeat too, which is
 //! why it is off unless [`Options::duplicates`](super::Options::duplicates)
@@ -32,10 +37,11 @@ pub struct Duplicates {
 }
 
 impl Duplicates {
-    /// Two seconds: long enough for a copy to come round a loop of
-    /// routers, short enough to let a sender's own retry through soon.
+    /// One second: a looped copy comes back within milliseconds over IP
+    /// and within a few hundred over MS/TP, while a client's own retries
+    /// are usually a second or more apart.
     pub const DEFAULT: Self = Self {
-        ttl: Duration::from_secs(2),
+        ttl: Duration::from_secs(1),
     };
 }
 

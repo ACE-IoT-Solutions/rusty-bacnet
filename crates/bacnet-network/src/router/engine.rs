@@ -48,12 +48,26 @@ pub(super) const SEARCHES: usize = 256;
 /// with its added source address.
 pub(super) const SCRATCH: usize = 65_535 + 2 + 1 + bacnet_npdu::MAX_MAC_LEN;
 
+/// The global broadcasts the hosted router remembers for duplicate
+/// suppression ([`RouterOptions::duplicates`](super::RouterOptions::duplicates)):
+/// enough for 512 within one time to live. 12 KiB, boxed with the rest.
+pub(super) const DUPLICATE_RECORD: usize = 512;
+
 /// What a hosted router's engine keeps, including its owned port rules, boxed.
-type HostedStorage = Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups>;
+type HostedStorage =
+    Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups, DUPLICATE_RECORD>;
 
 /// The engine as the hosted router runs it.
-pub(super) type HostedRouter =
-    Router<Box<HostedStorage>, PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups>;
+pub(super) type HostedRouter = Router<
+    Box<HostedStorage>,
+    PORTS,
+    ROUTE_CAP,
+    HOLD_RECORDS,
+    SEARCHES,
+    SCRATCH,
+    PortGroups,
+    DUPLICATE_RECORD,
+>;
 
 /// The hosted router's options: its policy values and timers, and the
 /// 256-route cap. [`RouterOptions`](super::RouterOptions) turns on the

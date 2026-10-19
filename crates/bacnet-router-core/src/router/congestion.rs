@@ -59,6 +59,22 @@ impl Congestion {
     };
 }
 
+impl Congestion {
+    /// Whether [`Router::new`](super::Router::new) takes it: a nonzero
+    /// `clog_after`, since with none a queue full for a moment would
+    /// announce busy, which is not one that stays full; a nonzero
+    /// `repeat`; and a low-water mark of 1 to 99 percent, so a port can
+    /// drain (0 never) and need not be empty to have drained below a
+    /// full queue (100 or more would clear it at once).
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        !self.clog_after.is_zero()
+            && !self.repeat.is_zero()
+            && self.drain_below_percent >= 1
+            && self.drain_below_percent <= 99
+    }
+}
+
 impl Default for Congestion {
     /// [`Congestion::DEFAULT`].
     fn default() -> Self {

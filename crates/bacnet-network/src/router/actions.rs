@@ -29,18 +29,22 @@ use super::SendRequest;
 /// Send what `router` asks for on the port queues `send_txs`, by port
 /// index, until it is idle. `attributes` are the data attributes of the
 /// arrival that prompted the sends, if any; `now` is the engine's time.
+/// Says whether a request the router's application originated was among
+/// the sends a queue refused: only that one, not a Router-Busy or another
+/// send refused in the same drain.
 pub(super) fn drain(
     router: &mut HostedRouter,
     attributes: &[DataAttribute],
     send_txs: &[send_queue::Sender],
     now: Instant,
-) {
+) -> Drained {
     let congestion = router.options().congestion.is_some();
+    let mut drained = Drained::default();
     // A fan-out polls the same NPDU once per port: share its buffer.
     let mut last: Option<Bytes> = None;
     loop {
         let Action::Send(send) = router.poll_action() else {
-            return;
+            return drained;
         };
         let npdu = match last.take() {
             Some(previous) if previous.as_ref() == send.npdu => previous,
@@ -78,8 +82,16 @@ pub(super) fn drain(
         if let Err(error) = result {
             refused(kind, &error);
             router.refused(SendRefusal::Full);
+            drained.originate_refused |= kind == Kind::Originate;
         }
     }
+}
+
+/// What a [`drain`] saw that its caller may need.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct Drained {
+    /// A queue refused the router's own originated request.
+    pub(super) originate_refused: bool,
 }
 
 /// Report port `port`'s backlog, read from its receiver after a send was
@@ -92,15 +104,19 @@ pub(super) fn report_backlog(
     port: PortId,
     queue: &send_queue::Receiver,
 ) {
-    let Some(backlog) = queue.watched_backlog() else {
+    if !queue.is_watched() {
         return;
-    };
+    }
     let outputs = outputs.upgrade();
     let send_txs = outputs
         .as_ref()
         .map_or(&[][..], |outputs| outputs.send_txs.as_slice());
     let now = shared.engine.now();
     let mut router = shared.engine.lock();
+    // Read under the engine's lock, never before it (see watched_backlog).
+    let Some(backlog) = queue.watched_backlog(&router) else {
+        return;
+    };
     router.egress_backlog(port, backlog, now);
     queue.set_watched(router.port_congested(port));
     drain(&mut router, &[], send_txs, now);

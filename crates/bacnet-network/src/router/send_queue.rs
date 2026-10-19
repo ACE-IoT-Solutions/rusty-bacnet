@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 
 use bacnet_router_core::router::Backlog;
 
+use super::engine::EngineGuard;
 use super::SendRequest;
 
 pub(super) const CAPACITY: usize = 256;
@@ -149,9 +150,20 @@ impl Receiver {
         })
     }
 
-    /// The backlog now, when the engine wants to hear it as the queue
-    /// drains: after each send taken, the sender reports it (#1697).
-    pub(super) fn watched_backlog(&self) -> Option<Backlog> {
+    /// Whether the engine wants to hear the backlog as the queue drains:
+    /// a cheap look, before the engine's lock is worth taking (#1697).
+    pub(super) fn is_watched(&self) -> bool {
+        self.0.lock().watched
+    }
+
+    /// The backlog now, when the engine still wants to hear it. It takes
+    /// the engine's guard so it can only be read under the engine's lock:
+    /// read before it, a drain on another task could refill the queue
+    /// between the read and the report, and the engine would hear a stale
+    /// low backlog, announcing a full port available. Under the lock, every
+    /// admission is reported after this one, so the engine always hears
+    /// the latest. Engine, then queue: the order `drain` takes them in.
+    pub(super) fn watched_backlog(&self, _engine: &EngineGuard<'_>) -> Option<Backlog> {
         let state = self.0.lock();
         state.watched.then(|| backlog(&state))
     }

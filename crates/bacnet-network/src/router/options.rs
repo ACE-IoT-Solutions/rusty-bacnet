@@ -227,13 +227,18 @@ impl<A, C> RouterOptions<A, C> {
     ///
     /// In a topology with a loop, routers can pass one global broadcast
     /// around it until its hop count runs out. With this on, the router
-    /// remembers the last 32 global broadcasts by origin (SNET and SADR,
+    /// remembers the last 512 global broadcasts by origin (SNET and SADR,
     /// or the arrival network and link source) and a hash of the APDU,
-    /// and drops a repeat seen within the time to live, 2 s for
+    /// and drops a repeat seen within the time to live, 1 s for
     /// [`Duplicates::DEFAULT`]: not relayed, not delivered, counted in
     /// [`Counters::duplicate_drops`](super::Counters::duplicate_drops).
     /// The standard defines no such suppression, and a sender's own
     /// identical retry within the time to live is dropped too.
+    ///
+    /// Sizing: the record must hold every global broadcast the router sees
+    /// within one time to live, or the oldest is forgotten before its
+    /// looped copy returns. 512 covers 512 broadcasts a second at the
+    /// default; a longer time to live needs proportionally fewer a second.
     pub fn duplicates(mut self, policy: Duplicates) -> Self {
         self.engine.duplicates = Some(policy);
         self

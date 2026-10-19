@@ -196,6 +196,12 @@ pub enum ConfigError {
     TableTooSmall,
     /// The sweep period is zero.
     ZeroSweep,
+    /// [`Options::duplicates`] is on, but the storage records no
+    /// broadcasts (its `B` is 0), so nothing would be suppressed.
+    NoDuplicateRecord,
+    /// [`Options::congestion`] is a policy
+    /// [`Congestion::is_valid`](super::Congestion::is_valid) refuses.
+    Congestion,
 }
 
 impl fmt::Display for ConfigError {
@@ -223,6 +229,13 @@ impl fmt::Display for ConfigError {
             }
             Self::TableTooSmall => f.write_str("the table can't hold every port's network"),
             Self::ZeroSweep => f.write_str("the sweep period is zero"),
+            Self::NoDuplicateRecord => {
+                f.write_str("duplicate suppression is on, but the storage records no broadcasts")
+            }
+            Self::Congestion => f.write_str(
+                "a congestion policy needs a nonzero clog time and repeat, \
+                 and a low-water mark of 1 to 99 percent",
+            ),
         }
     }
 }

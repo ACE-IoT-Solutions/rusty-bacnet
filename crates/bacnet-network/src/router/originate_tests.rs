@@ -112,3 +112,45 @@ async fn a_full_queue_refuses_and_a_stopped_router_refuses_everything() {
     router.stop().await;
     assert_eq!(router.originate(&request), Err(OriginateFailure::Stopped));
 }
+
+/// A request on network 2000 or 1000, each a port's own.
+fn to_port(network: u16) -> Request<'static> {
+    Request::new(Address { network, mac: &[5] }, &READ_PROPERTY)
+}
+
+/// Only the request's own refusal fails it: a Router-Busy refused by a
+/// full queue in the same drain doesn't.
+#[tokio::test(start_paused = true)]
+async fn a_busy_refused_in_the_same_drain_doesnt_fail_a_queued_request() {
+    let options = super::RouterOptions::new().congestion(super::Congestion::DEFAULT);
+    let (mut router, _apdus, mut peers) = start_with(2, options).await;
+    // Port 0's queue full, one send in progress.
+    router.originate(&to_port(1000)).unwrap();
+    let _port_0 = sending(&mut peers[0]).await;
+    for _ in 0..CAPACITY {
+        router.originate(&to_port(1000)).unwrap();
+    }
+    // Port 1's queue full, then one slot freed: waiting to clog.
+    router.originate(&to_port(2000)).unwrap();
+    let in_progress = sending(&mut peers[1]).await;
+    for _ in 0..CAPACITY {
+        router.originate(&to_port(2000)).unwrap();
+    }
+    in_progress.complete.send(Ok(())).unwrap();
+    let _port_1 = sending(&mut peers[1]).await;
+
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    let refused = router.counters().refused;
+    // Admitted, filling port 1 past its clog time: its Router-Busy for
+    // port 0 is refused by port 0's full queue in this same drain.
+    assert_eq!(router.originate(&to_port(2000)), Ok(()));
+    let counts = router.counters();
+    assert!(counts.busy_announced >= 1);
+    assert!(counts.refused > refused, "the Busy was refused");
+    // Now port 1 is full: the next request is refused itself.
+    assert_eq!(
+        router.originate(&to_port(2000)),
+        Err(OriginateFailure::QueueFull)
+    );
+    router.stop().await;
+}

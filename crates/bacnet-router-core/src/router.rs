@@ -263,7 +263,8 @@ pub type RouterIn<
     const H: usize,
     const D: usize = 16,
     const N: usize = MAX_NPDU,
-> = Router<&'s mut Storage<P, R, H, D, N>, P, R, H, D, N>;
+    const B: usize = 32,
+> = Router<&'s mut Storage<P, R, H, D, N, Groups, B>, P, R, H, D, N, Groups, B>;
 
 impl<
         S,
@@ -307,7 +308,9 @@ where
     /// Refused: no port; more than `P` or 255; a port numbered 0 or 0xFFFF
     /// ([`PortConfig::network`]); two ports with one network number; a
     /// limit under 64 octets or over the scratch; a route cap over `R`; a
-    /// table too small for every port's network; a zero sweep.
+    /// table too small for every port's network; a zero sweep; duplicate
+    /// suppression on storage that records none (`B` of 0); a congestion
+    /// policy [`Congestion::is_valid`] refuses.
     pub fn new(
         mut storage: S,
         ports: &[PortConfig<G>],
@@ -349,6 +352,12 @@ where
         }
         if options.sweep.as_nanos() == 0 {
             return Err(ConfigError::ZeroSweep);
+        }
+        if options.duplicates.is_some() && B == 0 {
+            return Err(ConfigError::NoDuplicateRecord);
+        }
+        if options.congestion.is_some_and(|policy| !policy.is_valid()) {
+            return Err(ConfigError::Congestion);
         }
 
         let store = storage.borrow_mut();
@@ -428,6 +437,12 @@ where
     /// as the router refuses others' traffic for it. Like
     /// [`receive`](Self::receive), it drops what an earlier call left
     /// unpolled.
+    ///
+    /// A global broadcast (DNET 0xFFFF) is refused as
+    /// [`OriginateError::ReservedNetwork`]: there is no engine path for one
+    /// yet. To reach every network, send a remote broadcast (an empty
+    /// DADR) to each network in the table, the attached ones included,
+    /// where it leaves as that port's local broadcast.
     pub fn originate(&mut self, request: &Request<'_>, now: Instant) -> Result<(), OriginateError> {
         let now = self.clock(now);
         let options = self.options;
