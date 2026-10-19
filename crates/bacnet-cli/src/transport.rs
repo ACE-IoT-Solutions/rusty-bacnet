@@ -219,7 +219,7 @@ pub async fn build_sc_client(
         .and_then(pem::private_key_reader)
         .map_err(|e| Error::Encoding(format!("failed to read key PEM: {e}")))?;
 
-    // The pre-dial lint (#968), for one-shots, the shell and the TUI alike:
+    // The pre-dial lint (#968), for one-shots and the TUI alike:
     // a hard failure stops here, before any socket. Warnings are logged (to
     // stderr in one-shots) and never block; the TUI confirms them earlier, so
     // a warning that first appears between that check and this one is only

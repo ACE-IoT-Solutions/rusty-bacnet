@@ -17,7 +17,7 @@ Most configuration mistakes come from mixing settings that sound similar but act
 | Request pacing | `--min-interval-ms` | `min_request_interval_ms` | Least time between requests to one device, in milliseconds; 0 by default |
 | Remote endpoint | Command target | Method `address` | Target address and, where needed, remote port |
 
-The reviewed CLI defaults to local UDP port `47808`, broadcast address `255.255.255.255`, and APDU timeout `6000` ms. One-shot commands without an interface use `0.0.0.0`; the interactive shell may prompt for an interface.
+The reviewed CLI defaults to local UDP port `47808`, broadcast address `255.255.255.255`, and APDU timeout `6000` ms. One-shot commands without an interface use `0.0.0.0`; the v0.13.0 interactive shell may prompt for an interface, and after v0.13.0 the terminal UI shows a dialog instead.
 
 Do not infer receive isolation or multi-interface behavior from the word “bind.” Broadcast reception can involve wildcard socket behavior. Verify the actual host/interface arrangement, especially when multiple network adapters, VPNs, or local BACnet applications are present.
 

@@ -31,8 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Each release target with the CLI's features there: packet capture (pcap) and
-# MS/TP (serial, #969)
+# Each release target with the CLI's features there, on top of its default
+# ones (the terminal UI, #974): packet capture (pcap) and MS/TP (serial, #969)
 # only on Linux, as in scripts/release/build_linux.sh. The Python extension has
 # the same features everywhere.
 TARGETS = {
@@ -62,7 +62,7 @@ EXTRA_LICENSES = {
 # SPDX identifiers whose terms don't ask for the notice to go with a binary.
 # Any other identifier, unknown ones included, counts as needing its notice.
 # BSL-1.0 asks for it in copies of the software except machine-executable
-# object code, so not in a binary (clipboard-win, in the Windows CLI).
+# object code, so not in a binary.
 NO_NOTICE = {"0BSD", "BSL-1.0", "CC0-1.0", "MIT-0", "Unlicense", "WTFPL"}
 # Crates that may ship no licence file although their licence needs its notice:
 # {name: why that's fine}. Empty: every such crate ships one.

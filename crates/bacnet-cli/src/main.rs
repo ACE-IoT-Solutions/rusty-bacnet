@@ -1,9 +1,8 @@
 //! BACnet command-line tool.
 //!
-//! Running `bacnet` with no arguments or with the `shell` subcommand launches
-//! an interactive REPL, and `bacnet tui` opens the full-screen terminal UI
-//! (with the opt-in `tui` feature).
-//! Subcommands can also be used directly for scripting.
+//! `bacnet tui`, or plain `bacnet` on a terminal, opens the full-screen
+//! terminal UI (the default `tui` feature; see [`entry`]). Every other
+//! subcommand is a one-shot command for scripts, with `--json` output.
 #![allow(clippy::print_stdout, clippy::print_stderr)] // a command-line tool prints its results
 
 use std::{io::IsTerminal, net::Ipv4Addr};
@@ -17,14 +16,14 @@ mod commands;
 mod core;
 #[allow(dead_code)] // Public API consumed by capture command handler (Task 4).
 mod decode;
+mod entry;
 mod foreign;
 mod mstp;
 mod output;
 mod parse;
+#[cfg(feature = "tui")]
 mod paths;
 mod sc_check;
-mod session;
-mod shell;
 mod timestamp;
 mod transport;
 #[cfg(feature = "tui")]
@@ -99,7 +98,7 @@ async fn execute_command<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Shell | Command::Tui { .. } | Command::ScCheck { .. } | Command::MstpPorts => {
+        Command::Tui { .. } | Command::ScCheck { .. } | Command::MstpPorts => {
             unreachable!()
         }
         Command::Discover {
@@ -189,6 +188,11 @@ async fn execute_command<T: TransportPort + 'static>(
             )
             .await?;
         }
+        Command::Writem { target, specs } => {
+            let to = resolve_destination(client, target).await?;
+            let specs = commands::write::parse_write_multiple(specs)?;
+            commands::write::write_property_multiple_cmd(client, &to, specs, format).await?;
+        }
         Command::Subscribe {
             target,
             object,
@@ -273,9 +277,6 @@ async fn execute_command<T: TransportPort + 'static>(
             let mac = resolve_target_mac(client, target).await?;
             commands::file::file_write_cmd(client, &mac, *file_instance, *start, input, format)
                 .await?;
-        }
-        Command::Devices => {
-            commands::router::devices_cmd(client, format).await?;
         }
         Command::Bdt { .. }
         | Command::Fdt { .. }
@@ -418,26 +419,18 @@ async fn execute_bip_command(
     Ok(true)
 }
 
+/// Run the one-shot command and stop the client.
 async fn run<T: TransportPort + 'static>(
     mut client: BACnetClient<T>,
     cli: &Cli,
     format: OutputFormat,
-    is_sc: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match &cli.command {
-        None | Some(Command::Shell) => {
-            shell::run_shell(client, is_sc, format, cli.policy()).await?;
-        }
-        Some(cmd) => {
-            execute_command(&client, cmd, format).await?;
-            client.stop().await?;
-        }
-    }
+    // Plain `bacnet` became `tui` while parsing (see `entry`).
+    let cmd = cli.command.as_ref().expect("a command after parsing");
+    execute_command(&client, cmd, format).await?;
+    client.stop().await?;
     Ok(())
 }
-
-mod interface;
-use interface::pick_interface;
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -465,6 +458,11 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         let mut cli = Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit());
         cli.explicit_args = explicit_args;
         cli.command_name = command_name;
+        // Plain `bacnet` opens the TUI, or exits 2 with the usage (#974).
+        if cli.command.is_none() {
+            let allowed = entry::tui_allowed_here(cli.no_tui);
+            entry::resolve(&mut cli, allowed).unwrap_or_else(|error| error.exit());
+        }
         cli
     });
     dispatch(cli, &mut guard::Stdin, |cli| {
@@ -514,8 +512,8 @@ fn dispatch(
     network(cli).map(|()| std::process::ExitCode::SUCCESS)
 }
 
-/// The write guard for a one-shot command. A bare `bacnet` (the shell)
-/// passes: the shell guards each command it runs.
+/// The write guard for a one-shot command. `tui` is a read (plain `bacnet`
+/// has become it while parsing): the TUI guards its own writes.
 fn guard_one_shot(cli: &Cli, confirm: &mut dyn guard::Confirm) -> Result<(), guard::Refusal> {
     let Some(command) = &cli.command else {
         return Ok(());
@@ -570,27 +568,9 @@ async fn cli_main(cli: Cli) -> CliResult {
     );
     let format = resolve_format(&cli);
 
-    let mut args = transport::TransportArgs::from_cli(&cli, Ipv4Addr::UNSPECIFIED, cli.broadcast)?;
-
-    // Determine interface and broadcast address.
-    // If --interface was explicitly given, use it (with the given or default broadcast).
-    // In interactive shell mode without --interface, prompt the user to pick.
-    // In one-shot mode without --interface, default to 0.0.0.0.
-    let is_shell = matches!(cli.command, None | Some(Command::Shell));
-    let (interface, broadcast) = if let Some(iface) = cli.interface {
-        (iface, cli.broadcast)
-    } else if is_shell
-        && !cli.sc
-        && !cli.ipv6
-        && cli.mstp.is_none()
-        && std::io::stdin().is_terminal()
-    {
-        pick_interface()?
-    } else {
-        (Ipv4Addr::UNSPECIFIED, cli.broadcast)
-    };
-    args.interface = interface;
-    args.broadcast = broadcast;
+    // A one-shot binds --interface, or every interface without it.
+    let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let args = transport::TransportArgs::from_cli(&cli, interface, cli.broadcast)?;
 
     // Handle capture command separately — no BACnet client needed
     if let Some(Command::Capture {
@@ -635,7 +615,7 @@ async fn cli_main(cli: Cli) -> CliResult {
         #[cfg(feature = "sc-tls")]
         {
             let client = transport::build_sc_client(&args).await?;
-            run(client, &cli, format, true).await?;
+            run(client, &cli, format).await?;
         }
         #[cfg(not(feature = "sc-tls"))]
         {
@@ -644,32 +624,26 @@ async fn cli_main(cli: Cli) -> CliResult {
         }
     } else if args.ipv6 {
         let client = transport::build_bip6_client(&args).await?;
-        run(client, &cli, format, false).await?;
+        run(client, &cli, format).await?;
     } else {
         let mut client = transport::build_bip_client(&args).await?;
-        match &cli.command {
-            None | Some(Command::Shell) => {
-                shell::run_bip_shell(client, cli.foreign_bbmd, format, cli.policy()).await?;
-            }
-            Some(cmd) => {
-                // Broadcasts reach the remote network once the BBMD has
-                // taken the registration (#938).
-                if let Some(bbmd) = cli.foreign_bbmd {
-                    if let Err(e) = foreign::await_registration(&client, bbmd).await {
-                        // The registration's failure is the error to report.
-                        return Err(match client.stop().await {
-                            Ok(()) => e,
-                            Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
-                        }
-                        .into());
-                    }
+        let cmd = cli.command.as_ref().expect("a command after parsing");
+        // Broadcasts reach the remote network once the BBMD has taken the
+        // registration (#938).
+        if let Some(bbmd) = cli.foreign_bbmd {
+            if let Err(e) = foreign::await_registration(&client, bbmd).await {
+                // The registration's failure is the error to report.
+                return Err(match client.stop().await {
+                    Ok(()) => e,
+                    Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
                 }
-                if !execute_bip_command(&client, cmd, cli.ttl, format).await? {
-                    execute_command(&client, cmd, format).await?;
-                }
-                client.stop().await?;
+                .into());
             }
         }
+        if !execute_bip_command(&client, cmd, cli.ttl, format).await? {
+            execute_command(&client, cmd, format).await?;
+        }
+        client.stop().await?;
     }
 
     Ok(())

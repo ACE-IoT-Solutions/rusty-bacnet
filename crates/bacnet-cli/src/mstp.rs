@@ -444,7 +444,7 @@ pub(crate) fn ports_cmd(
     u8::from(written.is_err())
 }
 
-/// Run a one-shot command or the shell over MS/TP.
+/// Run a one-shot command over MS/TP.
 #[cfg(feature = "serial")]
 pub(crate) async fn run(
     cli: &crate::args::Cli,
@@ -452,7 +452,7 @@ pub(crate) async fn run(
     format: OutputFormat,
 ) -> crate::CliResult {
     let (client, _diagnostics) = build_client(args).await?;
-    crate::run(client, cli, format, false).await
+    crate::run(client, cli, format).await
 }
 
 /// Without the `serial` feature, say how to get it.

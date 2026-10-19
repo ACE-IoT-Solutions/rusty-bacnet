@@ -34,8 +34,7 @@ pub(crate) struct Cli {
     /// Let commands that change a device run: writes, object and file
     /// changes, alarm acknowledgment, time sync and unregister, and (with
     /// --yes or a typed confirmation) communication control and reinitialize.
-    /// Given to the shell, it holds for the whole session. The TUI ignores
-    /// it: its writes need an armed write session.
+    /// The TUI ignores it: its writes need an armed write session.
     #[arg(long, global = true)]
     pub(crate) allow_write: bool,
 
@@ -44,7 +43,8 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) yes: bool,
 
-    /// Network interface IP address to bind (omit to select interactively in shell mode).
+    /// Network interface IP address to bind (omit to bind all of them; the
+    /// TUI asks which).
     #[arg(short, long, global = true)]
     pub(crate) interface: Option<Ipv4Addr>,
 
@@ -174,6 +174,11 @@ pub(crate) struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub(crate) verbose: u8,
 
+    /// With no command, print the usage instead of opening the terminal UI
+    /// (as does BACNET_NO_TUI set to anything but "" or "0").
+    #[arg(long)]
+    pub(crate) no_tui: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -200,11 +205,9 @@ pub(crate) enum Command {
         at_unix: Option<i64>,
     },
 
-    /// Launch interactive shell.
-    Shell,
-
     /// Open the full-screen terminal UI (read-only until W arms writes).
     ///
+    /// Plain `bacnet` on a terminal opens it too, with these defaults.
     /// Opens B/IP profiles by default. Explicit transport flags without
     /// --profile retain a nonpersistent B/IP, B/IPv6 or SC connection.
     /// Writes need a profile, whose workspace holds the ledger and audit log.
@@ -318,6 +321,17 @@ pub(crate) enum Command {
         priority: Option<u8>,
     },
 
+    /// Write multiple properties (WritePropertyMultiple).
+    #[command(alias = "wpm")]
+    Writem {
+        /// Target device.
+        target: String,
+        /// Each object, then its comma-separated writes, each with an
+        /// optional @priority: "av:1 pv=72.5@8,on=Zone ao:1 pv=10".
+        #[arg(required = true, num_args = 2..)]
+        specs: Vec<String>,
+    },
+
     /// Subscribe to COV notifications.
     #[command(alias = "cov")]
     Subscribe {
@@ -400,9 +414,6 @@ pub(crate) enum Command {
         /// Input file path.
         input: String,
     },
-
-    /// List cached discovered devices.
-    Devices,
 
     /// List the serial ports to pass to --mstp (a JSON array of names,
     /// possibly empty). Opens no port.
@@ -592,7 +603,7 @@ mod tests {
             "192.0.2.10",
             "--renewal",
             "20",
-            "devices",
+            "discover",
             "--ttl",
             "60",
         ])

@@ -66,6 +66,7 @@ fn a_refused_one_shot_never_reaches_the_network() {
     for args in [
         &["bacnet", "--json", "write", "10.0.0.1", "av:1", "pv", "1"][..],
         &["bacnet", "--json", "time-sync", "10.0.0.1"],
+        &["bacnet", "--json", "writem", "10.0.0.1", "av:1", "pv=1"],
         &[
             "bacnet",
             "--json",
@@ -97,8 +98,8 @@ fn a_refused_one_shot_never_reaches_the_network() {
             "warmstart",
         ],
         &["bacnet", "read", "10.0.0.1", "av:1", "pv"],
-        &["bacnet", "shell"],
-        &["bacnet"],
+        &["bacnet", "--allow-write", "wpm", "10.0.0.1", "av:1", "pv=1"],
+        &["bacnet", "tui"],
     ] {
         assert_eq!(
             run_guarded(args),

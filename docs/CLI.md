@@ -1,6 +1,12 @@
 # BACnet CLI Reference
 
-The `bacnet` command-line tool provides interactive and scripted access to BACnet networks for device discovery, property reading/writing, diagnostics, and packet analysis. `bacnet tui` opens a full-screen terminal UI in builds with the opt-in `tui` feature; see [Terminal UI](#terminal-ui).
+The `bacnet` command-line tool provides interactive and scripted access to BACnet networks for device discovery, property reading/writing, diagnostics, and packet analysis. Plain `bacnet` on a terminal, or `bacnet tui`, opens a full-screen terminal UI; see [Terminal UI](#terminal-ui). Every other command is a one-shot command that prints its result and exits, as a table at a terminal or as JSON with `--json` or through a pipe.
+
+**Screen readers.** The terminal UI redraws a whole screen at a time, which
+screen readers follow poorly. The one-shot commands cover the same work
+(`discover`, `read`, `readm`, `write`, `subscribe` and the rest below) and
+print plain lines: use them with `--json` for output that reads the same every
+time, or with `--format table`.
 
 ## Installation
 
@@ -65,11 +71,12 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--json` | | JSON output shorthand |
 | `-v` | | Verbosity (`-v`, `-vv`, `-vvv`) |
 | `--allow-write` | | Let a command that changes a device run; see [Write guard](#write-guard) |
+| `--no-tui` | | With no command, print the usage instead of opening the terminal UI; see [Plain `bacnet`](#plain-bacnet) |
 | `--yes` | | Confirm communication control and reinitialize without typing the target; needed when stdin is not a terminal |
 
 Output auto-detects: tables in TTY, JSON when piped.
 
-**Interface selection:** When launching the interactive shell without `--interface` on BACnet/IP, the CLI lists available network interfaces and prompts you to select one; `bacnet tui --no-profile` shows the same list as a dialog. Named B/IP profiles use their saved interface. For one-shot commands without `--interface`, it defaults to `0.0.0.0`.
+**Interface selection:** A one-shot command without `--interface` binds `0.0.0.0`. The terminal UI on BACnet/IP without `-i` lists the available network interfaces in a dialog; named B/IP profiles use their saved interface.
 
 ## Target Resolution
 
@@ -89,9 +96,9 @@ Commands that take a `<target>` argument accept several formats:
 | DNET:instance | `2:1234` | Routed device (network:instance) |
 | DNET:0xMAC | `2:0x05` | Routed station by its MAC on that network (MS/TP station 5 here) |
 
-When using a device instance number, the device must have been previously found via `discover`. In the shell, you can set a default target with the `target` command to omit the target argument from subsequent commands.
+When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
-**Routed targets.** `read`, `readm`, `write` and `subscribe` (and the shell's `writem`) take
+**Routed targets.** `read`, `readm`, `write`, `writem` and `subscribe` take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
 the device to answer, then sends the request through the router that answered
@@ -105,7 +112,7 @@ not its IPv6 address (Clause U.1.3), and a device's VMAC is its device instance
 turns an `[IPv6]` or `[IPv6]:port` target into a VMAC before the command runs,
 asking the node there with a unicast Virtual-Address-Resolution (Clause U.5);
 it fails after three seconds when nothing answers. Device tables, COV output
-and `status` show B/IPv6 addresses as `bip6:0x0004D2`, which every target
+and the TUI show B/IPv6 addresses as `bip6:0x0004D2`, which every target
 argument takes back. A `bip6:` target without `--ipv6` is refused.
 
 `--device-instance` gives the CLI the VMAC of that instance on `--ipv6`.
@@ -126,8 +133,8 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `devices`, `mstp-ports`, `capture`, `sc-check`, `shell`, `tui`; shell-only `target`, `status`, `help`, `exit`, `quit` | nothing |
-| write | `write` (`wp`), shell-only `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
+| write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
 `subscribe` and `register` stay read commands: each leaves an entry on the
@@ -161,14 +168,6 @@ JSON in this shape, which scripts can rely on:
 | `missing` | the flags that would have let it run, possibly empty |
 | `message` | the same reason as a sentence, for people; its wording may change |
 
-**The shell** takes the flags it was started with for the whole session:
-`bacnet --allow-write shell` (add `--yes` to skip the typed confirmation for
-`control` and `reinit`). A shell started with `--yes` applies it to every
-`control` and `reinit` for the rest of the session, so none of them asks.
-Without them a write in the shell prints the refusal,
-names the flags to start the shell with, and sends nothing; the shell keeps
-running. There is no toggle inside the shell.
-
 **The TUI** ignores both flags: its writes need an armed write session (see
 [Write sessions](#write-sessions)). Profiles apply only to the TUI, so there
 is no profile setting for one-shot commands.
@@ -179,7 +178,7 @@ is no profile setting for one-shot commands.
 |---|---|
 | 0 | The command completed |
 | 1 | It failed while running: a timeout, an error or reject from the device, a bad value, a transport that wouldn't start |
-| 2 | Usage error from the argument parser (an unknown flag, a missing argument); nothing is sent |
+| 2 | Usage error from the argument parser (an unknown flag, a missing argument, or no command where the terminal UI can't open); nothing is sent |
 | 3 | `sc-check` could not complete (see [the SC check guide](sc-check.md)) |
 | 4 | The write guard refused the command; nothing is sent |
 
@@ -202,47 +201,10 @@ reports whether a CA in that file issued the certificate directly. Read the
 [command contract and examples](sc-check.md) for diagnostics, JSON fields, the
 same checks before every SC dial, and an OpenSSL recipe for a lab PKI.
 
-### Interactive Shell
-
-```bash
-bacnet              # launch interactive REPL
-bacnet shell        # same as above
-```
-
-The shell provides:
-
-- **Tab completion** for commands, object types, and property names
-- **Command history** with history-based hints, saved as `shell_history` in the
-  platform data directory (`~/.local/share/bacnet` or `$XDG_DATA_HOME/bacnet`
-  on Linux, `~/Library/Application Support/bacnet` on macOS,
-  `%APPDATA%\bacnet\data` on Windows). The first start copies an existing
-  `$HOME/.bacnet_history` there once
-- **Default target** via the `target` command (omit target from subsequent commands)
-- **BBMD auto-renewal** at 80% of TTL when registered via `register`
-- **Colored output** (green for success/values, red for errors, cyan for addresses, dimmed for labels)
-- **Quoted string support** in arguments (e.g., `write 10.0.1.5 av:1 on "Zone Temp"`)
-- **The write guard** from the launch flags: start it with `bacnet --allow-write shell` to run writes (see [Write guard](#write-guard))
-
-Shell-only commands:
-
-```bash
-target 192.168.1.100        # set default target
-target 1234                 # set default target by device instance
-target clear                # clear default target
-target                      # show current default target
-
-status                      # show session state (transport, local address,
-                            # default target, BBMD registration, device count)
-
-help                        # list all commands
-exit                        # exit the shell (also: quit, Ctrl-D)
-```
-
-**Command aliases in shell:** `whois`=discover, `whohas`=find, `rp`=read, `rpm`=readm, `rr`=read-range, `wp`=write, `wpm`=writem, `cov`=subscribe, `dcc`=control, `ack`=ack-alarm, `ts`=time-sync
-
 ### Terminal UI
 
 ```bash
+bacnet                                   # on a terminal: the same as `bacnet tui`
 bacnet tui                               # create, select or preview a profile
 bacnet tui --profile plant-a             # preview this saved connection
 bacnet tui --profile plant-a --port 47808 # explicit flags override saved settings
@@ -253,6 +215,7 @@ bacnet --sc --sc-url wss://hub:443 --sc-ca ca.pem --sc-cert me.pem \
   --sc-key me.key --sc-vmac 02:00:00:00:00:09 \
   --sc-device-uuid 00112233-4455-6677-8899-aabbccddeeff tui   # BACnet/SC
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui   # MS/TP (serial feature); confirm the join with y
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3       # the same, without `tui`
 bacnet tui --mstp-monitor /dev/ttyUSB0   # listen to an MS/TP trunk; J finds a MAC to join as
 bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
 ```
@@ -289,6 +252,22 @@ flag for the other transport (say `--port` on an SC profile) is an error.
 
 `-v` and `-vv` raise the log level from info to debug and trace.
 
+#### Plain `bacnet`
+
+`bacnet` with no command opens the terminal UI when stdin and stdout are both
+terminals and `TERM` isn't `dumb`. Its global flags carry over exactly as they
+do before `tui`: `bacnet --sc --sc-url ...` opens an SC session, and `bacnet
+--mstp /dev/ttyUSB0 --mstp-mac 3` asks before it joins the trunk, as `bacnet
+... tui` does. The `tui` flags (`--profile`, `--fps` and the rest) take their
+defaults; name `tui` to set them.
+
+Otherwise it prints the usage to stderr, prints nothing on stdout, and exits
+with status 2, as for any other usage error. That happens in a pipe or a
+script, when `--no-tui` is given, when the `BACNET_NO_TUI` environment variable
+is set to anything but empty or `0`, and in a build without the `tui` feature.
+`--no-tui` and `BACNET_NO_TUI` matter only when no command is given: every
+other command ignores them.
+
 **Requirements.** stdin and stdout must be a terminal and `TERM` must not be
 `dumb`; otherwise `bacnet tui` exits 1 with a hint on stderr and writes nothing
 to stdout. The same hint appears, with exit status 1, when the terminal refuses
@@ -302,11 +281,11 @@ Windows Terminal or conhost; mintty and Git Bash are not supported.
 the UI so settings can be corrected and retried. Terminal/internal failures
 exit 1, with the reason on stderr. When a
 signal ends it, the terminal is restored first; on Unix the status then follows
-the shell convention of 128 plus the signal number (130 for SIGINT, 129 for
+the Unix shell convention of 128 plus the signal number (130 for SIGINT, 129 for
 SIGHUP, 143 for SIGTERM), and on Windows a console close or Ctrl-Break exits 1.
 
 **Interface selection.** In flags-only B/IP sessions without `-i`, a dialog
-lists the IPv4 interfaces (one is used without asking, as in the shell). An
+lists the IPv4 interfaces (a single one is used without asking). An
 explicit broadcast value survives either choice. Profiles use their saved
 interface; `0.0.0.0` binds all interfaces.
 
@@ -736,11 +715,11 @@ status bar shows `PASSIVE`.
 holds on other devices: COV subscriptions, and our entry in a BBMD's
 foreign-device table. `ledger n` counts changes still in effect.
 
-The `tui` cargo feature is off by default until the terminal UI ships in
-0.14.0 (#975), so the release binaries and a plain `cargo install bacnet-cli`
-leave it out. Build it with `cargo install bacnet-cli --features tui`, or with
-`--features bacnet-cli/tui` in a workspace checkout. Without it, ratatui and
-crossterm aren't built and `bacnet tui` prints that rebuild advice. The
+The `tui` cargo feature is on by default from 0.14.0, so the release binaries
+and a plain `cargo install bacnet-cli` include it. `--no-default-features`
+builds a lean CLI without it (add back what you need, such as
+`--no-default-features --features sc-tls`): ratatui and crossterm aren't built,
+`bacnet tui` prints rebuild advice, and plain `bacnet` prints the usage. The
 one-shot commands and their JSON output are the same with or without the
 feature.
 
@@ -778,11 +757,9 @@ and object. With `--json` it prints an array, empty when nothing answered:
 [{ "device": 1234, "object": "ANALOG_INPUT:7", "name": "Zone Temp" }]
 ```
 
-The one-shot command takes the name only through `--name`; the shell's
-`find` also takes it as its first word.
+The name goes in `--name`.
 
 ```bash
-bacnet devices                           # list cached discovered devices
 bacnet whois-router                      # routers and the networks they reach
 ```
 
@@ -861,10 +838,15 @@ bacnet --allow-write write 192.168.1.100 nc:1 pv object:ai:1        # object ide
 
 Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
 
-**Write multiple properties (shell only, started with `--allow-write`):**
+**Write multiple properties (WritePropertyMultiple):** each object is followed
+by its comma-separated `property=value` writes, each value with an optional
+`@priority`. Like `write`, it needs `--allow-write` and takes routed targets.
+A value can't contain a comma, since the comma separates the writes. The
+TUI's `:writem` command takes a different grammar, `OBJECT PROPERTY VALUE`
+groups separated by spaces; the one-shot takes `OBJECT prop=value,...`.
 
 ```bash
-writem 192.168.1.100 av:1 pv=72.5,desc="Zone Temp" av:2 pv=68.0
+bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2 pv=68.0
 ```
 
 **Aliases:** `wp` = write, `wpm` = writem
@@ -904,7 +886,7 @@ that fails ends the watch with an error, after the cancel. `--lifetime 0` asks
 for a subscription that never expires (Clause 13.14.1.1.4): it is not renewed
 or cancelled, it stays after the CLI exits, and it needs `--allow-write`. A
 process killed outright (SIGKILL) can't cancel; its subscription runs out with
-its lifetime. The shell's `subscribe` behaves the same way.
+its lifetime.
 
 **Alias:** `cov` = subscribe
 
@@ -1028,8 +1010,7 @@ final target. New output is staged in a sibling file or directory and published
 only after authoritative EOF; remote, decode, cursor, or write failures remove
 staging and leave the final target absent. If cleanup fails, the error reports
 the retained staging path. This is not a crash journal or a hostile
-concurrent-writer no-clobber guarantee. The same flags and behavior apply in
-the interactive shell.
+concurrent-writer no-clobber guarantee.
 
 **file-read flags:**
 
@@ -1051,7 +1032,6 @@ the interactive shell.
 ```bash
 bacnet whois-router                       # routers and the networks they reach
 bacnet whois-router --dnet 2 --wait 5     # only the router to network 2
-bacnet devices                            # list cached discovered devices
 ```
 
 `whois-router` broadcasts a Who-Is-Router-To-Network and lists each router
@@ -1077,7 +1057,8 @@ bacnet register 192.168.1.1 --ttl 300   # register as foreign device
 bacnet --allow-write unregister 192.168.1.1   # unregister from BBMD (a write)
 ```
 
-In the interactive shell, `register` also starts a background auto-renewal task that re-registers at 80% of the TTL (e.g., every 240 seconds for a 300-second TTL). The renewal runs silently in the background and prints a dimmed confirmation on each renewal. Use `unregister` or `status` to check registration state.
+`register` sends one registration and exits; it is not renewed. To stay
+registered, use foreign-device mode below, or the TUI's Network screen.
 
 #### Foreign-device mode
 
@@ -1094,8 +1075,8 @@ bacnet --foreign-bbmd 203.0.113.7:47808 --ttl 600 --renewal 20 discover 1000-200
 ```
 
 A one-shot command waits for the BBMD to answer the first registration and
-fails if it refuses or doesn't answer. The shell reports the outcome when it
-starts, keeps trying either way, and shows the registration in `status`.
+fails if it refuses or doesn't answer. The TUI reports the outcome, keeps
+trying either way, and shows the registration on its Network screen.
 Behind NAT, keep `--renewal` short so the mapping the BBMD's replies come back
 on stays open; the TTL can stay long. While the transport manages the
 registration, `register` and `unregister` to that BBMD are refused; use
@@ -1226,8 +1207,7 @@ bacnet mstp-ports --json
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --mstp-baud 38400 discover
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --json read mstp:5 ai:1 pv
 
-# Or stay on the trunk in the shell, where a device instance works as a
-# target once discover has found it.
+# Or stay on the trunk in the terminal UI, which asks before it joins.
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3
 ```
 
@@ -1342,11 +1322,11 @@ Available from [GitHub Releases](https://github.com/jscott3201/rusty-bacnet/rele
 
 | Binary | OS | Features |
 |--------|-----|----------|
-| `bacnet-linux-amd64` | Linux x86_64 | pcap, sc-tls |
-| `bacnet-linux-arm64` | Linux aarch64 | pcap, sc-tls |
-| `bacnet-macos-amd64` | macOS Intel | sc-tls |
-| `bacnet-macos-arm64` | macOS Apple Silicon | sc-tls |
-| `bacnet-windows-amd64.exe` | Windows x86_64 | sc-tls |
+| `bacnet-linux-amd64` | Linux x86_64 | tui, pcap, sc-tls |
+| `bacnet-linux-arm64` | Linux aarch64 | tui, pcap, sc-tls |
+| `bacnet-macos-amd64` | macOS Intel | tui, sc-tls |
+| `bacnet-macos-arm64` | macOS Apple Silicon | tui, sc-tls |
+| `bacnet-windows-amd64.exe` | Windows x86_64 | tui, sc-tls |
 
 Rename the downloaded file to `bacnet` (`bacnet.exe` on Windows), make it
 executable and put it on your `PATH`. Linux binaries include packet capture

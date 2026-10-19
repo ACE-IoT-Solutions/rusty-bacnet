@@ -63,6 +63,8 @@ use std::time::Duration;
 use ratatui::crossterm::event::EventStream;
 use tokio::sync::mpsc;
 
+pub(crate) use self::terminal::unusable_terminal;
+
 use self::app::picker::Picker;
 use self::app::{App, AppConfig, Link, Overlay};
 use self::event_loop::LoopIo;

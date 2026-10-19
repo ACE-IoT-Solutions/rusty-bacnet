@@ -111,6 +111,7 @@ done
   -m crates/rusty-bacnet/Cargo.toml --out dist
 echo "::endgroup::"
 
+# The default features add the terminal UI (`tui`, #974).
 echo "::group::CLI"
 LIBPCAP_LIBDIR=/tmp/libpcap/lib LIBPCAP_VER=$(pin LIBPCAP_VERSION) \
   cargo build --release --locked -p bacnet-cli --features sc-tls,pcap,serial --target "$target"

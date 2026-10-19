@@ -1,6 +1,6 @@
-//! The write guard for one-shot commands and the shell (#972): a command
-//! that [mutates](super::class::Class::mutates) needs `--allow-write`, and
-//! a device-management one also needs `--yes`, or the target typed at a
+//! The write guard for one-shot commands (#972): a command that isn't a
+//! [read](super::class::Class::Read) needs `--allow-write`, and a
+//! device-management one also needs `--yes`, or the target typed at a
 //! terminal. A refused command sends nothing.
 
 use std::io::{BufRead, IsTerminal, Write};
@@ -138,7 +138,7 @@ fn confirmation(target: &str) -> (String, String) {
     }
 }
 
-/// May `command` (a one-shot subcommand name or a shell word) of `class`
+/// May `command` (a one-shot subcommand name) of `class`
 /// run under `policy`? The caller gives the class: [`super::class::of`] by name,
 /// or [`super::class::of_subscribe`] when the arguments decide it. `None` refuses
 /// it as unclassified. `target` is what a device-management confirmation

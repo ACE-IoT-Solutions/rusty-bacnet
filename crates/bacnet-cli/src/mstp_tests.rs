@@ -179,7 +179,7 @@ fn the_flags_reach_the_transport_settings() {
         "/dev/ttyUSB0",
         "--mstp-mac",
         "3",
-        "devices",
+        "discover",
         "--mstp-baud",
         "76800",
         "--mstp-max-master",
@@ -216,7 +216,7 @@ fn the_flags_reach_the_transport_settings() {
     );
     assert_eq!(config.baud_rate, 76_800);
     // The defaults, with only the port and MAC given.
-    let cli = parse(["bacnet", "--mstp", "COM3", "--mstp-mac", "0", "devices"]).unwrap();
+    let cli = parse(["bacnet", "--mstp", "COM3", "--mstp-mac", "0", "discover"]).unwrap();
     assert_eq!(
         (cli.mstp_baud, cli.mstp_max_master, cli.mstp_max_info_frames),
         (38_400, 127, 1)
@@ -227,7 +227,7 @@ fn the_flags_reach_the_transport_settings() {
 #[test]
 fn the_cross_flag_checks_are_usage_errors() {
     use clap::error::ErrorKind;
-    let error = parse(["bacnet", "--mstp", "/dev/x", "devices"]).unwrap_err();
+    let error = parse(["bacnet", "--mstp", "/dev/x", "discover"]).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     assert!(
         error.to_string().contains("--mstp-mac (0 to 127)"),
@@ -241,7 +241,7 @@ fn the_cross_flag_checks_are_usage_errors() {
         "9",
         "--mstp-max-master",
         "5",
-        "devices",
+        "discover",
     ])
     .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ValueValidation);
@@ -249,7 +249,7 @@ fn the_cross_flag_checks_are_usage_errors() {
         error.to_string().contains("above --mstp-max-master 5"),
         "{error}"
     );
-    let error = parse(["bacnet", "--mstp-mac", "9", "devices"]).unwrap_err();
+    let error = parse(["bacnet", "--mstp-mac", "9", "discover"]).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     // Another transport's flag, before or after the subcommand, on the
     // same side as --mstp or the other one: refused, never dropped.
@@ -265,10 +265,10 @@ fn the_cross_flag_checks_are_usage_errors() {
         &["--device-instance", "5"],
     ] {
         let shapes = [
-            [&["bacnet"][..], &mstp, other, &["devices"]].concat(),
-            [&["bacnet"][..], other, &["devices"], &mstp].concat(),
-            [&["bacnet"][..], &mstp, &["devices"], other].concat(),
-            [&["bacnet"][..], &["devices"], other, &mstp].concat(),
+            [&["bacnet"][..], &mstp, other, &["discover"]].concat(),
+            [&["bacnet"][..], other, &["discover"], &mstp].concat(),
+            [&["bacnet"][..], &mstp, &["discover"], other].concat(),
+            [&["bacnet"][..], &["discover"], other, &mstp].concat(),
         ];
         for line in shapes {
             let error = parse_vec(line.clone()).unwrap_err();
@@ -286,7 +286,7 @@ fn the_cross_flag_checks_are_usage_errors() {
             empty,
             "--mstp-mac",
             "1",
-            "devices",
+            "discover",
         ])
         .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ValueValidation);
@@ -295,9 +295,9 @@ fn the_cross_flag_checks_are_usage_errors() {
             "{error}"
         );
     }
-    assert!(parse(["bacnet", "devices"]).unwrap().mstp.is_none());
+    assert!(parse(["bacnet", "discover"]).unwrap().mstp.is_none());
     // The other transports' flags are still fine without --mstp.
-    assert!(parse_vec(vec!["bacnet", "--sc", "devices", "--ttl", "60"]).is_ok());
+    assert!(parse_vec(vec!["bacnet", "--sc", "discover", "--ttl", "60"]).is_ok());
 }
 
 /// A profile's settings get the flags' checks, naming its keys.

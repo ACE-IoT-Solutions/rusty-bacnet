@@ -1,9 +1,32 @@
 //! `bacnet tui` without a terminal: `bacnet tui > out.txt` must fail with a
-//! hint on stderr and leave the output file empty. The support harness runs
-//! the binary with stdin from /dev/null and stdout and stderr to files.
+//! hint on stderr and leave the output file empty. Plain `bacnet` there
+//! prints the usage and exits 2 (#974). The support harness runs the binary
+//! with stdin from /dev/null and stdout and stderr to files.
 #[allow(dead_code)]
 mod support;
-use support::{failure, run};
+use support::{command, failure, run, Process};
+
+/// Plain `bacnet` in a pipeline or a script: the usage on stderr, nothing on
+/// stdout and exit status 2, whatever opted out of the TUI.
+#[tokio::test]
+async fn plain_bacnet_without_a_terminal_prints_the_usage_and_exits_2() {
+    for (args, no_tui_env) in [
+        (&[][..], None),
+        (&["--no-tui"][..], None),
+        (&[][..], Some("1")),
+        (&["-v", "--sc"][..], Some("0")),
+    ] {
+        let mut cmd = command();
+        cmd.args(args).env_remove("BACNET_NO_TUI");
+        if let Some(value) = no_tui_env {
+            cmd.env("BACNET_NO_TUI", value);
+        }
+        let output = Process::spawn(&mut cmd).output().await;
+        assert_eq!(output.status.code(), Some(2), "{args:?} {no_tui_env:?}");
+        failure(&output, "Usage: bacnet [OPTIONS] [COMMAND]");
+        failure(&output, "the terminal UI won't open");
+    }
+}
 
 #[cfg(feature = "tui")]
 #[tokio::test]
