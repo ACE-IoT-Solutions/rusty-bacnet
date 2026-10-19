@@ -98,14 +98,17 @@ release's wheels.
 ## TUI screenshots
 
 The `tui/` pages show real macOS Terminal screenshots of `bacnet tui`. They are
-PNGs in `src/assets/tui/`, which Astro's image pipeline turns into sized WebP
-files at build time. `src/assets/tui/manifest.json` lists every shot: its file,
+WebP files in `src/assets/tui/` (lossy, quality 92: sharp text at about a
+twentieth of a PNG's size), which Astro's image pipeline resizes at build time. `src/assets/tui/manifest.json` lists every shot: its file,
 alt text, terminal size, the command and keys that produced it, and whether it
 is a live capture, an insta snapshot or a placeholder. A unit test checks that
 the pages, the manifest and the capture script name the same shots.
 
 `scripts/tui-screenshots/capture.py` regenerates them. It needs macOS, tmux
-(`brew install tmux`) and Rust; `pngquant`, if installed, shrinks the files.
+and cwebp (`brew install tmux webp`) and Rust. It shoots its own Terminal
+window; when Terminal is in full screen, that window can't be resized, so the
+script keeps the TUI at the shot's size in the window's top-left corner and
+crops each shot to it.
 From the repository root:
 
 ```sh

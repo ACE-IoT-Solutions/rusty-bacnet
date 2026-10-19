@@ -19,13 +19,13 @@ On B/IP without `-i`, a flags-only session lists the host's IPv4 interfaces in a
 
 `p` opens the dialog from any screen. It has three views: the list, a preview, and the editor.
 
-![The profile picker listing four saved profiles, with keys to preview, create or reload them.](../../../assets/tui/profiles-picker.png)
+![The profile picker listing four saved profiles, with keys to preview, create or reload them.](../../../assets/tui/profiles-picker.webp)
 
 In the list, Up and Down (or Tab and Shift-Tab) choose, Enter previews, `r` reloads the list from disk, and `n`, `s` or `m` create a B/IP, BACnet/SC or MS/TP profile. The dialog shows the config directory at the bottom.
 
 ### Create a profile
 
-![The new B/IP profile form with its fields and their defaults.](../../../assets/tui/profiles-new-bip.png)
+![The new B/IP profile form with its fields and their defaults.](../../../assets/tui/profiles-new-bip.webp)
 
 Tab and Shift-Tab (or Up and Down) move between fields, Backspace erases, and Enter saves without connecting. Esc discards the draft. A failed save keeps the draft and shows why; a new profile never overwrites an existing name.
 
@@ -41,11 +41,11 @@ Some fields change the mode as well as a value:
 - **SC files.** Only the paths of the PEM files are saved, never their contents, and relative paths are made absolute. A blank VMAC and device UUID are generated once, when the profile is first saved or first connected, and then kept, so the device UUID stays the same across restarts. After that the editor shows them read-only.
 - **MS/TP port.** Use the name `bacnet mstp-ports` lists, and a MAC no other station on the trunk uses.
 
-![The new MS/TP profile form: serial port, MAC, baud, Max_Master and Max_Info_Frames.](../../../assets/tui/profiles-new-mstp.png)
+![The new MS/TP profile form: serial port, MAC, baud, Max_Master and Max_Info_Frames.](../../../assets/tui/profiles-new-mstp.webp)
 
 ### Preview and first-use attestation
 
-![A B/IP profile preview in Foreign Device mode, asking for first-use authorization.](../../../assets/tui/profiles-preview-attest.png)
+![A B/IP profile preview in Foreign Device mode, asking for first-use authorization.](../../../assets/tui/profiles-preview-attest.webp)
 
 The preview shows the settings that will be used, after any flag overrides: the mode, the bind address and broadcast, the timeouts, the BBMD and TTL, and the safety policy. In it, `e` edits, `r` reloads the file and checks it again, `p` returns to the list, and `x` disconnects a live session while the dialog stays open.
 
@@ -71,7 +71,7 @@ bacnet tui --profile plant-a --passive
 
 `--passive` builds no client, so nothing is transmitted: no discovery, reads, subscriptions, registrations or writes. Those keys show a notice instead. You can still open the profile dialog and read the session ledger with `u`. Use it to check a profile, or to look at what an earlier session left behind, without touching the network.
 
-![A passive session: the status bar reads PASSIVE and the device list says nothing is transmitted.](../../../assets/tui/profiles-passive.png)
+![A passive session: the status bar reads PASSIVE and the device list says nothing is transmitted.](../../../assets/tui/profiles-passive.webp)
 
 ### The safety policy
 

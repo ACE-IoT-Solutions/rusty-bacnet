@@ -25,7 +25,7 @@ Safety:
 
 Options:
   --reuse              use the binaries already built, skip cargo
-  --only A,B           take only these shots (names from SHOTS, no .png)
+  --only A,B           take only these shots (names from SHOTS, no extension)
   --mstp-port PORT     live, receive-only MS/TP monitor shots on this port
   --mstp-baud BAUD     the trunk's baud rate (default 38400)
   --tmux-only DIR      no Terminal window: save each shot's text to DIR
@@ -61,6 +61,7 @@ TARGET = os.environ.get("CARGO_TARGET_DIR", os.path.join(REPO, "target"))
 BACNET = os.path.join(TARGET, "release", "bacnet")
 LAB = os.path.join(TARGET, "release", "tui-lab")
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "/opt/homebrew/bin/tmux"
+CWEBP = shutil.which("cwebp") or "/opt/homebrew/bin/cwebp"
 # What every shot shows as the config root. A link, so a rerun shows the same text.
 CONFIG_LINK = "/tmp/bacnet-docs"
 SOCKET = "bacnet-docs-%d" % os.getpid()
@@ -248,6 +249,96 @@ def osascript(script):
     return run(["osascript", "-e", script]).strip()
 
 
+
+def read_bmp(path):
+    """(width, height, px) for an uncompressed 24- or 32-bit BMP, as sips
+    writes it; px(x, y) is an (r, g, b) tuple with y counted from the top."""
+    import struct
+    data = open(path, "rb").read()
+    offset = struct.unpack_from("<I", data, 10)[0]
+    width, height = struct.unpack_from("<ii", data, 18)
+    bpp = struct.unpack_from("<H", data, 28)[0] // 8
+    stride = (width * bpp + 3) & ~3
+    flipped = height > 0
+    height = abs(height)
+
+    def px(x, y):
+        row = (height - 1 - y) if flipped else y
+        i = offset + row * stride + x * bpp
+        return (data[i + 2], data[i + 1], data[i])
+
+    return width, height, px
+
+
+
+def find_pane(width, height, px, cols, rows, window_cells):
+    """(top, left, bottom, right) in pixels of a cols x rows tmux pane drawn
+    at the top left of a larger window whose spare area is block-filled, or
+    None. See Window.crop_to_pane."""
+    wcols, wrows = window_cells
+    cw, ch = width / wcols, height / wrows
+    # The fill colour: the commonest colour in a column near the right edge,
+    # lower half (all fill there).
+    x_fill = int(width - 2 * cw)
+    counts = {}
+    for y in range(height // 2, int(height - 2 * ch)):
+        c = tuple(v // 16 for v in px(x_fill, y))
+        counts[c] = counts.get(c, 0) + 1
+    common = max(counts, key=counts.get)
+    fill = next(px(x_fill, y) for y in range(height // 2, height)
+                if tuple(v // 16 for v in px(x_fill, y)) == common)
+
+    def is_fill(x, y):
+        # Colour management moves values by a unit or two.
+        return all(abs(a - b) <= 8 for a, b in zip(px(x, y), fill))
+    # Cell height: the spacing of the stripes' top edges in that column.
+    edges = [y for y in range(height // 2, int(height - 2 * ch))
+             if is_fill(x_fill, y) and not is_fill(x_fill, y - 1)]
+    if len(edges) < 3:
+        return None
+    # The mean spacing: rows are a fraction of a pixel over a whole number,
+    # which adds up over a pane's height.
+    cell_h = (edges[-1] - edges[0]) / (len(edges) - 1)
+
+    def block_at(x, y):
+        # A block cell: fill colour across most of the cell's width.
+        return all(is_fill(int(x + f * cw), y) for f in (0.15, 0.5, 0.85))
+
+    # First block row under the pane, from the top. Terminal pads its left
+    # edge, so look a quarter of the way across (still under the pane).
+    x_under = width * cols / wcols / 2
+    fill_top = next((y for y in range(height) if block_at(x_under, y)
+                     and block_at(x_under, min(height - 1, int(y + cell_h / 2)))), None)
+    if fill_top is None:
+        return None
+    # A block glyph is shorter than its cell: the line gap is split above
+    # and below it, so the cell starts half a gap above the glyph.
+    run_len = 0
+    while is_fill(x_fill, edges[0] + run_len):
+        run_len += 1
+    fill_top -= (cell_h - run_len) / 2
+    bottom = fill_top - cell_h          # the border row sits between
+    top = bottom - rows * cell_h
+    # First block column on a pane row, from the right: one row well inside
+    # the pane, at a height that lands on a block, not a gap.
+    y = int(fill_top - cell_h * (rows // 2) + cell_h * 0.3)
+    x = int(width - 2 * cw)
+    while x > 0 and is_fill(x, y):
+        x -= 1
+    fill_left = x + 1
+    # The left edge: where the fill starts on a block row under the pane
+    # (Terminal pads its left edge).
+    y_under = int(fill_top + cell_h * 1.4)
+    left = 0
+    while left < fill_left and not is_fill(left, y_under):
+        left += 1
+    cell_w = (fill_left - left) / (cols + 1)
+    right = int(round(fill_left - cell_w))  # the border column sits between
+    if top < 0 or right - left < cols * 4:
+        return None
+    return (int(round(top)), left, int(round(bottom)), right)
+
+
 class Window:
     """The Terminal window this run opens, attached to the tmux session."""
 
@@ -283,26 +374,75 @@ class Window:
         return "tab 1 of window id %d" % self.id
 
     def resize(self, cols, rows):
+        """Size the window to the pane. A full-screen Terminal opens new
+        windows as full-screen tabs that can't be resized; then tmux keeps
+        the pane at exactly cols x rows in the top-left corner (window-size
+        manual, the rest filled with solid blocks) and each shot is cropped
+        to it."""
+        self.size = (cols, rows)
+        if getattr(self, "crop", False):
+            return
         osascript('tell application "Terminal"\n  set number of columns of %s to %d\n'
                   '  set number of rows of %s to %d\nend tell' % (self.tab(), cols, self.tab(), rows))
         deadline = time.time() + 5
+        got = ""
         while time.time() < deadline:
-            got = osascript('tell application "Terminal" to get {number of columns, number of rows} of %s'
-                            % self.tab())
-            if got.replace(" ", "") == "%d,%d" % (cols, rows):
+            got = self.cells()
+            if got == (cols, rows):
                 return
             time.sleep(0.2)
+        if got and got[0] >= cols and got[1] >= rows:
+            log("Terminal keeps its window at %dx%d (full screen?): cropping each shot to %dx%d"
+                % (got[0], got[1], cols, rows))
+            self.crop = True
+            return
         raise Failure("the Terminal window did not take %dx%d (it is %s); is the screen big enough?"
                       % (cols, rows, got))
 
+    def cells(self):
+        got = osascript('tell application "Terminal" to get {number of columns, number of rows} of %s'
+                        % self.tab())
+        try:
+            c, r = (int(x) for x in got.replace(" ", "").split(","))
+            return (c, r)
+        except ValueError:
+            return ()
+
+    def crop_to_pane(self, path):
+        """Crop a full-window shot to the pane's cells.
+
+        The pane sits at the top left. tmux draws a border one cell wide
+        right of and below it, and fills the rest with solid blocks. Blocks
+        join across a row but leave a gap under each row, so the fill reads
+        as stripes whose period is the cell height. The pane ends one cell
+        before the first row and column of blocks."""
+        cols, rows = self.size
+        bmp = path + ".bmp"
+        run(["sips", "-s", "format", "bmp", path, "--out", bmp])
+        width, height, px = read_bmp(bmp)
+        os.unlink(bmp)
+        box = find_pane(width, height, px, cols, rows, self.cells())
+        if not box:
+            raise Failure("could not find the %dx%d pane in %s" % (cols, rows, path))
+        top, left, bottom, right = box
+        run(["sips", "-c", str(bottom - top), str(right - left), "--cropOffset", str(top), str(left), path])
+
     def shoot(self, path):
-        run(["screencapture", "-x", "-o", "-l", str(self.id), "-t", "png", path])
-        width = int(re.search(r"pixelWidth: (\d+)", run(["sips", "-g", "pixelWidth", path])).group(1))
-        if width > self.opts.width:
-            run(["sips", "--resampleWidth", str(self.opts.width), path])
-        if shutil.which("pngquant"):
-            run(["pngquant", "--force", "--skip-if-larger", "--quality", "80-98", "--strip",
-                 "--output", path, path], check=False)
+        """Shoot the window to `path` (.webp): capture as PNG, crop when the
+        window is full screen, scale, then encode WebP (sharp text at about
+        a twentieth of the PNG's size)."""
+        png = path[:-len(".webp")] + ".capture.png"
+        run(["screencapture", "-x", "-o", "-l", str(self.id), "-t", "png", png])
+        try:
+            if getattr(self, "crop", False):
+                self.crop_to_pane(png)
+            width = int(re.search(r"pixelWidth: (\d+)", run(["sips", "-g", "pixelWidth", png])).group(1))
+            if width > self.opts.width:
+                run(["sips", "--resampleWidth", str(self.opts.width), png])
+            run([CWEBP, "-quiet", "-q", "92", "-m", "6", "-metadata", "none", png, "-o", path])
+        finally:
+            if os.path.exists(png):
+                os.unlink(png)
 
     def close(self):
         try:
@@ -417,11 +557,11 @@ class Shooter:
             raise Failure("%s: the pane is %s, not %dx%d" % (name, got, *self.current))
         if self.window:
             time.sleep(0.5)  # let Terminal draw the last frame
-            self.window.shoot(os.path.join(ASSETS, name + ".png"))
+            self.window.shoot(os.path.join(ASSETS, name + ".webp"))
         else:
             with open(os.path.join(self.opts.tmux_only, name + ".txt"), "w") as f:
                 f.write(pane.text())
-        self.taken[name] = dict(file=name + ".png", alt=SHOTS[name][1], size="%dx%d" % self.current,
+        self.taken[name] = dict(file=name + ".webp", alt=SHOTS[name][1], size="%dx%d" % self.current,
                                 source=source, command=pane.command, keys=" ".join(pane.keys))
         log("shot %s (%s)" % (name, source))
 
@@ -776,7 +916,7 @@ def write_manifest(s):
     commit = run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], check=False).strip()
     shots = []
     for name, (size, alt) in SHOTS.items():
-        shot = old.get(name, dict(name=name, file=name + ".png", alt=alt, size="%dx%d" % size,
+        shot = old.get(name, dict(name=name, file=name + ".webp", alt=alt, size="%dx%d" % size,
                                   source="placeholder", command="", keys=""))
         if name in s.taken:
             shot = dict(name=name, **s.taken[name], commit=commit)
@@ -831,7 +971,8 @@ def main():
     conf = os.path.join(real, "tmux.conf")
     with open(conf, "w") as f:
         f.write("set -g status off\nset -g default-terminal tmux-256color\nset -g escape-time 0\n"
-                "set -g window-size manual\nset -g set-titles off\nset -g remain-on-exit on\n")
+                "set -g window-size manual\nset -g set-titles off\nset -g remain-on-exit on\n"
+                "set -g fill-character \"\u2588\"\n")
     try:
         tmux("-f", conf, "new-session", "-d", "-s", "docs", "-x", str(MAIN[0]), "-y", str(MAIN[1]),
              "sleep 86400")
@@ -840,6 +981,8 @@ def main():
         lab = Lab(CONFIG_LINK)
         write_profiles(CONFIG_LINK, lab)
         if not opts.tmux_only:
+            if not os.access(CWEBP, os.X_OK):
+                raise Failure("cwebp is missing; install it with `brew install webp`")
             s.window = Window(opts)
             s.window.resize(*MAIN)
             time.sleep(1.0)

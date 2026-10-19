@@ -22,7 +22,7 @@ The MS/TP screen opens first. Tab moves between four views. `z` counts from now,
 
 ### Stations
 
-![The MS/TP monitor's Stations view: an address map and a row per station heard.](../../../assets/tui/mstp-monitor-stations.png)
+![The MS/TP monitor's Stations view: an address map and a row per station heard.](../../../assets/tui/mstp-monitor-stations.webp)
 
 A map of every address: masters 0 to 127 and slaves 128 to 254. Each address is marked:
 
@@ -38,13 +38,13 @@ Below the map is a row per station: its role, its device instance once its I-Am 
 
 ### Token ring
 
-![The Token ring view: successors, rotation times and per-master token statistics.](../../../assets/tui/mstp-monitor-ring.png)
+![The Token ring view: successors, rotation times and per-master token statistics.](../../../assets/tui/mstp-monitor-ring.webp)
 
 The successor chain, the token's rotation time (shortest, mean and longest, with a sparkline of recent rotations), and for each master: the tokens it got, how long it held each, the frames it sent per token, token retries, and its Max_Master as its polls show it. `N` means its polls wrap at N, `≥N` is the highest it has polled so far, and `?` means no poll seen yet.
 
 ### Findings
 
-![The Findings view warning that one master's Max_Master leaves a station out.](../../../assets/tui/mstp-monitor-findings.png)
+![The Findings view warning that one master's Max_Master leaves a station out.](../../../assets/tui/mstp-monitor-findings.webp)
 
 The monitor flags:
 
@@ -57,7 +57,7 @@ Each comes with a suggestion. The two 8s are rules of thumb, not values from the
 
 ### Errors
 
-![The Errors view: CRC errors, noise, a lost token and the adapter's timing note.](../../../assets/tui/mstp-monitor-errors.png)
+![The Errors view: CRC errors, noise, a lost token and the adapter's timing note.](../../../assets/tui/mstp-monitor-errors.webp)
 
 Header and data CRC errors, malformed or oversize frames, partial frames, noise, lost tokens with when and who started the ring again, and extended (COBS) frames, which are decoded but not interpreted (Clause 9.10). Timestamps are only as good as the adapter: the screen shows the 16 ms a USB adapter can add.
 
@@ -69,11 +69,11 @@ Header and data CRC errors, malformed or oversize frames, partial frames, noise,
 - a Max_Master that reaches every station heard;
 - `--mstp-max-info-frames`.
 
-![The safe-join proposal: a free MAC, the Max_Master to use and the free addresses.](../../../assets/tui/mstp-join-proposal.png)
+![The safe-join proposal: a free MAC, the Max_Master to use and the free addresses.](../../../assets/tui/mstp-join-proposal.webp)
 
 `+` and `-` pick another free MAC. Enter opens the join confirmation, and `y` there stops the monitor, closes the port, and joins on it, so only one of them holds the port at a time. Enter and `y` each check the proposal against the newest reading first: if a station has appeared at that MAC, the dialog closes and the wizard proposes again.
 
-![The join confirmation the safe join opens, naming the station and the port.](../../../assets/tui/mstp-join-confirm.png)
+![The join confirmation the safe join opens, naming the station and the port.](../../../assets/tui/mstp-join-confirm.webp)
 
 From then on the session is a participant at `READ-ONLY`. A join the transport refuses leaves the monitor listening, with the reason shown. If the join fails after the monitor closed the port, `c` confirms a join again; to listen again, quit and start with `--mstp-monitor`. With `--passive` the wizard proposes a MAC but never joins.
 
@@ -85,11 +85,11 @@ bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui
 
 Joining adds a master to the token ring, which every station notices, so the TUI asks before it opens the port. The dialog states the station, baud rate, Max_Master and Max_Info_Frames, and lists the serial ports: the one you gave first, then the others `bacnet mstp-ports` finds (an MS/TP profile offers its own port only). Up and Down choose the port. Only `y` joins; Esc goes back to the profile, or quits a flags-only session. Every later join, such as `c` after a disconnect, asks again.
 
-![The confirmation shown before joining a trunk with --mstp.](../../../assets/tui/mstp-participant-join.png)
+![The confirmation shown before joining a trunk with --mstp.](../../../assets/tui/mstp-participant-join.webp)
 
 As a participant, the MS/TP screen shows this station and its counters:
 
-![The MS/TP screen as a participant: this station's token state and the transport counters.](../../../assets/tui/mstp-participant.png)
+![The MS/TP screen as a participant: this station's token state and the transport counters.](../../../assets/tui/mstp-participant.webp)
 
 - **This station:** port, MAC, baud, Max_Master and Max_Info_Frames; whether it holds the token; the master state machine's state; the next station and the one it is polling; and a warning when it believes it is the only master.
 - **Counters,** read once a second: frames received and sent, NPDUs delivered, tokens passed, retried and regenerated, invalid and aborted frames, reply timeouts, postponed and late replies, deadline misses, frames from another station with this MAC, transmit-queue refusals and serial errors.

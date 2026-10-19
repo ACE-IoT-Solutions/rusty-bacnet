@@ -12,7 +12,7 @@ Screen `1` is the device table. It lists every device whose I-Am the session has
 
 Press `d` for the Who-Is form.
 
-![The Who-Is form with its Scope, Target, Range and Listen fields.](../../../assets/tui/discovery-whois-form.png)
+![The Who-Is form with its Scope, Target, Range and Listen fields.](../../../assets/tui/discovery-whois-form.webp)
 
 | Field | Values |
 |---|---|
@@ -25,13 +25,13 @@ Tab, Shift-Tab, Up and Down move between fields. Enter sends, Esc closes.
 
 Start with the smallest scope that answers your question: a directed Who-Is to a known address, or a range. A global or unbounded Who-Is can draw an I-Am from every device on a site, so the first Enter shows a warning with the number of devices already known, and only a second Enter sends it.
 
-![The Who-Is form warning that a global Who-Is with no range reaches every device.](../../../assets/tui/discovery-whois-warning.png)
+![The Who-Is form warning that a global Who-Is with no range reaches every device.](../../../assets/tui/discovery-whois-warning.webp)
 
 Ctrl-C cancels a Who-Is that is still listening.
 
 ## Read the device table
 
-![The device table after a global Who-Is: two local devices and one routed device on network 2.](../../../assets/tui/discovery-devices.png)
+![The device table after a global Who-Is: two local devices and one routed device on network 2.](../../../assets/tui/discovery-devices.webp)
 
 Each row is one device: its instance, address, network, vendor ID, Max APDU, segmentation, and how long ago its last I-Am arrived. The bottom border shows the latest request and how many replies it got.
 
@@ -47,7 +47,7 @@ If a burst of I-Am traffic outruns the UI, events are dropped rather than queued
 - `/` filters the rows by instance, address, network or vendor as you type. Enter keeps the filter, and Esc clears it.
 - Arrows, `j` and `k`, PgUp and PgDn, Home and End (or `g` and `G`) move.
 
-![The device table filtered to instances containing 100.](../../../assets/tui/discovery-filter.png)
+![The device table filtered to instances containing 100.](../../../assets/tui/discovery-filter.webp)
 
 Enter on a row opens the [device browser](/rusty-bacnet/tui/browser/).
 
@@ -55,7 +55,7 @@ Enter on a row opens the [device browser](/rusty-bacnet/tui/browser/).
 
 `:find NAME` broadcasts a Who-Has for the object named NAME. The name is the rest of the line, exactly as typed, spaces included. Each device that answers with an I-Have is listed in a panel under the device table, with the object it named and the address it answered from. `:find` on its own closes the panel.
 
-![A Who-Has panel below the device table, listing the device that has an object named Damper.](../../../assets/tui/discovery-who-has.png)
+![A Who-Has panel below the device table, listing the device that has an object named Damper.](../../../assets/tui/discovery-who-has.webp)
 
 ## Routed devices and other networks
 

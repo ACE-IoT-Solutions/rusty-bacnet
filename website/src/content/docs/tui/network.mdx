@@ -12,7 +12,7 @@ The Network screen, `4`, is where B/IP broadcast problems show. Its BBMD tabs ar
 
 When the session runs as a foreign device (a profile with a BBMD, or `--foreign-bbmd`), the top panel follows the registration:
 
-![The Network screen: the foreign-device panel and the BBMD's broadcast distribution table.](../../../assets/tui/network-fd-bdt.png)
+![The Network screen: the foreign-device panel and the BBMD's broadcast distribution table.](../../../assets/tui/network-fd-bdt.webp)
 
 - **BBMD, TTL and renewal.** Where the TUI registers, for how long, and how often it renews (half the TTL unless set).
 - **Status.** Registered with the lease left, or not registered; with the count of attempts, acceptances, refusals and lapses.
@@ -22,7 +22,7 @@ When the session runs as a foreign device (a profile with a BBMD, or `--foreign-
 
 A BBMD that never answers leaves the status at `not registered`, with the attempt count rising. A refusal raises a red banner on every screen.
 
-![The foreign-device panel when the BBMD never answers: not registered, attempts counting.](../../../assets/tui/network-bbmd-unreachable.png)
+![The foreign-device panel when the BBMD never answers: not registered, attempts counting.](../../../assets/tui/network-bbmd-unreachable.webp)
 
 ## BDT and FDT
 
@@ -31,7 +31,7 @@ Below the panel, tabs show one BBMD's tables. Tab and Shift-Tab move between BDT
 - **BDT**, the broadcast distribution table: each peer BBMD with its mask, and what that mask means for forwarding. An all-ones mask means peers send to that BBMD, which then rebroadcasts on its own subnet (two hops). Other masks mean a directed broadcast (Annex J.4.5).
 - **FDT**, the foreign-device table: each registered foreign device with its TTL and the seconds left. This client's own entry is marked.
 
-![The Network screen's FDT tab with this client's own entry.](../../../assets/tui/network-fdt.png)
+![The Network screen's FDT tab with this client's own entry.](../../../assets/tui/network-fdt.webp)
 
 To read another BBMD's tables, run `:bbmd ADDRESS` (`ip` or `ip:port`, port 47808 by default). The tabs then show that BBMD.
 
@@ -39,7 +39,7 @@ To read another BBMD's tables, run `:bbmd ADDRESS` (`ip` or `ip:port`, port 4780
 
 Every BBMD in a site should list every other one, the same way each time. `m` surveys them: it reads the BDT of every BBMD the tables lead to, up to 16, and shows which lists which.
 
-![The BDT consistency matrix after a survey: both BBMDs agree.](../../../assets/tui/network-matrix.png)
+![The BDT consistency matrix after a survey: both BBMDs agree.](../../../assets/tui/network-matrix.webp)
 
 Each cell says how the row BBMD lists the column BBMD: `uni` for an all-ones mask, `dir` for a directed broadcast, `*` when the masks differ, `MISS` where an entry should be, `-` for not listed and `?` for not read. The survey flags:
 
@@ -54,7 +54,7 @@ The matrix matches BBMDs by address. A BBMD reached at an address other than its
 
 The Networks tab lists routers and the networks they reach. `r` clears the map and asks every router, by broadcasting Who-Is-Router-To-Network. Every router that announces itself, asked or not, is listed against its networks, with how long ago it was heard.
 
-![The Networks tab: one router reaches network 2.](../../../assets/tui/network-networks.png)
+![The Networks tab: one router reaches network 2.](../../../assets/tui/network-networks.webp)
 
 A network number that more than one router claims is flagged `DUPLICATE`: two networks may share the number, the routers may form a loop, or the route may have moved since the last search. The tab's title shows the local network number once a Network-Number-Is is heard. A router's Reject-Message-To-Network for a message the TUI sent shows in the footer with the network and the reason.
 

@@ -22,7 +22,7 @@ test('screenshots, the manifest and capture.py name the same shots', async () =>
   const names = manifest.shots.map(shot => shot.name);
   assert.equal(new Set(names).size, names.length, 'no shot is listed twice');
   for (const shot of manifest.shots) {
-    assert.equal(shot.file, `${shot.name}.png`);
+    assert.equal(shot.file, `${shot.name}.webp`);
     assert.ok(shot.alt.length > 20, `${shot.name} has alt text`);
   }
   const files = (await readdir(new URL('src/assets/tui/', root))).filter(name => name !== 'manifest.json');

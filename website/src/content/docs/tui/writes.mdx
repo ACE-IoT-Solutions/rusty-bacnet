@@ -12,11 +12,11 @@ Writes reach live equipment. A wrong priority can override a life-safety command
 
 The TUI is read-only until you press `W`. Arming needs a profile whose policy is `writes = "session"`, because the profile's workspace holds the ledger and the audit log. A flags-only session, or a profile with `writes = "never"`, can't arm.
 
-![The footer refusing a write because no write session is armed.](../../../assets/tui/writes-not-armed.png)
+![The footer refusing a write because no write session is armed.](../../../assets/tui/writes-not-armed.webp)
 
 The arm dialog names the site and the network, and takes an optional reason (a ticket or a note, which goes in the audit log) and a length in minutes: 15 by default, at most 480.
 
-![The dialog that arms a write session, with a reason and a length in minutes.](../../../assets/tui/writes-arm-dialog.png)
+![The dialog that arms a write session, with a reason and a length in minutes.](../../../assets/tui/writes-arm-dialog.webp)
 
 While the session is armed, the status bar turns red and counts down, `WRITE 14:58`. At zero the session disarms itself; `W` disarms it early. Only one TUI at a time may arm a profile: a second `bacnet tui` on the same profile is refused and told which process holds it.
 
@@ -24,7 +24,7 @@ While the session is armed, the status bar turns red and counts down, `WRITE 14:
 
 Open an object in the browser and press `w`.
 
-![The write form for an analog output: property, value and priority.](../../../assets/tui/writes-form.png)
+![The write form for an analog output: property, value and priority.](../../../assets/tui/writes-form.webp)
 
 - **Property** defaults to Present_Value.
 - **Value** uses the one-shot `write` syntax: `42`, `72.5`, `true`, `active`, `"text"` or `null`. A number is sent as the datatype the property already holds, and `null` is a relinquish.
@@ -40,7 +40,7 @@ Before every write the TUI reads the object's priority array, Present_Value, Rel
 - who holds the slot now: nobody, an earlier write of yours, or another commander, whose value yours replaces without telling them;
 - whether Present_Value will change. A write at a lower priority than the one in control won't change it.
 
-![A T1 write preview at priority 12: the slot changes but Present_Value does not.](../../../assets/tui/writes-preview-t1.png)
+![A T1 write preview at priority 12: the slot changes but Present_Value does not.](../../../assets/tui/writes-preview-t1.webp)
 
 ## Confirm by tier
 
@@ -53,11 +53,11 @@ The confirmation depends on what the write can affect:
 | T3 | Priorities 1, 2 and 5: life safety and critical equipment | Type the device instance, then Enter |
 | Blocked | Priority 6, kept for minimum on and off times (Clause 19.2) | Refused, unless the profile sets `dangerous = true`; then T3 |
 
-![A T2 write preview at priority 8, which needs y to send.](../../../assets/tui/writes-preview-t2.png)
+![A T2 write preview at priority 8, which needs y to send.](../../../assets/tui/writes-preview-t2.webp)
 
-![A T3 write preview at priority 5, which needs the device instance typed to send.](../../../assets/tui/writes-preview-t3.png)
+![A T3 write preview at priority 5, which needs the device instance typed to send.](../../../assets/tui/writes-preview-t3.webp)
 
-![A write at priority 6, blocked because the profile does not allow dangerous writes.](../../../assets/tui/writes-blocked.png)
+![A write at priority 6, blocked because the profile does not allow dangerous writes.](../../../assets/tui/writes-blocked.webp)
 
 Three more guards stop a write you didn't mean:
 
@@ -71,13 +71,13 @@ Esc declines. Nothing is sent, and the audit log records the decline.
 
 The result lists each write's outcome. A device whose own policy refuses the write (SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors. Once a write is in effect, the status bar counts it: `ledger 1`.
 
-![The result of a write the device acknowledged; the status bar counts one ledger entry.](../../../assets/tui/writes-result.png)
+![The result of a write the device acknowledged; the status bar counts one ledger entry.](../../../assets/tui/writes-result.webp)
 
 ## Relinquish a slot
 
 `n` writes NULL to one priority slot, so the next priority down, or Relinquish_Default, takes over. It is previewed and confirmed like any other write. Relinquishing your own slot follows the priority's tier; relinquishing a slot another commander holds is always at least T2.
 
-![The relinquish form, which writes NULL to one priority slot.](../../../assets/tui/writes-relinquish.png)
+![The relinquish form, which writes NULL to one priority slot.](../../../assets/tui/writes-relinquish.webp)
 
 ## Several writes at once
 
@@ -89,7 +89,7 @@ The result lists each write's outcome. A device whose own policy refuses the wri
 
 A batch is always at least T2. Each property may appear only once in a batch, because a failed batch names the failing write without its priority.
 
-![A WritePropertyMultiple batch preview of two writes, confirmed at T2.](../../../assets/tui/writes-writem-preview.png)
+![A WritePropertyMultiple batch preview of two writes, confirmed at T2.](../../../assets/tui/writes-writem-preview.webp)
 
 ## The ledger: undo what you changed
 
@@ -97,11 +97,11 @@ Every change still in effect is kept in the profile's `ledger.json` with its pre
 
 `u` opens the ledger. `R`, then `y`, reverts everything, newest first: your slots are relinquished, or given back the value another commander had there, and other properties get their old value back. Reverting needs a connection but not an armed session. A device not yet discovered, after a restart for example, is looked for first.
 
-![The session ledger with one write and its undo value.](../../../assets/tui/writes-ledger.png)
+![The session ledger with one write and its undo value.](../../../assets/tui/writes-ledger.webp)
 
 Quitting with entries in the ledger opens the exit guard:
 
-![The exit guard listing a change still in effect, with revert, keep and cancel.](../../../assets/tui/writes-exit-guard.png)
+![The exit guard listing a change still in effect, with revert, keep and cancel.](../../../assets/tui/writes-exit-guard.webp)
 
 - `r` reverts everything, then quits.
 - `k` keeps the changes, records that in the audit log, and quits.

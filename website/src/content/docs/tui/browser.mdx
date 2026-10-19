@@ -8,7 +8,7 @@ import { release, repository } from '../../../lib/site.mjs';
 
 Enter on a row of the device table opens the browser. It reads the device and lists its objects; nothing is written.
 
-![The device browser: the device card, the object list grouped by type, and an empty property pane.](../../../assets/tui/browser-device.png)
+![The device browser: the device card, the object list grouped by type, and an empty property pane.](../../../assets/tui/browser-device.webp)
 
 ## Three panes
 
@@ -36,7 +36,7 @@ The first line of the property pane sums up the object's Status_Flags in text, s
 | `[OOS]` | Out of service |
 | `normal` | None of them |
 
-![An analog input in alarm, in fault and out of service, with its status badges.](../../../assets/tui/browser-status-flags.png)
+![An analog input in alarm, in fault and out of service, with its status badges.](../../../assets/tui/browser-status-flags.webp)
 
 Here the analog input is out of service with a reliability of `OPEN_LOOP`, so its Present_Value is not coming from the sensor. Read Reliability and Event_State next to the badges before trusting a value.
 
@@ -44,7 +44,7 @@ Here the analog input is out of service with a reliability of `OPEN_LOOP`, so it
 
 A commandable object, such as an analog output, binary output or multi-state output, also shows its 16 command priorities, Relinquish_Default and Present_Value. The slot in control is marked with `>`, and the title names it.
 
-![A commandable analog output with its 16-slot priority array; priority 10 is in control.](../../../assets/tui/browser-priority-array.png)
+![A commandable analog output with its 16-slot priority array; priority 10 is in control.](../../../assets/tui/browser-priority-array.webp)
 
 Each slot is labelled with its usual role: 1 and 2 for life safety, 5 for critical equipment, 6 for minimum on and off times, 8 for manual operator, and the others site defined. The highest-priority slot that holds a value, the lowest number, drives Present_Value; when every slot is empty, Relinquish_Default does (Clause 19.2). In this example a value at priority 14 sits under the one at 10 and takes over when 10 is relinquished.
 
@@ -52,11 +52,11 @@ Each slot is labelled with its usual role: 1 and 2 for life safety, 5 for critic
 
 A Trend Log shows its logging properties: Log_Enable, Log_Interval, Buffer_Size, Record_Count, Total_Record_Count, Stop_When_Full, the logged property and the start and stop times.
 
-![A Trend Log object's properties in the browser.](../../../assets/tui/browser-trend-log.png)
+![A Trend Log object's properties in the browser.](../../../assets/tui/browser-trend-log.webp)
 
 A Schedule shows Present_Value, Schedule_Default, Weekly_Schedule, Exception_Schedule, Effective_Period, the list of properties it writes and Priority_For_Writing.
 
-![A Schedule object's properties in the browser.](../../../assets/tui/browser-schedule.png)
+![A Schedule object's properties in the browser.](../../../assets/tui/browser-schedule.webp)
 
 The browser shows these as properties; it has no log-buffer table or weekly calendar view. Some constructed values, such as a Weekly_Schedule or a property reference, are shown as their raw encoded form. To read a trend log's records, use the one-shot `bacnet read-range` command.
 
@@ -64,7 +64,7 @@ The browser shows these as properties; it has no log-buffer table or weekly cale
 
 `/` filters the object list as you type: by type, such as `binary`, or by instance. The title shows how many objects match. Enter keeps the filter and Esc clears it.
 
-![The object list filtered to binary objects.](../../../assets/tui/browser-object-filter.png)
+![The object list filtered to binary objects.](../../../assets/tui/browser-object-filter.webp)
 
 ## From the browser
 
