@@ -101,10 +101,10 @@ impl RawLink {
         assert!(fd >= 0, "{}", std::io::Error::last_os_error());
         // SAFETY: `fd` was just opened and is owned by nothing else.
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        let name = std::ffi::CString::new(interface()).unwrap();
-        // SAFETY: `name` is a valid NUL-terminated string.
-        let if_index = unsafe { libc::if_nametoindex(name.as_ptr()) } as i32;
-        assert!(if_index > 0, "unknown interface");
+        let if_index = nix::net::if_::if_nametoindex(interface().as_str())
+            .expect("unknown interface")
+            .try_into()
+            .unwrap();
         let timeout = libc::timeval {
             tv_sec: 0,
             tv_usec: 200_000,

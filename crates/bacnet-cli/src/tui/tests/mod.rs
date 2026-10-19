@@ -39,6 +39,7 @@ mod build_retirement;
 mod capture;
 mod capture_frames;
 mod capture_live;
+mod capture_pcap;
 mod capture_views;
 mod connections;
 #[cfg(unix)]

@@ -521,42 +521,16 @@ fn monotone_random_events_never_panic_and_deadlines_are_causal() {
 }
 
 #[cfg(feature = "alloc")]
+#[path = "../../bacnet-services/tests/support/counting_alloc.rs"]
+mod counting_alloc;
+
+#[cfg(feature = "alloc")]
 mod allocation_test {
     extern crate std;
 
+    use super::counting_alloc::counted;
     use super::*;
     use bacnet_mstp_core::AllocQueues;
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    std::thread_local! {
-        static THREAD_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct CountingAllocator;
-
-    // SAFETY: every allocation and free goes to System unchanged, so the
-    // GlobalAlloc contract holds as System's does. The count is a const
-    // thread-local Cell with no destructor, so it never allocates, and
-    // `with` can't fail or unwind out of the allocator.
-    #[allow(unsafe_code)]
-    unsafe impl GlobalAlloc for CountingAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            THREAD_ALLOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
-            // SAFETY: the caller upholds alloc's contract (a non-zero-size
-            // layout), which is System.alloc's; it is passed on unchanged.
-            unsafe { System.alloc(layout) }
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: every block came from System.alloc above with this layout
-            // (the caller's contract), so System.dealloc may free it.
-            unsafe { System.dealloc(ptr, layout) }
-        }
-    }
-
-    #[global_allocator]
-    static GLOBAL: CountingAllocator = CountingAllocator;
 
     #[test]
     fn alloc_queues_and_core_do_not_allocate_after_construction() {
@@ -571,25 +545,24 @@ mod allocation_test {
             Instant::ZERO,
         )
         .unwrap();
-        // Initialize the thread-local counter before beginning the measured
-        // interval; construction above is the final permitted allocation.
-        THREAD_ALLOCATIONS.with(|count| count.set(0));
-        core.enqueue_npdu(2, &[1, 2], NetworkPriority::Normal, at(0))
-            .unwrap();
-        core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(2));
-        core.on_deadline(at(7));
-        assert_eq!(
-            core.poll_action(),
-            Action::SetDirection(Direction::Transmit)
-        );
-        let id = match core.poll_action() {
-            Action::Transmit { id, .. } => id,
-            other => panic!("expected transmit, got {other:?}"),
-        };
-        core.on_transmit_started(id, at(7)).unwrap();
-        core.on_transmit_complete(id, at(8));
-        assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
-        let measured = THREAD_ALLOCATIONS.with(Cell::get);
+        // Construction above is the last allocation allowed.
+        let ((), measured) = counted(|| {
+            core.enqueue_npdu(2, &[1, 2], NetworkPriority::Normal, at(0))
+                .unwrap();
+            core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(2));
+            core.on_deadline(at(7));
+            assert_eq!(
+                core.poll_action(),
+                Action::SetDirection(Direction::Transmit)
+            );
+            let id = match core.poll_action() {
+                Action::Transmit { id, .. } => id,
+                other => panic!("expected transmit, got {other:?}"),
+            };
+            core.on_transmit_started(id, at(7)).unwrap();
+            core.on_transmit_complete(id, at(8));
+            assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+        });
         assert_eq!(measured, 0);
         assert!(core.counters().unicast.enqueued >= 1);
     }

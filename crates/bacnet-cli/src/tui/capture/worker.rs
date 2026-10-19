@@ -12,6 +12,7 @@
 //! held across an await.
 
 use std::any::Any;
+use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
 use bacnet_client::client::BACnetClient;
@@ -34,6 +35,9 @@ use crate::tui::message::WorkerEvent;
 use crate::tui::monitor::lines::CliSerial;
 use crate::tui::worker::{EventSink, Offer};
 
+/// What a session's capture is called before its tap is known.
+pub(crate) const TAP: &str = "the session's frame tap";
+
 /// Most frames in one batch.
 pub(crate) const BATCH: usize = 256;
 
@@ -51,6 +55,8 @@ pub(crate) enum Source {
         rx: FrameTapReceiver,
         /// The transport's link.
         framing: Framing,
+        /// This node's address on it, when it has a UDP one.
+        local: Option<SocketAddr>,
         /// This node's address as the device table writes it.
         local_text: String,
     },
@@ -61,6 +67,9 @@ pub(crate) enum Source {
         /// Wall-clock time of the monitor's start, which records count from.
         epoch: SystemTime,
     },
+    /// libpcap on its thread.
+    #[cfg(feature = "pcap")]
+    Pcap(super::libpcap::Feed),
     /// Frames a test hands in, and its own count of those it lost.
     #[cfg(test)]
     Test {
@@ -74,7 +83,7 @@ pub(crate) enum Source {
 /// What a source gave. Held only until the frame joins a batch, so its
 /// size is not worth a box per frame.
 #[allow(clippy::large_enum_variant)]
-enum Next {
+pub(crate) enum Next {
     /// A frame.
     Frame(CaptureFrame),
     /// The end, and why.
@@ -88,12 +97,15 @@ impl Source {
             Self::Tap {
                 rx,
                 framing,
+                local,
                 local_text,
-            } => (rx.recv().await).map(|frame| convert(frame, *framing, local_text)),
+            } => (rx.recv().await).map(|frame| convert(frame, *framing, *local, local_text)),
             Self::Monitor { frames, epoch } => {
                 let epoch = *epoch;
                 frames.recv().await.map(|record| from_record(record, epoch))
             }
+            #[cfg(feature = "pcap")]
+            Self::Pcap(feed) => return feed.recv().await,
             #[cfg(test)]
             Self::Test { rx, .. } => rx.recv().await,
         };
@@ -106,14 +118,17 @@ impl Source {
             Self::Tap {
                 rx,
                 framing,
+                local,
                 local_text,
             } => rx
                 .try_recv()
-                .map(|frame| convert(frame, *framing, local_text)),
+                .map(|frame| convert(frame, *framing, *local, local_text)),
             Self::Monitor { frames, epoch } => {
                 let epoch = *epoch;
                 frames.try_recv().map(|record| from_record(record, epoch))
             }
+            #[cfg(feature = "pcap")]
+            Self::Pcap(feed) => feed.try_recv(),
             #[cfg(test)]
             Self::Test { rx, .. } => rx.try_recv().ok(),
         }
@@ -124,6 +139,8 @@ impl Source {
         match self {
             Self::Tap { rx, .. } => rx.dropped(),
             Self::Monitor { frames, .. } => frames.dropped(),
+            #[cfg(feature = "pcap")]
+            Self::Pcap(feed) => feed.lost(),
             #[cfg(test)]
             Self::Test { lost, .. } => lost.load(std::sync::atomic::Ordering::Relaxed),
         }
@@ -131,14 +148,28 @@ impl Source {
 }
 
 /// A tapped frame, summarised, with its endpoints.
-fn convert(frame: TappedFrame, framing: Framing, local_text: &str) -> CaptureFrame {
+fn convert(
+    frame: TappedFrame,
+    framing: Framing,
+    local: Option<SocketAddr>,
+    local_text: &str,
+) -> CaptureFrame {
     let summary = summarize_frame(framing, &frame.bytes);
     let inbound = frame.direction == TapDirection::Inbound;
-    let peer_text = match frame.peer {
-        TapPeer::Udp(peer) => peer.to_string(),
-        TapPeer::ScHub(hub) => format!("hub {}", crate::tui::sc::hub_name(hub)),
-        TapPeer::Mstp(station) => AddressStyle::Mstp.format(&[station]),
-        _ => "?".to_string(),
+    let (peer_text, udp) = match frame.peer {
+        TapPeer::Udp(peer) => {
+            let udp = local.map(|local| {
+                if inbound {
+                    (peer, local)
+                } else {
+                    (local, peer)
+                }
+            });
+            (peer.to_string(), udp)
+        }
+        TapPeer::ScHub(hub) => (format!("hub {}", crate::tui::sc::hub_name(hub)), None),
+        TapPeer::Mstp(station) => (AddressStyle::Mstp.format(&[station]), None),
+        _ => ("?".to_string(), None),
     };
     let (mut source, mut destination) = if inbound {
         (peer_text, local_text.to_string())
@@ -160,6 +191,7 @@ fn convert(frame: TappedFrame, framing: Framing, local_text: &str) -> CaptureFra
         } else {
             Direction::Out
         },
+        udp: if framing == Framing::Bip { udp } else { None },
         source,
         destination,
         via,
@@ -252,6 +284,7 @@ fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
         time,
         framing: Framing::Mstp,
         direction: Direction::Wire,
+        udp: None,
         source,
         destination,
         via,
@@ -291,26 +324,38 @@ pub(crate) async fn run<T: TransportPort + 'static>(
 ) {
     while let Some(CaptureCommand::Start) = commands.recv().await {
         let Some((tap, framing)) = tap_of(client.transport()) else {
-            let ended = CaptureEvent::Ended("this transport has no frame tap".into());
+            let ended = CaptureEvent::Ended {
+                what: TAP.into(),
+                why: "this transport has no frame tap".into(),
+            };
             sink.deliver(WorkerEvent::Capture(ended)).await;
             continue;
         };
-        let local_text = style.format(client.local_mac());
+        let mac = client.local_mac();
+        let local_text = style.format(mac);
+        let local = match mac {
+            [a, b, c, d, hi, lo] if framing == Framing::Bip => Some(SocketAddr::from((
+                [*a, *b, *c, *d],
+                u16::from_be_bytes([*hi, *lo]),
+            ))),
+            _ => None,
+        };
         let source = Source::Tap {
             rx: tap.subscribe_with_capacity(TAP_QUEUE),
             framing,
+            local,
             local_text: local_text.clone(),
         };
         let started = format!("{} tap at {local_text}", framing.label());
         tracing::info!("capture: {started}");
         if sink
             .deliver(WorkerEvent::Capture(CaptureEvent::Started {
-                what: started,
+                what: started.clone(),
                 session: true,
             }))
             .await
         {
-            pump(source, sink, &mut commands).await;
+            pump(source, sink, Some(&mut commands), started).await;
         }
         return;
     }
@@ -331,22 +376,56 @@ pub(crate) async fn run_monitor(
             frames: monitor.frames(),
             epoch,
         };
+        let what = "MS/TP monitor, every frame on the line".to_string();
         let started = CaptureEvent::Started {
-            what: "MS/TP monitor, every frame on the line".into(),
+            what: what.clone(),
             session: true,
         };
         if sink.deliver(WorkerEvent::Capture(started)).await {
-            pump(source, sink, &mut commands).await;
+            pump(source, sink, Some(&mut commands), what).await;
         }
     }
 }
 
-/// Pump `source` to the UI until the session ends (`commands` closes, or
-/// the sink is cancelled) or the source does.
+/// Start libpcap capture for the whole TUI run, not one session: its
+/// frames go to the UI unscoped. The task ends when the UI closes the
+/// event channel, which stops the thread.
+#[cfg(feature = "pcap")]
+pub(crate) fn spawn_pcap(
+    device: Option<String>,
+    interface: std::net::Ipv4Addr,
+    port: u16,
+    sink: EventSink,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let what = super::libpcap::describe(&device, port);
+        let started = CaptureEvent::Started {
+            what: what.clone(),
+            session: false,
+        };
+        if sink.deliver(WorkerEvent::Capture(started)).await {
+            let feed = super::libpcap::Feed::start(device, interface, port);
+            pump(Source::Pcap(feed), &sink, None, what).await;
+        }
+    })
+}
+
+/// The next command, or never without a channel.
+async fn command(commands: &mut Option<&mut mpsc::Receiver<CaptureCommand>>) -> Option<()> {
+    match commands {
+        Some(rx) => rx.recv().await.map(|_| ()),
+        None => std::future::pending().await,
+    }
+}
+
+/// Pump `source`, which captures `what`, to the UI until the session ends
+/// (`commands` closes, or the sink is cancelled or closed) or the source
+/// does.
 pub(crate) async fn pump(
     mut source: Source,
     sink: &EventSink,
-    commands: &mut mpsc::Receiver<CaptureCommand>,
+    mut commands: Option<&mut mpsc::Receiver<CaptureCommand>>,
+    what: String,
 ) {
     let mut counts = Counts::default();
     let mut batch = Vec::new();
@@ -356,7 +435,8 @@ pub(crate) async fn pump(
         tokio::select! {
             biased;
             () = sink.cancelled() => return,
-            received = commands.recv() => {
+            () = sink.closed() => return,
+            received = command(&mut commands) => {
                 // Another Start is a no-op: this capture already runs.
                 if received.is_none() {
                     return;
@@ -380,8 +460,9 @@ pub(crate) async fn pump(
                 }
                 Next::End(reason) => {
                     counts.finish(batch, &source, sink).await;
-                    tracing::info!("capture ended: {reason}");
-                    sink.deliver(WorkerEvent::Capture(CaptureEvent::Ended(reason))).await;
+                    tracing::info!("capture from {what} ended: {reason}");
+                    let ended = CaptureEvent::Ended { what, why: reason };
+                    sink.deliver(WorkerEvent::Capture(ended)).await;
                     return;
                 }
             },

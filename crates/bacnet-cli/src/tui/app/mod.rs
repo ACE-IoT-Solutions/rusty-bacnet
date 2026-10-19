@@ -752,7 +752,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Move(movement) => match app.browser.as_deref_mut() {
             _ if app.screen == Screen::Watch => app.watch.move_selection(movement),
             _ if app.screen == Screen::Capture => {
-                app.capture_key(capture::CaptureKey::Move(movement));
+                app.capture_key(capture::CaptureKey::Move(movement), &mut out);
             }
             Some(browser) => browser.move_selection(movement),
             None => app.devices.move_selection(movement),
@@ -795,7 +795,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Sc(key) => app.sc_key(key),
         Action::Join(key) => app.join_key(key, &mut out),
         Action::Mstp(key) => app.mstp_key(key),
-        Action::Capture(key) => app.capture_key(key),
+        Action::Capture(key) => app.capture_key(key, &mut out),
         Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out

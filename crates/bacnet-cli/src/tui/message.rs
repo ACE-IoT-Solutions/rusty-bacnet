@@ -161,6 +161,9 @@ pub(crate) enum Command {
     Discovery(super::network::discovery::DiscoveryCommand),
     /// A capture request for the session.
     Capture(super::capture::CaptureCommand),
+    /// Write the ring to pcap files; the coordinator does it, on a
+    /// blocking thread.
+    CaptureExport(Box<super::capture::ExportJob>),
 }
 
 /// One row of the device table, already formatted for display.

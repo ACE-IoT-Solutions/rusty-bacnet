@@ -36,7 +36,7 @@ pub(crate) enum Screen {
     Sc,
     /// MS/TP: this station, its token state and its counters.
     Mstp,
-    /// Live capture: frames, their decode, filters.
+    /// Live capture: frames, their decode, filters, pcap export.
     Capture,
 }
 
