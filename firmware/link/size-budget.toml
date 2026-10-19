@@ -98,7 +98,10 @@
 # 2026-10-18 with the same toolchain, when the owned APDU and NPDU encoders'
 # validation refusals became static range errors and ObjectIdentifier's
 # encoder lost its formatted assertions (#1777): 2.9-4.0 KB less flash. Its
-# text, rodata and flash budgets are the new sizes plus 12%.
+# text, rodata and flash budgets are the new sizes plus 12%. Checking each
+# character set's structure in the borrowed CharacterString view (#1778)
+# then added 0.2-0.5 KB of flash to the apdu and device images, within
+# their budgets.
 #
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
