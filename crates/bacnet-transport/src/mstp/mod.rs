@@ -17,6 +17,8 @@
 //!   core's rules.
 //! - [`MstpDiagnostics`], the core's counters added up ([`MstpCounters`])
 //!   plus counts kept at the transport boundary.
+//! - [`monitor`], a receive-only monitor that listens to a trunk without
+//!   joining it and keeps per-station statistics.
 
 use bacnet_mstp_core::{ConfigError, Duration as CoreDuration, MstpCoreConfig};
 use bacnet_types::error::Error;
@@ -26,6 +28,7 @@ pub use bacnet_mstp_codec as codec;
 mod adapter;
 mod diagnostics;
 mod echo;
+pub mod monitor;
 mod queues;
 mod replies;
 mod totals;

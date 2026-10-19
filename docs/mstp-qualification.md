@@ -27,14 +27,20 @@ Use the [result template](mstp-qualification-result.json) for each campaign.
   Publish only redacted counts, settings and synthetic role labels. An independent
   analyzer must observe the bus without becoming another active master or opening
   either application's serial device a second time.
+  `bacnet_transport::mstp::monitor::MstpMonitor` over a
+  `mstp_serial::ReceiveOnlyPort` on a second adapter is such an analyzer: it
+  only reads, and its statistics carry the timestamp resolution to quote with
+  any interval it reports.
 
 ## Host counters: obtain before moving the transport
 
 `bacnet_transport::mstp::{MstpDiagnostics, MstpDiagnosticsSnapshot}` is Rust-only.
 Keep the handle in each downstream router/mini process before its existing owner
 consumes `MstpTransport`. No change to `TransportPort` or Python status is required.
-Builders that construct the transport internally do not automatically expose it;
-this slice does not add a generic endpoint status API.
+A session that `MstpEndpointBuilder::build_session` builds keeps the handle for you:
+`EndpointSession::mstp_diagnostics` returns it, before start, while running and
+after stop. The client and server builders take a transport you built, so take
+`MstpTransport::diagnostics` before handing it over.
 
 ```rust
 use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
