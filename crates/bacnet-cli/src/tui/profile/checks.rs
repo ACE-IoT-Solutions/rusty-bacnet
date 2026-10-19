@@ -78,7 +78,7 @@ fn inspect_sc(sc: &Sc, checks: &mut Checks, at_unix: Option<i64>) {
 }
 
 /// The credential lint: its hard failures are errors and its warnings need
-/// a confirmation. Key read bits are [`key_exposure`]'s, so not repeated.
+/// a confirmation. Key read bits are `key_exposure`'s (Unix only), so not repeated.
 #[cfg(feature = "sc-tls")]
 fn lint(sc: &Sc, checks: &mut Checks, at_unix: Option<i64>) {
     use crate::sc_check::lint::{Lint, Weight};
