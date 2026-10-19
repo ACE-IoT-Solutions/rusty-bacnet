@@ -326,6 +326,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tui-tree-widget",
+ "unicode-segmentation",
 ]
 
 [[package]]

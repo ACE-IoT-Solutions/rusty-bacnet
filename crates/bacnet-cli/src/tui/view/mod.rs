@@ -35,6 +35,8 @@ pub(crate) const MIN_WIDTH: u16 = 80;
 pub(crate) const MIN_HEIGHT: u16 = 24;
 /// Width from which the wide table columns are used.
 pub(crate) const FULL_WIDTH: u16 = 120;
+/// Width from which panes that stack at the full width sit side by side.
+pub(crate) const WIDE_WIDTH: u16 = 160;
 /// Height from which the log pane gets more room.
 pub(crate) const FULL_HEIGHT: u16 = 40;
 
