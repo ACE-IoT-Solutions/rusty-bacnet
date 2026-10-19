@@ -13,20 +13,20 @@ use tokio::sync::mpsc;
 
 fn profile() -> Profile {
     let mut p = Profile::default();
-    p.bip.interface = Ipv4Addr::LOCALHOST;
-    p.bip.port = 0;
-    p.bip.broadcast = Ipv4Addr::new(127, 0, 0, 255);
+    p.bip_mut().interface = Ipv4Addr::LOCALHOST;
+    p.bip_mut().port = 0;
+    p.bip_mut().broadcast = Ipv4Addr::new(127, 0, 0, 255);
     p
 }
 
-async fn event(events: &mut mpsc::Receiver<WorkerEvent>) -> WorkerEvent {
+pub(super) async fn event(events: &mut mpsc::Receiver<WorkerEvent>) -> WorkerEvent {
     tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
         .expect("worker event timeout")
         .expect("coordinator stopped")
 }
 
-async fn connected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64) -> String {
+pub(super) async fn connected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64) -> String {
     loop {
         match event(events).await {
             WorkerEvent::Session {
@@ -54,7 +54,7 @@ async fn disconnected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64)
 async fn coordinator_disconnects_reconnects_same_port_and_joins_on_quit() {
     let mut p = profile();
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    p.bip.port = socket.local_addr().unwrap().port();
+    p.bip_mut().port = socket.local_addr().unwrap().port();
     drop(socket);
     let args = p.transport_args().unwrap();
     let plan = ConnectPlan {
@@ -77,14 +77,14 @@ async fn coordinator_disconnects_reconnects_same_port_and_joins_on_quit() {
         .await
         .unwrap()
         .unwrap();
-    std::net::UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, p.bip.port))
+    std::net::UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, p.bip().port))
         .expect("socket released after coordinator join");
 }
 
 #[tokio::test]
 async fn failed_attempt_keeps_coordinator_available_for_corrected_interface() {
     let mut p = profile();
-    p.bip.interface = Ipv4Addr::new(203, 0, 113, 222);
+    p.bip_mut().interface = Ipv4Addr::new(203, 0, 113, 222);
     let plan = ConnectPlan {
         kind: TransportKind::Bip,
         args: p.transport_args().unwrap(),
@@ -107,7 +107,7 @@ async fn failed_attempt_keeps_coordinator_available_for_corrected_interface() {
     commands
         .send(Command::Connect {
             interface: Ipv4Addr::LOCALHOST,
-            broadcast: p.bip.broadcast,
+            broadcast: p.bip().broadcast,
         })
         .await
         .unwrap();
@@ -123,12 +123,12 @@ async fn failed_attempt_keeps_coordinator_available_for_corrected_interface() {
 async fn disconnect_cancels_pending_foreign_registration_and_stops_renewals() {
     let bbmd = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mut p = profile();
-    p.bip.bbmd = Some(match bbmd.local_addr().unwrap() {
+    p.bip_mut().bbmd = Some(match bbmd.local_addr().unwrap() {
         std::net::SocketAddr::V4(a) => a,
         _ => unreachable!(),
     });
-    p.bip.ttl = 2;
-    p.bip.renewal_secs = Some(1);
+    p.bip_mut().ttl = 2;
+    p.bip_mut().renewal_secs = Some(1);
     let plan = ConnectPlan {
         kind: TransportKind::Bip,
         args: p.transport_args().unwrap(),
@@ -204,7 +204,7 @@ async fn unauthorized_or_unsaved_profiles_never_start_a_network_attempt() {
     ));
     assert!(events.try_recv().is_err());
     let mut changed = p.clone();
-    changed.bip.port = 47808;
+    changed.bip_mut().port = 47808;
     commands
         .send(Command::Profile(Request::Connect {
             name: "local".into(),
@@ -358,12 +358,12 @@ fn a_start_ack_does_not_hide_an_already_requested_disconnect() {
 async fn a_refused_first_registration_still_connects_and_retries_in_background() {
     let bbmd = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mut p = profile();
-    p.bip.bbmd = Some(match bbmd.local_addr().unwrap() {
+    p.bip_mut().bbmd = Some(match bbmd.local_addr().unwrap() {
         std::net::SocketAddr::V4(a) => a,
         _ => unreachable!(),
     });
-    p.bip.ttl = 2;
-    p.bip.renewal_secs = Some(1);
+    p.bip_mut().ttl = 2;
+    p.bip_mut().renewal_secs = Some(1);
     let plan = ConnectPlan {
         kind: TransportKind::Bip,
         args: p.transport_args().unwrap(),

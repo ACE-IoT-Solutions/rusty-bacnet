@@ -1,6 +1,6 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
-use super::session::{ConnectPlan, SessionOptions, TransportKind};
+use super::session::{ConnectPlan, SessionOptions};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
@@ -166,19 +166,22 @@ async fn run(
                             Request::List => profiles.catalog(),
                             Request::Load(name) => profiles.load(&name),
                             Request::Save { name, profile, create, previous } => profiles.save(&name, profile, create, previous),
-                            Request::Connect { name, mut profile, attest } => {
-                                match profiles.prepare(&name, &profile, attest).and_then(|resolved| Ok((resolved.transport_args()?, resolved.authorized_at_unix, resolved.authorized_safety))) {
-                                    Ok((args, authorized_at_unix, authorized_safety)) => {
+                            Request::Connect { name, profile, attest } => {
+                                // Validation, file checks and authorization all run
+                                // here, before a session (and so any socket) exists.
+                                match profiles.prepare(&name, &profile, attest).and_then(|prepared| Ok((prepared.resolved.transport_args()?, prepared))) {
+                                    Ok((args, prepared)) => {
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
-                                        profile.authorized_at_unix = authorized_at_unix;
-                                        profile.authorized_safety = authorized_safety;
+                                        let kind = prepared.stored.transport.kind();
                                         options.watch.workspace = profiles.workspace(&name);
                                         options.safety.workspace = options.watch.workspace.clone();
                                         options.safety.profile = Some(name.clone());
-                                        options.safety.policy = profile.safety.clone();
-                                        sink.deliver(WorkerEvent::Profile(Ok(Reply::Loaded { name, profile }))).await;
-                                        let next = ConnectPlan { kind: TransportKind::Bip, args, await_interface: false };
+                                        options.safety.policy = prepared.stored.safety.clone();
+                                        options.safety.transport = kind.label();
+                                        let checks = crate::tui::profile::checks::inspect(&prepared.resolved);
+                                        sink.deliver(WorkerEvent::Profile(Ok(Reply::Loaded { name, profile: prepared.stored, checks }))).await;
+                                        let next = ConnectPlan { kind, args, await_interface: false };
                                         generation += 1;
                                         active = start(&next, generation, &sink, &options).await;
                                         plan = Some(next);

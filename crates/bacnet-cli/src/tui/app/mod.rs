@@ -615,18 +615,17 @@ impl App {
 
     fn connection_key(&mut self, key: connection::Key, out: &mut Vec<Command>) {
         if !matches!(self.link, Link::Down | Link::Failed(_)) {
-            self.flash(
-                "Disconnect (Esc then x) before changing profiles.",
-                FLASH_FOR,
-            );
+            self.flash("Disconnect (x) before changing profiles.", FLASH_FOR);
             return;
         }
         if let Some(connection) = &mut self.connection {
             if let Some(command) = connection.key(key) {
-                if matches!(
-                    command,
-                    Command::Profile(super::profile::service::Request::Connect { .. })
-                ) {
+                if let Command::Profile(super::profile::service::Request::Connect {
+                    profile, ..
+                }) = &command
+                {
+                    let kind = profile.transport.kind();
+                    (self.transport, self.style) = (kind.label(), kind.style());
                     self.link = Link::Connecting;
                 }
                 out.push(command);

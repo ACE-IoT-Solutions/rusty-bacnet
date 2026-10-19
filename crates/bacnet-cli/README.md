@@ -30,16 +30,18 @@ Prebuilt binaries are attached to each
 bacnet discover
 bacnet read 192.168.1.100 ai:1 pv
 bacnet --json readm 192.168.1.100 ai:1 pv,object-name
-bacnet tui    # built with --features tui; create/select a B/IP profile
+bacnet tui    # built with --features tui; create/select a B/IP or SC profile
 bacnet tui --profile plant-a
 bacnet tui --no-profile -i 127.0.0.1 -p 0 -b 127.0.0.255
 ```
 
-Named B/IP profiles preview resolved settings before connecting and record an
-explicit first-use authorization. Press `p` for profiles, `x` to disconnect and
+Named B/IP and BACnet/SC profiles preview resolved settings, check the files
+they name before anything is sent, and record an explicit first-use
+authorization. SC profiles store certificate and key paths only, and keep the
+device UUID they generate. Press `p` for profiles, `x` to disconnect and
 `c` to reconnect. `BACNET_CONFIG_DIR` isolates both profiles and workspaces.
 `--no-profile` or explicit network flags without `--profile` retain the
-nonpersistent connection flow; SC and B/IPv6 still use that flow. The TUI is
+nonpersistent connection flow; B/IPv6 uses only that flow. The TUI is
 read-only until `W` arms a time-boxed write session on a profile; every write
 is previewed, kept in a revertible ledger and recorded in an audit log.
 `--passive` transmits nothing.

@@ -1,6 +1,6 @@
 //! Profile entry decisions happen before any filesystem or network effects.
 
-use super::{overrides::has_transport_flags, service::Service, Overrides};
+use super::{overrides::has_transport_flags, service::Service, store::Store, Overrides};
 use crate::args::{Cli, Command};
 use crate::tui::app::connection::Connection;
 
@@ -10,7 +10,12 @@ pub(crate) fn enabled(cli: &Cli) -> bool {
         if profile.is_some() || !has_transport_flags(cli))
 }
 
-pub(crate) fn open(cli: &Cli) -> Result<Option<(Service, Connection)>, String> {
+/// Open the profile service. A flags-only run returns `None` without calling
+/// `discover`, so it reads and creates nothing in the config dir.
+pub(crate) fn open(
+    cli: &Cli,
+    discover: impl FnOnce() -> Result<Store, String>,
+) -> Result<Option<(Service, Connection)>, String> {
     if !enabled(cli) {
         return Ok(None);
     }
@@ -19,7 +24,7 @@ pub(crate) fn open(cli: &Cli) -> Result<Option<(Service, Connection)>, String> {
         _ => None,
     };
     let overrides = Overrides::from_cli(cli)?;
-    let service = Service::new(overrides);
+    let service = Service::new(discover(), overrides);
     let connection = select(&service, profile_name);
     Ok(Some((service, connection)))
 }

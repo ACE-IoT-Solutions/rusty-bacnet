@@ -200,7 +200,10 @@ bacnet shell        # same as above
 The shell provides:
 
 - **Tab completion** for commands, object types, and property names
-- **Command history** (saved to `~/.bacnet_history`) with history-based hints
+- **Command history** with history-based hints, saved as `shell_history` in the
+  platform data directory (`~/.local/share/bacnet` or `$XDG_DATA_HOME/bacnet`
+  on Linux, `~/Library/Application Support/bacnet` on macOS,
+  `%APPDATA%\bacnet\data` on Windows)
 - **Default target** via the `target` command (omit target from subsequent commands)
 - **BBMD auto-renewal** at 80% of TTL when registered via `register`
 - **Colored output** (green for success/values, red for errors, cyan for addresses, dimmed for labels)
@@ -227,8 +230,8 @@ exit                        # exit the shell (also: quit, Ctrl-D)
 ### Terminal UI
 
 ```bash
-bacnet tui                               # create, select or preview a B/IP profile
-bacnet tui --profile plant-a             # preview this saved B/IP connection
+bacnet tui                               # create, select or preview a profile
+bacnet tui --profile plant-a             # preview this saved connection
 bacnet tui --profile plant-a --port 47808 # explicit flags override saved settings
 bacnet tui --no-profile                  # flags-only connection, no profile I/O
 bacnet tui -i 10.0.1.5                   # bind this interface, skip the picker
@@ -239,7 +242,7 @@ bacnet --sc --sc-url wss://hub:443 --sc-ca ca.pem --sc-cert me.pem \
 bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
 ```
 
-`bacnet tui` opens a B/IP profile dialog before connecting. With no saved
+`bacnet tui` opens a profile dialog (B/IP or BACnet/SC) before connecting. With no saved
 profiles it opens creation; with one it previews that connection; with several
 it shows a picker. `--profile NAME` selects one directly. The Devices screen is
 a live table of I-Am answers, with a Who-Is form. The status bar shows the
@@ -251,14 +254,15 @@ The design and planned screens (SC, MS/TP, capture) are in
 
 Explicit global network flags without `--profile`, or `--no-profile`, start
 the existing flags-only connection flow and do not read or write profiles or
-workspaces. B/IPv6 and SC continue to use that flow; named profiles currently
-support B/IP only. Global flags can appear before or after `tui`.
+workspaces. B/IPv6 uses that flow only; named profiles support B/IP and
+BACnet/SC. Global flags can appear before or after `tui`. With `--profile`, a
+flag for the other transport (say `--port` on an SC profile) is an error.
 
 **Tui flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile <NAME>` | | Preview a named B/IP profile; explicit global flags override saved values |
+| `--profile <NAME>` | | Preview a named B/IP or SC profile; explicit global flags override saved values |
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
 | `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. The ledger can still be viewed |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
@@ -300,15 +304,30 @@ Who-Is cancellation cannot enter a command queue, its status shows the
 failure; Ctrl-C retries immediately and `x` disconnects. The queued Who-Is
 may still run until cancellation is accepted or the connection is retired.
 
-In the profile picker, Up/Down choose, Enter previews, `n` creates and `r`
-reloads the list. In a preview, `e` edits, `r` reloads the file, `p` returns to
-the list, and `n` creates another profile. The editor uses Tab/Shift-Tab and
+In the profile picker, Up/Down choose, Enter previews, `n` creates a B/IP
+profile, `s` creates a BACnet/SC profile and `r` reloads the list. In a
+preview, `e` edits, `r` reloads the file and re-checks it, `p` returns to the
+list, `n` or `s` creates another profile, and `x` disconnects a live session. The editor uses Tab/Shift-Tab and
 Backspace; Enter saves without connecting. Save errors retain the draft.
 Esc explicitly discards it and returns to the saved preview (or the picker
 for a new profile), where `r` reloads from disk. If a file changed externally,
 the refused save leaves that file untouched; discard, reload and edit again.
 A blank BBMD selects Normal mode and clears the saved renewal; a BBMD selects
 Foreign Device mode. Blank renewal uses half the TTL. Port `0` requests an ephemeral local UDP port.
+
+An SC profile names a primary hub URL (`wss://`, with a host and a nonzero
+port if one is given), an optional failover hub URL, and the paths of the CA,
+certificate and key PEM files. Only the paths are saved, never PEM text, key
+bytes or passwords; relative paths are made absolute on save. A blank VMAC or
+device UUID is generated when the profile is first saved (or first connected,
+for a hand-written file) and kept from then on, so the device UUID stays the
+same across restarts. The failover URL is saved and validated, but this build
+connects to the primary hub only.
+
+Before a connection is attempted, the preview checks that each named file
+opens for reading, and on Unix warns when the key file is readable by group or
+others. A failed check names the path and refuses the connection; nothing is
+sent until it passes.
 
 The preview shows the settings after CLI overrides. Explicit values win even
 when equal to defaults, such as `--port 47808`, `--timeout 6000` or
@@ -349,6 +368,28 @@ min_interval_ms = 0
 ttl = 300
 # bbmd = "127.0.0.2:47808"
 # renewal_secs = 30
+
+[safety]
+writes = "session"
+dangerous = false
+```
+
+An SC profile has an `[sc]` table instead of `[bip]`:
+
+```toml
+version = 1
+transport = "sc"
+
+[sc]
+hub_url = "wss://hub.example.com:443/bacnet"
+# failover_hub_url = "wss://hub2.example.com:443/bacnet"
+ca = "/etc/bacnet/site/ca.pem"
+cert = "/etc/bacnet/site/node.pem"
+key = "/etc/bacnet/site/node.key"
+vmac = "22:10:20:30:40:50"                           # generated when blank
+device_uuid = "6f1c2a9e-4407-4b3d-9a51-0e7c8821d40b" # generated when blank
+timeout_ms = 6000
+min_interval_ms = 0
 
 [safety]
 writes = "session"
