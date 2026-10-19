@@ -1,10 +1,11 @@
+use super::receive::{self, Inbound};
 use super::*;
-use bacnet_encoding::npdu::{decode_npdu, NpduDecodeError};
+use bacnet_router_core::node::Node;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::task::Poll;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 const QUEUE_CAPACITY: usize = 256;
 const APDU_SOURCE_CAPACITY: usize = 16;
@@ -534,76 +535,35 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         self.local_broadcasts = self.transport.local_broadcast_destinations();
         let mut network_control_tx = self.network_control_tx.take();
         let network_control_ingress_sequence = Arc::clone(&self.network_control_ingress_sequence);
-        let address_length_drops = Arc::clone(&self.address_length_drops);
-        let global_broadcast_dadr_drops = Arc::clone(&self.global_broadcast_dadr_drops);
-        let broadcast_pdu_type_drops = Arc::clone(&self.broadcast_pdu_type_drops);
+        let totals = Arc::clone(&self.node_totals);
         let (apdu_tx, apdu_rx) = AdmissionSender::channel(track_depth);
         let counters = apdu_tx.counters.clone();
 
         let dispatch_task = tokio::spawn(async move {
+            // The layer's receive rules are the router core's (#1795).
+            let mut node = Node::new();
             while let Some(mut received) = npdu_rx.recv().await {
-                if !link_source_fits(&received.source_mac, &address_length_drops) {
-                    continue;
-                }
-                // Moved, not cloned: nothing below reads the frame again, and
-                // a clone of a fresh frame allocates its shared header (#1713).
-                match decode_npdu(std::mem::take(&mut received.npdu)) {
-                    Ok(npdu) => {
-                        if !destination_is_coherent(
-                            npdu.destination.as_ref(),
-                            &global_broadcast_dadr_drops,
-                        ) || !broadcast_carries_unconfirmed(&npdu, &broadcast_pdu_type_drops)
-                        {
-                            continue;
-                        }
-                        if npdu.is_network_message() {
-                            if let Some(tx) = network_control_tx.as_ref() {
-                                let ingress_sequence = next_ingress_sequence(
-                                    network_control_ingress_sequence.as_ref(),
-                                );
-                                let control = ReceivedNetworkControl {
-                                    npdu,
-                                    source_mac: received.source_mac,
-                                    link_layer_group: received.link_layer_group,
-                                    data_attributes: received.data_attributes,
-                                    provenance: received.provenance,
-                                    ingress_sequence,
-                                };
-                                match tx.try_send(control) {
-                                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
-                                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                                        network_control_tx = None;
-                                        debug!("Network-control receiver closed; resuming discard behavior");
-                                    }
-                                }
-                            } else {
-                                debug!(
-                                    message_type = ?npdu.message_type,
-                                    "Ignoring network layer message (non-router mode)"
-                                );
-                            }
-                            continue;
-                        }
-
-                        // Non-routing node: discard messages with a specific DNET.
-                        if let Some(ref dest) = npdu.destination {
-                            if dest.network != 0xFFFF {
-                                debug!(
-                                    dnet = dest.network,
-                                    "Discarding routed message (non-router)"
-                                );
-                                continue;
-                            }
-                        }
-
-                        let source_network = npdu.source.clone();
-                        let is_group =
-                            is_group_delivery(received.link_layer_group, npdu.destination.as_ref());
-                        let global_broadcast = is_global_broadcast(npdu.destination.as_ref());
+                // Moved, not cloned: nothing below reads the frame again.
+                let frame = std::mem::take(&mut received.npdu);
+                let inbound = receive::admit(
+                    &mut node,
+                    &totals,
+                    &received.source_mac,
+                    received.link_layer_group,
+                    frame,
+                    network_control_tx.is_some(),
+                );
+                match inbound {
+                    Inbound::Apdu {
+                        apdu,
+                        source_network,
+                        is_group,
+                        global_broadcast,
+                    } => {
                         let apdu = ReceivedApdu {
                             router_response: None,
                             direct_response: received.direct_response.clone(),
-                            apdu: npdu.payload,
+                            apdu,
                             source_mac: received.source_mac,
                             ingress_network: None,
                             source_network,
@@ -614,20 +574,36 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                             provenance: received.provenance,
                             reply_tx: received.reply_tx,
                         };
-
                         match apdu_tx.try_send_apdu(apdu) {
                             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
                             Err(mpsc::error::TrySendError::Closed(_)) => break,
                         }
                     }
-                    Err(e @ NpduDecodeError::AddressTooLong { .. }) => {
-                        // A non-router has no reject to send (Clause 6.6.3.5).
-                        count_drop(&address_length_drops);
-                        warn!(error = %e, "Dropping NPDU with an over-long address");
+                    Inbound::Control(Some(npdu)) => {
+                        let Some(tx) = network_control_tx.as_ref() else {
+                            continue;
+                        };
+                        let ingress_sequence =
+                            next_ingress_sequence(network_control_ingress_sequence.as_ref());
+                        let control = ReceivedNetworkControl {
+                            npdu,
+                            source_mac: received.source_mac,
+                            link_layer_group: received.link_layer_group,
+                            data_attributes: received.data_attributes,
+                            provenance: received.provenance,
+                            ingress_sequence,
+                        };
+                        match tx.try_send(control) {
+                            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                network_control_tx = None;
+                                debug!(
+                                    "Network-control receiver closed; resuming discard behavior"
+                                );
+                            }
+                        }
                     }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to decode NPDU");
-                    }
+                    Inbound::Control(None) | Inbound::Dropped => {}
                 }
             }
         });
@@ -635,84 +611,6 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         self.dispatch_task = Some(dispatch_task);
         Ok((apdu_rx, counters))
     }
-}
-
-/// Whether a frame's link-layer source MAC fits [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN)
-/// (#1198). [`NetworkLayer`] asks before decoding anything else in the
-/// frame, and the router's engine (`bacnet-router-core`) applies the same
-/// bound. A longer MAC is counted in `drops` and its frame goes no
-/// further, so neither an APDU consumer nor the routing table ever learns an
-/// address that a `BACnetAddress` cannot hold. No built-in transport makes
-/// one: B/IP, BACnet/SC and Ethernet MACs are 6 octets, B/IPv6 VMACs 3 and
-/// MS/TP 1; only a custom [`TransportPort`] can.
-pub(crate) fn link_source_fits(source_mac: &[u8], drops: &AtomicU64) -> bool {
-    if source_mac.len() <= bacnet_npdu::MAX_MAC_LEN {
-        return true;
-    }
-    count_drop(drops);
-    warn!(
-        octets = source_mac.len(),
-        limit = bacnet_npdu::MAX_MAC_LEN,
-        "Dropping a frame whose link-layer source MAC is over the limit"
-    );
-    false
-}
-
-/// Whether a decoded NPDU's destination can be acted on: anything but DNET
-/// 0xFFFF with a DADR (#1379). That DNET already names every device on every
-/// network (Clauses 6.2.2 and 6.3.2), so a DADR beside it names one device as
-/// well and the NPDU contradicts itself. [`NetworkLayer`] asks right after
-/// decoding, before it looks at what the NPDU carries, so this one check
-/// covers APDUs and network messages; the router's engine applies the same
-/// rule at the same point. A
-/// contradictory NPDU is counted in `drops` and goes no further: it is not
-/// delivered, forwarded, answered, rejected or learned from.
-pub(crate) fn destination_is_coherent(
-    destination: Option<&NpduAddress>,
-    drops: &AtomicU64,
-) -> bool {
-    let Some(destination) = destination else {
-        return true;
-    };
-    if destination.network != 0xFFFF || destination.mac_address.is_empty() {
-        return true;
-    }
-    count_drop(drops);
-    warn!(
-        dlen = destination.mac_address.len(),
-        "Dropping a global broadcast NPDU that also names a DADR"
-    );
-    false
-}
-
-/// Whether a decoded NPDU may go on: anything but an APDU sent to a broadcast
-/// network address, global (DNET 0xFFFF) or remote (a DNET with no DADR),
-/// whose PDU type isn't Unconfirmed-Request (#1491). Only that type may use
-/// a broadcast network address (Clause 6.3); any other belongs to one peer's
-/// transaction, so every device reached would get a request or an answer
-/// that names no one. The type is the high nibble of the APDU's first octet
-/// (Clause 20.1), so nothing is decoded, and an empty APDU names no type.
-/// Network messages pass. [`NetworkLayer`] asks right after
-/// [`destination_is_coherent`], as the router's engine does: a refused NPDU is counted in `drops`
-/// and is not delivered, forwarded, answered or rejected.
-pub(crate) fn broadcast_carries_unconfirmed(npdu: &Npdu, drops: &AtomicU64) -> bool {
-    let Some(destination) = npdu.destination.as_ref() else {
-        return true;
-    };
-    let broadcast = destination.network == 0xFFFF || destination.mac_address.is_empty();
-    let unconfirmed = npdu
-        .payload
-        .first()
-        .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
-    if npdu.is_network_message() || !broadcast || unconfirmed {
-        return true;
-    }
-    count_drop(drops);
-    warn!(
-        dnet = destination.network,
-        "Dropping a broadcast NPDU whose APDU isn't an Unconfirmed-Request"
-    );
-    false
 }
 
 #[cfg(test)]

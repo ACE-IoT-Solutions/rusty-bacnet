@@ -20,7 +20,6 @@
 //! drive the transports'.
 
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bacnet_npdu::NpduLimits;
@@ -32,6 +31,7 @@ use bacnet_time::HostClock;
 
 use super::port_groups::PortGroups;
 use super::Counters;
+use crate::totals::totals;
 
 use crate::router_table::{HOLD_RECORDS, ROUTE_CAP};
 
@@ -214,44 +214,11 @@ impl Drop for EngineGuard<'_> {
     }
 }
 
-/// Declares [`Published`]: one atomic total for each named field of
-/// [`Counters`], what adds the engine's taken counts to them, and the copy
-/// out.
-macro_rules! published {
-    ($($field:ident),+ $(,)?) => {
-        /// The engine's totals since start, one atomic each. Only a guard
-        /// being dropped changes them, under the engine's lock, so their
-        /// writers never race: each adds after its sends are queued
-        /// (release), and readers take no lock (acquire), so a reader who
-        /// sees a total also sees the sends of the call that made it.
-        #[derive(Debug, Default)]
-        struct Published {
-            $($field: AtomicU64,)+
-        }
-
-        impl Published {
-            /// How many counts it keeps.
-            const FIELDS: usize = [$(stringify!($field)),+].len();
-
-            /// Add the counts a guard took to the totals, saturating.
-            fn add(&self, counts: &EngineCounters) {
-                $(
-                    let total = self.$field.load(Ordering::Relaxed);
-                    let total = total.saturating_add(u64::from(counts.$field));
-                    self.$field.store(total, Ordering::Release);
-                )+
-            }
-
-            fn load(&self) -> Counters {
-                let mut counters = Counters::default();
-                $(counters.$field = self.$field.load(Ordering::Acquire);)+
-                counters
-            }
-        }
-    };
-}
-
-published!(
+totals!(
+    /// The engine's totals since start, one atomic each. Only a guard
+    /// being dropped changes them, under the engine's lock, each after its
+    /// call's sends are queued.
+    Published: EngineCounters => Counters {
     address_length_drops,
     global_broadcast_dadr_drops,
     broadcast_pdu_type_drops,
@@ -273,18 +240,7 @@ published!(
     duplicate_drops,
     not_next_hop,
     originated,
-);
-
-// The engine's counts are all `u32`s and the totals all `u64`s, so their
-// sizes say how many there are: a count the engine adds fails this until it
-// is published, and totalled, too.
-const _: () = assert!(
-    std::mem::size_of::<EngineCounters>() == Published::FIELDS * std::mem::size_of::<u32>(),
-    "publish every count in the engine's Counters"
-);
-const _: () = assert!(
-    std::mem::size_of::<Counters>() == Published::FIELDS * std::mem::size_of::<u64>(),
-    "total every published count"
+    }
 );
 
 /// Zeroed storage on the heap. Built here, outside any async function, so
@@ -302,6 +258,7 @@ mod tests {
     use bacnet_router_core::PortId;
 
     use super::*;
+    use std::sync::atomic::Ordering;
 
     /// An engine on networks 1 and 2.
     fn engine() -> Engine {
