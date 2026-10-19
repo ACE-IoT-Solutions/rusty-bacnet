@@ -2,7 +2,8 @@
 //!
 //! - The foreign-device panel: the BBMD, the time-to-live, the last
 //!   BVLC-Result, a countdown to the next registration, and a banner when
-//!   the BBMD refuses the registration (Annex J.5.2.2).
+//!   the BBMD refuses the registration (Annex J.5.2.2) or leaves it
+//!   unanswered.
 //! - The BDT and FDT of the target BBMD, with what each mask means and the
 //!   seconds each FDT entry has left; our own FDT entry is marked, since the
 //!   address the BBMD recorded is the one it forwards broadcasts to.
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use bacnet_transport::bip::{ForeignRegistrationOutcome, ForeignRegistrationSnapshot};
 
+use super::objects::kebab;
 use super::watch::Screen;
 use super::{App, Link, FLASH_FOR};
 use crate::tui::message::Command;
@@ -99,7 +101,8 @@ pub(crate) struct NetworkState {
 }
 
 impl NetworkState {
-    /// The configured BBMD accepted us: start the panel on it.
+    /// The connection registers as a foreign device: start the panel on its
+    /// BBMD, whether it accepted the first attempt or is still retrying.
     pub(crate) fn foreign_device(&mut self, foreign: Foreign) {
         self.foreign = Some(foreign);
         self.target.get_or_insert(foreign.bbmd);
@@ -119,22 +122,64 @@ impl NetworkState {
         Some(left.saturating_sub(now.saturating_duration_since(*at)))
     }
 
-    /// The refusal banner, while the BBMD refuses the registration.
-    pub(crate) fn refusal(&self) -> Option<String> {
+    /// The registration banner: while the BBMD refuses the registration,
+    /// or once registrations go unanswered (none accepted after the first
+    /// attempt, or a lease lapsed with no newer success).
+    ///
+    /// It keys on the counters rather than the last outcome, since a fresh
+    /// attempt reads `Pending` while the earlier ones went unanswered.
+    pub(crate) fn registration_banner(&self) -> Option<String> {
         let (snapshot, _) = self.registration.as_ref()?;
-        if snapshot.last_outcome != Some(ForeignRegistrationOutcome::Refused) {
-            return None;
-        }
         let bbmd = snapshot
             .last_bbmd
             .map_or_else(|| "The BBMD".to_string(), |bbmd| format!("BBMD {bbmd}"));
-        let result = snapshot
-            .last_result
-            .map_or_else(String::new, |code| format!(" ({code})"));
-        Some(format!(
-            " REFUSED {bbmd} refused the foreign-device registration{result}; \
-             broadcasts through it fail until it accepts. Check its foreign-device policy."
-        ))
+        if snapshot.last_outcome == Some(ForeignRegistrationOutcome::Refused) {
+            let result = snapshot
+                .last_result
+                .map_or_else(String::new, |code| format!(" ({})", kebab(code)));
+            return Some(format!(
+                " REFUSED {bbmd} refused the foreign-device registration{result}; \
+                 broadcasts through it fail until it accepts. Check its foreign-device policy."
+            ));
+        }
+        if self.foreign.is_none() || snapshot.registered {
+            return None;
+        }
+        if snapshot.lapses > 0 {
+            return Some(format!(
+                " LAPSED The registration with {bbmd} lapsed, and no renewal since was \
+                 accepted; broadcasts through it are not delivered."
+            ));
+        }
+        // Attempts that ended with no answer. The last one doesn't count
+        // while in flight, or when it never reached the BBMD (not sent, or
+        // cancelled). The snapshot keeps no per-outcome totals, so earlier
+        // attempts that failed locally can't be told from timeouts.
+        let not_the_bbmds = matches!(
+            snapshot.last_outcome,
+            Some(
+                ForeignRegistrationOutcome::Pending
+                    | ForeignRegistrationOutcome::LocalError
+                    | ForeignRegistrationOutcome::Cancelled
+            )
+        );
+        let unanswered = snapshot
+            .attempts
+            .saturating_sub(snapshot.accepted + snapshot.refused + u64::from(not_the_bbmds));
+        let plural = if unanswered == 1 { "" } else { "s" };
+        if snapshot.accepted == 0 && unanswered > 0 {
+            return Some(format!(
+                " NO ANSWER {bbmd} has not answered {unanswered} foreign-device \
+                 registration{plural}; broadcasts through it are not delivered."
+            ));
+        }
+        None
+    }
+
+    /// Whether the tables shown are from the BBMD we register with, so our
+    /// own FDT entry can be judged; false without a registration.
+    pub(crate) fn tables_are_ours(&self) -> bool {
+        self.foreign.is_some_and(|f| self.target == Some(f.bbmd))
     }
 
     /// Seconds an FDT entry had left at the read, less the time since.
