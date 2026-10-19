@@ -12,6 +12,8 @@
 //!   `tests/support/lab.rs` on that network.
 //! - `load`: a 1,000 events/s burst, and the render-time budget.
 //! - `event_loop`: the `select!` loop on a `TestBackend` with scripted input.
+//! - `network`: the Network screen against real B/IP transports and BBMDs
+//!   on loopback; `network_frames`: its frames from synthetic events.
 //!
 //! Snapshot workflow: CI runs plain `cargo nextest run -p bacnet-cli`, where a
 //! changed frame fails the test. After an intended UI change, run
@@ -32,6 +34,8 @@ mod inprocess;
 #[path = "../../../tests/support/lab.rs"]
 mod lab;
 mod load;
+mod network;
+mod network_frames;
 mod profile_ui;
 mod site;
 mod watch;

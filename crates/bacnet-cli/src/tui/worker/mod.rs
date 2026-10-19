@@ -9,6 +9,7 @@
 
 pub(crate) mod browse;
 pub(crate) mod coordinator;
+pub(crate) mod network;
 pub(crate) mod passive;
 pub(crate) mod session;
 pub(crate) mod watch;

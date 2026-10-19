@@ -9,6 +9,7 @@ pub(crate) mod browser;
 pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
+pub(crate) mod network;
 pub(crate) mod objects;
 pub(crate) mod picker;
 pub(crate) mod safety;
@@ -213,6 +214,8 @@ pub(crate) enum Action {
     },
     /// A key in a write session dialog.
     Modal(safety::ModalKey),
+    /// A key on the Network screen.
+    Network(network::NetworkKey),
     /// A message from the worker.
     Worker(WorkerEvent),
 }
@@ -255,8 +258,8 @@ pub(crate) struct App {
     pub(crate) watch: WatchList,
     /// The write session.
     pub(crate) safety: safety::SafetyState,
-    /// The BBMD this session registers with as a foreign device.
-    pub(crate) foreign: Option<String>,
+    /// The Network screen: foreign-device status, BDT, FDT and matrix.
+    pub(crate) network: network::NetworkState,
     /// The screen in the body.
     pub(crate) screen: Screen,
     next_req: super::point::ReqId,
@@ -312,7 +315,7 @@ impl App {
             browser: None,
             watch: WatchList::default(),
             safety: safety::SafetyState::new(config.passive),
-            foreign: None,
+            network: network::NetworkState::default(),
             screen: Screen::Main,
             next_req: 0,
             duplicates: Duplicates::default(),
@@ -377,7 +380,9 @@ impl App {
     fn tick(&mut self, now: Instant, dropped: u64, log_generation: u64) {
         let second = |t: Instant| t.saturating_duration_since(self.epoch).as_secs();
         // Ages and countdowns change once a second.
-        let ticking = !self.devices.is_empty() || !self.watch.rows().is_empty();
+        let ticking = !self.devices.is_empty()
+            || !self.watch.rows().is_empty()
+            || self.screen == Screen::Network;
         if second(now) != second(self.now) && (ticking || self.op_running()) {
             self.dirty = true;
         }
@@ -457,7 +462,7 @@ impl App {
             }
             // As the dialog's own Esc: a preview closed is a decline.
             Overlay::Safety(_) => self.modal_key(safety::ModalKey::Esc, out),
-            Overlay::None if self.screen == Screen::Watch => self.screen = Screen::Main,
+            Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
             Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
                     browser.objects.clear_filter();
@@ -571,7 +576,7 @@ impl App {
         self.browser = None;
         // The worker of the ended session cancelled the subscriptions.
         self.watch = WatchList::default();
-        self.foreign = None;
+        self.network = network::NetworkState::default();
         // A new session starts read-only; its worker reports the policy
         // and the ledger again.
         self.safety.armed = None;
@@ -758,7 +763,8 @@ impl App {
             }
             WorkerEvent::Safety(event) => self.safety_event(event, out),
             WorkerEvent::Passive => self.link = Link::Passive,
-            WorkerEvent::ForeignDevice { bbmd } => self.foreign = Some(bbmd),
+            WorkerEvent::ForeignDevice(foreign) => self.network.foreign_device(foreign),
+            WorkerEvent::Network(event) => self.network_event(event),
         }
     }
 }
@@ -843,6 +849,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::OpenLedger => app.open_ledger(),
         Action::OpenWrite { relinquish } => app.open_write(relinquish),
         Action::Modal(key) => app.modal_key(key, &mut out),
+        Action::Network(key) => app.network_key(key, &mut out),
         Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out

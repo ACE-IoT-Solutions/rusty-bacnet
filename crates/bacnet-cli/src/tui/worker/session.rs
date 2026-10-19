@@ -25,6 +25,7 @@ use crate::transport::{self, TransportArgs};
 use crate::tui::message::{
     Command, DirectedTo, OpId, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent,
 };
+use crate::tui::network::Foreign;
 use crate::tui::point::BrowseResult;
 
 /// How often the worker checks whether the UI needs a resync.
@@ -137,8 +138,15 @@ async fn connect(
                     }
                     // Accepted or retrying, the BBMD may hold an FDT entry
                     // for us until its TTL runs out: part of the footprint.
-                    let bbmd = bbmd.to_string();
-                    sink.deliver(WorkerEvent::ForeignDevice { bbmd }).await;
+                    let renewal = foreign
+                        .renewal_interval
+                        .unwrap_or(Duration::from_secs(u64::from(foreign.ttl)) / 2);
+                    let foreign = Foreign {
+                        bbmd,
+                        ttl: foreign.ttl,
+                        renewal,
+                    };
+                    sink.deliver(WorkerEvent::ForeignDevice(foreign)).await;
                 }
                 Box::pin(serve(client, style, sink, commands, options)).await;
             }
@@ -252,6 +260,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
         let (browse, browse_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (watch, watch_rx) = mpsc::channel(WATCH_CHANNEL_CAPACITY);
         let (safety, safety_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        let (network, network_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let quiet = options.safety.passive;
         // The browser and the watch list run beside this loop under
         // `join!`, so their jobs keep being polled while an arm here awaits;
@@ -260,6 +269,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
             let browse = browse;
             let watch = watch;
             let safety = safety;
+            let network = network;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
             let mut resolving: Option<Resolving<'_>> = None;
@@ -323,6 +333,12 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                                 tracing::debug!("the watch list has ended");
                             }
                         }
+                        Some(Command::Network(command)) => {
+                            // Polled beside this loop too; it queues requests.
+                            if network.send(command).await.is_err() {
+                                tracing::debug!("the network worker has ended");
+                            }
+                        }
                         Some(Command::Disconnect) => break,
                         Some(Command::Connect { .. } | Command::Reconnect | Command::Profile(_)) => {}
                         None => break,
@@ -382,7 +398,8 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                 &rate,
                 &options.safety,
                 &local
-            ))
+            )),
+            Box::pin(super::network::run(&client, &sink, network_rx))
         );
     }
     stop_shared(client).await;
