@@ -67,8 +67,8 @@ fn armed(operation: u32) -> BinaryLightingOutputObject {
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
         Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }

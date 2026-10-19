@@ -12,6 +12,7 @@ use bacnet_transport::{
     mstp::LoopbackSerial,
     port::{ReceivedNpdu, TransportPort},
 };
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -215,7 +216,8 @@ pub async fn start(transport: BipTransport, gates: Option<Arc<Gates>>) -> (Serve
         .unwrap(),
     ))
     .unwrap();
-    let mut analog = AnalogInputObject::new(1, "Number progress", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(1, "Number progress", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(42.0);
     db.add(Box::new(analog)).unwrap();
     let server = bounded(BACnetServer::start(

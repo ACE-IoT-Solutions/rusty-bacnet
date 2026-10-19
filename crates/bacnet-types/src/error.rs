@@ -19,7 +19,7 @@ use crate::constructed::BACnetObjectPropertyReference;
 use crate::data_link::DataLink;
 #[cfg(feature = "alloc")]
 use crate::enums::PropertyIdentifier;
-use crate::enums::{ErrorClass, ErrorCode, RejectReason};
+use crate::enums::{AbortReason, ErrorClass, ErrorCode, RejectReason};
 
 mod decode;
 pub use decode::{DecodeError, DecodingKind, RangeError};
@@ -27,8 +27,8 @@ pub use decode::{DecodeError, DecodingKind, RangeError};
 /// How a protocol error's class and code read: each name in lower case with
 /// hyphens, or the raw number for a value without one.
 struct ProtocolText {
-    class: u32,
-    code: u32,
+    class: ErrorClass,
+    code: ErrorCode,
 }
 
 impl fmt::Display for ProtocolText {
@@ -37,7 +37,7 @@ impl fmt::Display for ProtocolText {
             f: &mut fmt::Formatter<'_>,
             named: Option<&str>,
             field: &str,
-            value: u32,
+            value: u16,
         ) -> fmt::Result {
             let Some(named) = named else {
                 return write!(f, "{field}={value}");
@@ -52,18 +52,10 @@ impl fmt::Display for ProtocolText {
             }
             Ok(())
         }
-        let class = ErrorClass::ALL_NAMED
-            .iter()
-            .find(|(_, v)| u32::from(v.to_raw()) == self.class)
-            .map(|(n, _)| *n);
-        let code = ErrorCode::ALL_NAMED
-            .iter()
-            .find(|(_, v)| u32::from(v.to_raw()) == self.code)
-            .map(|(n, _)| *n);
         f.write_str("BACnet error: ")?;
-        name(f, class, "class", self.class)?;
+        name(f, self.class.name(), "class", self.class.to_raw())?;
         f.write_str(" / ")?;
-        name(f, code, "code", self.code)
+        name(f, self.code.name(), "code", self.code.to_raw())
     }
 }
 
@@ -105,10 +97,10 @@ pub enum Error {
     /// BACnet protocol error response (Clause 20.1.7).
     #[error("{}", ProtocolText { class: *.class, code: *.code })]
     Protocol {
-        /// Error class value.
-        class: u32,
-        /// Error code value.
-        code: u32,
+        /// Error class (Clause 18).
+        class: ErrorClass,
+        /// Error code (Clause 18).
+        code: ErrorCode,
     },
 
     /// BACnet error response whose Clause 21 production carries more than the
@@ -120,27 +112,27 @@ pub enum Error {
     #[cfg(feature = "alloc")]
     #[error("{}, {detail}", ProtocolText { class: *.class, code: *.code })]
     Structured {
-        /// Error class value.
-        class: u32,
-        /// Error code value.
-        code: u32,
+        /// Error class (Clause 18).
+        class: ErrorClass,
+        /// Error code (Clause 18).
+        code: ErrorCode,
         /// The production's fields after the class and code. Boxed so the
         /// rare structured error does not widen every `Result<_, Error>`.
         detail: Box<ErrorDetail>,
     },
 
     /// BACnet reject PDU (Clause 20.1.5).
-    #[error("BACnet reject: reason={reason}")]
+    #[error("BACnet reject: reason={}", reason.to_raw())]
     Reject {
-        /// Reject reason value.
-        reason: u8,
+        /// Reject reason (Clause 18.9).
+        reason: RejectReason,
     },
 
     /// BACnet abort PDU (Clause 20.1.6).
-    #[error("BACnet abort: reason={reason}")]
+    #[error("BACnet abort: reason={}", reason.to_raw())]
     Abort {
-        /// Abort reason value.
-        reason: u8,
+        /// Abort reason (Clause 18.10).
+        reason: AbortReason,
     },
 
     /// A router reported that the active message was too long for a routed path.
@@ -435,7 +427,7 @@ impl Error {
     /// The error an Error PDU reports: [`Error::Structured`] when its body
     /// carried a detail, [`Error::Protocol`] otherwise. Only with `alloc`.
     #[cfg(feature = "alloc")]
-    pub fn protocol(class: u32, code: u32, detail: Option<ErrorDetail>) -> Self {
+    pub fn protocol(class: ErrorClass, code: ErrorCode, detail: Option<ErrorDetail>) -> Self {
         match detail {
             Some(detail) => Self::Structured {
                 class,
@@ -537,7 +529,7 @@ impl Error {
     /// of the request's parameters reports.
     pub fn reject_reason(&self) -> Option<RejectReason> {
         match self {
-            Self::Reject { reason } => Some(RejectReason::from_raw(*reason)),
+            Self::Reject { reason } => Some(*reason),
             Self::BufferTooShort { .. } => Some(RejectReason::MISSING_REQUIRED_PARAMETER),
             _ => self.decode_fault().map(|(_, kind)| kind.reject_reason()),
         }
@@ -553,9 +545,7 @@ impl Error {
     /// reject the request (Clause 20.1.8), so it stays as it is.
     pub fn into_request_reject(self) -> Self {
         match self.reject_reason() {
-            Some(reason) => Self::Reject {
-                reason: reason.to_raw(),
-            },
+            Some(reason) => Self::Reject { reason },
             None => self,
         }
     }

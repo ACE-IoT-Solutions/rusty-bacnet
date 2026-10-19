@@ -3,6 +3,7 @@ use crate::analog::AnalogValueObject;
 use crate::clock::{ClockFrame, ClockReader};
 use crate::trend::TrendLogObject;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, Time};
 use std::sync::{Arc, Mutex};
@@ -81,8 +82,10 @@ fn fixture(
     let source = time.clone();
     db.set_monotonic_clock_internal(Some(Arc::new(move || *source.lock().unwrap())));
     db.set_clock_reader(Some(clock.clone()));
-    db.add(Box::new(AnalogValueObject::new(1, "AV", 95).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(1, "AV", EngineeringUnits::NO_UNITS).unwrap(),
+    ))
+    .unwrap();
     let object = trend(interval, 16);
     let oid = object.object_identifier();
     db.add(Box::new(object)).unwrap();
@@ -436,7 +439,7 @@ fn qualified_fixture(
     device: Option<u32>,
 ) -> (ObjectDatabase, ObjectIdentifier) {
     let (mut db, oid, _, _) = fixture(u32::MAX);
-    let mut av = AnalogValueObject::new(1, "AV", 95).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(42.5).unwrap();
     db.remove(&target()).unwrap();
     db.add(Box::new(av)).unwrap();

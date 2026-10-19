@@ -11,6 +11,7 @@ use bacnet_objects::{
     traits::BACnetObject,
 };
 use bacnet_services::{audit::AuditNotificationRequest, write_property::WritePropertyRequest};
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::{
     bitstring::AuditOperationFlags,
     enums::{AuditLevel, AuditOperation},
@@ -377,8 +378,10 @@ pub(super) async fn try_servers_config(
         execution_error: Arc::clone(&execution_error),
     }))
     .unwrap();
-    db.add(Box::new(AnalogInputObject::new(1, "input", 0).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(1, "input", EngineeringUnits::SQUARE_METERS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(BinaryValueObject::new(2, "other-value").unwrap()))
         .unwrap();
     let identities = reporters

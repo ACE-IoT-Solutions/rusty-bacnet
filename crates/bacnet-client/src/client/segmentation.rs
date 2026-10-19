@@ -670,7 +670,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 ack_retries += 1;
                                 if ack_retries > max_ack_retries {
                                     return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT.to_raw(),
+                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
                                     });
                                 }
                                 warn!(

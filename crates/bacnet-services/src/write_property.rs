@@ -122,8 +122,8 @@ impl WritePropertyRequest {
         if let Some(prio) = prio {
             if !(1..=16).contains(&prio) {
                 return Err(Error::Protocol {
-                    class: ErrorClass::SERVICES.to_raw() as u32,
-                    code: ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32,
+                    class: ErrorClass::SERVICES,
+                    code: ErrorCode::PARAMETER_OUT_OF_RANGE,
                 });
             }
             priority = Some(prio as u8);
@@ -395,8 +395,8 @@ mod tests {
             let error = WritePropertyRequest::decode(&buf).unwrap_err();
             assert!(
                 matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::SERVICES.to_raw() as u32
-                        && code == ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32),
+                    if class == ErrorClass::SERVICES
+                        && code == ErrorCode::PARAMETER_OUT_OF_RANGE),
                 "priority {value} must fail semantic range validation, got {error:?}"
             );
         }

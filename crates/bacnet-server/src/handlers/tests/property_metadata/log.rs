@@ -353,7 +353,7 @@ fn rpm_log_indexed_property_list_and_list_gates_preserve_bytes() {
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, code)));
                     assert!(result.property_value.is_none());
                     assert!(matches!(rp_result, Err(Error::Protocol { class, code: c })
-                        if class == ErrorClass::PROPERTY.to_raw() as u32 && c == code.to_raw() as u32));
+                        if class == ErrorClass::PROPERTY && c == code));
                 }
             }
         }
@@ -425,8 +425,8 @@ fn rpm_and_rp_refuse_log_buffer_while_read_range_serves_framed_records() {
                 );
                 assert!(result.property_value.is_none());
                 assert!(matches!(rp_result, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::READ_ACCESS_DENIED.to_raw() as u32));
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::READ_ACCESS_DENIED));
             } else {
                 assert!(result.error.is_none());
                 assert_eq!(result.property_value.as_deref(), Some(&[0x21, 2][..]));

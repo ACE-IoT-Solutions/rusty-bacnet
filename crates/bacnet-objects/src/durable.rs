@@ -683,8 +683,8 @@ pub trait DurableWrites {
     /// refuses with OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
     fn commit_purge(&mut self) -> Result<(), Error> {
         Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
+            class: ErrorClass::OBJECT,
+            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
         })
     }
 

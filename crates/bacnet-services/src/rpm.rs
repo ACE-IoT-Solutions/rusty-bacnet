@@ -145,8 +145,8 @@ impl ReadResultElement {
             tags::encode_closing_tag(buf, 4);
         } else if let Some((class, code)) = self.error {
             tags::encode_opening_tag(buf, 5);
-            primitives::encode_app_enumerated(buf, class.to_raw() as u32);
-            primitives::encode_app_enumerated(buf, code.to_raw() as u32);
+            primitives::encode_app_enumerated(buf, u32::from(class.to_raw()));
+            primitives::encode_app_enumerated(buf, u32::from(code.to_raw()));
             tags::encode_closing_tag(buf, 5);
         }
     }

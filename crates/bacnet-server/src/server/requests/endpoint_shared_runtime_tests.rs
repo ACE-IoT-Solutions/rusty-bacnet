@@ -17,6 +17,7 @@ use tokio::time::timeout;
 
 use super::endpoint_responder::EndpointResponder;
 use super::*;
+use bacnet_types::enums::EngineeringUnits;
 
 const WAIT: Duration = Duration::from_secs(1);
 
@@ -109,7 +110,8 @@ async fn loopback_shared_runtime_routes_same_invoke_id_by_admitted_role() {
         NotificationTransactions::with_coordinator(Arc::clone(&coordinator));
 
     let mut db = ObjectDatabase::new();
-    let mut analog = AnalogInputObject::new(7, "endpoint-value", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(7, "endpoint-value", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(42.0);
     db.add(Box::new(analog)).unwrap();
     let responder = Arc::new(EndpointResponder::new(

@@ -114,8 +114,8 @@ pub(super) async fn replace<T: TransportPort + 'static>(
     {
         return Err(handlers::device_mgmt::DccFailure {
             error: Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+                class: ErrorClass::SERVICES,
+                code: ErrorCode::SERVICE_REQUEST_DENIED,
             },
             outcome: dcc_outcomes::DccOutcome::PolicyDenied,
             metadata: dcc_outcomes::DccMetadata {

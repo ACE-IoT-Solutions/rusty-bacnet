@@ -11,6 +11,7 @@ use bacnet_network::{
 };
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_transport::port::ReceivedNpdu;
+use bacnet_types::enums::EngineeringUnits;
 use std::sync::atomic::AtomicUsize;
 
 struct Routed {
@@ -201,8 +202,10 @@ async fn settled(context: &DispatchContext<TestTransport>) {
 async fn r7_deferred_read_and_overload_abort_keep_each_addressed_endpoint() {
     let mut routed = Routed::new().await;
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(7, "input", 0).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(7, "input", EngineeringUnits::SQUARE_METERS).unwrap(),
+    ))
+    .unwrap();
     let config = ServerConfig {
         request_admission_policy: RequestAdmissionPolicy {
             max_confirmed_in_flight: 1,

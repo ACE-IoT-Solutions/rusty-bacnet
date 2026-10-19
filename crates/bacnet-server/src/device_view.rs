@@ -169,8 +169,8 @@ pub(crate) fn check_executor_owned_write(oid: ObjectIdentifier, property: P) -> 
 
 fn property_error(code: ErrorCode) -> Error {
     Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: code.to_raw() as u32,
+        class: ErrorClass::PROPERTY,
+        code,
     }
 }
 

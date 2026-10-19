@@ -78,8 +78,8 @@ fn read_property(
 fn assert_value_out_of_range<T>(result: Result<T, Error>) {
     match result {
         Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE);
         }
         Err(other) => panic!("expected PROPERTY/VALUE_OUT_OF_RANGE, got {other:?}"),
         Ok(_) => panic!("expected PROPERTY/VALUE_OUT_OF_RANGE, got success"),

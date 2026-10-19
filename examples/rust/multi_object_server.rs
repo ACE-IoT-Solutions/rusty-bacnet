@@ -23,7 +23,7 @@ use bacnet_objects::trend_log::TrendLogObject;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use std::net::Ipv4Addr;
 
@@ -43,21 +43,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?))?;
 
     // HVAC point objects
-    let mut ai1 = AnalogInputObject::new(1, "Supply Air Temp", 62)?;
+    let mut ai1 = AnalogInputObject::new(1, "Supply Air Temp", EngineeringUnits::DEGREES_CELSIUS)?;
     ai1.set_present_value(55.0);
     db.add(Box::new(ai1))?;
 
-    let mut ai2 = AnalogInputObject::new(2, "Return Air Temp", 62)?;
+    let mut ai2 = AnalogInputObject::new(2, "Return Air Temp", EngineeringUnits::DEGREES_CELSIUS)?;
     ai2.set_present_value(72.0);
     db.add(Box::new(ai2))?;
 
-    let mut ai3 = AnalogInputObject::new(3, "Outside Air Temp", 62)?;
+    let mut ai3 = AnalogInputObject::new(3, "Outside Air Temp", EngineeringUnits::DEGREES_CELSIUS)?;
     ai3.set_present_value(85.0);
     db.add(Box::new(ai3))?;
 
-    db.add(Box::new(AnalogOutputObject::new(1, "Cooling Valve", 98)?))?;
-    db.add(Box::new(AnalogOutputObject::new(2, "Heating Valve", 98)?))?;
-    db.add(Box::new(AnalogValueObject::new(1, "Cooling Setpoint", 62)?))?;
+    db.add(Box::new(AnalogOutputObject::new(
+        1,
+        "Cooling Valve",
+        EngineeringUnits::PERCENT,
+    )?))?;
+    db.add(Box::new(AnalogOutputObject::new(
+        2,
+        "Heating Valve",
+        EngineeringUnits::PERCENT,
+    )?))?;
+    db.add(Box::new(AnalogValueObject::new(
+        1,
+        "Cooling Setpoint",
+        EngineeringUnits::DEGREES_CELSIUS,
+    )?))?;
     db.add(Box::new(BinaryInputObject::new(1, "Filter Status")?))?;
     db.add(Box::new(BinaryOutputObject::new(1, "Supply Fan")?))?;
     db.add(Box::new(BinaryValueObject::new(1, "Auto/Manual")?))?;

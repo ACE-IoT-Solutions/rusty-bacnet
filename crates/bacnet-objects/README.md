@@ -39,7 +39,7 @@ fn main() -> Result<(), bacnet_types::error::Error> {
     let mut analog = AnalogInputObject::new(
         7,
         "supply-temperature",
-        EngineeringUnits::DEGREES_CELSIUS.to_raw(),
+        EngineeringUnits::DEGREES_CELSIUS,
     )?;
     analog.set_present_value(42.0);
     let mut database = ObjectDatabase::new();

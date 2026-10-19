@@ -221,8 +221,8 @@ async fn local_index_refusal_reaches_no_audit_record() {
     let error = write(Some(1)).await.unwrap_err();
     assert!(
         matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
         "{error:?}"
     );
     completed(&fixture).await;

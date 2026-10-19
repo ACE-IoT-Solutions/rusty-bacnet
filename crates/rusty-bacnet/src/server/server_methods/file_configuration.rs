@@ -371,7 +371,7 @@ mod tests {
                     .unwrap()
                     .extract::<u32>()
                     .unwrap(),
-                ErrorClass::SERVICES.to_raw() as u32
+                u32::from(ErrorClass::SERVICES.to_raw())
             );
             assert_eq!(
                 mismatch
@@ -380,7 +380,7 @@ mod tests {
                     .unwrap()
                     .extract::<u32>()
                     .unwrap(),
-                ErrorCode::INVALID_FILE_ACCESS_METHOD.to_raw() as u32
+                u32::from(ErrorCode::INVALID_FILE_ACCESS_METHOD.to_raw())
             );
             assert_eq!(
                 server

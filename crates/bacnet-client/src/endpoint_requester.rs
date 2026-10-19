@@ -484,10 +484,10 @@ impl EndpointRequester {
                     },
                     Apdu::Error(error) => TsmResponse::from_error_pdu(error),
                     Apdu::Reject(reject) => TsmResponse::Reject {
-                        reason: reject.reject_reason.to_raw(),
+                        reason: reject.reject_reason,
                     },
                     Apdu::Abort(abort) => TsmResponse::Abort {
-                        reason: abort.abort_reason.to_raw(),
+                        reason: abort.abort_reason,
                     },
                     Apdu::SegmentAck(_)
                     | Apdu::ConfirmedRequest(_)

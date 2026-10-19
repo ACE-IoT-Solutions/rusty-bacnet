@@ -263,13 +263,13 @@ fn decode_closed_enumeration(data: &[u8], maximum: u32) -> Result<u32, Error> {
         }
         _ => {
             return Err(Error::Reject {
-                reason: bacnet_types::enums::RejectReason::UNDEFINED_ENUMERATION.to_raw(),
+                reason: bacnet_types::enums::RejectReason::UNDEFINED_ENUMERATION,
             })
         }
     };
     if value > maximum {
         return Err(Error::Reject {
-            reason: bacnet_types::enums::RejectReason::UNDEFINED_ENUMERATION.to_raw(),
+            reason: bacnet_types::enums::RejectReason::UNDEFINED_ENUMERATION,
         });
     }
     Ok(value)

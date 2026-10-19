@@ -46,8 +46,8 @@ use bacnet_types::constructed::{
     BACnetObjectPropertyReference, BACnetObjectSelector,
 };
 use bacnet_types::enums::{
-    AuditLevel, ErrorClass, ErrorCode, EventState, EventType, LifeSafetyOperation, ObjectType,
-    PropertyIdentifier as P, Reliability,
+    AuditLevel, EngineeringUnits, ErrorClass, ErrorCode, EventState, EventType,
+    LifeSafetyOperation, ObjectType, PropertyIdentifier as P, Reliability,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, PropertyValue, Time};
@@ -97,7 +97,8 @@ impl Probe {
             device_identifier: None,
             object_identifier: oid(ObjectType::AUDIT_LOG, 9),
         }));
-        let mut value = AnalogValueObject::new(7, "Probe value", 62).unwrap();
+        let mut value =
+            AnalogValueObject::new(7, "Probe value", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         value.set_audit_policy(ObjectAuditPolicy {
             level: Some(AuditLevel::NONE),
             ..ObjectAuditPolicy::default()
@@ -702,7 +703,7 @@ impl BACnetObject for Probe {
 /// object's own, unlike the default's OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
 fn own_record_error() -> Error {
     Error::Protocol {
-        class: ErrorClass::DEVICE.to_raw() as u32,
-        code: ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32,
+        class: ErrorClass::DEVICE,
+        code: ErrorCode::OPERATIONAL_PROBLEM,
     }
 }

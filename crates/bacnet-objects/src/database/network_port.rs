@@ -155,8 +155,8 @@ impl ObjectDatabase {
             .is_some_and(|port| port.oid == *oid && port.lease.strong_count() != 0)
         {
             return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw().into(),
-                code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED.to_raw().into(),
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
             });
         }
         Ok(())

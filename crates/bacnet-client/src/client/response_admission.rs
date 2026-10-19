@@ -205,8 +205,7 @@ pub(super) async fn complete_terminal_response(
                     &owner,
                     None,
                     TsmResponse::Abort {
-                        reason: bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE
-                            .to_raw(),
+                        reason: bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
                     },
                 );
                 return TerminalDispatchOutcome::PrematureSegmentedRequestAborted;

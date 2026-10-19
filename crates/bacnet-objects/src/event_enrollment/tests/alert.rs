@@ -16,8 +16,8 @@ fn assert_property_error<T: std::fmt::Debug>(
 ) {
     match result.expect_err(context) {
         Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{context}");
-            assert_eq!(code, expected.to_raw() as u32, "{context}");
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}");
+            assert_eq!(code, expected, "{context}");
         }
         other => panic!("{context}: expected property error, got {other:?}"),
     }

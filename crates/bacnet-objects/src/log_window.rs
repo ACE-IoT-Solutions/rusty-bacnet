@@ -307,8 +307,8 @@ mod tests {
             let error = copy.write(P::STOP_TIME, &value).unwrap().unwrap_err();
             assert!(
                 matches!(error, Error::Protocol { class, code: c }
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && c == code.to_raw() as u32),
+                    if class == ErrorClass::PROPERTY
+                        && c == code),
                 "{error:?}"
             );
             assert_eq!(copy, span);
