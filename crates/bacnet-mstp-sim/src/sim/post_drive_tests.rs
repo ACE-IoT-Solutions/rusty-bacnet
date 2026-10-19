@@ -296,6 +296,7 @@ fn own_driver_release_precedes_new_start_confirmation() {
     sim.run_until(us(500_000));
     let id = sim.master_mut(0).unwrap().pending.as_ref().unwrap().id;
     let old = sim.line.begin(
+        sim.timing,
         Driver::Station(0),
         vec![0x55],
         us(499_739),

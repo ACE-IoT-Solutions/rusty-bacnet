@@ -18,7 +18,8 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// Initialize-Routing-Table. A count of 0 is a query, answered with the
     /// whole table in Acks of at most 124 entries, ascending, each network

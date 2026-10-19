@@ -123,6 +123,14 @@ pub(crate) enum Event {
         node: usize,
         send: ScriptSend,
     },
+    /// An NPDU the node's application sends, fenced to the incarnation
+    /// that decided it: a node that lost power since never sends it.
+    AppSend {
+        node: usize,
+        incarnation: u64,
+        destination: u8,
+        npdu: Vec<u8>,
+    },
     Enqueue {
         node: usize,
         destination: u8,
@@ -249,7 +257,8 @@ impl Sim {
     /// # Panics
     ///
     /// If the station is taken or the spec's baud rate differs from the
-    /// line's, or the inter-octet gap or post-drive hold exceeds its limit.
+    /// line's, or the inter-octet gap, post-drive hold or skew exceeds its
+    /// limit.
     pub fn add_master(&mut self, spec: MasterSpec) -> &mut Self {
         let station = spec.station();
         self.claim_station(station);
@@ -258,6 +267,7 @@ impl Sim {
             "station {station}: core baud rate differs from the line's"
         );
         let powered = spec.powered;
+        spec.skew.validate();
         self.timing.validate_post_drive(spec.adapter.post_drive);
         self.timing
             .validate_inter_octet_gap(spec.adapter.inter_octet_gap);
@@ -672,6 +682,20 @@ impl Sim {
                 }
             }
             Event::ScriptSend { node, send } => self.script_send(node, send),
+            Event::AppSend {
+                node,
+                incarnation,
+                destination,
+                npdu,
+            } => {
+                // Dropped, not refused, if the node lost power since: its
+                // application's state went with it.
+                if self.master_mut(node).is_some_and(|master| {
+                    master.incarnation == incarnation && master.core.is_some()
+                }) {
+                    self.enqueue_now(node, destination, &npdu, NetworkPriority::Normal);
+                }
+            }
             Event::Enqueue {
                 node,
                 destination,

@@ -99,7 +99,7 @@ use bacnet_router_core::mstp_core::{
 };
 use bacnet_router_core::npdu::MAX_NPDU;
 use bacnet_router_core::router::{
-    Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received,
+    Action, Counters, Dest, Discard, Event, Groups, Host, Kind, Options, Received,
 };
 use bacnet_router_core::{Instant, PortId, RouterIn, Storage};
 
@@ -114,12 +114,20 @@ pub const HOLDS: usize = 8;
 /// Searches for unknown networks it remembers at once.
 pub const SEARCHES: usize = 4;
 
+/// Global broadcasts recorded for duplicate suppression: none. The image
+/// leaves `Options::duplicates` off, so it keeps no record, and
+/// `Router::new` would refuse the option over storage without one rather
+/// than silently suppress nothing.
+pub const DUPLICATE_RECORD: usize = 0;
+
 /// The router's storage: its ports, table, searches and an output scratch
-/// of [`MAX_NPDU`] octets.
-pub type RouterStorage = Storage<PORTS, ROUTES, HOLDS, SEARCHES>;
+/// of [`MAX_NPDU`] octets, with no duplicate record.
+pub type RouterStorage =
+    Storage<PORTS, ROUTES, HOLDS, SEARCHES, MAX_NPDU, Groups, DUPLICATE_RECORD>;
 
 /// The router as the image builds it, over storage it borrows.
-pub type RouterEngine<'m> = RouterIn<'m, PORTS, ROUTES, HOLDS, SEARCHES>;
+pub type RouterEngine<'m> =
+    RouterIn<'m, PORTS, ROUTES, HOLDS, SEARCHES, MAX_NPDU, DUPLICATE_RECORD>;
 
 /// Unicast slots in the MS/TP transmit queue. Each step's sends leave on
 /// the next token, so one is enough.

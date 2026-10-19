@@ -188,10 +188,13 @@ impl Line {
         self.owners.remove(&tx)
     }
 
-    /// Register a transmission. Its first octet starts with
+    /// Register a transmission on `timing`'s character grid: the line's,
+    /// or a skewed node's own. Its first octet starts with
     /// [`Self::start_octet`].
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin(
         &mut self,
+        timing: WireTiming,
         driver: Driver,
         octets: Vec<u8>,
         start: Instant,
@@ -202,7 +205,7 @@ impl Line {
         self.timing.validate_post_drive(post_drive);
         let id = self.next_id;
         self.next_id += 1;
-        let schedule = self.timing.schedule(start, inter_octet_gap);
+        let schedule = timing.schedule(start, inter_octet_gap);
         let data_end = schedule.end(octets.len());
         self.owners.insert(
             id,
@@ -433,6 +436,7 @@ mod tests {
         let timing = WireTiming::new(9_600);
         let mut line = Line::new(timing);
         let tx = line.begin(
+            line.timing,
             Driver::Station(1),
             vec![0x55, 0xFF],
             us(0),
@@ -466,6 +470,7 @@ mod tests {
         let timing = WireTiming::new(9_600);
         let mut line = Line::new(timing);
         let a = line.begin(
+            line.timing,
             Driver::Station(1),
             vec![0x55, 0xFF],
             us(0),
@@ -474,6 +479,7 @@ mod tests {
             Duration::ZERO,
         );
         let b = line.begin(
+            line.timing,
             Driver::Station(2),
             vec![0x55],
             us(500),
@@ -498,6 +504,7 @@ mod tests {
         let timing = WireTiming::new(9_600);
         let mut line = Line::new(timing);
         let tx = line.begin(
+            line.timing,
             Driver::Station(1),
             vec![0x55, 0xFF],
             us(0),
@@ -517,6 +524,7 @@ mod tests {
         );
 
         let cut = line.begin(
+            line.timing,
             Driver::Station(2),
             vec![0x55, 0xFF],
             us(10_000),

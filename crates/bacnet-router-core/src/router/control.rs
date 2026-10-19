@@ -20,7 +20,7 @@ use crate::message::{
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::npdu::{NetworkMessageType, RejectMessageReason};
 use crate::swap_apart;
-use crate::table::Learned;
+use crate::table::{Learned, RejectEffect};
 
 impl<
         const P: usize,
@@ -29,7 +29,8 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// A network message. What-Is, Number-Is and Reject are always handled
     /// here. Any other that names a DNET besides 0xFFFF and the arrival
@@ -360,7 +361,9 @@ impl<
 
     /// A received reject (Clause 6.6.3.5): applied to the table, then for
     /// the router itself or passed on, whatever its reason. A reason other
-    /// than 1 or 2 changes no route.
+    /// than 1 or 2 changes no route, and under
+    /// [`Options::next_hop_rejects`] neither does one from a router other
+    /// than the route's next.
     fn received_reject<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -381,13 +384,27 @@ impl<
         ) {
             return Received::Discarded(Discard::Denied);
         }
-        let effect = self.table.apply_reject(
-            reject.network,
-            at.port,
-            reject.reason,
-            at.now,
-            &options.timing,
-        );
+        // Under the next-hop policy, only the route's next router may
+        // change it; a direct route no reject changes anyway.
+        let off_path = options.next_hop_rejects
+            && self.table.lookup(reject.network).is_some_and(|route| {
+                !route.is_direct()
+                    && !self
+                        .table
+                        .is_served_via_peer(reject.network, at.port, at.source)
+            });
+        let effect = if off_path {
+            bump(&mut self.counters.not_next_hop);
+            RejectEffect::NotNextHop
+        } else {
+            self.table.apply_reject(
+                reject.network,
+                at.port,
+                reject.reason,
+                at.now,
+                &options.timing,
+            )
+        };
         host.observe(Event::RejectReceived {
             network: reject.network,
             reason: reject.reason,
@@ -450,6 +467,14 @@ impl<
             for network in list.iter() {
                 if self.table.is_served_via_peer(network, at.port, at.source) {
                     mark(&mut self.table, network);
+                } else if self
+                    .table
+                    .lookup(network)
+                    .is_some_and(|route| !route.is_direct())
+                {
+                    // Learned through another router: not the sender's
+                    // to curtail.
+                    bump(&mut self.counters.not_next_hop);
                 }
             }
         }

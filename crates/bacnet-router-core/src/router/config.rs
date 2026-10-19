@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use super::{GroupClassifier, Groups};
+use super::{Congestion, Duplicates, GroupClassifier, Groups};
 
 use crate::npdu::NpduLimits;
 use crate::table::{Convergence, Timing};
@@ -94,6 +94,21 @@ pub struct Options {
     pub discovery_cooldown: Duration,
     /// How long a search is remembered.
     pub discovery_age: Duration,
+    /// The router's own Router-Busy for a clogged egress port (#1697):
+    /// `None`, the default, sends none.
+    pub congestion: Option<Congestion>,
+    /// Apply a received reject to a learned route only when it came from
+    /// that route's next router (#1698). Off, the default, any sender's
+    /// reject updates the route, as Clause 6.6.3.5 reads: it names no
+    /// sender. Router-Busy and Router-Available are always scoped to the
+    /// routes through their sender (Clauses 6.6.3.6, 6.6.3.7; RB-04). Either
+    /// way, what a check leaves alone is counted in
+    /// [`Counters::not_next_hop`](super::Counters::not_next_hop), and the
+    /// message is passed on as before.
+    pub next_hop_rejects: bool,
+    /// Duplicate global-broadcast suppression (#1698): `None`, the
+    /// default, suppresses nothing.
+    pub duplicates: Option<Duplicates>,
 }
 
 impl Options {
@@ -101,8 +116,8 @@ impl Options {
     /// standard convergence, no route cap of its own, so learning may fill
     /// whatever table the [`Storage`](super::Storage) holds, 300 s learned
     /// age, a 60 s sweep, [`Timing::DEFAULT`], and a 5 s discovery cooldown
-    /// and 30 s age. Firmware sizes its table with the storage's `R` and
-    /// starts here.
+    /// and 30 s age, with every opt-in policy off. Firmware sizes its
+    /// table with the storage's `R` and starts here.
     pub const STANDARD: Self = Self {
         convergence: Convergence::Standard,
         route_cap: None,
@@ -111,6 +126,9 @@ impl Options {
         timing: Timing::DEFAULT,
         discovery_cooldown: Duration::from_secs(5),
         discovery_age: Duration::from_secs(30),
+        congestion: None,
+        next_hop_rejects: false,
+        duplicates: None,
     };
 
     /// The hosted router's values: [`STANDARD`](Self::STANDARD)'s, with
@@ -178,6 +196,12 @@ pub enum ConfigError {
     TableTooSmall,
     /// The sweep period is zero.
     ZeroSweep,
+    /// [`Options::duplicates`] is on, but the storage records no
+    /// broadcasts (its `B` is 0), so nothing would be suppressed.
+    NoDuplicateRecord,
+    /// [`Options::congestion`] is a policy
+    /// [`Congestion::is_valid`](super::Congestion::is_valid) refuses.
+    Congestion,
 }
 
 impl fmt::Display for ConfigError {
@@ -205,6 +229,13 @@ impl fmt::Display for ConfigError {
             }
             Self::TableTooSmall => f.write_str("the table can't hold every port's network"),
             Self::ZeroSweep => f.write_str("the sweep period is zero"),
+            Self::NoDuplicateRecord => {
+                f.write_str("duplicate suppression is on, but the storage records no broadcasts")
+            }
+            Self::Congestion => f.write_str(
+                "a congestion policy needs a nonzero clog time and repeat, \
+                 and a low-water mark of 1 to 99 percent",
+            ),
         }
     }
 }

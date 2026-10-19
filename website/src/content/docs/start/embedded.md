@@ -43,10 +43,10 @@ CI links each firmware image for four targets and checks it against a budget in 
 | --- | --- | --- | --- | --- |
 | `mstp` | MS/TP codec and master core, standard frames | 18,180 | 5,528 | 2,560 |
 | `mstp-extended` | the same with extended frames | 17,048 | 7,696 | 3,776 |
-| `node` | B/IP foreign-device node and its port | 15,128 | 240 | 5,904 |
-| `bbmd` | a BBMD's port and tables | 12,376 | 240 | 2,880 |
+| `node` | B/IP foreign-device node and its port | 15,128 | 240 | 6,816 |
+| `bbmd` | a BBMD's port and tables | 12,376 | 240 | 2,976 |
 | `device` | a whole MS/TP device with Who-Is and ReadProperty | 29,876 | 3,496 | 3,328 |
-| `router` | a B/IP-to-MS/TP router whose B/IP port is the BBMD | 43,320 | 15,536 | 7,072 |
+| `router` | a B/IP-to-MS/TP router whose B/IP port is the BBMD | 43,320 | 15,536 | 5,584 |
 
 What drives the RAM:
 

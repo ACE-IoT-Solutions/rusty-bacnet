@@ -116,6 +116,10 @@ pub enum Discard {
     /// Its rewrite can't be written: longer than the scratch, or with a
     /// field no NPDU may carry, such as an SNET of 0.
     Unwritable,
+    /// A global broadcast seen within the duplicate time to live
+    /// ([`Options::duplicates`](super::Options::duplicates), #1698):
+    /// neither relayed nor delivered.
+    Duplicate,
 }
 
 /// What the router knows about the frame in hand.
@@ -168,7 +172,8 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// [`Router::receive`](super::Router::receive).
     pub(super) fn receive<'f>(
@@ -254,6 +259,20 @@ impl<
             return Received::Local(local(at, npdu, at.link_group, false));
         };
         if destination.network == GLOBAL_NETWORK {
+            if let Some(duplicates) = options.duplicates {
+                // Keyed by its origin: the SNET and SADR it carries, or
+                // those a relay would add.
+                let (network, source) = npdu.source.map_or((at.network, at.source), |source| {
+                    (source.network, source.mac)
+                });
+                if self
+                    .recent
+                    .repeat(network, source, npdu.payload, at.now, duplicates.ttl)
+                {
+                    bump(&mut self.counters.duplicate_drops);
+                    return Received::Discarded(Discard::Duplicate);
+                }
+            }
             self.forward_global(at, npdu, host);
             return Received::Local(local(at, npdu, true, true));
         }
