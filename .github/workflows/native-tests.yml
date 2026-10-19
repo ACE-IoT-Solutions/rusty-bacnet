@@ -243,6 +243,11 @@ jobs:
       - name: Clippy (PyO3 bindings)
         if: ${{ !cancelled() }}
         run: cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
+      # The lean bacnet-cli without its default `tui` (#974), whose platform
+      # code differs here; ci.yml also runs its tests on Linux.
+      - name: Clippy (bacnet-cli, no default features)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
       # Private items too, as in ci.yml (#1164).
       - name: Rustdoc (every native feature, private items)
         if: ${{ !cancelled() }}

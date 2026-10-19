@@ -9,7 +9,7 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 
 | Task | Command family | Operational note |
 |---|---|---|
-| Discover devices | `discover`, `devices` | `devices` is useful with a populated session cache |
+| Discover devices | `discover`, `devices` | `devices` is useful with a populated session cache; after v0.13.0 it is removed, so use `discover --json` or the terminal UI's device list |
 | Find an object | `find --name` | The name goes in `--name` |
 | Read one or several properties | `read`, `readm` | Handle object/property errors individually |
 | Read log/list ranges | `read-range` | Bound request size and result volume |

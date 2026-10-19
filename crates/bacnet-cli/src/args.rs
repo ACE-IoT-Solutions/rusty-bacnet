@@ -409,9 +409,6 @@ pub(crate) enum Command {
         input: String,
     },
 
-    /// List cached discovered devices.
-    Devices,
-
     /// List the serial ports to pass to --mstp (a JSON array of names,
     /// possibly empty). Opens no port.
     MstpPorts,
@@ -600,7 +597,7 @@ mod tests {
             "192.0.2.10",
             "--renewal",
             "20",
-            "devices",
+            "discover",
             "--ttl",
             "60",
         ])

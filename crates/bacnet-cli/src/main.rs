@@ -278,9 +278,6 @@ async fn execute_command<T: TransportPort + 'static>(
             commands::file::file_write_cmd(client, &mac, *file_instance, *start, input, format)
                 .await?;
         }
-        Command::Devices => {
-            commands::router::devices_cmd(client, format).await?;
-        }
         Command::Bdt { .. }
         | Command::Fdt { .. }
         | Command::Register { .. }

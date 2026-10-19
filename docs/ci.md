@@ -84,7 +84,9 @@ Linux, including per-crate ones such as `bacnet-endpoint/sc-tls` and
 `bacnet-cli/pcap`. Then come the `bacnet-cli` tests with default features,
 because a few exist only when `sc-tls` or `pcap` is off, and with no default
 features, the lean CLI without the TUI (`tui` is a default feature since
-#974), whose own tests cover plain `bacnet` and `bacnet tui` without it. The last steps
+#974), whose own tests cover plain `bacnet` and `bacnet tui` without it.
+Only Linux runs the lean CLI's tests; macOS and Windows lint it with clippy
+in the native-tests workflow (and `local-macos.sh` runs both on a Mac). The last steps
 run the tests and doctests of `bacnet-types`, `bacnet-encoding` and
 `bacnet-services` with `alloc` and without `std`, the code their bare-metal
 builds compile, which the runs before leave out (see
@@ -1465,7 +1467,7 @@ Clippy runs six ways:
 
 - the workspace with every feature;
 - the PyO3 crate on its own;
-- `bacnet-cli` with no default features (without the TUI);
+- `bacnet-cli` with no default features (without the TUI), on Linux, macOS and Windows;
 - the `no_std` crates (`bacnet-time`, `bacnet-npdu`, `bacnet-mstp-codec`,
   `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`,
   `bacnet-router-core`, and `bacnet-types`,

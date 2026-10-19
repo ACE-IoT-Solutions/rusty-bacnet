@@ -5,7 +5,7 @@
 //!
 //! - **Read**: discovery, reads, finite COV subscriptions and
 //!   foreign-device registration, plus the commands that never reach a
-//!   device (`devices`, `mstp-ports`, `capture`, `sc-check`, `help`) and
+//!   device (`mstp-ports`, `capture`, `sc-check`, `help`) and
 //!   `tui`, which guards its own writes. A subscription and a registration do leave an entry
 //!   on the remote side, but only to deliver what the client watches, and
 //!   it lapses on its own: `subscribe` cancels its subscription when it
@@ -68,7 +68,6 @@ const COMMANDS: &[(&str, Class)] = &[
     ("register", Read),
     // Nothing reaches a device, or a front end whose own writes are
     // guarded one by one.
-    ("devices", Read),
     ("mstp-ports", Read),
     ("capture", Read),
     ("sc-check", Read),

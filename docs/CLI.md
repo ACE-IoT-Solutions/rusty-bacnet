@@ -133,7 +133,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `devices`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
 | write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -263,6 +263,8 @@ Otherwise it prints the usage to stderr, prints nothing on stdout, and exits
 with status 2, as for any other usage error. That happens in a pipe or a
 script, when `--no-tui` is given, when the `BACNET_NO_TUI` environment variable
 is set to anything but empty or `0`, and in a build without the `tui` feature.
+`--no-tui` and `BACNET_NO_TUI` matter only when no command is given: every
+other command ignores them.
 
 **Requirements.** stdin and stdout must be a terminal and `TERM` must not be
 `dumb`; otherwise `bacnet tui` exits 1 with a hint on stderr and writes nothing
@@ -710,7 +712,6 @@ and object. With `--json` it prints an array, empty when nothing answered:
 The name goes in `--name`.
 
 ```bash
-bacnet devices                           # list cached discovered devices
 bacnet whois-router                      # routers and the networks they reach
 ```
 
@@ -792,6 +793,9 @@ Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
 **Write multiple properties (WritePropertyMultiple):** each object is followed
 by its comma-separated `property=value` writes, each value with an optional
 `@priority`. Like `write`, it needs `--allow-write` and takes routed targets.
+A value can't contain a comma, since the comma separates the writes. The
+TUI's `:writem` command takes a different grammar, `OBJECT PROPERTY VALUE`
+groups separated by spaces; the one-shot takes `OBJECT prop=value,...`.
 
 ```bash
 bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2 pv=68.0
@@ -980,7 +984,6 @@ concurrent-writer no-clobber guarantee.
 ```bash
 bacnet whois-router                       # routers and the networks they reach
 bacnet whois-router --dnet 2 --wait 5     # only the router to network 2
-bacnet devices                            # list cached discovered devices
 ```
 
 `whois-router` broadcasts a Who-Is-Router-To-Network and lists each router
