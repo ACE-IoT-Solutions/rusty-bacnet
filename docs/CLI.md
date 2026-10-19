@@ -321,8 +321,9 @@ certificate and key PEM files. Only the paths are saved, never PEM text, key
 bytes or passwords; relative paths are made absolute on save. A blank VMAC or
 device UUID is generated when the profile is first saved (or first connected,
 for a hand-written file) and kept from then on, so the device UUID stays the
-same across restarts. The failover URL is saved and validated, but this build
-connects to the primary hub only.
+same across restarts. A profile with a failover URL connects with automatic
+reconnect, using the client's default policy, and turns to the failover hub
+when the primary can't be reached.
 
 Before a connection is attempted, the preview checks that each named file
 opens for reading, and on Unix warns when the key file is readable by group or

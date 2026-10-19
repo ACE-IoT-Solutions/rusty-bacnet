@@ -229,6 +229,55 @@ async fn a_missing_ca_fails_validation_by_path_and_nothing_dials_the_hub() {
     }
 }
 
+/// The profile's failover hub reaches the client builder: with the primary
+/// down, the connection attempt dials the failover hub instead.
+#[cfg(feature = "sc-tls")]
+#[tokio::test]
+async fn an_sc_profile_dials_its_failover_hub_when_the_primary_is_down() {
+    let primary = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let down = primary.local_addr().unwrap().port();
+    drop(primary);
+    let failover = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let mut p = sc_profile(files.path(), &format!("wss://127.0.0.1:{down}"));
+    p.sc.as_mut().unwrap().failover_hub_url = Some(format!(
+        "wss://127.0.0.1:{}",
+        failover.local_addr().unwrap().port()
+    ));
+    Store::new(root.path().into())
+        .save("site", &p, true)
+        .unwrap();
+    let (sink, mut events) = EventSink::channel(16);
+    let (commands, rx) = mpsc::channel(16);
+    let task = coordinator::spawn(
+        None,
+        Some(service(root.path())),
+        sink,
+        rx,
+        Default::default(),
+    );
+    commands
+        .send(Command::Profile(Request::Connect {
+            name: "site".into(),
+            profile: p,
+            attest: true,
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        event(&mut events).await,
+        WorkerEvent::Profile(Ok(_))
+    ));
+    let (socket, _) = tokio::time::timeout(Duration::from_secs(30), failover.accept())
+        .await
+        .expect("the failover hub is dialled")
+        .unwrap();
+    drop((socket, failover));
+    drop(events);
+    quit(commands, task).await;
+}
+
 #[tokio::test]
 async fn a_flags_only_bip_run_connects_without_touching_the_config_dir() {
     let root = tempfile::tempdir().unwrap();
@@ -298,7 +347,6 @@ fn sc_connection_screen_frames_at_120x40() {
         errors: vec!["CA file /etc/bacnet/site/ca.pem does not exist".into()],
         warnings: vec![
             "Key file /etc/bacnet/site/node.key is readable by group or others (mode 644); chmod 600 it.".into(),
-            "Failover hub is saved but not used yet: this build connects to the primary hub only.".into(),
         ],
     };
     let mut app = profile_app();

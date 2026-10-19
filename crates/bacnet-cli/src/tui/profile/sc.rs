@@ -15,8 +15,8 @@ use std::path::PathBuf;
 pub(crate) struct Sc {
     /// The primary hub, a `wss://` URI.
     pub(crate) hub_url: String,
-    /// The failover hub. Saved and validated; connecting uses the primary
-    /// until the client's failover support is wired up.
+    /// The failover hub, used after reconnects to the primary run out. A
+    /// profile that sets one also connects with the default reconnect policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) failover_hub_url: Option<String>,
     /// Trusted site CA certificates (PEM file).
@@ -102,9 +102,9 @@ impl Sc {
     }
 }
 
-/// A hub URI check done locally: `wss` scheme, a host, and a nonzero port
-/// when one is given. The transport repeats its own parse when connecting;
-/// this one only has to catch a bad URI before anything is sent.
+/// A hub URI check with no I/O: `wss` scheme, a host, and a nonzero port
+/// when one is given, with labelled messages; with `sc-tls`, also the
+/// transport's own URL check. Catches a bad URI before anything is sent.
 pub(crate) fn check_hub_url(label: &str, url: &str) -> Result<(), String> {
     let rest = url
         .get(..6)
@@ -142,6 +142,11 @@ pub(crate) fn check_hub_url(label: &str, url: &str) -> Result<(), String> {
             _ => return Err(format!("{label} port must be 1-65535")),
         }
     }
+    // Then the dialer's own parse (scheme, host, TLS server name), so a URL
+    // that passes here is one the transport accepts.
+    #[cfg(feature = "sc-tls")]
+    bacnet_transport::sc_tls::TlsWebSocket::validate_url(url)
+        .map_err(|e| format!("{label} is not usable: {e}"))?;
     Ok(())
 }
 

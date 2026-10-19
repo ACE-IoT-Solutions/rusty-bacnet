@@ -51,12 +51,6 @@ fn inspect_sc(sc: &Sc, checks: &mut Checks) {
     if let Some(warning) = key_exposure(&sc.key) {
         checks.warnings.push(warning);
     }
-    if sc.failover_hub_url.is_some() {
-        checks.warnings.push(
-            "Failover hub is saved but not used yet: this build connects to the primary hub only."
-                .into(),
-        );
-    }
 }
 
 /// Open the file for reading; a directory or an unreadable file fails.
@@ -146,15 +140,5 @@ mod tests {
         }
         std::fs::set_permissions(key, std::fs::Permissions::from_mode(0o400)).unwrap();
         assert!(inspect(&profile).warnings.is_empty());
-    }
-
-    #[test]
-    fn a_saved_failover_hub_is_flagged_as_unused() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut profile = sc_profile(dir.path());
-        profile.sc.as_mut().unwrap().failover_hub_url = Some("wss://127.0.0.1:2".into());
-        let checks = inspect(&profile);
-        assert!(checks.errors.is_empty());
-        assert!(checks.warnings.iter().any(|w| w.contains("Failover")));
     }
 }

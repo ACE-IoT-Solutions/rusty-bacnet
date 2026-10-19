@@ -155,7 +155,9 @@ fn sc_lines(profile: &Profile, lines: &mut Vec<Line<'_>>) {
     let Some(s) = &profile.sc else { return };
     lines.push(Line::raw(format!("Hub: {}", s.hub_url)));
     if let Some(failover) = &s.failover_hub_url {
-        lines.push(Line::raw(format!("Failover hub: {failover}")));
+        lines.push(Line::raw(format!(
+            "Failover hub: {failover} (with automatic reconnect)"
+        )));
     }
     lines.push(Line::raw(format!("CA file:   {}", s.ca.display())));
     lines.push(Line::raw(format!("Cert file: {}", s.cert.display())));

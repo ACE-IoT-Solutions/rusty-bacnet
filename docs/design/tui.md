@@ -497,10 +497,10 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
 
 B/IP and BACnet/SC profiles are implemented behind `tui`. The entry flow,
 schema and keys are in the [CLI reference](../CLI.md#terminal-ui). MS/TP
-profiles (#969) add a `transport` value and their own table. Connecting to an
-SC failover hub waits for the client's failover support (#967); the URL is
-already saved and validated. The shell history lives in the platform data
-directory.
+profiles (#969) add a `transport` value and their own table. An SC profile's
+failover hub goes to the client builder with the default reconnect policy,
+which the builder needs for failover; the SC status screen is #967. The shell
+history lives in the platform data directory.
 
 - Each transport keeps its settings in its own table (`[bip]` or `[sc]`), and
   exactly the one `transport` names is present. B/IP files from before SC

@@ -212,6 +212,7 @@ impl Profile {
             foreign_device: None,
             sc: false,
             sc_url: None,
+            sc_failover_url: None,
             sc_ca: None,
             sc_cert: None,
             sc_key: None,
@@ -237,6 +238,7 @@ impl Profile {
             args.min_interval_ms = sc.min_interval_ms;
             args.sc = true;
             args.sc_url = Some(sc.hub_url.clone());
+            args.sc_failover_url = sc.failover_hub_url.clone();
             args.sc_ca = Some(sc.ca.clone());
             args.sc_cert = Some(sc.cert.clone());
             args.sc_key = Some(sc.key.clone());
