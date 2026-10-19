@@ -2253,10 +2253,11 @@ All `add_*` methods must be called before `server.start()`. Objects cannot be ad
 #### Core I/O Objects
 
 ```python
-# Analog objects (units: BACnet engineering units enum value, e.g. 62 = degrees-Fahrenheit)
-server.add_analog_input(instance=1, name="Zone Temp", units=62, present_value=72.5)
-server.add_analog_output(instance=1, name="Damper Cmd", units=62)
-server.add_analog_value(instance=1, name="Setpoint", units=62)
+# Analog objects (units: BACnet engineering units enum value, e.g.
+# 62 = degrees Celsius, 64 = degrees Fahrenheit, 98 = percent)
+server.add_analog_input(instance=1, name="Zone Temp", units=64, present_value=72.5)
+server.add_analog_output(instance=1, name="Damper Cmd", units=98)
+server.add_analog_value(instance=1, name="Setpoint", units=64)
 
 # Binary objects
 server.add_binary_input(instance=1, name="Occupancy")
