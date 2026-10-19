@@ -10,6 +10,7 @@ use crate::udp_metadata::ReceivedDatagram;
 use std::net::{IpAddr, SocketAddr};
 
 /// How many times each ordering test sends a pair: the acceptance count.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 const RUNS: usize = 1_000;
 
 fn held(arrival_stamp: Option<u128>, read: u64) -> Held {
@@ -167,6 +168,7 @@ async fn datagrams_on_two_sockets_come_up_in_the_order_the_kernel_received_them(
     }
 }
 
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 fn listeners_data(listeners: &Listeners, source: Source, len: usize) -> [u8; 4] {
     listeners.data(source, len).try_into().unwrap()
 }
