@@ -45,7 +45,12 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
   application; the sends it calls for are polled after, one at a time,
   from its scratch. A port is data to it (a network number, the router's
   MAC there, its group-address rule, and the longest NPDU the port carries), so B/IP, MS/TP and the
-  hosted transports all plug in the same way.
+  hosted transports all plug in the same way. `Router::originate` sends
+  the router's own application's requests through the same table, from a
+  source address it selects. Two opt-in policies, both off by default:
+  `Options::congestion` announces Router-Busy and Router-Available for a
+  port whose egress stays full, and `Options::duplicates` drops a global
+  broadcast seen again within its time to live.
 - `bip` (feature `bip`): B/IP ports over `bacnet-bip-core`'s port
   driver (`NodePort` in normal or foreign-device mode, `BbmdPort` for a
   BBMD, which answers management requests from its tables). `BipPort`

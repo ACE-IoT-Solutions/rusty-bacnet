@@ -105,6 +105,14 @@ impl TransportPort for Port {
 }
 
 pub(super) async fn start(count: usize) -> (BACnetRouter, mpsc::Receiver<ReceivedApdu>, Vec<Peer>) {
+    start_with(count, RouterOptions::new()).await
+}
+
+/// [`start`], with `options`.
+pub(super) async fn start_with(
+    count: usize,
+    options: RouterOptions,
+) -> (BACnetRouter, mpsc::Receiver<ReceivedApdu>, Vec<Peer>) {
     let (ports, mut peers): (Vec<_>, Vec<_>) = (0..count)
         .map(|index| {
             let (frames, incoming) = mpsc::channel(64);
@@ -128,9 +136,7 @@ pub(super) async fn start(count: usize) -> (BACnetRouter, mpsc::Receiver<Receive
             )
         })
         .unzip();
-    let started = BACnetRouter::start(ports, RouterOptions::new())
-        .await
-        .unwrap();
+    let started = BACnetRouter::start(ports, options).await.unwrap();
     for peer in &mut peers {
         for kind in [0x13, 0x01] {
             let announcement = sending(peer).await;

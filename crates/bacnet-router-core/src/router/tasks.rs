@@ -181,13 +181,14 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// Write the front task's next output into the scratch as the current
     /// one. `false` when no task is left.
     pub(super) fn write_task(&mut self) -> bool {
         let Some(task) = self.out.front() else {
-            return false;
+            return self.write_announcement();
         };
         let mut next = None;
         // The output's length (`None`: the writer refused it), kind, cause

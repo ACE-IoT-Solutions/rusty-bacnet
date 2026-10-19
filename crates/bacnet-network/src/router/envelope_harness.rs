@@ -15,6 +15,7 @@ use std::sync::Arc;
 use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_npdu::NetworkMessageType;
 use bacnet_npdu::NpduLimits;
+use bacnet_router_core::router::Options;
 use bacnet_router_core::Instant;
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportProvenance};
 use bacnet_types::MacAddr;
@@ -23,7 +24,7 @@ use tokio::sync::mpsc;
 
 use super::control_policy::ControlGate;
 use super::dispatch::{Outputs, PortDispatch, Shared};
-use super::engine::{tokio_clock, Engine};
+use super::engine::{tokio_clock, Engine, OPTIONS};
 use super::local_control::LocalControl;
 use super::port_groups::PortGroups;
 use super::send_queue;
@@ -187,12 +188,12 @@ impl Harness {
     pub(super) fn with_limits(networks: &[u16], limits: &[NpduLimits]) -> Self {
         let capacities = vec![16; networks.len()];
         let gate = Arc::new(ControlGate::permissive());
-        Self::build_with(networks, limits, gate, &capacities)
+        Self::build_with(networks, limits, gate, &capacities, OPTIONS)
     }
 
     fn build(networks: &[u16], gate: Arc<ControlGate>, capacities: &[usize]) -> Self {
         let limits = vec![NpduLimits::default(); networks.len()];
-        Self::build_with(networks, &limits, gate, capacities)
+        Self::build_with(networks, &limits, gate, capacities, OPTIONS)
     }
 
     fn build_with(
@@ -200,6 +201,7 @@ impl Harness {
         limits: &[NpduLimits],
         gate: Arc<ControlGate>,
         capacities: &[usize],
+        options: Options,
     ) -> Self {
         let configs: Vec<_> = (0u8..)
             .zip(networks.iter().zip(limits))
@@ -212,7 +214,7 @@ impl Harness {
                 )
             })
             .collect();
-        let engine = Engine::new(&configs, tokio_clock()).unwrap();
+        let engine = Engine::new(&configs, tokio_clock(), options).unwrap();
         let shared = Arc::new(Shared {
             engine,
             gate: Arc::clone(&gate),

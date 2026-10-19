@@ -57,6 +57,23 @@ pub struct Counters {
     pub refused: u32,
     /// Actions dropped because a call came before they were polled.
     pub undrained: u32,
+    /// Router-Busy announcements started for a clogged port, repeats
+    /// included (#1697). One may take several messages.
+    pub busy_announced: u32,
+    /// Router-Available announcements started for a port that drained
+    /// (#1697).
+    pub available_announced: u32,
+    /// Global broadcasts dropped as repeats of one seen within the
+    /// [`Duplicates`](super::Duplicates) time to live (#1698).
+    pub duplicate_drops: u32,
+    /// Networks a received reject or flow-control message named whose
+    /// learned route goes through another router, left unchanged (#1698):
+    /// rejects under [`Options::next_hop_rejects`](super::Options::next_hop_rejects),
+    /// Router-Busy and Router-Available always.
+    pub not_next_hop: u32,
+    /// Requests the router's own application sent through the engine
+    /// ([`Router::originate`](super::Router::originate), #1699).
+    pub originated: u32,
 }
 
 impl Counters {
@@ -78,6 +95,11 @@ impl Counters {
         egress_too_long: 0,
         refused: 0,
         undrained: 0,
+        busy_announced: 0,
+        available_announced: 0,
+        duplicate_drops: 0,
+        not_next_hop: 0,
+        originated: 0,
     };
 }
 
