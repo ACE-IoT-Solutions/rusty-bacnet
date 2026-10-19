@@ -103,6 +103,16 @@ class LicenseFilesTests(unittest.TestCase):
                 with self.assertRaisesRegex(tpn.NoticesError, f"no longer has {path}"):
                     tpn.license_files(self.package(root, name="aws-lc-sys"))
 
+    def test_vendored_licence_for_its_pinned_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = tpn.license_files(self.package(root, name="tui-tree-widget", version="0.24.1"))
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0][0].startswith("tui-tree-widget-0.24.1-LICENSE: "))
+            self.assertIn("Copyright (c) EdJoPaTo", files[0][1])
+            with self.assertRaisesRegex(tpn.NoticesError, "vendored licence is for 0.24.1"):
+                tpn.license_files(self.package(root, name="tui-tree-widget", version="0.25.0"))
+
     def test_licence_comment_must_still_be_a_licence(self):
         with tempfile.TemporaryDirectory() as tmp:
             header = Path(tmp, "x.h")
