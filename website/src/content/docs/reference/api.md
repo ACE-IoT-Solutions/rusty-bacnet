@@ -17,6 +17,20 @@ Start with the [integration overview](/rusty-bacnet/development/overview/) and [
 | [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/docs/CLI.md) | Flags and transport prerequisites |
 | [Architecture](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/docs/architecture.md) | Crate composition, packet paths and lifecycle ownership |
 
+## Crate documentation on docs.rs
+
+docs.rs builds the rustdoc of each library crate on crates.io when a version is published. A crate's page opens on its latest published version; choose the version your `Cargo.toml` names from the page's version menu. A version's page is built from that version's source: on `dev`, each crate's README is its rustdoc landing page and its `[package.metadata.docs.rs]` profile picks the features documented.
+
+| Crates | Use them for |
+|---|---|
+| [`bacnet-types`](https://docs.rs/bacnet-types), [`bacnet-encoding`](https://docs.rs/bacnet-encoding), [`bacnet-services`](https://docs.rs/bacnet-services) | Enumerations and values, the application-layer codec, and service request and response types (also `no_std` with an allocator) |
+| [`bacnet-time`](https://docs.rs/bacnet-time), [`bacnet-mstp-codec`](https://docs.rs/bacnet-mstp-codec), [`bacnet-mstp-core`](https://docs.rs/bacnet-mstp-core), [`bacnet-bip-codec`](https://docs.rs/bacnet-bip-codec), [`bacnet-bip-core`](https://docs.rs/bacnet-bip-core), [`bacnet-router-core`](https://docs.rs/bacnet-router-core) | The portable `no_std` frame codecs and sans-IO MS/TP, B/IP and router cores |
+| [`bacnet-transport`](https://docs.rs/bacnet-transport), [`bacnet-network`](https://docs.rs/bacnet-network) | The hosted data links and the network layer and router |
+| [`bacnet-endpoint-core`](https://docs.rs/bacnet-endpoint-core), [`bacnet-endpoint`](https://docs.rs/bacnet-endpoint) | Shared endpoints that combine requester and responder roles on one transport |
+| [`bacnet-objects`](https://docs.rs/bacnet-objects), [`bacnet-client`](https://docs.rs/bacnet-client), [`bacnet-server`](https://docs.rs/bacnet-server) | The object database, the standalone client and the standalone server |
+
+`bacnet-cli` is a program; use the CLI reference above for it. A crate added on `dev` after the release gets a docs.rs page once a release publishes it.
+
 For source checkout rustdoc, select the features used by your application. Do not assume every workspace crate is published or that a published documentation page matches the current checkout. Use the [shared endpoint guide](/rusty-bacnet/development/shared-endpoints/) to compare requester, responder and source Audit scope before choosing that owner.
 
 A type constant alone does not prove that a bundled server implements an object family.

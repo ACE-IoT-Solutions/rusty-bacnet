@@ -60,12 +60,12 @@ async fn full_read_property_round_trip() {
                 PropertyIdentifier::PRESENT_VALUE
             );
 
-            // Build a ReadPropertyACK with a Real value (72.5)
+            // Build a ReadPropertyACK with a Real value (72.0)
             let ack = ReadPropertyACK {
                 object_identifier: rp_req.object_identifier,
                 property_identifier: rp_req.property_identifier,
                 property_array_index: rp_req.property_array_index,
-                property_value: vec![0x44, 0x42, 0x90, 0x00, 0x00], // app-tagged Real 72.5
+                property_value: vec![0x44, 0x42, 0x90, 0x00, 0x00], // app-tagged Real 72.0
             };
             let mut ack_buf = BytesMut::new();
             ack.encode(&mut ack_buf);
