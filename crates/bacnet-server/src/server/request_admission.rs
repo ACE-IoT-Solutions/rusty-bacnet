@@ -6,10 +6,13 @@ use std::sync::{Arc, Mutex};
 use super::request_peer::CanonicalRequester;
 
 use bacnet_types::error::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 
 #[path = "recovery_classifier.rs"]
 mod recovery_classifier;
+#[cfg(test)]
+#[path = "request_admission_slot_tests.rs"]
+mod slot_tests;
 pub(super) use recovery_classifier::confirmed_class;
 
 /// Global and logical-peer top-level handler limits with a strict recovery reserve.
@@ -48,7 +51,8 @@ impl Default for RequestAdmissionPolicy {
 }
 
 impl RequestAdmissionPolicy {
-    /// Reject zero and limits that the underlying semaphore cannot represent.
+    /// Reject zero and limits above tokio's `Semaphore::MAX_PERMITS`, the
+    /// bound these limits have always had.
     pub fn validate(&self) -> Result<(), Error> {
         for (name, value) in [
             ("max_confirmed_in_flight", self.max_confirmed_in_flight),
@@ -147,8 +151,13 @@ pub(super) struct Admission {
     recovery_enabled: bool,
 }
 
+/// One class's capacity. `held` counts the handlers that hold a slot here;
+/// [`Admission::try_enter`] takes one with a compare-and-swap, so a full
+/// pool rejects at once and nothing ever waits for a slot. A semaphore did
+/// this before (#1713): its release took a lock on every request.
 struct Pool {
-    permits: Arc<Semaphore>,
+    limit: usize,
+    held: AtomicUsize,
     peer_limit: usize,
     peers: Mutex<HashMap<CanonicalRequester, usize>>,
     active: AtomicUsize,
@@ -162,7 +171,8 @@ struct Pool {
 impl Pool {
     fn new(limit: usize, peer_limit: usize) -> Arc<Self> {
         Arc::new(Self {
-            permits: Arc::new(Semaphore::new(limit)),
+            limit,
+            held: AtomicUsize::new(0),
             peer_limit,
             peers: Mutex::new(HashMap::new()),
             active: AtomicUsize::new(0),
@@ -173,6 +183,28 @@ impl Pool {
             closed: AtomicU64::new(0),
         })
     }
+
+    /// Take a slot unless all `limit` are held.
+    fn take_slot(&self) -> bool {
+        let mut held = self.held.load(Ordering::Relaxed);
+        while held < self.limit {
+            match self.held.compare_exchange_weak(
+                held,
+                held + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(now) => held = now,
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
+    fn free_slots(&self) -> usize {
+        self.limit - self.held.load(Ordering::Relaxed)
+    }
 }
 
 pub(super) struct Guard {
@@ -180,7 +212,6 @@ pub(super) struct Guard {
     // Counters only: recovery never registers in the ordinary peer map.
     aggregate: Option<Arc<Pool>>,
     peer: Option<CanonicalRequester>,
-    _permit: OwnedSemaphorePermit,
 }
 
 impl Drop for Guard {
@@ -198,6 +229,7 @@ impl Drop for Guard {
         for pool in std::iter::once(&self.pool).chain(self.aggregate.iter()) {
             pool.active.fetch_sub(1, Ordering::Relaxed);
         }
+        self.pool.held.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -261,15 +293,15 @@ impl Admission {
             }
             return Err(Rejection::Closed);
         }
-        let permit = Arc::clone(&pool.permits).try_acquire_owned().map_err(|_| {
+        if !pool.take_slot() {
             pool.overloaded.fetch_add(1, Ordering::Relaxed);
             pool.global_overloaded.fetch_add(1, Ordering::Relaxed);
             if let Some(total) = aggregate {
                 total.overloaded.fetch_add(1, Ordering::Relaxed);
                 total.global_overloaded.fetch_add(1, Ordering::Relaxed);
             }
-            Rejection::Overloaded
-        })?;
+            return Err(Rejection::Overloaded);
+        }
         // Spawn serialization belongs to RequestTasks. Peer registrations are
         // partition-local, while confirmed counters remain inclusive. Only one
         // map is locked, so no cross-partition registration or rollback is needed.
@@ -285,6 +317,7 @@ impl Admission {
                     total.overloaded.fetch_add(1, Ordering::Relaxed);
                     total.peer_overloaded.fetch_add(1, Ordering::Relaxed);
                 }
+                pool.held.fetch_sub(1, Ordering::Release);
                 return Err(Rejection::Overloaded);
             }
             *peers.entry(peer.clone()).or_default() += 1;
@@ -300,7 +333,6 @@ impl Admission {
             pool: Arc::clone(pool),
             aggregate: aggregate.map(Arc::clone),
             peer,
-            _permit: permit,
         })
     }
 
