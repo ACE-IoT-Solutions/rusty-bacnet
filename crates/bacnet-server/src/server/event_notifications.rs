@@ -19,6 +19,17 @@ use crate::event_enrollment::{CommittedEventEnrollmentDelivery, CommittedEventEn
 mod recipient_lookup;
 use recipient_lookup::matched_recipients_or_log;
 
+/// Whether a committed projection needs Event_Message_Texts.
+#[derive(Clone, Copy)]
+enum MessageTexts {
+    /// Intrinsic reporters serve it; failing to read it fails closed.
+    Required,
+    /// Event Enrollment serves it as an optional row (Table 12-14). An object
+    /// that doesn't (UNKNOWN_PROPERTY) sends no message text; any other
+    /// failure, or a value that isn't a CharacterString, still fails closed.
+    Optional,
+}
+
 /// Read one exact committed transition coordinate through the object contract.
 ///
 /// Required properties are projected while the caller still owns the database
@@ -30,6 +41,7 @@ use recipient_lookup::matched_recipients_or_log;
 fn read_committed_history_snapshot(
     object: &dyn BACnetObject,
     coordinate: EventTransition,
+    message_texts: MessageTexts,
 ) -> Option<CommittedHistorySnapshot> {
     let array_index = u32::try_from(coordinate.index() + 1)
         .expect("three event transition coordinates fit in u32");
@@ -44,11 +56,19 @@ fn read_committed_history_snapshot(
         return None;
     }
 
-    let PropertyValue::CharacterString(message_text) = object
-        .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, Some(array_index))
-        .ok()?
-    else {
-        return None;
+    let message_text = match (
+        object.read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, Some(array_index)),
+        message_texts,
+    ) {
+        (Ok(PropertyValue::CharacterString(message_text)), _) => message_text,
+        (
+            Err(Error::Protocol {
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
+            }),
+            MessageTexts::Optional,
+        ) => String::new(),
+        _ => return None,
     };
 
     Some(CommittedHistorySnapshot {
@@ -81,9 +101,9 @@ pub(super) fn resolve_committed_event_enrollment_transition(
     };
 
     let coordinate = change.transition();
-    let history_snapshot = db
-        .get(&oid)
-        .and_then(|object| read_committed_history_snapshot(object, coordinate))?;
+    let history_snapshot = db.get(&oid).and_then(|object| {
+        read_committed_history_snapshot(object, coordinate, MessageTexts::Optional)
+    })?;
     Some((
         oid,
         distribute,
@@ -135,10 +155,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
 
         let recipient_clock = confirm_event_timestamp(db, staged_timestamp).clock;
-        let history_snapshot = match db
-            .get(oid)
-            .and_then(|object| read_committed_history_snapshot(object, coordinate))
-        {
+        let history_snapshot = match db.get(oid).and_then(|object| {
+            read_committed_history_snapshot(object, coordinate, MessageTexts::Required)
+        }) {
             Some(snapshot) => snapshot,
             None => {
                 debug!(

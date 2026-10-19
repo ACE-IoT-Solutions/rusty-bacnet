@@ -306,15 +306,18 @@ fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnro
 
 /// An Event Enrollment's committed Event_Message_Texts entry is its
 /// notification's message text: none for the empty entry it commits by
-/// default, the configured text otherwise (#1507), and no notification at all
-/// when the entry can't be read, as for an intrinsic reporter.
+/// default, the configured text otherwise (#1507). An object that doesn't
+/// serve the property sends no text, while a malformed entry or a refused
+/// read suppresses the notification.
 #[test]
 fn event_enrollment_projection_reads_committed_message_without_mutation() {
     let configured = IndexedHistoryRead::Value(PropertyValue::CharacterString("high".into()));
     for (instance, (message, expected)) in [
         (empty_message_read(), Some(None)),
         (configured, Some(Some("high".to_owned()))),
-        (IndexedHistoryRead::Missing, None),
+        (IndexedHistoryRead::Missing, Some(None)),
+        (IndexedHistoryRead::Value(PropertyValue::Unsigned(7)), None),
+        (IndexedHistoryRead::Unreadable, None),
     ]
     .into_iter()
     .enumerate()
