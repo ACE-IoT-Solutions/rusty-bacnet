@@ -195,6 +195,9 @@ async fn run(
                     }
                     Command::Connect { interface, broadcast } => {
                         if active.is_some() { reject(&sink, "disconnect before reconnecting").await; continue; }
+                        // Like Reconnect: a profile session connects only through
+                        // its reviewed preview, never through the interface picker.
+                        if profiles.is_some() { reject(&sink, "review the profile before connecting").await; continue; }
                         if let Some(plan) = &mut plan {
                             plan.args.interface = interface; plan.args.broadcast = broadcast;
                             plan.await_interface = false;

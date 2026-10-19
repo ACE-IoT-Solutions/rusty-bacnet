@@ -42,7 +42,7 @@ pub(super) async fn connected(events: &mut mpsc::Receiver<WorkerEvent>, generati
     }
 }
 
-async fn disconnected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64) {
+pub(super) async fn disconnected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64) {
     loop {
         if event(events).await == (WorkerEvent::Disconnected { generation }) {
             return;

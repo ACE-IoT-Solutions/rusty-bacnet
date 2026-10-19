@@ -45,6 +45,17 @@ pub(crate) struct Prepared {
     pub(crate) resolved: Profile,
 }
 
+/// `p` without what a first connect fills in: the SC identity and the
+/// attestation time. Two instances racing that first connect differ only here.
+fn first_use_neutral(p: &Profile) -> Profile {
+    let mut p = p.clone();
+    p.authorized_at_unix = None;
+    if let Some(sc) = &mut p.sc {
+        (sc.vmac, sc.device_uuid) = (None, None);
+    }
+    p
+}
+
 /// Owns the store and command-line overrides for a profile-enabled session.
 pub(crate) struct Service {
     pub(crate) store: Result<Store, String>,
@@ -88,6 +99,14 @@ impl Service {
         previous: Option<Profile>,
     ) -> Result<Reply, String> {
         let store = self.store()?;
+        let stored = if create {
+            None
+        } else {
+            Some(store.load(name)?)
+        };
+        if !create && previous != stored {
+            return Err("profile changed on disk; reload before saving".into());
+        }
         if let Some(sc) = &mut profile.sc {
             for path in [&mut sc.ca, &mut sc.cert, &mut sc.key] {
                 if !path.as_os_str().is_empty() {
@@ -95,12 +114,15 @@ impl Service {
                         .map_err(|e| format!("cannot resolve {}: {e}", path.display()))?;
                 }
             }
+            // An identity, once stored, outlives every edit (Annex AB.1.5.3):
+            // only a hand edit of the file can change it.
+            if let Some(kept) = stored.as_ref().and_then(|p| p.sc.as_ref()) {
+                sc.vmac = kept.vmac.or(sc.vmac);
+                sc.device_uuid = kept.device_uuid.or(sc.device_uuid);
+            }
             sc.assign_identity()?;
         }
         self.overrides.resolve(&profile)?;
-        if !create && previous.as_ref() != Some(&store.load(name)?) {
-            return Err("profile changed on disk; reload before saving".into());
-        }
         store.save(name, &profile, create)?;
         self.loaded(name, profile)
     }
@@ -144,6 +166,19 @@ impl Service {
         }
         if changed {
             store.save(name, &profile, false)?;
+            // Another instance may have saved its own first identity at the
+            // same moment, and the last rename wins: connect as what is on
+            // disk, so every instance uses the one identity that persisted.
+            let on_disk = store.load(name)?;
+            // Only the identity and the attestation time may differ.
+            if on_disk.authorized_at_unix.is_none()
+                || first_use_neutral(&on_disk) != first_use_neutral(&profile)
+            {
+                return Err(
+                    "profile changed on disk; reload and review it before connecting".into(),
+                );
+            }
+            profile = on_disk;
         }
         store.workspace(name)?;
         let resolved = self.overrides.resolve(&profile)?;

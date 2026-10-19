@@ -565,6 +565,8 @@ fn setup_readline() -> Result<ShellEditor, Box<dyn std::error::Error>> {
     rl.set_helper(Some(helper));
 
     if let Some(path) = history_path() {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let _ = crate::paths::adopt_legacy_history(home.as_deref(), &path);
         let _ = rl.load_history(&path);
     }
     Ok(rl)

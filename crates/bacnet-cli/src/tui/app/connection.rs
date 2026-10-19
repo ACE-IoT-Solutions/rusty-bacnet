@@ -65,6 +65,11 @@ pub(crate) const SC_LABELS: [&str; 12] = [
     "Dangerous",
 ];
 
+/// Positions of the VMAC and device UUID in [`SC_LABELS`].
+pub(crate) const VMAC_FIELD: usize = 6;
+/// See [`VMAC_FIELD`].
+pub(crate) const UUID_FIELD: usize = 7;
+
 /// State retained while a connection is running or the dialog is closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Connection {
@@ -121,6 +126,19 @@ impl Connection {
             overrides,
             pending: false,
         }
+    }
+    /// Whether editor field `i` shows an SC identity that is already
+    /// assigned, and so can't be edited here (Annex AB.1.5.3).
+    pub(crate) fn identity_locked(&self, i: usize) -> bool {
+        let Some(sc) = self.saved.as_ref().and_then(|p| p.sc.as_ref()) else {
+            return false;
+        };
+        self.transport == Transport::Sc
+            && match i {
+                VMAC_FIELD => sc.vmac.is_some(),
+                UUID_FIELD => sc.device_uuid.is_some(),
+                _ => false,
+            }
     }
     /// The editor's field labels.
     pub(crate) fn labels(&self) -> &'static [&'static str] {
@@ -241,8 +259,14 @@ impl Connection {
             s.ca = PathBuf::from(&f[3]);
             s.cert = PathBuf::from(&f[4]);
             s.key = PathBuf::from(&f[5]);
-            s.vmac = optional(&f[6], "VMAC must be 6 hex bytes, not all 0 or all FF")?;
-            s.device_uuid = optional(&f[7], "Device UUID must be a nonzero UUID")?;
+            // An assigned identity is read-only here (it came from `saved`);
+            // only a new profile's blank or typed values are taken.
+            if !self.identity_locked(VMAC_FIELD) {
+                s.vmac = optional(&f[6], "VMAC must be 6 hex bytes, not all 0 or all FF")?;
+            }
+            if !self.identity_locked(UUID_FIELD) {
+                s.device_uuid = optional(&f[7], "Device UUID must be a nonzero UUID")?;
+            }
             s.timeout_ms = f[8]
                 .parse()
                 .map_err(|_| "Timeout must be an unsigned number")?;
@@ -299,6 +323,13 @@ impl Connection {
                 if !self.creating && self.focus == 0 {
                     self.focus = count - 1;
                 }
+                None
+            }
+            (Screen::Edit, Key::Char(_) | Key::Backspace) if self.identity_locked(self.focus) => {
+                self.error = Some(
+                    "The VMAC and device UUID are kept for good; change them by editing the profile file."
+                        .into(),
+                );
                 None
             }
             (Screen::Edit, Key::Char(ch)) => {

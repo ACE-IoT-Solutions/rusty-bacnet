@@ -799,7 +799,14 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::OpenWhoIs => app.open_who_is(),
         Action::OpenConnection => app.open_connection(),
         Action::Connection(key) => app.connection_key(key, &mut out),
-        Action::Disconnect => app.disconnect(&mut out),
+        Action::Disconnect => {
+            // From the connection screen, stay there to watch the link go down.
+            let stay = matches!(app.overlay, Overlay::Connection);
+            app.disconnect(&mut out);
+            if stay {
+                app.overlay = Overlay::Connection;
+            }
+        }
         Action::Reconnect => {
             if matches!(app.link, Link::Down | Link::Failed(_)) {
                 if app.connection.is_some() {

@@ -2,7 +2,7 @@
 //! restart, refused before any dial when validation fails, the flags-only
 //! path, and the connection screen's frames for BACnet/SC.
 
-use super::connections::{connected, event};
+use super::connections::{connected, disconnected, event};
 use super::*;
 use crate::tui::app::connection::{Connection, Screen};
 use crate::tui::app::{Link, Overlay};
@@ -131,6 +131,135 @@ fn connecting_an_sc_profile_switches_the_status_bar_to_sc() {
     assert!(screen(&mut app, 120, 40).contains("x disconnect"));
     assert_eq!(press(&mut app, KeyCode::Char('x')), [Command::Disconnect]);
     assert_eq!(app.link, Link::Disconnecting);
+    assert_eq!(app.overlay, Overlay::Connection, "x stays on the screen");
+    worker(&mut app, WorkerEvent::Disconnected { generation: 0 });
+    assert_eq!(app.link, Link::Down);
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("c connect") && !text.contains("x disconnect"));
+}
+
+/// Editing a saved SC profile never changes its identity: the fields are
+/// read-only in the editor, and a save keeps what is stored whatever the
+/// request carries (Annex AB.1.5.3).
+#[test]
+fn editing_an_sc_profile_keeps_its_identity() {
+    use crate::tui::app::connection::UUID_FIELD;
+    let root = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    let p = sc_profile(files.path(), "wss://127.0.0.1:47808");
+    let Ok(Reply::Loaded { profile: saved, .. }) = service.save("hub", p, true, None) else {
+        panic!("save");
+    };
+    let identity = saved.sc.as_ref().map(|s| (s.vmac, s.device_uuid));
+    let mut app = profile_app();
+    worker(&mut app, WorkerEvent::Profile(service.load("hub")));
+    press(&mut app, KeyCode::Char('e'));
+    while app.connection.as_ref().unwrap().focus != UUID_FIELD {
+        press(&mut app, KeyCode::Tab);
+    }
+    let before = app.connection.as_ref().unwrap().fields[UUID_FIELD].clone();
+    for _ in 0..40 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    type_text(&mut app, "0");
+    let connection = app.connection.as_ref().unwrap();
+    assert_eq!(connection.fields[UUID_FIELD], before, "read-only");
+    assert!(connection.error.as_ref().unwrap().contains("profile file"));
+    assert!(screen(&mut app, 120, 40).contains("(read-only)"));
+    // Change something else, then save through the service.
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "0");
+    let commands = press(&mut app, KeyCode::Enter);
+    let [Command::Profile(Request::Save {
+        name,
+        profile,
+        previous,
+        ..
+    })] = commands.as_slice()
+    else {
+        panic!("expected a save, got {commands:?}");
+    };
+    assert_eq!(
+        profile.sc.as_ref().map(|s| (s.vmac, s.device_uuid)),
+        identity
+    );
+    let Ok(Reply::Loaded {
+        profile: edited, ..
+    }) = service.save(name, profile.clone(), false, previous.clone())
+    else {
+        panic!("save after edit");
+    };
+    assert_eq!(edited.sc.as_ref().unwrap().timeout_ms, 60000);
+    assert_eq!(
+        edited.sc.as_ref().map(|s| (s.vmac, s.device_uuid)),
+        identity
+    );
+    // A request with the identity blanked out still keeps the stored one.
+    let mut blanked = edited.clone();
+    let sc = blanked.sc.as_mut().unwrap();
+    (sc.vmac, sc.device_uuid) = (None, None);
+    let Ok(Reply::Loaded { profile: kept, .. }) = service.save("hub", blanked, false, Some(edited))
+    else {
+        panic!("save with blanks");
+    };
+    assert_eq!(kept.sc.as_ref().map(|s| (s.vmac, s.device_uuid)), identity);
+    let on_disk = Store::new(root.path().into()).load("hub").unwrap();
+    assert_eq!(
+        on_disk.sc.as_ref().map(|s| (s.vmac, s.device_uuid)),
+        identity
+    );
+}
+
+/// The interface picker's Connect never starts a profile session, even
+/// after one ran: only the reviewed preview connects a profile.
+#[tokio::test]
+async fn a_profile_session_refuses_the_interface_pickers_connect() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut p = Profile::default();
+    p.bip_mut().interface = Ipv4Addr::LOCALHOST;
+    p.bip_mut().port = 0;
+    p.bip_mut().broadcast = Ipv4Addr::new(127, 0, 0, 255);
+    store.save("local", &p, true).unwrap();
+    let (sink, mut events) = EventSink::channel(32);
+    let (commands, rx) = mpsc::channel(16);
+    let task = coordinator::spawn(
+        None,
+        Some(service(root.path())),
+        sink,
+        rx,
+        Default::default(),
+    );
+    let connect = Command::Connect {
+        interface: Ipv4Addr::LOCALHOST,
+        broadcast: Ipv4Addr::new(127, 0, 0, 255),
+    };
+    commands.send(connect.clone()).await.unwrap();
+    assert!(matches!(
+        event(&mut events).await,
+        WorkerEvent::Rejected { .. }
+    ));
+    // Connect the profile, disconnect, and try the picker's Connect again.
+    commands
+        .send(Command::Profile(Request::Connect {
+            name: "local".into(),
+            profile: p,
+            attest: true,
+        }))
+        .await
+        .unwrap();
+    connected(&mut events, 1).await;
+    commands.send(Command::Disconnect).await.unwrap();
+    disconnected(&mut events, 1).await;
+    commands.send(connect).await.unwrap();
+    match event(&mut events).await {
+        WorkerEvent::Rejected { error } => assert!(error.contains("review the profile"), "{error}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(events.try_recv().is_err(), "no session was started");
+    drop(events);
+    quit(commands, task).await;
 }
 
 async fn quit(commands: mpsc::Sender<Command>, task: tokio::task::JoinHandle<()>) {

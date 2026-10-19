@@ -110,10 +110,15 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
             .into_iter()
             .rev()
             .collect();
+        let locked = connection.identity_locked(i);
         let text = format!(
             "{} {label:<13} {tail}{}",
             if focused { ">" } else { " " },
-            if focused { "_" } else { "" }
+            match (locked, focused) {
+                (true, _) => " (read-only)",
+                (false, true) => "_",
+                (false, false) => "",
+            }
         );
         lines.push(Line::styled(
             text,
@@ -141,7 +146,11 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
                 "Hub URLs are wss://. Files are PEM paths; only the paths are saved.",
             ));
             lines.push(Line::raw(
-                "Blank VMAC / UUID: generated once on save, then kept.",
+                if connection.identity_locked(crate::tui::app::connection::UUID_FIELD) {
+                    "VMAC / UUID are kept for good; to change them, edit the profile file."
+                } else {
+                    "Blank VMAC / UUID: generated once on save, then kept."
+                },
             ));
         }
     }

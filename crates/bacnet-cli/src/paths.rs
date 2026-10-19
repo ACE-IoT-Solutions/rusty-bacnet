@@ -3,7 +3,7 @@
 //!
 //! Resolution is pure: the environment and the platform directories are
 //! passed in, so each OS's layout is testable without touching the real
-//! environment. Nothing here creates a directory.
+//! environment. Only [`adopt_legacy_history`] writes anything.
 
 use directories::ProjectDirs;
 #[cfg(any(feature = "tui", test))]
@@ -52,10 +52,60 @@ pub(crate) fn history_file(dirs: Option<&ProjectDirs>) -> Option<PathBuf> {
     dirs.map(|dirs| dirs.data_dir().join(HISTORY_FILE))
 }
 
+/// The history file of earlier releases, `$HOME/.bacnet_history`. Only the
+/// `HOME` form is adopted: the working-directory fallback those releases used
+/// without `HOME` (the usual case on Windows) is not a reliable place to look.
+pub(crate) const LEGACY_HISTORY_FILE: &str = ".bacnet_history";
+
+/// Copy the legacy history once into `history` when that file doesn't exist
+/// yet. Returns whether it copied. The legacy file is left in place.
+pub(crate) fn adopt_legacy_history(
+    home: Option<&std::path::Path>,
+    history: &std::path::Path,
+) -> std::io::Result<bool> {
+    let Some(legacy) = home.map(|home| home.join(LEGACY_HISTORY_FILE)) else {
+        return Ok(false);
+    };
+    if history.exists() || !legacy.is_file() {
+        return Ok(false);
+    }
+    if let Some(dir) = history.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::copy(&legacy, history)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn legacy_history_is_copied_once_and_only_from_home() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let history = data.path().join("bacnet").join(HISTORY_FILE);
+        // Nothing to adopt: no HOME, or no legacy file under it.
+        assert!(!adopt_legacy_history(None, &history).unwrap());
+        assert!(!adopt_legacy_history(Some(home.path()), &history).unwrap());
+        assert!(!history.exists());
+        std::fs::write(
+            home.path().join(LEGACY_HISTORY_FILE),
+            "read 10.0.0.1 ai:1 pv\n",
+        )
+        .unwrap();
+        assert!(adopt_legacy_history(Some(home.path()), &history).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&history).unwrap(),
+            "read 10.0.0.1 ai:1 pv\n"
+        );
+        assert!(home.path().join(LEGACY_HISTORY_FILE).exists());
+        // Once the new file exists, it is never overwritten.
+        std::fs::write(&history, "newer\n").unwrap();
+        assert!(!adopt_legacy_history(Some(home.path()), &history).unwrap());
+        assert_eq!(std::fs::read_to_string(&history).unwrap(), "newer\n");
+    }
 
     fn dirs() -> ProjectDirs {
         project_dirs().expect("CI runners have a home directory")

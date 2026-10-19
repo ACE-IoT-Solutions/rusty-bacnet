@@ -203,7 +203,8 @@ The shell provides:
 - **Command history** with history-based hints, saved as `shell_history` in the
   platform data directory (`~/.local/share/bacnet` or `$XDG_DATA_HOME/bacnet`
   on Linux, `~/Library/Application Support/bacnet` on macOS,
-  `%APPDATA%\bacnet\data` on Windows)
+  `%APPDATA%\bacnet\data` on Windows). The first start copies an existing
+  `$HOME/.bacnet_history` there once
 - **Default target** via the `target` command (omit target from subsequent commands)
 - **BBMD auto-renewal** at 80% of TTL when registered via `register`
 - **Colored output** (green for success/values, red for errors, cyan for addresses, dimmed for labels)
@@ -307,8 +308,10 @@ may still run until cancellation is accepted or the connection is retired.
 In the profile picker, Up/Down choose, Enter previews, `n` creates a B/IP
 profile, `s` creates a BACnet/SC profile and `r` reloads the list. In a
 preview, `e` edits, `r` reloads the file and re-checks it, `p` returns to the
-list, `n` or `s` creates another profile, and `x` disconnects a live session. The editor uses Tab/Shift-Tab and
-Backspace; Enter saves without connecting. Save errors retain the draft.
+list, `n` or `s` creates another profile, and `x` disconnects a live session
+while the dialog stays open. The editor uses Tab/Shift-Tab and Backspace;
+Enter saves without connecting. Once an SC profile has a VMAC and device UUID,
+the editor shows them read-only; change them only by editing the file. Save errors retain the draft.
 Esc explicitly discards it and returns to the saved preview (or the picker
 for a new profile), where `r` reloads from disk. If a file changed externally,
 the refused save leaves that file untouched; discard, reload and edit again.
