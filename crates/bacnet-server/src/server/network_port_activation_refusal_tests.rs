@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::network_port_mode_tests::port_oid;
 use super::*;
-use crate::server::reinitialize::{response, Requester};
+use crate::server::reinitialize::{response, AfterReply, Requester};
 use bacnet_services::device_mgmt::ReinitializeDeviceRequest;
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::bip_port::{BbmdChanges, BbmdTables, BipPortMode};
@@ -91,7 +91,7 @@ async fn reinitialize(
     db: &RwLock<ObjectDatabase>,
     handler: &ReinitializeHandler,
     state: ReinitializedState,
-) -> Apdu {
+) -> (Apdu, AfterReply) {
     let mut data = BytesMut::new();
     ReinitializeDeviceRequest {
         reinitialized_state: state,
@@ -160,7 +160,9 @@ async fn a_refused_dry_run_answers_before_the_handler() {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(())
         });
-        assert_invalid_configuration(&reinitialize(&db, &handler, state).await);
+        let (reply, hooks) = reinitialize(&db, &handler, state).await;
+        assert_invalid_configuration(&reply);
+        assert!(hooks.is_empty(), "{state:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "{state:?}");
         assert!(changes_pending(&db).await);
         assert_eq!(tables.activated.load(Ordering::SeqCst), 0);
@@ -168,26 +170,51 @@ async fn a_refused_dry_run_answers_before_the_handler() {
 }
 
 /// A refusal after the handler, a race with the transport, is answered
-/// the same way, as an Error, and the values stay pending.
+/// the same way, as an Error, and the values stay pending. The restart the
+/// handler registered to run after the reply is dropped unrun (#1565).
 #[tokio::test]
 async fn a_late_activation_refusal_is_answered_the_same_way() {
     let tables = Arc::new(Tables::default());
     let (db, _lease) = database(&tables);
     let racing = Arc::clone(&tables);
-    let handler: ReinitializeHandler = Arc::new(move |_, _| {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let restarts = Arc::clone(&ran);
+    let handler: ReinitializeHandler = Arc::new(move |context, _| {
+        let restarts = Arc::clone(&restarts);
+        context.after_reply(move || {
+            restarts.fetch_add(1, Ordering::SeqCst);
+        });
         racing.refuse_activation.store(true, Ordering::SeqCst);
         Ok(())
     });
-    let reply = reinitialize(&db, &handler, ReinitializedState::ACTIVATE_CHANGES).await;
-    assert_invalid_configuration(&reply);
-    assert!(changes_pending(&db).await);
-    assert_eq!(tables.activated.load(Ordering::SeqCst), 0);
+    for state in [
+        ReinitializedState::ACTIVATE_CHANGES,
+        ReinitializedState::WARMSTART,
+    ] {
+        let (reply, hooks) = reinitialize(&db, &handler, state).await;
+        assert_invalid_configuration(&reply);
+        assert!(hooks.is_empty(), "{state:?}");
+        hooks.run();
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "{state:?}");
+        assert!(changes_pending(&db).await);
+        assert_eq!(tables.activated.load(Ordering::SeqCst), 0);
+    }
 
     // Once the transport takes them again, the next request activates them.
     tables.refuse_activation.store(false, Ordering::SeqCst);
-    let accept: ReinitializeHandler = Arc::new(|_, _| Ok(()));
-    let reply = reinitialize(&db, &accept, ReinitializedState::ACTIVATE_CHANGES).await;
+    let accepted = Arc::clone(&ran);
+    let accept: ReinitializeHandler = Arc::new(move |context, _| {
+        let accepted = Arc::clone(&accepted);
+        context.after_reply(move || {
+            accepted.fetch_add(1, Ordering::SeqCst);
+        });
+        Ok(())
+    });
+    let (reply, hooks) = reinitialize(&db, &accept, ReinitializedState::ACTIVATE_CHANGES).await;
     assert!(matches!(reply, Apdu::SimpleAck(_)), "{reply:?}");
     assert!(!changes_pending(&db).await);
     assert_eq!(tables.activated.load(Ordering::SeqCst), 1);
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "not before the reply");
+    hooks.run();
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
 }

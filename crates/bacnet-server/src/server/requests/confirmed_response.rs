@@ -307,15 +307,16 @@ pub(in crate::server) fn error_fields(error: &Error) -> (ErrorClass, ErrorCode) 
 }
 
 /// Send an encoded unsegmented response APDU, handing it off on an MS/TP
-/// reply channel when one waits for it.
+/// reply channel when one waits for it. Returns whether the response was
+/// handed off: taken by the reply channel, or accepted by the transport.
 pub(in crate::server) async fn send_unsegmented_response<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
     apdu: BytesMut,
     target: ResponseTarget<'_>,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     pending: Option<PendingConfirmedRequest>,
-) {
-    send_response(network, apdu, target, reply_tx, true, pending).await;
+) -> bool {
+    send_response(network, apdu, target, reply_tx, true, pending).await
 }
 
 /// `response` encoded, in a buffer sized for it.
@@ -451,7 +452,7 @@ async fn send_response<T: TransportPort + 'static>(
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     log_errors: bool,
     pending: Option<PendingConfirmedRequest>,
-) {
+) -> bool {
     let ResponseTarget {
         source_mac,
         source_network,
@@ -462,8 +463,8 @@ async fn send_response<T: TransportPort + 'static>(
     } else {
         reply_tx
     };
+    let apdu_bytes = buf.freeze();
     if let Some(tx) = reply_tx {
-        let apdu_bytes = buf.freeze();
         match network.encode_response_for_handoff(
             bacnet_network::layer::IssuedApdu {
                 apdu: &apdu_bytes,
@@ -483,41 +484,30 @@ async fn send_response<T: TransportPort + 'static>(
                 if !handed_off && log_errors {
                     warn!("MS/TP reply receiver closed before response handoff");
                 }
+                return handed_off;
             }
             Err(error) => {
                 if log_errors {
                     warn!(%error, "Failed to encode NPDU for MS/TP reply");
                 }
-                if let Err(error) = BACnetServer::<T>::issue_terminal_response(
-                    network,
-                    &apdu_bytes,
-                    source_mac,
-                    source_network,
-                    route,
-                    pending,
-                )
-                .await
-                {
-                    if log_errors {
-                        warn!(%error, "Failed to send response");
-                    }
-                }
             }
         }
-    } else if let Err(error) = BACnetServer::<T>::issue_terminal_response(
+    }
+    let sent = BACnetServer::<T>::issue_terminal_response(
         network,
-        &buf,
+        &apdu_bytes,
         source_mac,
         source_network,
         route,
         pending,
     )
-    .await
-    {
+    .await;
+    if let Err(error) = &sent {
         if log_errors {
             warn!(%error, "Failed to send response");
         }
     }
+    sent.is_ok()
 }
 
 impl<T: TransportPort + 'static> BACnetServer<T> {

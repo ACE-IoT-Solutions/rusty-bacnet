@@ -7472,16 +7472,23 @@ handler directly, as its unit tests would; outside `bacnet-transport` only
 class and code instead. The rules:
 
 - The SimpleACK leaves only after the handler returns, so it must not restart
-  inline. Accept or refuse, prepare, and schedule the restart, backup or
-  restore step for after the reply (Clause 16.4.2).
-- Nothing yet signals when the SimpleACK has left (#1565), so any delay before
-  restarting is best effort, and on MS/TP it can need longer, since a
-  postponed reply waits for the token. `BACnetServer::stop()` seals responses
-  and aborts request tasks before joining them, so a restart path that stops
-  the server before the reply has left drops the SimpleACK.
-- On a full server, an accepted WARMSTART or COLDSTART immediately ends
-  DISABLE_INITIATION, cancels its timer and resumes held COV (Clause 16.1.2),
-  even if the reply later fails.
+  inline. Accept or refuse, prepare, and register the restart, backup or
+  restore step with `ReinitializeContext::after_reply(hook)` (Clause 16.4.2).
+- The server runs each registered hook, in order and with no server lock
+  held, once the SimpleACK has been handed to the transport (#1565). On an
+  MS/TP reply channel that is the handoff to the node's reply slot, and the
+  frame can still wait for the token, so a restart that tears the port down
+  should let the transport drain first. A
+  request answered with an Error never runs its hooks: a refusal, a password
+  failure, a handler panic, or a Network Port activation the transport
+  refused. Neither does a reply that could not be handed over (the requester
+  retries) or a request task `BACnetServer::stop()` aborted first. Hooks run
+  on the request's task, so keep them short and spawn longer work; a panic in
+  one is logged and the next still runs. Start any `stop()` from a hook, never
+  from the handler.
+- On a full server, an accepted WARMSTART or COLDSTART ends
+  DISABLE_INITIATION as the handler accepts it, cancels its timer and resumes
+  held COV (Clause 16.1.2), even if the reply later fails.
 - It runs synchronously on a runtime worker with the database write-locked:
   keep it quick and hand slow work, such as writing backup files, to a task.
 - Its edits through `&mut ObjectDatabase` are raw: they skip what
@@ -7505,8 +7512,6 @@ use bacnet_types::enums::{ErrorClass, ErrorCode, ReinitializedState};
 let (restart_tx, mut restart_rx) = tokio::sync::mpsc::channel(1);
 tokio::spawn(async move {
     if let Some(state) = restart_rx.recv().await {
-        // Best effort: nothing yet reports that the SimpleACK has left (#1565).
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         restart_device(state); // application code
     }
 });
@@ -7516,11 +7521,10 @@ let server = BACnetServer::bip_builder()
     .on_reinitialize(move |request: &ReinitializeContext, _db: &mut ObjectDatabase| {
         match request.state {
             ReinitializedState::WARMSTART | ReinitializedState::COLDSTART => {
-                // Accept now; the task above restarts after its delay.
-                restart_tx.try_send(request.state).map_err(|_| Error::Protocol {
-                    class: ErrorClass::DEVICE,
-                    code: ErrorCode::CONFIGURATION_IN_PROGRESS,
-                })
+                // Accept now; restart once the SimpleACK has been handed off.
+                let (restart_tx, state) = (restart_tx.clone(), request.state);
+                request.after_reply(move || drop(restart_tx.try_send(state)));
+                Ok(())
             }
             _ => Err(Error::Protocol {
                 class: ErrorClass::SERVICES,
@@ -8319,8 +8323,10 @@ the Device and identity then advertise ReinitializeDevice next to RP (and WP
 when writes are on).
 
 The handler rules are the server's, with one addition: the session answers
-inbound requests on a single dispatch task, so a slow or blocking handler
-stalls every request behind it. A panic or a returned Reject is answered
+inbound requests on a single dispatch task, so a slow or blocking handler, or
+after-reply hook, stalls every request behind it. The hooks registered with
+`ReinitializeContext::after_reply` run once the egress reports the reply sent,
+or the reply channel has taken it. A panic or a returned Reject is answered
 `SERVICES / OTHER` and the session keeps serving. A close that wins while the
 request waits for the database refuses it before the handler runs.
 

@@ -20,17 +20,22 @@ use super::*;
 ///
 /// - **Reply first, restart later.** The SimpleACK goes out only after the
 ///   handler returns, so it must not restart the device inline. Accept or
-///   refuse, prepare, and schedule the restart (or the backup or restore
-///   step) to run after the reply: Clause 16.4.2 has the device acknowledge
-///   the request before it shuts down.
-/// - **No reply signal yet.** Nothing tells the application when the
-///   SimpleACK has left (#1565), so any delay before restarting is best
-///   effort, and on MS/TP it can need longer: a postponed reply waits for
-///   the token. [`BACnetServer::stop`] seals responses and aborts request
-///   tasks before joining them, so a restart path that stops the server
-///   before the reply has left drops the SimpleACK. On a full server, accepted
-///   WARMSTART/COLDSTART ends DISABLE_INITIATION immediately (Clause 16.1.2),
-///   cancels its timer and resumes held COV, even if the reply later fails.
+///   refuse, prepare, and register the restart (or the backup or restore
+///   step) with [`ReinitializeContext::after_reply`]: Clause 16.4.2 has the
+///   device acknowledge the request before it shuts down.
+/// - **The after-reply hook.** It runs once the SimpleACK has been handed
+///   to the transport (#1565). On an MS/TP reply channel that is the
+///   handoff to the node's reply slot, and the frame can still wait for the
+///   token, so a restart that tears the port down lets it drain first. It
+///   never runs for a request answered
+///   with an Error: the handler refused it or panicked, or the Network Port
+///   activation below failed. Nor does it run when the reply could not be
+///   handed over; the requester retries then. [`BACnetServer::stop`] seals
+///   responses and aborts request tasks before joining them, so a restart
+///   path that stops the server starts from the hook, never from the
+///   handler. On a full server, accepted WARMSTART/COLDSTART ends
+///   DISABLE_INITIATION as the handler accepts (Clause 16.1.2), cancels its
+///   timer and resumes held COV, even if the reply later fails.
 /// - **Be quick.** It runs synchronously on a runtime worker with the object
 ///   database write-locked, so every other request waits for it. Hand slow
 ///   work, such as writing backup files, to a task. On an endpoint session a
@@ -94,6 +99,64 @@ pub struct ReinitializeContext {
     pub provenance: TransportProvenance,
     /// Confirmed-request invoke identifier.
     pub invoke_id: u8,
+    /// Work registered with [`after_reply`](Self::after_reply). Clones
+    /// share it, so a hook registered through a clone still belongs to the
+    /// request.
+    after_reply: AfterReplyHooks,
+}
+
+/// One piece of work registered with [`ReinitializeContext::after_reply`].
+type AfterReplyHook = Box<dyn FnOnce() + Send>;
+
+/// The hooks a request's handler registered, shared by its context's clones.
+#[derive(Clone, Default)]
+struct AfterReplyHooks(Arc<std::sync::Mutex<Vec<AfterReplyHook>>>);
+
+impl AfterReplyHooks {
+    fn hooks(&self) -> std::sync::MutexGuard<'_, Vec<AfterReplyHook>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn take(&self) -> AfterReply {
+        AfterReply(std::mem::take(&mut *self.hooks()))
+    }
+}
+
+/// Hooks are work the handler scheduled, not part of the request, so they
+/// never make two contexts unequal.
+impl PartialEq for AfterReplyHooks {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for AfterReplyHooks {}
+
+/// The after-reply hooks of an accepted request, taken from its context.
+/// Empty for a request answered with an Error.
+#[derive(Default)]
+#[must_use = "an accepted request's hooks run once its reply is handed off"]
+pub(in crate::server) struct AfterReply(Vec<AfterReplyHook>);
+
+impl AfterReply {
+    /// Whether no hook waits, as for every refusal.
+    #[cfg(test)]
+    pub(in crate::server) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Run each hook in registration order, once the SimpleACK has been
+    /// handed to the transport, with no server lock held. A panicking hook
+    /// is logged and the rest still run.
+    pub(in crate::server) fn run(self) {
+        for hook in self.0 {
+            if catch_unwind(AssertUnwindSafe(hook)).is_err() {
+                warn!("ReinitializeDevice after-reply hook panicked");
+            }
+        }
+    }
 }
 
 impl ReinitializeContext {
@@ -113,7 +176,25 @@ impl ReinitializeContext {
             source_network,
             provenance,
             invoke_id,
+            after_reply: AfterReplyHooks::default(),
         }
+    }
+
+    /// Run `hook` once this request's SimpleACK has been handed to the
+    /// transport, with no server lock held: the place to restart, or to
+    /// start the backup or restore step, after replying (Clause 16.4.2).
+    ///
+    /// Hooks run in the order registered, on the task that answered the
+    /// request, so each should be quick and hand longer work to a task or
+    /// thread of its own. They are dropped unrun when the request is
+    /// answered with an Error instead (the handler refused it or panicked,
+    /// or the Network Port activation after it failed), when the reply
+    /// could not be handed over, and when [`BACnetServer::stop`] aborts the
+    /// request task first. A panic in one is logged and the next still runs.
+    /// A context built with [`new`](Self::new) outside the server never runs
+    /// its hooks.
+    pub fn after_reply(&self, hook: impl FnOnce() + Send + 'static) {
+        self.after_reply.hooks().push(Box::new(hook));
     }
 
     /// Original verified direct-SC leaf and incarnation, separate from claims.
@@ -170,6 +251,10 @@ impl Requester {
 /// while the request waited refuses it before the handler runs. The guard is
 /// released before `on_accepted` runs. That callback runs synchronously on
 /// success, before reply construction and with no intervening suspension.
+///
+/// A SimpleACK comes back with the hooks the handler registered, for the
+/// caller to run once it has handed the reply off. An Error comes back with
+/// none: they were dropped here.
 pub(in crate::server) async fn response(
     db: &RwLock<ObjectDatabase>,
     request: &ConfirmedRequestPdu,
@@ -178,7 +263,7 @@ pub(in crate::server) async fn response(
     requester: Requester,
     still_open: impl FnOnce() -> Result<(), Error>,
     on_accepted: impl FnOnce(ReinitializedState),
-) -> Apdu {
+) -> (Apdu, AfterReply) {
     let outcome = match handlers::handle_reinitialize_device(&request.service_request, password) {
         Ok(state) => match handler {
             Some(handler) => {
@@ -190,25 +275,32 @@ pub(in crate::server) async fn response(
                     request.invoke_id,
                 );
                 let mut db = db.write().await;
-                still_open()
+                let outcome = still_open()
                     .and_then(|()| check_network_ports(state, &mut db))
                     .and_then(|()| invoke(handler, &context, &mut db))
-                    .and_then(|()| activate_network_ports(state, &mut db))
-                    .map(|()| state)
+                    .and_then(|()| activate_network_ports(state, &mut db));
+                // Taken under the guard, so a clone the handler kept adds
+                // nothing later. A refusal drops them here, unrun.
+                let hooks = context.after_reply.take();
+                outcome.map(|()| (state, hooks))
             }
             None => Err(services_error(ErrorCode::SERVICE_REQUEST_DENIED)),
         },
         Err(error) => Err(error),
     };
     match outcome {
-        Ok(state) => {
+        Ok((state, hooks)) => {
             on_accepted(state);
-            Apdu::SimpleAck(SimpleAck {
+            let ack = Apdu::SimpleAck(SimpleAck {
                 invoke_id: request.invoke_id,
                 service_choice: request.service_choice,
-            })
+            });
+            (ack, hooks)
         }
-        Err(error) => error_apdu_from_error(request.invoke_id, request.service_choice, &error),
+        Err(error) => (
+            error_apdu_from_error(request.invoke_id, request.service_choice, &error),
+            AfterReply::default(),
+        ),
     }
 }
 
@@ -218,7 +310,7 @@ pub(in crate::server) async fn server_response<T: TransportPort + 'static>(
     services: &super::request_services::RequestServices<T>,
     request: &ConfirmedRequestPdu,
     requester: Requester,
-) -> Apdu {
+) -> (Apdu, AfterReply) {
     let cov_resume = services.cov_table.read().await.timed().clone();
     let mut slot = services.dcc_timer.lock().await;
     let mut restart_accepted = false;
