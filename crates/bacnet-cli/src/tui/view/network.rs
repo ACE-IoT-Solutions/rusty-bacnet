@@ -132,7 +132,10 @@ fn foreign_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let (word, style) = match (snapshot, state.lease_left(app.now)) {
         (_, _) if refused => ("REFUSED".to_string(), theme.danger()),
         (Some(s), Some(left)) if s.registered => (
-            format!("registered, lease {} s left", seconds(left)),
+            format!(
+                "registered, lease {} s left (TTL; the BBMD's FDT adds 30 s grace)",
+                seconds(left)
+            ),
             theme.accent(),
         ),
         (Some(_), _) => ("not registered".to_string(), theme.warn()),
@@ -370,9 +373,10 @@ fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         );
     };
     let n = matrix.bbmds.len();
+    let shown = shown(n, area.width);
     let findings = matrix.findings.len().max(1);
     let [grid, legend, list] = Layout::vertical([
-        Constraint::Length(n as u16 + 1),
+        Constraint::Length(shown as u16 + 1 + u16::from(shown < n)),
         Constraint::Length(3),
         Constraint::Min(findings.min(8) as u16),
     ])
@@ -407,18 +411,43 @@ fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), list);
 }
 
+/// Width of a grid cell, and of the `+k more` column.
+const CELL: u16 = 5;
+const MORE: u16 = 8;
+/// The most BBMDs the grid shows; the findings below still name them all.
+const MAX_SHOWN: usize = 16;
+
+/// How many of `n` BBMDs fit a grid `width` columns wide, as rows and as
+/// columns, leaving room for a `+k more` column when some don't.
+fn shown(n: usize, width: u16) -> usize {
+    let first = ADDRESS + 4;
+    let fit = |extra: u16| usize::from(width.saturating_sub(first + extra) / (CELL + 1));
+    if n <= fit(0).min(MAX_SHOWN) {
+        n
+    } else {
+        fit(MORE + 1).min(MAX_SHOWN)
+    }
+}
+
 fn grid_table(frame: &mut Frame, area: Rect, matrix: &Matrix, theme: &Theme) {
     let n = matrix.bbmds.len();
+    let shown = shown(n, area.width);
+    let hidden = n - shown;
+    let more = || Span::styled(format!("+{hidden} more"), theme.warn());
     let mut header = vec![Span::raw("BBMD (row lists column)")];
-    header.extend((1..=n).map(|i| Span::raw(format!("#{i}"))));
-    let rows: Vec<Row> = matrix
+    header.extend((1..=shown).map(|i| Span::raw(format!("#{i}"))));
+    if hidden > 0 {
+        header.push(more());
+    }
+    let mut rows: Vec<Row> = matrix
         .bbmds
         .iter()
         .zip(&matrix.cells)
+        .take(shown)
         .enumerate()
         .map(|(i, (bbmd, cells))| {
             let mut row = vec![Span::raw(format!("#{} {bbmd}", i + 1))];
-            row.extend(cells.iter().map(|cell| {
+            row.extend(cells.iter().take(shown).map(|cell| {
                 let style = match cell {
                     Cell::Missing | Cell::Listed { mixed: true, .. } => theme.danger(),
                     Cell::Unknown => theme.warn(),
@@ -430,8 +459,12 @@ fn grid_table(frame: &mut Frame, area: Rect, matrix: &Matrix, theme: &Theme) {
             Row::new(row)
         })
         .collect();
+    if hidden > 0 {
+        rows.push(Row::new([more()]));
+    }
     let mut widths = vec![Constraint::Length(ADDRESS + 4)];
-    widths.extend(std::iter::repeat_n(Constraint::Length(5), n));
+    widths.extend(std::iter::repeat_n(Constraint::Length(CELL), shown));
+    widths.push(Constraint::Length(MORE));
     let table = Table::new(rows, widths)
         .header(Row::new(header).style(theme.accent()))
         .column_spacing(1);
@@ -453,5 +486,15 @@ mod tests {
         assert_eq!(cell_text(Cell::Unknown), "?");
         assert_eq!(seconds(Duration::from_millis(400)), 1);
         assert_eq!(seconds(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn the_grid_shows_what_fits_and_counts_the_rest() {
+        // 118 columns inside the border: all of 12, 14 of 20.
+        assert_eq!(shown(12, 118), 12);
+        assert_eq!(shown(15, 118), 15);
+        assert_eq!(shown(20, 118), 14);
+        assert_eq!(shown(40, 400), MAX_SHOWN);
+        assert_eq!(shown(3, 78), 3);
     }
 }

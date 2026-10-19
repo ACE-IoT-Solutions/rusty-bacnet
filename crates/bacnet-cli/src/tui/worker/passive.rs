@@ -80,7 +80,9 @@ pub(crate) async fn refuse(sink: &EventSink, command: Command) {
             req: Some(req),
             reason,
         }),
-        Command::Network(_) => WorkerEvent::Network(NetworkEvent::Refused(reason)),
+        Command::Network(command) => {
+            WorkerEvent::Network(NetworkEvent::Refused { command, reason })
+        }
         Command::Safety(SafetyCommand::Arm { .. }) => {
             WorkerEvent::Safety(SafetyEvent::Refused { req: None, reason })
         }

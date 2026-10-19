@@ -458,7 +458,10 @@ matrix; `r` reads again. `m` reads the BDT of every BBMD the tables lead to (up
 to 16) and shows which lists which: a peer listed one way only, a BDT without
 its own entry, a BBMD listed with different masks, and BBMDs that refuse the
 read or don't answer are flagged. Every read is a BVLC request; nothing is
-written.
+written. The matrix matches BBMDs by address, so a BBMD reached at an address
+other than its own BDT entry (behind NAT, its global address in peers' tables
+and its private one in its own) shows as two rows, one flagged with no entry
+for itself.
 
 #### Write sessions
 

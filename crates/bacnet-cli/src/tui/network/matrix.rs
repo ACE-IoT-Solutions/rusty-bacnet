@@ -105,7 +105,9 @@ impl Finding {
                     "{from} lists {to}, but {to} does not list {from}: broadcasts go one way only"
                 )
             }
-            Self::MissingSelf(bbmd) => format!("{bbmd} has no entry for itself"),
+            Self::MissingSelf(bbmd) => {
+                format!("{bbmd} has no entry for itself (Annex J.4.3.2)")
+            }
             Self::MixedMasks { peer, masks } => {
                 let masks: Vec<String> = masks.iter().map(Ipv4Addr::to_string).collect();
                 format!(

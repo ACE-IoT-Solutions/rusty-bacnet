@@ -138,7 +138,11 @@ fn matrix_flags_the_missing_entry_120x40() {
         ),
         (at_ip(2), Probe::Table(vec![bdt_row(2, [255; 4])])),
     ];
-    worker(&mut app, WorkerEvent::Network(NetworkEvent::Survey(probes)));
+    let survey = NetworkEvent::Survey {
+        seed: at_ip(1),
+        probes,
+    };
+    worker(&mut app, WorkerEvent::Network(survey));
     let text = screen(&mut app, 120, 40);
     assert!(
         text.contains("#2 10.0.2.1:47808         MISS  uni"),
@@ -246,4 +250,63 @@ fn other_transports_and_passive_sessions_read_nothing() {
     passive.network.target = Some(at_ip(1));
     press(&mut passive, KeyCode::Char('4'));
     assert!(press(&mut passive, KeyCode::Char('m')).is_empty());
+}
+
+#[test]
+fn answers_for_an_earlier_target_are_dropped() {
+    let mut app = registered();
+    press(&mut app, KeyCode::Char('m'));
+    assert!(app.network.surveying);
+    // `:bbmd` moves to another BBMD while the survey from 10.0.1.1 runs.
+    press(&mut app, KeyCode::Char(':'));
+    type_text(&mut app, "bbmd 10.0.4.1");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.network.reading);
+    let late = NetworkEvent::Survey {
+        seed: at_ip(1),
+        probes: vec![(at_ip(1), Probe::Table(vec![bdt_row(1, [255; 4])]))],
+    };
+    worker(&mut app, WorkerEvent::Network(late));
+    assert_eq!(app.network.matrix, None, "the old survey's matrix shows");
+    // The automatic read of the registration's BBMD, or a refusal of an
+    // earlier request, leaves the new read waiting.
+    let auto = NetworkEvent::Tables {
+        bbmd: at_ip(1),
+        local: LOCAL,
+        bdt: Ok(Vec::new()),
+        fdt: Ok(Vec::new()),
+    };
+    worker(&mut app, WorkerEvent::Network(auto));
+    let refused = NetworkEvent::Refused {
+        command: NetworkCommand::Survey { seed: at_ip(1) },
+        reason: "busy".into(),
+    };
+    worker(&mut app, WorkerEvent::Network(refused));
+    assert!(app.network.reading);
+    let refused = NetworkEvent::Refused {
+        command: NetworkCommand::Tables { bbmd: at_ip(4) },
+        reason: "busy".into(),
+    };
+    worker(&mut app, WorkerEvent::Network(refused));
+    assert!(!app.network.reading);
+}
+
+#[test]
+fn a_large_matrix_shows_what_fits_and_counts_the_rest() {
+    let mut app = registered();
+    press(&mut app, KeyCode::Char('m'));
+    let everyone: Vec<BdtRow> = (1..=20).map(|last| bdt_row(last, [255; 4])).collect();
+    let probes = (1..=20)
+        .map(|last| (at_ip(last), Probe::Table(everyone.clone())))
+        .collect();
+    let survey = NetworkEvent::Survey {
+        seed: at_ip(1),
+        probes,
+    };
+    worker(&mut app, WorkerEvent::Network(survey));
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("#14   +6 more"), "{text}");
+    assert!(!text.contains("#15"), "{text}");
+    assert!(text.contains("#14 10.0.14.1:47808"), "{text}");
+    assert!(text.contains("All 20 BDTs agree"), "{text}");
 }

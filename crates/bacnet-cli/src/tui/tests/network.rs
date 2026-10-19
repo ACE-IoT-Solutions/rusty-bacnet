@@ -274,6 +274,20 @@ async fn silent_and_refusing_peers_are_named() {
     let mut plain = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let _rx = plain.start().await.unwrap();
     let plain_at = address_of(plain.local_mac()).unwrap();
+    // Read directly, a node that is no BBMD refuses both tables.
+    let mut net = Net::start(plan(None)).await;
+    net.command_line(&format!("bbmd {plain_at}")).await;
+    net.pump_until("the refusals", |app| app.network.fdt.is_some())
+        .await;
+    let state = &net.app.network;
+    let refused = |result: Result<(), &String>| {
+        result.is_err_and(|error| error.starts_with("refused: BVLC-Result"))
+    };
+    let bdt = state.bdt.as_ref().unwrap().result.as_ref().map(|_| ());
+    let fdt = state.fdt.as_ref().unwrap().result.as_ref().map(|_| ());
+    assert!(refused(bdt), "{bdt:?}");
+    assert!(refused(fdt), "{fdt:?}");
+    net.stop().await;
     set_bdt(&a, &[a_at, silent_at, plain_at]);
     let matrix = survey(a_at).await;
     assert!(matrix

@@ -74,14 +74,14 @@ pub(crate) async fn run<T: TransportPort + 'static>(
             () = sink.cancelled() => break,
             command = commands.recv() => match command {
                 None => break,
-                Some(_) if bip.is_none() => {
+                Some(command) if bip.is_none() => {
                     let reason = "the Network screen needs BACnet/IP".to_string();
-                    sink.deliver(WorkerEvent::Network(NetworkEvent::Refused(reason))).await;
+                    sink.deliver(WorkerEvent::Network(NetworkEvent::Refused { command, reason })).await;
                 }
                 Some(command) if running == Some(command) || queue.contains(&command) => {}
-                Some(_) if queue.len() >= MAX_QUEUED => {
+                Some(command) if queue.len() >= MAX_QUEUED => {
                     let reason = "the network worker is busy; try again".to_string();
-                    sink.deliver(WorkerEvent::Network(NetworkEvent::Refused(reason))).await;
+                    sink.deliver(WorkerEvent::Network(NetworkEvent::Refused { command, reason })).await;
                 }
                 Some(command) => queue.push_back(command),
             },
@@ -130,7 +130,10 @@ async fn execute(bip: &BipTransport, command: NetworkCommand, local: SocketAddrV
                 fdt,
             }
         }
-        NetworkCommand::Survey { seed } => NetworkEvent::Survey(survey(bip, seed).await),
+        NetworkCommand::Survey { seed } => NetworkEvent::Survey {
+            seed,
+            probes: survey(bip, seed).await,
+        },
     }
 }
 

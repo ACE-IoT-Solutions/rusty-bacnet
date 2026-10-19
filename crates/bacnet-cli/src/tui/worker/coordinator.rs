@@ -131,14 +131,14 @@ async fn run(
                     Command::Safety(request) => {
                         forward_safety(active.as_ref(), request, generation, &sink, &options.safety).await;
                     }
-                    Command::Network(_) => {
+                    Command::Network(request) => {
                         // A refused read is answered, so the screen stops waiting.
                         let error = match &active {
                             Some(active) => active.commands.try_send(command).err().map(|e| format!("session command not admitted: {e}")),
                             None => Some("no active connection".into()),
                         };
                         if let Some(error) = error {
-                            let event = Box::new(WorkerEvent::Network(NetworkEvent::Refused(error)));
+                            let event = Box::new(WorkerEvent::Network(NetworkEvent::Refused { command: request, reason: error }));
                             sink.deliver(WorkerEvent::Session { generation, event }).await;
                         }
                     }

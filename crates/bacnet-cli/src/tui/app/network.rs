@@ -149,10 +149,12 @@ impl App {
                 bdt,
                 fdt,
             } => {
-                state.reading = false;
+                // An answer for another BBMD, such as the automatic FDT read
+                // of the registration's BBMD after `:bbmd`, is not this one's.
                 if state.target != Some(bbmd) {
                     return;
                 }
+                state.reading = false;
                 state.own = fdt.as_ref().ok().and_then(|fdt| own_entry(fdt, local));
                 state.local = Some(local);
                 state.bdt = Some(Fetched {
@@ -166,13 +168,25 @@ impl App {
                     result: fdt,
                 });
             }
-            NetworkEvent::Survey(probes) => {
+            NetworkEvent::Survey { seed, probes } => {
+                // A survey from a BBMD that is no longer the target would
+                // show its matrix under the new one.
+                if state.target != Some(seed) {
+                    return;
+                }
                 state.surveying = false;
                 state.matrix = Some((Matrix::build(&probes), now));
             }
-            NetworkEvent::Refused(reason) => {
-                state.reading = false;
-                state.surveying = false;
+            NetworkEvent::Refused { command, reason } => {
+                match command {
+                    NetworkCommand::Tables { bbmd } if state.target == Some(bbmd) => {
+                        state.reading = false;
+                    }
+                    NetworkCommand::Survey { seed } if state.target == Some(seed) => {
+                        state.surveying = false;
+                    }
+                    NetworkCommand::Tables { .. } | NetworkCommand::Survey { .. } => {}
+                }
                 self.flash(reason, FLASH_FOR);
             }
         }
@@ -205,6 +219,9 @@ impl App {
             state.fdt = None;
             state.own = None;
             state.matrix = None;
+            // Answers to the old target's requests are dropped now.
+            state.reading = false;
+            state.surveying = false;
         }
         self.screen = Screen::Network;
         self.read_tables(out);

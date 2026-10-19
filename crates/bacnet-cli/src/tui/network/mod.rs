@@ -139,12 +139,21 @@ pub(crate) fn address_of(mac: &[u8]) -> Option<SocketAddrV4> {
     ))
 }
 
+/// The prefix [`probe_error`] gives a BVLC-Result that is not a NAK.
+const UNEXPECTED: &str = "unexpected reply";
+
 /// Sort a failed table read into a refusal or no answer. The transport
-/// reports a BBMD's BVLC-Result NAK as an encoding error naming the
-/// result; anything else (a timeout, a send failure, a malformed reply)
-/// means the BBMD could not be read.
+/// reports a BVLC-Result answering the read as an encoding error naming the
+/// result: a NAK is a refusal, while a success answers no read and is an
+/// unexpected reply. Anything else (a timeout, a send failure, a malformed
+/// reply) means the BBMD could not be read.
 pub(crate) fn probe_error(error: &Error) -> Probe {
     match error {
+        Error::Encoding(text)
+            if text.starts_with("BVLC-Result") && text.contains("SUCCESSFUL_COMPLETION") =>
+        {
+            Probe::Unreachable(format!("{UNEXPECTED}: {text}"))
+        }
         Error::Encoding(text) if text.starts_with("BVLC-Result") => Probe::Nak(text.clone()),
         Error::Timeout(_) => Probe::Unreachable("no answer".into()),
         other => Probe::Unreachable(other.to_string()),
@@ -155,6 +164,7 @@ pub(crate) fn probe_error(error: &Error) -> Probe {
 pub(crate) fn read_error(error: &Error) -> String {
     match probe_error(error) {
         Probe::Nak(text) => format!("refused: {text}"),
+        Probe::Unreachable(text) if text.starts_with(UNEXPECTED) => text,
         Probe::Unreachable(text) => format!("unreachable: {text}"),
         Probe::Table(_) | Probe::Skipped => unreachable!("probe_error makes no table"),
     }
@@ -177,9 +187,19 @@ pub(crate) enum NetworkEvent {
         fdt: Result<Vec<FdtRow>, String>,
     },
     /// Every BDT a survey read, in the order it found the BBMDs.
-    Survey(Vec<(SocketAddrV4, Probe)>),
+    Survey {
+        /// Where the survey started.
+        seed: SocketAddrV4,
+        /// What it read.
+        probes: Vec<(SocketAddrV4, Probe)>,
+    },
     /// The command was not carried out.
-    Refused(String),
+    Refused {
+        /// The command refused.
+        command: NetworkCommand,
+        /// Why.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -226,6 +246,13 @@ mod tests {
         assert!(read_error(&nak).starts_with("refused"));
         let silent = Error::Timeout(Duration::from_secs(3));
         assert_eq!(probe_error(&silent), Probe::Unreachable("no answer".into()));
+        // A success answers no read: not a refusal.
+        let success = Error::Encoding(format!(
+            "BVLC-Result: {:?}",
+            bacnet_transport::bvll::BvlcResultCode::SUCCESSFUL_COMPLETION
+        ));
+        assert!(matches!(probe_error(&success), Probe::Unreachable(_)));
+        assert!(read_error(&success).starts_with("unexpected reply: BVLC-Result"));
         let mac = mac("10.0.0.1:47809".parse().unwrap());
         assert_eq!(address_of(&mac), Some("10.0.0.1:47809".parse().unwrap()));
         assert_eq!(address_of(&mac[..5]), None);
