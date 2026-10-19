@@ -236,11 +236,13 @@ impl BipTransport {
     /// macOS and the BSDs, broadcasts arrive on separate receive-only
     /// listeners, and datagrams go up in the order the kernel stamped them
     /// on arrival across those sockets (#1546): a unicast that depends on a
-    /// broadcast sent just before it is handled after it. The listeners keep
-    /// only broadcasts that arrived on the interface's own link, as looked
-    /// up at start: restart the transport after its interface changes. The configured broadcast address must be
-    /// the interface's subnet broadcast or 255.255.255.255 (a loopback
-    /// interface may also name itself), or `start()` fails. On
+    /// broadcast sent just before it is handled after it; datagrams without
+    /// distinct stamps go up in the order read. The listeners keep only
+    /// broadcasts that arrived on the interface's own link, as looked up at
+    /// start: restart the transport after its interface changes. The
+    /// configured broadcast address must be the interface's subnet broadcast
+    /// or 255.255.255.255 (a loopback interface may also name itself), or
+    /// `start()` fails. On
     /// Windows one socket claims the address with `SO_EXCLUSIVEADDRUSE`; a
     /// socket already bound to the wildcard address on that port doesn't stop
     /// it, and under Windows' strong host model a multihomed BBMD reaches a

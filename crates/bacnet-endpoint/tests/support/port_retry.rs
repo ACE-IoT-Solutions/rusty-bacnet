@@ -59,7 +59,7 @@ pub async fn bind_eventually<T>(
         match bind() {
             Ok(bound) => return Ok(bound),
             Err(err) if tokio::time::Instant::now() >= deadline => return Err(err),
-            Err(_) => tokio::task::yield_now().await,
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
         }
     }
 }

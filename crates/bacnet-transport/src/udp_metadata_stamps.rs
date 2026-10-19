@@ -76,9 +76,13 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
     if header.cmsg_type != libc::SCM_TIMESTAMPING {
         return Ok(None);
     }
-    // The software stamp, then two hardware ones; zero is no stamp.
-    let [time, ..]: [libc::timespec; 3] =
-        unsafe { unix_cmsg_payload(header, "short receive timestamp") }?;
+    // The software stamp, then two hardware ones; zero is no stamp. A short
+    // one is no stamp either: the datagram still goes up, in read order.
+    let Ok([time, ..]) =
+        (unsafe { unix_cmsg_payload::<[libc::timespec; 3]>(header, "short receive timestamp") })
+    else {
+        return Ok(None);
+    };
     let stamp = arrival_stamp(time.tv_sec, time.tv_nsec, 1_000_000_000).filter(|&stamp| stamp != 0);
     Ok(stamp.map(CmsgMetadata::ArrivalStamp))
 }
@@ -86,7 +90,7 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
 /// The control message type of a `SO_TIMESTAMP_MONOTONIC` stamp, a `u64` of
 /// Mach absolute time, from the macOS SDK's `sys/socket.h` (libc lacks it).
 #[cfg(target_vendor = "apple")]
-const SCM_TIMESTAMP_MONOTONIC: libc::c_int = 0x04;
+pub(super) const SCM_TIMESTAMP_MONOTONIC: libc::c_int = 0x04;
 
 #[cfg(target_vendor = "apple")]
 pub(super) unsafe fn unix_arrival_stamp_cmsg(
@@ -95,8 +99,9 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
     if header.cmsg_type != SCM_TIMESTAMP_MONOTONIC {
         return Ok(None);
     }
-    let ticks: u64 = unsafe { unix_cmsg_payload(header, "short receive timestamp") }?;
-    Ok(Some(CmsgMetadata::ArrivalStamp(u128::from(ticks))))
+    // A short stamp is no stamp: the datagram still goes up, in read order.
+    let ticks = unsafe { unix_cmsg_payload::<u64>(header, "short receive timestamp") }.ok();
+    Ok(ticks.map(|ticks| CmsgMetadata::ArrivalStamp(u128::from(ticks))))
 }
 
 #[cfg(any(
@@ -111,7 +116,12 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
     if header.cmsg_type != libc::SCM_TIMESTAMP {
         return Ok(None);
     }
-    let time: libc::timeval = unsafe { unix_cmsg_payload(header, "short receive timestamp") }?;
+    // A short stamp is no stamp: the datagram still goes up, in read order.
+    let Ok(time) =
+        (unsafe { unix_cmsg_payload::<libc::timeval>(header, "short receive timestamp") })
+    else {
+        return Ok(None);
+    };
     Ok(arrival_stamp(time.tv_sec, time.tv_usec, 1_000_000).map(CmsgMetadata::ArrivalStamp))
 }
 

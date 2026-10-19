@@ -185,7 +185,10 @@ impl Listeners {
     /// the others already have queued, without waiting, and hands up the
     /// earliest. A datagram found alone goes up at once, so ordering adds a
     /// read attempt per other socket and no delay. One that the kernel
-    /// stamped earlier but queued only after that check goes up next.
+    /// stamped earlier but queued only after that check goes up next. Equal
+    /// or missing stamps (coarse ticks, Linux's start-up moment) fall back to
+    /// read order, and a step of Linux's realtime clock between two arrivals
+    /// can reorder them.
     async fn recv_in_order(&mut self) -> (Source, io::Result<ReceivedDatagram>) {
         let Self {
             primary,

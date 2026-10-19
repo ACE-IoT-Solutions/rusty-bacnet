@@ -121,13 +121,19 @@ async fn only_a_transport_reading_several_sockets_asks_for_receive_times() {
         .send_to(b"three", listener_at.unwrap())
         .await
         .unwrap();
+    // Linux, macOS and the BSDs stamp; elsewhere the order is the read's.
+    let stamps = cfg!(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ));
     for _ in 0..2 {
         let (_, received) = next(&mut ordered).await;
-        let stamped = received.arrival_stamp.is_some();
-        assert_eq!(
-            stamped,
-            cfg!(any(target_os = "linux", target_vendor = "apple"))
-        );
+        assert_eq!(received.arrival_stamp.is_some(), stamps);
     }
 }
 
@@ -165,35 +171,21 @@ fn listeners_data(listeners: &Listeners, source: Source, len: usize) -> [u8; 4] 
     listeners.data(source, len).try_into().unwrap()
 }
 
-/// Where a transport can share its port by address and hear a broadcast
-/// this host sends: on Linux a loopback address, whose 127.255.255.255
-/// stays on the host; on macOS, whose loopback has no broadcast address,
-/// the default-route address and its subnet broadcast, which also goes out
-/// on that network. `None` without one.
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
-fn broadcast_reachable_address() -> Option<(Ipv4Addr, Ipv4Addr)> {
-    if cfg!(target_os = "linux") {
-        return Some((
-            Ipv4Addr::new(127, 0, 0, 2),
-            Ipv4Addr::new(127, 255, 255, 255),
-        ));
-    }
-    let route = crate::local_addresses::route_ipv4().filter(|ip| !ip.is_loopback())?;
-    Some((route, crate::local_addresses::subnet_broadcast(route)?))
-}
-
 /// A broadcast and then a unicast from one peer, sent back to back to a
 /// transport sharing its port by address, come up in that order every
 /// time: the broadcast arrives on a listener, the unicast on the address
-/// socket.
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+/// socket. Linux carries 127.255.255.255 on loopback, so nothing leaves the
+/// host. macOS gives loopback no broadcast address, and the socket-level
+/// test above covers its ordering on loopback; no test here sends off it.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_broadcast_then_a_unicast_come_up_in_that_order() {
     use crate::port_ownership::{lost_port, ATTEMPTS};
 
-    let Some((ip, subnet)) = broadcast_reachable_address() else {
-        return eprintln!("skipped: no default-route IPv4 address with a subnet broadcast");
-    };
+    let (ip, subnet) = (
+        Ipv4Addr::new(127, 0, 0, 2),
+        Ipv4Addr::new(127, 255, 255, 255),
+    );
     let _stamping = stamping_on().await;
     let mut started = None;
     for attempt in 1..=ATTEMPTS {

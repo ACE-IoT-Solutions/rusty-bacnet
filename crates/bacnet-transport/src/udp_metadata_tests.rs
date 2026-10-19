@@ -17,6 +17,30 @@ fn the_control_buffer_holds_every_message_a_datagram_carries() {
 }
 }
 
+/// A datagram already queued reads without waiting, though the reactor has
+/// not run since it arrived: the read asks the kernel, not tokio's cached
+/// readiness, which still says not ready here (#1546).
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_queued_datagram_reads_before_the_reactor_sees_it() {
+    let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let receiver = DestinationReceiver::configure(&socket, IpVersion::V4).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let socket = UdpSocket::from_std(socket.into()).unwrap();
+    let sender = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    sender
+        .send_to(b"queued", socket.local_addr().unwrap())
+        .unwrap();
+    // Blocks the only runtime thread, so the reactor can't record readiness.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut buf = [0u8; 8];
+    let received = receiver.recv_queued(&socket, &mut buf).unwrap();
+    assert_eq!(&buf[..received.len], b"queued");
+}
+
 #[tokio::test]
 async fn ipv4_loopback_destination_is_reported() {
     let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
@@ -133,4 +157,36 @@ fn a_realtime_stamp_counts_seconds_and_parts() {
     assert_eq!(stamps::arrival_stamp(-1i64, 0i64, 1_000_000_000), None);
     assert_eq!(stamps::arrival_stamp(1i64, 1_000_000i64, 1_000_000), None);
     assert_eq!(stamps::arrival_stamp(1i64, -1i64, 1_000_000), None);
+}
+
+/// A receive stamp too short to read is no stamp: it doesn't fail the read,
+/// so the datagram still goes up, in read order (#1546). A whole one reads.
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+#[test]
+fn a_short_receive_stamp_is_no_stamp() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let (kind, whole) = (
+        libc::SCM_TIMESTAMPING,
+        std::mem::size_of::<[libc::timespec; 3]>(),
+    );
+    #[cfg(target_vendor = "apple")]
+    let (kind, whole) = (stamps::SCM_TIMESTAMP_MONOTONIC, std::mem::size_of::<u64>());
+    let stamp = |payload: usize| {
+        let mut control = [0u64; 16];
+        // SAFETY: the header and its payload lie inside the aligned,
+        // initialized buffer; the payload bytes stay zero but for one.
+        unsafe {
+            let header = control.as_mut_ptr().cast::<libc::cmsghdr>();
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = kind;
+            (*header).cmsg_len = libc::CMSG_LEN(payload as _) as _;
+            *libc::CMSG_DATA(header) = 7;
+            stamps::unix_arrival_stamp_cmsg(&*header).map(|m| match m {
+                Some(CmsgMetadata::ArrivalStamp(stamp)) => Some(stamp),
+                _ => None,
+            })
+        }
+    };
+    assert_eq!(stamp(whole - 1).unwrap(), None);
+    assert!(stamp(whole).unwrap().is_some());
 }

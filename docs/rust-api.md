@@ -1028,8 +1028,10 @@ What changes in this mode:
   Datagrams without a usable stamp go up in the order read: on Linux, those
   that arrive in the moment after a host's first socket asks for stamps,
   before the kernel starts taking them; on the BSDs, two in one
-  microsecond. One that the kernel stamps earlier but queues only after the
-  transport looked goes up next.
+  microsecond. Two with equal stamps also go up in the order read, and
+  Linux stamps from the realtime clock, so a clock step between two
+  arrivals can reorder them. One that the kernel stamps earlier but queues
+  only after the transport looked goes up next.
   Windows binds one socket, which keeps arrival order. A listener that fails
   is closed with a warning, and unicast goes on.
 - **Broadcast address:** it must be the interface's subnet broadcast,

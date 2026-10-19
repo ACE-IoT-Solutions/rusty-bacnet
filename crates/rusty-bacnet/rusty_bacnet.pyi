@@ -5744,7 +5744,7 @@ class BipEndpoint:
         ``share_port_by_address`` (default False): bind the interface address
         itself, so endpoints on other addresses of this host can share the
         port. Needs an explicit interface and a nonzero port; broadcasts and
-        unicast then arrive in no fixed order.
+        unicast are still handled in the order they arrived.
         ``min_request_interval_ms`` (default 0, no pacing; at most 3,600,000,
         else ValueError) paces the client role's confirmed requests to each
         destination exactly as ``BACnetClient``'s keyword does (#1542). A

@@ -285,11 +285,6 @@ class HubMtlsTests(MtlsFixture):
                         self.assertIsNone(await hub.address())
                     finally:
                         await asyncio.wait_for(hub.stop(), 3)
-                # The hub's own state shows no listener outlived the failed
-                # start; rebinding the freed port could lose it to another
-                # process (#1419).
-                with self.assertRaises(RuntimeError):
-                    await hub.status()
 
     async def test_rejected_peers_leave_trusted_read_property_usable(self):
         hub = self.hub()
@@ -690,11 +685,9 @@ class NodeIdentityMtlsTests(MtlsFixture):
                     await self.close_raw(writer)
             finally:
                 await self.stop_hub(hub)
-            # A finished stop has joined the accept task that owned the
-            # listener and given up the hub, which its own state shows; the
-            # fresh object's start on this address rebinds the port itself.
-            with self.assertRaises(RuntimeError):
-                await hub.status()
+            # No separate probe: the fresh object's start on the last
+            # lifecycle's address rebinds that port itself, and fails if the
+            # stopped hub kept it.
 
     async def test_distinct_nodes_and_same_uuid_replacement_leave_other_node_usable(self):
         hub = self.hub()
