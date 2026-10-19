@@ -641,9 +641,19 @@ bacnet find --name "Zone Temp"           # find objects by name (WhoHas)
 bacnet find --name "Zone Temp" --wait 5  # wait 5 seconds for responses
 ```
 
+`find` prints every I-Have that answers within the wait, one row per device
+and object. With `--json` it prints an array, empty when nothing answered:
+
+```json
+[{ "device": 1234, "object": "ANALOG_INPUT:7", "name": "Zone Temp" }]
+```
+
+The one-shot command takes the name only through `--name`; the shell's
+`find` also takes it as its first word.
+
 ```bash
 bacnet devices                           # list cached discovered devices
-bacnet whois-router                      # send Who-Is-Router-To-Network
+bacnet whois-router                      # routers and the networks they reach
 ```
 
 ### Reading Properties
@@ -909,9 +919,22 @@ the interactive shell.
 ### Network and Routing
 
 ```bash
-bacnet whois-router                       # send Who-Is-Router-To-Network
+bacnet whois-router                       # routers and the networks they reach
+bacnet whois-router --dnet 2 --wait 5     # only the router to network 2
 bacnet devices                            # list cached discovered devices
 ```
+
+`whois-router` broadcasts a Who-Is-Router-To-Network and lists each router
+that answers within `--wait` seconds (default 3), at its address on the
+local network, with every network its I-Am-Router-To-Network messages
+named. With `--json` it prints an array, empty when no router answered:
+
+```json
+[{ "router": "192.168.1.1:47808", "networks": [2, 3] }]
+```
+
+A device on one of those networks is then a routed target, such as
+`bacnet read 2:1234 ai:1 pv` for device 1234 on network 2.
 
 ### BBMD Management
 
