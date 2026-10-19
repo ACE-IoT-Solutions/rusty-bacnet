@@ -547,10 +547,13 @@ subscription's increment. A combined PV write and source correction reports the
 final corrected source. The same capture and delivery fences described above
 apply; command-only fields remain absent.
 
-Color and Color Temperature retain their existing property-COV behavior. Their
-Value_Source companion/trigger contract remains unresolved under #1582 because
-the inspected object tables do not define the Status_Flags companion required
-by Table 13-1a-2's fallback.
+Color and Color Temperature with source tracking take the same noncommandable
+row (#1582). Neither appears in Table 13-1, so the row's fallback applies:
+`Present_Value` and `Status_Flags`. Neither object has `Status_Flags`, so a
+report carries `Present_Value` and `Value_Source` only, the way Table 13-1a
+leaves out flags an object doesn't have. A notification follows any
+`Present_Value` change (neither object has a `COV_Increment`) or any
+`Value_Source` change.
 
 ### APDU Types
 
