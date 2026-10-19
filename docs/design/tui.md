@@ -124,7 +124,7 @@ What M0 draws (80x24):
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, refusal banner); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
 | SC (#967) | Hub connector status (state, primary or failover hub, hub VMAC, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory and pre-dial lint (#968) are a third view on the same screen |
 | MS/TP (#969, #970) | Participant panel (`--mstp`), or the passive monitor (`tui --mstp-monitor PORT`): a station grid, the token ring with rotation and hold times, Max_Master findings, error counters, and the safe-join wizard (`J`) that hands the port to a participant through the T2 join dialog |
-| Capture (#971) | Frame list (number, UTC time, link, direction, source and destination, link message, APDU type, invoke ID, service, error/reject/abort/NAK) over a bounded ring (50k frames by default); the selected frame's decode tree beside a hex view that marks the selected field's octets; Space pauses; filters by device, MAC, network, service, PDU type, errors, broadcasts and text. Sources: the session's frame tap (#957) and the MS/TP monitor's stream (#958). **Planned:** pcap export and a libpcap source |
+| Capture (#971) | Frame list (number, UTC time, link, direction, source and destination, link message, APDU type, invoke ID, service, error/reject/abort/NAK) over a bounded ring (50k frames by default); the selected frame's decode tree beside a hex view that marks the selected field's octets; Space pauses; filters by device, MAC, network, service, PDU type, errors, broadcasts and text; pcap export (B/IP as LINKTYPE 1 or 228 with made-up IPv4 and UDP headers, MS/TP as 165). Sources: the session's frame tap (#957), the MS/TP monitor's stream (#958), libpcap with `--capture-device` |
 | Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; arm dialog (`W`), write and relinquish forms (`w`, `n`), the preview and its confirmation, the session ledger (`u`) and the exit guard (#964) |
 
 ### 4.3 Keybindings
@@ -152,7 +152,7 @@ M0 keys:
 Since M0: `a`, `x`, `3`/`1` and `:` for the watch list (#965); `W` to arm or
 disarm writes, `w`/`n` to write or relinquish on an open object, and `u` for
 the ledger (#964); `4` for the Network screen, with `r`, `m`, Tab and
-`:bbmd` there (#966); `5` for the SC screen, with Tab between the hub's certificates, the doctor (#967) and this node's credentials (#968); `6` for MS/TP, with `J` on the monitor (#970); `7` for Capture, with Space, Tab, `/` and `z` (#971).
+`:bbmd` there (#966); `5` for the SC screen, with Tab between the hub's certificates, the doctor (#967) and this node's credentials (#968); `6` for MS/TP, with `J` on the monitor (#970); `7` for Capture, with Space, Tab, `/`, `e`/`E` and `z` (#971).
 
 Only key presses count; Windows also reports releases. Mouse capture will be
 opt-in (`--mouse`) because it breaks native text selection.
@@ -512,18 +512,23 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   commands. A client session finds the transport's frame tap (#957) by
   downcasting the concrete transport the CLI built (B/IP, B/IPv6, SC,
   MS/TP) and subscribes when the screen first asks, so an SC session's
-  handshake comes before it.
+  handshake comes before it. libpcap (`--capture-device`, `pcap` feature)
+  reads on a blocking thread for the whole run, outside sessions; dropping
+  its feed sets the flag the thread checks between 100 ms reads, which is
+  how the TUI stops it instead of the one-shot's `ctrlc` handler.
 - **Capture flow.** Each pump summarises frames (headers only) off the UI
   thread and offers them to the event channel in batches of up to 256; a
   batch the channel refuses is dropped and its frames counted with what the
-  source lost (tap queue, monitor lag), and the counts ride
+  source lost (tap queue, monitor lag, libpcap queue), and the counts ride
   on the next batch that gets through (or a counts-only one every 250 ms,
   and a waited-for last one when the source ends), so the screen's dropped
   counter is exact. The ring numbers frames consecutively and keeps the
   numbers the filter passes in a second queue, so a new frame is tested once
   and drawing touches only the visible rows. `App::settle` decodes the
   selected frame into its tree only when the selection changes and only on
-  the Capture screen.
+  the Capture screen. Export snapshots the filtered frames (shared `Bytes`)
+  into a command; the coordinator writes the files on a blocking thread and
+  joins those tasks before it exits.
 
 ### 6.6 Profiles and workspaces (#962)
 

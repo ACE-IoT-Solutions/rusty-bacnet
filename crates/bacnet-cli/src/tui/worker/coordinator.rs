@@ -3,7 +3,7 @@
 use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
-use crate::tui::capture::CaptureEvent;
+use crate::tui::capture::{pcap, CaptureEvent, ExportJob};
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
@@ -11,6 +11,7 @@ use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
 use crate::tui::watched::{Source, WatchCommand, WatchEvent};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -88,6 +89,7 @@ async fn run(
 ) {
     let mut generation = 0;
     let mut active = None;
+    let mut exports: Vec<JoinHandle<()>> = Vec::new();
     if let Some(plan) = &plan {
         if !plan.await_interface {
             generation += 1;
@@ -147,6 +149,12 @@ async fn run(
                     Command::Capture(_) => {
                         let refused = |reason| WorkerEvent::Capture(CaptureEvent::Ended(reason));
                         forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
+                    }
+                    Command::CaptureExport(job) => {
+                        // A profile's workspace, or the working directory.
+                        let dir = options.watch.workspace.clone().unwrap_or_else(|| ".".into());
+                        exports.retain(|export| !export.is_finished());
+                        exports.push(tokio::spawn(export(*job, dir, sink.clone())));
                     }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
@@ -258,6 +266,25 @@ async fn run(
     if let Err(error) = retire(&mut active).await {
         tracing::error!("{error}");
     }
+    // An export under way finishes its file before the TUI exits.
+    for export in exports {
+        if let Err(error) = export.await {
+            tracing::error!("capture export failed: {error}");
+        }
+    }
+}
+
+/// Write a capture export on a blocking thread and report the files.
+async fn export(job: ExportJob, dir: PathBuf, sink: EventSink) {
+    let written = tokio::task::spawn_blocking(move || pcap::export(&job, &dir))
+        .await
+        .unwrap_or_else(|error| Err(format!("the export failed: {error}")));
+    match &written {
+        Ok(files) => tracing::info!("capture exported to {}", files.join(", ")),
+        Err(error) => tracing::warn!("capture export: {error}"),
+    }
+    sink.deliver(WorkerEvent::Capture(CaptureEvent::Exported(written)))
+        .await;
 }
 
 /// Why a JoinTrunk is refused outside an MS/TP session.

@@ -173,6 +173,7 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("Space", "pause"),
                 ("Tab", "pane"),
                 ("/", "filter"),
+                ("e", "export"),
                 ("z", "clear"),
                 ("Esc", "back"),
                 ("?", "help"),
@@ -273,7 +274,7 @@ const CAPTURE_HELP: (&str, &[(&str, &str)]) = (
         ("Space  Tab", "Pause or follow; list, tree, hex"),
         ("Enter Left Rt", "To the tree; open or close a node"),
         ("/", "Filter dev: mac: net: svc: pdu: errors bcast"),
-        ("z  Esc", "Forget every frame; clear the filter, back"),
+        ("e  E  z", "Export pcap (Ethernet; raw IPv4); clear"),
     ],
 );
 

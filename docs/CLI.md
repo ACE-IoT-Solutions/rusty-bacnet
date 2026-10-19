@@ -218,6 +218,7 @@ bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui   # MS/TP (serial feature); confirm 
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3       # the same, without `tui`
 bacnet tui --mstp-monitor /dev/ttyUSB0   # listen to an MS/TP trunk; J finds a MAC to join as
 bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
+sudo bacnet tui -i 10.0.1.5 --capture-device en0   # also capture the wire (pcap feature)
 ```
 
 `bacnet tui` opens a profile dialog (B/IP, BACnet/SC or MS/TP) before connecting. With no saved
@@ -251,6 +252,7 @@ flag for the other transport (say `--port` on an SC profile) is an error.
 | `--cov-lifetime <SECS>` | `300` | Lifetime of the watch list's COV subscriptions, 10 to 28800 |
 | `--poll-interval <SECS>` | `10` | Least time between two polls of a watched point, 1 to 3600 |
 | `--capture-ring <N>` | `50000` | Frames the Capture screen keeps, 1 to 1000000; the oldest go first |
+| `--capture-device <DEVICE>` | | Also capture B/IP datagrams on the `-p` port from this network device with libpcap (the `pcap` feature; capture rights needed) |
 
 `-v` and `-vv` raise the log level from info to debug and trace.
 
@@ -647,6 +649,8 @@ sources:
   so an SC session's Connect-Request has gone by then.
 - **Every frame on an MS/TP trunk**, from the monitor (`--mstp-monitor`),
   line errors included.
+- **The wire** with `--capture-device DEVICE` (the `pcap` feature): B/IP
+  datagrams on the `-p` port, between any nodes, for the whole run.
 
 The list shows the frame number, the time (UTC), the link, the direction,
 source and destination as the device table writes them, the link message,
@@ -670,6 +674,7 @@ that arrived since. Keys:
 | arrows, `j`/`k`, PgUp/PgDn, Home/End | move in the focused pane |
 | Enter, Left, Right | in the list, go to the tree; in the tree, open or close a node |
 | `/` | filter; Enter applies it, Esc on the screen clears it |
+| `e`, `E` | export the frames the filter keeps to pcap: B/IP as Ethernet, or as raw IPv4 |
 | `z` | forget every frame |
 | Esc | clear the filter, then back to the devices |
 
@@ -681,6 +686,16 @@ and errors; `svc:ReadProperty`, `svc:read-property` and
 type: `pdu:confirmed`, `pdu:ack`, `pdu:error`; `pdu:network`, `pdu:link`),
 `errors`, `bcast`, and any other word as text in the row. So
 `svc:ReadProperty errors` keeps only Error responses to ReadProperty.
+
+Export writes `capture-<UTC time of the last frame>-bip.pcap` and
+`-mstp.pcap`, for the links it has frames of, into the profile's workspace
+or, without a profile, the working directory, and never replaces a file.
+B/IP frames get Ethernet (LINKTYPE 1) or raw IPv4 (LINKTYPE 228) framing;
+for tapped frames the IPv4 and UDP headers are made up from the endpoints
+(the UDP checksum is zero, which IPv4 allows). MS/TP frames are written from
+their preamble (LINKTYPE 165). Wireshark and `tshark -r` read both as BVLC,
+BACnet and BACnet-APDU, or MS/TP. B/IPv6 and BACnet/SC frames are not
+exported yet.
 
 #### Write sessions
 
@@ -1174,7 +1189,7 @@ bacnet capture --device eth0 --filter "host 10.0.0.1" --decode --save filtered.p
 | `--quiet` | Suppress output (use with `--save`) |
 | `--decode` | Full protocol decode (BVLC/NPDU/APDU/service) |
 | `--device <NAME>` | Network interface name (e.g., `en0`, `eth0`) |
-| `--filter <EXPR>` | Additional BPF filter (appended to `udp port 47808`) |
+| `--filter <EXPR>` | Additional BPF filter (appended to `udp port PORT`, where PORT is the global `-p`, 47808 by default) |
 | `--count <N>` | Stop after N packets |
 | `--snaplen <N>` | Max bytes per packet (default: 65535) |
 

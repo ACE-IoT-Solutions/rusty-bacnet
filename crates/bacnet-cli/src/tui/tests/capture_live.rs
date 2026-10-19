@@ -99,6 +99,10 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
     );
     let invoke = frames[0].summary.invoke_id.unwrap();
     assert_eq!(frames[1].summary.invoke_id, Some(invoke));
+    assert!(
+        frames.iter().all(|f| f.udp.is_some()),
+        "endpoints for export"
+    );
 
     // The response, selected, decodes to its invoke ID and service.
     press(&mut app, KeyCode::Home);

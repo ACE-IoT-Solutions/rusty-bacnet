@@ -1,6 +1,7 @@
 //! The Capture screen's core (#971): synthetic frames through `update`, the
-//! filter, pause, the bounded ring, decoding only the selected frame; and
-//! the pump's exact loss count under 5,000 frames a second.
+//! filter, pause, the bounded ring, decoding only the selected frame, the
+//! export command; and the pump's exact loss count under 5,000 frames a
+//! second.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,6 +45,7 @@ fn raw_bip(ms: u64, out: bool, bytes: Vec<u8>) -> CaptureFrame {
         time: wall(ms),
         framing: Framing::Bip,
         direction: if out { Direction::Out } else { Direction::In },
+        udp: Some((source, destination)),
         source: source.to_string(),
         destination: destination.to_string(),
         summary: summarize_frame(Framing::Bip, &bytes),
@@ -306,6 +308,25 @@ fn the_tree_selects_a_field_and_the_hex_view_marks_its_octets() {
         .starts_with("[1] 55"));
 }
 
+#[test]
+fn export_hands_the_kept_frames_to_the_coordinator() {
+    let mut app = capturing();
+    assert!(press(&mut app, KeyCode::Char('e')).is_empty());
+    assert_eq!(app.flash.as_ref().unwrap().text, "Nothing to export.");
+    deliver(&mut app, mixed(), 0);
+    filter(&mut app, "errors");
+    let commands = press(&mut app, KeyCode::Char('E'));
+    let [Command::CaptureExport(job)] = commands.as_slice() else {
+        panic!("{commands:?}");
+    };
+    assert!(job.raw_ipv4);
+    assert_eq!(job.frames.len(), 3);
+    assert_eq!(job.stem, "capture-2025-10-09T08-53-21.000Z");
+    let reply = CaptureEvent::Exported(Ok(vec!["a-bip.pcap".into()]));
+    worker(&mut app, WorkerEvent::Capture(reply));
+    assert_eq!(app.flash.as_ref().unwrap().text, "Exported a-bip.pcap.");
+}
+
 /// Frames a second, and seconds of them.
 const RATE: u64 = 5_000;
 const SECONDS: u64 = 3;
@@ -323,7 +344,7 @@ async fn five_thousand_frames_a_second_stay_bounded_and_every_loss_is_counted() 
     // The UI's event channel, which fills while the UI stalls.
     let (sink, mut events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let (_commands, mut command_rx) = mpsc::channel::<CaptureCommand>(1);
-    let pumping = tokio::spawn(async move { pump(source, &sink, &mut command_rx).await });
+    let pumping = tokio::spawn(async move { pump(source, &sink, Some(&mut command_rx)).await });
     let template = bip_frame(0, true, &testing::rp_request(1), false);
     let producer = tokio::spawn(async move {
         let mut every = tokio::time::interval(Duration::from_millis(1));

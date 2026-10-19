@@ -100,6 +100,11 @@ impl EventSink {
         }
     }
 
+    /// Wait until the UI has dropped its end of the channel.
+    pub(crate) async fn closed(&self) {
+        self.tx.closed().await;
+    }
+
     fn scoped(&self, event: WorkerEvent) -> WorkerEvent {
         match &self.session {
             Some((generation, _)) => WorkerEvent::Session {
