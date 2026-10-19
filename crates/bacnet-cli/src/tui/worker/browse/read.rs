@@ -20,8 +20,8 @@ use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifie
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::format::{decode_all, RawRow};
 use super::limits::RateCap;
+use crate::tui::format::{decode_all, RawRow};
 use crate::tui::point::ReadVia;
 
 /// Elements a device's Object_List may claim before the browser stops

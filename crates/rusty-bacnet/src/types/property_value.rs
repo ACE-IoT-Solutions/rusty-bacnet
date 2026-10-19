@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use bacnet_encoding::tags::MAX_CONTEXT_NESTING_DEPTH;
 use pyo3::types::PyTuple;
 
-use super::constructed_read::Element;
+use super::constructed_read::{Element, TypedElement};
 use super::date::{date_from_value, date_value};
 use super::timestamp::time_value;
 use super::*;

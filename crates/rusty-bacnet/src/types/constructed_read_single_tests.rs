@@ -137,6 +137,33 @@ fn single_timestamps_and_the_subordinate_list_reuse_their_forms() {
     assert_eq!(value.element, Some(Element::DeviceObjectReference));
 }
 
+#[test]
+fn the_event_algorithm_inhibit_reference_reads_as_an_object_property_reference() {
+    // Binary Value 3's Present_Value, then the same with array index 2.
+    let plain: &[u8] = &[0x0c, 0x01, 0x40, 0x00, 0x03, 0x19, 0x55];
+    let indexed: &[u8] = &[0x0c, 0x01, 0x40, 0x00, 0x03, 0x19, 0x55, 0x29, 0x02];
+    for object_type in [O::ANALOG_INPUT, O::BINARY_VALUE, O::TREND_LOG] {
+        for octets in [plain, indexed] {
+            let value =
+                decode_read_value(object_type, P::EVENT_ALGORITHM_INHIBIT_REF, None, octets)
+                    .unwrap();
+            assert_eq!(value.element, Some(Element::ObjectPropertyReference));
+            assert_eq!(value.inner, PropertyValue::ApplicationData(octets.to_vec()));
+        }
+    }
+    // A device member is not part of this production, so the generic
+    // decoder keeps the value.
+    let with_device = [plain, &[0x3c, 0x02, 0x00, 0x00, 0x01]].concat();
+    let value = decode_read_value(
+        O::ANALOG_INPUT,
+        P::EVENT_ALGORITHM_INHIBIT_REF,
+        None,
+        &with_device,
+    )
+    .unwrap();
+    assert_eq!(value.element, None);
+}
+
 fn parameter_octets(parameter: &BACnetEventParameter) -> Vec<u8> {
     let mut octets = BytesMut::new();
     encode_event_parameter(&mut octets, parameter).unwrap();
