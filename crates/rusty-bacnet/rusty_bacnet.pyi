@@ -2123,6 +2123,93 @@ class ScPeerInfo:
     @property
     def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
 
+class ScEvent:
+    """One SC hub-connector event (#1829), frozen. Fields that don't apply
+    to the event's kind are None.
+
+    A failover reads ``disconnected``, then ``reconnect_attempt`` and
+    ``connect_failed`` for each failed primary attempt, then
+    ``failover_engaged`` and ``connected`` on the failover hub. A primary
+    restore reads ``primary_restored``, then ``connected`` on the primary.
+    """
+    @property
+    def kind(self) -> Literal["connected", "disconnected", "connect_failed",
+                              "reconnect_attempt", "failover_engaged",
+                              "primary_restored", "reconnect_gave_up", "other"]: ...
+    @property
+    def hub(self) -> Literal["primary", "failover"] | None:
+        """The hub connected to, lost, failed or being dialled."""
+        ...
+    @property
+    def hub_vmac(self) -> bytes | None:
+        """The hub's VMAC from its Connect-Accept, on ``connected``."""
+        ...
+    @property
+    def cause(self) -> Literal["local_close", "peer_close", "heartbeat_timeout",
+                               "websocket", "tls", "nak", "connect_timeout",
+                               "malformed_result", "unexpected_connect_reply",
+                               "rejection_expired", "other"] | None:
+        """Why a ``disconnected`` link ended or a ``connect_failed`` attempt failed."""
+        ...
+    @property
+    def cause_detail(self) -> str | None:
+        """Diagnostic text for a ``websocket``, ``tls`` or ``other`` cause; not stable."""
+        ...
+    @property
+    def error_class(self) -> int | None:
+        """The NAK's error class, for a ``nak`` cause."""
+        ...
+    @property
+    def error_code(self) -> int | None:
+        """The NAK's error code, for a ``nak`` cause."""
+        ...
+    @property
+    def attempt(self) -> int | None:
+        """A ``reconnect_attempt``'s number, from 1; the attempts made, for
+        ``reconnect_gave_up``."""
+        ...
+    @property
+    def backoff(self) -> float | None:
+        """Seconds a ``reconnect_attempt`` waited first."""
+        ...
+
+class ScLinkStatus:
+    """A frozen snapshot of the SC hub link (#1829)."""
+    @property
+    def state(self) -> Literal["disconnected", "connecting", "connected", "disconnecting"]: ...
+    @property
+    def active_hub(self) -> Literal["primary", "failover"] | None:
+        """The hub in use or, while reconnecting, being dialled; None before
+        the first attempt."""
+        ...
+    @property
+    def hub_vmac(self) -> bytes | None:
+        """The connected hub's VMAC; None while not connected."""
+        ...
+    @property
+    def heartbeat_age(self) -> float | None:
+        """Seconds since the last message from the hub; None while not connected."""
+        ...
+    @property
+    def heartbeat_rtt(self) -> float | None:
+        """Round-trip seconds of the latest answered Heartbeat-Request on
+        this connection; None until one is answered."""
+        ...
+
+class ScEventIterator:
+    """Async iterator over ``ScEvent`` from one ``connection_events()`` call.
+
+    The connector never waits for it: an iterator more than 64 events behind
+    loses the oldest and adds them to ``missed``. Iteration ends when the
+    client stops.
+    """
+    def __aiter__(self) -> ScEventIterator: ...
+    def __anext__(self) -> Awaitable[ScEvent]: ...
+    @property
+    def missed(self) -> int:
+        """Events lost so far because this iterator fell behind."""
+        ...
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -2213,8 +2300,18 @@ class BACnetClient:
         foreign_device: Optional[ForeignDevice] = None,
         reconnect: Optional[ScReconnect] = None,
         sc_npdu_per_origin_limit: int | None = None,
+        sc_failover_hub: str | None = None,
+        sc_connect_timeout_ms: int | None = None,
     ) -> None:
-        """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
+        """``sc_failover_hub`` (SC only, needs ``reconnect``, else
+        ValueError): a second hub's ``wss://`` URL, dialled with the same TLS
+        settings when the primary can't be reached; the client keeps trying
+        the primary and returns to it. ``sc_connect_timeout_ms`` (SC only, at
+        least 1, default 10000) bounds each hub dial and Connect-Request.
+        Follow the link with ``connection_events()`` and
+        ``connection_status()`` (#1829).
+
+        ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
         ValueError): run the client as a BBMD, or register it with a BBMD
         on another subnet as a foreign device, so its Who-Is reaches that
         subnet (#938). See ``Bbmd`` and ``ForeignDevice``.
@@ -3180,6 +3277,19 @@ class BACnetClient:
         RuntimeError for non-SC, stopped or closing clients. Historical results
         own data only. Observation time is not certificate validation time.
         """
+        ...
+
+    def connection_events(self) -> Awaitable[ScEventIterator]:
+        """Subscribe to the SC hub-connector events from now on (#1829); the
+        first connection, made during ``async with``, is already behind it.
+        A slow reader never holds up the connector: see
+        ``ScEventIterator.missed``. RuntimeError for a stopped or non-SC
+        client."""
+        ...
+
+    def connection_status(self) -> Awaitable[ScLinkStatus]:
+        """Snapshot the SC hub link without I/O (#1829). RuntimeError for a
+        stopped or non-SC client."""
         ...
 
     def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:

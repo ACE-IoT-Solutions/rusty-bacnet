@@ -805,6 +805,57 @@ retry. A new connection must complete TLS and SC admission before service
 traffic resumes. Applications still handle request errors; reconnection does
 not guarantee that an interrupted operation completes.
 
+### SC failover hub, connection events and link status
+
+`sc_failover_hub` names a second hub's `wss://` URL, dialled with the same TLS
+settings when the primary can't be reached; it needs `reconnect`, since
+without reconnection the client would never turn to it or come back
+(`ValueError` otherwise). While on the failover hub the client keeps trying
+the primary and returns to it once it answers. `sc_connect_timeout_ms`
+(default 10,000, at least 1) bounds each hub dial and Connect-Request. Both are
+keyword-only and SC only.
+
+```python
+client = BACnetClient(
+    transport="sc", sc_hub="wss://hub.example.com/bacnet",
+    sc_failover_hub="wss://failover.example.com/bacnet",
+    reconnect=ScReconnect(initial_delay_ms=1_000, max_delay_ms=30_000, max_retries=3),
+    sc_vmac=node_vmac, sc_device_uuid=persistent_node_uuid,
+    sc_ca_cert="site-ca.pem", sc_client_cert="node.pem", sc_client_key="node.key",
+)
+async with client:
+    events = await client.connection_events()
+    async for event in events:
+        print(event.kind, event.hub, event.cause)
+        if events.missed:
+            status = await client.connection_status()  # resync after a gap
+```
+
+`await client.connection_events()` subscribes to the hub connector's events
+from that point on (the first connection, made during `async with`, is
+already behind it) and returns an `ScEventIterator` of frozen `ScEvent`
+values. `kind` is `connected`, `disconnected`, `connect_failed`,
+`reconnect_attempt`, `failover_engaged`, `primary_restored` or
+`reconnect_gave_up`; `hub` (`primary` or `failover`), `hub_vmac`, `cause`
+(with `cause_detail`, and `error_class`/`error_code` for a NAK), `attempt` and
+`backoff` (seconds) are set where they apply and None elsewhere. Losing the
+primary reads `disconnected`, a `reconnect_attempt` and `connect_failed` per
+failed primary attempt, then `failover_engaged` and `connected` on the
+failover hub.
+
+The connector never waits for Python. An iterator more than 64 events behind
+loses the oldest and adds their count to its `missed`, then goes on with the
+oldest event it still has; after a gap, `connection_status()` says where the
+link stands. Each `connection_events()` call is an independent subscription.
+A cancelled `__anext__` loses no event. Iteration ends (`StopAsyncIteration`)
+once the client stops; the iterator holds no reference to the client.
+
+`await client.connection_status()` returns a frozen `ScLinkStatus`: `state`
+(`disconnected`, `connecting`, `connected` or `disconnecting`), `active_hub`,
+`hub_vmac`, `heartbeat_age` (seconds since the last message from the hub) and
+`heartbeat_rtt` (seconds, the latest answered Heartbeat-Request), without
+network I/O. Both methods raise `RuntimeError` for a stopped or non-SC client.
+
 ### SC ingress quotas and drop counters
 
 `BACnetClient` and `BACnetServer` accept the keyword-only
