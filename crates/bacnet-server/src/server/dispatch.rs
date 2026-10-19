@@ -241,7 +241,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 let result = request_tasks.try_spawn(class, peer.clone(), || {
                     let reply_tx = reply_tx.take();
                     async move {
-                        Self::handle_admitted_confirmed_request(
+                        Self::run_admitted_confirmed_request(
                             &services,
                             &descendants,
                             RequestOrigin {
