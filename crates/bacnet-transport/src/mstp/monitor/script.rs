@@ -1,4 +1,6 @@
-//! Test support: a scripted MS/TP line and a token ring that plays on it.
+//! Test support: a scripted MS/TP line and a token ring that plays on it,
+//! public with the `test-support` feature so that tools built on the
+//! monitor can be tested without hardware.
 //!
 //! [`LineScript`] lays frames, corrupted frames, noise and silences out on
 //! a timeline at a baud rate, each as the chunk a read would return when
@@ -11,20 +13,18 @@
 
 use std::time::Duration;
 
-use bacnet_mstp_codec::{DecodeEvent, StreamDecoder, MAX_COBS_FRAME_LENGTH};
-use bacnet_mstp_codec::{Frame, FrameType};
+use bacnet_mstp_codec::{Frame, FrameType, MAX_COBS_FRAME_LENGTH};
 
-use super::line::{feed_chunk, LineClock};
-use super::stats::{octet_time, MonitorStats};
+use super::stats::octet_time;
 
 /// Gap between one frame and the next station's answer or frame.
-pub(crate) const TURNAROUND: Duration = Duration::from_millis(1);
+pub const TURNAROUND: Duration = Duration::from_millis(1);
 /// How long a poller waits for an answer that doesn't come: T_usage_timeout.
-pub(crate) const USAGE_TIMEOUT: Duration = Duration::from_millis(20);
+pub const USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 
 /// What to damage in a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Damage {
+pub enum Damage {
     /// Flip bits of the header CRC octet.
     HeaderCrc,
     /// Flip bits of the last data CRC octet (the frame must carry data).
@@ -34,14 +34,16 @@ pub(crate) enum Damage {
 /// Octets laid out in time: each chunk with the time its last octet
 /// arrived.
 #[derive(Debug, Clone)]
-pub(crate) struct LineScript {
+pub struct LineScript {
     baud_rate: u32,
     now: Duration,
     chunks: Vec<(Duration, Vec<u8>)>,
 }
 
 impl LineScript {
-    pub(crate) fn new(baud_rate: u32) -> Self {
+    /// An empty line at `baud_rate`, at time zero.
+    #[must_use]
+    pub fn new(baud_rate: u32) -> Self {
         Self {
             baud_rate,
             now: Duration::ZERO,
@@ -49,18 +51,20 @@ impl LineScript {
         }
     }
 
-    pub(crate) fn chunks(&self) -> &[(Duration, Vec<u8>)] {
+    /// The chunks so far, each with the time its last octet arrived.
+    #[must_use]
+    pub fn chunks(&self) -> &[(Duration, Vec<u8>)] {
         &self.chunks
     }
 
     /// Let the line stay silent for `silence`.
-    pub(crate) fn idle(&mut self, silence: Duration) -> &mut Self {
+    pub fn idle(&mut self, silence: Duration) -> &mut Self {
         self.now += silence;
         self
     }
 
     /// Put `octets` on the line now, as one chunk.
-    pub(crate) fn raw(&mut self, octets: &[u8]) -> &mut Self {
+    pub fn raw(&mut self, octets: &[u8]) -> &mut Self {
         let octet = octet_time(self.baud_rate);
         self.now += octet * u32::try_from(octets.len()).unwrap();
         self.chunks.push((self.now, octets.to_vec()));
@@ -68,7 +72,7 @@ impl LineScript {
     }
 
     /// Send a frame now, then wait [`TURNAROUND`].
-    pub(crate) fn frame(
+    pub fn frame(
         &mut self,
         frame_type: FrameType,
         destination: u8,
@@ -80,7 +84,7 @@ impl LineScript {
     }
 
     /// Send a frame with `damage` done to it, then wait [`TURNAROUND`].
-    pub(crate) fn damaged(
+    pub fn damaged(
         &mut self,
         frame_type: FrameType,
         destination: u8,
@@ -104,7 +108,7 @@ impl LineScript {
     /// The same octets regrouped as a coarse adapter would hand them over:
     /// everything that arrived in each `window` comes in one read at the
     /// window's end.
-    pub(crate) fn rechunked(&self, window: Duration) -> Vec<(Duration, Vec<u8>)> {
+    pub fn rechunked(&self, window: Duration) -> Vec<(Duration, Vec<u8>)> {
         let octet = octet_time(self.baud_rate);
         let mut out: Vec<(Duration, Vec<u8>)> = Vec::new();
         for (end, octets) in &self.chunks {
@@ -135,8 +139,14 @@ fn encode(frame_type: FrameType, destination: u8, source: u8, data: &[u8]) -> Ve
 
 /// Run timed chunks through a decoder and statistics engine, as the
 /// monitor's task does.
-pub(crate) fn analyse(baud_rate: u32, chunks: &[(Duration, Vec<u8>)]) -> MonitorStats {
-    let mut stats = MonitorStats::new(baud_rate, Duration::ZERO);
+#[cfg(test)]
+pub(crate) fn analyse(
+    baud_rate: u32,
+    chunks: &[(Duration, Vec<u8>)],
+) -> super::stats::MonitorStats {
+    use super::line::{feed_chunk, LineClock};
+    use bacnet_mstp_codec::{DecodeEvent, StreamDecoder};
+    let mut stats = super::stats::MonitorStats::new(baud_rate, Duration::ZERO);
     let mut storage = vec![0u8; MAX_COBS_FRAME_LENGTH + 512];
     let mut decoder = StreamDecoder::new(&mut storage).with_reserved_cobs();
     let mut clock = LineClock::new(baud_rate, Duration::from_millis(100));
@@ -160,14 +170,17 @@ struct RingMaster {
 
 /// A token ring of masters on a [`LineScript`].
 #[derive(Debug, Clone)]
-pub(crate) struct ScriptedRing {
-    pub(crate) line: LineScript,
+pub struct ScriptedRing {
+    /// The line the ring plays on.
+    pub line: LineScript,
     masters: Vec<RingMaster>,
     holder: usize,
 }
 
 impl ScriptedRing {
-    pub(crate) fn new(baud_rate: u32) -> Self {
+    /// A ring with no masters yet, on an empty line at `baud_rate`.
+    #[must_use]
+    pub fn new(baud_rate: u32) -> Self {
         Self {
             line: LineScript::new(baud_rate),
             masters: Vec::new(),
@@ -176,7 +189,7 @@ impl ScriptedRing {
     }
 
     /// Add a master in the ring. Masters pass the token in station order.
-    pub(crate) fn master(mut self, station: u8, max_master: u8) -> Self {
+    pub fn master(mut self, station: u8, max_master: u8) -> Self {
         self.masters.push(RingMaster {
             station,
             max_master,
@@ -193,7 +206,7 @@ impl ScriptedRing {
     /// Let `holds` token holds go by, starting with the current holder.
     /// `traffic` runs at the start of each, with the holder's station, to
     /// send its data frames.
-    pub(crate) fn rotate(
+    pub fn rotate(
         &mut self,
         holds: usize,
         mut traffic: impl FnMut(&mut LineScript, u8),
@@ -225,7 +238,7 @@ impl ScriptedRing {
     /// Lose the token: the line goes silent for `silence`, then the lowest
     /// master generates a new one, polls its successor, hears it answer and
     /// passes it the token (Clause 9.5.6.7, 9.5.6.8).
-    pub(crate) fn lose_token(&mut self, silence: Duration) -> &mut Self {
+    pub fn lose_token(&mut self, silence: Duration) -> &mut Self {
         self.line.idle(silence);
         let lowest = self.masters[0].station;
         let next = self.next_station(0);

@@ -44,6 +44,8 @@ pub(crate) enum TransportKind {
     Sc,
     /// MS/TP over a serial port.
     Mstp,
+    /// Listening to an MS/TP trunk, transmitting nothing (#970).
+    MstpMonitor,
 }
 
 impl TransportKind {
@@ -53,7 +55,7 @@ impl TransportKind {
             Self::Bip => "BIP",
             Self::Bip6 => "BIP6",
             Self::Sc => "SC",
-            Self::Mstp => "MSTP",
+            Self::Mstp | Self::MstpMonitor => "MSTP",
         }
     }
 
@@ -63,7 +65,7 @@ impl TransportKind {
             Self::Bip => AddressStyle::Bip,
             Self::Bip6 => AddressStyle::Bip6,
             Self::Sc => AddressStyle::Hex,
-            Self::Mstp => AddressStyle::Mstp,
+            Self::Mstp | Self::MstpMonitor => AddressStyle::Mstp,
         }
     }
 }
@@ -89,6 +91,8 @@ pub(crate) struct SessionOptions {
     pub(crate) watch: WatchOptions,
     /// The write session's settings, `--passive` included.
     pub(crate) safety: SafetyOptions,
+    /// The MS/TP monitor's plan and where serial ports are opened.
+    pub(crate) mstp: crate::tui::monitor::MstpOptions,
 }
 
 /// Capacity of the session's queue to the watch worker: a burst of adds
@@ -113,6 +117,19 @@ async fn connect(
     commands: mpsc::Receiver<Command>,
     mut options: SessionOptions,
 ) {
+    // The monitor transmits nothing, so it runs with `--passive` too.
+    if plan.kind == TransportKind::MstpMonitor {
+        return match options.mstp.monitor.clone() {
+            Some(monitor) => {
+                let lines = &options.mstp.lines;
+                Box::pin(crate::tui::monitor::worker::serve(
+                    monitor, lines, &sink, commands,
+                ))
+                .await
+            }
+            None => failed(&sink, Error::Encoding("no MS/TP port to monitor".into())).await,
+        };
+    }
     if options.safety.passive {
         return Box::pin(passive::serve(&sink, commands, &options.safety)).await;
     }
@@ -196,11 +213,11 @@ async fn connect(
             )
             .await;
         }
-        #[cfg(feature = "serial")]
         TransportKind::Mstp => {
             let mut handle = None;
+            let lines = options.mstp.lines.clone();
             let build = async {
-                let (client, diagnostics) = crate::mstp::build_client(&args).await?;
+                let (client, diagnostics) = lines.participant(&args).await?;
                 handle = Some(diagnostics);
                 Ok(client)
             };
@@ -225,14 +242,8 @@ async fn connect(
                 }
             }
         }
-        #[cfg(not(feature = "serial"))]
-        TransportKind::Mstp => {
-            failed(
-                &sink,
-                Error::Encoding("MS/TP requires the 'serial' feature".into()),
-            )
-            .await;
-        }
+        // Handled above, before the passive check.
+        TransportKind::MstpMonitor => {}
     }
 }
 

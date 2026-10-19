@@ -216,6 +216,7 @@ bacnet --sc --sc-url wss://hub:443 --sc-ca ca.pem --sc-cert me.pem \
   --sc-device-uuid 00112233-4455-6677-8899-aabbccddeeff tui   # BACnet/SC
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui   # MS/TP (serial feature); confirm the join with y
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3       # the same, without `tui`
+bacnet tui --mstp-monitor /dev/ttyUSB0   # listen to an MS/TP trunk; J finds a MAC to join as
 bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
 ```
 
@@ -242,6 +243,7 @@ flag for the other transport (say `--port` on an SC profile) is an error.
 | `--profile <NAME>` | | Preview a named B/IP, SC or MS/TP profile; explicit global flags override saved values |
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
 | `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. The ledger can still be viewed |
+| `--mstp-monitor <PORT>` | | Listen to an MS/TP trunk on this serial port without transmitting (the `serial` feature). Takes `--mstp-baud` and `--mstp-max-info-frames`; not `--mstp`, `--mstp-mac`, `--mstp-max-master`, another transport's flags or `--profile`. See [MS/TP monitor](#mstp-monitor-and-safe-join) |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
 | `--log-file <FILE>` | | Append log lines to this file as well as the in-app log pane |
 | `--max-rate <N>` | `20` | Confirmed requests a second across the browser and the watch list; 0 for no cap |
@@ -581,8 +583,54 @@ regenerated, invalid and aborted frames, reply timeouts, postponed and late
 replies, deadline misses, frames from another station with this MAC, queue
 refusals and serial errors. `z` counts from now (the transport keeps its totals;
 the screen shows the change since), and Space pauses the screen or follows the
-counters again. The receive-only monitor and the frame view are separate
-screens (#970, #971).
+counters again. The frame view is a later screen (#971).
+
+#### MS/TP monitor and safe join
+
+`bacnet tui --mstp-monitor PORT` opens the port to listen only and runs at the
+`PASSIVE` level: no client is built, the port's write side is dropped as it
+opens, and the status bar reads `listen only`. The MS/TP screen (`6`, shown
+first) has four views, Tab to change:
+
+- **Stations**: a map of every address, masters 0 to 127 and slaves 128 to
+  254, each marked `M` master (passes the token or polls), `S` slave (only
+  answers), `R` router (sends routed or network-layer messages) or `x` silent
+  (heard before, or sent requests, but quiet for 10 s); then a row per station
+  with its role in words, the device instance once its I-Am is seen, its frames
+  and when it was last heard.
+- **Token ring**: the successor chain, the rotation time (shortest, mean and
+  longest, with a sparkline of recent rotations), and per master the tokens it
+  got, how long it held each, the frames it sent per token, token retries and
+  its Max_Master as its polls show it: `N` once its polls wrap there, `≥N` the
+  highest it has polled so far, `?` before any poll.
+- **Findings**: a Max_Master that leaves a station out (only when the polls
+  show the exact value), a Max_Master more than 8 above the highest station,
+  a gap of more than 8 empty addresses between two masters, a rotation over
+  2 s and a hold over 500 ms, each with a suggestion. The two 8s are rules of
+  thumb, not values from the standard. `:mstp rotation MS` and
+  `:mstp hold MS` move the time thresholds.
+- **Errors**: header and data CRC errors, malformed or oversize frames,
+  partial frames, noise, lost tokens with when and who started the ring again,
+  and extended (COBS, Clause 9.10) frames, which are decoded but not
+  interpreted. `z` counts from now and Space pauses. The timestamps are only
+  as good as the adapter: the screen shows the 16 ms a USB adapter adds.
+
+`J` starts the safe join: the monitor listens for 10 s (`:mstp listen SECS`
+changes that), then proposes a free MAC that a master polls and that is within
+every Max_Master the line shows, with a Max_Master that reaches every station
+heard and `--mstp-max-info-frames`. `+` and `-` pick another free MAC; Enter
+opens the same join confirmation as `--mstp`, and `y` there stops the monitor,
+closes the port and joins on it, so only one of them holds the port at a time.
+Enter and `y` each check the proposal against the newest reading first: if
+a station has turned up at that MAC, the dialog closes and the wizard
+proposes again. Until the participant session starts the screen stays on the
+monitor; a join the worker refuses leaves it listening, with the reason
+shown. From then on the session is a participant (`READ-ONLY`), and a later
+join is confirmed again. If the join fails once the monitor has closed the
+port (the port can't be opened, say), `c` confirms a join again; to listen
+again, quit and restart with `--mstp-monitor`. With `--passive` the wizard proposes but never joins. The
+monitor is the place to start on an unfamiliar trunk; like the participant, it
+has hardware evidence only on Linux, and macOS and Windows are experimental.
 
 #### Write sessions
 

@@ -72,9 +72,9 @@ mod line;
 mod stats;
 
 pub use stats::{
-    octet_time, DurationStats, FrameTypeCounts, LineErrorKind, LineErrors, LineEvent, LostToken,
-    MaxMaster, MonitorStats, SilenceHistogram, StationStats, TimingQuality, NO_TOKEN_SILENCE,
-    SILENCE_BUCKET_BOUNDS,
+    octet_time, CountStats, DurationStats, FrameTypeCounts, LineErrorKind, LineErrors, LineEvent,
+    LostToken, MaxMaster, MonitorStats, SilenceHistogram, StationStats, TimingQuality,
+    NO_TOKEN_SILENCE, SILENCE_BUCKET_BOUNDS,
 };
 
 /// [`MonitorConfig::timestamp_resolution`]'s default: 16 ms, the receive
@@ -358,8 +358,8 @@ where
     }
 }
 
-#[cfg(test)]
-pub(crate) mod script;
+#[cfg(any(test, feature = "test-support"))]
+pub mod script;
 #[cfg(test)]
 mod stats_tests;
 #[cfg(test)]

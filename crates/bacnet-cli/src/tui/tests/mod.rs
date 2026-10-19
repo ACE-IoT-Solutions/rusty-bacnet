@@ -22,6 +22,8 @@
 //! - `sc_screen`: the SC screen from synthetic reports, with its frames;
 //!   `sc_hub`: the SC worker against in-process mTLS hubs; `sc_lint`: the
 //!   credential lint on the preview, in the coordinator and on the SC screen.
+//! - `mstp_monitor`: the MS/TP monitor and the safe-join wizard end to end,
+//!   on the scripted ring of `bacnet-transport`'s `test-support`.
 //! - `mstp_screen`: the MS/TP screen and the join confirmation from
 //!   synthetic reports and keys, with their frames, and the sampler.
 //!
@@ -45,6 +47,9 @@ mod inprocess;
 #[path = "../../../tests/support/lab.rs"]
 mod lab;
 mod load;
+mod mstp_monitor;
+#[cfg(all(target_os = "linux", feature = "serial"))]
+mod mstp_monitor_pty;
 mod mstp_screen;
 mod network;
 mod network_frames;

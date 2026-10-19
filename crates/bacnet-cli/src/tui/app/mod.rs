@@ -9,6 +9,7 @@ pub(crate) mod browser;
 pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
+pub(crate) mod monitor;
 pub(crate) mod mstp;
 pub(crate) mod network;
 pub(crate) mod objects;
@@ -281,6 +282,8 @@ pub(crate) struct App {
     /// A flags-only MS/TP session's join confirmation, shown again before
     /// every later join.
     pub(crate) join_again: Option<Box<mstp::JoinDialog>>,
+    /// The MS/TP monitor (`--mstp-monitor`), until the session joins.
+    pub(crate) monitor: Option<Box<monitor::MonitorState>>,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
     /// The screen in the body.
@@ -344,6 +347,7 @@ impl App {
             sc: sc::ScState::default(),
             mstp: mstp::MstpState::default(),
             join_again,
+            monitor: None,
             who_has: None,
             screen: Screen::Main,
             next_req: 0,
@@ -625,10 +629,13 @@ impl App {
     }
 
     fn disconnect(&mut self, out: &mut Vec<Command>) {
-        if matches!(
-            self.link,
-            Link::Connecting | Link::Up { .. } | Link::Failed(_)
-        ) {
+        let monitoring = self.link == Link::Passive && self.monitor.is_some();
+        if monitoring
+            || matches!(
+                self.link,
+                Link::Connecting | Link::Up { .. } | Link::Failed(_)
+            )
+        {
             self.link = Link::Disconnecting;
             self.overlay = Overlay::None;
             out.push(Command::Disconnect);
@@ -765,7 +772,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Network(key) => app.network_key(key, &mut out),
         Action::Sc(key) => app.sc_key(key),
         Action::Join(key) => app.join_key(key, &mut out),
-        Action::Mstp(key) => app.mstp.key(key),
+        Action::Mstp(key) => app.mstp_key(key),
         Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out

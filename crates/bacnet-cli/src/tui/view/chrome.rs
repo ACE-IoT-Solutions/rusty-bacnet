@@ -30,6 +30,7 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
         Link::Connecting => (app.transport.to_string(), "connecting"),
         Link::Up { local } => (format!("{} {local}", app.transport), "up"),
         Link::Failed(_) => (app.transport.to_string(), "failed"),
+        Link::Passive if app.monitor.is_some() => (app.transport.to_string(), "listen only"),
         Link::Passive => (app.transport.to_string(), "no client"),
     };
     let level = match level {
@@ -148,6 +149,15 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("p", "profiles"),
                 ("x", "disconnect"),
                 ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+            _ if app.screen == Screen::Mstp && app.monitor.is_some() => &[
+                ("Tab", "view"),
+                ("J", "safe join"),
+                ("z", "clear"),
+                ("Space", "pause"),
+                ("x", "stop"),
                 ("?", "help"),
                 ("q", "quit"),
             ],

@@ -8,12 +8,15 @@ use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{centered, Theme};
-use crate::tui::app::mstp::{JoinDialog, MstpState};
+use crate::tui::app::mstp::{JoinDialog, JoinOrigin, MstpState};
 use crate::tui::app::App;
 
 /// The MS/TP screen.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let mstp = &app.mstp;
+    if let (None, Some(monitor)) = (&mstp.station, app.monitor.as_deref()) {
+        return super::monitor::draw(frame, area, monitor, theme);
+    }
     if mstp.station.is_none() {
         let block = Block::bordered()
             .title(Line::styled(" MS/TP ", theme.accent()))
@@ -22,7 +25,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             "Not on the trunk yet: confirm joining it (y), or connect again (c)."
         } else {
             "MS/TP only: start bacnet tui with --mstp PORT --mstp-mac N, or connect an \
-             MS/TP profile (p), to join a trunk and see this station's token state here."
+             MS/TP profile (p), to join a trunk and see this station's token state here; \
+             or with --mstp-monitor PORT to listen to one without transmitting."
         };
         let lines = Paragraph::new(Line::styled(text, theme.dim())).wrap(Wrap { trim: true });
         frame.render_widget(lines.block(block), area);
@@ -120,7 +124,12 @@ pub(super) fn join(frame: &mut Frame, area: Rect, dialog: &JoinDialog, theme: &T
         .ports
         .len()
         .min(usize::from(area.height.saturating_sub(14)).max(1));
-    let box_area = centered(area, 76, rows as u16 + 9);
+    let note = match &dialog.origin {
+        JoinOrigin::Monitor { note } => Some(note.clone()),
+        _ => None,
+    };
+    let extra = u16::from(note.is_some());
+    let box_area = centered(area, 76, rows as u16 + 9 + extra);
     frame.render_widget(Clear, box_area);
     let s = &dialog.settings;
     let mut lines = vec![
@@ -136,9 +145,9 @@ pub(super) fn join(frame: &mut Frame, area: Rect, dialog: &JoinDialog, theme: &T
             "sees it, and a MAC another device already uses disrupts the whole ring.",
             theme.warn(),
         ),
-        Line::raw(""),
-        Line::styled("Serial port:", theme.accent()),
     ];
+    lines.extend(note.map(Line::raw));
+    lines.extend([Line::raw(""), Line::styled("Serial port:", theme.accent())]);
     let offset = dialog.selected.saturating_sub(rows - 1);
     for (i, port) in dialog.ports.iter().enumerate().skip(offset).take(rows) {
         let text = format!("{} {port}", if i == dialog.selected { ">" } else { " " });

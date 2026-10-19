@@ -9,6 +9,7 @@ mod chrome;
 mod connection;
 mod devices;
 mod dialogs;
+mod monitor;
 mod mstp;
 mod network;
 mod networks;

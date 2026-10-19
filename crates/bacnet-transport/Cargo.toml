@@ -64,6 +64,9 @@ sc-tls = [
 serial = ["dep:tokio-serial"]
 serial-gpio = ["serial", "dep:gpiocdev"]
 ethernet = []
+# The scripted MS/TP line and token ring the monitor's own tests use, as
+# `mstp::monitor::script`, for tools built on the monitor (#1854).
+test-support = []
 
 [dev-dependencies]
 rcgen.workspace = true

@@ -4,9 +4,10 @@ use super::{overrides::has_transport_flags, service::Service, store::Store, Over
 use crate::args::{Cli, Command};
 use crate::tui::app::connection::Connection;
 
-/// Explicit flags without a profile, or --no-profile, never inspect the store.
+/// Explicit flags without a profile, --no-profile, or the MS/TP monitor,
+/// never inspect the store.
 pub(crate) fn enabled(cli: &Cli) -> bool {
-    matches!(&cli.command, Some(Command::Tui { profile, no_profile: false, .. })
+    matches!(&cli.command, Some(Command::Tui { profile, no_profile: false, mstp_monitor: None, .. })
         if profile.is_some() || !has_transport_flags(cli))
 }
 
