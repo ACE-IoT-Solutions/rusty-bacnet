@@ -116,7 +116,7 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
         "{labels:?}"
     );
     assert!(
-        labels.contains(&"Service: READ_PROPERTY".to_string()),
+        labels.contains(&"Service: read-property".to_string()),
         "{labels:?}"
     );
     assert!(labels.iter().any(|l| l == "Real: 72.5"), "{labels:?}");
@@ -153,9 +153,9 @@ async fn the_session_tap_reaches_the_screen_through_the_coordinator() {
     net.pump_until("the Who-Is", |app| app.capture.ring.len() > 0)
         .await;
     let first = net.app.capture.ring.get(1).unwrap();
-    assert_eq!(first.summary.service.as_deref(), Some("WHO_IS"));
+    assert_eq!(first.summary.service.as_deref(), Some("who-is"));
     assert_eq!(first.direction, Direction::Out);
-    assert!(first.summary.link.contains("BROADCAST"), "{first:?}");
+    assert!(first.summary.link.contains("broadcast"), "{first:?}");
 
     net.press(KeyCode::Char('x')).await;
     net.pump_until("down", |app| app.link == crate::tui::app::Link::Down)
@@ -190,16 +190,16 @@ async fn the_monitor_feeds_the_capture_and_still_writes_nothing() {
         .map(|f| f.summary.link.clone())
         .collect();
     for link in [
-        "TOKEN",
-        "BACNET_DATA_EXPECTING_REPLY",
-        "BACNET_DATA_NOT_EXPECTING_REPLY",
+        "token",
+        "bacnet-data-expecting-reply",
+        "bacnet-data-not-expecting-reply",
     ] {
         assert!(links.contains(link), "{link}: {links:?}");
     }
     assert_eq!(capture.lost, 0);
     let token = (1..capture.ring.next())
         .filter_map(|n| capture.ring.get(n))
-        .find(|f| f.summary.link == "TOKEN")
+        .find(|f| f.summary.link == "token")
         .unwrap();
     assert_eq!(&token.bytes[..2], &[0x55, 0xFF], "from the preamble");
     assert_eq!(token.direction, Direction::Wire);

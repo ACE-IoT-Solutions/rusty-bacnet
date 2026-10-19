@@ -250,8 +250,11 @@ pub fn observer() -> (UdpSocket, u16) {
     let port = socket.local_addr().unwrap().port();
     (socket, port)
 }
-pub async fn stopped(mut server: Server, local: SocketAddrV4) {
+/// Stops `server`, and rebinds its port to show it released its wildcard
+/// socket. Run under `rerun_on_lost_port`: another process can take the
+/// freed port first (#1419).
+pub async fn stopped(mut server: Server, local: SocketAddrV4) -> std::io::Result<()> {
     bounded(server.stop()).await.unwrap();
     drop(server);
-    let _rebound = std::net::UdpSocket::bind(local).expect("server released wildcard socket");
+    std::net::UdpSocket::bind(local).map(drop)
 }

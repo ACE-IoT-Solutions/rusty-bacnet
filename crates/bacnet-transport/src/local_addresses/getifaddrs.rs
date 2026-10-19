@@ -1,6 +1,6 @@
 //! The host's IPv4 addresses from `getifaddrs`, copied out while the OS list
-//! is alive.
-#![allow(unsafe_code)]
+//! is alive. The walk is FFI, so each item that needs unsafe carries its own
+//! `#[allow(unsafe_code)]`.
 
 use std::ffi::CStr;
 use std::io;
@@ -23,6 +23,7 @@ struct Entry {
 ///
 /// `address` is null or points to a socket address that is valid for its
 /// reported family.
+#[allow(unsafe_code)] // reads a sockaddr through a raw pointer
 unsafe fn ipv4_of(address: *const libc::sockaddr) -> Option<Ipv4Addr> {
     if address.is_null() {
         return None;
@@ -45,6 +46,7 @@ unsafe fn ipv4_of(address: *const libc::sockaddr) -> Option<Ipv4Addr> {
 ///
 /// `mask` is null or points to a socket address at least as long as its
 /// reported length (on the BSDs) or family's layout (on Linux).
+#[allow(unsafe_code)] // reads a sockaddr through a raw pointer
 unsafe fn netmask_of(mask: *const libc::sockaddr) -> Option<Ipv4Addr> {
     #[cfg(not(any(
         target_vendor = "apple",
@@ -82,6 +84,7 @@ unsafe fn netmask_of(mask: *const libc::sockaddr) -> Option<Ipv4Addr> {
 }
 
 /// Every IPv4 address `getifaddrs` reports, on any interface.
+#[allow(unsafe_code)] // getifaddrs, the list walk and freeifaddrs
 fn entries() -> io::Result<Vec<Entry>> {
     struct IfAddrsGuard(*mut libc::ifaddrs);
 

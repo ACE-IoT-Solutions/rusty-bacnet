@@ -517,17 +517,23 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   its feed sets the flag the thread checks between 100 ms reads, which is
   how the TUI stops it instead of the one-shot's `ctrlc` handler.
 - **Capture flow.** Each pump summarises frames (headers only) off the UI
-  thread and offers them to the event channel in batches of up to 256; a
-  batch the channel refuses is dropped and its frames counted with what the
-  source lost (tap queue, monitor lag, libpcap queue), and the counts ride
-  on the next batch that gets through (or a counts-only one every 250 ms,
-  and a waited-for last one when the source ends), so the screen's dropped
-  counter is exact. The ring numbers frames consecutively and keeps the
-  numbers the filter passes in a second queue, so a new frame is tested once
-  and drawing touches only the visible rows. `App::settle` decodes the
-  selected frame into its tree only when the selection changes and only on
-  the Capture screen. Export snapshots the filtered frames (shared `Bytes`)
-  into a command; the coordinator writes the files on a blocking thread and
+  thread and offers them to the event channel when a batch reaches 256
+  frames or every 250 ms, whichever comes first, so a busy source costs
+  the shared channel a few events a second and can't crowd out device or
+  COV events. A batch the channel refuses is dropped and its frames counted
+  with what the source lost (tap queue, monitor lag, libpcap queue), in the screen's own
+  dropped count, not the status bar's; the counts ride on the next batch
+  that gets through, and a waited-for last one when the source ends, so
+  the count is exact while a source runs. The ring numbers frames
+  consecutively and keeps the numbers the filter passes in a second queue,
+  so a new frame is tested once and drawing touches only the visible rows.
+  `App::settle` decodes the selected frame into its tree only when the
+  selection changes and only on the Capture screen; going to the tree or
+  the hex view pauses the list, so the tree keeps its place.
+  Export takes the frames the filter keeps as shared references (the ring
+  holds each frame in an `Arc`), so the UI thread copies no octets; the
+  coordinator streams each file through a buffered writer on a blocking
+  thread, removes a file it couldn't finish, reports what it wrote, and
   joins those tasks before it exits.
 
 ### 6.6 Profiles and workspaces (#962)

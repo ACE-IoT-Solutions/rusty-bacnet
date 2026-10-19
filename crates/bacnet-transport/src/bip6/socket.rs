@@ -230,6 +230,7 @@ mod tests {
             destination: IpAddr::V6(BACNET_IPV6_MULTICAST_SITE_LOCAL),
             arrival_index: Some(3),
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         assert!(admits(link, &datagram));
         for index in [None, Some(0), Some(4)] {
@@ -260,6 +261,7 @@ mod tests {
             destination: destination.parse().unwrap(),
             arrival_index,
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         let elsewhere = [
             datagram("[fd12::2]:47808", "fd12::9", Some(3)),

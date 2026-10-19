@@ -138,6 +138,7 @@ fn read(
             udp: Some((SocketAddr::V4(source), SocketAddr::V4(destination))),
             source: source.to_string(),
             destination: destination.to_string(),
+            via: None,
             bytes: Bytes::copy_from_slice(payload),
             summary: summarize_frame(Framing::Bip, payload),
         };

@@ -79,6 +79,9 @@ pub(crate) struct CaptureFrame {
     pub(crate) source: String,
     /// Where it went.
     pub(crate) destination: String,
+    /// For a routed NPDU, whose ends `source` and `destination` give as
+    /// routed stations (`2:0x05`): the link peer it went through.
+    pub(crate) via: Option<String>,
     /// The frame as the link carries it; empty for a line error the
     /// monitor reports.
     pub(crate) bytes: Bytes,

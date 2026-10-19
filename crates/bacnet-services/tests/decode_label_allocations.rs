@@ -19,7 +19,6 @@
 // Most of these services need alloc; tests/no_alloc_subset.rs covers the
 // allocation-free ones in every profile.
 #![cfg(feature = "alloc")]
-#![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -59,15 +58,22 @@ std::thread_local! {
 /// that grows counts once per growth.
 struct CountingAllocator;
 
+// SAFETY: every allocation and free goes to System unchanged, so the
+// GlobalAlloc contract holds as System's does. The count is a const
+// thread-local Cell with no destructor, so it never allocates, and `with`
+// can't fail or unwind out of the allocator.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         THREAD_ALLOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
-        // SAFETY: forwarded unchanged to the platform allocator.
+        // SAFETY: the caller upholds alloc's contract (a non-zero-size
+        // layout), which is System.alloc's; it is passed on unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: forwarded unchanged to the platform allocator.
+        // SAFETY: every block came from System.alloc above with this layout
+        // (the caller's contract), so System.dealloc may free it.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

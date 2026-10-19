@@ -1092,6 +1092,12 @@ mod registered_port_wire_tests;
 #[path = "network_number_tests.rs"]
 mod network_number_tests;
 
+/// Reruns a test whose closing rebind loses the freed port to another
+/// process (#1419).
+#[cfg(test)]
+#[path = "../tests/support/port_retry.rs"]
+mod port_retry;
+
 #[cfg(test)]
 #[path = "local_network_tests.rs"]
 mod local_network_tests;

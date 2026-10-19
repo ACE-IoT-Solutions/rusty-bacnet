@@ -175,8 +175,8 @@ impl PyBipEndpoint {
     ///     share_port_by_address: Keyword-only (default False). Bind the
     ///         interface address itself, so endpoints on other addresses of
     ///         this host can share the port; needs an explicit interface and
-    ///         a nonzero port. Broadcasts and unicast then arrive in no fixed
-    ///         order.
+    ///         a nonzero port. Broadcasts and unicast are still handled in
+    ///         the order they arrived.
     ///     min_request_interval_ms: Keyword-only (default 0, no pacing; at
     ///         most 3600000). Least time between the client role's confirmed
     ///         requests to one destination, as for `BACnetClient`.

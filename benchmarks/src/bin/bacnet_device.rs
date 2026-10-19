@@ -2,6 +2,7 @@
 //!
 //! Supports BIP and SC transports. Creates a server with N AnalogInput objects.
 #![allow(clippy::print_stdout, clippy::print_stderr)] // benchmark binaries report progress and results on the console
+#![forbid(unsafe_code)]
 
 use std::net::Ipv4Addr;
 

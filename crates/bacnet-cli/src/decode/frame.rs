@@ -72,6 +72,38 @@ pub struct FrameSummary {
     pub problem: Option<String>,
     /// The device instance an I-Am announces.
     pub device: Option<u32>,
+    /// SNET and SADR as a routed target, `2:0x7F000001C335`.
+    pub routed_source: Option<String>,
+    /// DNET and DADR the same way; `2:*` for a broadcast on network 2.
+    pub routed_destination: Option<String>,
+}
+
+/// An enumeration's name as the TUI writes it: `READ_PROPERTY` and
+/// `EncapsulatedNpdu` become `read-property` and `encapsulated-npdu`.
+pub fn kebab(name: impl std::fmt::Display) -> String {
+    let mut out = String::new();
+    let mut lower_before = false;
+    for ch in name.to_string().chars() {
+        if ch.is_ascii_uppercase() && lower_before {
+            out.push('-');
+        }
+        lower_before = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        out.push(match ch {
+            '_' => '-',
+            ch => ch.to_ascii_lowercase(),
+        });
+    }
+    out
+}
+
+/// A routed station in the CLI's target syntax: `NET:0xMAC`, or `NET:*`
+/// for a broadcast on that network.
+pub fn routed(network: u16, mac: &[u8]) -> String {
+    if mac.is_empty() {
+        return format!("{network}:*");
+    }
+    let hex: String = mac.iter().map(|b| format!("{b:02X}")).collect();
+    format!("{network}:0x{hex}")
 }
 
 /// What the link layer says about a frame, and where its NPDU is.
@@ -131,7 +163,7 @@ pub(super) fn link(framing: Framing, frame: &[u8]) -> Link {
 
 fn bip(frame: &[u8], link: &mut Link) -> Result<(), String> {
     let message = bvll::decode_bvll(frame).map_err(|e| e.to_string())?;
-    link.name = message.function.to_string();
+    link.name = kebab(message.function);
     link.broadcast = matches!(
         message.function,
         BvlcFunction::ORIGINAL_BROADCAST_NPDU
@@ -140,7 +172,7 @@ fn bip(frame: &[u8], link: &mut Link) -> Result<(), String> {
     );
     match message.message().map_err(|e| e.to_string())? {
         Bvll::BvlcResult(code) if code != BvlcResultCode::SUCCESSFUL_COMPLETION => {
-            link.problem = Some(format!("NAK {code}"));
+            link.problem = Some(format!("NAK {}", kebab(code)));
         }
         parsed => {
             if let Some(npdu) = parsed.npdu() {
@@ -154,7 +186,7 @@ fn bip(frame: &[u8], link: &mut Link) -> Result<(), String> {
 
 fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
     let message = decode_bvll6(frame).map_err(|e| e.to_string())?;
-    link.name = message.function().to_string();
+    link.name = kebab(message.function());
     link.source = Some(format_vmac_text(message.source_vmac()));
     link.destination = message.destination_vmac().map(format_vmac_text);
     link.broadcast = matches!(
@@ -165,7 +197,7 @@ fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
     );
     if let Bvll6::BvlcResult { code, .. } = message {
         if code.to_raw() != 0 {
-            link.problem = Some(format!("NAK {code}"));
+            link.problem = Some(format!("NAK {}", kebab(code)));
         }
     }
     if let Some(npdu) = message.npdu() {
@@ -177,7 +209,7 @@ fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
 
 fn sc(frame: &[u8], link: &mut Link) -> Result<(), String> {
     let message = decode_sc_message(frame).map_err(|e| e.to_string())?;
-    link.name = format!("{:?}", message.function);
+    link.name = kebab(format!("{:?}", message.function));
     link.source = message.originating_vmac.map(|v| hex(&v));
     link.destination = message.destination_vmac.map(|v| hex(&v));
     link.broadcast = message
@@ -201,10 +233,9 @@ fn sc(frame: &[u8], link: &mut Link) -> Result<(), String> {
 fn mstp(frame: &[u8], link: &mut Link) -> Result<(), String> {
     if frame.len() >= 5 {
         let frame_type = FrameType::from_raw(frame[2]);
-        link.name = frame_type.name().map_or_else(
-            || format!("type {}", frame_type.to_raw()),
-            |name| name.to_string(),
-        );
+        link.name = frame_type
+            .name()
+            .map_or_else(|| format!("type {}", frame_type.to_raw()), kebab);
         link.destination = Some(format!("mstp:{}", frame[3]));
         link.source = Some(format!("mstp:{}", frame[4]));
         link.broadcast = frame[3] == 255;
@@ -253,6 +284,10 @@ pub fn summarize_frame(framing: Framing, frame: &[u8]) -> FrameSummary {
         Some(Npdu::Encoded { data, .. }) => Bytes::from(data),
         None => return summary,
     };
+    if let Ok(view) = bacnet_npdu::Npdu::decode(&npdu) {
+        summary.routed_source = view.source.map(|a| routed(a.network, a.mac));
+        summary.routed_destination = view.destination.map(|a| routed(a.network, a.mac));
+    }
     match decode_npdu_layer(npdu) {
         Ok(npdu) => {
             summary.broadcast |= npdu.broadcast;
@@ -260,12 +295,12 @@ pub fn summarize_frame(framing: Framing, frame: &[u8]) -> FrameSummary {
             summary.dnet = npdu.dest_network;
             summary.network_message = npdu
                 .network_message_type
-                .map(|kind| bacnet_npdu::NetworkMessageType::from_raw(kind).to_string());
+                .map(|kind| kebab(bacnet_npdu::NetworkMessageType::from_raw(kind)));
             if let Some(apdu) = npdu.apdu {
                 summary.pdu = Some(apdu.pdu_type);
                 summary.invoke_id = apdu.invoke_id;
-                summary.service = apdu.service;
-                summary.problem = apdu.problem;
+                summary.service = apdu.service.map(kebab);
+                summary.problem = apdu.problem.map(kebab);
                 summary.device = apdu.device;
             }
         }

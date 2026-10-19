@@ -4,6 +4,7 @@
 // argument count is part of the Python API; a Rust parameter struct would
 // change what Python callers write (#902).
 #![allow(clippy::too_many_arguments)]
+#![forbid(unsafe_code)]
 
 use pyo3::prelude::*;
 

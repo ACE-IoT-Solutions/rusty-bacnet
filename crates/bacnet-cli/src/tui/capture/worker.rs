@@ -1,13 +1,15 @@
 //! The capture pumps: read a source, summarise each frame, and offer them
 //! to the UI in batches.
 //!
-//! Nothing here waits for the UI. A batch the event channel can't take is
-//! dropped and its frames counted, beside what the source itself lost (a
-//! tap queue or a monitor subscription that filled up), so the Capture
-//! screen's dropped counter is exact: every frame the source offered is in
-//! the ring or in that count. Counts the UI hasn't heard of ride on the
-//! next batch that gets through, or on a counts-only one every
-//! [`REPORT_EVERY`]. No lock is held across an await.
+//! Nothing here waits for the UI. Frames go out when a batch is full or
+//! every [`REPORT_EVERY`], whichever is first, so capture shares the UI's
+//! event channel with a few events a second. A batch the channel can't
+//! take is dropped and its frames counted, beside what the source itself
+//! lost (a tap queue or a monitor subscription that filled up), so while a
+//! source runs the Capture screen's dropped counter is exact: every frame
+//! the source offered is in the ring or in that count. Counts the UI
+//! hasn't heard of ride on the next batch that gets through. No lock is
+//! held across an await.
 
 use std::any::Any;
 use std::net::SocketAddr;
@@ -17,7 +19,9 @@ use bacnet_client::client::BACnetClient;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::mstp::codec::Frame;
-use bacnet_transport::mstp::monitor::{LineEvent, MonitorFrames, MonitorRecord, MstpMonitor};
+use bacnet_transport::mstp::monitor::{
+    LineErrorKind, LineEvent, MonitorFrames, MonitorRecord, MstpMonitor,
+};
 use bacnet_transport::mstp::MstpTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_transport::tap::{FrameTap, FrameTapReceiver, TapDirection, TapPeer, TappedFrame};
@@ -175,6 +179,7 @@ fn convert(
         source = summary.link_source.clone().unwrap_or(source);
         destination = summary.link_destination.clone().unwrap_or(destination);
     }
+    let (source, destination, via) = route(source, destination, &summary, !inbound);
     CaptureFrame {
         time: frame.timestamp,
         framing,
@@ -186,9 +191,33 @@ fn convert(
         udp: if framing == Framing::Bip { udp } else { None },
         source,
         destination,
+        via,
         bytes: frame.bytes,
         summary,
     }
+}
+
+/// A routed NPDU's ends as routed stations (`2:0x05`), with the link peer
+/// it went through: the router it came from, or the one it was sent to.
+pub(crate) fn route(
+    source: String,
+    destination: String,
+    summary: &FrameSummary,
+    outbound: bool,
+) -> (String, String, Option<String>) {
+    if summary.routed_source.is_none() && summary.routed_destination.is_none() {
+        return (source, destination, None);
+    }
+    let via = if outbound {
+        destination.clone()
+    } else {
+        source.clone()
+    };
+    (
+        summary.routed_source.clone().unwrap_or(source),
+        summary.routed_destination.clone().unwrap_or(destination),
+        Some(via),
+    )
 }
 
 /// A monitor record as a frame: a valid frame encoded again from its
@@ -227,21 +256,35 @@ fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
             destination,
             octets,
         } => line(
-            "line error",
-            format!("{kind:?}, {octets} octets dropped"),
+            "line-error",
+            format!(
+                "{}, {octets} octets dropped",
+                match kind {
+                    LineErrorKind::HeaderCrc => "header-crc",
+                    LineErrorKind::DataCrc => "data-crc",
+                    _ => "malformed",
+                }
+            ),
             destination,
         ),
         LineEvent::Noise { octets } => line("noise", format!("{octets} octets of noise"), None),
-        LineEvent::FrameAbort => line("frame abort", "a frame stopped midway".into(), None),
-        _ => line("line event", "unknown line event".into(), None),
+        LineEvent::FrameAbort => line("frame-abort", "a frame stopped midway".into(), None),
+        _ => line("line-event", "unknown line event".into(), None),
     };
+    let (source, destination, via) = route(
+        summary.link_source.clone().unwrap_or_default(),
+        summary.link_destination.clone().unwrap_or_default(),
+        &summary,
+        false,
+    );
     CaptureFrame {
         time,
         framing: Framing::Mstp,
         direction: Direction::Wire,
         udp: None,
-        source: summary.link_source.clone().unwrap_or_default(),
-        destination: summary.link_destination.clone().unwrap_or_default(),
+        source,
+        destination,
+        via,
         bytes,
         summary,
     }
@@ -375,7 +418,7 @@ pub(crate) async fn pump(
     mut commands: Option<&mut mpsc::Receiver<CaptureCommand>>,
 ) {
     let mut counts = Counts::default();
-    let mut batch = Vec::with_capacity(BATCH);
+    let mut batch = Vec::new();
     let mut report = tokio::time::interval(REPORT_EVERY);
     report.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -398,7 +441,10 @@ pub(crate) async fn pump(
                             None => break,
                         }
                     }
-                    if !counts.offer(&mut batch, &source, sink) {
+                    // A full batch goes now; a partial one waits for the
+                    // tick, so a busy source costs the shared channel a
+                    // few events a second, not one per wake-up.
+                    if batch.len() >= BATCH && !counts.offer(&mut batch, &source, sink) {
                         return;
                     }
                 }
@@ -435,13 +481,14 @@ impl Counts {
         if batch.is_empty() && lost == self.reported {
             return true;
         }
-        let frames = std::mem::replace(batch, Vec::with_capacity(BATCH));
+        let frames = std::mem::take(batch);
         let count = frames.len() as u64;
         let event = CaptureEvent::Frames(Box::new(Batch {
             frames,
             lost: lost - self.reported,
         }));
-        match sink.offer(WorkerEvent::Capture(event)) {
+        // Refused frames count in the screen's own dropped figure only.
+        match sink.offer_uncounted(WorkerEvent::Capture(event)) {
             Offer::Sent => {
                 self.reported = lost;
                 true

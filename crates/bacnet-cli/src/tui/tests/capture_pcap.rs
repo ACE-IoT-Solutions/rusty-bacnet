@@ -72,6 +72,7 @@ fn mstp_frames() -> Vec<CaptureFrame> {
         udp: None,
         source: String::new(),
         destination: String::new(),
+        via: None,
         summary: summarize_frame(Framing::Mstp, &bytes),
         bytes: Bytes::from(bytes),
     })

@@ -104,9 +104,8 @@ pub struct ClientConfig {
     /// B/IP only: bind the interface address itself, so transports on other
     /// addresses of this host can share the port (#1538). Off by default.
     /// Needs an explicit interface and a nonzero port; see
-    /// `BipTransport::set_share_port_by_address` for what changes, including
-    /// that broadcasts and unicast are then received in no fixed order. Only
-    /// the B/IP builder reads it; a transport passed to `start` has its own.
+    /// `BipTransport::set_share_port_by_address` for what changes. Only the
+    /// B/IP builder reads it; a transport passed to `start` has its own.
     pub share_port_by_address: bool,
     /// APDU timeout in milliseconds.
     pub apdu_timeout_ms: u64,
@@ -337,8 +336,7 @@ impl BipClientBuilder {
     /// this host can share the port, each getting only its own unicast
     /// (#1538). Off by default, which binds `0.0.0.0`. Needs an explicit
     /// [`interface`](Self::interface) and a nonzero port, or `build` fails.
-    /// Broadcasts and unicast are then received in no fixed order; see
-    /// [`BipTransport::set_share_port_by_address`].
+    /// See [`BipTransport::set_share_port_by_address`] for what changes.
     pub fn share_port_by_address(mut self, enabled: bool) -> Self {
         self.config.share_port_by_address = enabled;
         self

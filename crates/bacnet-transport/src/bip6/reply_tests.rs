@@ -103,6 +103,7 @@ fn datagram(data: &[u8], peer: SocketAddrV6, destination: Ipv6Addr) -> ReceivedD
         destination: IpAddr::V6(destination),
         arrival_index: Some(1),
         os_group_delivery: None,
+        arrival_stamp: None,
     }
 }
 

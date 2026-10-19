@@ -1,7 +1,7 @@
 //! A synchronous packet-info syscall attempt inside Tokio writable readiness.
 //!
 //! No native pointer or pending overlapped operation survives a syscall attempt.
-#![allow(unsafe_code)]
+//! The send paths are FFI, so each carries its own `#[allow(unsafe_code)]`.
 
 use super::link::SelectedLink;
 use socket2::Socket;
@@ -61,6 +61,7 @@ impl SelectedSender {
     }
 
     #[cfg(unix)]
+    #[allow(unsafe_code)] // sendmsg with a hand-built IPV6_PKTINFO cmsg
     fn try_send(
         &self,
         socket: &UdpSocket,
@@ -78,16 +79,22 @@ impl SelectedSender {
             iov_base: bytes.as_ptr().cast_mut().cast(),
             iov_len: bytes.len(),
         };
-        // SAFETY: all-zero msghdr has null pointers/zero lengths. Every active
-        // field below points to live aligned storage through synchronous sendmsg.
+        // SAFETY: msghdr is a plain C struct of integers and raw pointers, so
+        // all zeros is a valid value (null pointers, zero lengths). Every field
+        // set below points to storage that outlives the synchronous sendmsg.
         let mut message: libc::msghdr = unsafe { zeroed() };
         message.msg_name = destination.as_ptr().cast_mut().cast();
         message.msg_namelen = destination.len();
         message.msg_iov = &mut iov;
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr().cast();
-        // SAFETY: the payload size is fixed and the aligned array is larger
-        // than CMSG_SPACE on supported Unix targets. No memory escapes this call.
+        // SAFETY: `control` is a usize array, so it meets cmsghdr's alignment,
+        // and the assert keeps CMSG_SPACE of one in6_pktinfo inside it. With
+        // msg_controllen that large, CMSG_FIRSTHDR returns the non-null start
+        // of `control`; CMSG_DATA pads to cmsghdr alignment, which covers
+        // in6_pktinfo's, so the header and payload writes are aligned and in
+        // bounds. sendmsg only reads `message`, the iovec, the destination and
+        // `control`, all live for the call, and keeps no pointer to them.
         let count = unsafe {
             let space = libc::CMSG_SPACE(size_of::<libc::in6_pktinfo>() as _) as usize;
             assert!(space <= size_of_val(&control));
@@ -115,6 +122,7 @@ impl SelectedSender {
     }
 
     #[cfg(windows)]
+    #[allow(unsafe_code)] // WSASendMsg with a hand-built IN6_PKTINFO cmsg
     fn try_send(
         &self,
         udp_socket: &UdpSocket,
@@ -137,8 +145,10 @@ impl SelectedSender {
         let mut info = IN6_PKTINFO::default();
         info.ipi6_addr.u.Byte = link.address.octets();
         info.ipi6_ifindex = link.index;
-        // SAFETY: control is suitably aligned and both fixed-size writes are
-        // within its checked capacity; header length includes the full payload.
+        // SAFETY: `control` is a usize array, so it is aligned for CMSGHDR, and
+        // for IN6_PKTINFO at `offset`, which is rounded up to usize alignment.
+        // The assert keeps `space` (header, padding and payload) inside it, so
+        // both writes are in bounds; cmsg_len covers the whole payload.
         unsafe {
             std::ptr::write(
                 control.as_mut_ptr().cast::<CMSGHDR>(),
@@ -188,6 +198,8 @@ impl SelectedSender {
             )
         };
         if result == SOCKET_ERROR {
+            // SAFETY: WSAGetLastError takes no arguments and only reads this
+            // thread's last Winsock error code.
             Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }))
         } else {
             Ok(sent as usize)
@@ -210,6 +222,7 @@ impl SelectedSender {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)] // WSAIoctl extension-function lookup
 fn windows_function(
     udp_socket: &Socket,
 ) -> io::Result<windows_sys::Win32::Networking::WinSock::LPFN_WSASENDMSG> {
@@ -233,6 +246,8 @@ fn windows_function(
         )
     };
     if result != 0 {
+        // SAFETY: WSAGetLastError takes no arguments and only reads this
+        // thread's last Winsock error code.
         return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
     }
     function
