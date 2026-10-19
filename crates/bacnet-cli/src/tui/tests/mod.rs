@@ -14,6 +14,8 @@
 //! - `event_loop`: the `select!` loop on a `TestBackend` with scripted input.
 //! - `network`: the Network screen against real B/IP transports and BBMDs
 //!   on loopback; `network_frames`: its frames from synthetic events.
+//! - `discovery`: the `:find` panel and the Networks tab, from synthetic
+//!   events and against a real BBMD and `BACnetRouter`.
 //! - `sc_profiles`: profiles created through the screen and reloaded, the
 //!   refusal of an invalid SC profile before any dial, the flags-only path,
 //!   and the SC connection screen's frames.
@@ -33,6 +35,7 @@ mod build_retirement;
 mod connections;
 #[cfg(unix)]
 mod crash;
+mod discovery;
 mod event_loop;
 mod frames;
 mod inprocess;

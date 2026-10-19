@@ -4,6 +4,7 @@ use super::session::{ConnectPlan, SessionOptions};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
+use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
@@ -132,15 +133,15 @@ async fn run(
                         forward_safety(active.as_ref(), request, generation, &sink, &options.safety).await;
                     }
                     Command::Network(request) => {
-                        // A refused read is answered, so the screen stops waiting.
-                        let error = match &active {
-                            Some(active) => active.commands.try_send(command).err().map(|e| format!("session command not admitted: {e}")),
-                            None => Some("no active connection".into()),
-                        };
-                        if let Some(error) = error {
-                            let event = Box::new(WorkerEvent::Network(NetworkEvent::Refused { command: request, reason: error }));
-                            sink.deliver(WorkerEvent::Session { generation, event }).await;
-                        }
+                        let refused = |reason| NetworkEvent::Refused { command: request, reason };
+                        let refused = move |reason| WorkerEvent::Network(refused(reason));
+                        forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
+                    }
+                    Command::Discovery(ref request) => {
+                        let command_copy = request.clone();
+                        let refused = |reason| DiscoveryEvent::Refused { command: command_copy, reason };
+                        let refused = move |reason| WorkerEvent::Discovery(refused(reason));
+                        forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
                     }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
@@ -292,6 +293,30 @@ pub(crate) const WATCH_SEND_WAIT: Duration = Duration::from_secs(5);
 /// renewed subscription on the device with no row to show it, and a lost
 /// add a row that never starts. The wait is bounded so a stuck session
 /// can't hold up a disconnect; a command still refused then is reported.
+/// Hand `command` to the session, or answer it with `refused(reason)`, so
+/// the screen that asked stops waiting.
+async fn forward_or_refuse(
+    active: Option<&Active>,
+    command: Command,
+    generation: u64,
+    sink: &EventSink,
+    refused: impl FnOnce(String) -> WorkerEvent,
+) {
+    let reason = match active {
+        Some(active) => active
+            .commands
+            .try_send(command)
+            .err()
+            .map(|e| format!("session command not admitted: {e}")),
+        None => Some("no active connection".into()),
+    };
+    if let Some(reason) = reason {
+        let event = Box::new(refused(reason));
+        sink.deliver(WorkerEvent::Session { generation, event })
+            .await;
+    }
+}
+
 async fn forward_watch(
     active: Option<&Active>,
     command: WatchCommand,

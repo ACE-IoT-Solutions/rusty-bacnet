@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use super::write::{keep_offline, ready_offline, SafetyOptions, PASSIVE};
 use super::EventSink;
 use crate::tui::message::{Command, OpOutcome, WorkerEvent};
+use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
 use crate::tui::point::BrowseResult;
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
@@ -52,6 +53,7 @@ pub(crate) fn transmits(command: &Command) -> bool {
             | Command::Watch(_)
             | Command::Safety(_)
             | Command::Network(_)
+            | Command::Discovery(_)
     )
 }
 
@@ -82,6 +84,9 @@ pub(crate) async fn refuse(sink: &EventSink, command: Command) {
         }),
         Command::Network(command) => {
             WorkerEvent::Network(NetworkEvent::Refused { command, reason })
+        }
+        Command::Discovery(command) => {
+            WorkerEvent::Discovery(DiscoveryEvent::Refused { command, reason })
         }
         Command::Safety(SafetyCommand::Arm { .. }) => {
             WorkerEvent::Safety(SafetyEvent::Refused { req: None, reason })

@@ -395,8 +395,16 @@ pub(crate) enum Command {
         target: String,
     },
 
-    /// Send Who-Is-Router-To-Network.
-    WhoisRouter,
+    /// List the routers on the local network and the networks they reach
+    /// (Who-Is-Router-To-Network).
+    WhoisRouter {
+        /// Ask only for the router to this network number.
+        #[arg(long)]
+        dnet: Option<u16>,
+        /// Seconds to wait for responses.
+        #[arg(long, default_value_t = 3)]
+        wait: u64,
+    },
 
     /// Acknowledge an alarm.
     #[command(alias = "ack")]

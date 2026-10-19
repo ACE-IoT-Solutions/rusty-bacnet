@@ -6505,6 +6505,33 @@ let device = client.get_device(1234).await;              // Option<DiscoveredDev
 client.clear_devices().await;                            // reset table
 ```
 
+Who-Has answers and router discovery (#960):
+
+```rust
+// Send a Who-Has and collect the I-Haves that answer it for three seconds.
+let found: Vec<ReceivedIHave> = client
+    .who_has_replies(WhoHasObject::Name("Supply Air Temp".into()), None, Duration::from_secs(3))
+    .await?;
+let mut i_haves = client.i_have_events();                // every I-Have, asked for or not
+
+// Who-Is-Router-To-Network, then the routers heard and the networks they reach.
+let routers: Vec<DiscoveredRouter> = client.discover_routers(None, Duration::from_secs(3)).await?;
+client.who_is_router_to_network(Some(2), None).await?;   // just send it
+client.what_is_network_number(None).await?;
+
+// I-Am-Router-To-Network, Network-Number-Is and Reject-Message-To-Network.
+let mut reports = client.network_reports();
+if let NetworkReport::RejectMessageToNetwork(reject) = reports.recv().await?.report {
+    eprintln!("router refused network {}: {}", reject.network, reject.reason);
+}
+```
+
+Both are broadcast channels: the dispatch task never waits for a
+subscriber, and one that falls behind loses the oldest and gets
+`RecvError::Lagged` with the count. `NetworkReport` and
+`ReceivedNetworkReport` live in `bacnet_network::layer`, which also has
+`NetworkLayer::send_network_message` for a local network message.
+
 ### Device Management
 
 ```rust

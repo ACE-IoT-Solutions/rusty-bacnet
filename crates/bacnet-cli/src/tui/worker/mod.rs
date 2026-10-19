@@ -9,6 +9,7 @@
 
 pub(crate) mod browse;
 pub(crate) mod coordinator;
+pub(crate) mod discovery;
 pub(crate) mod network;
 pub(crate) mod passive;
 #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]

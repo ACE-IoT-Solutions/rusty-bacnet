@@ -24,6 +24,7 @@ bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
 bacnet-network.workspace = true
+bacnet-router-core.workspace = true
 bacnet-endpoint-core.workspace = true
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
