@@ -2042,6 +2042,19 @@ class ScPemInspection:
     def key_consistency(self) -> Literal["not_assessed", "match", "mismatch", "unusable", "unknown"]: ...
     @property
     def key_file_permissions(self) -> ScKeyFilePermissions | None: ...
+    @property
+    def direct_issuer(self) -> Literal["not_assessed", "direct", "not_direct", "unknown"]:
+        """Whether a ``peer_trust`` certificate signed the identity leaf
+        directly (its subject is the leaf's issuer and the leaf's signature
+        verifies with its key). ``not_assessed`` without peer trust;
+        ``unknown`` when the leaf can't be parsed or a candidate's signature
+        algorithm is unsupported. Informational: it changes no acceptance."""
+        ...
+    @property
+    def direct_issuer_index(self) -> int | None:
+        """Zero-based ``peer_trust`` index of the CA that signed the leaf
+        when ``direct_issuer`` is ``direct``; else None."""
+        ...
 
 def inspect_sc_pem(
     identity_pem: bytes | bytearray, *, peer_trust_pem: bytes | bytearray | None = None,

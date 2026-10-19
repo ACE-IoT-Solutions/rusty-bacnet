@@ -845,7 +845,10 @@ Future, so use `await` or `asyncio.ensure_future` when scheduling observations.
 inspected_at_unix=None)` returns a frozen, owned report without opening a
 connection. `inspect_sc_pem_files` accepts explicit `str | os.PathLike[str]` paths
 and reads each selected file once. Reports contain fingerprints, bounded metadata,
-date and SAN/KU/EKU findings, key consistency and optional Unix mode observations.
+date and SAN/KU/EKU findings, key consistency, optional Unix mode observations,
+and `direct_issuer` / `direct_issuer_index`: whether, and which, peer-trust
+certificate signed the identity leaf directly (`"direct"` with its zero-based
+index, `"not_direct"`, `"unknown"`, or `"not_assessed"` without peer trust).
 These are advisory observations and do not change startup acceptance. See
 [the bounds, error contract and examples](sc-offline-inspection.md).
 
