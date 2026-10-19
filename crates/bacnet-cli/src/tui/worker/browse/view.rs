@@ -1,71 +1,14 @@
-//! Turn property values as read into the browser's display data.
+//! The browser's display data from property values as read: the device
+//! card, an object's properties, its health badges and its priority pane,
+//! each value written by the TUI's formatter ([`crate::tui::format`]).
 
-use bacnet_encoding::primitives::decode_application_value;
-use bacnet_types::enums::{resolve_bits, resolve_enum, PropertyIdentifier, ResolvedBits};
+use bacnet_types::enums::{resolve_bits, ObjectType, PropertyIdentifier, ResolvedBits};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
+use crate::tui::format::{decode_all, units, Floats, RawRow, StateTexts, ValueFormat};
 use crate::tui::point::{
     DeviceCard, Health, ObjectView, PriorityView, PropertyRow, ReadVia, PRIORITIES,
 };
-
-/// A property as read: its raw application-tagged value, or an error.
-pub(crate) type RawRow = (PropertyIdentifier, Result<Vec<u8>, String>);
-
-/// Values shown before the rest are summarised.
-const MAX_LIST_SHOWN: usize = 8;
-
-/// Every application-tagged value in `data`, or `None` if any part of it
-/// is not one (a constructed value).
-pub(crate) fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
-    let mut offset = 0;
-    let mut values = Vec::new();
-    while offset < data.len() {
-        let (value, next) = decode_application_value(data, offset).ok()?;
-        values.push(value);
-        offset = next;
-    }
-    Some(values)
-}
-
-/// One value, with enumerations and bit strings named for `property`.
-fn one(property: PropertyIdentifier, value: &PropertyValue) -> String {
-    if let Some(named) = resolve_enum(property, value) {
-        return named.to_string();
-    }
-    match resolve_bits(property, value) {
-        Some(ResolvedBits::Unknown { .. }) | None => crate::output::format_property_value(value),
-        Some(bits) => bits.to_string(),
-    }
-}
-
-/// A property's value as display text.
-pub(crate) fn value_text(property: PropertyIdentifier, data: &[u8]) -> String {
-    let Some(values) = decode_all(data) else {
-        let hex: Vec<String> = data.iter().map(|b| format!("{b:02x}")).collect();
-        return format!("[raw {}]", hex.join(" "));
-    };
-    match values.as_slice() {
-        [] => "(empty)".into(),
-        [value] => one(property, value),
-        many => {
-            let shown: Vec<String> = many
-                .iter()
-                .take(MAX_LIST_SHOWN)
-                .map(|value| one(property, value))
-                .collect();
-            let more = many.len().saturating_sub(MAX_LIST_SHOWN);
-            if more == 0 {
-                format!("[{}]", shown.join(", "))
-            } else {
-                format!(
-                    "[{}, +{more} more] ({} items)",
-                    shown.join(", "),
-                    many.len()
-                )
-            }
-        }
-    }
-}
 
 /// The single value of `property` among `rows`.
 fn single(rows: &[RawRow], property: PropertyIdentifier) -> Option<PropertyValue> {
@@ -85,7 +28,8 @@ fn supported(data: &[u8], property: PropertyIdentifier) -> Option<String> {
     Some(format!("{count} supported"))
 }
 
-/// The device card from the Device object's properties.
+/// The device card from the Device object's properties. Strings show
+/// without their quotes.
 pub(crate) fn card(rows: &[RawRow], via: ReadVia) -> DeviceCard {
     const LABELS: [(PropertyIdentifier, &str); 13] = [
         (PropertyIdentifier::OBJECT_NAME, "Name"),
@@ -105,12 +49,14 @@ pub(crate) fn card(rows: &[RawRow], via: ReadVia) -> DeviceCard {
         (PropertyIdentifier::SEGMENTATION_SUPPORTED, "Segmentation"),
         (PropertyIdentifier::DATABASE_REVISION, "Database revision"),
     ];
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(ObjectType::DEVICE, &texts, Floats::Display);
     let rows = LABELS
         .iter()
         .map(|&(property, label)| {
             let text = match rows.iter().find(|(p, _)| *p == property) {
                 Some((_, Ok(data))) => {
-                    supported(data, property).unwrap_or_else(|| value_text(property, data))
+                    supported(data, property).unwrap_or_else(|| format.plain(property, data))
                 }
                 Some((_, Err(error))) => format!("({error})"),
                 None => "-".into(),
@@ -153,7 +99,7 @@ fn health(rows: &[RawRow]) -> Health {
 }
 
 /// The priority pane, for an object with a Priority_Array of 16 values.
-fn priority(rows: &[RawRow]) -> Option<PriorityView> {
+fn priority(rows: &[RawRow], format: &ValueFormat<'_>) -> Option<PriorityView> {
     let (_, data) = rows
         .iter()
         .find(|(p, _)| *p == PropertyIdentifier::PRIORITY_ARRAY)?;
@@ -164,23 +110,28 @@ fn priority(rows: &[RawRow]) -> Option<PriorityView> {
     let mut view = PriorityView::default();
     for (slot, value) in view.slots.iter_mut().zip(&values) {
         if *value != PropertyValue::Null {
-            *slot = Some(one(PropertyIdentifier::PRESENT_VALUE, value));
+            *slot = Some(format.element(PropertyIdentifier::PRIORITY_ARRAY, value));
         }
     }
-    let text = |property| {
+    let data = |property| {
         rows.iter()
             .find(|(p, _)| *p == property)
-            .and_then(|(_, value)| value.as_ref().ok())
-            .map(|data| value_text(property, data))
+            .and_then(|(_, value)| value.as_deref().ok())
     };
-    view.relinquish_default = text(PropertyIdentifier::RELINQUISH_DEFAULT);
-    view.present_value = text(PropertyIdentifier::PRESENT_VALUE);
+    view.relinquish_default = data(PropertyIdentifier::RELINQUISH_DEFAULT)
+        .map(|data| format.value(PropertyIdentifier::RELINQUISH_DEFAULT, data));
+    view.present_value = data(PropertyIdentifier::PRESENT_VALUE)
+        .map(|data| format.with_units(PropertyIdentifier::PRESENT_VALUE, data, units(rows)));
     Some(view)
 }
 
-/// One object's view from its properties.
+/// One object's view from its properties: values for the screen, with
+/// floats rounded, the object's state texts, and units on Present_Value.
 pub(crate) fn object_view(object: ObjectIdentifier, rows: &[RawRow], via: ReadVia) -> ObjectView {
-    let priority = priority(rows);
+    let texts = StateTexts::from_rows(rows);
+    let format = ValueFormat::new(object.object_type(), &texts, Floats::Display);
+    let units = units(rows);
+    let priority = priority(rows, &format);
     let properties = rows
         .iter()
         .map(|(property, value)| PropertyRow {
@@ -192,7 +143,10 @@ pub(crate) fn object_view(object: ObjectIdentifier, rows: &[RawRow], via: ReadVi
                         None => "all relinquished".into(),
                     })
                 }
-                Ok(data) => Ok(value_text(*property, data)),
+                Ok(data) if *property == PropertyIdentifier::PRESENT_VALUE => {
+                    Ok(format.with_units(*property, data, units))
+                }
+                Ok(data) => Ok(format.value(*property, data)),
                 Err(error) => Err(error.clone()),
             },
         })
@@ -255,31 +209,88 @@ mod tests {
                 Ok(encoded(&[PropertyValue::Real(0.0)])),
             ),
         ];
-        let view = priority(&rows).unwrap();
+        let texts = StateTexts::default();
+        let format = ValueFormat::new(ObjectType::ANALOG_OUTPUT, &texts, Floats::Display);
+        let view = priority(&rows, &format).unwrap();
         assert_eq!(view.winner(), Some(10));
         assert_eq!(view.slots[9].as_deref(), Some("55"));
         assert_eq!(view.relinquish_default.as_deref(), Some("0"));
         let short = vec![(PropertyIdentifier::PRIORITY_ARRAY, Ok(encoded(&slots[..4])))];
-        assert!(priority(&short).is_none());
+        assert!(priority(&short, &format).is_none());
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use bacnet_encoding::primitives::encode_property_value;
+    use bytes::BytesMut;
+
+    use super::*;
+
+    fn encoded(value: &PropertyValue) -> Vec<u8> {
+        let mut buf = BytesMut::new();
+        encode_property_value(&mut buf, value).unwrap();
+        buf.to_vec()
     }
 
     #[test]
-    fn values_name_their_enumerations_and_summarise_long_lists() {
-        assert_eq!(
-            value_text(
-                PropertyIdentifier::EVENT_STATE,
-                &encoded(&[PropertyValue::Enumerated(1)])
+    fn the_card_shows_strings_without_quotes() {
+        let rows = vec![
+            (
+                PropertyIdentifier::OBJECT_NAME,
+                Ok(encoded(&PropertyValue::CharacterString("AHU-1".into()))),
             ),
-            "FAULT"
+            (
+                PropertyIdentifier::SEGMENTATION_SUPPORTED,
+                Ok(encoded(&PropertyValue::Enumerated(3))),
+            ),
+        ];
+        let card = card(&rows, ReadVia::Rpm);
+        assert!(card.rows.contains(&("Name", "AHU-1".into())), "{card:?}");
+        assert!(
+            card.rows.contains(&("Segmentation", "none".into())),
+            "{card:?}"
         );
-        let many: Vec<_> = (0..10).map(PropertyValue::Unsigned).collect();
+    }
+
+    #[test]
+    fn a_binary_priority_array_names_its_states_with_the_object_texts() {
+        let mut slots = vec![PropertyValue::Null; 16];
+        slots[7] = PropertyValue::Enumerated(1);
+        let text = |s: &str| Ok(encoded(&PropertyValue::CharacterString(s.into())));
+        let rows = vec![
+            (
+                PropertyIdentifier::PRESENT_VALUE,
+                Ok(encoded(&PropertyValue::Enumerated(1))),
+            ),
+            (
+                PropertyIdentifier::PRIORITY_ARRAY,
+                Ok({
+                    let mut buf = BytesMut::new();
+                    for slot in &slots {
+                        encode_property_value(&mut buf, slot).unwrap();
+                    }
+                    buf.to_vec()
+                }),
+            ),
+            (
+                PropertyIdentifier::RELINQUISH_DEFAULT,
+                Ok(encoded(&PropertyValue::Enumerated(0))),
+            ),
+            (PropertyIdentifier::ACTIVE_TEXT, text("On")),
+            (PropertyIdentifier::INACTIVE_TEXT, text("Off")),
+        ];
+        let object = ObjectIdentifier::new(ObjectType::BINARY_OUTPUT, 1).unwrap();
+        let view = object_view(object, &rows, ReadVia::Rpm);
+        let priority = view.priority.as_ref().unwrap();
+        assert_eq!(priority.slots[7].as_deref(), Some("active (On)"));
         assert_eq!(
-            value_text(PropertyIdentifier::DESCRIPTION, &encoded(&many)),
-            "[0, 1, 2, 3, 4, 5, 6, 7, +2 more] (10 items)"
+            priority.relinquish_default.as_deref(),
+            Some("inactive (Off)")
         );
         assert_eq!(
-            value_text(PropertyIdentifier::DESCRIPTION, &[0xFF]),
-            "[raw ff]"
+            view.value(PropertyIdentifier::PRESENT_VALUE),
+            Some("active (On)")
         );
     }
 }

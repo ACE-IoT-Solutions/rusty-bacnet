@@ -9,9 +9,10 @@ use bacnet_types::constructed::{
     BACnetAuthenticationFactor, BACnetAuthenticationFactorFormat, BACnetAuthenticationPolicy,
     BACnetCOVSubscription, BACnetCalendarEntry, BACnetDateRange, BACnetDestination,
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetEventParameter,
-    BACnetNameValue, BACnetPortPermission, BACnetPrescale, BACnetPropertyAccessResult,
-    BACnetRecipient, BACnetScale, BACnetShedLevel, BACnetSpecialEvent, BACnetStageLimitValue,
-    BACnetTimeValue, BACnetValueSource, ReadAccessSpecification, SpecialEventPeriod,
+    BACnetNameValue, BACnetObjectPropertyReference, BACnetPortPermission, BACnetPrescale,
+    BACnetPropertyAccessResult, BACnetRecipient, BACnetScale, BACnetShedLevel, BACnetSpecialEvent,
+    BACnetStageLimitValue, BACnetTimeValue, BACnetValueSource, ReadAccessSpecification,
+    SpecialEventPeriod,
 };
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
@@ -44,6 +45,7 @@ pub(super) enum Decoded {
     StageLimitValue(BACnetStageLimitValue),
     AccessRule(BACnetAccessRule),
     DeviceObjectPropertyReference(BACnetDeviceObjectPropertyReference),
+    ObjectPropertyReference(BACnetObjectPropertyReference),
     PropertyAccessResult(BACnetPropertyAccessResult),
     Recipient(BACnetRecipient),
     DailySchedule(Vec<BACnetTimeValue>),
@@ -116,6 +118,11 @@ impl Decoded {
             Self::AccessRule(rule) => access_rule_to_py(py, &rule)?.into_any().unbind(),
             Self::DeviceObjectPropertyReference(reference) => {
                 property_reference_to_py(py, &reference)?
+                    .into_any()
+                    .unbind()
+            }
+            Self::ObjectPropertyReference(reference) => {
+                object_property_reference_to_py(py, &reference)?
                     .into_any()
                     .unbind()
             }
@@ -337,6 +344,26 @@ pub(super) fn property_reference_to_py<'py>(
             .device_identifier
             .map(PyObjectIdentifier::from_rust),
     )?;
+    Ok(dict)
+}
+
+/// A reference that names no device, as `object_identifier`,
+/// `property_identifier` and `property_array_index`: the
+/// `DeviceObjectPropertyReference` mapping without its `device_identifier`.
+fn object_property_reference_to_py<'py>(
+    py: Python<'py>,
+    reference: &BACnetObjectPropertyReference,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item(
+        "object_identifier",
+        PyObjectIdentifier::from_rust(reference.object_identifier),
+    )?;
+    dict.set_item(
+        "property_identifier",
+        property_identifier(reference.property_identifier),
+    )?;
+    dict.set_item("property_array_index", reference.property_array_index)?;
     Ok(dict)
 }
 

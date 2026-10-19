@@ -21,9 +21,9 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 
-use super::sample;
-use crate::tui::watched::{Point, RowId, Sample};
-use crate::tui::worker::browse::format::RawRow;
+use super::sample::{self, Reading, RowFormat};
+use crate::tui::format::{RawRow, StateTexts};
+use crate::tui::watched::{Point, RowId};
 use crate::tui::worker::browse::limits::RateCap;
 use crate::tui::worker::browse::read::{
     rpm_failure, unreachable, Halt, Reader, RpmFailure, Wanted,
@@ -70,8 +70,8 @@ pub(crate) struct Refusal {
 
 /// How a row started.
 pub(crate) struct Started {
-    /// The first value, with Units.
-    pub(crate) first: Option<(Sample, Option<String>)>,
+    /// The first value, with the format the row's later values take.
+    pub(crate) first: Option<(Reading, RowFormat)>,
     /// The device's MAC, for a device on this network.
     pub(crate) mac: Option<MacAddr>,
     /// The subscription, or why there is none.
@@ -115,11 +115,18 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         PropertyIdentifier::UNITS,
     ];
     let read = reader.properties(point.object, Wanted::List(&wanted)).await;
-    let refused_rpm = rpm && !reader.rpm;
     let first = match &read {
-        Ok((rows, _)) => sample::from_rows(point.property, rows).map(|s| (s, sample::units(rows))),
+        Ok((rows, _)) => match sample::from_rows(point.property, rows) {
+            Some(reading) => {
+                let mut rows = rows.clone();
+                rows.extend(state_texts(&mut reader, point).await);
+                Some((reading, RowFormat::from_rows(&rows)))
+            }
+            None => None,
+        },
         Err(_) => None,
     };
+    let refused_rpm = rpm && !reader.rpm;
     let outcome = match read {
         // Subscribing would only time out too.
         Err(Halt::Device(error)) if unreachable(&error) => Err(Refusal {
@@ -153,6 +160,35 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         mac,
         outcome,
         refused_rpm,
+    }
+}
+
+/// A binary or multi-state object's state texts, which name the row's
+/// values: a request of its own after the first read, through the same
+/// gate. It is only a nicety, so any failure (a refusal, an unknown
+/// property, an answer too large) leaves the texts out and the row starts
+/// all the same. A watched property that is itself a text was read already.
+async fn state_texts<T: TransportPort + 'static>(
+    reader: &mut Reader<'_, T>,
+    point: Point,
+) -> Vec<RawRow> {
+    let texts: Vec<PropertyIdentifier> = StateTexts::properties(point.object.object_type())
+        .iter()
+        .copied()
+        .filter(|property| *property != point.property)
+        .collect();
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    match reader.properties(point.object, Wanted::List(&texts)).await {
+        Ok((rows, _)) => rows,
+        Err(error) => {
+            tracing::debug!(
+                "{}: state texts not read ({error:?}); values show without them",
+                point.object
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -219,8 +255,8 @@ pub(crate) async fn cancel<T: TransportPort + 'static>(
 
 /// One poll of a device's due rows.
 pub(crate) struct Polled {
-    /// A sample for every row asked for: its value, or why it has none.
-    pub(crate) samples: Vec<(RowId, Sample)>,
+    /// A reading for every row asked for: its value, or why it has none.
+    pub(crate) readings: Vec<(RowId, Reading)>,
     /// The device refused RPM during this poll.
     pub(crate) refused_rpm: bool,
     /// The device stopped answering: the poll gave up on the rows left.
@@ -289,29 +325,24 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
                 Err(error) => Err(error.to_string()),
             };
             let rows: Vec<RawRow> = vec![(point.property, value)];
-            if let Some(sample) = sample::from_rows(point.property, &rows) {
-                samples.push((*row, sample));
+            if let Some(reading) = sample::from_rows(point.property, &rows) {
+                samples.push((*row, reading));
             }
         }
     }
     Polled {
-        samples,
+        readings: samples,
         refused_rpm: started_rpm && !rpm,
         unreachable: silent.is_some(),
     }
 }
 
-fn failed(error: &Error) -> Sample {
+fn failed(error: &Error) -> Reading {
     failed_with(error.to_string())
 }
 
-fn failed_with(error: String) -> Sample {
-    Sample {
-        value: Err(error),
-        number: None,
-        flags: None,
-        at: tokio::time::Instant::now().into_std(),
-    }
+fn failed_with(error: String) -> Reading {
+    Reading::failed(error)
 }
 
 /// One ReadPropertyMultiple for `batch`, one access specification per row.
@@ -320,7 +351,7 @@ async fn rpm_batch<T: TransportPort + 'static>(
     rate: &RateCap,
     device: u32,
     batch: &[(RowId, Point)],
-) -> Result<Vec<(RowId, Sample)>, Error> {
+) -> Result<Vec<(RowId, Reading)>, Error> {
     let specs = batch
         .iter()
         .map(|(_, point)| ReadAccessSpecification {
