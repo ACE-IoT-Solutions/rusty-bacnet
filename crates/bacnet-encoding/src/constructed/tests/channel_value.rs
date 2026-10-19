@@ -117,8 +117,7 @@ fn malformed_colour_alternatives_are_refused() {
         assert!(
             matches!(
                 channel_value_end(value, 0),
-                Err(bacnet_types::error::Error::Decoding(_)
-                    | bacnet_types::error::Error::DecodingMessage { .. })
+                Err(bacnet_types::error::Error::Decoding(_))
             ),
             "{value:02X?}"
         );
@@ -164,8 +163,7 @@ fn malformed_lighting_commands_are_refused() {
         assert!(
             matches!(
                 channel_value_end(value, 0),
-                Err(bacnet_types::error::Error::Decoding(_)
-                    | bacnet_types::error::Error::DecodingMessage { .. })
+                Err(bacnet_types::error::Error::Decoding(_))
             ),
             "{value:02X?}"
         );

@@ -251,10 +251,7 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
             assert_eq!(ack.property_value, [0x21, 42]);
         } else {
             assert!(
-                matches!(
-                    result,
-                    Err(Error::Decoding(_) | Error::DecodingMessage { .. })
-                ),
+                matches!(result, Err(Error::Decoding(_))),
                 "case{i}: {result:?}"
             );
         }

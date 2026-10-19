@@ -12,7 +12,7 @@
 
 use bacnet_types::constructed::{BACnetColorCommand, BACnetXyColor};
 use bacnet_types::enums::ColorOperation;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RangeError};
 use bytes::BytesMut;
 
 use super::members::unsigned_field;
@@ -102,7 +102,7 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
         offset,
         0,
         WHAT,
-        "operation [0] exceeds 32 bits",
+        "color command operation [0] exceeds 32 bits",
         &mut oversized,
     )?;
     let (target_color, offset) = target_color(data, offset)?;
@@ -112,10 +112,10 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
         })
     };
     let (target_color_temperature, offset) =
-        unsigned(offset, 2, "target-color-temperature [2] exceeds 32 bits")?;
-    let (fade_time, offset) = unsigned(offset, 3, "fade-time [3] exceeds 32 bits")?;
-    let (ramp_rate, offset) = unsigned(offset, 4, "ramp-rate [4] exceeds 32 bits")?;
-    let (step_increment, offset) = unsigned(offset, 5, "step-increment [5] exceeds 32 bits")?;
+        unsigned(offset, 2, "color command target-color-temperature [2] exceeds 32 bits")?;
+    let (fade_time, offset) = unsigned(offset, 3, "color command fade-time [3] exceeds 32 bits")?;
+    let (ramp_rate, offset) = unsigned(offset, 4, "color command ramp-rate [4] exceeds 32 bits")?;
+    let (step_increment, offset) = unsigned(offset, 5, "color command step-increment [5] exceeds 32 bits")?;
     let command = BACnetColorCommand {
         operation: ColorOperation::from_raw(operation),
         target_color,
@@ -127,9 +127,10 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
     Ok((command, offset, oversized))
 }
 
-/// The [`Error::OutOfRange`] for a field too wide for its type.
+/// The [`Error::Range`] for a field too wide for its type, named by its
+/// full label.
 fn too_wide(field: &'static str) -> Error {
-    Error::OutOfRange(format!("{WHAT} {field}"))
+    RangeError::new(field).into()
 }
 
 /// Decode one unframed `BACnetColorCommand` SEQUENCE at `offset`.

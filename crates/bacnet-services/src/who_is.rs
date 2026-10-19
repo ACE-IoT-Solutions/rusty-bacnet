@@ -445,10 +445,7 @@ mod tests {
         // [0] low limit 1 alone, then [1] high limit 10 alone (#1447).
         for data in [&[0x09, 0x01][..], &[0x19, 0x0A]] {
             let error = WhoIsRequest::decode(data).unwrap_err();
-            assert!(
-                matches!(error, Error::Decoding(_) | Error::DecodingMessage { .. }),
-                "{error:?}"
-            );
+            assert!(matches!(error, Error::Decoding(_)), "{error:?}");
         }
     }
 
@@ -456,10 +453,7 @@ mod tests {
     fn test_decode_who_is_invalid_tag() {
         // A tag that is neither limit is left over, not read as no limits.
         let error = WhoIsRequest::decode(&[0x29, 0]).unwrap_err();
-        assert!(
-            matches!(error, Error::Decoding(_) | Error::DecodingMessage { .. }),
-            "{error:?}"
-        );
+        assert!(matches!(error, Error::Decoding(_)), "{error:?}");
     }
 
     #[test]

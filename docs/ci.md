@@ -473,21 +473,18 @@ targets, so a crate that needs one builds only with a backend such as
   `__udivdi3`, `__umoddi3` and similar entry points to it. These targets
   have no 64-bit divide instruction, so a 64-bit division by a runtime
   value costs about 0.9 KB, which the budgets' headroom would otherwise
-  absorb; the MS/TP core divides only in 32 bits (#1618). The apdu image
-  is the exception to both zeros. Its libraries build their error messages
-  with `format!`, which links 15 `core::fmt` functions (about 2.7 KB of
-  `.text` on `thumbv7m-none-eabi`), and on `thumbv6m-none-eabi`, which has
-  no multiply with a 64-bit product, formatting a `u64` divides by a
-  constant through the 64-bit division routine (3 functions). Its budget
-  holds both counts at what it links today, with no headroom, so any new
-  formatting or division function still fails the check. The device image
-  calls the same libraries through their allocation-free profile, whose
-  errors carry static labels formatted only when displayed, and links no
-  `core::fmt` function. It also fails
+  absorb; the MS/TP core divides only in 32 bits (#1618). Every image,
+  apdu included, holds both counts at 0: the libraries' decoding and
+  encoding errors carry static labels formatted only when displayed
+  (#1646, #1777), which no image does. The apdu image used to build its
+  messages with `format!`, which linked 15 `core::fmt` functions (about
+  2.7 KB of `.text` on `thumbv7m-none-eabi`), and on `thumbv6m-none-eabi`,
+  which has no multiply with a 64-bit product, formatting a `u64` divided
+  by a constant through the 64-bit division routine (3 functions). It also fails
   when the image has no function symbols to look for that code in: the
   images must not be stripped. A size more than 20% under its budget gets a
   notice to tighten it, not a failure, and so does a count under its limit,
-  so a ceiling such as the apdu image's 15 `core::fmt` functions comes
+  so a ceiling such as the apdu image's old 15 `core::fmt` functions comes
   down once the code behind it goes. It fails the same way when an image
   links more memmove routines than its `memmove_functions` allows:
   compiler-builtins' `memmove` and the `memmove`, `__aeabi_memmove`,

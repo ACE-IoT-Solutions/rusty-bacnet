@@ -14,7 +14,7 @@ use bacnet_types::constructed::{
     BACnetCOVSubscriptionSpecification, BACnetRecipientProcess,
 };
 use bacnet_types::enums::PropertyIdentifier;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use crate::{primitives, tags};
@@ -193,10 +193,13 @@ pub fn decode_cov_multiple_subscription(
     let mut specifications = Vec::new();
     while !is_closing(data, pos, 4)? {
         if specifications.len() >= MAX_FRAMED_ITEMS {
-            return Err(Error::overflow(
+            return Err(DecodeError::new(
+                DecodingKind::Overflow,
                 pos,
-                format!("{what}: specification count exceeds limit"),
-            ));
+                "specification count exceeds limit",
+            )
+            .within(what)
+            .into());
         }
         let (specification, end) = decode_specification(data, pos, what)?;
         specifications.push(specification);
@@ -227,10 +230,13 @@ fn decode_specification(
     let mut references = Vec::new();
     while !is_closing(data, pos, 1)? {
         if references.len() >= MAX_FRAMED_ITEMS {
-            return Err(Error::overflow(
+            return Err(DecodeError::new(
+                DecodingKind::Overflow,
                 pos,
-                format!("{what}: COV reference count exceeds limit"),
-            ));
+                "COV reference count exceeds limit",
+            )
+            .within(what)
+            .into());
         }
         let (reference, end) = decode_cov_reference(data, pos, what)?;
         references.push(reference);

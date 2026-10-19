@@ -10,7 +10,7 @@ use super::{decode_recipient, validate_tlv_sequence};
 use crate::{primitives, tags};
 use bacnet_types::constructed::{AuditPropertyReference, BACnetAuditNotification};
 use bacnet_types::enums::{AuditOperation, ErrorClass, ErrorCode};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 /// Encode one bare `BACnetAuditNotification` field sequence.
@@ -163,10 +163,13 @@ pub fn decode_audit_notification_at(
     let (operation_raw, next) =
         decode_ctx_canonical_unsigned::<u32>(data, offset, 4, "AuditNotification operation")?;
     if !valid_operation(operation_raw) {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             operation_offset,
-            format!("AuditNotification operation {operation_raw} is reserved"),
-        ));
+            "AuditNotification operation {} is reserved",
+        )
+        .with_value(operation_raw.into())
+        .into());
     }
     let operation = AuditOperation::from_raw(operation_raw);
     offset = next;
@@ -247,10 +250,13 @@ pub fn decode_audit_notification_at(
         decode_ctx_canonical_unsigned::<u8>,
     )?;
     if let Some(priority) = target_priority.filter(|priority| !(1..=16).contains(priority)) {
-        return Err(Error::out_of_range(
+        return Err(DecodeError::new(
+            DecodingKind::OutOfRange,
             priority_offset,
-            format!("AuditNotification target-priority {priority} is outside 1..=16"),
-        ));
+            "AuditNotification target-priority {} is outside 1..=16",
+        )
+        .with_value(priority.into())
+        .into());
     }
     offset = next;
     let target_value = if next_is_opening(data, offset, 14)? {
@@ -345,10 +351,7 @@ fn decode_wrapped_recipient(
     let mut canonical = BytesMut::new();
     write_recipient(&mut canonical, &recipient);
     if canonical.as_ref() != body {
-        return Err(Error::decoding(
-            offset,
-            format!("{what} is not canonically encoded"),
-        ));
+        return Err(not_canonical(offset, what));
     }
     Ok((recipient, next))
 }
@@ -363,12 +366,18 @@ fn decode_canonical_timestamp(
     let mut canonical = BytesMut::new();
     primitives::encode_timestamp(&mut canonical, tag_number, &timestamp)?;
     if canonical.as_ref() != &data[offset..next] {
-        return Err(Error::decoding(
-            offset,
-            format!("{what} is not canonically encoded"),
-        ));
+        return Err(not_canonical(offset, what));
     }
     Ok((timestamp, next))
+}
+
+/// The refusal of a member `what` at `offset` whose encoding isn't the
+/// canonical one.
+#[cold]
+fn not_canonical(offset: usize, what: &'static str) -> Error {
+    DecodeError::new(DecodingKind::InvalidEncoding, offset, "not canonically encoded")
+        .within(what)
+        .into()
 }
 
 fn decode_raw_value(

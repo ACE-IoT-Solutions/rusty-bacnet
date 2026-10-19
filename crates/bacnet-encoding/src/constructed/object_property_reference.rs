@@ -31,7 +31,7 @@
 //! \[3\]; this codec narrows it).
 
 use bacnet_types::constructed::BACnetObjectPropertyReference;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 pub use super::reference_sinks::{
@@ -76,10 +76,13 @@ pub fn decode_object_property_reference_at(
     let (property_array_index, offset) =
         decode_optional_ctx(data, offset, 2, WHAT, decode_ctx_unsigned::<u32>)?;
     if next_is_context(data, offset, 3)? {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("{WHAT}: [3] device-identifier is not part of this production"),
-        ));
+            "[3] device-identifier is not part of this production",
+        )
+        .within(WHAT)
+        .into());
     }
     Ok((
         BACnetObjectPropertyReference {

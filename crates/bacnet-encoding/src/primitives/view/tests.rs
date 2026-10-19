@@ -173,7 +173,7 @@ fn content_faults_index_the_data() {
 #[test]
 fn character_string_contents_need_a_defined_character_set() {
     assert!(CharacterStringRef::decode(&[]).is_err());
-    for charset in 0..=5 {
+    for charset in [0, 2, 3, 4, 5] {
         assert_eq!(
             CharacterStringRef::decode(&[charset]).unwrap().charset(),
             charset
@@ -183,6 +183,42 @@ fn character_string_contents_need_a_defined_character_set() {
     // Another character set keeps its octets, even ones not valid UTF-8.
     let ucs2 = CharacterStringRef::decode(&[charset::UCS2, 0x00, 0xE9]).unwrap();
     assert_eq!((ucs2.as_str(), ucs2.contents()), (None, &[4, 0, 0xE9][..]));
+}
+
+/// Each character set's structure is checked, as the owned validator checks
+/// it (#1778); the offsets index the contents.
+#[test]
+fn character_string_contents_need_their_character_sets_structure() {
+    let refusal = |contents: &[u8]| {
+        CharacterStringRef::decode(contents)
+            .expect_err("the contents are refused")
+            .to_string()
+    };
+    // A DBCS string opens with its two-octet code page (850 here).
+    assert_eq!(
+        refusal(&[charset::IBM_MICROSOFT_DBCS, 0x03]),
+        "decoding error at offset 1: DBCS CharacterString requires a two-octet code page"
+    );
+    CharacterStringRef::decode(&[charset::IBM_MICROSOFT_DBCS, 0x03, 0x52]).unwrap();
+    // UCS-2 is whole two-octet characters, none a surrogate.
+    assert_eq!(
+        refusal(&[charset::UCS2, 0x00, 0x41, 0x00]),
+        "decoding error at offset 1: UCS-2 data must have even length"
+    );
+    assert_eq!(
+        refusal(&[charset::UCS2, 0x00, 0x41, 0xD8, 0x00]),
+        "decoding error at offset 3: invalid UCS-2 code point"
+    );
+    // UCS-4 is whole four-octet characters, each at most U+10FFFF.
+    assert_eq!(
+        refusal(&[charset::UCS4, 0x00, 0x00, 0x41]),
+        "decoding error at offset 1: UCS-4 CharacterString length must be a multiple of four"
+    );
+    assert_eq!(
+        refusal(&[charset::UCS4, 0, 0, 0, 0x41, 0x00, 0x11, 0x00, 0x00]),
+        "decoding error at offset 5: invalid UCS-4 code point"
+    );
+    CharacterStringRef::decode(&[charset::UCS4, 0x00, 0x10, 0xFF, 0xFF]).unwrap();
 }
 
 /// The view reads what the owned decoder reads, at the same offsets, and
@@ -290,4 +326,78 @@ fn the_view_agrees_with_the_owned_decoder() {
             _ => panic!("{wire:02X?}: owned {owned:?}, view {view:?}"),
         }
     }
+}
+
+/// The borrowed view and the owned validator refuse the same CharacterString
+/// contents, with the same fault at the same place, because both run one
+/// check (#1778). The owned converter accepts what they accept in the
+/// character sets it converts. Inputs come from a fixed-seed generator that
+/// leans toward the edges: odd lengths, surrogates, code points past
+/// U+10FFFF, short DBCS code pages, reserved character sets.
+#[cfg(feature = "alloc")]
+#[test]
+fn character_string_checks_agree_on_generated_contents() {
+    use super::super::{decode_character_string, validate_application_value};
+
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let edges = [0x00, 0x7F, 0x80, 0xC3, 0xD8, 0xDF, 0xE0, 0xFF, 0x10, 0x11];
+    let (mut accepted, mut refused) = (0, 0);
+    for _ in 0..20_000 {
+        let charset = (next() % 8) as u8;
+        let length = (next() % 10) as usize;
+        let mut contents = vec![charset];
+        for _ in 0..length {
+            let octet = match next() % 3 {
+                0 => edges[(next() % edges.len() as u64) as usize],
+                _ => next() as u8,
+            };
+            contents.push(octet);
+        }
+
+        let view = CharacterStringRef::decode(&contents);
+        // Application tag 7 with its length in the header, then the contents.
+        let length = contents.len() as u8;
+        let mut wire = if length < 5 {
+            vec![0x70 | length]
+        } else {
+            vec![0x75, length]
+        };
+        let content_start = wire.len();
+        wire.extend_from_slice(&contents);
+        let owned = validate_application_value(&wire, 0);
+        match (&view, &owned) {
+            (Ok(_), Ok(end)) => {
+                assert_eq!(*end, wire.len(), "{contents:02X?}");
+                accepted += 1;
+            }
+            (Err(Error::Decoding(view)), Err(Error::Decoding(owned))) => {
+                assert_eq!(
+                    (
+                        view.kind,
+                        view.message().to_string(),
+                        view.offset + content_start
+                    ),
+                    (owned.kind, owned.message().to_string(), owned.offset),
+                    "{contents:02X?}"
+                );
+                refused += 1;
+            }
+            _ => panic!("{contents:02X?}: view {view:?}, owned {owned:?}"),
+        }
+        if matches!(charset, charset::UTF8 | charset::UCS2 | charset::ISO_8859_1) {
+            assert_eq!(
+                decode_character_string(&contents).is_ok(),
+                view.is_ok(),
+                "{contents:02X?}"
+            );
+        }
+    }
+    // Both outcomes are well represented.
+    assert!(accepted > 2_000 && refused > 2_000, "{accepted} {refused}");
 }

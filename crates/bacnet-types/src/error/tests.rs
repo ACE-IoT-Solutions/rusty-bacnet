@@ -97,7 +97,6 @@ fn decoding_error_display() {
         err.to_string(),
         "decoding error at offset 42: unexpected tag"
     );
-    // A static label makes the allocation-free form.
     assert!(matches!(
         err,
         Error::Decoding(DecodeError {
@@ -110,17 +109,12 @@ fn decoding_error_display() {
     ));
 }
 
-/// A formatted message, which only alloc builds take, makes the other form,
-/// with the same text and the same offset and kind.
-#[cfg(feature = "alloc")]
+/// A label with numbers keeps its offset and kind (#1776).
 #[test]
-fn formatted_messages_make_the_message_form() {
-    let err = Error::trailing(3, format!("{} trailing byte(s)", 2));
-    assert!(matches!(
-        &err,
-        Error::DecodingMessage { offset: 3, kind: DecodingKind::Trailing, message }
-            if message == "2 trailing byte(s)"
-    ));
+fn labelled_values_keep_their_fault() {
+    let err = Error::from(
+        DecodeError::new(DecodingKind::Trailing, 3, "{} trailing byte(s)").with_value(2),
+    );
     assert_eq!(
         err.to_string(),
         "decoding error at offset 3: 2 trailing byte(s)"
@@ -201,7 +195,7 @@ fn owned_variants_take_no_reject_reason() {
         assert_eq!(error.reject_reason(), None, "{error}");
     }
     assert_eq!(
-        Error::trailing(3, format!("{} more", 2))
+        Error::trailing(3, "more")
             .into_request_reject()
             .reject_reason(),
         Some(RejectReason::TOO_MANY_ARGUMENTS)

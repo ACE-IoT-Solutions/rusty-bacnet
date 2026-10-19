@@ -36,7 +36,7 @@ use alloc::{string::ToString, vec::Vec};
 
 use bacnet_types::constructed::FaultParameters;
 use bacnet_types::enums::LifeSafetyState;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use crate::primitives;
@@ -165,10 +165,13 @@ fn decode_fault_normal_value(data: &[u8], offset: usize) -> Result<(f64, usize),
     }
     let what = "fault-out-of-range min/max-normal-value";
     if t.number == tags::app_tag::BOOLEAN {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("{what}: BOOLEAN is not a valid alternative"),
-        ));
+            "BOOLEAN is not a valid alternative",
+        )
+        .within(what)
+        .into());
     }
     let (content, end) = contents(data, pos, t.length)?;
     let value = match t.number {
@@ -177,10 +180,14 @@ fn decode_fault_normal_value(data: &[u8], offset: usize) -> Result<(f64, usize),
         tags::app_tag::DOUBLE => primitives::decode_double(content)?,
         tags::app_tag::SIGNED => primitives::decode_signed(content)? as f64,
         other => {
-            return Err(Error::decoding(
+            return Err(DecodeError::new(
+                DecodingKind::InvalidEncoding,
                 offset,
-                format!("{what}: unexpected application tag {other}"),
-            ))
+                "unexpected application tag {}",
+            )
+            .within(what)
+            .with_value(other.into())
+            .into())
         }
     };
     Ok((value, end))
@@ -330,10 +337,13 @@ pub fn decode_fault_parameters(
             (F::FaultListed { reference }, pos)
         }
         n => {
-            return Err(Error::decoding(
+            return Err(DecodeError::new(
+                DecodingKind::InvalidEncoding,
                 offset,
-                format!("BACnetFaultParameter: unknown CHOICE tag [{n}]"),
-            ));
+                "BACnetFaultParameter: unknown CHOICE tag [{}]",
+            )
+            .with_value(n.into())
+            .into());
         }
     };
     let (value, end) = value;
