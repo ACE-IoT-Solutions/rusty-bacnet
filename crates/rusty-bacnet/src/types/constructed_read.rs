@@ -409,17 +409,23 @@ pub(crate) type AddressBinding = (ObjectIdentifier, u16, Vec<u8>);
 /// then its address's network number and MAC, each application tagged.
 fn address_binding(octets: &[u8], offset: usize) -> Result<(AddressBinding, usize), Error> {
     use bacnet_encoding::primitives::decode_application_value as next;
-    let unexpected =
-        |at, what| Error::decoding(at, format!("expected the address binding's {what}"));
+    let unexpected = |at, label: &'static str| Error::decoding(at, label);
     let (PropertyValue::ObjectIdentifier(device), at) = next(octets, offset)? else {
-        return Err(unexpected(offset, "Device identifier"));
+        return Err(unexpected(
+            offset,
+            "expected the address binding's Device identifier",
+        ));
     };
     let (PropertyValue::Unsigned(network), mac_at) = next(octets, at)? else {
-        return Err(unexpected(at, "network number"));
+        return Err(unexpected(
+            at,
+            "expected the address binding's network number",
+        ));
     };
-    let network = u16::try_from(network).map_err(|_| unexpected(at, "Unsigned16 network"))?;
+    let network = u16::try_from(network)
+        .map_err(|_| unexpected(at, "expected the address binding's Unsigned16 network"))?;
     let (PropertyValue::OctetString(mac), end) = next(octets, mac_at)? else {
-        return Err(unexpected(mac_at, "MAC"));
+        return Err(unexpected(mac_at, "expected the address binding's MAC"));
     };
     Ok(((device, network, mac), end))
 }

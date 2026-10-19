@@ -11,7 +11,7 @@ use core::num::NonZeroU32;
 use bacnet_encoding::constructed::channel_value_end;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use crate::common::MAX_DECODED_ITEMS;
@@ -38,11 +38,14 @@ fn check_priority(field: &'static str, value: u64) -> Result<u8, Error> {
     }
 }
 
-fn decode_priority(field: &'static str, offset: usize, value: u64) -> Result<u8, Error> {
+/// `label` names the priority, with a placeholder for its value.
+fn decode_priority(label: &'static str, offset: usize, value: u64) -> Result<u8, Error> {
     if PRIORITY_RANGE.contains(&value) {
         Ok(value as u8)
     } else {
-        Err(Error::decoding(offset, priority_message(field, value)))
+        Err(DecodeError::new(DecodingKind::InvalidEncoding, offset, label)
+            .with_value(value)
+            .into())
     }
 }
 
@@ -149,17 +152,19 @@ impl WriteGroupRequest {
             .ok()
             .and_then(NonZeroU32::new)
             .ok_or_else(|| {
-                Error::out_of_range(
+                DecodeError::new(
+                    DecodingKind::OutOfRange,
                     0,
-                    format!("WriteGroup group number {group_raw} out of range 1-4294967295"),
+                    "WriteGroup group number {} out of range 1-4294967295",
                 )
+                .with_value(group_raw)
             })?;
 
         // [1] write-priority
         let priority_pos = offset;
         let (content, end) = decode_ctx_primitive(data, offset, 1, "WriteGroup write-priority")?;
         let write_priority = decode_priority(
-            "write-priority",
+            "WriteGroup write-priority {} out of range 1-16",
             priority_pos,
             primitives::decode_unsigned(content)?,
         )?;
@@ -193,10 +198,12 @@ impl WriteGroupRequest {
             let (content, end) = decode_ctx_primitive(data, offset, 0, "WriteGroup channel")?;
             let channel_raw = primitives::decode_unsigned(content)?;
             let channel = u16::try_from(channel_raw).map_err(|_| {
-                Error::out_of_range(
+                DecodeError::new(
+                    DecodingKind::OutOfRange,
                     offset,
-                    format!("WriteGroup channel {channel_raw} exceeds 65535"),
+                    "WriteGroup channel {} exceeds 65535",
                 )
+                .with_value(channel_raw)
             })?;
             offset = end;
 
@@ -206,7 +213,7 @@ impl WriteGroupRequest {
                 let (content, end) =
                     decode_ctx_primitive(data, offset, 1, "WriteGroup override-priority")?;
                 override_priority = Some(decode_priority(
-                    "override-priority",
+                    "WriteGroup override-priority {} out of range 1-16",
                     offset,
                     primitives::decode_unsigned(content)?,
                 )?);

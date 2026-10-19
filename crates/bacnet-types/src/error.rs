@@ -185,26 +185,10 @@ pub enum Error {
     #[error("encoding error: {0}")]
     Encoding(String),
 
-    /// Error decoding received data, with a static label (#1646). Every
-    /// decoder in the allocation-free profile reports this form.
+    /// Error decoding received data, with a static label and its numbers
+    /// (#1646, #1776). Every decoder reports this form.
     #[error("{0}")]
     Decoding(DecodeError),
-
-    /// Error decoding received data, with a message formatted when the error
-    /// was made. Only with `alloc`: decoders outside the allocation-free
-    /// profile still word some refusals this way until they move to
-    /// [`Error::Decoding`] (#1776). [`Error::decode_fault`] reads the offset
-    /// and kind of either form.
-    #[cfg(feature = "alloc")]
-    #[error("decoding error at offset {offset}: {message}")]
-    DecodingMessage {
-        /// Byte offset where the error occurred.
-        offset: usize,
-        /// Which kind of fault the decoder found.
-        kind: DecodingKind,
-        /// Description of what went wrong.
-        message: String,
-    },
 
     /// Transport-level I/O error. Only with the `std` feature, which has
     /// `std::io`.
@@ -279,35 +263,6 @@ impl From<DecodeError> for Error {
 impl From<RangeError> for Error {
     fn from(error: RangeError) -> Self {
         Self::Range(error)
-    }
-}
-
-/// The text a decoding error constructor such as [`Error::decoding`] takes.
-///
-/// A `&'static str` label makes an [`Error::Decoding`], as every decoder in
-/// the allocation-free profile does. With `alloc`, a formatted `String`
-/// makes an `Error::DecodingMessage`. Build a [`DecodeError`] directly for
-/// a label that names a context or a number.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DecodeMessage {
-    /// A static label.
-    Label(&'static str),
-    /// A message formatted when the error was made. Only with `alloc`.
-    #[cfg(feature = "alloc")]
-    Formatted(String),
-}
-
-impl From<&'static str> for DecodeMessage {
-    fn from(label: &'static str) -> Self {
-        Self::Label(label)
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl From<String> for DecodeMessage {
-    fn from(message: String) -> Self {
-        Self::Formatted(message)
     }
 }
 
@@ -493,68 +448,81 @@ impl Error {
 
     /// Create a [`DecodingKind::InvalidEncoding`] decoding error at the given
     /// byte offset: contents whose encoding isn't valid for their datatype.
-    /// See [`DecodeMessage`] for the form `message` gives.
-    pub fn decoding(offset: usize, message: impl Into<DecodeMessage>) -> Self {
-        Self::decoding_kind(DecodingKind::InvalidEncoding, offset, message)
+    /// Build a [`DecodeError`] directly for a label that names a context or
+    /// a number.
+    pub fn decoding(offset: usize, label: &'static str) -> Self {
+        Self::decoding_kind(DecodingKind::InvalidEncoding, offset, label)
     }
 
-    /// Create a decoding error of `kind` at the given byte offset: an
-    /// [`Error::Decoding`] for a static label, an `Error::DecodingMessage`
-    /// for a formatted message.
-    pub fn decoding_kind(
-        kind: DecodingKind,
-        offset: usize,
-        message: impl Into<DecodeMessage>,
-    ) -> Self {
-        match message.into() {
-            DecodeMessage::Label(label) => Self::Decoding(DecodeError::new(kind, offset, label)),
-            #[cfg(feature = "alloc")]
-            DecodeMessage::Formatted(message) => Self::DecodingMessage {
-                offset,
-                kind,
-                message,
-            },
-        }
+    /// Create an [`Error::Decoding`] of `kind` at the given byte offset,
+    /// described by a static `label`.
+    pub fn decoding_kind(kind: DecodingKind, offset: usize, label: &'static str) -> Self {
+        Self::Decoding(DecodeError::new(kind, offset, label))
     }
 
     /// Create a [`DecodingKind::InvalidTag`] decoding error: a tag at
     /// `offset` that doesn't fit there.
-    pub fn invalid_tag(offset: usize, message: impl Into<DecodeMessage>) -> Self {
-        Self::decoding_kind(DecodingKind::InvalidTag, offset, message)
+    pub fn invalid_tag(offset: usize, label: &'static str) -> Self {
+        Self::decoding_kind(DecodingKind::InvalidTag, offset, label)
     }
 
     /// Create a [`DecodingKind::Missing`] decoding error: a required member
     /// due at `offset` isn't there.
-    pub fn missing(offset: usize, message: impl Into<DecodeMessage>) -> Self {
-        Self::decoding_kind(DecodingKind::Missing, offset, message)
+    pub fn missing(offset: usize, label: &'static str) -> Self {
+        Self::decoding_kind(DecodingKind::Missing, offset, label)
     }
 
     /// Create a [`DecodingKind::Trailing`] decoding error: octets from
     /// `offset` on that the value leaves unread.
-    pub fn trailing(offset: usize, message: impl Into<DecodeMessage>) -> Self {
-        Self::decoding_kind(DecodingKind::Trailing, offset, message)
+    pub fn trailing(offset: usize, label: &'static str) -> Self {
+        Self::decoding_kind(DecodingKind::Trailing, offset, label)
     }
 
     /// Create a [`DecodingKind::OutOfRange`] decoding error: a value at
     /// `offset` too large for its field, or outside its range.
-    pub fn out_of_range(offset: usize, message: impl Into<DecodeMessage>) -> Self {
-        Self::decoding_kind(DecodingKind::OutOfRange, offset, message)
+    pub fn out_of_range(offset: usize, label: &'static str) -> Self {
+        Self::decoding_kind(DecodingKind::OutOfRange, offset, label)
     }
 
     /// Create a [`DecodingKind::Overflow`] decoding error: more items, or a
     /// longer tag, than the decoder takes.
-    pub fn overflow(offset: usize, message: impl Into<DecodeMessage>) -> Self {
-        Self::decoding_kind(DecodingKind::Overflow, offset, message)
+    pub fn overflow(offset: usize, label: &'static str) -> Self {
+        Self::decoding_kind(DecodingKind::Overflow, offset, label)
     }
 
-    /// The offset and kind of a decoding error of either form
-    /// ([`Error::Decoding`] or `Error::DecodingMessage`); `None` for any
-    /// other error.
+    /// This error, an inner reader's refusal, as a static [`DecodeError`] at
+    /// `offset`, for a decoder that reports it as its own fault there and
+    /// names its own context or item (#1776). A decoding error keeps its
+    /// kind, context, label, values and index; a range error is
+    /// [`DecodingKind::OutOfRange`] with its label and values; a short buffer
+    /// is [`DecodingKind::Missing`] with its sizes. Any other error, which a
+    /// decoder doesn't return, is an [`DecodingKind::InvalidEncoding`]
+    /// labelled `malformed`.
+    pub fn to_decode_error(&self, offset: usize) -> DecodeError {
+        let mut refused = match self {
+            Self::Decoding(refused) => *refused,
+            Self::Range(refused) => {
+                let mut range = DecodeError::new(DecodingKind::OutOfRange, offset, refused.label);
+                range.values = refused.values;
+                range
+            }
+            Self::BufferTooShort { need, have } => DecodeError::new(
+                DecodingKind::Missing,
+                offset,
+                "buffer too short: need {} bytes, have {}",
+            )
+            .with_values(*need as u64, *have as u64),
+            _ => DecodeError::new(DecodingKind::InvalidEncoding, offset, "malformed"),
+        };
+        refused.offset = offset;
+        refused
+    }
+
+    /// The offset and kind of an [`Error::Decoding`]; `None` for any other
+    /// error.
     pub fn decode_fault(&self) -> Option<(usize, DecodingKind)> {
         match self {
             Self::Decoding(error) => Some((error.offset, error.kind)),
-            #[cfg(feature = "alloc")]
-            Self::DecodingMessage { offset, kind, .. } => Some((*offset, *kind)),
             _ => None,
         }
     }
@@ -562,7 +530,7 @@ impl Error {
     /// The Reject reason a responder answers a confirmed request with when
     /// this error refused it while decoding its parameters (Clauses 18.9 and
     /// 20.1.8): the reason itself for [`Error::Reject`], the kind's reason
-    /// for a decoding error of either form (the table on
+    /// for a decoding error (the table on
     /// [`DecodingKind::reject_reason`]), and MISSING_REQUIRED_PARAMETER for
     /// [`Error::BufferTooShort`], a member cut short because the data ran out
     /// before it was complete. `None` for any other error, which no decoder

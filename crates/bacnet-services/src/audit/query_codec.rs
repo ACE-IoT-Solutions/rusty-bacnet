@@ -3,13 +3,13 @@ use bacnet_encoding::{primitives, tags};
 use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::enums::{BACnetSuccessFilter, PropertyIdentifier, RejectReason};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
 
 use bacnet_encoding::constructed::tagged::{
     decode_app_primitive, decode_canonical_unsigned, decode_ctx_canonical_unsigned,
-    decode_ctx_object_id, decode_ctx_primitive, expect_end, misplaced_tag, next_is_context,
+    decode_ctx_object_id, decode_ctx_primitive, expect_end, misplaced, misplaced_tag, next_is_context,
     next_is_opening,
 };
 
@@ -392,21 +392,30 @@ fn decode_address(
     let field = labels.field;
     let (opening, content_start) = tags::decode_tag(data, offset)?;
     if !opening.is_opening_tag(expected_tag) {
-        return Err(misplaced_tag(
+        return Err(misplaced(
             data,
             &opening,
             Some(expected_tag),
             offset,
-            format!("{field} expected opening tag {expected_tag}"),
-        ));
+            "expected opening tag {}",
+        )
+        .within(field)
+        .with_value(expected_tag.into())
+        .into());
     }
     let (content, end) = tags::extract_context_value(data, content_start, expected_tag)?;
 
     let (network_bytes, inner_offset) =
         decode_app_primitive(content, 0, tags::app_tag::UNSIGNED, labels.network_number)?;
     let network_number = decode_canonical_unsigned(network_bytes, offset, field)?;
-    let network_number = u16::try_from(network_number)
-        .map_err(|_| Error::out_of_range(offset, format!("{field} network-number exceeds u16")))?;
+    let network_number = u16::try_from(network_number).map_err(|_| {
+        DecodeError::new(
+            DecodingKind::OutOfRange,
+            offset,
+            "network-number exceeds u16",
+        )
+        .within(field)
+    })?;
 
     let mac_offset = inner_offset;
     let (mac_address, inner_offset) = decode_app_primitive(

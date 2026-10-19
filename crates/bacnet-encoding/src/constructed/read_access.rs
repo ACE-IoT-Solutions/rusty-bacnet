@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::PropertyIdentifier;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 pub use super::reference_sinks::encode_property_reference_to_sink;
@@ -79,16 +79,22 @@ pub fn decode_read_access_specification(
     let mut list_of_property_references = Vec::new();
     loop {
         if offset >= data.len() {
-            return Err(Error::missing(
+            return Err(DecodeError::new(
+                DecodingKind::Missing,
                 offset,
-                format!("{WHAT} missing closing tag 1"),
-            ));
+                "missing closing tag 1",
+            )
+            .within(WHAT)
+            .into());
         }
         if list_of_property_references.len() >= MAX_FRAMED_ITEMS {
-            return Err(Error::overflow(
+            return Err(DecodeError::new(
+                DecodingKind::Overflow,
                 offset,
-                format!("{WHAT} property references exceed the item limit"),
-            ));
+                "property references exceed the item limit",
+            )
+            .within(WHAT)
+            .into());
         }
         let (tag, tag_end) = tags::decode_tag(data, offset)?;
         if tag.is_closing_tag(1) {

@@ -85,7 +85,8 @@ impl DecodingKind {
 /// It displays as `decoding error at offset {offset}: {context}: {label}`,
 /// leaving out `{context}: ` when the context is empty, and with each `{}`
 /// in the label replaced by the next of [`values`](Self::values) in decimal,
-/// or each `{:#x}` in hexadecimal.
+/// or each `{:#x}` in hexadecimal. An [`index`](Self::index) follows the
+/// context as `[{index}]`.
 ///
 /// ```
 /// use bacnet_types::error::{DecodeError, DecodingKind, Error};
@@ -96,7 +97,11 @@ impl DecodingKind {
 /// assert_eq!(refused.to_string(), "decoding error at offset 9: IAm: 2 trailing byte(s)");
 /// assert_eq!(Error::from(refused).reject_reason(), Some(DecodingKind::Trailing.reject_reason()));
 /// ```
+///
+/// It is `#[non_exhaustive]`: build one with [`new`](Self::new) and the
+/// builder methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct DecodeError {
     /// Byte offset where the decoder found the fault.
     pub offset: usize,
@@ -110,6 +115,10 @@ pub struct DecodeError {
     /// The numbers the label's placeholders stand for, in order; a slot with
     /// no placeholder is 0.
     pub values: [u64; 2],
+    /// The zero-based position of the list item the fault is in, such as a
+    /// file record, when the decoder names one (#1776). It sits in the
+    /// struct's padding, so the error is no larger for it.
+    pub index: Option<u16>,
 }
 
 impl DecodeError {
@@ -121,6 +130,7 @@ impl DecodeError {
             context: "",
             label,
             values: [0; 2],
+            index: None,
         }
     }
 
@@ -128,6 +138,13 @@ impl DecodeError {
     #[must_use]
     pub const fn within(mut self, context: &'static str) -> Self {
         self.context = context;
+        self
+    }
+
+    /// The same fault, in the list item at `index`.
+    #[must_use]
+    pub const fn at_item(mut self, index: u16) -> Self {
+        self.index = Some(index);
         self
     }
 
@@ -150,7 +167,7 @@ impl DecodeError {
     /// The context and label with their numbers, without the
     /// `decoding error at offset {offset}: ` prefix.
     pub fn message(&self) -> impl fmt::Display + '_ {
-        DecodeMessageText(self)
+        DecodeText(self)
     }
 }
 
@@ -164,13 +181,16 @@ impl fmt::Display for DecodeError {
 impl core::error::Error for DecodeError {}
 
 /// [`DecodeError::message`].
-struct DecodeMessageText<'a>(&'a DecodeError);
+struct DecodeText<'a>(&'a DecodeError);
 
-impl fmt::Display for DecodeMessageText<'_> {
+impl fmt::Display for DecodeText<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let error = self.0;
-        if !error.context.is_empty() {
+        if !error.context.is_empty() || error.index.is_some() {
             f.write_str(error.context)?;
+            if let Some(index) = error.index {
+                write!(f, "[{index}]")?;
+            }
             f.write_str(": ")?;
         }
         write_label(f, error.label, error.values)
@@ -339,6 +359,14 @@ mod tests {
                 .with_values(0, 1 << 32)
                 .to_string(),
             "decoding error at offset 0: WhoIs low limit: [0] value 4294967296 exceeds u32"
+        );
+        assert_eq!(
+            DecodeError::new(DecodingKind::InvalidTag, 7, "expected {t}")
+                .within("record data")
+                .at_item(1)
+                .with_value(6)
+                .to_string(),
+            "decoding error at offset 7: record data[1]: expected OCTET STRING"
         );
     }
 

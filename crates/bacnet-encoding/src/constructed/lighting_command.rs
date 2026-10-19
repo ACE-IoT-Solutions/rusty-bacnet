@@ -10,7 +10,7 @@
 
 use bacnet_types::constructed::BACnetLightingCommand;
 use bacnet_types::enums::LightingOperation;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RangeError};
 use bytes::BytesMut;
 
 use super::members::unsigned_field;
@@ -53,7 +53,7 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
         offset,
         0,
         WHAT,
-        "operation [0] exceeds 32 bits",
+        "lighting command operation [0] exceeds 32 bits",
         &mut oversized,
     )?;
     let (target_level, offset) = decode_optional_ctx(data, offset, 1, WHAT, decode_ctx_real)?;
@@ -65,7 +65,7 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
             at,
             tag,
             WHAT,
-            "fade-time [4] exceeds 32 bits",
+            "lighting command fade-time [4] exceeds 32 bits",
             &mut oversized,
         )
     })?;
@@ -75,7 +75,7 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
             at,
             tag,
             WHAT,
-            "priority [5] exceeds an Unsigned8",
+            "lighting command priority [5] exceeds an Unsigned8",
             &mut oversized,
         )
     })?;
@@ -90,9 +90,10 @@ pub(super) fn decode_fields(data: &[u8], offset: usize) -> Result<Fields, Error>
     Ok((command, offset, oversized))
 }
 
-/// The [`Error::OutOfRange`] for a field too wide for its type.
+/// The [`Error::Range`] for a field too wide for its type, named by its
+/// full label.
 fn too_wide(field: &'static str) -> Error {
-    Error::OutOfRange(format!("{WHAT} {field}"))
+    RangeError::new(field).into()
 }
 
 /// Decode one unframed `BACnetLightingCommand` SEQUENCE at `offset`.
