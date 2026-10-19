@@ -316,7 +316,8 @@ pub(crate) fn tls(failure: ScTlsFailure) -> (String, String) {
         ScTlsFailure::PeerCertificate(R::NameMismatch) => (
             "hub certificate is for another host".into(),
             "The certificate does not name the host in the URL. Dial the host name the \
-             certificate was issued for."
+             certificate was issued for. This name check goes past the Annex AB.7.4 default \
+             and is kept on purpose (docs/sc-check.md, Hub name verification)."
                 .into(),
         ),
         ScTlsFailure::PeerCertificate(R::WrongPurpose) => (

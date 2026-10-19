@@ -195,6 +195,7 @@ async fn unauthorized_or_unsaved_profiles_never_start_a_network_attempt() {
             name: "local".into(),
             profile: p.clone(),
             attest: false,
+            accepted: Vec::new(),
         }))
         .await
         .unwrap();
@@ -210,6 +211,7 @@ async fn unauthorized_or_unsaved_profiles_never_start_a_network_attempt() {
             name: "local".into(),
             profile: changed,
             attest: true,
+            accepted: Vec::new(),
         }))
         .await
         .unwrap();
@@ -224,6 +226,7 @@ async fn unauthorized_or_unsaved_profiles_never_start_a_network_attempt() {
             name: "local".into(),
             profile: p,
             attest: true,
+            accepted: Vec::new(),
         }))
         .await
         .unwrap();

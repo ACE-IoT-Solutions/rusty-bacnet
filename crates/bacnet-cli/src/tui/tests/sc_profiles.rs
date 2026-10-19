@@ -246,6 +246,7 @@ async fn a_profile_session_refuses_the_interface_pickers_connect() {
             name: "local".into(),
             profile: p,
             attest: true,
+            accepted: Vec::new(),
         }))
         .await
         .unwrap();
@@ -303,6 +304,7 @@ async fn a_missing_ca_fails_validation_by_path_and_nothing_dials_the_hub() {
             name: "site".into(),
             profile: p.clone(),
             attest: true,
+            accepted: Vec::new(),
         }))
         .await
         .unwrap();
@@ -341,6 +343,7 @@ async fn a_missing_ca_fails_validation_by_path_and_nothing_dials_the_hub() {
                 name: "site".into(),
                 profile: fixed,
                 attest: true,
+                accepted: Vec::new(),
             }))
             .await
             .unwrap();
@@ -391,6 +394,7 @@ async fn an_sc_profile_dials_its_failover_hub_when_the_primary_is_down() {
             name: "site".into(),
             profile: p,
             attest: true,
+            accepted: Vec::new(),
         }))
         .await
         .unwrap();

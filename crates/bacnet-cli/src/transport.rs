@@ -216,6 +216,21 @@ pub async fn build_sc_client(
         .and_then(pem::private_key_reader)
         .map_err(|e| Error::Encoding(format!("failed to read key PEM: {e}")))?;
 
+    // The pre-dial lint (#968), for one-shots, the shell and the TUI alike:
+    // a hard failure stops here, before any socket. Warnings are logged (to
+    // stderr in one-shots) and never block; the TUI confirms them earlier, so
+    // a warning that first appears between that check and this one is only
+    // logged (accepted by design). Inputs past the inspection limits are a
+    // warning, not a refusal: the loaders above already accepted them.
+    let lint = crate::sc_check::lint::Lint::run(cert_path, Some(ca_path), Some(key_path), None)
+        .map_err(Error::Encoding)?;
+    if let Some(refusal) = lint.refusal() {
+        return Err(Error::Encoding(refusal));
+    }
+    for warning in lint.of(crate::sc_check::lint::Weight::Warning) {
+        tracing::warn!("{}", warning.text);
+    }
+
     let tls_config = ScNodeTlsConfig::from_der(ca_certs, certs, key)
         .map_err(|e| Error::Encoding(format!("TLS config error: {e}")))?;
 
