@@ -261,6 +261,15 @@ fn preview<'a>(connection: &'a Connection, live: bool, theme: &Theme) -> Vec<Lin
                     "Connecting is refused until these are fixed (r re-checks).",
                     theme.danger(),
                 ));
+            } else if !connection.checks.warnings.is_empty() {
+                lines.push(Line::styled(
+                    if connection.accepted == connection.checks.warnings {
+                        "Warnings accepted for this connection."
+                    } else {
+                        "y accept these warnings for this connection | fix them and r re-check"
+                    },
+                    theme.warn(),
+                ));
             }
             lines.push(Line::raw(""));
             if live {

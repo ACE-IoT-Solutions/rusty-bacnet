@@ -6,6 +6,8 @@ use serde::Serialize;
 use std::io::{self, Write};
 
 #[cfg(feature = "sc-tls")]
+pub(crate) mod lint;
+#[cfg(feature = "sc-tls")]
 mod projection;
 #[cfg(feature = "sc-tls")]
 mod render;
@@ -13,6 +15,11 @@ mod render;
 pub(crate) use render::date;
 #[cfg(all(test, feature = "sc-tls"))]
 mod tests;
+
+/// Where this node's hub check goes past the Annex AB.7.4 default, kept on
+/// purpose. Printed by sc-check and shown on the TUI's credentials view.
+#[cfg(any(feature = "sc-tls", feature = "tui"))]
+pub(crate) const HUB_NAME_NOTE: &str = "Hub name: this node also requires the hub's certificate to name the host in the hub URL (a DNS or IP SAN) and to permit server authentication. That is stricter than the Annex AB.7.4 default and is kept on purpose; see https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/sc-check.md#hub-name-verification";
 
 const UNASSESSED: &[&str] = &[
     "issuer_authorization",

@@ -166,10 +166,10 @@ async fn run(
                             Request::List => profiles.catalog(),
                             Request::Load(name) => profiles.load(&name),
                             Request::Save { name, profile, create, previous } => profiles.save(&name, profile, create, previous),
-                            Request::Connect { name, profile, attest } => {
+                            Request::Connect { name, profile, attest, accepted } => {
                                 // Validation, file checks and authorization all run
                                 // here, before a session (and so any socket) exists.
-                                match profiles.prepare(&name, &profile, attest).and_then(|prepared| Ok((prepared.resolved.transport_args()?, prepared))) {
+                                match profiles.prepare(&name, &profile, attest, &accepted).and_then(|prepared| Ok((prepared.resolved.transport_args()?, prepared))) {
                                     Ok((args, prepared)) => {
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.

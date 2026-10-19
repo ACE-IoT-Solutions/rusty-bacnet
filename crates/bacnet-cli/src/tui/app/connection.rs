@@ -24,6 +24,8 @@ pub(crate) enum Key {
     List,
     Connect,
     Attest,
+    /// Accept the preview's check warnings for the next connection.
+    Confirm,
 }
 
 /// One of the connection dialog's three screens.
@@ -81,6 +83,8 @@ pub(crate) struct Connection {
     pub(crate) saved: Option<Profile>,
     /// File checks of the saved profile's resolved settings.
     pub(crate) checks: Checks,
+    /// The warnings of `checks` the operator accepted (y); cleared by new checks.
+    pub(crate) accepted: Vec<String>,
     /// The transport the editor's fields belong to.
     pub(crate) transport: Transport,
     pub(crate) fields: Vec<String>,
@@ -118,6 +122,7 @@ impl Connection {
             name: String::new(),
             saved: None,
             checks: Checks::default(),
+            accepted: Vec::new(),
             transport: Transport::Bip,
             fields: Vec::new(),
             focus: 0,
@@ -169,6 +174,7 @@ impl Connection {
                 self.name = name;
                 self.saved = Some(profile);
                 self.checks = checks;
+                self.accepted.clear();
                 self.creating = false;
                 self.screen = Screen::Preview;
             }
@@ -183,6 +189,7 @@ impl Connection {
         self.name.clear();
         self.saved = None;
         self.checks = Checks::default();
+        self.accepted.clear();
         self.creating = true;
         self.edit(profile);
     }
@@ -392,6 +399,23 @@ impl Connection {
                 self.names.get(self.selected).cloned().map(Request::Load)
             }
             (Screen::Preview, Key::Reload) => Some(Request::Load(self.name.clone())),
+            (Screen::Preview, Key::Confirm) => {
+                if self.checks.warnings.is_empty() {
+                    self.error = Some("No warnings to accept.".into());
+                } else {
+                    self.accepted = self.checks.warnings.clone();
+                }
+                None
+            }
+            // A warning holds the connection until accepted (#968). The
+            // coordinator checks again against fresh checks.
+            (Screen::Preview, Key::Submit | Key::Connect | Key::Attest)
+                if self.checks.errors.is_empty() && self.accepted != self.checks.warnings =>
+            {
+                self.error =
+                    Some("Review the warnings above: y accepts them for this connection.".into());
+                None
+            }
             // A failed file check is refused again (freshly) by the
             // coordinator, so the request goes out and names the path.
             (Screen::Preview, key @ (Key::Submit | Key::Connect | Key::Attest)) => {
@@ -410,6 +434,7 @@ impl Connection {
                         name: self.name.clone(),
                         profile: self.saved.clone().expect("resolved profile"),
                         attest: key == Key::Attest,
+                        accepted: self.accepted.clone(),
                     }),
                 }
             }

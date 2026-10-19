@@ -10,6 +10,8 @@ pub(super) struct Inspection<'a> {
     pub(super) peer_trust_supplied: bool,
     pub(super) key_consistency: &'static str,
     pub(super) key_file_permissions: Option<Permissions>,
+    pub(super) direct_issuer: &'static str,
+    pub(super) direct_issuer_index: Option<usize>,
     pub(super) certificates: Vec<Certificate<'a>>,
 }
 #[derive(Serialize)]
@@ -98,6 +100,8 @@ pub(super) fn completed(report: &ScPemInspection) -> Document<Inspection<'_>> {
                 group_readable: value.group_readable,
                 world_readable: value.world_readable,
             }),
+            direct_issuer: report.direct_issuer.as_str(),
+            direct_issuer_index: report.direct_issuer_index,
             certificates: report
                 .certificates
                 .iter()
@@ -147,7 +151,7 @@ fn diagnostic(
     }
 }
 
-fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
+pub(super) fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
     let mut result = Vec::new();
     for cert in &report.certificates {
         let mut add = |area, kind: &str, severity, message: &str| {
@@ -270,9 +274,26 @@ fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
                 "The opened key file has its Unix world-read bit set. Review local access requirements; ACLs were not assessed."); }
         }
     }
+    let mut add_issuer = |kind, message| {
+        result.push(diagnostic(
+            ScInputRole::Identity,
+            Some(0),
+            "issuer",
+            kind,
+            "warning",
+            message,
+        ))
+    };
+    match report.direct_issuer {
+        ScDirectIssuer::Direct | ScDirectIssuer::NotAssessed => {}
+        ScDirectIssuer::NotDirect => add_issuer("not_direct",
+            "No CA in the --sc-ca bundle signed the identity leaf directly. Peers using the Annex AB.7.4 default check with this bundle can refuse it; have a bundle CA issue it, or add its issuing CA to every peer's bundle."),
+        ScDirectIssuer::Unknown => add_issuer("unknown",
+            "Direct issuance by a --sc-ca CA could not be established: the leaf could not be read, or a candidate CA uses a signature algorithm this check does not support."),
+    }
     if !report.peer_trust_supplied {
         result.push(diagnostic(ScInputRole::PeerTrust, None, "peer_trust", "not_assessed", "notice",
-            "No peer-trust file was supplied. Supply --sc-ca to inventory that file; it does not authorize the local issuer."));
+            "No peer-trust file was supplied. Supply --sc-ca to inventory that file and to check that one of its CAs issued the identity leaf directly."));
     }
     let role = |value: Option<&str>| match value {
         Some("identity") => 0,

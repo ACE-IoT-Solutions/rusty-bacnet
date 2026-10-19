@@ -18,7 +18,8 @@
 //!   refusal of an invalid SC profile before any dial, the flags-only path,
 //!   and the SC connection screen's frames.
 //! - `sc_screen`: the SC screen from synthetic reports, with its frames;
-//!   `sc_hub`: the SC worker against in-process mTLS hubs.
+//!   `sc_hub`: the SC worker against in-process mTLS hubs; `sc_lint`: the
+//!   credential lint on the preview, in the coordinator and on the SC screen.
 //!
 //! Snapshot workflow: CI runs plain `cargo nextest run -p bacnet-cli`, where a
 //! changed frame fails the test. After an intended UI change, run
@@ -44,6 +45,7 @@ mod network_frames;
 mod profile_ui;
 #[cfg(feature = "sc-tls")]
 mod sc_hub;
+mod sc_lint;
 mod sc_profiles;
 mod sc_screen;
 mod site;

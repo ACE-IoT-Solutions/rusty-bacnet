@@ -1,6 +1,6 @@
 //! The SC screen: the hub connector and identity panels on top, the hub's
-//! certificate chain or the connection doctor in the middle (Tab switches),
-//! and the event timeline below. Every state is marked by text as well as
+//! certificate chain, the connection doctor or this node's own credentials
+//! in the middle (Tab switches), and the event timeline below. Every state is marked by text as well as
 //! colour.
 
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -35,12 +35,14 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(lines.block(block), area);
         return;
     }
-    let [top, middle, events] = Layout::vertical([
-        Constraint::Length(PANEL_HEIGHT),
-        Constraint::Length(MIDDLE_HEIGHT),
-        Constraint::Min(3),
-    ])
-    .areas(area);
+    // The credentials list is the longest view: it takes the room the
+    // timeline would, leaving a few event lines.
+    let (middle, events) = match app.sc.view {
+        View::Credentials => (Constraint::Min(MIDDLE_HEIGHT), Constraint::Length(5)),
+        _ => (Constraint::Length(MIDDLE_HEIGHT), Constraint::Min(3)),
+    };
+    let [top, middle, events] =
+        Layout::vertical([Constraint::Length(PANEL_HEIGHT), middle, events]).areas(area);
     let [status, identity] =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
     status_panel(frame, status, app, theme);
@@ -53,6 +55,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let lines = match sc.view {
         View::Status => chain(&sc.chain, theme),
         View::Doctor => doctor(sc, theme),
+        View::Credentials => super::sc_credentials::lines(sc.credentials.as_ref(), theme),
     };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     timeline(frame, events, app, theme);
@@ -61,7 +64,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn tabs<'a>(app: &App, theme: &Theme) -> Line<'a> {
     let sc = &app.sc;
     let mut spans = vec![Span::raw(" ")];
-    for (view, name) in [(View::Status, "Hub certificates"), (View::Doctor, "Doctor")] {
+    let credentials = if sc.lint_refused() {
+        "My credentials (FAIL)"
+    } else {
+        "My credentials"
+    };
+    for (view, name) in [
+        (View::Status, "Hub certificates"),
+        (View::Doctor, "Doctor"),
+        (View::Credentials, credentials),
+    ] {
         if view == sc.view {
             spans.push(Span::styled(format!("[{name}]"), theme.accent()));
         } else {
