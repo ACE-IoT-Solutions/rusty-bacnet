@@ -187,7 +187,7 @@ pub(crate) fn utc_now() -> String {
 }
 
 /// `secs` after the Unix epoch as an ISO 8601 UTC time.
-fn utc(secs: u64, millis: u32) -> String {
+pub(crate) fn utc(secs: u64, millis: u32) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).

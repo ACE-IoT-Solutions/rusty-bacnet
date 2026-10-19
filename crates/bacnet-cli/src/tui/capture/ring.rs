@@ -7,6 +7,7 @@
 //! new filter walks the whole ring.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use super::filter::Filter;
 use super::CaptureFrame;
@@ -14,7 +15,8 @@ use super::CaptureFrame;
 /// Frames, oldest first, at most `capacity` of them.
 #[derive(Debug)]
 pub(crate) struct Ring {
-    frames: VecDeque<CaptureFrame>,
+    /// Shared, so an export takes them without copying their octets.
+    frames: VecDeque<Arc<CaptureFrame>>,
     /// The number of `frames[0]`.
     first: u64,
     capacity: usize,
@@ -48,7 +50,7 @@ impl Ring {
         if self.filter.matches(&frame) {
             self.kept.push_back(number);
         }
-        self.frames.push_back(frame);
+        self.frames.push_back(Arc::new(frame));
         number
     }
 
@@ -69,6 +71,11 @@ impl Ring {
 
     /// Frame `number`, if still held.
     pub(crate) fn get(&self, number: u64) -> Option<&CaptureFrame> {
+        self.shared(number).map(|frame| &**frame)
+    }
+
+    /// Frame `number` as the ring holds it, shared.
+    pub(crate) fn shared(&self, number: u64) -> Option<&Arc<CaptureFrame>> {
         let index = number.checked_sub(self.first)?;
         self.frames.get(usize::try_from(index).ok()?)
     }

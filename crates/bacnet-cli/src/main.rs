@@ -596,6 +596,7 @@ async fn cli_main(cli: Cli) -> CliResult {
                 decode,
                 device: device.clone(),
                 interface_ip: interface,
+                port: cli.port,
                 filter: filter.clone(),
                 count,
                 snaplen,

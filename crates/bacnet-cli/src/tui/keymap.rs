@@ -246,7 +246,7 @@ fn mstp(key: KeyEvent) -> Option<Action> {
 }
 
 /// The Capture screen: move, Tab between the list, the tree and the hex
-/// view, Space to pause, `/` to filter, `z` to clear.
+/// view, Space to pause, `/` to filter, `e` to export, `z` to clear.
 fn capture(app: &App, key: KeyEvent) -> Option<Action> {
     if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
         return None;
@@ -264,6 +264,8 @@ fn capture(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Right if tree => Action::Capture(CaptureKey::Expand),
         KeyCode::Char(' ') => Action::Capture(CaptureKey::Pause),
         KeyCode::Char('z') => Action::Capture(CaptureKey::Clear),
+        KeyCode::Char('e') => Action::Capture(CaptureKey::Export { raw_ipv4: false }),
+        KeyCode::Char('E') => Action::Capture(CaptureKey::Export { raw_ipv4: true }),
         KeyCode::Char('/') => Action::StartFilter,
         KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
