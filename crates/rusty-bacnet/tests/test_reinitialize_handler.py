@@ -77,28 +77,19 @@ class Peer:
 
     async def ask(self, address, invoke, state, password=None):
         ip, port = address.rsplit(":", 1)
-        loop = asyncio.get_running_loop()
-        arrived = loop.create_future()
-
-        def readable():
-            # Taking the datagram and recording it happen in one loop
-            # callback, so `delivered` never misses a reply in between.
-            try:
-                datagram = self.sock.recv(2048)
-            except BlockingIOError:
-                return
-            loop.remove_reader(self.sock)
-            self.received.append(reply_apdu(datagram))
-            if not arrived.done():
-                arrived.set_result(self.received[-1])
-
-        loop.add_reader(self.sock, readable)
-        try:
-            await loop.sock_sendto(self.sock, request(invoke, state, password),
-                                   (ip, int(port)))
-            return await asyncio.wait_for(arrived, 2)
-        finally:
-            loop.remove_reader(self.sock)
+        self.sock.sendto(request(invoke, state, password), (ip, int(port)))
+        # Poll rather than use a loop reader: Windows' default event loop
+        # has no add_reader. Taking the datagram and recording it happen in
+        # one synchronous step, so `delivered` never misses a reply between.
+        async with asyncio.timeout(2):
+            while True:
+                try:
+                    datagram = self.sock.recv(2048)
+                except BlockingIOError:
+                    await asyncio.sleep(0.002)
+                    continue
+                self.received.append(reply_apdu(datagram))
+                return self.received[-1]
 
 
 def server(**keywords):
