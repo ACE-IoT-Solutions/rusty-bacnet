@@ -70,8 +70,7 @@ impl Session {
             ttl,
         });
 
-        // Spawn renewal task at 80% of TTL
-        let renewal_interval = std::time::Duration::from_secs((ttl as u64) * 80 / 100);
+        let renewal_interval = renewal_interval(ttl);
         let handle = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(renewal_interval).await;
@@ -95,6 +94,13 @@ impl Session {
         }
         self.bbmd_registration = None;
     }
+}
+
+/// How long the shell waits between renewals of a registration of `ttl`
+/// seconds: 80% of it, and never under a second, so a tiny TTL can't send
+/// registrations back to back.
+pub(crate) fn renewal_interval(ttl: u16) -> std::time::Duration {
+    std::time::Duration::from_secs((u64::from(ttl) * 80 / 100).max(1))
 }
 
 impl Drop for Session {

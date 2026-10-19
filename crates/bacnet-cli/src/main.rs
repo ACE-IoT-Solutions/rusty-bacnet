@@ -374,8 +374,8 @@ async fn execute_bip_command(
                 "--bbmd requires an IP address, not a device instance",
             )
             .await?;
-            let result = client.register_foreign_device_bvlc(&bbmd_mac, ttl).await?;
-            eprintln!("Registered as foreign device with BBMD: {result:?}");
+            client.register_foreign_device_bvlc(&bbmd_mac, ttl).await?;
+            eprintln!("Registered as foreign device with BBMD {bbmd_addr}");
             // Brief pause to allow registration to propagate.
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let range = parse_discover_range(range.as_deref())?;
