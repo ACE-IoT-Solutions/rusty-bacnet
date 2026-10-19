@@ -19,6 +19,10 @@ Start here when your goal is to identify a device, read a point, or collect diag
 
 [Install the CLI](/rusty-bacnet/start/installation/#install-a-cli-executable) and follow [Your first read](/rusty-bacnet/start/first-read/). The first-read path does not change a property value.
 
+## Work in the terminal UI
+
+In the development branch after v0.13.0, plain `bacnet` on a terminal opens a full-screen terminal UI: discovery, a device browser, a watch list and guarded writes, with B/IP, BACnet/SC and MS/TP diagnostics. [Use the terminal UI](/rusty-bacnet/tui/overview/) shows how to build it and walks through every screen.
+
 ## Automate with Python
 
 Choose Python for scripts, data collection, integration prototypes, or a small test device. The distribution is `rusty-bacnet`; the Python import is `rusty_bacnet`. The binding uses asynchronous I/O.

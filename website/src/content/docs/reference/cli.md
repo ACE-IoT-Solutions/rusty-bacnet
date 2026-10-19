@@ -41,7 +41,7 @@ Do not use an object-name string where an object identifier is required. Do not 
 
 In v0.13.0, plain `bacnet` and `bacnet shell` open an interactive shell that keeps a default target and the discovered devices for its session. A new one-shot process starts with neither.
 
-In the development branch after v0.13.0, the shell is removed. Plain `bacnet` opens the terminal UI when stdin and stdout are terminals; in a pipe or a script, with `--no-tui`, or with `BACNET_NO_TUI` set, it prints the usage and exits with status 2. Scripts that piped commands into the shell call the one-shot commands instead, with `--json`, which also read better with a screen reader than the terminal UI. The shell's `writem` is a one-shot command there.
+In the development branch after v0.13.0, the shell is removed. Plain `bacnet` opens the terminal UI when stdin and stdout are terminals; in a pipe or a script, with `--no-tui`, or with `BACNET_NO_TUI` set, it prints the usage and exits with status 2. Scripts that piped commands into the shell call the one-shot commands instead, with `--json`, which also read better with a screen reader than the terminal UI. The shell's `writem` is a one-shot command there. The [terminal UI guide](/rusty-bacnet/tui/overview/) covers its screens, and its [key reference](/rusty-bacnet/tui/keys/) lists every key and command.
 
 A new one-shot process has its own lifecycle. In the development branch after v0.13.0, one-shot `read`, `readm`, `write`, `writem` and `subscribe` take a routed `DNET:instance` or `DNET:0xMAC` target: the CLI asks that network for the device with a Who-Is and sends the request through the router that answers. Other one-shot commands still refuse routed targets, and v0.13.0 refuses them everywhere.
 
