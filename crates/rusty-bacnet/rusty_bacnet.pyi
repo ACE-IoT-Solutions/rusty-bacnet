@@ -2569,7 +2569,8 @@ class BACnetClient:
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so clients and devices on other addresses
         of this host can share the port. Needs an explicit interface and a
-        nonzero port; broadcasts and unicast then arrive in no fixed order.
+        nonzero port; broadcasts and unicast are still handled in the order
+        they arrived.
 
         ``min_request_interval_ms`` (default 0, no pacing; at most
         3,600,000, else ValueError) paces the confirmed requests to each
@@ -3871,7 +3872,7 @@ class BACnetServer:
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
         can share the port. Needs an explicit interface and a nonzero port;
-        broadcasts and unicast then arrive in no fixed order.
+        broadcasts and unicast are still handled in the order they arrived.
 
         ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
         ValueError): run the device as a BBMD, or register it with a BBMD

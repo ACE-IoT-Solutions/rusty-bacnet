@@ -115,6 +115,7 @@ impl Node {
             destination: IpAddr::V6(to),
             arrival_index: Some(1),
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         self.receiver.handle_datagram(datagram, &received).await
     }
@@ -233,6 +234,7 @@ async fn failed_reads_and_unusable_metadata_count_as_receive_errors() {
         destination: IpAddr::V6(local_ip()),
         arrival_index: Some(1),
         os_group_delivery: None,
+        arrival_stamp: None,
     };
     assert_eq!(node.receiver.handle_datagram(&frame, &received).await, None);
     node.nothing_handed_up();

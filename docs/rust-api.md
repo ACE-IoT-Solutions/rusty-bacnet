@@ -1018,11 +1018,20 @@ What changes in this mode:
 
 - **Sends** leave from the interface address and the shared port.
 - **Receipt order:** on Linux, macOS and the BSDs, broadcasts arrive on
-  separate receive-only listeners, read fairly against the address socket in
-  no fixed order. A broadcast and a unicast that arrive together may be
-  handled in either order, so a unicast that depends on a broadcast sent just
-  before it, such as a query after a Network-Number-Is, can be handled first.
-  A listener that fails is closed with a warning, and unicast goes on.
+  separate receive-only listeners beside the address socket. Every one of
+  these sockets asks the kernel to stamp each datagram with its arrival time
+  (the software receive stamp of `SO_TIMESTAMPING` on Linux,
+  `SO_TIMESTAMP_MONOTONIC` on macOS, `SO_TIMESTAMP` on the BSDs), and the
+  transport hands up what they hold in the order the kernel received it
+  (#1546). A unicast that depends on a broadcast sent just before it, such
+  as a query after a Network-Number-Is, is handled after that broadcast.
+  Datagrams without a usable stamp go up in the order read: on Linux, those
+  that arrive in the moment after a host's first socket asks for stamps,
+  before the kernel starts taking them; on the BSDs, two in one
+  microsecond. One that the kernel stamps earlier but queues only after the
+  transport looked goes up next.
+  Windows binds one socket, which keeps arrival order. A listener that fails
+  is closed with a warning, and unicast goes on.
 - **Broadcast address:** it must be the interface's subnet broadcast,
   judged by the netmask the host reports, or 255.255.255.255; anything else
   would lose this subnet's broadcasts, so `start()` fails. A loopback

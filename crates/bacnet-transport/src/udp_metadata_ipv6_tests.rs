@@ -32,7 +32,10 @@ fn decode_control(index: u32, short: bool, duplicate: bool) -> io::Result<(IpAdd
         let mut message: libc::msghdr = zeroed();
         message.msg_control = control.as_mut_ptr().cast();
         message.msg_controllen = (space * copies) as _;
-        unix_destination(&message, IpVersion::V6)
+        unix_destination(&message, IpVersion::V6).map(|info| {
+            assert_eq!(info.arrival_stamp, None);
+            (info.destination, info.arrival_index)
+        })
     }
 }
 

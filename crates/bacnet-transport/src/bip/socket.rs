@@ -40,14 +40,14 @@
 //!     socket already bound to the wildcard address without
 //!     `SO_EXCLUSIVEADDRUSE`.
 //!
-//!   The receive loop reads the address socket and the listeners fairly, in
-//!   no fixed order, so a broadcast and a unicast that arrive together may be
-//!   handled in either order; a unicast that depends on a broadcast sent just
-//!   before it can be handled first. A listener on 255.255.255.255 or
-//!   `0.0.0.0` hears every interface, so it keeps only what arrived on the
-//!   transport's own (the index from `IP_PKTINFO` on Linux, `IP_RECVIF` on
-//!   macOS and the BSDs). A listener that fails is closed, and unicast goes
-//!   on.
+//!   Every socket then asks for receive timestamps, and the receive loop
+//!   hands up what the address socket and the listeners hold in the order
+//!   the kernel received it (#1546, ingress.rs), so a unicast that depends on
+//!   a broadcast sent just before it is handled after it. A listener on
+//!   255.255.255.255 or `0.0.0.0` hears every interface, so it keeps only
+//!   what arrived on the transport's own (the index from `IP_PKTINFO` on
+//!   Linux, `IP_RECVIF` on macOS and the BSDs). A listener that fails is
+//!   closed, and unicast goes on.
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};

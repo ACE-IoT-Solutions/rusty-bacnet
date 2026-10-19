@@ -607,10 +607,11 @@ several devices on one host share the port (#1538). It needs an explicit
 `interface` and a nonzero `port`; `start()` fails otherwise, and another
 transport raises `ValueError`.
 
-In this mode every send leaves from the interface address, and broadcasts
-and unicast are received in **no fixed order**: on Linux and macOS
-broadcasts arrive on separate receive-only sockets, so a unicast that depends
-on a broadcast sent just before it can be handled first. Those sockets keep
+In this mode every send leaves from the interface address. On Linux and
+macOS broadcasts arrive on separate receive-only sockets, and datagrams are
+handed up in the order the kernel received them across those sockets
+(#1546), so a unicast that depends on a broadcast sent just before it is
+handled after it. Those sockets keep
 only broadcasts that arrived on the interface's own link, as identified
 when the device starts: restart it after its interface changes. The
 `broadcast_address` must be the interface's subnet broadcast or
