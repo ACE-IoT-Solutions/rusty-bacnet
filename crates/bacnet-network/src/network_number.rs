@@ -1,6 +1,7 @@
 //! Shared packet contract for the two local nonrouter Network Number controls.
 use crate::layer::ReceivedNetworkControl;
 use bacnet_npdu::NetworkMessageType;
+use bacnet_router_core::message::NetworkNumberIs;
 use bacnet_types::network_number::NetworkNumber;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
@@ -31,15 +32,16 @@ impl NumberControl {
             {
                 Some(Self::WhatIs)
             }
-            Some(t)
-                if t == NetworkMessageType::NETWORK_NUMBER_IS
-                    && control.link_layer_group
-                    && npdu.payload.len() == 3 =>
-            {
-                let number = u16::from_be_bytes([npdu.payload[0], npdu.payload[1]]);
-                let flag = npdu.payload[2];
-                (number != 0 && number != u16::MAX && flag <= 1)
-                    .then_some(Self::NumberIs { number, flag })
+            Some(t) if t == NetworkMessageType::NETWORK_NUMBER_IS && control.link_layer_group => {
+                // The router core's view, the one reader of this payload
+                // (#1818): it refuses any length but three octets.
+                let NetworkNumberIs { network, flag } =
+                    NetworkNumberIs::parse(&npdu.payload).ok()?;
+                (network != 0 && network != u16::MAX && flag <= NetworkNumberIs::CONFIGURED)
+                    .then_some(Self::NumberIs {
+                        number: network,
+                        flag,
+                    })
             }
             _ => None,
         }
@@ -50,13 +52,21 @@ impl NumberControl {
 /// Learned-configured state still transmits flag zero; unknown has no reply.
 pub fn number_is_reply(state: NetworkNumber) -> Option<[u8; 6]> {
     let (number, quality) = state.snapshot();
-    (number != 0).then_some([
+    if number == 0 {
+        return None;
+    }
+    let [high, low, flag] = NetworkNumberIs {
+        network: number,
+        flag: u8::from(quality == 3),
+    }
+    .to_bytes();
+    Some([
         1,
         0x80,
         NetworkMessageType::NETWORK_NUMBER_IS.to_raw(),
-        (number >> 8) as u8,
-        number as u8,
-        u8::from(quality == 3),
+        high,
+        low,
+        flag,
     ])
 }
 
