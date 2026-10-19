@@ -30,7 +30,7 @@ fn cursor_error(bytes: &[u8]) -> WritePropertyMultipleCursorError {
     );
     assert!(matches!(
         WritePropertyMultipleRequest::decode(bytes),
-        Err(Error::Decoding(_) | Error::DecodingMessage { .. })
+        Err(Error::Decoding(_))
     ));
     error
 }

@@ -20,7 +20,8 @@ const NAMES: PairNames = PairNames {
     frame: "landing door status landing-doors",
     floor: "landing door floor-number",
     second: "landing door door-status",
-    second_oversized: "door-status [1] exceeds 32 bits",
+    floor_oversized: "landing door status floor-number [0] exceeds an Unsigned8",
+    second_oversized: "landing door status door-status [1] exceeds 32 bits",
 };
 
 /// Encode one `BACnetLandingDoorStatus` SEQUENCE.

@@ -124,10 +124,7 @@ async fn lenient_still_refuses_an_answer_that_does_not_decode() {
         .await
         .unwrap_err();
     assert!(
-        matches!(
-            error,
-            Error::Decoding(_) | Error::DecodingMessage { .. } | Error::BufferTooShort { .. }
-        ),
+        matches!(error, Error::Decoding(_) | Error::BufferTooShort { .. }),
         "{error:?}"
     );
     client.stop().await.unwrap();

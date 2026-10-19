@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::enums::PropertyIdentifier;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use bytes::BytesMut;
 
@@ -19,13 +19,15 @@ use bacnet_encoding::constructed::tagged::{
 fn decode_count(data: &[u8], offset: usize, field: &'static str) -> Result<(i32, usize), Error> {
     let (content, end) = decode_app_primitive(data, offset, tags::app_tag::SIGNED, field)?;
     let value = primitives::decode_signed(content)?;
-    let value = i16::try_from(value)
-        .map_err(|_| Error::out_of_range(offset, format!("{field} exceeds INTEGER16")))?;
+    let value = i16::try_from(value).map_err(|_| {
+        DecodeError::new(DecodingKind::OutOfRange, offset, "exceeds INTEGER16").within(field)
+    })?;
     if value == 0 {
-        return Err(Error::out_of_range(
-            offset,
-            format!("{field} may not be zero"),
-        ));
+        return Err(
+            DecodeError::new(DecodingKind::OutOfRange, offset, "may not be zero")
+                .within(field)
+                .into(),
+        );
     }
     Ok((i32::from(value), end))
 }

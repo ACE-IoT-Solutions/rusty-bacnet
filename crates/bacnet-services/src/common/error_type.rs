@@ -11,7 +11,7 @@ use bacnet_encoding::constructed::tagged::{
 };
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::enums::{ConfirmedServiceChoice, ErrorClass, ErrorCode};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 /// Encode `[0]` around the error class and code.
@@ -118,17 +118,24 @@ pub(crate) fn decode_error_pdu<T>(
     pair: impl FnOnce(&T) -> (ErrorClass, ErrorCode),
 ) -> Result<T, Error> {
     if !services.contains(&pdu.service_choice) {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             0,
-            format!("ErrorPdu for {:?} is not a {what}", pdu.service_choice),
-        ));
+            "ErrorPdu answers confirmed service {}, which this error does not",
+        )
+        .within(what)
+        .with_value(pdu.service_choice.to_raw().into())
+        .into());
     }
     let decoded = decode(&pdu.error_data)?;
     if pair(&decoded) != (pdu.error_class, pdu.error_code) {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             0,
-            format!("{what} body disagrees with ErrorPdu class/code"),
-        ));
+            "body disagrees with ErrorPdu class/code",
+        )
+        .within(what)
+        .into());
     }
     Ok(decoded)
 }

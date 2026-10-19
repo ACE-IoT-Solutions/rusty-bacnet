@@ -34,11 +34,11 @@
 //! layer drops a frame from a longer link-layer source MAC (#1198).
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::Time;
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
@@ -48,19 +48,14 @@ use crate::tags::{self, TagClass};
 
 use super::tagged::{
     contents, decode_app_bit_string, decode_app_unsigned, decode_ctx_object_id, expect_closing,
-    misplaced_tag,
+    misplaced,
 };
 use super::MAX_FRAMED_ITEMS;
 
-/// The message for a `BACnetAddress` MAC of `length` octets, or `None` when it
-/// fits [`BACnetAddress::MAX_MAC_LEN`]. The one place the bound is compared.
-fn mac_len_excess(what: &'static str, length: usize) -> Option<String> {
-    (length > BACnetAddress::MAX_MAC_LEN).then(|| {
-        format!(
-            "{what}: mac-address of {length} octets exceeds the {}-octet limit",
-            BACnetAddress::MAX_MAC_LEN
-        )
-    })
+/// Whether a `BACnetAddress` MAC of `length` octets is longer than
+/// [`BACnetAddress::MAX_MAC_LEN`]. The one place the bound is compared.
+fn mac_len_excess(length: usize) -> bool {
+    length > BACnetAddress::MAX_MAC_LEN
 }
 
 /// Refuse, as a decode error at `offset`, a `BACnetAddress` mac-address whose
@@ -69,14 +64,31 @@ fn mac_len_excess(what: &'static str, length: usize) -> Option<String> {
 /// You-Are device MAC (#1200). Decoders call it on the tag's length, before
 /// copying any octet.
 pub fn check_decoded_mac_len(length: usize, offset: usize, what: &'static str) -> Result<(), Error> {
-    mac_len_excess(what, length).map_or(Ok(()), |message| Err(Error::overflow(offset, message)))
+    if !mac_len_excess(length) {
+        return Ok(());
+    }
+    Err(DecodeError::new(
+        DecodingKind::Overflow,
+        offset,
+        "mac-address of {} octets exceeds the {}-octet limit",
+    )
+    .within(what)
+    .with_values(length as u64, BACnetAddress::MAX_MAC_LEN as u64)
+    .into())
 }
 
 /// Refuse to encode a MAC longer than [`BACnetAddress::MAX_MAC_LEN`] octets,
 /// which [`check_decoded_mac_len`] would refuse on the way back in: a
 /// `BACnetAddress` mac-address (#1156) or the You-Are device MAC (#1200).
 pub fn check_encoded_mac_len(mac: &[u8], what: &'static str) -> Result<(), Error> {
-    mac_len_excess(what, mac.len()).map_or(Ok(()), |message| Err(Error::Encoding(message)))
+    if !mac_len_excess(mac.len()) {
+        return Ok(());
+    }
+    Err(Error::Encoding(format!(
+        "{what}: mac-address of {} octets exceeds the {}-octet limit",
+        mac.len(),
+        BACnetAddress::MAX_MAC_LEN
+    )))
 }
 
 /// [`check_encoded_mac_len`] for the address form of a recipient; the device
@@ -178,7 +190,12 @@ pub fn decode_recipient(data: &[u8], offset: usize) -> Result<(BACnetRecipient, 
         // network-number Unsigned16
         let (network_number, pos) = decode_app_unsigned::<u64>(data, pos, what)?;
         let network_number = u16::try_from(network_number).map_err(|_| {
-            Error::out_of_range(pos, format!("{what}: network-number exceeds Unsigned16"))
+            DecodeError::new(
+                DecodingKind::OutOfRange,
+                pos,
+                "network-number exceeds Unsigned16",
+            )
+            .within(what)
         })?;
         // mac-address OCTET STRING (a zero-length string is a broadcast)
         let (mac_address, pos) = decode_app_mac_address(data, pos, what)?;
@@ -191,25 +208,20 @@ pub fn decode_recipient(data: &[u8], offset: usize) -> Result<(BACnetRecipient, 
             end,
         ));
     }
-    Err(misplaced_tag(
-        data,
-        &tag,
-        None,
-        offset,
-        format!(
-            "{what}: expected [0] (device) or [1] (address), got {}",
-            if tag.is_opening {
-                format!("opening tag [{}]", tag.number)
-            } else if tag.is_closing {
-                format!("closing tag [{}]", tag.number)
-            } else {
-                match tag.class {
-                    TagClass::Context => format!("primitive context tag [{}]", tag.number),
-                    TagClass::Application => format!("application tag {}", tag.number),
-                }
-            }
-        ),
-    ))
+    let label = if tag.is_opening {
+        "expected [0] (device) or [1] (address), got opening tag [{}]"
+    } else if tag.is_closing {
+        "expected [0] (device) or [1] (address), got closing tag [{}]"
+    } else {
+        match tag.class {
+            TagClass::Context => "expected [0] (device) or [1] (address), got primitive context tag [{}]",
+            TagClass::Application => "expected [0] (device) or [1] (address), got application tag {}",
+        }
+    };
+    Err(misplaced(data, &tag, None, offset, label)
+        .within(what)
+        .with_value(tag.number.into())
+        .into())
 }
 
 /// Decode one [`BACnetDestination`] at `offset`; returns it and the offset
@@ -235,22 +247,22 @@ pub fn decode_destination(data: &[u8], offset: usize) -> Result<(BACnetDestinati
     // process-identifier Unsigned32.
     let (process_identifier, pos) = decode_app_unsigned::<u64>(data, pos, what)?;
     let process_identifier = u32::try_from(process_identifier).map_err(|_| {
-        Error::out_of_range(
+        DecodeError::new(
+            DecodingKind::OutOfRange,
             pos,
-            format!("{what}: process-identifier exceeds Unsigned32"),
+            "process-identifier exceeds Unsigned32",
         )
+        .within(what)
     })?;
     // issue-confirmed-notifications BOOLEAN (application-tagged: the value
     // rides in the tag's L/V/T bits with no contents octets).
     let (tag, pos) = tags::decode_tag(data, pos)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::BOOLEAN {
-        return Err(misplaced_tag(
-            data,
-            &tag,
-            None,
-            pos,
-            format!("{what}: expected application-tagged BOOLEAN"),
-        ));
+        return Err(
+            misplaced(data, &tag, None, pos, "expected application-tagged BOOLEAN")
+                .within(what)
+                .into(),
+        );
     }
     let issue_confirmed_notifications = tag.length != 0;
     // transitions: BACnetEventTransitionBits (3 bits).
@@ -310,13 +322,15 @@ pub(super) fn decode_app_mac_address(
 ) -> Result<(MacAddr, usize), Error> {
     let (tag, pos) = tags::decode_tag(data, offset)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::OCTET_STRING {
-        return Err(misplaced_tag(
+        return Err(misplaced(
             data,
             &tag,
             None,
             offset,
-            format!("{what}: expected application-tagged OCTET STRING"),
-        ));
+            "expected application-tagged OCTET STRING",
+        )
+        .within(what)
+        .into());
     }
     check_decoded_mac_len(tag.length as usize, offset, what)?;
     let (mac, end) = contents(data, pos, tag.length)?;
@@ -327,22 +341,21 @@ pub(super) fn decode_app_mac_address(
 fn decode_app_time(data: &[u8], offset: usize, what: &'static str) -> Result<(Time, usize), Error> {
     let (tag, pos) = tags::decode_tag(data, offset)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::TIME {
-        return Err(misplaced_tag(
-            data,
-            &tag,
-            None,
-            offset,
-            format!("{what}: expected application-tagged Time"),
-        ));
+        return Err(
+            misplaced(data, &tag, None, offset, "expected application-tagged Time")
+                .within(what)
+                .into(),
+        );
     }
     if tag.length != 4 {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!(
-                "{what}: Time has {} contents octets, expected 4",
-                tag.length
-            ),
-        ));
+            "Time has {} contents octets, expected 4",
+        )
+        .within(what)
+        .with_value(tag.length.into())
+        .into());
     }
     let (octets, end) = contents(data, pos, 4)?;
     Ok((Time::decode(octets)?, end))
@@ -360,17 +373,27 @@ fn check_fixed_bit_string(
     unused_bits: u8,
     data: &[u8],
     expected_unused: u8,
-    name: &str,
+    name: &'static str,
 ) -> Result<(), Error> {
-    if data.len() != 1 || unused_bits != expected_unused {
-        return Err(Error::decoding(
+    if data.len() != 1 {
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             0,
-            format!(
-                "{name}: expected 1 content octet with unused_bits {expected_unused} \
-                 (got {} content octet(s), unused_bits {unused_bits})",
-                data.len()
-            ),
-        ));
+            "expected 1 content octet, got {}",
+        )
+        .within(name)
+        .with_value(data.len() as u64)
+        .into());
+    }
+    if unused_bits != expected_unused {
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
+            0,
+            "expected unused_bits {}, got {}",
+        )
+        .within(name)
+        .with_values(expected_unused.into(), unused_bits.into())
+        .into());
     }
     Ok(())
 }

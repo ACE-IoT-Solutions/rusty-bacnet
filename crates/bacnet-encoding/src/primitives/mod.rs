@@ -254,43 +254,31 @@ fn character_string_too_long() -> Error {
 /// them.
 #[cfg(feature = "alloc")]
 pub fn decode_character_string(data: &[u8]) -> Result<String, Error> {
-    if data.is_empty() {
-        return Err(Error::decoding(
-            0,
-            "CharacterString requires at least 1 byte for charset",
-        ));
-    }
-    let charset_id = data[0];
-    let payload = &data[1..];
-    match charset_id {
-        charset::UTF8 => match core::str::from_utf8(payload) {
-            Ok(text) => Ok(text.into()),
-            Err(error) => Err(invalid_utf8(error)),
-        },
-        charset::UCS2 => {
-            if !payload.len().is_multiple_of(2) {
-                return Err(Error::decoding(1, "UCS-2 data must have even length"));
-            }
-            let mut s = String::new();
-            for (i, chunk) in payload.as_chunks::<2>().0.iter().enumerate() {
-                let code_point = u16::from_be_bytes(*chunk);
-                if let Some(c) = char::from_u32(code_point as u32) {
-                    s.push(c);
-                } else {
-                    return Err(Error::decoding(1 + i * 2, "invalid UCS-2 code point"));
-                }
-            }
-            Ok(s)
-        }
-        charset::ISO_8859_1 => Ok(payload.iter().map(|&b| b as char).collect()),
-        // Character sets the standard defines but this decoder doesn't convert.
-        charset::IBM_MICROSOFT_DBCS | charset::JIS_X_0208 | charset::UCS4 => Err(contents_fault(
+    // Character sets the standard defines but this decoder doesn't convert.
+    if let Some(
+        &unsupported @ (charset::IBM_MICROSOFT_DBCS | charset::JIS_X_0208 | charset::UCS4),
+    ) = data.first()
+    {
+        return Err(contents_fault(
             DecodingKind::Unsupported,
             "unsupported charset: {}",
-            charset_id.into(),
-        )),
-        other => Err(unknown_charset(other)),
+            unsupported.into(),
+        ));
     }
+    // The structure is checked as the borrowed view checks it (#1778), so
+    // the conversions below can't fail.
+    view::check_character_string(data)?;
+    let payload = &data[1..];
+    Ok(match data[0] {
+        charset::UCS2 => payload
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter_map(|c| char::from_u32(u16::from_be_bytes(*c).into()))
+            .collect(),
+        charset::ISO_8859_1 => payload.iter().map(|&octet| char::from(octet)).collect(),
+        _ => core::str::from_utf8(payload).unwrap_or_default().into(),
+    })
 }
 
 /// UTF-8 contents that aren't valid, reported at the first contents octet
@@ -553,50 +541,7 @@ pub fn validate_application_value(data: &[u8], offset: usize) -> Result<usize, E
         decode_signed_canonical(content)?;
         return Ok(content_end);
     }
-    let Some((&charset_id, payload)) = content.split_first() else {
-        return Err(Error::decoding(
-            content_start,
-            "CharacterString requires a character-set octet",
-        ));
-    };
-    match charset_id {
-        charset::UTF8 | charset::UCS2 | charset::ISO_8859_1 => {
-            decode_character_string(content)?;
-        }
-        charset::IBM_MICROSOFT_DBCS if payload.len() < 2 => {
-            return Err(Error::decoding(
-                content_start + 1,
-                "DBCS CharacterString requires a two-octet code page",
-            ));
-        }
-        charset::IBM_MICROSOFT_DBCS | charset::JIS_X_0208 => {}
-        charset::UCS4 => {
-            if !payload.len().is_multiple_of(4) {
-                return Err(Error::decoding(
-                    content_start + 1,
-                    "UCS-4 CharacterString length must be a multiple of four",
-                ));
-            }
-            for (index, encoded) in payload.as_chunks::<4>().0.iter().enumerate() {
-                let code_point = u32::from_be_bytes(*encoded);
-                if char::from_u32(code_point).is_none() {
-                    return Err(Error::decoding(
-                        content_start + 1 + index * 4,
-                        "invalid UCS-4 code point",
-                    ));
-                }
-            }
-        }
-        _ => {
-            return Err(DecodeError::new(
-                DecodingKind::InvalidEncoding,
-                content_start,
-                "reserved character set: {}",
-            )
-            .with_value(charset_id.into())
-            .into());
-        }
-    }
+    view::check_character_string(content).map_err(view::rebased(content_start))?;
     Ok(content_end)
 }
 

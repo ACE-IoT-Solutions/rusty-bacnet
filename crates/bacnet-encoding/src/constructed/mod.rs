@@ -26,7 +26,7 @@ alloc_only! {
         BACnetDeviceObjectPropertyReference, BACnetExtendedPropertyState, BACnetPropertyStates,
         BACnetProprietaryPropertyState,
     };
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{DecodeError, DecodingKind, Error};
     use bytes::BytesMut;
 
     use crate::primitives;
@@ -327,22 +327,25 @@ pub fn decode_property_state(
     let state = match tag.number {
         0 => {
             if content.len() != 1 {
-                return Err(Error::decoding(
+                return Err(DecodeError::new(
+                    DecodingKind::InvalidEncoding,
                     offset,
-                    format!(
-                        "BACnetPropertyStates boolean-value: expected 1 contents octet, got {}",
-                        content.len()
-                    ),
-                ));
+                    "BACnetPropertyStates boolean-value: expected 1 contents octet, got {}",
+                )
+                .with_value(content.len() as u64)
+                .into());
             }
             match content[0] {
                 0 => S::BooleanValue(false),
                 1 => S::BooleanValue(true),
                 value => {
-                    return Err(Error::decoding(
+                    return Err(DecodeError::new(
+                        DecodingKind::InvalidEncoding,
                         pos,
-                        format!("BACnetPropertyStates boolean-value must be 0 or 1, got {value}"),
-                    ));
+                        "BACnetPropertyStates boolean-value must be 0 or 1, got {}",
+                    )
+                    .with_value(value.into())
+                    .into());
                 }
             }
         }
@@ -409,10 +412,13 @@ pub fn decode_property_state(
             content.to_vec(),
         )?),
         reserved => {
-            return Err(Error::invalid_tag(
+            return Err(DecodeError::new(
+                DecodingKind::InvalidTag,
                 offset,
-                format!("BACnetPropertyStates context tag {reserved} is reserved"),
-            ));
+                "BACnetPropertyStates context tag {} is reserved",
+            )
+            .with_value(reserved.into())
+            .into());
         }
     };
     Ok((state, end))
@@ -490,10 +496,13 @@ pub fn validate_tlv_sequence(data: &[u8], what: &'static str) -> Result<(), Erro
     let mut count = 0;
     while offset < data.len() {
         if count >= MAX_FRAMED_ITEMS {
-            return Err(Error::overflow(
+            return Err(DecodeError::new(
+                DecodingKind::Overflow,
                 offset,
-                format!("{what}: sequence exceeds item limit"),
-            ));
+                "sequence exceeds item limit",
+            )
+            .within(what)
+            .into());
         }
         let (tag, content) = tags::decode_tag(data, offset)?;
         if tag.is_opening {
@@ -521,10 +530,13 @@ pub(crate) fn validate_extended_parameters(data: &[u8], what: &'static str) -> R
     let mut count = 0;
     while offset < data.len() {
         if count >= MAX_FRAMED_ITEMS {
-            return Err(Error::overflow(
+            return Err(DecodeError::new(
+                DecodingKind::Overflow,
                 offset,
-                format!("{what}: parameters exceed item limit"),
-            ));
+                "parameters exceed item limit",
+            )
+            .within(what)
+            .into());
         }
         let (tag, _) = tags::decode_tag(data, offset)?;
         if tag.class == TagClass::Context {

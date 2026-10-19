@@ -83,13 +83,11 @@ fn a_record_that_fails_names_its_index_and_offset_and_keeps_the_ones_before() {
     assert_eq!(error.offset, second);
     assert_eq!(error.decoded, records[..1]);
     match Error::from(error) {
-        Error::DecodingMessage {
-            offset, message, ..
-        } => {
-            assert_eq!(offset, second);
+        Error::Decoding(refused) => {
+            assert_eq!(refused.offset, second);
             assert!(
-                message.starts_with("log record 1 at item-data offset"),
-                "{message}"
+                refused.message().to_string().starts_with("log record[1]: "),
+                "{refused}"
             );
         }
         other => panic!("expected a decoding error, got {other:?}"),
@@ -109,7 +107,7 @@ fn item_count_must_match_the_records_in_the_data() {
     assert_eq!(fewer.decoded, records);
     assert_eq!(
         fewer.error.decode_fault().map(|(_, kind)| kind),
-        Some(DecodingKind::Missing)
+        Some(bacnet_types::error::DecodingKind::Missing)
     );
 
     let more = ack(ObjectType::TREND_LOG, 1, data)
@@ -119,7 +117,7 @@ fn item_count_must_match_the_records_in_the_data() {
     assert_eq!(more.decoded, records[..1]);
     assert_eq!(
         more.error.decode_fault().map(|(_, kind)| kind),
-        Some(DecodingKind::Trailing)
+        Some(bacnet_types::error::DecodingKind::Trailing)
     );
 }
 

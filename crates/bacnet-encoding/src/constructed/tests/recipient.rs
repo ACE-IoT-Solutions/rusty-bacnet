@@ -419,10 +419,7 @@ fn recipient_mac_bound_holds_in_both_directions() {
     for len in [BACnetAddress::MAX_MAC_LEN + 1, 64, 255] {
         let raw = raw_address_recipient(len);
         assert!(
-            matches!(
-                decode_recipient(&raw, 0),
-                Err(Error::Decoding(_) | Error::DecodingMessage { .. })
-            ),
+            matches!(decode_recipient(&raw, 0), Err(Error::Decoding(_))),
             "{len}-octet MAC"
         );
         assert!(decode_destination(&raw_destination(&raw), 0).is_err());

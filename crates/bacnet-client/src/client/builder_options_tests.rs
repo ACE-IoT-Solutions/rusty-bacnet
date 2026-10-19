@@ -243,10 +243,16 @@ async fn builder_rejects_max_segments_below_protocol_minimum() {
             .await;
 
         match result {
-            Err(Error::Encoding(message)) => {
-                assert!(message.contains("max-segments-accepted"));
+            Err(Error::Range(refused)) => {
+                assert_eq!(
+                    refused.to_string(),
+                    format!(
+                        "value out of range: invalid max-segments-accepted {invalid}; \
+                         expected 2..=255 or unspecified"
+                    )
+                );
             }
-            Err(other) => panic!("expected encoding error, got {other}"),
+            Err(other) => panic!("expected a range error, got {other}"),
             Ok(mut client) => {
                 client.stop().await.unwrap();
                 panic!("max_segments={invalid} must be rejected");

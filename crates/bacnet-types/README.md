@@ -53,11 +53,9 @@ Without `alloc`, `error::Error` keeps only the variants that own nothing. A
 decoder's refusal is `Error::Decoding(DecodeError)` and a checked constructor's
 is `Error::Range(RangeError)`: each carries static labels and up to two numbers,
 and builds its text only when it is displayed (#1646), so firmware that never
-displays one links no formatting for it. With `alloc`, `Error::DecodingMessage`
-carries a decoding error whose message was formatted when it was made (the
-decoders outside the allocation-free profile, until #1776), and
-`Error::Encoding`, `Error::OutOfRange`, `Error::Segmentation` and
-`Error::Structured` return.
+displays one links no formatting for it. Every decoder reports this one form
+(#1776). With `alloc`, `Error::Encoding`, `Error::OutOfRange`,
+`Error::Segmentation` and `Error::Structured` return.
 
 Enum newtypes support `FromStr` for their named constants in common case styles,
 such as `analog-input` and `ANALOG_INPUT`. The normal runtime dependencies are
