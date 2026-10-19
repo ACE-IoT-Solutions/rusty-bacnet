@@ -1,11 +1,12 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
 use super::session::{ConnectPlan, SessionOptions, TransportKind};
+use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
-use crate::tui::safety::{SafetyCommand, SafetyEvent};
+use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
 use crate::tui::watched::{Source, WatchCommand, WatchEvent};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -127,7 +128,7 @@ async fn run(
                         forward_watch(active.as_ref(), watch, generation, &sink).await;
                     }
                     Command::Safety(request) => {
-                        forward_safety(active.as_ref(), request, generation, &sink).await;
+                        forward_safety(active.as_ref(), request, generation, &sink, &options.safety).await;
                     }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
@@ -154,11 +155,12 @@ async fn run(
                             Request::Load(name) => profiles.load(&name),
                             Request::Save { name, profile, create, previous } => profiles.save(&name, profile, create, previous),
                             Request::Connect { name, mut profile, attest } => {
-                                match profiles.prepare(&name, &profile, attest).and_then(|resolved| Ok((resolved.transport_args()?, resolved.authorized_at_unix))) {
-                                    Ok((args, authorized_at_unix)) => {
+                                match profiles.prepare(&name, &profile, attest).and_then(|resolved| Ok((resolved.transport_args()?, resolved.authorized_at_unix, resolved.authorized_safety))) {
+                                    Ok((args, authorized_at_unix, authorized_safety)) => {
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
                                         profile.authorized_at_unix = authorized_at_unix;
+                                        profile.authorized_safety = authorized_safety;
                                         options.watch.workspace = profiles.workspace(&name);
                                         options.safety.workspace = options.watch.workspace.clone();
                                         options.safety.profile = Some(name.clone());
@@ -312,12 +314,14 @@ async fn forward_watch(
 
 /// Forward a write session request with the same bounded wait as a watch
 /// command: a lost `Keep` or `Disarm` would leave the audit log short. One
-/// still refused is answered, so the UI doesn't wait for it.
+/// still refused is answered, so the UI doesn't wait for it. A `Keep` no
+/// session takes (disconnected) is done here, from the profile workspace.
 async fn forward_safety(
     active: Option<&Active>,
     request: SafetyCommand,
     generation: u64,
     sink: &EventSink,
+    options: &SafetyOptions,
 ) {
     let sent = match active {
         Some(active) => matches!(
@@ -332,6 +336,14 @@ async fn forward_safety(
     };
     if sent {
         return;
+    }
+    if request == SafetyCommand::Keep {
+        let level = if options.passive {
+            Level::Passive
+        } else {
+            Level::ReadOnly
+        };
+        return keep_offline(options, level).await;
     }
     let req = match request {
         SafetyCommand::Prepare { req, .. }

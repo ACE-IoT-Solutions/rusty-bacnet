@@ -43,6 +43,7 @@ fn entry(run: &str) -> Entry {
         },
         state: State::Applied,
         kept: false,
+        seq: 1,
     }
 }
 
@@ -154,12 +155,76 @@ fn ctrl_c_on_a_preview_declines_it() {
         preview: preview.clone(),
         typed: String::new(),
         error: None,
+        opened: app.now,
     }));
     let commands = press_with(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(
         commands,
         [Command::Safety(SafetyCommand::Declined { preview })]
     );
+    assert_eq!(app.overlay, Overlay::None);
+}
+
+/// An armed app showing a T1 preview opened now.
+fn confirming() -> App {
+    use crate::tui::safety::{Gate, Preview, Tier};
+    let mut app = connected_app();
+    ready(&mut app, true, Vec::new());
+    worker(
+        &mut app,
+        WorkerEvent::Safety(SafetyEvent::Armed { minutes: 15 }),
+    );
+    app.overlay = Overlay::Safety(Box::new(Modal::Confirm {
+        req: 1,
+        preview: Box::new(Preview {
+            device: 100,
+            items: Vec::new(),
+            batch: false,
+            gate: Gate::Allowed(Tier::T1),
+        }),
+        typed: String::new(),
+        error: None,
+        opened: app.now,
+    }));
+    app
+}
+
+#[test]
+fn enter_right_after_a_preview_opens_is_ignored() {
+    use crate::tui::app::safety::CONFIRM_GUARD;
+    let mut app = confirming();
+    assert!(
+        press(&mut app, KeyCode::Enter).is_empty(),
+        "a repeating key"
+    );
+    advance(&mut app, CONFIRM_GUARD);
+    let commands = press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::Safety(SafetyCommand::Execute { req: 1, .. })]
+    ));
+}
+
+#[test]
+fn a_preview_left_unconfirmed_expires_as_declined() {
+    use crate::tui::app::safety::PREVIEW_LIFETIME;
+    let mut app = confirming();
+    let start = app.now;
+    tick(&mut app, start + PREVIEW_LIFETIME - Duration::from_secs(1));
+    assert!(matches!(&app.overlay, Overlay::Safety(_)));
+    let log_generation = app.log.generation();
+    let commands = update(
+        &mut app,
+        Action::Tick {
+            now: start + PREVIEW_LIFETIME,
+            dropped: 0,
+            log_generation,
+        },
+    );
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::Safety(SafetyCommand::Declined { .. })]
+    ));
     assert_eq!(app.overlay, Overlay::None);
 }
 

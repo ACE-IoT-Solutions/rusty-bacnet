@@ -91,6 +91,7 @@ fn clearing_bbmd_returns_to_normal_and_network_edits_require_new_attestation() {
     p.bip.bbmd = Some("127.0.0.2:47808".parse().unwrap());
     p.bip.renewal_secs = Some(12);
     p.authorized_at_unix = Some(1_794_000_000);
+    p.authorized_safety = Some(p.safety.clone());
     worker(
         &mut app,
         WorkerEvent::Profile(Ok(Reply::Loaded {

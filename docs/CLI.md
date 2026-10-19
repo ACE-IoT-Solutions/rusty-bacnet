@@ -381,15 +381,21 @@ workspace holds the ledger and the audit log; a flags-only session can't arm.
 The arm dialog shows the site and network, takes an optional reason or ticket,
 and a length in minutes (default 15, at most 480). While armed the status bar
 is red with a countdown; at zero the session disarms itself, and `W` disarms
-it early.
+it early. Only one session at a time may change a profile's ledger: a second
+`bacnet tui` on the same profile can't arm, and says which process holds it.
+Raising a profile's write policy (`never` to `session`, or `dangerous` to
+true), or using a profile saved before write policies existed, asks for the
+authorization attestation again before connecting.
 
 In the browser, with an object open, `w` writes a property (Present_Value by
 default, at priority 16 by default for a commandable object) and `n`
 relinquishes a priority slot (writes NULL to it). Values use the one-shot
 `write` syntax (`42`, `72.5`, `true`, `active`, `"text"`, `null`); a number is
-sent as the datatype the property already holds. `:writem DEVICE OBJECT
-PROPERTY VALUE[@P] ...` sends several writes to one device as one
-WritePropertyMultiple.
+sent as the datatype the property already holds, and a typed `null` is a
+relinquish. `:writem DEVICE OBJECT PROPERTY VALUE[@P] ...` sends several writes
+to one device as one WritePropertyMultiple; each property may appear only once
+in a batch, because a failed batch names the failing write without its
+priority.
 
 Before every write the TUI reads the object's priority array, Present_Value,
 Relinquish_Default and Out_Of_Service, then shows a preview: the old and new
@@ -406,27 +412,39 @@ on the tier:
 | T3 | Priorities 1, 2 and 5 (life safety, critical equipment) | typing the device instance, then Enter |
 | Blocked | Priority 6, which the standard keeps for minimum on and off times | refused, unless the profile sets `dangerous = true` (then T3) |
 
-Esc declines; nothing is sent and the audit log records it. The result shows
+Enter and `y` are ignored for 300 ms after a preview opens, so a repeating key
+can't confirm a write unseen, and a preview left unconfirmed for two minutes is
+declined. Just before sending, the TUI reads the targets again; if a pre-image
+or a slot's holder changed since the preview, nothing is sent and the result
+says to review it again. A priority array that was read but isn't 16 values
+refuses the write. Esc declines; nothing is sent and the audit log records it.
+The result shows
 each write's outcome; a device whose write policy refuses it
 (SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors.
 
 **Ledger.** Every change still in effect is kept with its pre-image in
 `ledger.json`, saved before each request goes out and after each answer, so it
-outlives a crash. `u` lists it, and `R` then `y` reverts everything, newest
-first: our slots are relinquished, or given back the value another commander
-had there; other properties (Out_Of_Service included) get their old value
-back. Reverting needs a connection but not an armed session. Quitting with
-entries in the ledger opens the exit guard: `r` reverts all and quits, `k`
-keeps them, records that in the audit log and quits, Esc cancels. Entries left
-by an earlier run, whether kept or left by a crash, are listed when the next
-session on the profile starts.
+outlives a crash. A slot counts as ours only while it still holds what we
+wrote; one someone has overwritten since is treated as another commander's.
+`u` lists the ledger, and `R` then `y` reverts everything, latest write first:
+our slots are relinquished, or given back the value another commander had
+there; other properties (Out_Of_Service included) get their old value back. A
+device not yet discovered (after a restart, say) is looked for first. Reverting
+needs a connection but not an armed session. Quitting with entries in the
+ledger, or with a write session request still out, opens the exit guard: `r`
+reverts all and quits, `k` keeps them, records that in the audit log and quits
+(also when passive or disconnected), Esc cancels. Entries left by an earlier
+run, whether kept or left by a crash, are listed when the next session on the
+profile starts; one a crash cut off mid-request is recorded as unknown.
 
 **Audit log.** `audit.jsonl` in the workspace gets one JSON object a line,
 flushed and synced: UTC time, OS user, host, profile, transport and local
 address, session level, the event, and for a write its target, service,
 parameters, priority, pre-image and outcome (ack, error class and code,
-denied, reject, abort, timeout or not sent). Arming, disarming, refusals,
-declined confirmations, reverts and kept entries are recorded too. Fields
+denied, reject, abort, timeout or not sent). A `sending` record goes in before
+each request. Arming, disarming, refusals, declined confirmations, reverts and
+kept entries are recorded too; a session that ran out shows as
+`write-session (expired)`. Fields
 named like passwords are written as `[redacted]`. Reads are not logged. This
 is a client-side record, separate from BACnet's own audit reporting.
 

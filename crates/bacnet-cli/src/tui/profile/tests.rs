@@ -42,6 +42,7 @@ fn roundtrip_preserves_bip_settings_safety_authorization_and_workspace_isolation
     );
     let mut profile = foreign();
     profile.authorized_at_unix = Some(1_794_000_000);
+    profile.authorized_safety = Some(profile.safety.clone());
     store.save("site-west", &profile, true).unwrap();
     let reopened = Store::new(store.root().into());
     assert_eq!(reopened.load("site-west").unwrap(), profile);
@@ -118,6 +119,49 @@ fn malformed_unknown_and_unsupported_profiles_are_rejected() {
         std::fs::write(&path, text).unwrap();
         assert!(store.load("site").is_err());
     }
+}
+
+/// An authorization covers the write policy it was given under: raising
+/// the policy, or a file from before the policy was recorded that allows
+/// writes, needs authorizing again. Lowering it doesn't.
+#[test]
+fn raising_the_write_policy_revokes_the_authorization() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().join("config"));
+    let mut p = foreign();
+    p.safety = Safety::READ_ONLY;
+    p.authorized_at_unix = Some(1_794_000_000);
+    p.authorized_safety = Some(Safety::READ_ONLY);
+    store.save("site", &p, true).unwrap();
+    assert!(store.load("site").unwrap().authorized_at_unix.is_some());
+    for raised in [
+        Safety::default(),
+        Safety {
+            writes: Writes::Session,
+            dangerous: true,
+        },
+    ] {
+        p.safety = raised.clone();
+        store.save("site", &p, false).unwrap();
+        assert_eq!(
+            store.load("site").unwrap().authorized_at_unix,
+            None,
+            "{raised:?}"
+        );
+    }
+    // Authorized under writes = "session": lowering keeps it.
+    p.authorized_safety = Some(Safety::default());
+    p.safety = Safety::READ_ONLY;
+    store.save("site", &p, false).unwrap();
+    assert!(store.load("site").unwrap().authorized_at_unix.is_some());
+    // A file saved before this PR: authorized, no policy recorded.
+    let path = root.path().join("config/profiles/site.toml");
+    let old = "version = 1\ntransport = \"bip\"\nauthorized_at_unix = 1794000000\n\n\
+               [bip]\n\n[safety]\nwrites = \"session\"\ndangerous = false\n";
+    std::fs::write(&path, old).unwrap();
+    assert_eq!(store.load("site").unwrap().authorized_at_unix, None);
+    std::fs::write(&path, old.replace("\"session\"", "\"never\"")).unwrap();
+    assert!(store.load("site").unwrap().authorized_at_unix.is_some());
 }
 
 #[test]

@@ -14,7 +14,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Serialize, Serializer};
@@ -75,9 +75,10 @@ pub(crate) struct Context {
     pub(crate) local: String,
 }
 
-/// The open log.
+/// The open log. Records are written on the blocking pool (the host name
+/// lookup and the sync can stall), one at a time, each awaited.
 pub(crate) struct Audit {
-    file: File,
+    file: Arc<Mutex<File>>,
     context: Context,
 }
 
@@ -95,38 +96,58 @@ impl Audit {
         let file = options
             .open(&path)
             .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-        Ok(Self { file, context })
+        Ok(Self {
+            file: Arc::new(Mutex::new(file)),
+            context,
+        })
     }
 
-    /// Append one record: the common fields, `event`, then `fields`.
-    pub(crate) fn record(
-        &mut self,
+    /// Append one record: the common fields, `event`, then `fields`. Done
+    /// on the blocking pool; the file's lock is held only there, never
+    /// across an await.
+    pub(crate) async fn record(
+        &self,
         level: Level,
         event: &str,
         fields: Value,
     ) -> Result<(), String> {
-        let mut record = Map::new();
-        record.insert("time".into(), json!(utc_now()));
-        record.insert("user".into(), json!(os_user()));
-        record.insert("host".into(), json!(host_name()));
-        record.insert("profile".into(), json!(self.context.profile));
-        record.insert("transport".into(), json!(self.context.transport));
-        record.insert("local".into(), json!(self.context.local));
-        record.insert("level".into(), json!(level.audit_name()));
-        record.insert("event".into(), json!(event));
-        if let Value::Object(fields) = fields {
-            record.extend(fields);
-        }
-        let mut record = Value::Object(record);
-        redact(&mut record);
-        let mut line = record.to_string();
-        line.push('\n');
-        self.file
-            .write_all(line.as_bytes())
-            .and_then(|()| self.file.flush())
-            .and_then(|()| self.file.sync_data())
-            .map_err(|e| format!("cannot write the audit log: {e}"))
+        let file = Arc::clone(&self.file);
+        let context = self.context.clone();
+        let event = event.to_string();
+        tokio::task::spawn_blocking(move || {
+            let line = line(&context, level, &event, fields);
+            let mut file = file
+                .lock()
+                .map_err(|_| "the audit log's lock is poisoned".to_string())?;
+            file.write_all(line.as_bytes())
+                .and_then(|()| file.flush())
+                .and_then(|()| file.sync_data())
+                .map_err(|e| format!("cannot write the audit log: {e}"))
+        })
+        .await
+        .map_err(|e| format!("the audit writer failed: {e}"))?
     }
+}
+
+/// One record as a line.
+fn line(context: &Context, level: Level, event: &str, fields: Value) -> String {
+    let mut record = Map::new();
+    record.insert("time".into(), json!(utc_now()));
+    record.insert("user".into(), json!(os_user()));
+    record.insert("host".into(), json!(host_name()));
+    record.insert("profile".into(), json!(context.profile));
+    record.insert("transport".into(), json!(context.transport));
+    record.insert("local".into(), json!(context.local));
+    record.insert("level".into(), json!(level.audit_name()));
+    record.insert("event".into(), json!(event));
+    if let Value::Object(fields) = fields {
+        record.extend(fields);
+    }
+    let mut record = Value::Object(record);
+    redact(&mut record);
+    let mut line = record.to_string();
+    line.push('\n');
+    line
 }
 
 /// The OS user: `USER`, `USERNAME` or `LOGNAME`.
@@ -198,10 +219,10 @@ mod tests {
         assert_eq!(utc(1_792_326_896, 789), "2026-10-18T12:34:56.789Z");
     }
 
-    #[test]
-    fn records_parse_and_never_hold_a_password() {
+    #[tokio::test]
+    async fn records_parse_and_never_hold_a_password() {
         let dir = tempfile::tempdir().unwrap();
-        let mut audit = Audit::open(
+        let audit = Audit::open(
             dir.path(),
             Context {
                 profile: Some("lab".into()),
@@ -213,13 +234,17 @@ mod tests {
         let secret = Secret("hunter2-test-password".into());
         let fields = json!({ "service": "DeviceCommunicationControl",
             "params": { "password": "hunter2-test-password", "secret": secret } });
-        audit.record(Level::ReadOnly, "write", fields).unwrap();
+        audit
+            .record(Level::ReadOnly, "write", fields)
+            .await
+            .unwrap();
         audit
             .record(
                 Level::Armed { dangerous: false },
                 "arm",
                 json!({ "reason": "ticket 7" }),
             )
+            .await
             .unwrap();
         let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
         assert!(!text.contains("hunter2"), "{text}");

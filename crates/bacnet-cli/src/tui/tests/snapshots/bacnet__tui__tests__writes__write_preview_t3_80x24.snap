@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/writes.rs
 expression: "screen(&mut site.app, 80, 24)"
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | WRITE 15:00 | COV 0 FD 0 | drop 0    ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | WRITE 14:59 | COV 0 FD 0 | drop 0    ? help "
 " Device 100   Card    Objects   [Properties]   Tab switches                     "
 "┌ analog-output 1 ───────────────────────┐┌ Priority array: 10 in control ─────┐"
 "│ Status: normal                         ││  1 life safety, manual    -        │"

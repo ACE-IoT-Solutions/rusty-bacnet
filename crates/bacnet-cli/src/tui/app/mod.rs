@@ -452,11 +452,11 @@ impl App {
     fn escape(&mut self, out: &mut Vec<Command>) {
         match self.overlay {
             Overlay::Picker(_) => self.quit = true,
-            Overlay::Help
-            | Overlay::WhoIs(_)
-            | Overlay::Connection
-            | Overlay::Command(_)
-            | Overlay::Safety(_) => self.overlay = Overlay::None,
+            Overlay::Help | Overlay::WhoIs(_) | Overlay::Connection | Overlay::Command(_) => {
+                self.overlay = Overlay::None
+            }
+            // As the dialog's own Esc: a preview closed is a decline.
+            Overlay::Safety(_) => self.modal_key(safety::ModalKey::Esc, out),
             Overlay::None if self.screen == Screen::Watch => self.screen = Screen::Main,
             Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {

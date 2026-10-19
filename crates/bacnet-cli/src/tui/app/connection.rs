@@ -184,7 +184,10 @@ impl Connection {
             .is_some_and(|saved| saved.bip != profile.bip)
         {
             profile.authorized_at_unix = None;
+            profile.authorized_safety = None;
         }
+        // Raising the write policy needs a fresh authorization too.
+        profile.revoke_if_raised();
         profile.validate()?;
         self.overrides.resolve(&profile)?;
         Ok(profile)

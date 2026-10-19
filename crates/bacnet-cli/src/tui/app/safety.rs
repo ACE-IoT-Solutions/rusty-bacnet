@@ -21,6 +21,14 @@ use crate::tui::safety::{
     MAX_MINUTES,
 };
 
+/// How long after a preview opens its confirmation is ignored, so a
+/// repeating key can't confirm a write nobody has seen.
+pub(crate) const CONFIRM_GUARD: Duration = Duration::from_millis(300);
+
+/// How long a preview may wait for its confirmation before it is
+/// declined as stale.
+pub(crate) const PREVIEW_LIFETIME: Duration = Duration::from_secs(120);
+
 /// What `w` says in a read-only session.
 pub(crate) const ARM_HINT: &str = "Read-only: press W to arm a write session first.";
 
@@ -50,6 +58,9 @@ pub(crate) struct SafetyState {
     pub(crate) ledger: Vec<Entry>,
     /// The reason typed in the arm form, until the worker confirms.
     pending_reason: String,
+    /// A Prepare, Execute or Revert the worker hasn't answered yet; the
+    /// exit guard waits for it as for a ledger entry.
+    pub(crate) pending: Option<u64>,
     next_req: u64,
     /// Revert all, then quit.
     quitting: bool,
@@ -178,6 +189,9 @@ pub(crate) enum Modal {
         typed: String,
         /// Why the last confirm failed.
         error: Option<String>,
+        /// When it opened: Enter is ignored for a moment after, and the
+        /// preview expires after [`PREVIEW_LIFETIME`].
+        opened: Instant,
     },
     /// How the writes went.
     Result(Vec<(String, Outcome)>),
@@ -300,11 +314,13 @@ impl App {
         });
     }
 
-    /// Quit, through the exit guard when the ledger holds changes.
+    /// Quit, through the exit guard when the ledger holds changes or a
+    /// write session request is still out.
     pub(super) fn request_quit(&mut self) {
         let guarding =
             matches!(&self.overlay, Overlay::Safety(m) if matches!(**m, Modal::ExitGuard(_)));
-        if self.safety.ledger.is_empty() || guarding {
+        let open = !self.safety.ledger.is_empty() || self.safety.pending.is_some();
+        if !open || guarding {
             self.quit = true;
         } else {
             self.overlay = modal(Modal::ExitGuard(None));
@@ -321,6 +337,7 @@ impl App {
             return;
         }
         let req = self.safety_req();
+        self.safety.pending = Some(req);
         out.push(Command::Safety(SafetyCommand::Prepare {
             req,
             specs,
@@ -332,8 +349,19 @@ impl App {
         });
     }
 
-    /// Once a second: disarm at expiry, and redraw the countdown.
+    /// Once a second: decline a preview left too long, disarm at expiry,
+    /// and redraw the countdown.
     pub(super) fn safety_tick(&mut self, out: &mut Vec<Command>) {
+        let stale = matches!(&self.overlay, Overlay::Safety(m)
+            if matches!(**m, Modal::Confirm { opened, .. }
+                if self.now.saturating_duration_since(opened) >= PREVIEW_LIFETIME));
+        if stale {
+            self.modal_key(ModalKey::Esc, out);
+            self.flash(
+                "The preview expired unconfirmed: nothing was sent.",
+                FLASH_FOR,
+            );
+        }
         let Some(armed) = &self.safety.armed else {
             return;
         };
@@ -409,7 +437,8 @@ impl App {
                 preview,
                 typed,
                 error,
-            } => self.confirm_key(key, req, preview, typed, error, out),
+                opened,
+            } => self.confirm_key(key, req, preview, (typed, error, opened), out),
             Modal::Ledger { confirm, notice } => match key {
                 ModalKey::Char('R') if !self.safety.ledger.is_empty() => Some(Modal::Ledger {
                     notice,
@@ -450,6 +479,7 @@ impl App {
             return None;
         }
         let req = self.safety_req();
+        self.safety.pending = Some(req);
         out.push(Command::Safety(SafetyCommand::Revert { req }));
         Some(Modal::Waiting {
             req,
@@ -462,16 +492,18 @@ impl App {
         key: ModalKey,
         req: u64,
         preview: Box<Preview>,
-        mut typed: String,
-        error: Option<String>,
+        (mut typed, error, opened): (String, Option<String>, Instant),
         out: &mut Vec<Command>,
     ) -> Option<Modal> {
+        let fresh = self.now.saturating_duration_since(opened) < CONFIRM_GUARD;
         let confirmed = match (&preview.gate, key) {
             (_, ModalKey::Esc) => {
                 out.push(Command::Safety(SafetyCommand::Declined { preview }));
                 self.flash("Declined: nothing was sent.", FLASH_FOR);
                 return None;
             }
+            // Too soon after it opened to have been read.
+            (_, ModalKey::Enter | ModalKey::Char('y')) if fresh => false,
             (Gate::Allowed(Tier::T1), ModalKey::Enter) => true,
             (Gate::Allowed(Tier::T2), ModalKey::Char('y')) => true,
             (Gate::Allowed(Tier::T3), ModalKey::Char(ch)) if ch.is_ascii_digit() => {
@@ -493,6 +525,7 @@ impl App {
                         preview,
                         typed: String::new(),
                         error: Some(error),
+                        opened,
                     });
                 }
             }
@@ -504,6 +537,7 @@ impl App {
                 preview,
                 typed,
                 error,
+                opened,
             });
         }
         if self.safety.armed.is_none() {
@@ -514,6 +548,7 @@ impl App {
             out.push(Command::Safety(SafetyCommand::Declined { preview }));
             return None;
         }
+        self.safety.pending = Some(req);
         out.push(Command::Safety(SafetyCommand::Execute { req, preview }));
         Some(Modal::Waiting {
             req,
@@ -524,6 +559,16 @@ impl App {
     /// A write session report.
     pub(super) fn safety_event(&mut self, event: SafetyEvent, out: &mut Vec<Command>) {
         let waiting = |app: &App, id: u64| matches!(&app.overlay, Overlay::Safety(m) if matches!(**m, Modal::Waiting { req, .. } if req == id));
+        let answered = match &event {
+            SafetyEvent::Preview { req, .. }
+            | SafetyEvent::Done { req, .. }
+            | SafetyEvent::Reverted { req, .. }
+            | SafetyEvent::Refused { req: Some(req), .. } => Some(*req),
+            _ => None,
+        };
+        if answered.is_some() && answered == self.safety.pending {
+            self.safety.pending = None;
+        }
         match event {
             SafetyEvent::Ready {
                 policy,
@@ -572,6 +617,7 @@ impl App {
                         preview,
                         typed: String::new(),
                         error: None,
+                        opened: self.now,
                     });
                 }
             }

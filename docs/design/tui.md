@@ -242,6 +242,37 @@ log, or cancel. The next session on the same profile lists entries an earlier
 run left, marking the kept ones. A write already sent when its session is
 retired completes and is recorded; one still queued is recorded as not sent.
 
+Hardening after review (#964):
+- A batch names each (object, property, index) once, checked in the plan and
+  again in the worker: a WritePropertyMultiple error names its first failed
+  write without the priority (Clause 15.10.1.3.2), so a repeat would be
+  ambiguous. Writes before the failed one are tracked as applied, the failed
+  one is not, and later ones are recorded as not sent.
+- A slot is ours only while it holds what the ledger wrote; otherwise it is
+  another commander's (T2 to relinquish, with a warning). A typed `null` is a
+  relinquish. A Priority_Array that is read but isn't 16 values refuses a
+  Present_Value write; only a missing or failed read means not commandable.
+- The worker reads the targets again just before sending and refuses a
+  preview whose pre-image or slot holder changed (audited as a stale
+  decline). The app ignores Enter and `y` for 300 ms after a preview opens
+  and declines a preview left for 120 s.
+- The ledger update goes to the UI right after it is saved, and the exit
+  guard also waits on an unanswered Prepare, Execute or Revert. Keep works
+  without a session: the passive session or the coordinator flags the entries
+  and records it.
+- While a session's write worker runs it holds `ledger.lock` in the workspace
+  (`std::fs::File::try_lock`, so `flock` or `LockFileEx`); another session on
+  the profile can't arm and names the holder's process id where it can.
+- A `sending` audit record precedes each request; on the next launch an
+  earlier run's `sending` entries become `unknown` and are audited so.
+  Revert goes by latest write and looks for an undiscovered device first.
+- Raising the write policy (or a profile with no recorded authorized policy,
+  read as authorized read-only) clears `authorized_at_unix`, so the
+  attestation is asked for again; `authorized_safety` records what it
+  covered.
+- Audit records are written on the blocking pool; a session past its
+  deadline but not yet disarmed is audited as `write-session (expired)`.
+
 **Audit log** (#964). `audit.jsonl` in the profile workspace is append-only.
 Each record holds UTC time, OS user, host, profile, transport and local
 address, target, service, decoded parameters, priority, pre-image, outcome

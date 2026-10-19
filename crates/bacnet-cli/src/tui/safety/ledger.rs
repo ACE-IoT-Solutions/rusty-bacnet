@@ -69,6 +69,10 @@ pub(crate) struct Entry {
     /// An earlier session chose to keep it on exit.
     #[serde(default)]
     pub(crate) kept: bool,
+    /// Order of the latest write to it across the ledger: revert goes
+    /// from the highest down.
+    #[serde(default)]
+    pub(crate) seq: u64,
 }
 
 impl Entry {
@@ -159,18 +163,20 @@ impl Ledger {
         &self.entries
     }
 
-    /// True when an entry covers `spec`'s slot at `priority`, or its
-    /// property.
-    pub(crate) fn holds(&self, spec: &WriteSpec, priority: Option<u8>) -> bool {
+    /// True when the slot `spec` names at `priority` still holds what
+    /// this ledger wrote there: `current` is the slot's encoded value now.
+    /// A slot someone has since overwritten is theirs, not ours.
+    pub(crate) fn owns(&self, spec: &WriteSpec, priority: Option<u8>, current: &[u8]) -> bool {
         self.entries
             .iter()
-            .any(|entry| entry.same_target(spec, priority))
+            .any(|entry| entry.same_target(spec, priority) && entry.written.bytes == current)
     }
 
     /// Record `planned` as sending, merging into an entry for the same
     /// target (whose first pre-image stays). Returns the entry's id.
     pub(crate) fn begin(&mut self, planned: &Planned, run: &str, at: &str) -> u64 {
         let (spec, priority) = (&planned.spec, planned.priority);
+        let seq = self.entries.iter().map(|e| e.seq).max().unwrap_or(0) + 1;
         if let Some(entry) = self
             .entries
             .iter_mut()
@@ -178,6 +184,7 @@ impl Ledger {
         {
             entry.written = planned.value.clone();
             entry.state = State::Sending;
+            entry.seq = seq;
             return entry.id;
         }
         let id = self.entries.iter().map(|e| e.id).max().map_or(1, |n| n + 1);
@@ -197,6 +204,7 @@ impl Ledger {
             written: planned.value.clone(),
             state: State::Sending,
             kept: false,
+            seq,
         });
         id
     }
@@ -225,6 +233,26 @@ impl Ledger {
                 }
             }
         }
+    }
+
+    /// The entries, latest write first: the order revert undoes them in.
+    pub(crate) fn newest_first(&self) -> Vec<Entry> {
+        let mut entries = self.entries.clone();
+        entries.sort_by(|a, b| b.seq.cmp(&a.seq).then(b.id.cmp(&a.id)));
+        entries
+    }
+
+    /// Entries an earlier run left mid-request (`sending`): its session
+    /// ended before the answer, so they become `unknown`. Returns them.
+    pub(crate) fn settle_abandoned(&mut self, run: &str) -> Vec<Entry> {
+        let mut settled = Vec::new();
+        for entry in &mut self.entries {
+            if entry.state == State::Sending && entry.run != run {
+                entry.state = State::Unknown;
+                settled.push(entry.clone());
+            }
+        }
+        settled
     }
 
     /// Drop entry `id`, once undone.
@@ -331,5 +359,41 @@ mod tests {
         assert_eq!(ledger.entries()[0].state, State::Sending);
         ledger.finish(id, None, &[]);
         assert_eq!(ledger.entries()[0].state, State::Unknown);
+    }
+
+    #[test]
+    fn a_slot_is_ours_only_while_it_holds_what_we_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path()).unwrap();
+        let ours = planned(stored(42.0), None);
+        let id = ledger.begin(&ours, "run-a", "t");
+        ledger.finish(id, Some(true), &[]);
+        assert!(ledger.owns(&ours.spec, Some(8), &stored(42.0).bytes));
+        assert!(
+            !ledger.owns(&ours.spec, Some(8), &stored(50.0).bytes),
+            "someone overwrote it"
+        );
+        assert!(!ledger.owns(&ours.spec, Some(9), &stored(42.0).bytes));
+    }
+
+    #[test]
+    fn revert_order_follows_the_latest_write_and_abandoned_sends_settle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path()).unwrap();
+        let first = ledger.begin(&planned(stored(1.0), None), "run-a", "t");
+        let mut other = planned(stored(2.0), None);
+        other.priority = Some(9);
+        let second = ledger.begin(&other, "run-a", "t");
+        // Writing the first target again makes it the newest.
+        ledger.begin(&planned(stored(3.0), None), "run-a", "t");
+        let order: Vec<u64> = ledger.newest_first().iter().map(|e| e.id).collect();
+        assert_eq!(order, [first, second]);
+        assert!(
+            ledger.settle_abandoned("run-a").is_empty(),
+            "this run's own"
+        );
+        let settled = ledger.settle_abandoned("run-b");
+        assert_eq!(settled.len(), 2);
+        assert!(ledger.entries().iter().all(|e| e.state == State::Unknown));
     }
 }

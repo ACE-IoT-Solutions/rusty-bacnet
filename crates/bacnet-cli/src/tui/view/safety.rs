@@ -303,6 +303,12 @@ fn exit_guard(app: &App, error: Option<&str>, theme: &Theme) -> Vec<Line<'static
         "{} change(s) made through this tool are still in effect:",
         app.safety.ledger.len()
     ))];
+    if app.safety.pending.is_some() {
+        lines.push(Line::styled(
+            "A request is still out; its outcome is recorded either way.",
+            theme.warn(),
+        ));
+    }
     for entry in &app.safety.ledger {
         lines.push(entry_line(app, entry, theme));
     }

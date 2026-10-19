@@ -33,7 +33,7 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
     };
     let level = match level {
         Safety::Passive => Span::styled("PASSIVE", theme.safe()),
-        Safety::ReadOnly => Span::styled("READ-ONLY", theme.safe()),
+        Safety::ReadOnly | Safety::Expired => Span::styled("READ-ONLY", theme.safe()),
         Safety::Armed { dangerous } => {
             let left = app.safety.armed.as_ref().map_or(0, |armed| {
                 armed.until.saturating_duration_since(app.now).as_secs()

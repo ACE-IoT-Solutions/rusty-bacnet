@@ -7,11 +7,11 @@
 
 use tokio::sync::mpsc;
 
-use super::write::{ready_offline, SafetyOptions, PASSIVE};
+use super::write::{keep_offline, ready_offline, SafetyOptions, PASSIVE};
 use super::EventSink;
 use crate::tui::message::{Command, OpOutcome, WorkerEvent};
 use crate::tui::point::BrowseResult;
-use crate::tui::safety::{SafetyCommand, SafetyEvent};
+use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
 use crate::tui::watched::{Source, WatchCommand, WatchEvent};
 
 /// Serve a passive session: list the ledger, then refuse every request
@@ -32,6 +32,10 @@ pub(crate) async fn serve(
             () = sink.cancelled() => break,
             command = commands.recv() => match command {
                 None | Some(Command::Disconnect) => break,
+                // Keeping transmits nothing: flag the entries and record it.
+                Some(Command::Safety(SafetyCommand::Keep)) => {
+                    keep_offline(options, Level::Passive).await;
+                }
                 Some(command) => refuse(sink, command).await,
             },
         }

@@ -110,9 +110,10 @@ impl Store {
         }
         let text = fs::read_to_string(&path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let profile: Profile =
+        let mut profile: Profile =
             toml::from_str(&text).map_err(|e| format!("invalid profile {name}: {e}"))?;
         profile.validate()?;
+        profile.revoke_if_raised();
         Ok(profile)
     }
     /// Save a complete synced temporary file, then atomically publish it.

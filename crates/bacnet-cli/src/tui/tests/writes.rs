@@ -16,7 +16,7 @@ use serde_json::Value;
 use super::browser::{open_device, open_object};
 use super::site::{ClientLimits, Quirks, Server, Site};
 use super::*;
-use crate::tui::app::safety::{Modal, ARM_HINT};
+use crate::tui::app::safety::{Modal, ARM_HINT, CONFIRM_GUARD};
 use crate::tui::app::Overlay;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::ledger::{Ledger, State};
@@ -27,12 +27,12 @@ use crate::tui::worker::session::SessionOptions;
 use crate::tui::worker::write::SafetyOptions;
 
 pub(super) const LAB: u32 = 100;
-const LAB_MAC: [u8; 6] = [10, 0, 0, 100, 0xBA, 0xC0];
+pub(super) const LAB_MAC: [u8; 6] = [10, 0, 0, 100, 0xBA, 0xC0];
 const CLIENT_MAC: [u8; 6] = [10, 0, 0, 1, 0xBA, 0xC0];
 const WRITE_PROPERTY: u8 = 15;
-const WRITE_PROPERTY_MULTIPLE: u8 = 16;
+pub(super) const WRITE_PROPERTY_MULTIPLE: u8 = 16;
 
-fn ao1() -> ObjectIdentifier {
+pub(super) fn ao1() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap()
 }
 
@@ -61,7 +61,7 @@ pub(super) async fn lab(dir: &Path, policy: Safety, server: Server) -> Site {
     site
 }
 
-fn modal(app: &App) -> Option<&Modal> {
+pub(super) fn modal(app: &App) -> Option<&Modal> {
     match &app.overlay {
         Overlay::Safety(modal) => Some(modal),
         _ => None,
@@ -89,8 +89,15 @@ pub(super) async fn write(site: &mut Site, value: &str, priority: &str) {
     site.press(KeyCode::Backspace).await;
     type_text(&mut site.app, priority);
     site.press(KeyCode::Enter).await;
+    previewed(site).await;
+}
+
+/// Wait for the preview, then let the confirmation guard pass, as a
+/// person reading it would.
+pub(super) async fn previewed(site: &mut Site) {
     site.pump_until(|app| !matches!(modal(app), Some(Modal::Waiting { .. })))
         .await;
+    advance(&mut site.app, CONFIRM_GUARD);
 }
 
 /// Wait for the writes to end.
@@ -99,21 +106,21 @@ pub(super) async fn finished(site: &mut Site) {
         .await;
 }
 
-fn outcomes(app: &App) -> Vec<Outcome> {
+pub(super) fn outcomes(app: &App) -> Vec<Outcome> {
     match modal(app) {
         Some(Modal::Result(outcomes)) => outcomes.iter().map(|(_, o)| o.clone()).collect(),
         other => panic!("expected a result, got {other:?}"),
     }
 }
 
-fn preview(app: &App) -> &crate::tui::safety::Preview {
+pub(super) fn preview(app: &App) -> &crate::tui::safety::Preview {
     match modal(app) {
         Some(Modal::Confirm { preview, .. }) => preview,
         other => panic!("expected a preview, got {other:?}"),
     }
 }
 
-async fn slot(site: &Site, priority: u32) -> PropertyValue {
+pub(super) async fn slot(site: &Site, priority: u32) -> PropertyValue {
     let db = site.server(0).database().read().await;
     let object = db.get(&ao1()).unwrap();
     object
@@ -137,7 +144,7 @@ pub(super) fn audit(dir: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn writes_sent(site: &Site) -> usize {
+pub(super) fn writes_sent(site: &Site) -> usize {
     site.hub
         .services_to(&LAB_MAC)
         .iter()
@@ -145,7 +152,7 @@ fn writes_sent(site: &Site) -> usize {
         .count()
 }
 
-fn spec(value: Option<&str>, priority: u8) -> WriteSpec {
+pub(super) fn spec(value: Option<&str>, priority: u8) -> WriteSpec {
     WriteSpec {
         device: LAB,
         object: ao1(),
@@ -462,8 +469,7 @@ async fn a_writem_batch_is_one_wpm_confirmed_with_y() {
     site.press(KeyCode::Char(':')).await;
     type_text(&mut site.app, "writem 100 ao:1 pv 41@12 av:1 pv 7");
     site.press(KeyCode::Enter).await;
-    site.pump_until(|app| matches!(modal(app), Some(Modal::Confirm { .. })))
-        .await;
+    previewed(&mut site).await;
     let batch = preview(&site.app);
     assert!(batch.batch);
     assert_eq!(batch.gate, Gate::Allowed(Tier::T2));

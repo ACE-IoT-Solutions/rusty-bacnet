@@ -4,10 +4,15 @@
 //!
 //! [`run`] is polled beside the session loop under `join!`, like the
 //! browser and the watch list, and serves one request at a time. It does
-//! not watch for the session's cancellation while a request is out: a
-//! write already sent always gets its outcome into the ledger and the
-//! audit log, even if the UI never hears of it. Requests still queued when
-//! the session ends are recorded as not sent.
+//! not watch for the session's cancellation while a write is out: a write
+//! already sent always gets its outcome into the ledger and the audit log,
+//! even if the UI never hears of it. Requests still queued when the session
+//! ends are recorded as not sent.
+//!
+//! While it runs it holds the workspace's lock ([`lock`]), so a second
+//! session on the same profile can't arm.
+
+mod send;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -15,14 +20,12 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bacnet_client::client::BACnetClient;
-use bacnet_services::common::BACnetPropertyValue;
-use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::error::{Error, ErrorDetail};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
 use super::browse::limits::RateCap;
 use super::browse::read::{Halt, Reader, Wanted};
 use super::EventSink;
@@ -30,6 +33,7 @@ use crate::tui::message::WorkerEvent;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::audit::{utc_now, Audit, Context};
 use crate::tui::safety::ledger::{Entry, Ledger};
+use crate::tui::safety::lock::{lock, WorkspaceLock};
 use crate::tui::safety::plan::{self, PRE_READ, PRIORITY_6};
 use crate::tui::safety::{
     Gate, Level, Outcome, Planned, Preview, SafetyCommand, SafetyEvent, WriteSpec, MAX_MINUTES,
@@ -37,6 +41,9 @@ use crate::tui::safety::{
 
 /// Why a passive session refuses anything that transmits.
 pub(crate) const PASSIVE: &str = "passive session: nothing is transmitted";
+
+/// Why a stale preview is not sent.
+pub(crate) const STALE: &str = "changed since preview, review again";
 
 /// What the write session needs from the session's settings.
 #[derive(Debug, Clone)]
@@ -79,6 +86,14 @@ pub(crate) fn run_id() -> &'static str {
     })
 }
 
+fn context(options: &SafetyOptions, local: &str) -> Context {
+    Context {
+        profile: options.profile.clone(),
+        transport: options.transport,
+        local: local.into(),
+    }
+}
+
 /// Open the ledger alone, to list it without a client (a passive session).
 pub(crate) async fn ready_offline(sink: &EventSink, options: &SafetyOptions) {
     let ledger = options
@@ -97,15 +112,55 @@ pub(crate) async fn ready_offline(sink: &EventSink, options: &SafetyOptions) {
     .await;
 }
 
+/// Keep the ledger's entries on exit with no connected session (passive,
+/// or disconnected): flag them in the ledger and record it. Without the
+/// workspace's lock the entries can't be flagged, and the record says so.
+pub(crate) async fn keep_offline(options: &SafetyOptions, level: Level) {
+    let Some(dir) = options.workspace.as_deref() else {
+        return;
+    };
+    let audit = Audit::open(dir, context(options, "-"));
+    let kept = lock(dir).and_then(|held| {
+        let mut ledger = Ledger::open(dir)?;
+        ledger.keep_all();
+        ledger.save()?;
+        drop(held);
+        Ok(ledger
+            .entries()
+            .iter()
+            .map(Entry::label)
+            .collect::<Vec<_>>())
+    });
+    let fields = match &kept {
+        Ok(labels) => json!({ "entries": labels, "flagged": true }),
+        Err(why) => {
+            let labels: Vec<String> = Ledger::open(dir)
+                .map(|l| l.entries().iter().map(Entry::label).collect())
+                .unwrap_or_default();
+            json!({ "entries": labels, "flagged": false, "why": why })
+        }
+    };
+    match audit {
+        Ok(audit) => {
+            if let Err(error) = audit.record(level, "kept", fields).await {
+                tracing::error!("{error}");
+            }
+        }
+        Err(error) => tracing::error!("{error}"),
+    }
+}
+
 async fn tell(sink: &EventSink, event: SafetyEvent) {
     sink.deliver(WorkerEvent::Safety(event)).await;
 }
 
-/// The open ledger and audit log, and the session's arming.
+/// The locked ledger, the audit log, and the session's arming.
 struct Runner<'a> {
     options: &'a SafetyOptions,
-    store: Option<(Ledger, Audit)>,
-    /// Why there is no store.
+    ledger: Option<Ledger>,
+    audit: Option<Audit>,
+    _lock: Option<WorkspaceLock>,
+    /// Why there is no ledger to write to.
     missing: String,
     armed: Option<(Instant, String)>,
 }
@@ -120,12 +175,20 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     local: &str,
 ) {
     let mut runner = Runner::open(options, local);
-    let ledger = runner.entries();
+    runner.settle_abandoned().await;
+    let ledger = match (&runner.ledger, &options.workspace) {
+        (Some(ledger), _) => ledger.entries().to_vec(),
+        // Locked by another session: still list it.
+        (None, Some(dir)) => Ledger::open(dir)
+            .map(|l| l.entries().to_vec())
+            .unwrap_or_default(),
+        (None, None) => Vec::new(),
+    };
     tell(
         sink,
         SafetyEvent::Ready {
             policy: options.policy.clone(),
-            workspace: runner.store.is_some(),
+            workspace: options.workspace.is_some(),
             run: run_id().into(),
             ledger,
         },
@@ -138,41 +201,65 @@ pub(crate) async fn run<T: TransportPort + 'static>(
 
 impl<'a> Runner<'a> {
     fn open(options: &'a SafetyOptions, local: &str) -> Self {
-        let store = match &options.workspace {
-            None => Err(
-                "write sessions need a profile: its workspace holds the ledger and the audit log"
-                    .to_string(),
-            ),
-            Some(dir) => Ledger::open(dir).and_then(|ledger| {
-                let context = Context {
-                    profile: options.profile.clone(),
-                    transport: options.transport,
-                    local: local.into(),
-                };
-                Ok((ledger, Audit::open(dir, context)?))
-            }),
-        };
-        let (store, missing) = match store {
-            Ok(store) => (Some(store), String::new()),
-            Err(error) => {
-                if options.workspace.is_some() {
-                    tracing::error!("{error}");
-                }
-                (None, error)
-            }
-        };
-        Self {
+        let mut runner = Self {
             options,
-            store,
-            missing,
+            ledger: None,
+            audit: None,
+            _lock: None,
+            missing: String::new(),
             armed: None,
+        };
+        let Some(dir) = &options.workspace else {
+            runner.missing =
+                "write sessions need a profile: its workspace holds the ledger and the audit log"
+                    .into();
+            return runner;
+        };
+        match Audit::open(dir, context(options, local)) {
+            Ok(audit) => runner.audit = Some(audit),
+            Err(error) => {
+                tracing::error!("{error}");
+                runner.missing = error;
+                return runner;
+            }
+        }
+        match lock(dir).and_then(|held| Ok((held, Ledger::open(dir)?))) {
+            Ok((held, ledger)) => {
+                runner._lock = Some(held);
+                runner.ledger = Some(ledger);
+            }
+            Err(error) => {
+                tracing::warn!("{error}");
+                runner.missing = error;
+            }
+        }
+        runner
+    }
+
+    /// Entries an earlier run left mid-request: their outcome is unknown.
+    async fn settle_abandoned(&mut self) {
+        let Some(ledger) = &mut self.ledger else {
+            return;
+        };
+        let settled = ledger.settle_abandoned(run_id());
+        if settled.is_empty() {
+            return;
+        }
+        self.save();
+        for entry in settled {
+            let fields = json!({
+                "target": entry.label(),
+                "priority": entry.priority,
+                "outcome": { "result": "unknown", "why": "session ended" },
+            });
+            self.audit("unknown", fields).await;
         }
     }
 
     fn entries(&self) -> Vec<Entry> {
-        self.store
+        self.ledger
             .as_ref()
-            .map(|(ledger, _)| ledger.entries().to_vec())
+            .map(|ledger| ledger.entries().to_vec())
             .unwrap_or_default()
     }
 
@@ -189,18 +276,20 @@ impl<'a> Runner<'a> {
             Level::Armed {
                 dangerous: self.options.policy.dangerous,
             }
+        } else if self.armed.is_some() {
+            Level::Expired
         } else {
             Level::ReadOnly
         }
     }
 
-    fn audit(&mut self, event: &str, mut fields: Value) {
+    async fn audit(&self, event: &str, mut fields: Value) {
         let level = self.level();
         if let (Some((_, reason)), Value::Object(map)) = (&self.armed, &mut fields) {
             map.entry("session_reason").or_insert(json!(reason));
         }
-        if let Some((_, audit)) = &mut self.store {
-            if let Err(error) = audit.record(level, event, fields) {
+        if let Some(audit) = &self.audit {
+            if let Err(error) = audit.record(level, event, fields).await {
                 tracing::error!("{error}");
             }
         }
@@ -208,7 +297,7 @@ impl<'a> Runner<'a> {
 
     /// Save the ledger; false (and logged) when that failed.
     fn save(&self) -> bool {
-        let Some((ledger, _)) = &self.store else {
+        let Some(ledger) = &self.ledger else {
             return false;
         };
         let saved = ledger.save();
@@ -222,7 +311,7 @@ impl<'a> Runner<'a> {
     fn refusal(&self) -> Option<String> {
         if self.options.passive {
             Some(PASSIVE.into())
-        } else if self.store.is_none() {
+        } else if self.ledger.is_none() {
             Some(self.missing.clone())
         } else if !self.armed() {
             Some("read-only: press W to arm a write session".into())
@@ -231,12 +320,22 @@ impl<'a> Runner<'a> {
         }
     }
 
-    async fn refuse(&mut self, sink: &EventSink, req: Option<u64>, event: &str, reason: String) {
+    async fn refuse(
+        &self,
+        sink: &EventSink,
+        req: Option<u64>,
+        event: &str,
+        reason: String,
+        mut fields: Value,
+    ) {
         tracing::warn!("{event} refused: {reason}");
-        self.audit(
-            event,
-            json!({ "outcome": { "result": "refused", "why": reason } }),
-        );
+        if let Value::Object(map) = &mut fields {
+            map.insert(
+                "outcome".into(),
+                json!({ "result": "refused", "why": reason }),
+            );
+        }
+        self.audit(event, fields).await;
         tell(sink, SafetyEvent::Refused { req, reason }).await;
     }
 
@@ -253,7 +352,7 @@ impl<'a> Runner<'a> {
                     Some(PASSIVE.to_string())
                 } else if self.options.policy.writes == Writes::Never {
                     Some("this profile sets writes = \"never\"".into())
-                } else if self.store.is_none() {
+                } else if self.ledger.is_none() {
                     Some(self.missing.clone())
                 } else if !(1..=MAX_MINUTES).contains(&minutes) {
                     Some(format!("a session lasts 1 to {MAX_MINUTES} minutes"))
@@ -261,33 +360,35 @@ impl<'a> Runner<'a> {
                     None
                 };
                 if let Some(why) = refusal {
-                    return self.refuse(sink, None, "arm", why).await;
+                    let fields = json!({ "reason": reason, "minutes": minutes });
+                    return self.refuse(sink, None, "arm", why, fields).await;
                 }
                 let until = Instant::now() + Duration::from_secs(u64::from(minutes) * 60);
                 self.armed = Some((until, reason.clone()));
-                self.audit("arm", json!({ "reason": reason, "minutes": minutes }));
+                self.audit("arm", json!({ "reason": reason, "minutes": minutes }))
+                    .await;
                 tell(sink, SafetyEvent::Armed { minutes }).await;
             }
             SafetyCommand::Disarm { expired } => {
                 if self.armed.is_some() {
                     let why = if expired { "expired" } else { "user" };
-                    self.audit("disarm", json!({ "why": why }));
+                    self.audit("disarm", json!({ "why": why })).await;
                     self.armed = None;
                 }
                 tell(sink, SafetyEvent::Disarmed).await;
             }
             SafetyCommand::Declined { preview } => {
                 let items: Vec<Value> = preview.items.iter().map(item_json).collect();
-                self.audit(
-                    "declined",
-                    json!({ "items": items, "tier": gate_name(&preview.gate) }),
-                );
+                let fields = json!({ "items": items, "tier": gate_name(&preview.gate) });
+                self.audit("declined", fields).await;
             }
             SafetyCommand::Prepare { req, specs, batch } => {
                 if let Some(why) = self.refusal() {
-                    return self.refuse(sink, Some(req), "prepare", why).await;
+                    return self
+                        .refuse(sink, Some(req), "prepare", why, json!({}))
+                        .await;
                 }
-                let event = match self.prepare(client, rate, &specs, batch).await {
+                let event = match self.prepare(client, sink, rate, &specs, batch).await {
                     Ok(preview) => SafetyEvent::Preview {
                         req,
                         preview: Box::new(preview),
@@ -300,16 +401,10 @@ impl<'a> Runner<'a> {
                 tell(sink, event).await;
             }
             SafetyCommand::Execute { req, preview } => {
-                let refusal = self.refusal().or_else(|| match &preview.gate {
-                    Gate::Blocked(why) => Some(why.clone()),
-                    Gate::Allowed(_) => None,
-                });
-                let refusal = refusal.or_else(|| {
-                    let six = preview.items.iter().any(|i| i.priority == Some(6));
-                    (six && !self.options.policy.dangerous).then(|| PRIORITY_6.to_string())
-                });
-                if let Some(why) = refusal {
-                    return self.refuse(sink, Some(req), "write", why).await;
+                if let Some(why) = self.write_refusal(&preview) {
+                    let items: Vec<Value> = preview.items.iter().map(item_json).collect();
+                    let fields = json!({ "items": items, "tier": gate_name(&preview.gate) });
+                    return self.refuse(sink, Some(req), "write", why, fields).await;
                 }
                 let outcomes = self.execute(client, sink, rate, &preview).await;
                 // The ledger first, so the UI never shows a result without it.
@@ -319,13 +414,13 @@ impl<'a> Runner<'a> {
             SafetyCommand::Revert { req } => {
                 let refusal = if self.options.passive {
                     Some(PASSIVE.to_string())
-                } else if self.store.is_none() {
+                } else if self.ledger.is_none() {
                     Some(self.missing.clone())
                 } else {
                     None
                 };
                 if let Some(why) = refusal {
-                    return self.refuse(sink, Some(req), "revert", why).await;
+                    return self.refuse(sink, Some(req), "revert", why, json!({})).await;
                 }
                 let failed = self.revert(client, sink, rate).await;
                 tell(sink, SafetyEvent::Ledger(self.entries())).await;
@@ -333,20 +428,48 @@ impl<'a> Runner<'a> {
             }
             SafetyCommand::Keep => {
                 let labels: Vec<String> = self.entries().iter().map(Entry::label).collect();
-                if let Some((ledger, _)) = &mut self.store {
-                    ledger.keep_all();
+                let flagged = match &mut self.ledger {
+                    Some(ledger) => {
+                        ledger.keep_all();
+                        self.save()
+                    }
+                    None => false,
+                };
+                let mut fields = json!({ "entries": labels, "flagged": flagged });
+                if !flagged {
+                    fields["why"] = json!(self.missing);
                 }
-                self.save();
-                self.audit("kept", json!({ "entries": labels }));
+                self.audit("kept", fields).await;
                 tell(sink, SafetyEvent::Ledger(self.entries())).await;
             }
         }
     }
 
-    /// Read what `specs` need and plan them.
+    /// Why a confirmed preview may not be sent, checked here again whatever
+    /// the app decided.
+    fn write_refusal(&self, preview: &Preview) -> Option<String> {
+        if let Some(why) = self.refusal() {
+            return Some(why);
+        }
+        if let Gate::Blocked(why) = &preview.gate {
+            return Some(why.clone());
+        }
+        let six = preview.items.iter().any(|i| i.priority == Some(6));
+        if six && !self.options.policy.dangerous {
+            return Some(PRIORITY_6.into());
+        }
+        if preview.batch {
+            let specs: Vec<&WriteSpec> = preview.items.iter().map(|i| &i.spec).collect();
+            return plan::repeated_target(&specs);
+        }
+        None
+    }
+
+    /// Read what `specs` need and plan them. Stops once the session ends.
     async fn prepare<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
+        sink: &EventSink,
         rate: &RateCap,
         specs: &[WriteSpec],
         batch: bool,
@@ -369,7 +492,12 @@ impl<'a> Runner<'a> {
             if !wanted.contains(&spec.property) && spec.index.is_none() {
                 wanted.push(spec.property);
             }
-            match reader.properties(spec.object, Wanted::List(&wanted)).await {
+            let read = tokio::select! {
+                biased;
+                () = sink.cancelled() => return Err("the session ended".into()),
+                read = reader.properties(spec.object, Wanted::List(&wanted)) => read,
+            };
+            match read {
                 Ok((read, _)) => rows.push(read),
                 Err(Halt::Device(error)) => {
                     return Err(format!("reading {}: {error}", spec.object))
@@ -377,12 +505,28 @@ impl<'a> Runner<'a> {
                 Err(Halt::Cancelled) => return Err("cancelled".into()),
             }
         }
-        let ledger = self.store.as_ref().map(|(ledger, _)| ledger);
-        let ours = |spec: &WriteSpec, priority| ledger.is_some_and(|l| l.holds(spec, priority));
+        let ledger = self.ledger.as_ref();
+        let ours = |spec: &WriteSpec, priority, now: &[u8]| {
+            ledger.is_some_and(|l| l.owns(spec, priority, now))
+        };
         plan::preview(specs, &rows, ours, self.options.policy.dangerous, batch)
     }
 
-    /// Send a confirmed preview, ledger first, and record each outcome.
+    /// Record every write of `preview` as not sent, and why.
+    async fn not_sent(&self, preview: &Preview, why: &str) -> Vec<(String, Outcome)> {
+        let outcome = Outcome::NotSent(why.into());
+        for item in &preview.items {
+            self.audit_write(preview, item, "write", &outcome).await;
+        }
+        preview
+            .items
+            .iter()
+            .map(|item| (item.label(), outcome.clone()))
+            .collect()
+    }
+
+    /// Send a confirmed preview and record each outcome: read the targets
+    /// again first, then the ledger, then the request.
     async fn execute<T: TransportPort + 'static>(
         &mut self,
         client: &BACnetClient<T>,
@@ -390,22 +534,28 @@ impl<'a> Runner<'a> {
         rate: &RateCap,
         preview: &Preview,
     ) -> Vec<(String, Outcome)> {
-        let labels = preview.items.iter().map(Planned::label);
-        let not_sent = |runner: &mut Self, why: &str| {
-            let outcome = Outcome::NotSent(why.into());
-            for item in &preview.items {
-                runner.audit_write(preview, item, &outcome);
-            }
-            labels
-                .clone()
-                .map(|label| (label, outcome.clone()))
-                .collect()
-        };
         if sink.is_cancelled() {
             // The session ended before this was sent: record it, send nothing.
-            return not_sent(self, "the session ended first");
+            return self.not_sent(preview, "the session ended first").await;
         }
-        let Some((ledger, _)) = &mut self.store else {
+        let specs: Vec<WriteSpec> = preview.items.iter().map(|i| i.spec.clone()).collect();
+        let fresh = self
+            .prepare(client, sink, rate, &specs, preview.batch)
+            .await;
+        if !fresh.as_ref().is_ok_and(|fresh| unchanged(preview, fresh)) {
+            let items: Vec<Value> = preview.items.iter().map(item_json).collect();
+            let detail = fresh
+                .err()
+                .unwrap_or_else(|| "the pre-image changed".into());
+            let fields = json!({ "items": items, "why": "stale", "detail": detail });
+            self.audit("declined", fields).await;
+            return preview
+                .items
+                .iter()
+                .map(|item| (item.label(), Outcome::NotSent(STALE.into())))
+                .collect();
+        }
+        let Some(ledger) = &mut self.ledger else {
             return Vec::new();
         };
         let backup = ledger.entries().to_vec();
@@ -417,58 +567,79 @@ impl<'a> Runner<'a> {
             .collect();
         if !self.save() {
             // Nothing goes out that the ledger couldn't record first.
-            if let Some((ledger, _)) = &mut self.store {
+            if let Some(ledger) = &mut self.ledger {
                 for id in &ids {
                     ledger.finish(*id, Some(false), &backup);
                 }
             }
-            return not_sent(self, "the ledger could not be saved");
+            return self
+                .not_sent(preview, "the ledger could not be saved")
+                .await;
         }
+        for item in &preview.items {
+            self.audit_write(preview, item, "sending", &Outcome::NotSent(String::new()))
+                .await;
+        }
+        // The exit guard counts a write in flight; by now it is on disk
+        // in both the ledger and the audit log.
+        tell(sink, SafetyEvent::Ledger(self.entries())).await;
         rate.acquire().await;
         let outcomes = send(client, preview).await;
         for ((item, id), outcome) in preview.items.iter().zip(&ids).zip(&outcomes) {
-            if let Some((ledger, _)) = &mut self.store {
+            if let Some(ledger) = &mut self.ledger {
                 ledger.finish(*id, outcome.applied(), &backup);
             }
-            self.audit_write(preview, item, outcome);
+            let event = if relinquishes(item) {
+                "relinquish"
+            } else {
+                "write"
+            };
+            self.audit_write(preview, item, event, outcome).await;
         }
         self.save();
-        labels.zip(outcomes).collect()
+        preview
+            .items
+            .iter()
+            .map(Planned::label)
+            .zip(outcomes)
+            .collect()
     }
 
-    fn audit_write(&mut self, preview: &Preview, item: &Planned, outcome: &Outcome) {
+    /// One write's audit record. `sending` carries no outcome yet.
+    async fn audit_write(&self, preview: &Preview, item: &Planned, event: &str, outcome: &Outcome) {
         let service = if preview.batch {
             "WritePropertyMultiple"
         } else {
             "WriteProperty"
         };
-        let event = if item.spec.value.is_none() {
-            "relinquish"
-        } else {
-            "write"
-        };
         let mut fields = item_json(item);
         if let Value::Object(map) = &mut fields {
             map.insert("service".into(), json!(service));
             map.insert("tier".into(), json!(gate_name(&preview.gate)));
-            map.insert("outcome".into(), outcome.json());
+            if event != "sending" {
+                map.insert("outcome".into(), outcome.json());
+            }
         }
-        self.audit(event, fields);
+        self.audit(event, fields).await;
     }
 
-    /// Undo every entry, newest first; returns how many are left.
+    /// Undo every entry, latest write first; returns how many are left.
     async fn revert<T: TransportPort + 'static>(
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
         rate: &RateCap,
     ) -> usize {
-        let mut entries = self.entries();
-        entries.reverse();
+        let entries = self
+            .ledger
+            .as_ref()
+            .map(Ledger::newest_first)
+            .unwrap_or_default();
         for entry in entries {
             let outcome = match (entry.undo(), entry.object()) {
                 _ if sink.is_cancelled() => Outcome::NotSent("the session ended first".into()),
                 (Some(undo), Some(object)) => {
+                    find(client, entry.device).await;
                     rate.acquire().await;
                     let result = client
                         .write_property_to_device(
@@ -485,133 +656,21 @@ impl<'a> Runner<'a> {
                 _ => Outcome::NotSent("the old value is unknown".into()),
             };
             if outcome.applied() == Some(true) {
-                if let Some((ledger, _)) = &mut self.store {
+                if let Some(ledger) = &mut self.ledger {
                     ledger.remove(entry.id);
                 }
                 self.save();
             }
-            self.audit(
-                "revert",
-                json!({
-                    "target": entry.label(),
-                    "service": "WriteProperty",
-                    "priority": entry.priority,
-                    "params": { "value": entry.undo().map(|u| u.text) },
-                    "pre_image": { "written": entry.written.text },
-                    "outcome": outcome.json(),
-                }),
-            );
+            let fields = json!({
+                "target": entry.label(),
+                "service": "WriteProperty",
+                "priority": entry.priority,
+                "params": { "value": entry.undo().map(|u| u.text) },
+                "pre_image": { "written": entry.written.text },
+                "outcome": outcome.json(),
+            });
+            self.audit("revert", fields).await;
         }
         self.entries().len()
     }
-}
-
-/// Send the preview as one WriteProperty or one WritePropertyMultiple, and
-/// give each write its outcome. A WritePropertyMultiple error names the
-/// first write that failed: the ones before it took effect and the rest
-/// were not tried (Clause 15.10.2).
-async fn send<T: TransportPort + 'static>(
-    client: &BACnetClient<T>,
-    preview: &Preview,
-) -> Vec<Outcome> {
-    let items = &preview.items;
-    if !preview.batch {
-        let Some(item) = items.first() else {
-            return Vec::new();
-        };
-        let spec = &item.spec;
-        let result = client
-            .write_property_to_device(
-                spec.device,
-                spec.object,
-                spec.property,
-                spec.index,
-                item.value.bytes.clone(),
-                item.priority,
-            )
-            .await;
-        return vec![Outcome::of(&result)];
-    }
-    let mut specs: Vec<WriteAccessSpecification> = Vec::new();
-    for item in items {
-        let value = BACnetPropertyValue {
-            property_identifier: item.spec.property,
-            property_array_index: item.spec.index,
-            value: item.value.bytes.clone(),
-            priority: item.priority,
-        };
-        match specs.last_mut() {
-            Some(last) if last.object_identifier == item.spec.object => {
-                last.list_of_properties.push(value);
-            }
-            _ => specs.push(WriteAccessSpecification {
-                object_identifier: item.spec.object,
-                list_of_properties: vec![value],
-            }),
-        }
-    }
-    let result = client
-        .write_property_multiple_to_device(preview.device, specs)
-        .await;
-    let failed_at = match &result {
-        Err(Error::Structured { detail, .. }) => match detail.as_ref() {
-            ErrorDetail::FirstFailedWriteAttempt(at) => items.iter().position(|item| {
-                item.spec.object == at.object_identifier
-                    && item.spec.property.to_raw() == at.property_identifier
-                    && item.spec.index == at.property_array_index
-            }),
-            _ => None,
-        },
-        _ => None,
-    };
-    let outcome = match (&result, failed_at) {
-        // An Error PDU without the failed write leaves which ones took
-        // effect unknown.
-        (Err(Error::Protocol { .. } | Error::Structured { .. }), None) => Outcome::Failed(
-            result
-                .as_ref()
-                .err()
-                .map(Error::to_string)
-                .unwrap_or_default(),
-        ),
-        _ => Outcome::of(&result),
-    };
-    (0..items.len())
-        .map(|i| match failed_at {
-            Some(at) if i < at => Outcome::Ack,
-            Some(at) if i > at => Outcome::NotSent("an earlier write in the batch failed".into()),
-            _ => outcome.clone(),
-        })
-        .collect()
-}
-
-fn gate_name(gate: &Gate) -> String {
-    match gate {
-        Gate::Allowed(tier) => format!("{tier:?}"),
-        Gate::Blocked(_) => "blocked".into(),
-    }
-}
-
-/// A planned write's audit fields.
-fn item_json(item: &Planned) -> Value {
-    let spec = &item.spec;
-    json!({
-        "target": {
-            "device": spec.device,
-            "object": crate::tui::app::objects::object_label(spec.object),
-            "property": crate::tui::app::objects::kebab(spec.property),
-            "index": spec.index,
-        },
-        "params": { "value": item.value.text, "encoded": hex(&item.value.bytes) },
-        "priority": item.priority,
-        "pre_image": {
-            "value": item.before.as_ref().map(|b| b.text.clone()),
-            "encoded": item.before.as_ref().map(|b| hex(&b.bytes)),
-            "out_of_service": item.out_of_service,
-        },
-    })
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

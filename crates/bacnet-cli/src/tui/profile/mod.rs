@@ -27,6 +27,10 @@ pub(crate) struct Profile {
     /// Explicit first-use authorization, persisted before connecting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) authorized_at_unix: Option<u64>,
+    /// The write policy that authorization covered. A policy raised past
+    /// it (or a file from before this was recorded) needs authorizing again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authorized_safety: Option<Safety>,
 }
 
 /// Profile transport discriminator.
@@ -86,6 +90,22 @@ pub(crate) struct Safety {
     pub(crate) dangerous: bool,
 }
 
+impl Safety {
+    /// The read-only policy, which an authorization recorded before write
+    /// policies existed is taken to cover.
+    pub(crate) const READ_ONLY: Self = Self {
+        writes: Writes::Never,
+        dangerous: false,
+    };
+
+    /// True when `self` allows something `from` did not: writes where
+    /// there were none, or dangerous operations.
+    pub(crate) fn raises(&self, from: &Self) -> bool {
+        (self.writes == Writes::Session && from.writes == Writes::Never)
+            || (self.dangerous && !from.dangerous)
+    }
+}
+
 impl Default for Safety {
     /// Sessions may be armed, with nothing dangerous. Arming is itself the
     /// explicit, time-boxed step.
@@ -105,11 +125,25 @@ impl Default for Profile {
             bip: Bip::default(),
             safety: Safety::default(),
             authorized_at_unix: None,
+            authorized_safety: None,
         }
     }
 }
 
 impl Profile {
+    /// Drop an authorization that doesn't cover the current write policy,
+    /// so connecting asks for it again before anything can be armed.
+    pub(crate) fn revoke_if_raised(&mut self) {
+        let covered = self
+            .authorized_safety
+            .as_ref()
+            .unwrap_or(&Safety::READ_ONLY);
+        if self.authorized_at_unix.is_some() && self.safety.raises(covered) {
+            self.authorized_at_unix = None;
+            self.authorized_safety = None;
+        }
+    }
+
     /// Deterministic validation before any bind, probe, or registration.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.version != 1 {

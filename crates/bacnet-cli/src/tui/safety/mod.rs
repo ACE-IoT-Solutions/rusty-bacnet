@@ -13,6 +13,7 @@
 
 pub(crate) mod audit;
 pub(crate) mod ledger;
+pub(crate) mod lock;
 pub(crate) mod plan;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
@@ -42,6 +43,10 @@ pub(crate) enum Level {
         /// The profile allows dangerous operations.
         dangerous: bool,
     },
+    /// The worker's view of an armed session whose time has run out but
+    /// which nobody has disarmed yet: read-only, named apart in the audit
+    /// log. The app never shows it.
+    Expired,
 }
 
 impl Level {
@@ -52,6 +57,7 @@ impl Level {
             Self::ReadOnly => "read-only",
             Self::Armed { dangerous: false } => "write-session",
             Self::Armed { dangerous: true } => "write-session+dangerous",
+            Self::Expired => "write-session (expired)",
         }
     }
 }

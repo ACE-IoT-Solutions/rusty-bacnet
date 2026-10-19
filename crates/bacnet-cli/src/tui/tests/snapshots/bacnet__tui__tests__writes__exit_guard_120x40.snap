@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/writes.rs
 expression: "screen(&mut site.app, 120, 40)"
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | WRITE 15:00 | COV 0 FD 0 | ledger 1 | drop 0                                 ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | WRITE 14:59 | COV 0 FD 0 | ledger 1 | drop 0                                 ? help "
 "┌ Device 100 at 10.0.0.100:47808 ────────────┐┌ analog-output 1 ───────────────────────────────────────────────────────┐"
 "│ Name              "Lab device 100"         ││ Reading...                                                             │"
 "│ Vendor            "Rusty Lab"              ││                                                                        │"

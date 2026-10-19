@@ -37,6 +37,7 @@ mod site;
 mod watch;
 mod writes;
 mod writes_app;
+mod writes_ledger;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
