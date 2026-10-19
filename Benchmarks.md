@@ -541,7 +541,9 @@ orchestrator container ([section 7.3](#73-reproducing-the-docker-run)) for
 the published figure, and replace this table at the next refresh. A short
 trial run on macOS (2 seconds a step, on a loaded machine) forwarded about
 30,000 packets per second with 5 foreign devices; in the Linux container
-all 100 of 100 foreign devices registered.
+all 100 of 100 foreign devices registered. The 1-device step always
+forwards nothing: a BBMD doesn't send a broadcast back to the foreign
+device it came from, and there is no other.
 
 ### 6.7 Device scan
 
@@ -589,7 +591,9 @@ the `fleet` service, 20 copies of one device by default, each with its own
 address and Device instance. The orchestrator container sits on networks
 1 and 2, the BACnet/SC network and the discovery network, and drives the
 tests; the `foreign-bench` container sits on the foreign network alone and
-runs the foreign-device scenario. Docker does not route IP between its
+runs the foreign-device scenario. It is in the compose file's `foreign`
+profile, so a plain `docker compose up` does not run it alongside the
+orchestrator. Docker does not route IP between its
 bridge networks, so the hosts on the foreign device's path add routes
 through `ip-router` when they start, which needs the `NET_ADMIN`
 capability.
@@ -636,11 +640,12 @@ two scenarios cover them; measure both at the next refresh:
 
 - **`foreign`**, run by the `foreign-bench` service from the foreign
   network: a client registers as a foreign device with `bbmd-a`, finds
-  `server-a` with a Who-Is that `bbmd-a` distributes on network 1 (the
-  I-Am comes back through the BBMD), then reads from `server-a` for the
-  duration. The reads are unicast, as a foreign device's are, over
-  `ip-router`. It reports the time to register and to discover, and the
-  reads' rate and latency.
+  `server-a` with a Who-Is that `bbmd-a` distributes on network 1, then
+  reads from `server-a` for the duration. Only the Who-Is goes through
+  the BBMD: by default a server sends its I-Am straight back to the
+  device that asked (`DiscoveryPolicy::prefer_directed_responses`), so
+  the I-Am and the reads are unicast over `ip-router`. It reports the
+  time to register and to discover, and the reads' rate and latency.
 - **`discovery`**: the orchestrator broadcasts a Who-Is on the discovery
   network and times how long until every device of the fleet has
   answered with an I-Am, round after round for the duration. A round in
@@ -695,7 +700,8 @@ describes, then, from `examples/docker`:
 ```bash
 export SC_CERT_DIR=/absolute/path/outside/the/checkout
 export COMPOSE_PROJECT_NAME=rusty-bench
-docker compose build
+# --profile foreign includes foreign-bench, which a plain build or up leaves out.
+docker compose --profile foreign build
 # Everything but the two runners, whose own commands would run alongside yours.
 docker compose up -d server-a bbmd-a server-b bbmd-b router sc-hub sc-server \
   ip-router fleet
@@ -945,6 +951,12 @@ their figures:
   B/IP suites, and both suites' concurrency within 16 requests per client.
 - Any figure taken from a scenario's summary rather than its steps: the
   summary now covers every step.
+
+**Still to fix in the harness.** `stress-test mixed` and `stress-test
+router` still create their clients inside the timed window, record into
+one histogram behind a shared lock, and divide by the nominal duration
+rather than the measured one. `stress-test clients` no longer does any of
+these; the other two should follow it in a later change.
 
 ## 11. How to reproduce
 

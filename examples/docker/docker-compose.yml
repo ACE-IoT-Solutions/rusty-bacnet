@@ -13,8 +13,13 @@
 #   Provision caller-owned PEM credentials first; see README.md.
 #   docker compose build
 #   docker compose up -d
-#   docker compose logs orchestrator foreign-bench
+#   docker compose logs orchestrator
+#   # The foreign-device scenario, after the orchestrator has finished:
+#   docker compose run --rm foreign-bench
 #   docker compose down
+#
+# foreign-bench is in the `foreign` profile, so a plain `up` doesn't run it
+# alongside the orchestrator; `run` (or `--profile foreign`) starts it.
 #
 # Docker doesn't route IP between bridge networks. The foreign-device
 # scenario needs it, so ip-router forwards between foreign and bacnet-a, and
@@ -210,8 +215,10 @@ services:
         ipv4_address: 172.20.0.3
 
   # A foreign device on the foreign subnet only: it registers with bbmd-a,
-  # finds server-a through it and reads from it. Runs once and exits.
+  # finds server-a with a Who-Is the BBMD distributes, and reads from it.
+  # Runs once and exits; only when asked for (the `foreign` profile).
   foreign-bench:
+    profiles: [foreign]
     build:
       context: ../..
       dockerfile: examples/docker/Dockerfile

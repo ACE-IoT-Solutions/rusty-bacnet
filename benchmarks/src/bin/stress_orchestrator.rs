@@ -144,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let duration = Duration::from_secs(args.duration);
     let mut all_points = Vec::new();
+    let mut discovery_point = None;
     for (index, scenario) in scenarios.iter().enumerate() {
         let param = index as u64 + 1;
         let point = match *scenario {
@@ -185,12 +186,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 discovery(args.fleet, duration).await
             }
             "foreign" => {
-                eprintln!("\n=== Foreign Device through bbmd-a ===");
+                eprintln!("\n=== Foreign Device registered with bbmd-a ===");
                 foreign(param, duration).await
             }
             _ => unreachable!("selected() returns known scenarios"),
         };
         match point {
+            // Discovery counts rounds, not requests, so it stays out of the
+            // combined summary; it printed its own line, and the JSON holds
+            // its point under `parameters.discovery`.
+            Ok(point) if *scenario == "discovery" => discovery_point = Some(point),
             Ok(point) => all_points.push(point),
             Err(e) => eprintln!("  {scenario} failed: {e}"),
         }
@@ -203,6 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "duration_secs": args.duration,
             "scenarios": scenarios,
             "fleet": args.fleet,
+            "discovery": discovery_point,
         }),
         results: StressMetrics::from_curve(
             all_points,

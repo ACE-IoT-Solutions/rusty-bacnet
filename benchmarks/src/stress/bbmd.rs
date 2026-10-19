@@ -184,10 +184,10 @@ pub async fn run(duration_secs: u64, steps: &[u64]) -> Vec<DegradationPoint> {
                 fds.push(fd);
             }
         }
-        let send_elapsed = started.elapsed();
-        // Give the queue a moment to empty before reading the counters.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The step's time ends with the sends; the queue then gets a moment
+        // to empty, off the clock, before the counters are read.
         let elapsed = started.elapsed();
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let fanout = growth(&before, &bbmd.fanout_counters());
         let delivered = received.load(Ordering::Relaxed) - received_before;
         let rss_after = current_rss_kb();
@@ -197,7 +197,7 @@ pub async fn run(duration_secs: u64, steps: &[u64]) -> Vec<DegradationPoint> {
             "  broadcasts sent={} failed={} ({:.0} per second), send call p50={} µs p99={} µs",
             sends.successful(),
             sends.failed(),
-            rate(sends.successful(), send_elapsed),
+            rate(sends.successful(), elapsed),
             send_stats.p50,
             send_stats.p99,
         );

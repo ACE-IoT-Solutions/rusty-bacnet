@@ -95,9 +95,11 @@ pub async fn run_rp_scenario(
 /// How long one discovery round waits for the whole fleet to answer.
 const ROUND_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The pause between discovery rounds, longer than a server's default
-/// window for coalescing repeated Who-Is requests.
-const ROUND_GAP: Duration = Duration::from_millis(250);
+/// The pause between discovery rounds: 50 ms longer than a server's
+/// default window for coalescing repeated Who-Is requests.
+fn round_gap() -> Duration {
+    bacnet_server::server::DiscoveryPolicy::default().coalesce_window + Duration::from_millis(50)
+}
 
 /// Who-Is discovery: the client on the fleet network broadcasts a Who-Is to
 /// every device and times how long until `fleet` distinct devices have
@@ -125,7 +127,7 @@ pub async fn discovery(fleet: u64, duration: Duration) -> Result<DegradationPoin
             // A server drops a repeat of the same Who-Is from one source
             // within its discovery policy's coalescing window (200 ms by
             // default); wait it out, off the clock.
-            tokio::time::sleep(ROUND_GAP).await;
+            tokio::time::sleep(round_gap()).await;
         }
         round += 1;
         client.clear_devices().await;
@@ -177,12 +179,14 @@ pub async fn discovery(fleet: u64, duration: Duration) -> Result<DegradationPoin
 const SERVER_A: (u32, [u8; 4]) = (1000, [172, 20, 0, 10]);
 
 /// A foreign device on the foreign network (172.20.4.0/24) registers with
-/// `bbmd-a`, finds server-a with a Who-Is the BBMD distributes on network 1
-/// (its I-Am comes back to the foreign device through the BBMD), then reads
-/// from it for `duration`. The reads are unicast, as BACnet foreign devices'
-/// are, over the `ip-router` service that joins the foreign network to
-/// network 1. This must run on a host whose only network is the foreign
-/// one, or it would reach network 1 directly.
+/// `bbmd-a`, finds server-a with a Who-Is the BBMD distributes on network 1,
+/// then reads from it for `duration`. Server-a answers the Who-Is with an
+/// I-Am sent straight back to the foreign device (a server prefers directed
+/// replies by default, `DiscoveryPolicy::prefer_directed_responses`), and
+/// that reply and the reads are unicast over the `ip-router` service that
+/// joins the foreign network to network 1; only the Who-Is goes through
+/// the BBMD. This must run on a host whose only network is the foreign one,
+/// or it would reach network 1 directly.
 pub async fn foreign(param: u64, duration: Duration) -> Result<DegradationPoint, Error> {
     let interface = Ipv4Addr::new(172, 20, 4, 10);
     let mut client = BACnetClient::bip_builder()
@@ -245,7 +249,7 @@ pub async fn foreign(param: u64, duration: Duration) -> Result<DegradationPoint,
     .flatten();
     match &found {
         Some(mac) => eprintln!(
-            "  found server-a through bbmd-a in {:.1} ms, at MAC {mac:02x?}",
+            "  found server-a (Who-Is through bbmd-a) in {:.1} ms, at MAC {mac:02x?}",
             t0.elapsed().as_secs_f64() * 1000.0
         ),
         None => eprintln!("  no I-Am from server-a within 5 seconds"),

@@ -71,6 +71,36 @@ pub fn expected_notifications(holders: &[u64], written: &[u64]) -> u64 {
     initial + per_write
 }
 
+/// The notifications a step counted: by the time its clock started (the
+/// setup notifications), by its end, and in all it should have.
+#[derive(Clone, Copy, Debug)]
+pub struct Received {
+    pub at_start: u64,
+    pub total: u64,
+    pub expected: u64,
+}
+
+/// A step's point: its rate counts only the notifications inside the timed
+/// window, while every expected notification that never arrived, setup
+/// ones included, counts as an error, with `other_errors`.
+pub fn step_point(
+    parameter: u64,
+    received: Received,
+    other_errors: u64,
+    elapsed: Duration,
+) -> DegradationPoint {
+    let timed = received.total.saturating_sub(received.at_start);
+    DegradationPoint {
+        parameter,
+        p50_us: 0, // the step counts notifications; it doesn't time them
+        p99_us: 0,
+        throughput: rate(timed, elapsed),
+        successful: timed,
+        errors: other_errors + received.expected.saturating_sub(received.total),
+        elapsed_secs: elapsed.as_secs_f64(),
+    }
+}
+
 pub async fn run(
     duration_secs: u64,
     change_rate_hz: u64,
@@ -137,6 +167,14 @@ pub async fn run(
             eprintln!("  the server refused {refused} subscriptions");
         }
 
+        // Every accepted subscription sends one notification at setup. Wait
+        // for those before the clock starts, so the step's rate counts only
+        // the notifications its writes caused.
+        let setup_until = Instant::now() + Duration::from_secs(2);
+        while received.load(Ordering::Relaxed) < accepted && Instant::now() < setup_until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
         // Write values at change_rate_hz for duration, to the objects in turn.
         let writer = make_stress_client().await.unwrap();
         let interval = 1_000_000u64
@@ -145,6 +183,7 @@ pub async fn run(
             .unwrap_or(Duration::from_secs(1));
         let written_objects = shares.first().copied().unwrap_or(1).max(1);
         let mut written = vec![0u64; objects as usize];
+        let at_start = received.load(Ordering::Relaxed);
         let started = Instant::now();
         let deadline = started + Duration::from_secs(duration_secs);
         let mut writes = 0u64;
@@ -192,15 +231,16 @@ pub async fn run(
              notifications={got}/{expected} expected"
         );
 
-        curve.push(DegradationPoint {
-            parameter: count,
-            p50_us: 0, // the step counts notifications; it doesn't time them
-            p99_us: 0,
-            throughput: rate(got, elapsed),
-            successful: got,
-            errors: write_errors + refused + expected.saturating_sub(got),
-            elapsed_secs: elapsed.as_secs_f64(),
-        });
+        curve.push(step_point(
+            count,
+            Received {
+                at_start,
+                total: got,
+                expected,
+            },
+            write_errors + refused,
+            elapsed,
+        ));
 
         drop(writer);
         drop(subscribers);
@@ -233,5 +273,32 @@ mod tests {
         // written 3 times, object 2 twice.
         assert_eq!(expected_notifications(&[2, 1], &[3, 2]), 3 + 6 + 2);
         assert_eq!(expected_notifications(&[0, 0], &[5, 5]), 0);
+    }
+
+    #[test]
+    fn the_rate_leaves_out_setup_notifications() {
+        // 64 subscriptions (64 setup notifications before the clock), then
+        // 20 writes in 2 seconds, each notifying one subscriber.
+        let received = Received {
+            at_start: 64,
+            total: 84,
+            expected: 84,
+        };
+        let pt = step_point(64, received, 0, Duration::from_secs(2));
+        assert_eq!(pt.successful, 20);
+        assert!((pt.throughput - 10.0).abs() < 1e-9, "{}", pt.throughput);
+        assert_eq!(pt.errors, 0);
+    }
+
+    #[test]
+    fn missing_notifications_count_against_the_total() {
+        let received = Received {
+            at_start: 64,
+            total: 80,
+            expected: 84,
+        };
+        let pt = step_point(64, received, 1, Duration::from_secs(2));
+        assert_eq!(pt.successful, 16);
+        assert_eq!(pt.errors, 5);
     }
 }
