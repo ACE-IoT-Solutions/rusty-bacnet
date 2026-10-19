@@ -3615,8 +3615,9 @@ The default 1476 is declared B/IP capacity, not a measured or verified live limi
 
 Port configuration and the derived six-octet IP/UDP MAC are read-only. Successful
 BACnet configuration writes require pending-change activation under Clause12.56;
-this snapshot has no activation owner and rejects those writes. Changes_Pending
-remains false, Command and obsolete Network Port property62 are absent. Description
+this snapshot has no activation owner and rejects those writes, apart from a
+registered BBMD port's BDT and Accept_FD_Registrations (below). Command and
+obsolete Network Port property62 are absent. Description
 and Out_Of_Service retain their existing object-local behavior. This is not a live
 port control or complete Network Port/BBMD/foreign/DHCP support claim. The pre-1.0
 raw `add_network_port(network_type=...)` API is removed.
@@ -3627,9 +3628,13 @@ A registered port follows its owner's B/IP mode (#939): `BACnet_IP_Mode` reads
 0 for a normal node, 1 for a foreign device and 2 for a BBMD (`bbmd=` and
 `foreign_device=`, see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)),
 and a BBMD's port serves its live BDT and FDT, a foreign device's its BBMD and
-time-to-live. Local Network Number behavior is described below; complete
-Network Port conformance and multiport routing remain outside this
-registration contract.
+time-to-live. A BBMD port's BBMD_Broadcast_Distribution_Table and
+BBMD_Accept_FD_Registrations accept writes (#1578): the value waits, with
+Changes_Pending TRUE, until a ReinitializeDevice ACTIVATE_CHANGES or WARMSTART
+activates it. Python servers take no ReinitializeDevice handler, so they refuse
+that request and a written value stays pending. Local Network Number behavior
+is described below; complete Network Port conformance and multiport routing
+remain outside this registration contract.
 
 ### Local Network Number controls
 

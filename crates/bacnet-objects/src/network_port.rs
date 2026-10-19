@@ -1,12 +1,13 @@
 //! Configured Network Port snapshots and selected live state (135-2020 Clause 12.56).
 //!
 //! The B/IP constructor supplies the flat application-level IPV4 profile.
-//! Configuration is read-only over BACnet: this object has no pending
-//! activation owner, socket, or NIC discovery. Reconstruct it to change local
-//! configuration. An explicit B/IP owner may publish its actual bind and mode,
-//! and learn Network_Number/Quality, without changing configured provenance.
-//! In FOREIGN or BBMD mode the object serves that mode's properties, a
-//! BBMD's tables read live from the transport (see `bip_mode`).
+//! Configuration is read-only over BACnet: this object has no socket or NIC
+//! discovery. Reconstruct it to change local configuration. An explicit B/IP
+//! owner may publish its actual bind and mode, and learn
+//! Network_Number/Quality, without changing configured provenance. In
+//! FOREIGN or BBMD mode the object serves that mode's properties, a BBMD's
+//! tables read live from the transport (see `bip_mode`). A BBMD's BDT and
+//! registration setting are writable, and wait for activation (`pending`).
 //! Non-B/IP snapshots expose only the common application rows;
 //! they do not claim a complete transport-specific SC, Ethernet or MS/TP profile.
 
@@ -22,6 +23,7 @@ use crate::traits::BACnetObject;
 mod bip_config;
 mod bip_mode;
 mod metadata;
+mod pending;
 mod registration;
 use bacnet_types::network_number::NetworkNumber;
 pub use bip_config::BipPortConfig;
@@ -43,6 +45,8 @@ pub struct NetworkPortObject {
     /// publishes. Like the bind, it stays after that owner stops, until a
     /// new registration reserves the port.
     mode: bip_mode::LiveMode,
+    /// Values written to the mode's properties, waiting for activation.
+    pending: bacnet_types::bip_port::BbmdChanges,
     binding: std::sync::Weak<()>,
 }
 
@@ -72,6 +76,7 @@ impl NetworkPortObject {
             apdu_length: config.apdu_length,
             bip: Some(config),
             mode: Default::default(),
+            pending: Default::default(),
             binding: std::sync::Weak::new(),
         })
     }
@@ -107,6 +112,7 @@ impl NetworkPortObject {
             apdu_length,
             bip: None,
             mode: Default::default(),
+            pending: Default::default(),
             binding: std::sync::Weak::new(),
         })
     }
@@ -148,7 +154,7 @@ impl BACnetObject for NetworkPortObject {
             P::APDU_LENGTH => Ok(PropertyValue::Unsigned(self.apdu_length.into())),
             // Optional unknown rate, not a measured NIC speed (errata item 23).
             P::LINK_SPEED => Ok(PropertyValue::Real(0.0)),
-            P::CHANGES_PENDING => Ok(PropertyValue::Boolean(false)),
+            P::CHANGES_PENDING => Ok(PropertyValue::Boolean(self.changes_pending())),
             _ => {
                 let config = self
                     .bip
@@ -182,8 +188,8 @@ impl BACnetObject for NetworkPortObject {
                             .ok_or_else(common::invalid_array_index_error),
                     },
                     _ => self
-                        .mode
-                        .read(property)
+                        .pending_value(property)
+                        .or_else(|| self.mode.read(property))
                         .unwrap_or_else(|| Err(common::unknown_property_error())),
                 }
             }
@@ -193,7 +199,7 @@ impl BACnetObject for NetworkPortObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
@@ -208,8 +214,11 @@ impl BACnetObject for NetworkPortObject {
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
-        // Configuration writes require actual activation (12.56); this snapshot
-        // deliberately provides no apply/Command path or inert pending state.
+        if let Some(result) = self.write_pending(property, array_index, &value) {
+            return result;
+        }
+        // Other configuration writes would need an activation owner (12.56)
+        // this snapshot doesn't have.
         if self
             .property_metadata()
             .iter()
@@ -237,5 +246,7 @@ impl BACnetObject for NetworkPortObject {
 
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod pending_tests;
 #[cfg(test)]
 mod tests;

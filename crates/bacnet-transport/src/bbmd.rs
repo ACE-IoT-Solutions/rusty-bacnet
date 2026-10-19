@@ -23,6 +23,7 @@ use bytes::BytesMut;
 
 use crate::bvll::bvll_error;
 
+mod activation;
 mod forward;
 mod policy;
 mod serve;
@@ -275,6 +276,9 @@ pub struct BbmdState {
     /// Explicit policy for foreign device registrations.
     /// None means fail closed (deny all registrations).
     foreign_device_policy: Option<ForeignDevicePolicy>,
+    /// The policy kept while BBMD_Accept_FD_Registrations is FALSE, for
+    /// when it is TRUE again.
+    parked_policy: Option<ForeignDevicePolicy>,
     rate_tracker: ForeignDeviceRateTracker,
     counters: FdtCounters,
 }
@@ -289,6 +293,7 @@ impl BbmdState {
             alone_on_subnet: false,
             management_acl: Vec::new(),
             foreign_device_policy: None,
+            parked_policy: None,
             rate_tracker: ForeignDeviceRateTracker::new(),
             counters: FdtCounters::default(),
         }
@@ -597,6 +602,9 @@ impl BbmdState {
 fn rows_of(rows: &[codec::BdtEntry]) -> Vec<BdtEntry> {
     rows.iter().copied().map(BdtEntry::from).collect()
 }
+
+#[cfg(test)]
+mod activation_tests;
 
 #[cfg(test)]
 mod foreign_device_tests;

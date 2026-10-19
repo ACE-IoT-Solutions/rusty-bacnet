@@ -145,6 +145,36 @@ impl ObjectDatabase {
         )
     }
 
+    /// Put the values written to every built-in Network Port into effect and
+    /// clear its Changes_Pending, as a ReinitializeDevice ACTIVATE_CHANGES
+    /// or WARMSTART does (Clause 12.56.13). How many ports had changes.
+    ///
+    /// A port whose transport refuses its changes keeps them pending, and
+    /// the first such error is returned once every port has been tried.
+    pub fn activate_network_port_changes(&mut self) -> Result<usize, Error> {
+        let ports: Vec<ObjectIdentifier> = self
+            .objects
+            .keys()
+            .filter(|oid| oid.object_type() == ObjectType::NETWORK_PORT)
+            .copied()
+            .collect();
+        let mut activated = 0;
+        let mut first_error = None;
+        for oid in ports {
+            let Some(port) = self.builtin_network_port_mut(&oid) else {
+                continue;
+            };
+            match port.activate_changes() {
+                Ok(true) => activated += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(activated), Err)
+    }
+
     pub(super) fn check_network_port_membership(
         &self,
         oid: &ObjectIdentifier,

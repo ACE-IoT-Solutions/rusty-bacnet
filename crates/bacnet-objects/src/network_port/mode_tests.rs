@@ -19,6 +19,10 @@ const BBMD_ROWS: [P; 3] = [
     P::BBMD_FOREIGN_DEVICE_TABLE,
 ];
 const FOREIGN_ROWS: [P; 2] = [P::FD_BBMD_ADDRESS, P::FD_SUBSCRIPTION_LIFETIME];
+const WRITABLE_BBMD_ROWS: [P; 2] = [
+    P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+    P::BBMD_ACCEPT_FD_REGISTRATIONS,
+];
 
 /// Tables a test changes between reads.
 #[derive(Default)]
@@ -110,7 +114,7 @@ fn list_bytes(value: PropertyValue) -> Vec<u8> {
 }
 
 #[test]
-fn each_mode_lists_its_own_rows_read_only_and_required() {
+fn each_mode_lists_its_own_rows_required_and_writable_only_where_the_clause_says() {
     let tables: Arc<dyn BbmdTables> = Arc::new(Tables::default());
     for (mode, ip_mode, present, absent) in [
         (
@@ -154,7 +158,15 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
                 .find(|row| row.property_identifier == property)
                 .unwrap();
             assert_eq!(row.conformance, PropertyConformance::RequiredRead);
-            assert_eq!(row.write_capability, PropertyWriteCapability::ReadOnly);
+            // A BBMD's BDT and registration setting are writable, with
+            // activation (Clause 12.56.34, 12.56.35, #1578).
+            let writable = WRITABLE_BBMD_ROWS.contains(&property);
+            let capability = if writable {
+                PropertyWriteCapability::Always
+            } else {
+                PropertyWriteCapability::ReadOnly
+            };
+            assert_eq!(row.write_capability, capability, "{property}");
             assert!(read(&db, property).is_ok(), "{property} reads");
         }
         for &property in absent.iter().flat_map(|rows| rows.iter()) {
@@ -165,10 +177,10 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
                 ErrorCode::UNKNOWN_PROPERTY,
             );
         }
-        // The mode's rows refuse writes, as every configured row does; any
-        // other mode's rows don't exist.
+        // The mode's other rows refuse writes, as every configured row does;
+        // any other mode's rows don't exist.
         let object = db.get_mut(&oid()).unwrap();
-        for &property in present {
+        for &property in present.iter().filter(|p| !WRITABLE_BBMD_ROWS.contains(p)) {
             assert_code(
                 object.write_property(property, None, PropertyValue::Boolean(true), None),
                 ErrorClass::PROPERTY,

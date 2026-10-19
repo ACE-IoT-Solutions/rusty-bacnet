@@ -195,8 +195,8 @@ fn pics_network_port_lists_the_rows_its_bip_mode_adds() {
         (
             bbmd,
             &[
-                (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, false, false),
-                (P::BBMD_ACCEPT_FD_REGISTRATIONS, false, false),
+                (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, false, true),
+                (P::BBMD_ACCEPT_FD_REGISTRATIONS, false, true),
                 (P::BBMD_FOREIGN_DEVICE_TABLE, false, false),
             ][..],
         ),

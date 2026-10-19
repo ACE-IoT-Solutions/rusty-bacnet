@@ -39,26 +39,22 @@ const BIP: &[PropertyMetadata] = &[
 // the informative Table 12-72 lists them for BBMD mode. A port counts as
 // able to only while configured as a BBMD, since its mode is fixed while
 // registered. Clauses 12.56.34 and 12.56.35 make the first two writable in
-// BBMD mode; writes wait for an activation owner, so all three are
-// read-only here.
+// BBMD mode: a write waits, with Changes_Pending set, until a
+// ReinitializeDevice activates it (#1578).
 const BBMD: &[PropertyMetadata] = &[
     PropertyMetadata::new(
         P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
         RequiredRead,
         None,
-        ReadOnly,
+        Always,
     ),
-    PropertyMetadata::new(
-        P::BBMD_ACCEPT_FD_REGISTRATIONS,
-        RequiredRead,
-        None,
-        ReadOnly,
-    ),
+    PropertyMetadata::new(P::BBMD_ACCEPT_FD_REGISTRATIONS, RequiredRead, None, Always),
     PropertyMetadata::new(P::BBMD_FOREIGN_DEVICE_TABLE, RequiredRead, None, ReadOnly),
 ];
 // Table 12-71 footnote 13 and Table 12-72: FOREIGN mode has these. Clauses
-// 12.56.37 and 12.56.38 make them writable; read-only here for the same
-// reason.
+// 12.56.37 and 12.56.38 make them writable, but a foreign device's BBMD and
+// time-to-live can't change while its transport runs, so they are read-only
+// here.
 const FOREIGN: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::FD_BBMD_ADDRESS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::FD_SUBSCRIPTION_LIFETIME, RequiredRead, None, ReadOnly),

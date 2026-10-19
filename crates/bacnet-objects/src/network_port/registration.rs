@@ -39,6 +39,7 @@ impl NetworkPortObject {
             NetworkNumber::configured(self.bip.as_ref().expect("validated B/IP").network_number)
                 .expect("validated Network Number");
         self.mode = bip_mode::LiveMode::Normal;
+        self.pending = Default::default();
         self.binding = Arc::downgrade(lease);
         Ok(())
     }
@@ -78,6 +79,7 @@ impl NetworkPortObject {
         self.mac_address.extend_from_slice(&udp.to_be_bytes());
         self.bip = Some(config);
         self.mode = mode;
+        self.pending = Default::default();
         Ok(())
     }
 }

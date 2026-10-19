@@ -11,7 +11,9 @@
 //!
 //! A BBMD's tables change at run time, so they are lent as a live view,
 //! [`BbmdTables`], which the object reads on each property read. Nothing is
-//! copied, so the object cannot drift from the transport.
+//! copied, so the object cannot drift from the transport. The same view
+//! checks a written BDT and puts written values into effect when they are
+//! activated ([`BbmdChanges`]).
 //!
 //! The module exists only with the `std` feature. Both crates it joins are
 //! hosted, and the shared `Arc` needs atomic compare-and-swap, which
@@ -21,7 +23,8 @@ use core::fmt;
 use std::sync::Arc;
 
 use crate::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
-use crate::enums::IPMode;
+use crate::enums::{ErrorClass, ErrorCode, IPMode};
+use crate::error::Error;
 
 /// A live view of one BBMD's BDT and FDT.
 ///
@@ -41,6 +44,47 @@ pub trait BbmdTables: Send + Sync {
     /// The registrations that have not expired, each with the seconds it has
     /// left: the value of BBMD_Foreign_Device_Table.
     fn foreign_device_table(&self) -> Vec<BACnetFDTEntry>;
+
+    /// Check a BDT written to BBMD_Broadcast_Distribution_Table, changing
+    /// nothing: `Ok` when [`activate`](Self::activate) would take it. The
+    /// default refuses every table, as for tables that can't be changed.
+    fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
+        let _ = table;
+        Err(Error::Protocol {
+            class: ErrorClass::PROPERTY.to_raw().into(),
+            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
+        })
+    }
+
+    /// Put written values into effect, as a ReinitializeDevice
+    /// ACTIVATE_CHANGES or WARMSTART asks (Clause 12.56.13): all of them, or
+    /// none and an error. The default refuses.
+    fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        let _ = changes;
+        Err(Error::Protocol {
+            class: ErrorClass::PROPERTY.to_raw().into(),
+            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
+        })
+    }
+}
+
+/// Values written to a BBMD's Network Port properties and not yet in effect
+/// (Clause 12.56.34, 12.56.35): `None` leaves that setting as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BbmdChanges {
+    /// A new BDT: BBMD_Broadcast_Distribution_Table.
+    pub broadcast_distribution_table: Option<Vec<BACnetBDTEntry>>,
+    /// Whether to accept foreign-device registrations:
+    /// BBMD_Accept_FD_Registrations.
+    pub accept_foreign_device_registrations: Option<bool>,
+}
+
+impl BbmdChanges {
+    /// Whether nothing is waiting.
+    pub fn is_empty(&self) -> bool {
+        self.broadcast_distribution_table.is_none()
+            && self.accept_foreign_device_registrations.is_none()
+    }
 }
 
 /// A B/IP port's mode, with what that mode's Network Port properties need.

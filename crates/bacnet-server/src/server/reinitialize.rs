@@ -43,6 +43,12 @@ use super::*;
 ///   Device properties may, belongs in `write_local`, called after the
 ///   reply from a task the handler schedules (for example by sending the
 ///   change to the code that holds the server).
+/// - **Network Port changes activate after it.** Once the handler accepts
+///   ACTIVATE_CHANGES or WARMSTART, the server puts the values written to
+///   Network Port objects into effect, under the same lock, and clears
+///   Changes_Pending (Clause 12.56.13), the transport's BDT for one
+///   ([`ObjectDatabase::activate_network_port_changes`]). If the transport
+///   refuses them, its error is the reply and they stay pending.
 /// - **Gate the requester.** Without `reinit_password` any peer reaches the
 ///   handler. [`MutationPolicy`](crate::mutation::MutationPolicy) and the
 ///   mutation authorizer don't cover ReinitializeDevice, so check the
@@ -179,6 +185,7 @@ pub(in crate::server) async fn response(
                 let mut db = db.write().await;
                 still_open()
                     .and_then(|()| invoke(handler, &context, &mut db))
+                    .and_then(|()| activate_network_ports(state, &mut db))
                     .map(|()| state)
             }
             None => Err(services_error(ErrorCode::SERVICE_REQUEST_DENIED)),
@@ -254,6 +261,27 @@ fn invoke(
                 invoke_id = context.invoke_id,
                 "ReinitializeDevice handler panicked; answered SERVICES / OTHER"
             );
+            Err(services_error(ErrorCode::OTHER))
+        }
+    }
+}
+
+/// Once the handler has accepted ACTIVATE_CHANGES or WARMSTART, put the
+/// values written to Network Port objects into effect (Clause 12.56.13):
+/// the transport's BDT, for one. A refusal is the reply: its class and code
+/// when it has them, SERVICES / OTHER otherwise.
+fn activate_network_ports(state: ReinitializedState, db: &mut ObjectDatabase) -> Result<(), Error> {
+    if !matches!(
+        state,
+        ReinitializedState::ACTIVATE_CHANGES | ReinitializedState::WARMSTART
+    ) {
+        return Ok(());
+    }
+    match db.activate_network_port_changes() {
+        Ok(_) => Ok(()),
+        Err(error @ (Error::Protocol { .. } | Error::Structured { .. })) => Err(error),
+        Err(error) => {
+            debug!(%error, "Network Port activation error answered SERVICES / OTHER");
             Err(services_error(ErrorCode::OTHER))
         }
     }

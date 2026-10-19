@@ -395,7 +395,10 @@ handler set with `on_reinitialize`, which carries it out with the object
 database write-locked; an error the handler returns is sent in place of the
 SimpleACK. Without a handler, or for a state Clause 16.4 does not define, the
 request is refused with `SERVICES / SERVICE_REQUEST_DENIED`. Password failures
-and malformed-request errors keep their precedence. The SimpleACK leaves only
+and malformed-request errors keep their precedence. Once the handler accepts
+ACTIVATE_CHANGES or WARMSTART, the server activates the values written to
+Network Port objects under the same lock (a BBMD's BDT and registration
+setting, #1578); a refusal from the transport becomes the reply. The SimpleACK leaves only
 after the handler returns, so a handler schedules any restart for after the
 reply and hands slow work to a task. The mutation policy doesn't cover this
 service; the handler restricts sources through its context. A handler panic

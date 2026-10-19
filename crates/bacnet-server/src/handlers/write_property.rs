@@ -470,10 +470,11 @@ pub(crate) fn decode_write_property_value(
     // Output decodes its Lighting_Command whole too, so a command keeps its
     // fields together and any other datatype is the object's to refuse
     // (#1263), and so do Color and Color Temperature their Color_Command
-    // (#1386).
+    // (#1386), and a Network Port its BDT (#1578).
     if matches!(
         property,
         PropertyIdentifier::RECIPIENT_LIST
+            | PropertyIdentifier::BBMD_BROADCAST_DISTRIBUTION_TABLE
             | PropertyIdentifier::SUBSCRIBED_RECIPIENTS
             | PropertyIdentifier::VALUE_SOURCE
             | PropertyIdentifier::EFFECTIVE_PERIOD
