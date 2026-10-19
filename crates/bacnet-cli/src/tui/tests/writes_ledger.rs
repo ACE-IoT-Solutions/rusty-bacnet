@@ -304,6 +304,9 @@ async fn a_second_session_on_the_profile_cannot_arm() {
         })
         .await;
     assert!(why.contains("in use"), "{why}");
+    // Windows does not let another handle read a locked file, so only Unix
+    // can name the holder (see `safety::lock`).
+    #[cfg(unix)]
     assert!(why.contains(&std::process::id().to_string()), "{why}");
     assert!(second.app.safety.armed.is_none());
     let refused = audit(dir.path())
