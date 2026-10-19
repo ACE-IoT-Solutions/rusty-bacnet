@@ -103,7 +103,6 @@ impl Bip6Socket {
 
     pub async fn send_to(&self, bytes: &[u8], peer: impl Into<SocketAddr>) -> io::Result<usize> {
         let peer = peer.into();
-        // Each arm awaits once, with no nested future around it.
         let sent = match (self.selection, &self.sender, peer) {
             (Some(link), Some(sender), SocketAddr::V6(peer)) => {
                 sender.send(&self.udp, bytes, peer, link).await

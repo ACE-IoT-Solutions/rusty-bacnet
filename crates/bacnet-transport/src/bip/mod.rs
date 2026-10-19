@@ -938,6 +938,8 @@ mod shared_port_tests;
 #[cfg(test)]
 mod socket_tests;
 #[cfg(test)]
+mod tap_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod unanswerable_tests;

@@ -7,6 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use bacnet_bip_codec::{BvlcFunction, BvllFrame};
 use bacnet_bip_core::node::{Addressed, Datagram, Discard, LocalAddresses, Path};
 use tracing::{debug, warn};
 
@@ -32,26 +33,37 @@ pub(super) struct Listener {
     socket: Arc<BipSocket>,
     receiver: DestinationReceiver,
     buf: Vec<u8>,
+    /// The primary reports each datagram to the tap as it is read; a
+    /// broadcast listener only what the node keeps ([`handle_datagram`]).
+    tap_at_read: bool,
 }
 
 impl Listener {
     /// Hand a bound socket to tokio, reading the destination of each
     /// datagram. Must run inside a tokio runtime.
-    fn open(socket: socket2::Socket, lease: Option<Arc<()>>, tap: &FrameTap) -> io::Result<Self> {
+    fn open(
+        socket: socket2::Socket,
+        lease: Option<Arc<()>>,
+        tap: &FrameTap,
+        tap_at_read: bool,
+    ) -> io::Result<Self> {
         let receiver = DestinationReceiver::configure(&socket, IpVersion::V4)?;
         let socket = tokio::net::UdpSocket::from_std(socket.into())?;
         Ok(Self {
             socket: Arc::new(BipSocket::new(socket, lease).tapped(tap.clone())),
             receiver,
             buf: vec![0; 2048],
+            tap_at_read,
         })
     }
 
-    /// The next datagram, which the tap sees as it is read.
+    /// The next datagram, which the primary's tap sees as it is read.
     async fn recv(&mut self) -> io::Result<ReceivedDatagram> {
         let received = self.receiver.recv_from(&self.socket, &mut self.buf).await?;
-        let datagram = self.buf.get(..received.len).unwrap_or_default();
-        self.socket.tap_inbound(datagram, received.peer);
+        if self.tap_at_read {
+            let datagram = self.buf.get(..received.len).unwrap_or_default();
+            self.socket.tap_inbound(datagram, received.peer);
+        }
         Ok(received)
     }
 }
@@ -85,9 +97,9 @@ impl Listeners {
     ) -> io::Result<Self> {
         let mut broadcast = [None, None];
         for (slot, socket) in broadcast.iter_mut().zip(bound.listeners) {
-            *slot = Some(Listener::open(socket, lease.clone(), tap)?);
+            *slot = Some(Listener::open(socket, lease.clone(), tap, false)?);
         }
-        let primary = Listener::open(bound.primary, lease, tap)?;
+        let primary = Listener::open(bound.primary, lease, tap, true)?;
         Ok(Self { primary, broadcast })
     }
 
@@ -278,8 +290,39 @@ pub(super) async fn handle_datagram(
     let to = addressed(received.destination, received.os_group_delivery, local, ctx);
     let mut datagram = Datagram::new(data, source, Some(to));
     datagram.path = path;
+    if arrival == Arrival::BroadcastListener && kept_by_listener(&datagram) {
+        ctx.socket().tap_inbound(data, received.peer);
+    }
     if let Some(Discard::ListenerMismatch { other_interface }) = receive(&datagram, ctx).await {
         log_listener_mismatch(other_interface, received, local);
+    }
+}
+
+/// Whether the node keeps a datagram a broadcast listener read, by the
+/// check its receive makes before anything else (`bacnet-bip-core`,
+/// node/receive.rs). It is made here first so that the tap sees only what
+/// the node keeps, and sees it before the node acts on it, which may send.
+/// `tap_tests` holds the two to the same verdict.
+pub(super) fn kept_by_listener(datagram: &Datagram<'_>) -> bool {
+    let (Some(to), Path::Listener { other_interface }) = (datagram.to, datagram.path) else {
+        return true;
+    };
+    if !to.broadcast || other_interface {
+        return false;
+    }
+    // With a broadcast address that is also the node's own, as in loopback
+    // tests, a point-to-point function passes the address checks, and the
+    // listener refuses it. A frame that doesn't decode is the node's to
+    // count as malformed.
+    match BvllFrame::decode(datagram.payload) {
+        Ok(frame) => {
+            !to.node
+                || matches!(
+                    frame.function,
+                    BvlcFunction::ORIGINAL_BROADCAST_NPDU | BvlcFunction::FORWARDED_NPDU
+                )
+        }
+        Err(_) => true,
     }
 }
 

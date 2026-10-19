@@ -156,6 +156,8 @@ impl<S: SerialPort> Task<S> {
             }
         };
         let max_age = Duration::from(config.queue_max_age);
+        // Allocated at every start, subscribed or not: the tap's decoder
+        // borrows it for the task's life, as the core borrows `storage`.
         let mut tap_storage = vec![0; MAX_EXTENDED_FRAME_LENGTH];
         let mut mac = Mac {
             echo: serial.echo(),

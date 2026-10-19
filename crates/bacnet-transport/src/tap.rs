@@ -4,22 +4,27 @@
 //! B/IP, B/IPv6, BACnet/SC and MS/TP each own a [`FrameTap`], reached with
 //! their `frame_tap()` method (through `BACnetClient::transport()` on a
 //! running client). [`FrameTap::subscribe`] returns a [`FrameTapReceiver`]
-//! that gets a [`TappedFrame`] for every frame the link carries for this
-//! node, control traffic included:
+//! that gets a [`TappedFrame`] for every frame the transport sends, and
+//! every frame it receives, control traffic included:
 //!
-//! - B/IP and B/IPv6: every BVLL message, as the UDP datagram's payload.
+//! - B/IP and B/IPv6: every BVLL message, as the UDP datagram's payload. A
+//!   received one appears if the transport takes it: what a B/IP broadcast
+//!   listener reads only when the node keeps it.
 //! - BACnet/SC: every BVLC-SC message on the hub connection, as the
 //!   WebSocket message's payload.
 //! - MS/TP: every frame, preamble to CRC, Token and Poll For Master
-//!   included.
+//!   included, that the station sends or hears on the line: other
+//!   stations' traffic too, since the bus is shared. Frames are found from
+//!   the octets alone, without the master node's inter-octet timing, so one
+//!   the node aborted for a gap can still appear.
 //!
 //! # What it is not
 //!
 //! The tap sees what this process sends and receives, inside the process.
-//! For BACnet/SC that is the plaintext: frames are taken before TLS
-//! encrypts them on the way out and after it decrypts them on the way in.
-//! It shows nothing of other nodes' traffic, so it does not replace a wire
-//! capture.
+//! On B/IP, B/IPv6 and BACnet/SC that is this node's own traffic only, so
+//! it does not replace a wire capture. For BACnet/SC it is the plaintext:
+//! frames are taken before TLS encrypts them on the way out and after it
+//! decrypts them on the way in.
 //!
 //! # Cost and loss
 //!
@@ -258,8 +263,9 @@ impl std::fmt::Debug for FrameTapReceiver {
 }
 
 impl FrameTapReceiver {
-    /// The next frame, waiting for one. `None` once the transport that owns
-    /// the tap is dropped and the queue is empty.
+    /// The next frame, waiting for one. After the transport stops this
+    /// keeps waiting, since it may start again; it returns `None` once the
+    /// transport that owns the tap is dropped and the queue is empty.
     pub async fn recv(&mut self) -> Option<TappedFrame> {
         self.rx.recv().await
     }

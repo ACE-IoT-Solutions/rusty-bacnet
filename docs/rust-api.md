@@ -5657,21 +5657,28 @@ connection are not public.
 `MstpTransport` (and `AnyTransport::frame_tap()`, `None` for Ethernet and
 loopback) returns the transport's `FrameTap` (#957). `subscribe()` gives a
 `FrameTapReceiver` of `TappedFrame { timestamp, direction, link, peer, bytes }`
-for every frame the link carries for this node, control traffic included:
+for every frame the transport sends, and every frame it receives (on MS/TP,
+every frame it hears on the line), control traffic included:
 
 - B/IP and B/IPv6: each BVLL message as the datagram carried it, BVLC-Results,
-  registrations, address resolution and forwarded NPDUs too. `peer` is the
-  UDP source or destination, broadcast and multicast included.
+  registrations, address resolution and forwarded NPDUs too. A received
+  datagram appears if the transport takes it: a B/IP broadcast listener's
+  datagrams only when the node keeps them, and on B/IPv6 only those the
+  selected link admits. `peer` is the UDP source or destination, broadcast
+  and multicast included.
 - BACnet/SC: each BVLC-SC message on the hub connection, the handshake,
   heartbeats, address resolution and Disconnect too. `peer` names the hub,
   primary or failover. Direct connections are not tapped yet.
 - MS/TP: each whole frame, preamble to CRC, Token and Poll For Master too,
-  found in what the line delivered. `peer` is the source station of a received
-  frame and the destination of a sent one.
+  found in what the line delivered: every frame on the bus, other stations'
+  traffic included. Frames are found from the octets alone, without the
+  master node's inter-octet timing, so a frame the node aborted for a gap
+  can still appear. `peer` is the source station of a received frame and the
+  destination of a sent one.
 
-The tap is in-process. A BACnet/SC message is taken in plaintext, before TLS
-encrypts it and after TLS decrypts it, so the tap shows only this node's own
-traffic and does not replace a wire capture.
+The tap is in-process. On B/IP, B/IPv6 and BACnet/SC it shows only this
+node's own traffic, so it does not replace a wire capture. A BACnet/SC message
+is taken in plaintext, before TLS encrypts it and after TLS decrypts it.
 
 Each receiver has a bounded queue (`DEFAULT_TAP_CAPACITY`, 1024 frames, or
 `subscribe_with_capacity(n)`). The transport never waits for one: a frame that
@@ -5679,7 +5686,9 @@ finds a queue full is dropped for that receiver and counted in
 `FrameTapReceiver::dropped()` and in `FrameTap::counters()`. With nobody
 subscribed a frame costs one atomic load and nothing is copied. Subscribe
 before `start()` (on the transport, before handing it to a builder) to see a
-BACnet/SC handshake; a client's builders start the transport.
+BACnet/SC handshake; a client's builders start the transport. After `stop()`
+a receiver keeps waiting, since the transport may start again; `recv()`
+returns `None` once the transport is dropped and the queue is empty.
 
 The management, FDT and fanout counters count what this transport does as a
 BBMD (ACKs sent, registrations admitted, broadcasts forwarded). They stay at

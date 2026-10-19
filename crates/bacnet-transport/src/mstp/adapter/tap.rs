@@ -9,6 +9,10 @@
 //! station sends is reported as it was written. With nobody subscribed an
 //! octet costs one atomic load, and the decoder is reset so that a later
 //! subscriber starts clean.
+//!
+//! The decoder sees octets only, not when they arrived: the core's
+//! inter-octet timeout (T_frame_abort) is not applied, so a frame the core
+//! aborted for a gap in the middle can still be reported whole.
 
 use bacnet_mstp_codec::{DecodeEvent, StreamDecoder};
 use bacnet_types::data_link::DataLink;
