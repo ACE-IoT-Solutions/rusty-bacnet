@@ -14,7 +14,9 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportProvenance;
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::oneshot;
@@ -33,7 +35,9 @@ fn session_config() -> SessionConfig {
 
 fn database_with_analog(instance: u32, value: f32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    let mut analog = AnalogInputObject::new(instance, "lifecycle-input", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(instance, "lifecycle-input", EngineeringUnits::SQUARE_METERS)
+            .unwrap();
     analog.set_present_value(value);
     db.add(Box::new(analog)).unwrap();
     db

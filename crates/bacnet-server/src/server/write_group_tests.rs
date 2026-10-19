@@ -24,13 +24,18 @@ use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_services::write_group::GroupChannelValue;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
-use bacnet_types::enums::WriteStatus;
+use bacnet_types::enums::{EngineeringUnits, WriteStatus};
 use std::num::NonZeroU32;
 
 fn objects(db: &mut ObjectDatabase) {
     for instance in 1..=5 {
         db.add(Box::new(
-            AnalogOutputObject::new(instance, format!("AO-{instance}"), 62).unwrap(),
+            AnalogOutputObject::new(
+                instance,
+                format!("AO-{instance}"),
+                EngineeringUnits::DEGREES_CELSIUS,
+            )
+            .unwrap(),
         ))
         .unwrap();
     }

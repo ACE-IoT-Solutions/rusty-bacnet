@@ -26,6 +26,7 @@ use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
     ChangeOfValueCriteria,
 };
+use bacnet_types::enums::EngineeringUnits;
 
 /// EE (instance 1) monitoring `AI-1.NOTIFICATION_CLASS` (an Unsigned), with
 /// the given event type + parameters.
@@ -36,7 +37,7 @@ fn setup_on_notification_class(
 ) -> (ObjectDatabase, ObjectIdentifier) {
     let mut db = ObjectDatabase::new();
 
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.write_property(
         PropertyIdentifier::NOTIFICATION_CLASS,
         None,

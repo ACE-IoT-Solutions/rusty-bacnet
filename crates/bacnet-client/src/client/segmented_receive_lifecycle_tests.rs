@@ -201,7 +201,7 @@ async fn peer_abort_ends_the_reassembly_session() {
         .unwrap();
     match result {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::BUFFER_OVERFLOW.to_raw())
+            assert_eq!(reason, AbortReason::BUFFER_OVERFLOW)
         }
         other => panic!("expected Err(Abort), got {other:?}"),
     }
@@ -237,7 +237,7 @@ async fn error_pdu_mid_reassembly_aborts_the_transfer() {
         .unwrap();
     match result {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw())
+            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE)
         }
         other => panic!("expected Err(Abort), got {other:?}"),
     }
@@ -269,7 +269,7 @@ async fn reject_pdu_mid_reassembly_aborts_the_transfer() {
         .unwrap();
     match result {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw())
+            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE)
         }
         other => panic!("expected Err(Abort), got {other:?}"),
     }
@@ -331,8 +331,8 @@ async fn error_and_reject_without_a_session_surface_as_themselves() {
         .unwrap();
     match result {
         Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY);
         }
         other => panic!("expected Err(Protocol), got {other:?}"),
     }
@@ -353,7 +353,7 @@ async fn error_and_reject_without_a_session_surface_as_themselves() {
         .unwrap();
     match result {
         Err(Error::Reject { reason }) => {
-            assert_eq!(reason, RejectReason::BUFFER_OVERFLOW.to_raw())
+            assert_eq!(reason, RejectReason::BUFFER_OVERFLOW)
         }
         other => panic!("expected Err(Reject), got {other:?}"),
     }
@@ -568,7 +568,7 @@ async fn segmented_request_timeout_cleanup_preserves_replacement_sender() {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Abort { reason }) if reason == AbortReason::TSM_TIMEOUT.to_raw()
+        Err(Error::Abort { reason }) if reason == AbortReason::TSM_TIMEOUT
     ));
     assert_eq!(
         client.tsm.lock().await.pending_count(),
@@ -639,7 +639,7 @@ async fn simple_ack_mid_reassembly_aborts_the_transfer() {
         .unwrap();
     match result {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw())
+            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE)
         }
         other => panic!("expected Err(Abort), got {other:?}"),
     }
@@ -682,7 +682,7 @@ async fn unsegmented_complex_ack_mid_reassembly_aborts_the_transfer() {
         .unwrap();
     match result {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw())
+            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE)
         }
         other => panic!("expected Err(Abort), got {other:?}"),
     }

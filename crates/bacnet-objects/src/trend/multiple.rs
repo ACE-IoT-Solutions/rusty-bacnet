@@ -384,8 +384,8 @@ impl BACnetObject for TrendLogMultipleObject {
                 read_property_list_property(&self.property_list(), array_index)
             }
             _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             }),
         }
     }
@@ -402,8 +402,8 @@ impl BACnetObject for TrendLogMultipleObject {
                 return self.lifecycle().write_enable(v);
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         if let Some(result) = self.acquisition.write(property, &value) {
@@ -420,8 +420,8 @@ impl BACnetObject for TrendLogMultipleObject {
                 return self.lifecycle().write_stop_when_full(v);
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         if property == PropertyIdentifier::RECORD_COUNT {
@@ -429,8 +429,8 @@ impl BACnetObject for TrendLogMultipleObject {
                 return self.lifecycle().purge();
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         if property == PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY {

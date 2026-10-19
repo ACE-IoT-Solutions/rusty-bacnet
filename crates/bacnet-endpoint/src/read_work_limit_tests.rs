@@ -98,7 +98,7 @@ async fn endpoint_group_read_past_the_read_work_limit_aborts_out_of_resources() 
     assert!(
         matches!(
             results[0],
-            Err(Error::Abort { reason }) if reason == AbortReason::OUT_OF_RESOURCES.to_raw()
+            Err(Error::Abort { reason }) if reason == AbortReason::OUT_OF_RESOURCES
         ),
         "{results:?}"
     );

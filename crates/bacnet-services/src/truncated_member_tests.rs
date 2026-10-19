@@ -160,7 +160,7 @@ fn reals_and_times_check_their_length_before_their_contents() {
     let wrong = COVNotificationMultipleRequest::decode(&wrong);
     assert!(
         matches!(wrong, Err(Error::Reject { reason })
-            if reason == RejectReason::INVALID_DATA_ENCODING.to_raw()),
+            if reason == RejectReason::INVALID_DATA_ENCODING),
         "{wrong:?}"
     );
     let cut = COVNotificationMultipleRequest::decode(&cut);

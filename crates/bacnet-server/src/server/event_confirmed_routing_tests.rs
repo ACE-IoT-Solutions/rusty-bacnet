@@ -25,7 +25,7 @@ use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
-use bacnet_types::enums::{EventState, EventType};
+use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
 use bacnet_types::primitives::StatusFlags;
 use bytes::Bytes;
 
@@ -84,7 +84,7 @@ impl Harness {
             .unwrap(),
         ))
         .unwrap();
-        let mut ai = AnalogInputObject::new(1, "AI-1", 0).unwrap();
+        let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::SQUARE_METERS).unwrap();
         ai.write_property(
             PropertyIdentifier::NOTIFY_TYPE,
             None,

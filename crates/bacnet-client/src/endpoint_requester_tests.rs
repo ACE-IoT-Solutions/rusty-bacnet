@@ -343,7 +343,7 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
     assert!(matches!(
         request_handle.await.unwrap(),
         Err(Error::Abort { reason })
-            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert_eq!(coordinator.active_count().unwrap(), 0);
     assert_eq!(admit_calls.load(Ordering::SeqCst), 1);

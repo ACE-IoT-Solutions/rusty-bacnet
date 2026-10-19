@@ -18,6 +18,7 @@ use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
 use bacnet_transport::sc::ScTransport;
 use bacnet_transport::sc_tls::TlsWebSocket;
+use bacnet_types::enums::EngineeringUnits;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -102,12 +103,14 @@ fn make_db(device_instance: u32, object_count: u32) -> ObjectDatabase {
     db.add(Box::new(device)).unwrap();
 
     for i in 1..=object_count {
-        let mut ai = AnalogInputObject::new(i, format!("AI-{i}"), 62).unwrap();
+        let mut ai =
+            AnalogInputObject::new(i, format!("AI-{i}"), EngineeringUnits::DEGREES_CELSIUS)
+                .unwrap();
         ai.set_present_value(20.0 + (i as f32 * 0.1));
         db.add(Box::new(ai)).unwrap();
     }
 
-    let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ao)).unwrap();
 
     let bv = BinaryValueObject::new(1, "BV-1").unwrap();

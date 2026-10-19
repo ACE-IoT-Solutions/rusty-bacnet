@@ -387,9 +387,10 @@ impl DeviceIdentity {
 /// ```
 /// use bacnet_objects::device_identity::{build_database_with_extra, DeviceIdentity};
 /// use bacnet_objects::analog::AnalogInputObject;
+/// use bacnet_types::enums::EngineeringUnits;
 ///
 /// let identity = DeviceIdentity::new(1001, 42)?;
-/// let mut point = AnalogInputObject::new(1, "ai-1", 0)?;
+/// let mut point = AnalogInputObject::new(1, "ai-1", EngineeringUnits::NO_UNITS)?;
 /// point.set_present_value(21.5);
 /// let db = build_database_with_extra(&identity, vec![Box::new(point)])?;
 /// assert!(db.get(&identity.device_oid()).is_some());

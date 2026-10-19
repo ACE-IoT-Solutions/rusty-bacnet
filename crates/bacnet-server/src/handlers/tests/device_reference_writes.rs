@@ -12,6 +12,7 @@ use bacnet_objects::trend::{TrendLogMultipleObject, TrendLogObject};
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetStageLimitValue,
 };
+use bacnet_types::enums::EngineeringUnits;
 
 type P = PropertyIdentifier;
 
@@ -69,7 +70,7 @@ fn database() -> ObjectDatabase {
         StagingConfig {
             present_value: 5.0,
             min_present_value: -1.0,
-            units: 62,
+            units: EngineeringUnits::DEGREES_CELSIUS,
             priority_for_writing: 8,
             stages: vec![stage(10.0, false), stage(20.0, true)],
             target_references: vec![oid(ObjectType::BINARY_OUTPUT, 1).into()],

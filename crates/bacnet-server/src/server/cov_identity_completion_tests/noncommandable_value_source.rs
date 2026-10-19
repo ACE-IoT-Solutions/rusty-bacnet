@@ -5,6 +5,7 @@ use bacnet_objects::{
     binary::BinaryValueObject, multistate::MultiStateValueObject,
     present_value_access::PresentValueAccess, traits::BACnetObject,
 };
+use bacnet_types::enums::EngineeringUnits;
 
 const FIELDS: [PropertyIdentifier; 3] = [
     PropertyIdentifier::PRESENT_VALUE,
@@ -13,7 +14,8 @@ const FIELDS: [PropertyIdentifier; 3] = [
 ];
 
 fn families(access: PresentValueAccess, tracked: bool) -> Vec<Box<dyn BACnetObject>> {
-    let mut av = AnalogValueObject::with_access(3, "av", 95, access).unwrap();
+    let mut av =
+        AnalogValueObject::with_access(3, "av", EngineeringUnits::NO_UNITS, access).unwrap();
     av.set_value_source_tracking(tracked);
     av.write_property(
         PropertyIdentifier::COV_INCREMENT,
@@ -364,8 +366,8 @@ fn value_source_cov_noncommandable_admission_requires_tracking() {
                         assert!(
                             matches!(result.unwrap_err(), Error::Protocol { class, code }
                             | Error::Structured { class, code, .. }
-                            if class == ErrorClass::PROPERTY.to_raw() as u32
-                                && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+                            if class == ErrorClass::PROPERTY
+                                && code == ErrorCode::UNKNOWN_PROPERTY)
                         );
                         assert!(table.is_empty());
                     }

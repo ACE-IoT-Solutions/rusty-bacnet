@@ -3,6 +3,7 @@ use super::*;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::object_profile::ObjectProfile;
 use bacnet_types::constructed::BACnetNameValue;
+use bacnet_types::enums::EngineeringUnits;
 
 const TAGS: PropertyIdentifier = PropertyIdentifier::TAGS;
 const LOCATION: PropertyIdentifier = PropertyIdentifier::PROFILE_LOCATION;
@@ -42,8 +43,10 @@ fn database(mask: u8) -> ObjectDatabase {
         })
         .unwrap();
     db.add(Box::new(object)).unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     assert_eq!(db.selected_device(), Some(device()));
     db
 }

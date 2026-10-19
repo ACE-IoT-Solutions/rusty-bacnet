@@ -471,7 +471,7 @@ fn decode_success_filter(
         // answers its own filters.
         _ => {
             return Err(Error::Reject {
-                reason: RejectReason::UNDEFINED_ENUMERATION.to_raw(),
+                reason: RejectReason::UNDEFINED_ENUMERATION,
             });
         }
     };

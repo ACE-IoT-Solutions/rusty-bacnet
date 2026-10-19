@@ -25,7 +25,8 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::mstp::{LoopbackSerial, MstpExecutionMode, MstpTransport, SerialPort};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier, Segmentation,
+    ServiceSupported,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -90,7 +91,7 @@ pub fn db_with_named_analog(
     name: &str,
     value: f32,
 ) -> ObjectDatabase {
-    let mut o = AnalogInputObject::new(instance, name, 0).unwrap();
+    let mut o = AnalogInputObject::new(instance, name, EngineeringUnits::SQUARE_METERS).unwrap();
     o.set_present_value(value);
     build_database_with_extra(id, vec![Box::new(o)]).unwrap()
 }

@@ -14,7 +14,7 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_types::enums::{
-    NetworkType, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
+    EngineeringUnits, NetworkType, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
     UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
@@ -35,7 +35,12 @@ fn session_config() -> SessionConfig {
 }
 
 fn analog(instance: u32, value: f32) -> Box<dyn bacnet_objects::traits::BACnetObject> {
-    let mut o = AnalogInputObject::new(instance, format!("ai-{instance}"), 0).unwrap();
+    let mut o = AnalogInputObject::new(
+        instance,
+        format!("ai-{instance}"),
+        EngineeringUnits::SQUARE_METERS,
+    )
+    .unwrap();
     o.set_present_value(value);
     Box::new(o)
 }

@@ -48,8 +48,8 @@ fn mode_derived_max_segments_accepted() {
             None => assert!(matches!(
                 max_segments,
                 Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::UNKNOWN_PROPERTY
             )),
         }
     }
@@ -64,7 +64,7 @@ fn segment_timeout_absence_custom_value_and_zero_validation() {
     .unwrap();
     assert!(
         matches!(none.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY)
     );
     assert!(!none
         .property_list()

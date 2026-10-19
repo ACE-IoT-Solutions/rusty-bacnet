@@ -41,14 +41,14 @@ use bacnet_endpoint::{EndpointSession, SessionConfig, SessionRole};
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::time::{timeout, Duration};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (client_port, server_port) = LoopbackTransport::pair(vec![1], vec![2]);
-    let mut analog = AnalogInputObject::new(7, "room-temperature", 0)?;
+    let mut analog = AnalogInputObject::new(7, "room-temperature", EngineeringUnits::DEGREES_FAHRENHEIT)?;
     analog.set_present_value(72.5);
     let mut database = ObjectDatabase::new();
     database.add(Box::new(analog))?;

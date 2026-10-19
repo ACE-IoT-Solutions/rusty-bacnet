@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::stress::harness::{make_bip_server_with_db, make_large_db, make_stress_client};
@@ -24,7 +24,8 @@ fn make_mixed_db(device_instance: u32) -> ObjectDatabase {
     let mut db = make_large_db(device_instance, 500);
     // Add 50 more writable AO objects (starting at instance 2 since make_large_db adds AO-1)
     for i in 2..=50 {
-        let ao = AnalogOutputObject::new(i, format!("AO-{}", i), 62).unwrap();
+        let ao = AnalogOutputObject::new(i, format!("AO-{}", i), EngineeringUnits::DEGREES_CELSIUS)
+            .unwrap();
         db.add(Box::new(ao)).unwrap();
     }
     db

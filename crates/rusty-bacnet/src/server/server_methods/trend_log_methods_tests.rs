@@ -35,7 +35,7 @@ fn assert_refused(result: Result<TrendLogMultipleObject, Error>, code: ErrorCode
     };
     assert!(
         matches!(error, Error::Protocol { class: c, code: e }
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            if c == class && e == code),
         "{error:?}"
     );
 }

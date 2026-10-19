@@ -2,19 +2,22 @@ use super::*;
 
 #[test]
 fn protocol_error_display() {
-    let err = Error::Protocol { class: 2, code: 31 };
+    let err = Error::Protocol {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::UNKNOWN_OBJECT,
+    };
     assert_eq!(err.to_string(), "BACnet error: property / unknown-object");
 
     // Unknown class/code falls back to numeric
     let err2 = Error::Protocol {
-        class: 999,
-        code: 999,
+        class: ErrorClass::from_raw(999),
+        code: ErrorCode::from_raw(999),
     };
     assert_eq!(err2.to_string(), "BACnet error: class=999 / code=999");
     assert_eq!(
         Error::Protocol {
-            class: 2,
-            code: 999
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::from_raw(999)
         }
         .to_string(),
         "BACnet error: property / code=999"
@@ -80,13 +83,21 @@ fn structured_error_display_names_the_detail() {
         ),
     ] {
         assert_eq!(
-            Error::protocol(class, code, Some(detail)).to_string(),
+            Error::protocol(
+                ErrorClass::from_raw(class),
+                ErrorCode::from_raw(code),
+                Some(detail)
+            )
+            .to_string(),
             expected
         );
     }
     assert!(matches!(
-        Error::protocol(2, 31, None),
-        Error::Protocol { class: 2, code: 31 }
+        Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_OBJECT, None),
+        Error::Protocol {
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::UNKNOWN_OBJECT
+        }
     ));
 }
 
@@ -154,23 +165,30 @@ fn syntax_faults_name_their_reject_reasons() {
             RejectReason::MISSING_REQUIRED_PARAMETER,
         ),
         (
-            Error::Reject { reason: 8 },
+            Error::Reject {
+                reason: RejectReason::UNDEFINED_ENUMERATION,
+            },
             RejectReason::UNDEFINED_ENUMERATION,
         ),
     ] {
         assert_eq!(error.reject_reason(), Some(reason), "{error}");
     }
     for error in [
-        Error::Protocol { class: 5, code: 0 },
+        Error::Protocol {
+            class: ErrorClass::SERVICES,
+            code: ErrorCode::OTHER,
+        },
         Error::Range(RangeError::new("x")),
-        Error::Abort { reason: 1 },
+        Error::Abort {
+            reason: AbortReason::BUFFER_OVERFLOW,
+        },
     ] {
         assert_eq!(error.reject_reason(), None, "{error}");
     }
     // A request's decode error becomes its Reject; any other error stays.
     assert!(matches!(
         Error::trailing(3, "more").into_request_reject(),
-        Error::Reject { reason } if reason == RejectReason::TOO_MANY_ARGUMENTS.to_raw()
+        Error::Reject { reason } if reason == RejectReason::TOO_MANY_ARGUMENTS
     ));
     assert!(matches!(
         Error::Range(RangeError::new("x")).into_request_reject(),

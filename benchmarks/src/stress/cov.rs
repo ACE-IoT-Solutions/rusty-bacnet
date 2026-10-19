@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::stress::harness::{make_bip_server_with_db, make_stress_client};
@@ -29,7 +29,8 @@ fn make_ao_db(device_instance: u32, count: u32) -> ObjectDatabase {
     db.add(Box::new(device)).unwrap();
 
     for i in 1..=count {
-        let ao = AnalogOutputObject::new(i, format!("AO-{}", i), 62).unwrap();
+        let ao = AnalogOutputObject::new(i, format!("AO-{}", i), EngineeringUnits::DEGREES_CELSIUS)
+            .unwrap();
         db.add(Box::new(ao)).unwrap();
     }
     db
