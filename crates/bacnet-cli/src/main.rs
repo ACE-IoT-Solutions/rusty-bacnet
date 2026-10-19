@@ -20,6 +20,7 @@ mod decode;
 mod foreign;
 mod output;
 mod parse;
+mod paths;
 mod sc_check;
 mod session;
 mod shell;

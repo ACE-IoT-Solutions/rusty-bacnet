@@ -564,15 +564,27 @@ fn setup_readline() -> Result<ShellEditor, Box<dyn std::error::Error>> {
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(helper));
 
-    let history_path = history_path();
-    let _ = rl.load_history(&history_path);
+    if let Some(path) = history_path() {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let _ = crate::paths::adopt_legacy_history(home.as_deref(), &path);
+        let _ = rl.load_history(&path);
+    }
     Ok(rl)
 }
 
-fn history_path() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".bacnet_history"))
-        .unwrap_or_else(|_| std::path::PathBuf::from(".bacnet_history"))
+/// The history file in the platform data directory (see [`crate::paths`]).
+fn history_path() -> Option<std::path::PathBuf> {
+    crate::paths::history_file(crate::paths::project_dirs().as_ref())
+}
+
+/// Best effort: a shell without a writable data directory still works.
+fn save_history(rl: &mut ShellEditor) {
+    if let Some(path) = history_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = rl.save_history(&path);
+    }
 }
 
 /// Run the interactive BACnet shell (non-BIP transports: SC, BIP6).
@@ -640,7 +652,7 @@ pub async fn run_shell<T: TransportPort + 'static>(
         }
     }
 
-    let _ = rl.save_history(&history_path());
+    save_history(&mut rl);
     client.stop().await?;
     Ok(())
 }
@@ -734,7 +746,7 @@ pub async fn run_bip_shell(
         }
     }
 
-    let _ = rl.save_history(&history_path());
+    save_history(&mut rl);
     // Drop session first to release the Arc clone held by the BBMD renewal closure.
     drop(session);
     // Unwrap the Arc to call stop(). If there are outstanding references

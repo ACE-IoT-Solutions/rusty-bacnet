@@ -217,6 +217,10 @@ fn connection(app: &App, key: KeyEvent) -> Option<Action> {
     if !editing && key.code == KeyCode::Char('q') {
         return Some(Action::Quit);
     }
+    // Disconnect from the connection screen too; a no-op when nothing is up.
+    if !editing && key.code == KeyCode::Char('x') {
+        return Some(Action::Disconnect);
+    }
     Some(Action::Connection(match key.code {
         KeyCode::Tab | KeyCode::Down => Key::Next,
         KeyCode::BackTab | KeyCode::Up => Key::Prev,
@@ -224,6 +228,7 @@ fn connection(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Backspace if editing => Key::Backspace,
         _ if editing => Key::Char(typed(key)?),
         KeyCode::Char('n') => Key::New,
+        KeyCode::Char('s') => Key::NewSc,
         KeyCode::Char('e') => Key::Edit,
         KeyCode::Char('r') => Key::Reload,
         KeyCode::Char('p') => Key::List,

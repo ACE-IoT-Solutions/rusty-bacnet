@@ -1,85 +1,142 @@
 //! Explicit command-line values override profile values, including defaults.
 
-use super::Profile;
+use super::sc::{DeviceUuid, Vmac};
+use super::{Profile, Transport};
 use crate::args::Cli;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::PathBuf;
 
 /// Only values with clap's CommandLine provenance are present.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Overrides {
+    timeout_ms: Option<u64>,
+    min_interval_ms: Option<u64>,
+    bip: BipOverrides,
+    sc: ScOverrides,
+}
+
+/// Flags that only a B/IP profile takes.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct BipOverrides {
     interface: Option<Ipv4Addr>,
     port: Option<u16>,
     broadcast: Option<Ipv4Addr>,
-    timeout_ms: Option<u64>,
-    min_interval_ms: Option<u64>,
     bbmd: Option<SocketAddrV4>,
     ttl: Option<u16>,
     renewal_secs: Option<u64>,
 }
 
+/// Flags that only an SC profile takes. `--sc` itself only says which
+/// transport the command line meant.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ScOverrides {
+    sc: bool,
+    hub_url: Option<String>,
+    ca: Option<PathBuf>,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
+    vmac: Option<Vmac>,
+    device_uuid: Option<DeviceUuid>,
+}
+
+/// A path flag made absolute against the working directory now, so the
+/// effective path doesn't depend on where the coordinator reads it later.
+fn absolute(path: &std::path::Path) -> Result<PathBuf, String> {
+    std::path::absolute(path).map_err(|e| format!("cannot resolve {}: {e}", path.display()))
+}
+
 impl Overrides {
     pub(crate) fn from_cli(cli: &Cli) -> Result<Self, String> {
         let has = |key: &str| cli.explicit_args.iter().any(|arg| arg == key);
-        if [
-            "sc",
-            "sc_url",
-            "sc_ca",
-            "sc_cert",
-            "sc_key",
-            "sc_vmac",
-            "sc_device_uuid",
-            "ipv6",
-            "ipv6_interface",
-            "device_instance",
-        ]
-        .iter()
-        .any(|key| has(key))
+        if ["ipv6", "ipv6_interface", "device_instance"]
+            .iter()
+            .any(|key| has(key))
         {
             return Err(
-                "named profiles support BACnet/IP only; remove SC/IPv6 flags or use --no-profile"
+                "named profiles support BACnet/IP and BACnet/SC only; remove IPv6 flags or use --no-profile"
                     .into(),
             );
         }
+        let path = |key: &str, value: &Option<PathBuf>| -> Result<Option<PathBuf>, String> {
+            value
+                .as_deref()
+                .filter(|_| has(key))
+                .map(absolute)
+                .transpose()
+        };
         Ok(Self {
-            interface: cli.interface.filter(|_| has("interface")),
-            port: has("port").then_some(cli.port),
-            broadcast: has("broadcast").then_some(cli.broadcast),
             timeout_ms: has("timeout").then_some(cli.timeout),
             min_interval_ms: has("min_interval_ms").then_some(cli.min_interval_ms),
-            bbmd: cli.foreign_bbmd.filter(|_| has("foreign_bbmd")),
-            ttl: has("ttl").then_some(cli.ttl),
-            renewal_secs: cli.renewal.filter(|_| has("renewal")),
+            bip: BipOverrides {
+                interface: cli.interface.filter(|_| has("interface")),
+                port: has("port").then_some(cli.port),
+                broadcast: has("broadcast").then_some(cli.broadcast),
+                bbmd: cli.foreign_bbmd.filter(|_| has("foreign_bbmd")),
+                ttl: has("ttl").then_some(cli.ttl),
+                renewal_secs: cli.renewal.filter(|_| has("renewal")),
+            },
+            sc: ScOverrides {
+                sc: has("sc") && cli.sc,
+                hub_url: cli.sc_url.clone().filter(|_| has("sc_url")),
+                ca: path("sc_ca", &cli.sc_ca)?,
+                cert: path("sc_cert", &cli.sc_cert)?,
+                key: path("sc_key", &cli.sc_key)?,
+                vmac: cli.sc_vmac.filter(|_| has("sc_vmac")).map(Vmac),
+                device_uuid: cli
+                    .sc_device_uuid
+                    .filter(|_| has("sc_device_uuid"))
+                    .map(DeviceUuid),
+            },
         })
     }
 
     /// Apply the explicit flags, then validate the actual connection settings.
+    /// A flag for the other transport is an error, not silently dropped.
     pub(crate) fn resolve(&self, profile: &Profile) -> Result<Profile, String> {
         profile.validate()?;
         let mut resolved = profile.clone();
-        let b = &mut resolved.bip;
-        if let Some(v) = self.interface {
-            b.interface = v;
-        }
-        if let Some(v) = self.port {
-            b.port = v;
-        }
-        if let Some(v) = self.broadcast {
-            b.broadcast = v;
-        }
-        if let Some(v) = self.timeout_ms {
-            b.timeout_ms = v;
-        }
-        if let Some(v) = self.min_interval_ms {
-            b.min_interval_ms = v;
-        }
-        if let Some(v) = self.bbmd {
-            b.bbmd = Some(v);
-        }
-        if let Some(v) = self.ttl {
-            b.ttl = v;
-        }
-        if let Some(v) = self.renewal_secs {
-            b.renewal_secs = Some(v);
+        match profile.transport {
+            Transport::Bip => {
+                if self.sc != ScOverrides::default() {
+                    return Err("SC flags (--sc, --sc-*) don't apply to a B/IP profile".into());
+                }
+                let b = resolved.bip.as_mut().expect("validated B/IP profile");
+                let o = &self.bip;
+                set(&mut b.interface, o.interface);
+                set(&mut b.port, o.port);
+                set(&mut b.broadcast, o.broadcast);
+                set(&mut b.timeout_ms, self.timeout_ms);
+                set(&mut b.min_interval_ms, self.min_interval_ms);
+                if let Some(v) = o.bbmd {
+                    b.bbmd = Some(v);
+                }
+                set(&mut b.ttl, o.ttl);
+                if let Some(v) = o.renewal_secs {
+                    b.renewal_secs = Some(v);
+                }
+            }
+            Transport::Sc => {
+                if self.bip != BipOverrides::default() {
+                    return Err(
+                        "B/IP flags (interface, port, broadcast, BBMD) don't apply to an SC profile"
+                            .into(),
+                    );
+                }
+                let s = resolved.sc.as_mut().expect("validated SC profile");
+                let o = &self.sc;
+                set(&mut s.hub_url, o.hub_url.clone());
+                set(&mut s.ca, o.ca.clone());
+                set(&mut s.cert, o.cert.clone());
+                set(&mut s.key, o.key.clone());
+                if let Some(v) = o.vmac {
+                    s.vmac = Some(v);
+                }
+                if let Some(v) = o.device_uuid {
+                    s.device_uuid = Some(v);
+                }
+                set(&mut s.timeout_ms, self.timeout_ms);
+                set(&mut s.min_interval_ms, self.min_interval_ms);
+            }
         }
         resolved.validate()?;
         Ok(resolved)
@@ -87,6 +144,12 @@ impl Overrides {
 
     pub(crate) fn is_empty(&self) -> bool {
         self == &Self::default()
+    }
+}
+
+fn set<T>(slot: &mut T, value: Option<T>) {
+    if let Some(value) = value {
+        *slot = value;
     }
 }
 

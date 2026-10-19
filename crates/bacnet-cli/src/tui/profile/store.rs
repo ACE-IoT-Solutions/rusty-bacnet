@@ -56,15 +56,7 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
 impl Store {
     /// Resolve platform paths without creating files. An override isolates all state.
     pub(crate) fn discover() -> Result<Self, String> {
-        if let Some(root) = std::env::var_os("BACNET_CONFIG_DIR") {
-            if root.is_empty() {
-                return Err("BACNET_CONFIG_DIR must not be empty".into());
-            }
-            return Ok(Self::new(PathBuf::from(root)));
-        }
-        directories::ProjectDirs::from("", "", "bacnet")
-            .map(|dirs| Self::new(dirs.config_dir().to_owned()))
-            .ok_or_else(|| "cannot locate the config directory; set BACNET_CONFIG_DIR".into())
+        crate::paths::discover_config_root().map(Self::new)
     }
 
     pub(crate) fn new(root: PathBuf) -> Self {
