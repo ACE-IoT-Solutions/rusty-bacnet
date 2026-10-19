@@ -10,6 +10,8 @@
 //!   WritePropertyMultiple to the device, any number of `OBJECT PROPERTY
 //!   VALUE` groups, previewed and confirmed at T2 or above. Needs an armed
 //!   write session.
+//! - `bbmd ADDRESS`: show and read that BBMD's tables on the Network screen
+//!   (`ip` or `ip:port`, port 47808 by default).
 
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -23,7 +25,7 @@ use crate::tui::watched::{Point, WatchCommand};
 
 /// The usage line shown for an unknown command.
 pub(crate) const USAGE: &str =
-    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ...";
+    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS";
 
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,8 @@ pub(crate) enum Line {
     Csv(bool),
     /// A WritePropertyMultiple batch.
     Writem(Vec<WriteSpec>),
+    /// Show a BBMD's tables.
+    Bbmd(std::net::SocketAddrV4),
 }
 
 fn device(word: &str, command: &str) -> Result<u32, String> {
@@ -100,6 +104,7 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
         }
         ["csv", "on"] => Ok(Line::Csv(true)),
         ["csv", "off"] => Ok(Line::Csv(false)),
+        ["bbmd", address] => Ok(Line::Bbmd(crate::foreign::parse_bbmd_arg(address)?)),
         [] => Err(USAGE.into()),
         _ => Err(format!("unknown command '{}'; {USAGE}", text.trim())),
     }
@@ -129,6 +134,7 @@ impl App {
                     Ok(Line::Watch(point)) => self.watch_point(point, out),
                     Ok(Line::Csv(on)) => out.push(Command::Watch(WatchCommand::Csv(on))),
                     Ok(Line::Writem(specs)) => self.prepare(specs, true, out),
+                    Ok(Line::Bbmd(bbmd)) => self.set_bbmd(bbmd, out),
                     Err(error) => self.flash(error, FLASH_FOR),
                 }
             }
@@ -162,6 +168,11 @@ mod tests {
             }))
         );
         assert_eq!(parse("csv on"), Ok(Line::Csv(true)));
+        assert_eq!(
+            parse("bbmd 10.0.0.1"),
+            Ok(Line::Bbmd("10.0.0.1:47808".parse().unwrap()))
+        );
+        assert!(parse("bbmd 10.0.0").is_err());
         assert!(parse("watch 10.0.0.5 ai:1")
             .unwrap_err()
             .contains("device instance"));

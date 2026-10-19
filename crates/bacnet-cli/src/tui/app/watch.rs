@@ -30,6 +30,8 @@ pub(crate) enum Screen {
     Main,
     /// The watch list.
     Watch,
+    /// B/IP infrastructure: foreign-device status, BDT, FDT and the matrix.
+    Network,
 }
 
 /// One watched point as shown.

@@ -148,6 +148,8 @@ pub(crate) enum Command {
     Watch(super::watched::WatchCommand),
     /// A write session request.
     Safety(super::safety::SafetyCommand),
+    /// A Network screen request.
+    Network(super::network::NetworkCommand),
 }
 
 /// One row of the device table, already formatted for display.
@@ -260,10 +262,9 @@ pub(crate) enum WorkerEvent {
     Passive,
     /// The client holds, or keeps asking for, an entry in this BBMD's
     /// foreign-device table.
-    ForeignDevice {
-        /// The BBMD.
-        bbmd: String,
-    },
+    ForeignDevice(super::network::Foreign),
+    /// A Network screen report.
+    Network(super::network::NetworkEvent),
 }
 
 #[cfg(test)]

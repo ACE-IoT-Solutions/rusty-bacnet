@@ -4,6 +4,7 @@ use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
+use crate::tui::network::NetworkEvent;
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
@@ -129,6 +130,17 @@ async fn run(
                     }
                     Command::Safety(request) => {
                         forward_safety(active.as_ref(), request, generation, &sink, &options.safety).await;
+                    }
+                    Command::Network(_) => {
+                        // A refused read is answered, so the screen stops waiting.
+                        let error = match &active {
+                            Some(active) => active.commands.try_send(command).err().map(|e| format!("session command not admitted: {e}")),
+                            None => Some("no active connection".into()),
+                        };
+                        if let Some(error) = error {
+                            let event = Box::new(WorkerEvent::Network(NetworkEvent::Refused(error)));
+                            sink.deliver(WorkerEvent::Session { generation, event }).await;
+                        }
                     }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.

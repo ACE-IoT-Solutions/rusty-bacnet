@@ -56,7 +56,7 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
             format!(
                 "COV {} FD {}",
                 app.watch.stats.subscriptions,
-                u8::from(app.foreign.is_some())
+                u8::from(app.network.foreign.is_some())
             ),
             bar,
         ),
@@ -105,6 +105,15 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Line::raw("")
     } else {
         let hints: &[(&str, &str)] = match app.link {
+            _ if app.screen == Screen::Network => &[
+                ("r", "read tables"),
+                ("m", "survey BBMDs"),
+                ("Tab", "BDT/FDT/matrix"),
+                (":", "bbmd ADDRESS"),
+                ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
             _ if app.screen == Screen::Watch => &[
                 ("x", "remove"),
                 (":", "command"),
@@ -176,10 +185,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "Watch list",
+        "Screens",
         &[
-            ("3  1  x", "Watch list; devices; stop watching a row"),
+            ("3  4  1  x", "Watch list; network; devices; stop watching"),
             (":", "watch DEVICE OBJECT [PROPERTY]; csv on|off"),
+            ("r  m  Tab", "Network: read BBMD; survey BDTs; next table"),
         ],
     ),
     (
