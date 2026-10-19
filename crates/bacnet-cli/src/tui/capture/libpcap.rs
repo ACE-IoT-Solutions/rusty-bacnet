@@ -14,7 +14,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use super::worker::Next;
+use super::worker::{route, Next};
 use super::{CaptureFrame, Direction, Framing};
 use crate::commands::capture::{build_filter, resolve_device, udp_datagram};
 use crate::decode::frame::summarize_frame;
@@ -131,16 +131,19 @@ fn read(
             u64::try_from(packet.header.ts.tv_sec).unwrap_or_default(),
             u32::try_from(packet.header.ts.tv_usec).unwrap_or_default() * 1_000,
         );
+        let summary = summarize_frame(Framing::Bip, payload);
+        let (shown_source, shown_destination, via) =
+            route(source.to_string(), destination.to_string(), &summary, false);
         let frame = CaptureFrame {
             time: UNIX_EPOCH + since,
             framing: Framing::Bip,
             direction: Direction::Wire,
             udp: Some((SocketAddr::V4(source), SocketAddr::V4(destination))),
-            source: source.to_string(),
-            destination: destination.to_string(),
-            via: None,
+            source: shown_source,
+            destination: shown_destination,
+            via,
             bytes: Bytes::copy_from_slice(payload),
-            summary: summarize_frame(Framing::Bip, payload),
+            summary,
         };
         match tx.try_send(Ok(frame)) {
             Ok(()) => {}

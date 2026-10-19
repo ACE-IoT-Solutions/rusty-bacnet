@@ -277,14 +277,24 @@ impl CaptureState {
                 }
                 None
             }
-            CaptureEvent::Ended(why) => {
-                self.sources.clear();
-                let text = format!("Capture: {why}.");
-                self.ended = Some(why);
+            CaptureEvent::Ended { what, why } => {
+                // Only that source: a session ending leaves libpcap running.
+                self.sources.retain(|(source, _)| *source != what);
+                let text = format!("Capture from {what}: {why}.");
+                self.ended = Some(format!("{what}: {why}"));
                 Some(text)
             }
-            CaptureEvent::Exported(Ok(files)) => Some(format!("Exported {}.", files.join(", "))),
-            CaptureEvent::Exported(Err(error)) => Some(format!("Export failed: {error}")),
+            CaptureEvent::Exported(exported) => {
+                let written = exported.written.join(", ");
+                Some(match (exported.written.is_empty(), exported.error) {
+                    (false, None) => format!("Exported {written}."),
+                    (true, Some(error)) => format!("Export failed: {error}"),
+                    (false, Some(error)) => {
+                        format!("Exported {written}, then failed: {error}")
+                    }
+                    (true, None) => "Nothing exported.".into(),
+                })
+            }
         }
     }
 }
@@ -431,7 +441,7 @@ impl App {
         let capture = &self.capture;
         let frames: Vec<_> = capture
             .visible()
-            .filter_map(|n| capture.ring.get(n).cloned())
+            .filter_map(|n| capture.ring.shared(n).cloned())
             .collect();
         let Some(last) = frames.last() else {
             self.flash("Nothing to export.", FLASH_FOR);

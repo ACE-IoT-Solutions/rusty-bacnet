@@ -41,7 +41,7 @@ pub(super) fn bip_frame(ms: u64, out: bool, apdu: &Apdu, broadcast: bool) -> Cap
 pub(super) fn raw_bip(ms: u64, out: bool, bytes: Vec<u8>) -> CaptureFrame {
     let (me, peer): (SocketAddr, SocketAddr) = (ME.parse().unwrap(), PEER.parse().unwrap());
     let (source, destination) = if out { (me, peer) } else { (peer, me) };
-    let (source_addr, destination_addr) = (source, destination);
+    let udp = (source, destination);
     let summary = summarize_frame(Framing::Bip, &bytes);
     // As the worker does: a routed NPDU's ends are routed stations.
     let (source, destination, via) =
@@ -50,7 +50,7 @@ pub(super) fn raw_bip(ms: u64, out: bool, bytes: Vec<u8>) -> CaptureFrame {
         time: wall(ms),
         framing: Framing::Bip,
         direction: if out { Direction::Out } else { Direction::In },
-        udp: Some((source_addr, destination_addr)),
+        udp: Some(udp),
         source,
         destination,
         via,
@@ -334,9 +334,48 @@ fn export_hands_the_kept_frames_to_the_coordinator() {
     assert!(job.raw_ipv4);
     assert_eq!(job.frames.len(), 3);
     assert_eq!(job.stem, "capture-2025-10-09T08-53-21.000Z");
-    let reply = CaptureEvent::Exported(Ok(vec!["a-bip.pcap".into()]));
-    worker(&mut app, WorkerEvent::Capture(reply));
-    assert_eq!(app.flash.as_ref().unwrap().text, "Exported a-bip.pcap.");
+    // The export shares the ring's frames rather than copying them.
+    let first = app.capture.ring.shared(4).unwrap();
+    assert!(Arc::ptr_eq(first, &job.frames[0]));
+    let reply = |written: &[&str], error: Option<&str>| {
+        let exported = crate::tui::capture::pcap::Exported {
+            written: written.iter().map(|w| w.to_string()).collect(),
+            error: error.map(str::to_string),
+        };
+        WorkerEvent::Capture(CaptureEvent::Exported(exported))
+    };
+    worker(&mut app, reply(&["a-ipv4.pcap"], None));
+    assert_eq!(app.flash.as_ref().unwrap().text, "Exported a-ipv4.pcap.");
+    worker(&mut app, reply(&["a-bip.pcap"], Some("disk full")));
+    assert_eq!(
+        app.flash.as_ref().unwrap().text,
+        "Exported a-bip.pcap, then failed: disk full"
+    );
+}
+
+/// An ended source takes only itself off the list: a session ending
+/// leaves libpcap running, and libpcap's error names it.
+#[test]
+fn an_ended_source_leaves_the_others_running() {
+    let mut app = capturing();
+    for (what, session) in [("libpcap on en0, UDP port 47808", false), ("BIP tap", true)] {
+        let started = CaptureEvent::Started {
+            what: what.into(),
+            session,
+        };
+        worker(&mut app, WorkerEvent::Capture(started));
+    }
+    let ended = CaptureEvent::Ended {
+        what: "libpcap on en0, UDP port 47808".into(),
+        why: "en0: permission denied".into(),
+    };
+    worker(&mut app, WorkerEvent::Capture(ended));
+    assert_eq!(app.capture.sources, [("BIP tap".to_string(), true)]);
+    let text = &app.flash.as_ref().unwrap().text;
+    assert!(
+        text.contains("libpcap on en0") && text.contains("permission denied"),
+        "{text}"
+    );
 }
 
 /// Frames a second, and seconds of them.
@@ -358,7 +397,10 @@ async fn five_thousand_frames_a_second_stay_bounded_and_every_loss_is_counted() 
     let (sink, mut events) = EventSink::channel(8);
     let status_bar = sink.dropped_counter();
     let (_commands, mut command_rx) = mpsc::channel::<CaptureCommand>(1);
-    let pumping = tokio::spawn(async move { pump(source, &sink, Some(&mut command_rx)).await });
+    let pumping =
+        tokio::spawn(
+            async move { pump(source, &sink, Some(&mut command_rx), "test".into()).await },
+        );
     let template = bip_frame(0, true, &testing::rp_request(1), false);
     let producer = tokio::spawn(async move {
         let mut every = tokio::time::interval(Duration::from_millis(1));
@@ -380,7 +422,7 @@ async fn five_thousand_frames_a_second_stay_bounded_and_every_loss_is_counted() 
     while !ended {
         for _ in 0..256 {
             match events.try_recv() {
-                Ok(WorkerEvent::Capture(CaptureEvent::Ended(_))) => ended = true,
+                Ok(WorkerEvent::Capture(CaptureEvent::Ended { .. })) => ended = true,
                 Ok(event) => {
                     worker(&mut app, event);
                 }

@@ -3,6 +3,7 @@
 use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
+use crate::tui::capture::worker::TAP;
 use crate::tui::capture::{pcap, CaptureEvent, ExportJob};
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::network::discovery::DiscoveryEvent;
@@ -147,7 +148,7 @@ async fn run(
                         forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
                     }
                     Command::Capture(_) => {
-                        let refused = |reason| WorkerEvent::Capture(CaptureEvent::Ended(reason));
+                        let refused = |why| WorkerEvent::Capture(CaptureEvent::Ended { what: TAP.into(), why });
                         forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
                     }
                     Command::CaptureExport(job) => {
@@ -276,14 +277,19 @@ async fn run(
 
 /// Write a capture export on a blocking thread and report the files.
 async fn export(job: ExportJob, dir: PathBuf, sink: EventSink) {
-    let written = tokio::task::spawn_blocking(move || pcap::export(&job, &dir))
+    let exported = tokio::task::spawn_blocking(move || pcap::export(&job, &dir))
         .await
-        .unwrap_or_else(|error| Err(format!("the export failed: {error}")));
-    match &written {
-        Ok(files) => tracing::info!("capture exported to {}", files.join(", ")),
-        Err(error) => tracing::warn!("capture export: {error}"),
+        .unwrap_or_else(|error| pcap::Exported {
+            written: Vec::new(),
+            error: Some(format!("the export failed: {error}")),
+        });
+    if !exported.written.is_empty() {
+        tracing::info!("capture exported to {}", exported.written.join(", "));
     }
-    sink.deliver(WorkerEvent::Capture(CaptureEvent::Exported(written)))
+    if let Some(error) = &exported.error {
+        tracing::warn!("capture export: {error}");
+    }
+    sink.deliver(WorkerEvent::Capture(CaptureEvent::Exported(exported)))
         .await;
 }
 

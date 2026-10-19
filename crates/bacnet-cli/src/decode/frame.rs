@@ -25,7 +25,9 @@ pub enum Framing {
     Bip,
     /// A B/IPv6 BVLL message, the UDP payload (Annex U).
     Bip6,
-    /// A BVLC-SC message, the WebSocket payload (Annex AB).
+    /// A BVLC-SC message, the WebSocket payload (Annex AB). Only an SC
+    /// session (`sc-tls`) captures one.
+    #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
     Sc,
     /// An MS/TP frame, preamble to CRC (Clause 9.3).
     Mstp,

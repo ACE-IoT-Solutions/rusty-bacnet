@@ -35,6 +35,9 @@ use crate::tui::message::WorkerEvent;
 use crate::tui::monitor::lines::CliSerial;
 use crate::tui::worker::{EventSink, Offer};
 
+/// What a session's capture is called before its tap is known.
+pub(crate) const TAP: &str = "the session's frame tap";
+
 /// Most frames in one batch.
 pub(crate) const BATCH: usize = 256;
 
@@ -321,7 +324,10 @@ pub(crate) async fn run<T: TransportPort + 'static>(
 ) {
     while let Some(CaptureCommand::Start) = commands.recv().await {
         let Some((tap, framing)) = tap_of(client.transport()) else {
-            let ended = CaptureEvent::Ended("this transport has no frame tap".into());
+            let ended = CaptureEvent::Ended {
+                what: TAP.into(),
+                why: "this transport has no frame tap".into(),
+            };
             sink.deliver(WorkerEvent::Capture(ended)).await;
             continue;
         };
@@ -344,12 +350,12 @@ pub(crate) async fn run<T: TransportPort + 'static>(
         tracing::info!("capture: {started}");
         if sink
             .deliver(WorkerEvent::Capture(CaptureEvent::Started {
-                what: started,
+                what: started.clone(),
                 session: true,
             }))
             .await
         {
-            pump(source, sink, Some(&mut commands)).await;
+            pump(source, sink, Some(&mut commands), started).await;
         }
         return;
     }
@@ -370,12 +376,13 @@ pub(crate) async fn run_monitor(
             frames: monitor.frames(),
             epoch,
         };
+        let what = "MS/TP monitor, every frame on the line".to_string();
         let started = CaptureEvent::Started {
-            what: "MS/TP monitor, every frame on the line".into(),
+            what: what.clone(),
             session: true,
         };
         if sink.deliver(WorkerEvent::Capture(started)).await {
-            pump(source, sink, Some(&mut commands)).await;
+            pump(source, sink, Some(&mut commands), what).await;
         }
     }
 }
@@ -391,13 +398,14 @@ pub(crate) fn spawn_pcap(
     sink: EventSink,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let what = super::libpcap::describe(&device, port);
         let started = CaptureEvent::Started {
-            what: super::libpcap::describe(&device, port),
+            what: what.clone(),
             session: false,
         };
         if sink.deliver(WorkerEvent::Capture(started)).await {
             let feed = super::libpcap::Feed::start(device, interface, port);
-            pump(Source::Pcap(feed), &sink, None).await;
+            pump(Source::Pcap(feed), &sink, None, what).await;
         }
     })
 }
@@ -410,12 +418,14 @@ async fn command(commands: &mut Option<&mut mpsc::Receiver<CaptureCommand>>) -> 
     }
 }
 
-/// Pump `source` to the UI until the session ends (`commands` closes, or
-/// the sink is cancelled or closed) or the source does.
+/// Pump `source`, which captures `what`, to the UI until the session ends
+/// (`commands` closes, or the sink is cancelled or closed) or the source
+/// does.
 pub(crate) async fn pump(
     mut source: Source,
     sink: &EventSink,
     mut commands: Option<&mut mpsc::Receiver<CaptureCommand>>,
+    what: String,
 ) {
     let mut counts = Counts::default();
     let mut batch = Vec::new();
@@ -450,8 +460,9 @@ pub(crate) async fn pump(
                 }
                 Next::End(reason) => {
                     counts.finish(batch, &source, sink).await;
-                    tracing::info!("capture ended: {reason}");
-                    sink.deliver(WorkerEvent::Capture(CaptureEvent::Ended(reason))).await;
+                    tracing::info!("capture from {what} ended: {reason}");
+                    let ended = CaptureEvent::Ended { what, why: reason };
+                    sink.deliver(WorkerEvent::Capture(ended)).await;
                     return;
                 }
             },

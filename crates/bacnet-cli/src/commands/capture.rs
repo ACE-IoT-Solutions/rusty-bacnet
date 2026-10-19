@@ -154,10 +154,12 @@ struct PacketJson {
 // Core functions
 // ---------------------------------------------------------------------------
 
-/// Build a BPF filter string: UDP on the `-p` port (47808 by default); if
+/// Build a BPF filter string: IPv4 UDP on the `-p` port (47808 by default); if
 /// the user supplies an additional expression it is appended with `and`.
 pub(crate) fn build_filter(port: u16, user_filter: &Option<String>) -> String {
-    let base = format!("udp port {port}");
+    // IPv4 only: the decoders read an IPv4 header, and an IPv6 datagram on
+    // the port would be read as one.
+    let base = format!("ip and udp port {port}");
     match user_filter {
         Some(expr) => format!("{base} and ({expr})"),
         None => base,
@@ -262,8 +264,12 @@ pub(crate) fn udp_datagram(
     raw: &[u8],
     datalink: pcap::Linktype,
 ) -> Option<(SocketAddrV4, SocketAddrV4, &[u8])> {
+    let ip = raw.get(ip_offset(datalink)?..)?;
+    // IPv4 only: an IPv6 packet's fields are elsewhere.
+    if ip.first()? >> 4 != 4 {
+        return None;
+    }
     let payload = extract_bacnet_payload(raw, datalink)?;
-    let ip = &raw[ip_offset(datalink)?..];
     let udp = &ip[usize::from(ip[0] & 0x0F) * 4..];
     let address = |at: usize, port: usize| {
         let octets = [ip[at], ip[at + 1], ip[at + 2], ip[at + 3]];
@@ -441,20 +447,20 @@ mod tests {
 
     #[test]
     fn build_filter_default() {
-        assert_eq!(build_filter(47808, &None), "udp port 47808");
+        assert_eq!(build_filter(47808, &None), "ip and udp port 47808");
     }
 
     #[test]
     fn build_filter_with_user_expr() {
         let f = build_filter(47808, &Some("host 10.0.0.1".to_string()));
-        assert_eq!(f, "udp port 47808 and (host 10.0.0.1)");
+        assert_eq!(f, "ip and udp port 47808 and (host 10.0.0.1)");
     }
 
     #[test]
     fn build_filter_honours_the_port_flag() {
-        assert_eq!(build_filter(47809, &None), "udp port 47809");
+        assert_eq!(build_filter(47809, &None), "ip and udp port 47809");
         let f = build_filter(47809, &Some("host 10.0.0.1".to_string()));
-        assert_eq!(f, "udp port 47809 and (host 10.0.0.1)");
+        assert_eq!(f, "ip and udp port 47809 and (host 10.0.0.1)");
     }
 
     #[test]
@@ -473,6 +479,10 @@ mod tests {
         assert_eq!(dst.to_string(), "10.0.0.255:47808");
         assert_eq!(payload, &[0x81, 0x0B]);
         assert!(udp_datagram(&frame[..30], pcap::Linktype::ETHERNET).is_none());
+        assert!(udp_datagram(&frame[..10], pcap::Linktype::ETHERNET).is_none());
+        // An IPv6 packet isn't read as IPv4.
+        frame[14] = 0x60;
+        assert!(udp_datagram(&frame, pcap::Linktype::ETHERNET).is_none());
     }
 
     #[test]

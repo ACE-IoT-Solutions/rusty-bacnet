@@ -25,6 +25,7 @@
 //! full, and only that one.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use bytes::Bytes;
@@ -101,8 +102,8 @@ pub(crate) enum CaptureCommand {
 /// on a blocking thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExportJob {
-    /// The frames, oldest first.
-    pub(crate) frames: Vec<CaptureFrame>,
+    /// The frames, oldest first, shared with the ring.
+    pub(crate) frames: Vec<Arc<CaptureFrame>>,
     /// B/IP as raw IPv4 (LINKTYPE 228) rather than Ethernet (LINKTYPE 1).
     pub(crate) raw_ipv4: bool,
     /// The file name stem, `capture-<time>`.
@@ -121,10 +122,16 @@ pub(crate) enum CaptureEvent {
     },
     /// New frames, and frames lost since the last batch that got through.
     Frames(Box<Batch>),
-    /// A source ended, and why.
-    Ended(String),
-    /// An export finished: the files written, or why it failed.
-    Exported(Result<Vec<String>, String>),
+    /// A source ended, or never started.
+    Ended {
+        /// What it captured, as [`CaptureEvent::Started`] named it.
+        what: String,
+        /// Why it ended.
+        why: String,
+    },
+    /// An export finished: the files written, and the error that stopped
+    /// the rest, if one did.
+    Exported(pcap::Exported),
 }
 
 /// Frames for the ring.
