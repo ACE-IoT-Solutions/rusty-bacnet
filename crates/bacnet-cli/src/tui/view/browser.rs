@@ -220,6 +220,8 @@ fn object_panes(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme,
 
 fn properties_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
     let focused = browser.focus == Pane::Properties;
+    // Inside the border.
+    let inner = usize::from(area.width.saturating_sub(2));
     let (title, lines) = match &browser.view {
         ViewState::Empty => (
             " Properties ".to_string(),
@@ -234,16 +236,13 @@ fn properties_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
         ),
         ViewState::Failed(object, error) => (
             format!(" {} ", object_label(*object)),
-            vec![Line::styled(
-                format!(" Read failed: {error}"),
-                theme.danger(),
-            )],
+            // A space each side, as for a property row.
+            wrap(&format!("Read failed: {error}"), inner.saturating_sub(2))
+                .into_iter()
+                .map(|line| Line::styled(format!(" {line}"), theme.danger()))
+                .collect(),
         ),
-        ViewState::Ready(view) => {
-            // Inside the border.
-            let inner = usize::from(area.width.saturating_sub(2));
-            (title(view), property_lines(view, inner, theme))
-        }
+        ViewState::Ready(view) => (title(view), property_lines(view, inner, theme)),
     };
     let block = pane_block(title, focused, theme);
     let height = usize::from(block.inner(area).height).max(1);
@@ -283,7 +282,8 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     let mut used = 0;
-    for word in text.split(' ') {
+    // Trailing spaces would only add a blank line.
+    for word in text.trim_end().split(' ') {
         let word_width = text_width(word);
         if used > 0 && used + 1 + word_width <= width {
             line.push(' ');
@@ -441,6 +441,7 @@ mod tests {
         assert_eq!(wrap("one two three", 7), ["one two", "three"]);
         assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("72.5 °F", 4), ["72.5", "°F"]);
+        assert_eq!(wrap("ab    ", 2), ["ab"]);
         for line in wrap("[a, bb, ccc, dddd, eeeee, ffffff]", 9) {
             assert!(text_width(&line) <= 9, "{line:?}");
         }

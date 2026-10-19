@@ -97,7 +97,7 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(listed(&site), expected);
     let card = browser.card.as_ref().unwrap();
     assert!(
-        card.rows.contains(&("Vendor", "\"Rusty Lab\"".into())),
+        card.rows.contains(&("Vendor", "Rusty Lab".into())),
         "{card:?}"
     );
 
@@ -108,7 +108,7 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(priority.winner(), Some(10));
     assert_eq!(priority.slots[9].as_deref(), Some("55"));
     assert_eq!(priority.relinquish_default.as_deref(), Some("0"));
-    assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55"));
+    assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55 %"));
     for (w, h) in [(200, 50), (120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains(">10 site defined"), "{text}");
@@ -116,20 +116,6 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
         assert_snapshot!(format!("browser_ao1_{w}x{h}"), text);
     }
     site.stop().await;
-}
-
-/// Pin the open object's Event_Time_Stamps: AI:1's carry the wall clock
-/// of its fault transition, which the wide panes now show in full.
-fn pin_time_stamps(site: &mut Site) {
-    let browser = site.app.browser.as_mut().unwrap();
-    let ViewState::Ready(view) = &mut browser.view else {
-        panic!("no object open");
-    };
-    for row in &mut view.properties {
-        if row.property == PropertyIdentifier::EVENT_TIME_STAMPS {
-            row.value = Ok("[unspecified, 2026-10-19 07:30:00.00, unspecified]".into());
-        }
-    }
 }
 
 /// AI:1 is out of service and in fault: the badges say so in text, not
@@ -144,7 +130,13 @@ async fn ai1_out_of_service_and_in_fault_shows_both_badges() {
     // it in alarm.
     assert_eq!(view.health.badges(), ["[ALM]", "[FLT]", "[OOS]"]);
     assert!(view.priority.is_none(), "an input has no priority array");
-    pin_time_stamps(&mut site);
+    let stamps = view.value(PropertyIdentifier::EVENT_TIME_STAMPS).unwrap();
+    assert!(
+        stamps.starts_with("[seq 0, 20") && stamps.ends_with(", seq 0]"),
+        "the to-fault stamp is a date and time: {stamps}"
+    );
+    // The to-fault stamp is the server's wall clock.
+    assert_eq!(super::values::mask_open_object(&mut site.app), 1);
     for (w, h) in [(200, 50), (120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains("Status: [ALM] [FLT] [OOS]"), "{text}");
@@ -214,6 +206,17 @@ async fn a_long_value_wraps_under_its_column_at_80_columns() {
     site.press(KeyCode::End).await;
     let text = screen(&mut site.app, 80, 24);
     assert!(text.contains("event-algorithm-inhibit "), "{text}");
+    // A long read error wraps too.
+    let browser = site.app.browser.as_mut().unwrap();
+    browser.view = ViewState::Failed(
+        oid(ObjectType::ANALOG_INPUT, 1),
+        "no reply from 10.0.0.100:47808 after 3 attempts; the device may be \
+         offline or the router to its network may be down"
+            .into(),
+    );
+    let text = screen(&mut site.app, 80, 24);
+    assert!(text.contains("│ Read failed: no reply"), "{text}");
+    assert!(text.contains("network may be down"), "{text}");
     site.stop().await;
 }
 
