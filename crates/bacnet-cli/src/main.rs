@@ -4,6 +4,7 @@
 //! terminal UI (the default `tui` feature; see [`entry`]). Every other
 //! subcommand is a one-shot command for scripts, with `--json` output.
 #![allow(clippy::print_stdout, clippy::print_stderr)] // a command-line tool prints its results
+#![forbid(unsafe_code)]
 
 use std::{io::IsTerminal, net::Ipv4Addr};
 

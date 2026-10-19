@@ -160,10 +160,19 @@ linked_list_allocator = "0.10.6"
 semihosting = { version = "0.1.25", features = ["stdio"] }
 
 [workspace.lints.rust]
-# Workspace floor. `bacnet-transport` overrides nothing: each FFI site
-# carries `#[allow(unsafe_code)]` and a `// SAFETY:` comment, so this
-# stays `deny` everywhere.
+# Unsafe policy (#1880). `deny` is the floor for every target. Each library
+# and binary root with no unsafe raises it to `#![forbid(unsafe_code)]`;
+# bacnet-encoding forbids it outside its unit tests until #1881. The rest
+# (bacnet-transport's OS FFI, the firmware runtime hooks, and test-only FFI
+# and counting allocators under tests/) keeps `deny`, with a narrow
+# `#[allow(unsafe_code)]` on each item that needs it, never on a module.
+# Clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:` comment on
+# every unsafe block and impl, `missing_safety_doc` (private fns too, through
+# `check-private-items` in clippy.toml) a `# Safety` section on every unsafe
+# fn, and `unsafe_op_in_unsafe_fn` an unsafe block, so a SAFETY comment, for
+# each unsafe operation inside an unsafe fn.
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
 # Every public item is documented (#902); bacnet-benchmarks (publish = false)
 # opts out in its lib.rs.
 missing_docs = "deny"
@@ -175,6 +184,8 @@ todo = "deny"
 dbg_macro = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
 
 # The firmware link test's images (#1626, #1635), which
 # scripts/ci/check-firmware-link.sh builds for bare-metal targets with

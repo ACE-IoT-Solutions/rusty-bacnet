@@ -1,5 +1,5 @@
 //! Independent OS packet-info oracle, used only on an explicit isolated link.
-#![allow(unsafe_code)]
+//! Its socket calls are FFI, so each function carries its own allow.
 
 use std::{
     io,
@@ -17,9 +17,11 @@ pub(super) struct Frame {
     pub index: u32,
 }
 
+#[allow(unsafe_code)] // setsockopt
 pub(super) fn configure(socket: &socket2::Socket) {
     let enabled: libc::c_int = 1;
-    // SAFETY: setsockopt reads a live integer of the declared size synchronously.
+    // SAFETY: the option value points to `enabled`, a live c_int, with
+    // exactly a c_int's length; setsockopt only reads it, synchronously.
     let result = unsafe {
         libc::setsockopt(
             socket.as_raw_fd(),
@@ -37,13 +39,20 @@ pub(super) fn configure(socket: &socket2::Socket) {
     );
 }
 
+#[allow(unsafe_code)] // recvmsg and its control messages
 pub(super) async fn receive(socket: &UdpSocket) -> io::Result<Frame> {
     socket
         .async_io(Interest::READABLE, || {
             let mut bytes = [0u8; 2048];
             let mut control = [0usize; 32];
-            // SAFETY: each receive has initialized aligned peer/control storage and
-            // one live writable payload; pointers are used only during recvmsg.
+            // SAFETY: msghdr and sockaddr_in6 are plain C structs, so all
+            // zeros is valid. Every pointer in `message` points to live
+            // storage of the length beside it (`peer`, the iovec over `bytes`,
+            // the usize-aligned `control`), used only during recvmsg. With
+            // MSG_CTRUNC asserted clear, every control message lies whole in
+            // `control`, so the CMSG_* walk stays inside it; the length
+            // assert keeps the in6_pktinfo read inside its message, and
+            // CMSG_DATA is aligned for cmsghdr, which covers in6_pktinfo.
             unsafe {
                 let mut peer: libc::sockaddr_in6 = zeroed();
                 let mut iov = libc::iovec {

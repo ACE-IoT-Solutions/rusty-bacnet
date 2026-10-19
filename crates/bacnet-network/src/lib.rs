@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
 pub mod layer;
 pub mod network_number;
 pub mod priority_channel;
