@@ -9,10 +9,11 @@ use bacnet_mstp_core::{
 };
 
 use super::{decode_whole, describe, leak_core_storage, Event, NodeKind, Sim, SimCore};
+use crate::app::{Answer, Outbox, Received};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
-use crate::spec::{MasterSpec, ReplyPolicy};
+use crate::spec::MasterSpec;
 use crate::trace::{TraceKind, Who};
 
 /// A deadline the core still reports as due this many times in a row at one
@@ -532,7 +533,8 @@ impl Sim {
         }
     }
 
-    /// The application receives an NPDU and, for a request, plans its answer.
+    /// The application receives an NPDU, plans its answer and queues what
+    /// it sends of its own accord.
     fn deliver(&mut self, node: usize, delivery: Delivery, request: Option<RequestId>) {
         let now = self.now;
         let station = self.nodes[node].station;
@@ -550,24 +552,49 @@ impl Sim {
                 if request.is_some() { " (request)" } else { "" }
             )),
         );
+        if let Some(request) = request {
+            self.host_accept_request(node, request, source);
+        }
         let master = self.master_mut(node).expect("a master");
+        let mut outbox = Outbox::default();
+        // Only NPDUs reach the application, not frames delivered whole.
+        let answer = if delivery.frame_type.is_none() {
+            let received = Received {
+                at: now,
+                source,
+                destination,
+                npdu: &delivery.data,
+                expects_reply: request.is_some(),
+            };
+            let mut application = master.spec.application.0.borrow_mut();
+            application.on_npdu(&received, &mut outbox)
+        } else {
+            None
+        };
         master.deliveries.push(delivery);
-        let Some(request) = request else {
+        let incarnation = master.incarnation;
+        for (destination, npdu) in outbox.sends {
+            self.push(
+                now,
+                Class::Scheduled,
+                station,
+                Event::Enqueue {
+                    node,
+                    destination,
+                    npdu,
+                    priority: NetworkPriority::Normal,
+                },
+            );
+        }
+        let Some(answer) = answer else {
             return;
         };
-        self.host_accept_request(node, request, source);
-        let master = self.master_mut(node).expect("a master");
-        let (delay, postpone, payload) = match master.spec.reply.clone() {
-            ReplyPolicy::Answer { delay, payload } => (delay, false, payload),
-            ReplyPolicy::Postpone { delay, payload } => (delay, true, payload),
-            ReplyPolicy::Ignore => return,
+        let (delay, postpone, payload) = match answer {
+            Answer::Reply { delay, npdu } => (delay, false, npdu),
+            Answer::Postpone { delay, npdu } => (delay, true, npdu),
         };
-        let incarnation = master.incarnation;
-        self.push(
-            now + delay,
-            Class::Scheduled,
-            station,
-            Event::Decide {
+        let event = match request {
+            Some(request) => Event::Decide {
                 node,
                 incarnation,
                 request,
@@ -575,7 +602,15 @@ impl Sim {
                 postpone,
                 payload,
             },
-        );
+            // Nothing holds the line open for it: it waits for the token.
+            None => Event::Enqueue {
+                node,
+                destination: source,
+                npdu: payload,
+                priority: NetworkPriority::Normal,
+            },
+        };
+        self.push(now + delay, Class::Scheduled, station, event);
     }
 
     /// The application answers a request. An answer the core no longer

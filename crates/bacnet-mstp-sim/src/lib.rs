@@ -121,8 +121,11 @@
 //!   its receiver stays on;
 //!   if the core switches back to receive first, it has taken the frame
 //!   back, and the adapter drops it.
-//! - It hands NPDUs to the node's application, which answers requests per
-//!   its [`ReplyPolicy`].
+//! - It hands each NPDU to the node's [`Application`]: a fixed
+//!   [`ReplyPolicy`] or a callback. The application can answer it, in the
+//!   reply window for a request that expects one, and can queue NPDUs of
+//!   its own, such as a broadcast, through an [`Outbox`] for the node's
+//!   next token.
 //!
 //! The receiver feeds `on_octet` for each clean character and
 //! `on_receive_error` for each garbled one, timestamped when the character
@@ -336,6 +339,7 @@
 #![forbid(unsafe_code)]
 
 pub mod analysis;
+mod app;
 mod contention;
 mod event;
 mod line;
@@ -346,6 +350,7 @@ mod spec;
 mod trace;
 mod wire;
 
+pub use app::{Answer, Application, Outbox, Received, ReplyPolicy, BROADCAST};
 pub use contention::{ContentionPolicy, ContentionStats};
 pub use line::Driver;
 pub use report::{
@@ -356,8 +361,7 @@ pub use report::{
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};
 pub use spec::{
-    AdapterSpec, Corruption, Fault, HostSpec, MasterSpec, ReplyPolicy, Script, ScriptSend,
-    SeenFrame,
+    AdapterSpec, Corruption, Fault, HostSpec, MasterSpec, Script, ScriptSend, SeenFrame,
 };
 pub use trace::{Millis, Trace, TraceEntry, TraceKind, Who};
 pub use wire::{WireTiming, BITS_PER_OCTET};

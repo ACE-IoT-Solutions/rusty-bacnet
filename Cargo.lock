@@ -441,6 +441,7 @@ dependencies = [
  "bacnet-mstp-core",
  "bacnet-transport",
  "bacnet-types",
+ "firmware-link",
  "tokio",
 ]
 

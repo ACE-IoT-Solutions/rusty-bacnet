@@ -1,5 +1,5 @@
-//! What a scenario configures: master nodes, their adapters and
-//! applications, scripted stations' replies, and faults.
+//! What a scenario configures: master nodes and their adapters, scripted
+//! stations' replies, and faults. Applications are in `app`.
 
 use bacnet_mstp_codec::{Frame, FrameType, MAX_COBS_FRAME_LENGTH};
 use bacnet_mstp_core::{Duration, Instant, MstpCoreConfig};
@@ -112,42 +112,6 @@ impl AdapterSpec {
     }
 }
 
-/// How a simulated application answers the requests its core delivers.
-///
-/// Whatever the policy, an answer the core refuses as too late (it already
-/// sent Reply Postponed, or the requester may have stopped waiting) is queued
-/// as an ordinary NPDU for the next token, as a real stack would send it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReplyPolicy {
-    /// Answer every request with `payload` after `delay`.
-    Answer {
-        /// Time from the delivery to the answer.
-        delay: Duration,
-        /// Reply NPDU; it must not expect a reply itself.
-        payload: Vec<u8>,
-    },
-    /// Decide to postpone after `delay`, then queue `payload` for the next
-    /// token.
-    Postpone {
-        /// Time from the delivery to the decision.
-        delay: Duration,
-        /// Reply NPDU sent later.
-        payload: Vec<u8>,
-    },
-    /// Never decide. The core sends Reply Postponed when its decision
-    /// deadline passes.
-    Ignore,
-}
-
-impl Default for ReplyPolicy {
-    fn default() -> Self {
-        Self::Answer {
-            delay: Duration::from_millis(2),
-            payload: vec![0x01, 0x00, 0xAC],
-        }
-    }
-}
-
 /// A master node to put on the bus.
 #[derive(Debug, Clone)]
 pub struct MasterSpec {
@@ -160,8 +124,8 @@ pub struct MasterSpec {
     pub broadcast_capacity: usize,
     /// Adapter timing and echo.
     pub adapter: AdapterSpec,
-    /// How the node's application answers requests.
-    pub reply: ReplyPolicy,
+    /// The node's application. Clones of the spec share it.
+    pub(crate) application: crate::app::Shared,
     /// Whether the node is powered at the start. A node added unpowered
     /// joins with [`Fault::PowerOn`].
     pub powered: bool,
@@ -185,7 +149,7 @@ impl MasterSpec {
             unicast_capacity: 16,
             broadcast_capacity: 16,
             adapter: AdapterSpec::default(),
-            reply: ReplyPolicy::default(),
+            application: crate::app::Shared::new(crate::ReplyPolicy::default()),
             powered: true,
         }
     }
@@ -235,10 +199,12 @@ impl MasterSpec {
         self
     }
 
-    /// Set the reply policy.
+    /// Set the node's application: a [`ReplyPolicy`](crate::ReplyPolicy)
+    /// or any [`Application`](crate::Application). The default answers
+    /// every request with a short fixed NPDU after 2 ms.
     #[must_use]
-    pub fn reply(mut self, reply: ReplyPolicy) -> Self {
-        self.reply = reply;
+    pub fn application(mut self, application: impl crate::Application + 'static) -> Self {
+        self.application = crate::app::Shared::new(application);
         self
     }
 
