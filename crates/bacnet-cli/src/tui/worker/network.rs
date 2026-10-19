@@ -4,10 +4,13 @@
 //! It runs beside the session loop under `join!`, so a survey waiting on a
 //! silent BBMD holds up nothing else. Requests run one at a time, in order;
 //! a request already queued is not queued twice. The table reads hold no
-//! lock across an await: each is one BVLC exchange through the transport.
+//! lock across an await: each is one BVLC exchange through the transport,
+//! and the transport's own timer fails one that goes unanswered, so a read
+//! this loop is not polling for a moment still ends on time. A survey reads
+//! up to [`SURVEY_AT_ONCE`] BDTs at once (#1823).
 
 use std::any::Any;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
@@ -15,6 +18,7 @@ use std::time::Duration;
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::TransportPort;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
 use super::EventSink;
@@ -30,6 +34,11 @@ const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// The most BBMDs a survey reads. A larger set is drawn with the rest
 /// unread; a BDT of a hundred entries would not fit a terminal anyway.
 pub(crate) const MAX_SURVEY: usize = 16;
+
+/// The most BDTs a survey reads at once. Each read takes one of the
+/// transport's eight exchange slots (one per peer and request), so this
+/// leaves room for the foreign-device registration and other reads.
+pub(crate) const SURVEY_AT_ONCE: usize = 4;
 
 /// Requests waiting behind the running one.
 const MAX_QUEUED: usize = 8;
@@ -140,26 +149,63 @@ async fn execute(bip: &BipTransport, command: NetworkCommand, local: SocketAddrV
 /// Read the BDT of `seed`, then of every BBMD a table read lists, breadth
 /// first, up to [`MAX_SURVEY`] reads; the rest come back skipped.
 async fn survey(bip: &BipTransport, seed: SocketAddrV4) -> Vec<(SocketAddrV4, Probe)> {
-    let mut seen = HashSet::from([seed]);
-    let mut pending = VecDeque::from([seed]);
-    let mut probes = Vec::new();
-    while let Some(bbmd) = pending.pop_front() {
-        if probes.len() >= MAX_SURVEY {
-            probes.push((bbmd, Probe::Skipped));
-            continue;
-        }
-        let probe = match bip.read_bdt(&mac(bbmd)).await {
+    survey_with(seed, |bbmd| async move {
+        match bip.read_bdt(&mac(bbmd)).await {
             Ok(rows) => Probe::Table(rows.iter().map(BdtRow::from).collect()),
             Err(error) => probe_error(&error),
+        }
+    })
+    .await
+}
+
+/// [`survey`] with `read` giving each BBMD's probe.
+///
+/// Up to [`SURVEY_AT_ONCE`] reads run at once, so silent peers wait out
+/// their timeouts together. The result is the one reading them one at a
+/// time gives: BBMDs are numbered in the order they are found, a read
+/// starts only for one of the first [`MAX_SURVEY`], and a table's entries
+/// join the list only once every read before it has been taken in, so a
+/// fast answer from a later BBMD can't jump the breadth-first order.
+async fn survey_with<F, R>(seed: SocketAddrV4, read: F) -> Vec<(SocketAddrV4, Probe)>
+where
+    F: Fn(SocketAddrV4) -> R,
+    R: Future<Output = Probe>,
+{
+    let read = &read;
+    let mut seen = HashSet::from([seed]);
+    // Every BBMD found, in breadth-first order.
+    let mut found = vec![seed];
+    let mut probes = Vec::new();
+    // Reads finished ahead of an earlier one, by their place in `found`.
+    let mut early = BTreeMap::new();
+    let mut started = 0;
+    let mut reads = FuturesUnordered::new();
+    loop {
+        while reads.len() < SURVEY_AT_ONCE && started < found.len().min(MAX_SURVEY) {
+            let (index, bbmd) = (started, found[started]);
+            reads.push(async move { (index, read(bbmd).await) });
+            started += 1;
+        }
+        let Some((index, probe)) = reads.next().await else {
+            break;
         };
-        if let Probe::Table(rows) = &probe {
-            for row in rows {
-                if seen.insert(row.address) {
-                    pending.push_back(row.address);
+        early.insert(index, probe);
+        while let Some(probe) = early.remove(&probes.len()) {
+            if let Probe::Table(rows) = &probe {
+                for row in rows {
+                    if seen.insert(row.address) {
+                        found.push(row.address);
+                    }
                 }
             }
+            probes.push((found[probes.len()], probe));
         }
-        probes.push((bbmd, probe));
     }
+    let unread = found[probes.len()..].iter();
+    probes.extend(unread.map(|&bbmd| (bbmd, Probe::Skipped)));
     probes
 }
+
+#[cfg(test)]
+#[path = "network_tests.rs"]
+mod tests;
