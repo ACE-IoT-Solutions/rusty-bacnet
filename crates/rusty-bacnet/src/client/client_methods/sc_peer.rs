@@ -43,4 +43,43 @@ impl BACnetClient {
             Ok(info.map(crate::sc_peer::PyScPeerInfo))
         })
     }
+
+    /// Subscribe to this SC client's hub-connector events (#1829): an
+    /// async iterator of `ScEvent` from now on (the first connection, made
+    /// during `async with`, is already behind it). The connector never
+    /// waits for the iterator; one more than 64 events behind loses the
+    /// oldest and counts them in its `missed`. Iteration ends when the
+    /// client stops. Raises RuntimeError for a stopped or non-SC client.
+    fn connection_events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        crate::py_async::future_into_py(py, async move {
+            let client = started(&inner).await?;
+            match client.transport() {
+                AnyTransport::Sc(transport) => Ok(crate::sc_events::PyScEventIterator::new(
+                    transport.connection_events(),
+                )),
+                _ => Err(PyRuntimeError::new_err(
+                    "connection_events requires an SC client",
+                )),
+            }
+        })
+    }
+
+    /// A snapshot of this SC client's hub link (#1829): state, active hub,
+    /// hub VMAC and heartbeat timing, without network I/O. Raises
+    /// RuntimeError for a stopped or non-SC client.
+    fn connection_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        crate::py_async::future_into_py(py, async move {
+            let client = started(&inner).await?;
+            match client.transport() {
+                AnyTransport::Sc(transport) => Ok(crate::sc_events::PyScLinkStatus(
+                    transport.connection_status(),
+                )),
+                _ => Err(PyRuntimeError::new_err(
+                    "connection_status requires an SC client",
+                )),
+            }
+        })
+    }
 }

@@ -662,6 +662,43 @@ and `last_result` when the response to that attempt matters. A positive
 to the requested TTL, because the lease begins at a send rather than at the
 status read.
 
+### BBMD management
+
+Five `BACnetClient` methods manage a BBMD by hand (#1841). Each sends one
+BVLC request to `address`, a B/IP `"ip"` or `"ip:port"`, and waits up to
+three seconds for the answer:
+
+- `read_bdt(address)` returns the Broadcast Distribution Table as
+  `("ip:port", "mask")` rows, the shape `Bbmd(bdt=)` takes.
+- `write_bdt(address, entries)` asks the BBMD to take `entries` as its BDT. A
+  BBMD that follows the 2020 standard refuses (result code 0x0010).
+- `read_fdt(address)` returns the Foreign Device Table, a dict per entry with
+  `address`, `ttl` and `seconds_remaining` (the grace period included).
+- `delete_fdt_entry(address, entry)` asks it to delete the foreign device at
+  `entry`, an `"ip:port"`; a refusal is 0x0050.
+- `register_foreign_device_bvlc(address, ttl)` registers once for `ttl`
+  seconds; a refusal is 0x0030. It renews nothing and doesn't route
+  broadcasts through the BBMD: `foreign_device=` does that.
+
+A refusal and silence never share an exception class. A BVLC-Result NAK
+raises `BacnetBvlcNakError` with the code in `result_code`; no answer raises
+`BacnetTimeoutError`; an answer of the wrong kind raises
+`BacnetBvlcUnexpectedResponseError` with the `expected` and `got` BVLC
+function codes. A second request to the same peer while one is in flight is
+refused locally with `BacnetError`, as is any request on a non-B/IP client.
+A bad address raises `ValueError` before anything is sent.
+
+```python
+from rusty_bacnet import BacnetBvlcNakError, BacnetTimeoutError
+
+try:
+    rows = await client.read_bdt("192.168.1.10:47808")
+except BacnetBvlcNakError as refusal:
+    print(f"not a BBMD, or refused: {refusal.result_code:#06x}")
+except BacnetTimeoutError:
+    print("no answer")
+```
+
 ### MS/TP serial ports
 
 `transport="mstp"` takes the keyword-only `serial_port` (required),
@@ -805,6 +842,60 @@ retry. A new connection must complete TLS and SC admission before service
 traffic resumes. Applications still handle request errors; reconnection does
 not guarantee that an interrupted operation completes.
 
+### SC failover hub, connection events and link status
+
+`sc_failover_hub` names a second hub's `wss://` URL, dialled with the same TLS
+settings when the primary can't be reached; it needs `reconnect`, since
+without reconnection the client would never turn to it or come back
+(`ValueError` otherwise). While on the failover hub the client keeps trying
+the primary and returns to it once it answers. `sc_connect_timeout_ms`
+(default 10,000, at least 1) bounds each hub dial and Connect-Request. Both are
+keyword-only and SC only.
+
+```python
+client = BACnetClient(
+    transport="sc", sc_hub="wss://hub.example.com/bacnet",
+    sc_failover_hub="wss://failover.example.com/bacnet",
+    reconnect=ScReconnect(initial_delay_ms=1_000, max_delay_ms=30_000, max_retries=3),
+    sc_vmac=node_vmac, sc_device_uuid=persistent_node_uuid,
+    sc_ca_cert="site-ca.pem", sc_client_cert="node.pem", sc_client_key="node.key",
+)
+async with client:
+    events = await client.connection_events()
+    async for event in events:
+        print(event.kind, event.hub, event.cause)
+        if events.missed:
+            status = await client.connection_status()  # resync after a gap
+```
+
+`await client.connection_events()` subscribes to the hub connector's events
+from that point on (the first connection, made during `async with`, is
+already behind it) and returns an `ScEventIterator` of frozen `ScEvent`
+values. `kind` is `connected`, `disconnected`, `connect_failed`,
+`reconnect_attempt`, `failover_engaged`, `primary_restored` or
+`reconnect_gave_up`; `hub` (`primary` or `failover`), `hub_vmac`, `cause`
+(with `cause_detail`, and `error_class`/`error_code` for a NAK), `attempt` and
+`backoff` (seconds) are set where they apply and None elsewhere. Losing the
+primary reads `disconnected`, a `reconnect_attempt` and `connect_failed` per
+failed primary attempt, then `failover_engaged` and `connected` on the
+failover hub.
+
+The connector never waits for Python. An iterator more than 64 events behind
+loses the oldest and adds their count to its `missed`, then goes on with the
+oldest event it still has; after a gap, `connection_status()` says where the
+link stands. Each `connection_events()` call is an independent subscription.
+A cancel before an event arrives loses nothing, but one that lands while an
+event is being delivered can drop it without counting it in `missed`: prefer
+`async for` over polling `__anext__` with short timeouts. Iteration ends
+(`StopAsyncIteration`) once the client stops; the iterator holds no reference
+to the client.
+
+`await client.connection_status()` returns a frozen `ScLinkStatus`: `state`
+(`disconnected`, `connecting`, `connected` or `disconnecting`), `active_hub`,
+`hub_vmac`, `heartbeat_age` (seconds since the last message from the hub) and
+`heartbeat_rtt` (seconds, the latest answered Heartbeat-Request), without
+network I/O. Both methods raise `RuntimeError` for a stopped or non-SC client.
+
 ### SC ingress quotas and drop counters
 
 `BACnetClient` and `BACnetServer` accept the keyword-only
@@ -845,7 +936,10 @@ Future, so use `await` or `asyncio.ensure_future` when scheduling observations.
 inspected_at_unix=None)` returns a frozen, owned report without opening a
 connection. `inspect_sc_pem_files` accepts explicit `str | os.PathLike[str]` paths
 and reads each selected file once. Reports contain fingerprints, bounded metadata,
-date and SAN/KU/EKU findings, key consistency and optional Unix mode observations.
+date and SAN/KU/EKU findings, key consistency, optional Unix mode observations,
+and `direct_issuer` / `direct_issuer_index`: whether, and which, peer-trust
+certificate signed the identity leaf directly (`"direct"` with its zero-based
+index, `"not_direct"`, `"unknown"`, or `"not_assessed"` without peer trust).
 These are advisory observations and do not change startup acceptance. See
 [the bounds, error contract and examples](sc-offline-inspection.md).
 
@@ -1211,6 +1305,54 @@ Find a device hosting a specific object by name.
 ```python
 await client.who_has_by_name("Zone Temperature")
 ```
+
+#### `who_has_replies(object, low_limit=None, high_limit=None, timeout_ms=3000) -> list[IHave]`
+
+Broadcast a Who-Has for `object`, an `ObjectIdentifier` or a name as `str`,
+and collect the I-Haves that answer it for `timeout_ms`: one per device and
+object, in arrival order, and an empty list when none answer. The limits
+follow `who_has_by_id()`'s rule. Each frozen `IHave` has
+`device_identifier`, `object_identifier`, `object_name`, `source_mac`, and
+`source_network`/`source_address` when a router passed it on.
+
+```python
+for reply in await client.who_has_replies("Zone Temperature", timeout_ms=1000):
+    print(reply.device_identifier, reply.object_identifier)
+```
+
+#### `i_have_events() -> Awaitable[IHaveIterator]`
+
+Follow every I-Have the client receives from now on, an answer to its own
+Who-Has or not, as an async iterator of `IHave`.
+
+#### `discover_routers(network=None, timeout_ms=3000) -> list[DiscoveredRouter]`
+
+Broadcast a Who-Is-Router-To-Network for `network`, or every network, and
+collect the routers that answer for `timeout_ms`: one frozen
+`DiscoveredRouter` per router, with its `mac` (the next hop) and the
+`networks` it listed, ascending. For a `network`, only the routers listing
+it are kept. No answer is an empty list; `network` 0 or 65535 raises
+`BacnetError`.
+
+#### `network_reports() -> Awaitable[NetworkReportIterator]`
+
+Follow the network reports the client receives from now on, as an async
+iterator of frozen `NetworkReport`: `kind` is `i_am_router_to_network` (with
+`networks`), `network_number_is` (with `network` and `configured`) or
+`reject_message_to_network` (with `reason` and `network`), and `source_mac`,
+`source_network` and `source_address` say where it came from.
+
+Like `connection_events()`, both iterators are independent subscriptions
+that the client never waits for. One that falls behind (256 I-Haves, 64
+network reports) loses the oldest, adds their count to its `missed` and
+goes on with the oldest it still has. As with `connection_events()`, a
+cancel before an item arrives loses nothing, while one that lands as an item
+is being delivered can drop it uncounted, so prefer `async for` over polling
+with short timeouts. Iteration ends once the client stops.
+
+`who_has_replies()` and `discover_routers()` hold the started client for
+their whole `timeout_ms`, so `stop()`, or leaving `async with`, waits for them
+to finish.
 
 #### `discovered_devices() -> list[DiscoveredDevice]`
 
@@ -4164,6 +4306,8 @@ All BACnet errors are raised as Python exceptions:
 | `BacnetAbortError` | Remote device aborted the request |
 | `BacnetReadRangeViolationError` | A strict `read_range` refused an answer that breaks a ReadRange rule; `rule` names it (for example `"zero_first_sequence_number"`) |
 | `BacnetLogNotAdvancingError` | A paged log read can't advance: the device answered from before the record asked for, or with none its counts say it holds. `requested` and `returned` (`None` when it sent none) name the sequence numbers |
+| `BacnetBvlcNakError` | A BBMD refused a management request (`read_bdt` and its siblings) with a BVLC-Result NAK; `result_code` holds its code |
+| `BacnetBvlcUnexpectedResponseError` | A management request was answered by a BVLC message it doesn't take; `expected` and `got` hold the function codes |
 | `BacnetTransportError` | A socket or I/O failure: a bind or listen that fails (B/IP, B/IPv6, `ScHub.start`), a failed SC dial. Also an `OSError` |
 
 ```python

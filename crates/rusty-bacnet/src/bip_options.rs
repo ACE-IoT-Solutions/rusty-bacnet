@@ -162,17 +162,7 @@ impl PyBbmd {
     /// The BDT rows given, as `("ip:port", "mask")`.
     #[getter]
     fn bdt(&self) -> Vec<(String, String)> {
-        self.options
-            .bdt
-            .iter()
-            .map(|row| {
-                let address = SocketAddrV4::new(Ipv4Addr::from(row.ip), row.port);
-                (
-                    address.to_string(),
-                    Ipv4Addr::from(row.broadcast_mask).to_string(),
-                )
-            })
-            .collect()
+        self.options.bdt.iter().map(bdt_row).collect()
     }
 
     /// Whether foreign devices may register.
@@ -264,9 +254,18 @@ pub(crate) fn registration_dict(registration: ForeignRegistrationSnapshot) -> Py
     })
 }
 
+/// A BDT row as Python reads it: `("ip:port", "mask")`.
+pub(crate) fn bdt_row(row: &BdtEntry) -> (String, String) {
+    let address = SocketAddrV4::new(Ipv4Addr::from(row.ip), row.port);
+    (
+        address.to_string(),
+        Ipv4Addr::from(row.broadcast_mask).to_string(),
+    )
+}
+
 /// A BDT row: `"ip[:port]"`, its broadcasts forwarded by unicast, or
 /// `("ip[:port]", "mask")`.
-fn bdt_entry(row: &Bound<'_, PyAny>) -> PyResult<BdtEntry> {
+pub(crate) fn bdt_entry(row: &Bound<'_, PyAny>) -> PyResult<BdtEntry> {
     let (address, mask) = match row.extract::<String>() {
         Ok(address) => (address, Ipv4Addr::BROADCAST),
         Err(_) => {
@@ -285,7 +284,7 @@ fn bdt_entry(row: &Bound<'_, PyAny>) -> PyResult<BdtEntry> {
 }
 
 /// `"ip"` or `"ip:port"`, a unicast IPv4 address with a nonzero port.
-fn parse_address(text: &str, what: &str) -> PyResult<SocketAddrV4> {
+pub(crate) fn parse_address(text: &str, what: &str) -> PyResult<SocketAddrV4> {
     let address = match text.parse::<SocketAddrV4>() {
         Ok(address) => address,
         Err(_) => SocketAddrV4::new(parse_ip(text, what)?, DEFAULT_BACNET_PORT),

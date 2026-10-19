@@ -36,7 +36,9 @@ impl BACnetClient {
         bbmd=None,
         foreign_device=None,
         reconnect=None,
-        sc_npdu_per_origin_limit=None
+        sc_npdu_per_origin_limit=None,
+        sc_failover_hub=None,
+        sc_connect_timeout_ms=None
     ))]
     fn new(
         interface: &str,
@@ -71,6 +73,8 @@ impl BACnetClient {
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
         reconnect: Option<PyRef<'_, crate::sc_reconnect::PyScReconnect>>,
         sc_npdu_per_origin_limit: Option<usize>,
+        sc_failover_hub: Option<String>,
+        sc_connect_timeout_ms: Option<u64>,
     ) -> PyResult<Self> {
         let sc_npdu_admission_policy = crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit)?;
         if reconnect.is_some() && transport != "sc" {
@@ -78,6 +82,12 @@ impl BACnetClient {
                 "reconnect applies only to transport='sc'",
             ));
         }
+        sc_hub_options(
+            transport,
+            reconnect.is_some(),
+            sc_failover_hub.as_deref(),
+            sc_connect_timeout_ms,
+        )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
         let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
         let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
@@ -110,6 +120,8 @@ impl BACnetClient {
             sc_heartbeat_interval_ms,
             sc_heartbeat_timeout_ms,
             reconnect: reconnect.map(|options| options.config.clone()),
+            sc_failover_hub,
+            sc_connect_timeout_ms,
             ipv6_interface,
             ipv6_device_instance,
             mstp: crate::mstp_py::MstpOptions {
@@ -152,6 +164,8 @@ impl BACnetClient {
         let sc_heartbeat_interval_ms = slf.borrow().sc_heartbeat_interval_ms;
         let sc_heartbeat_timeout_ms = slf.borrow().sc_heartbeat_timeout_ms;
         let reconnect = slf.borrow().reconnect.clone();
+        let sc_failover_hub = slf.borrow().sc_failover_hub.clone();
+        let sc_connect_timeout_ms = slf.borrow().sc_connect_timeout_ms;
         let ipv6_interface = slf.borrow().ipv6_interface.clone();
         let ipv6_device_instance = slf.borrow().ipv6_device_instance;
         let mstp = slf.borrow().mstp.clone();
@@ -232,6 +246,12 @@ impl BACnetClient {
                     if let Some(reconnect) = reconnect {
                         builder = builder.reconnect(reconnect);
                     }
+                    if let Some(url) = &sc_failover_hub {
+                        builder = builder.failover_hub_url(url);
+                    }
+                    if let Some(ms) = sc_connect_timeout_ms {
+                        builder = builder.connect_timeout_ms(ms);
+                    }
                     Box::pin(builder.build_any::<crate::mstp_py::PySerial>()).await
                 }
                 "mstp" => {
@@ -275,6 +295,34 @@ impl BACnetClient {
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         crate::py_async::future_into_py(py, crate::unit_result(state::close(self.inner.clone())))
     }
+}
+
+/// The `sc_failover_hub` and `sc_connect_timeout_ms` keywords (#1829):
+/// SC only, and a failover hub only with `reconnect`, since without
+/// reconnection the client would never turn to it or come back. Each is
+/// refused with `ValueError` at construction, before any I/O.
+fn sc_hub_options(
+    transport: &str,
+    reconnect: bool,
+    failover_hub: Option<&str>,
+    connect_timeout_ms: Option<u64>,
+) -> PyResult<()> {
+    if transport != "sc" && (failover_hub.is_some() || connect_timeout_ms.is_some()) {
+        return Err(PyValueError::new_err(
+            "sc_failover_hub and sc_connect_timeout_ms apply only to transport='sc'",
+        ));
+    }
+    if failover_hub.is_some() && !reconnect {
+        return Err(PyValueError::new_err(
+            "sc_failover_hub requires reconnect=ScReconnect(...)",
+        ));
+    }
+    if connect_timeout_ms == Some(0) {
+        return Err(PyValueError::new_err(
+            "sc_connect_timeout_ms must be at least 1",
+        ));
+    }
+    Ok(())
 }
 
 /// The `ipv6_device_instance` keyword: the device instance whose VMAC an ipv6

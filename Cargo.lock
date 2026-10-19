@@ -3026,6 +3026,7 @@ dependencies = [
  "bacnet-client",
  "bacnet-encoding",
  "bacnet-endpoint",
+ "bacnet-network",
  "bacnet-objects",
  "bacnet-server",
  "bacnet-services",
