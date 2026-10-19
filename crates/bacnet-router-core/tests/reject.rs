@@ -251,6 +251,34 @@ fn denied_and_malformed_rejects_do_nothing() {
     assert_eq!(router.counters().denied, 1);
 }
 
+/// A reject padded past its three octets is refused whole, before the host
+/// is asked: the route stays, nothing is sent, and it counts as malformed.
+#[test]
+fn a_padded_reject_is_a_bad_message() {
+    let mut router = router();
+    let mut host = Recorder::default();
+    learn_9_via_r7(&mut router, at(0));
+    let before = router.counters().bad_messages;
+    let padded = fixture::message(
+        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK,
+        &[
+            RejectMessageReason::NOT_DIRECTLY_CONNECTED.to_raw(),
+            0,
+            9,
+            0,
+        ],
+    );
+    let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &padded, at(1));
+    assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
+    assert!(sent.is_empty());
+    assert!(host.asked.is_empty());
+    assert_eq!(router.counters().bad_messages, before + 1);
+    assert_eq!(
+        router.table().lookup(9).unwrap().reachability(),
+        Reachability::Reachable
+    );
+}
+
 /// A reject the router sends for an unknown DNET also starts a search, and
 /// an unreachable or busy route draws reason 1 or 2, with no search.
 #[test]

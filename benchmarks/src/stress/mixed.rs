@@ -151,26 +151,9 @@ pub async fn run(_transport: &str, clients: u64, duration_secs: u64) -> Vec<Degr
     }
 
     let rec = recorder.lock().await;
-    let elapsed = duration_secs as f64;
-    let throughput = rec.successful() as f64 / elapsed;
-    let stats = rec.stats();
-
-    eprintln!(
-        "  ok={} err={} throughput={:.0}/s p50={}µs p99={}µs",
-        rec.successful(),
-        rec.failed(),
-        throughput,
-        stats.p50,
-        stats.p99,
-    );
-
-    let curve = vec![DegradationPoint {
-        parameter: clients,
-        p50_us: stats.p50,
-        p99_us: stats.p99,
-        throughput,
-        errors: rec.failed(),
-    }];
+    let point = DegradationPoint::from_recorder(clients, &rec, Duration::from_secs(duration_secs));
+    point.log();
+    let curve = vec![point];
 
     drop(rec);
     let _ = server.stop().await;

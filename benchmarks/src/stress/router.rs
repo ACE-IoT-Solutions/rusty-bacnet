@@ -270,25 +270,10 @@ pub async fn run(
         }
 
         let rec = recorder.lock().await;
-        let throughput = rec.successful() as f64 / duration_secs as f64;
-        let stats = rec.stats();
-
-        eprintln!(
-            "  ok={} err={} throughput={:.0}/s p50={}µs p99={}µs",
-            rec.successful(),
-            rec.failed(),
-            throughput,
-            stats.p50,
-            stats.p99,
-        );
-
-        curve.push(DegradationPoint {
-            parameter: count,
-            p50_us: stats.p50,
-            p99_us: stats.p99,
-            throughput,
-            errors: rec.failed(),
-        });
+        let point =
+            DegradationPoint::from_recorder(count, &rec, Duration::from_secs(duration_secs));
+        point.log();
+        curve.push(point);
     }
 
     running.stop().await;

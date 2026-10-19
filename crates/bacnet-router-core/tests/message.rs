@@ -1,13 +1,13 @@
 //! Network-layer message payloads: layouts, whole-or-nothing parsing, and
-//! agreement with `bacnet-encoding` where it has the same thing.
+//! messages the router writes decoding in `bacnet-encoding`.
 
-use bacnet_encoding::npdu::{decode_npdu, decode_reject_message_to_network};
+use bacnet_encoding::npdu::decode_npdu;
 use bacnet_router_core::message::{
     DataError, DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs,
-    Networks, Reject, RoutingEntries, RoutingEntry, WhoIsRouter,
+    Networks, RoutingEntries, RoutingEntry, WhoIsRouter,
 };
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason};
+use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use bytes::Bytes;
 use proptest::prelude::*;
 
@@ -60,20 +60,6 @@ fn routing_payload() -> impl Strategy<Value = Vec<u8>> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2048))]
-
-    /// The reject view takes exactly what bacnet-encoding's does, and writes
-    /// it back unchanged.
-    #[test]
-    fn reject_agrees_with_bacnet_encoding(payload in prop::collection::vec(any::<u8>(), 0..5)) {
-        let view = Reject::parse(&payload).ok();
-        let decoded = decode_reject_message_to_network(&payload).ok();
-        prop_assert_eq!(view.is_some(), decoded.is_some());
-        if let (Some(view), Some(decoded)) = (view, decoded) {
-            prop_assert_eq!(view.reason.to_raw(), decoded.reason.to_raw());
-            prop_assert_eq!(view.network, decoded.dnet);
-            prop_assert_eq!(&view.to_bytes()[..], &payload[..]);
-        }
-    }
 
     /// The routing-table view accepts what the independent walk accepts,
     /// reads the same entries, and writes them back as it read them when
@@ -226,7 +212,6 @@ fn fixed_payloads_take_exactly_their_length() {
         assert_eq!(ICouldBeRouter::parse(short), Err(refused));
         assert_eq!(EstablishConnection::parse(short), Err(refused));
         assert_eq!(NetworkNumberIs::parse(short), Err(refused));
-        assert_eq!(Reject::parse(short), Err(refused));
     }
     for bad in [&[][..], &[0x0B], &[0x0B, 0xB8, 0]] {
         assert_eq!(DisconnectConnection::parse(bad), Err(wrong(bad)));
@@ -256,7 +241,7 @@ fn data_errors_say_what_was_wrong() {
 
 #[test]
 fn messages_written_in_an_npdu_decode_in_bacnet_encoding() {
-    let reject = Reject {
+    let reject = RejectMessageToNetwork {
         reason: RejectMessageReason::MESSAGE_TOO_LONG,
         network: 3000,
     }
@@ -270,9 +255,9 @@ fn messages_written_in_an_npdu_decode_in_bacnet_encoding() {
         decoded.message_type,
         Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
-    let body = decode_reject_message_to_network(&decoded.payload).unwrap();
+    let body = RejectMessageToNetwork::decode(&decoded.payload).unwrap();
     assert_eq!(body.reason, RejectMessageReason::MESSAGE_TOO_LONG);
-    assert_eq!(body.dnet, 3000);
+    assert_eq!(body.network, 3000);
 
     // A header with no payload, then the payload written after it.
     let header = Npdu::message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &[]);

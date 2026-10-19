@@ -31,6 +31,8 @@ COPY --from=builder /src/target/release/bacnet-router     /usr/local/bin/
 COPY --from=builder /src/target/release/bacnet-bbmd       /usr/local/bin/
 COPY --from=builder /src/target/release/bacnet-sc-hub     /usr/local/bin/
 COPY --from=builder /src/target/release/stress-orchestrator /usr/local/bin/
+# Static routes for the foreign-device scenario (see the script and compose file).
+COPY --chmod=755 examples/docker/net-entrypoint.sh /usr/local/bin/bacnet-net
 
 # Default command — override with docker-compose command.
 CMD ["stress-test"]
