@@ -318,10 +318,7 @@ async fn bvlc_malformed_ack_returns_decode_error_without_counting_an_ack() {
             received = peer.recv_from(&mut packet) => received.unwrap(),
         };
         peer.send_to(&[0x81, 3, 0, 5, 0], source).await.unwrap();
-        assert!(matches!(
-            request.await,
-            Err(Error::Decoding(_) | Error::DecodingMessage { .. })
-        ));
+        assert!(matches!(request.await, Err(Error::Decoding(_))));
     }
     let snapshot = transport.bvlc_client_snapshot();
     assert_eq!(snapshot.read_bdt.sent, 1);
@@ -580,10 +577,7 @@ async fn a_malformed_or_oversized_ack_fails_the_request_it_answers() {
     let short = message(BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK, &[0]);
     answer(&ctx, &short, TARGET).await;
     let error = rx.await.unwrap().unwrap_err();
-    assert!(
-        matches!(error, Error::Decoding(_) | Error::DecodingMessage { .. }),
-        "{error:?}"
-    );
+    assert!(matches!(error, Error::Decoding(_)), "{error:?}");
 
     let (guard, rx) = ctx
         .node

@@ -49,7 +49,7 @@
 use alloc::{string::ToString, vec::Vec};
 
 use bacnet_types::constructed::{BACnetEventParameter, ChangeOfValueCriteria};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use crate::primitives;
@@ -276,13 +276,13 @@ pub fn decode_event_parameter(
     }
 
     if RESERVED_EVENT_TAGS.contains(&tag.number) {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!(
-                "BACnetEventParameter: context tag [{}] is omitted/deprecated/reserved in Clause 21",
-                tag.number
-            ),
-        ));
+            "BACnetEventParameter: context tag [{}] is omitted/deprecated/reserved in Clause 21",
+        )
+        .with_value(tag.number.into())
+        .into());
     }
 
     // `none [20] NULL` is the only primitive alternative in this CHOICE.
@@ -387,13 +387,13 @@ pub fn decode_event_parameter(
                 pos = p;
                 ChangeOfValueCriteria::ReferencedPropertyIncrement(increment)
             } else {
-                return Err(Error::decoding(
+                return Err(DecodeError::new(
+                    DecodingKind::InvalidEncoding,
                     pos,
-                    format!(
-                        "change-of-value: unexpected cov-criteria tag [{}]",
-                        inner.number
-                    ),
-                ));
+                    "change-of-value: unexpected cov-criteria tag [{}]",
+                )
+                .with_value(inner.number.into())
+                .into());
             };
             pos = expect_closing(data, pos, 1, what)?;
             pos = expect_closing(data, pos, 2, what)?;

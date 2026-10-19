@@ -18,7 +18,7 @@ use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
 use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, Reservation};
 use bacnet_bip_core::Arrival;
 use bacnet_time::HostClock;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::BytesMut;
 
 use crate::bvll::bvll_error;
@@ -221,9 +221,11 @@ pub fn decode_fdt(data: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
 pub fn bdt_from_wire(table: BdtEntries<'_>) -> Result<Vec<BdtEntry>, Error> {
     let count = table.len();
     if count > BbmdState::MAX_BDT_ENTRIES {
-        let max = BbmdState::MAX_BDT_ENTRIES;
-        let msg = format!("BDT entry count {count} exceeds maximum of {max}");
-        return Err(Error::decoding(0, msg));
+        return Err(table_too_long(
+            "BDT entry count {} exceeds maximum of {}",
+            count,
+            BbmdState::MAX_BDT_ENTRIES,
+        ));
     }
     Ok(table.iter().map(BdtEntry::from).collect())
 }
@@ -233,11 +235,20 @@ pub fn bdt_from_wire(table: BdtEntries<'_>) -> Result<Vec<BdtEntry>, Error> {
 pub fn fdt_from_wire(table: FdtEntries<'_>) -> Result<Vec<FdtEntryWire>, Error> {
     let count = table.len();
     if count > BbmdState::MAX_FDT_ENTRIES {
-        let max = BbmdState::MAX_FDT_ENTRIES;
-        let msg = format!("FDT entry count {count} exceeds maximum of {max}");
-        return Err(Error::decoding(0, msg));
+        return Err(table_too_long(
+            "FDT entry count {} exceeds maximum of {}",
+            count,
+            BbmdState::MAX_FDT_ENTRIES,
+        ));
     }
     Ok(table.iter().map(FdtEntryWire::from).collect())
+}
+
+/// The refusal of a table of `count` entries past its `max`.
+fn table_too_long(label: &'static str, count: usize, max: usize) -> Error {
+    DecodeError::new(DecodingKind::InvalidEncoding, 0, label)
+        .with_values(count as u64, max as u64)
+        .into()
 }
 
 /// BBMD state: the BDT and FDT, run by `bacnet-bip-core`, and the host's

@@ -1,4 +1,4 @@
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 
 use super::{ScFunction, ScMessage, SC_MIN_HEADER};
 
@@ -66,10 +66,13 @@ pub fn decode_sc_bvlc_result(msg: &ScMessage) -> Result<ScBvlcResult, Error> {
                 error_details: details,
             })
         }
-        code => Err(Error::decoding(
+        code => Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             1,
-            format!("unknown BACnet/SC BVLC-Result code {code:#04x}"),
-        )),
+            "unknown BACnet/SC BVLC-Result code {:#x}",
+        )
+        .with_value(code.into())
+        .into()),
     }
 }
 

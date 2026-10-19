@@ -92,7 +92,7 @@
 #[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::{string::String, vec::Vec};
 
-use bacnet_types::error::{DecodeError, DecodeMessage, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::ObjectIdentifier;
 #[cfg(feature = "alloc")]
 use bacnet_types::primitives::PropertyValue;
@@ -211,21 +211,29 @@ fn closes_open_frame(data: &[u8], at: usize, number: u8) -> bool {
 }
 
 /// The error for the tag `found`, at `offset` in `data`, where a required
-/// member is due, of the kind [`misplaced_kind`] gives. `message` is a
-/// static label or, with `alloc`, a formatted message (see
-/// [`DecodeMessage`]).
+/// member is due, of the kind [`misplaced_kind`] gives, described by
+/// `label`. [`misplaced`] gives the same fault as a [`DecodeError`], to
+/// name a context or fill the label's placeholders.
 pub fn misplaced_tag(
     data: &[u8],
     found: &Tag,
     expected: Option<u8>,
     offset: usize,
-    message: impl Into<DecodeMessage>,
+    label: &'static str,
 ) -> Error {
-    Error::decoding_kind(
-        misplaced_kind(data, offset, found, expected),
-        offset,
-        message,
-    )
+    misplaced(data, found, expected, offset, label).into()
+}
+
+/// [`misplaced_tag`]'s fault as a [`DecodeError`], for a caller that adds a
+/// context or values before returning it.
+pub fn misplaced(
+    data: &[u8],
+    found: &Tag,
+    expected: Option<u8>,
+    offset: usize,
+    label: &'static str,
+) -> DecodeError {
+    DecodeError::new(misplaced_kind(data, offset, found, expected), offset, label)
 }
 
 /// The refusal of the tag `found` at `offset` where `what`'s member is due:

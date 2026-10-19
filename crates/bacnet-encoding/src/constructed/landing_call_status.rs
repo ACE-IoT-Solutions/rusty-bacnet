@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 
 use bacnet_types::constructed::{BACnetLandingCallStatus, LandingCallCommand};
 use bacnet_types::enums::LiftCarDirection;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RangeError};
 use bytes::BytesMut;
 
 use super::members::{narrow, unsigned_member};
@@ -91,7 +91,7 @@ pub fn decode_landing_call_status(
         decode_ctx_primitive(data, offset, 0, "landing call status floor-number")?;
     let floor_number = narrow(
         unsigned_member(floor, offset - floor.len())?,
-        "floor-number [0] exceeds an Unsigned8",
+        "landing call status floor-number [0] exceeds an Unsigned8",
         &mut oversized,
     );
 
@@ -100,7 +100,7 @@ pub fn decode_landing_call_status(
         let (raw, end) = contents(data, content, tag.length)?;
         let direction: u32 = narrow(
             unsigned_member(raw, content)?,
-            "direction [1] exceeds 32 bits",
+            "landing call status direction [1] exceeds 32 bits",
             &mut oversized,
         );
         (
@@ -111,7 +111,7 @@ pub fn decode_landing_call_status(
         let (raw, end) = contents(data, content, tag.length)?;
         let destination = narrow(
             unsigned_member(raw, content)?,
-            "destination [2] exceeds an Unsigned8",
+            "landing call status destination [2] exceeds an Unsigned8",
             &mut oversized,
         );
         (LandingCallCommand::Destination(destination), end)
@@ -131,7 +131,7 @@ pub fn decode_landing_call_status(
     )?;
 
     if let Some(member) = oversized {
-        return Err(Error::OutOfRange(format!("landing call status {member}")));
+        return Err(RangeError::new(member).into());
     }
     Ok((
         BACnetLandingCallStatus {

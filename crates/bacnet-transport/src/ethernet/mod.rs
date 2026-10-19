@@ -5,7 +5,7 @@
 //!
 //! Platform: Linux only (AF_PACKET raw sockets). Feature-gated behind `ethernet`.
 
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 #[cfg(target_os = "linux")]
 use bacnet_types::MacAddr;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -177,6 +177,14 @@ pub fn build_test_response(local_mac: &[u8; 6], remote_mac: &[u8; 6], test_data:
     buf
 }
 
+/// The refusal of a frame's field at `offset`, `label` naming it with its
+/// two numbers.
+fn llc_refusal(offset: usize, label: &'static str, first: u64, second: u64) -> Error {
+    DecodeError::new(DecodingKind::InvalidEncoding, offset, label)
+        .with_values(first, second)
+        .into()
+}
+
 /// Decode a BACnet Ethernet LLC frame from raw bytes.
 ///
 /// Validates minimum length, LLC header fields (DSAP, SSAP, control),
@@ -195,19 +203,21 @@ pub fn decode_ethernet_frame(data: &[u8]) -> Result<EthernetFrame, Error> {
     let length = u16::from_be_bytes([data[12], data[13]]) as usize;
 
     if length > MAX_LLC_LENGTH {
-        return Err(Error::decoding(
+        return Err(llc_refusal(
             12,
-            format!(
-                "length field {length} exceeds IEEE 802.3 maximum ({MAX_LLC_LENGTH}); likely an EtherType"
-            ),
+            "length field {} exceeds IEEE 802.3 maximum ({}); likely an EtherType",
+            length as u64,
+            MAX_LLC_LENGTH as u64,
         ));
     }
 
     // Length must include at least the LLC header.
     if length < LLC_HEADER_LEN {
-        return Err(Error::decoding(
+        return Err(llc_refusal(
             12,
-            format!("length field {length} too small for LLC header ({LLC_HEADER_LEN} bytes)"),
+            "length field {} too small for LLC header ({} bytes)",
+            length as u64,
+            LLC_HEADER_LEN as u64,
         ));
     }
 
@@ -223,21 +233,27 @@ pub fn decode_ethernet_frame(data: &[u8]) -> Result<EthernetFrame, Error> {
     let control = data[16];
 
     if dsap != BACNET_LLC_DSAP {
-        return Err(Error::decoding(
+        return Err(llc_refusal(
             14,
-            format!("invalid DSAP: expected 0x{BACNET_LLC_DSAP:02X}, got 0x{dsap:02X}"),
+            "invalid DSAP: expected {:#x}, got {:#x}",
+            BACNET_LLC_DSAP.into(),
+            dsap.into(),
         ));
     }
     if ssap != BACNET_LLC_SSAP {
-        return Err(Error::decoding(
+        return Err(llc_refusal(
             15,
-            format!("invalid SSAP: expected 0x{BACNET_LLC_SSAP:02X}, got 0x{ssap:02X}"),
+            "invalid SSAP: expected {:#x}, got {:#x}",
+            BACNET_LLC_SSAP.into(),
+            ssap.into(),
         ));
     }
     if control != LLC_CONTROL_UI {
-        return Err(Error::decoding(
+        return Err(llc_refusal(
             16,
-            format!("invalid LLC control: expected 0x{LLC_CONTROL_UI:02X}, got 0x{control:02X}"),
+            "invalid LLC control: expected {:#x}, got {:#x}",
+            LLC_CONTROL_UI.into(),
+            control.into(),
         ));
     }
 

@@ -8,11 +8,21 @@ use bacnet_encoding::constructed::tagged::{
     decode_ctx_primitive, expect_end, next_is_context, next_is_opening,
 };
 use bacnet_encoding::{primitives, tags};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
 use crate::common::MAX_DECODED_ITEMS;
+
+/// A record's refusal naming its index, built without formatting (#1645,
+/// #1776): the shared reader's context names the list, and the index says
+/// which record.
+fn indexed_record(error: Error, index: u32) -> Error {
+    match (error, u16::try_from(index)) {
+        (Error::Decoding(refused), Ok(index)) => refused.at_item(index).into(),
+        (other, _) => other,
+    }
+}
 
 /// The application-tagged INTEGER at `offset` (a file-start-position or
 /// file-start-record) and the offset past it.
@@ -24,30 +34,13 @@ fn decode_start(data: &[u8], offset: usize, what: &'static str) -> Result<(i32, 
 /// The fault where `what`'s access-method choice, `[0]` or `[1]`, is due at
 /// `offset` and neither opens there: a missing member when the data ends
 /// after the file identifier, any other tag a wrong one.
-/// A record's refusal with its index in the label, formatted only when a
-/// record fails to decode (#1645): the shared reader's label is static
-/// (#1646), so it names the list, and this adds which record.
-fn indexed_record(error: Error, index: u32) -> Error {
-    match error {
-        Error::Decoding(refused) => Error::decoding_kind(
-            refused.kind,
-            refused.offset,
-            format!(
-                "{}[{index}]: {}",
-                refused.context,
-                refused.within("").message()
-            ),
-        ),
-        other => other,
-    }
-}
-
 fn unknown_access_method(data: &[u8], offset: usize, what: &'static str) -> Error {
-    if offset >= data.len() {
-        Error::missing(offset, format!("{what}: access method missing"))
+    let refused = if offset >= data.len() {
+        DecodeError::new(DecodingKind::Missing, offset, "access method missing")
     } else {
-        Error::invalid_tag(offset, format!("{what}: unknown access method"))
-    }
+        DecodeError::new(DecodingKind::InvalidTag, offset, "unknown access method")
+    };
+    refused.within(what).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -262,10 +255,13 @@ impl AtomicWriteFileRequest {
             let mut file_record_data = Vec::new();
             for i in 0..record_count {
                 if inner >= content.len() {
-                    return Err(Error::missing(
+                    return Err(DecodeError::new(
+                        DecodingKind::Missing,
                         inner,
-                        format!("AtomicWriteFile record: record {i} of the count is missing"),
-                    ));
+                        "AtomicWriteFile record: record {} of the count is missing",
+                    )
+                    .with_value(i.into())
+                    .into());
                 }
                 let (record, new_inner) = decode_app_primitive(
                     content,
@@ -416,10 +412,13 @@ impl AtomicReadFileAck {
             let mut file_record_data = Vec::new();
             for i in 0..returned_record_count {
                 if inner >= content.len() {
-                    return Err(Error::missing(
+                    return Err(DecodeError::new(
+                        DecodingKind::Missing,
                         inner,
-                        format!("AtomicReadFileAck record: record {i} of the count is missing"),
-                    ));
+                        "AtomicReadFileAck record: record {} of the count is missing",
+                    )
+                    .with_value(i.into())
+                    .into());
                 }
                 let (slice, new_inner) = decode_app_primitive(
                     content,

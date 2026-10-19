@@ -14,7 +14,7 @@
 use bacnet_npdu::{
     Address, EncodeError, NetworkMessageType, NetworkPriority, RejectMessageReason, MAX_MAC_LEN,
 };
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, Error, RangeError};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 
@@ -164,35 +164,35 @@ pub fn encode_npdu(buf: &mut BytesMut, npdu: &Npdu) -> Result<(), Error> {
     }
 }
 
-/// The text of an encoder refusal, naming the field it concerns.
+/// An encoder refusal as a static [`Error::Range`] naming the field it
+/// concerns, formatted only when displayed (#1777).
 fn encode_error(npdu: &Npdu, refused: EncodeError) -> Error {
     let destination = npdu.destination.as_ref();
     let source = npdu.source.as_ref();
-    Error::Encoding(match refused {
+    match refused {
         EncodeError::ReservedNetwork if destination.is_some_and(|d| d.network == 0) => {
-            "NPDU DNET must not be 0".into()
+            RangeError::new("NPDU DNET must not be 0")
         }
-        EncodeError::ReservedNetwork => format!(
-            "NPDU SNET must be 1..65534, got {}",
-            source.map_or(0, |s| s.network)
-        ),
-        EncodeError::EmptySource => "NPDU SLEN must not be 0".into(),
+        EncodeError::ReservedNetwork => RangeError::new("NPDU SNET must be 1..65534, got {}")
+            .with_value(source.map_or(0, |s| s.network).into()),
+        EncodeError::EmptySource => RangeError::new("NPDU SLEN must not be 0"),
         EncodeError::AddressTooLong => {
-            let (field, address) = match destination {
-                Some(d) if d.mac_address.len() > MAX_MAC_LEN => ("destination", d),
+            let (label, address) = match destination {
+                Some(d) if d.mac_address.len() > MAX_MAC_LEN => (
+                    "NPDU destination address of {} octets exceeds the {}-octet limit",
+                    d,
+                ),
                 _ => (
-                    "source",
+                    "NPDU source address of {} octets exceeds the {}-octet limit",
                     source.expect("an over-long address is one of the two"),
                 ),
             };
-            format!(
-                "NPDU {field} address of {} octets exceeds the {MAX_MAC_LEN}-octet limit",
-                address.mac_address.len()
-            )
+            RangeError::new(label).with_values(address.mac_address.len() as u64, MAX_MAC_LEN as u64)
         }
         // The buffer is sized to the NPDU, so nothing else is refused.
-        _ => "NPDU encoding refused".into(),
-    })
+        _ => RangeError::new("NPDU encoding refused"),
+    }
+    .into()
 }
 
 // ---------------------------------------------------------------------------

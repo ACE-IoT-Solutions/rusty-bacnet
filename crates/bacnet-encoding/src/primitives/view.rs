@@ -14,10 +14,12 @@ use crate::tags::{self, app_tag, Tag, TagClass};
 /// from: the character-set octet, then the string in that character set
 /// (Clause 20.2.9).
 ///
-/// [`decode`](Self::decode) checks that the character set is one the clause
-/// defines, and that UTF-8 contents are valid UTF-8, so
-/// [`as_str`](Self::as_str) borrows them as a `&str`. Contents in another
-/// character set are carried as they are, for the caller to convert.
+/// [`decode`](Self::decode) checks the contents' structure as every decoder
+/// of a CharacterString does (#1778): a character set the clause defines,
+/// valid UTF-8, a DBCS string's two-octet code page, and whole UCS-2 and
+/// UCS-4 characters that are Unicode scalar values. So
+/// [`as_str`](Self::as_str) borrows UTF-8 contents as a `&str`; contents in
+/// another character set are carried as they are, for the caller to convert.
 ///
 /// ```
 /// use bacnet_encoding::primitives::{charset, CharacterStringRef};
@@ -37,23 +39,12 @@ pub struct CharacterStringRef<'a> {
 }
 
 impl<'a> CharacterStringRef<'a> {
-    /// Read CharacterString contents: refuses an empty input, a character
-    /// set Clause 20.2.9 doesn't define and invalid UTF-8, each
-    /// [`DecodingKind::InvalidEncoding`] at an offset into `contents`.
+    /// Read CharacterString contents, refusing the malformed structures the
+    /// type's docs list, each [`DecodingKind::InvalidEncoding`] at an offset
+    /// into `contents`: no or a reserved character-set octet, invalid UTF-8,
+    /// a DBCS string without its code page, and broken UCS-2 or UCS-4.
     pub fn decode(contents: &'a [u8]) -> Result<Self, Error> {
-        let Some((&charset_id, payload)) = contents.split_first() else {
-            return Err(Error::decoding(
-                0,
-                "CharacterString requires at least 1 byte for charset",
-            ));
-        };
-        match charset_id {
-            charset::UTF8 => {
-                core::str::from_utf8(payload).map_err(invalid_utf8)?;
-            }
-            charset::IBM_MICROSOFT_DBCS..=charset::ISO_8859_1 => {}
-            other => return Err(unknown_charset(other)),
-        }
+        check_character_string(contents)?;
         Ok(Self { contents })
     }
 
@@ -85,6 +76,64 @@ impl<'a> CharacterStringRef<'a> {
         }
         core::str::from_utf8(self.bytes()).ok()
     }
+}
+
+/// Check CharacterString `contents`, the character-set octet and the string
+/// after it (Clause 20.2.9). The one check the borrowed view and the owned
+/// validator share, so they can't drift apart (#1778). It refuses, each as
+/// [`DecodingKind::InvalidEncoding`] at an offset into `contents`:
+///
+/// - no character-set octet, or one the clause doesn't define;
+/// - UTF-8 contents that aren't valid UTF-8;
+/// - an IBM/Microsoft DBCS string without its two-octet code page;
+/// - UCS-2 or UCS-4 contents that aren't whole two- or four-octet
+///   characters, or hold one that isn't a Unicode scalar value.
+///
+/// JIS X 0208 and ISO 8859-1 contents are taken as they are.
+pub(super) fn check_character_string(contents: &[u8]) -> Result<(), Error> {
+    let Some((&charset_id, payload)) = contents.split_first() else {
+        return Err(Error::decoding(
+            0,
+            "CharacterString requires at least 1 byte for charset",
+        ));
+    };
+    match charset_id {
+        charset::UTF8 => {
+            core::str::from_utf8(payload).map_err(invalid_utf8)?;
+        }
+        charset::IBM_MICROSOFT_DBCS if payload.len() < 2 => {
+            return Err(Error::decoding(
+                1,
+                "DBCS CharacterString requires a two-octet code page",
+            ));
+        }
+        charset::UCS2 => {
+            let (characters, rest) = payload.as_chunks::<2>();
+            if !rest.is_empty() {
+                return Err(Error::decoding(1, "UCS-2 data must have even length"));
+            }
+            let not_scalar = |c: &[u8; 2]| char::from_u32(u16::from_be_bytes(*c).into()).is_none();
+            if let Some(index) = characters.iter().position(not_scalar) {
+                return Err(Error::decoding(1 + index * 2, "invalid UCS-2 code point"));
+            }
+        }
+        charset::UCS4 => {
+            let (characters, rest) = payload.as_chunks::<4>();
+            if !rest.is_empty() {
+                return Err(Error::decoding(
+                    1,
+                    "UCS-4 CharacterString length must be a multiple of four",
+                ));
+            }
+            let not_scalar = |c: &[u8; 4]| char::from_u32(u32::from_be_bytes(*c)).is_none();
+            if let Some(index) = characters.iter().position(not_scalar) {
+                return Err(Error::decoding(1 + index * 4, "invalid UCS-4 code point"));
+            }
+        }
+        charset::IBM_MICROSOFT_DBCS | charset::JIS_X_0208 | charset::ISO_8859_1 => {}
+        other => return Err(unknown_charset(other)),
+    }
+    Ok(())
 }
 
 /// One application-tagged value of a primitive datatype (Clause 20.2.2 to
@@ -175,7 +224,7 @@ pub fn decode_application_value_ref(
 
 /// A refusal of contents that start at `base` in the data, its offset moved
 /// from the contents' start to the data's.
-fn rebased(base: usize) -> impl Fn(Error) -> Error {
+pub(super) fn rebased(base: usize) -> impl Fn(Error) -> Error {
     move |error| match error {
         Error::Decoding(mut refused) => {
             refused.offset = refused.offset.saturating_add(base);

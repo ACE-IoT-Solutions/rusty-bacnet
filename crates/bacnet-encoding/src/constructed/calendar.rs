@@ -20,7 +20,7 @@
 use alloc::vec::Vec;
 
 use bacnet_types::constructed::{BACnetCalendarEntry, BACnetDateRange, BACnetWeekNDay};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::Date;
 use bytes::BytesMut;
 
@@ -132,10 +132,13 @@ pub fn decode_calendar_entry_list(data: &[u8]) -> Result<Vec<BACnetCalendarEntry
 fn decode_app_date(data: &[u8], offset: usize, what: &'static str) -> Result<(Date, usize), Error> {
     let (tag, content) = tags::decode_tag(data, offset)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::DATE {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("{what}: expected an application-tagged Date"),
-        ));
+            "expected an application-tagged Date",
+        )
+        .within(what)
+        .into());
     }
     let (octets, end) = fixed_content(data, offset, content, tag.length, 4, what)?;
     Ok((Date::decode(octets)?, end))
@@ -152,10 +155,14 @@ fn fixed_content<'a>(
     what: &'static str,
 ) -> Result<(&'a [u8], usize), Error> {
     if usize::try_from(length).ok() != Some(expected) {
-        return Err(Error::decoding(
+        return Err(DecodeError::new(
+            DecodingKind::InvalidEncoding,
             offset,
-            format!("{what}: expected {expected} content octets, got {length}"),
-        ));
+            "expected {} content octets, got {}",
+        )
+        .within(what)
+        .with_values(expected as u64, length.into())
+        .into());
     }
     contents(data, content, length)
 }

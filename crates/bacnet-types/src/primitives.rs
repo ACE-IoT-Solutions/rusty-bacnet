@@ -121,15 +121,16 @@ impl ObjectIdentifier {
 
     /// Encode to the 4-byte BACnet wire format (big-endian).
     pub fn encode(&self) -> [u8; 4] {
-        assert!(
+        // `new` and `decode`, the only constructors, keep both fields in
+        // range, so these hold by construction; their messages are static
+        // so no build links formatting for them (#1777).
+        debug_assert!(
             self.object_type.to_raw() <= 0x3FF,
-            "ObjectType {} exceeds 10-bit field",
-            self.object_type.to_raw()
+            "ObjectType exceeds the 10-bit field"
         );
-        assert!(
+        debug_assert!(
             self.instance_number <= Self::MAX_INSTANCE,
-            "Instance {} exceeds MAX_INSTANCE",
-            self.instance_number
+            "instance exceeds MAX_INSTANCE"
         );
         let value = (self.object_type.to_raw() << 22) | self.instance_number;
         value.to_be_bytes()
