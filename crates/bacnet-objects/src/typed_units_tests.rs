@@ -1,7 +1,7 @@
 //! The constructors that take `EngineeringUnits` (#915) serve that value
 //! as the Units property (Output_Units for the Loop), as the same ENUMERATED
-//! number: a named unit, a proprietary one and the largest the enumeration
-//! allows.
+//! number: named units, proprietary ones, and a value above u16 that the
+//! constructors pass through unchanged.
 
 use crate::accumulator::{AccumulatorObject, PulseConverterObject};
 use crate::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
@@ -23,6 +23,8 @@ fn constructors_serve_the_units_they_were_given() {
         EngineeringUnits::PERCENT,
         EngineeringUnits::from_raw(256),
         EngineeringUnits::from_raw(65_535),
+        // Above u16: the constructors store and serve the full u32.
+        EngineeringUnits::from_raw(70_000),
     ] {
         let expected = PropertyValue::Enumerated(unit.to_raw());
         let objects: Vec<Box<dyn BACnetObject>> = vec![
