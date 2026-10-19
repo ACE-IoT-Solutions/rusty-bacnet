@@ -361,7 +361,9 @@ was read from, so writing the value back (`write_property`,
 elements of one collection, from indexed reads, equals the whole read. Two
 values are equal when they carry the same octets and the same element
 production, so a typed read doesn't equal `PropertyValue.application_data` of
-its octets.
+its octets. `.octets` gives those octets as `bytes` (a whole
+collection's elements back to back), for comparing with a capture or for
+`PropertyValue.application_data`.
 
 | Object type | Property | Element tag | Element `.value` | Typed write |
 |-------------|----------|-------------|------------------|-------------|

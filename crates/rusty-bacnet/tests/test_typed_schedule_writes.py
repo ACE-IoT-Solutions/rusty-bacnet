@@ -70,7 +70,7 @@ class TypedConstructionTests(unittest.IsolatedAsyncioTestCase):
         async with running(lambda server: add(server, **{keyword: first.value})) as context:
             second = await self.reads(context, oid, prop)
         self.assertEqual(second, first)
-        self.assertEqual(second.__reduce__(), first.__reduce__())
+        self.assertEqual(second.octets, first.octets)
         return first
 
     async def test_global_group_members(self):

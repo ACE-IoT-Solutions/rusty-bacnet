@@ -79,6 +79,12 @@ EVENT_PARAMETERS = [
       "bitmask": {"unused_bits": 5, "data": b"\xa0"},
       "list_of_values": [{"unused_bits": 5, "data": b"\xa0"},
                          {"unused_bits": 5, "data": b"\x40"}]}),
+    (bytes.fromhex("9e0a022b19092e21052f9f"),
+     {"kind": "extended", "vendor_id": 555, "extended_event_type": 9,
+      "parameters": b"\x21\x05"}),
+    # Command-failure, an algorithm the stack keeps as its encoded contents.
+    (bytes.fromhex("3e09051e0c0080000719551f3f"),
+     {"kind": "other", "tag": 3, "data": bytes.fromhex("09051e0c0080000719551f")}),
     # The none alternative, context tag 20 with no contents.
     (bytes.fromhex("f814"), {"kind": "none"}),
 ]
@@ -104,11 +110,16 @@ class PeerSingleReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_each_property_reads_typed_on_every_route(self):
         for target in [*SINGLE_TARGETS, SUBORDINATES]:
             tag, examples = vectors(target)
-            raw, expected = examples[0] if target != SUBORDINATES else examples[1]
-            for route in ROUTES:
-                with self.subTest(prop=target.prop, route=route):
-                    value = await ReferencePeer(self, target).read(raw, route=route)
-                    self.assertEqual((value.tag, value.value), (tag, expected))
+            chosen = [examples[1]] if target == SUBORDINATES else [examples[0]]
+            if target == PARAMETERS:
+                # Every Event_Parameters form, the extended and other ones included.
+                chosen = examples
+            for raw, expected in chosen:
+                for route in ROUTES:
+                    with self.subTest(prop=target.prop, route=route, raw=raw.hex()):
+                        value = await ReferencePeer(self, target).read(raw, route=route)
+                        self.assertEqual((value.tag, value.value), (tag, expected))
+                        self.assertEqual(value.octets, raw)
 
     async def test_every_form_writes_back_its_own_octets_and_survives_pickling(self):
         for target in [*SINGLE_TARGETS, SUBORDINATES]:
@@ -126,6 +137,14 @@ class PeerSingleReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((value.tag, value.value), ("device_object_reference", (REMOTE, AV7)))
         size = await ReferencePeer(self, SUBORDINATES).read(b"\x21\x02", 0)
         self.assertEqual((size.tag, size.value), ("unsigned", 2))
+
+    def test_octets_of_primitive_raw_and_list_values(self):
+        self.assertEqual(PropertyValue.real(1.5).octets, bytes.fromhex("443fc00000"))
+        self.assertEqual(PropertyValue.unsigned(2).octets, bytes.fromhex("2102"))
+        self.assertEqual(PropertyValue.application_data(b"\x19\x02").octets, b"\x19\x02")
+        self.assertEqual(PropertyValue.list([]).octets, b"")
+        self.assertEqual(PropertyValue.list([PropertyValue.null(), PropertyValue.boolean(True)]).octets,
+                         bytes.fromhex("0011"))
 
     async def test_values_that_are_not_one_element_stay_generic(self):
         for target in SINGLE_TARGETS:
@@ -176,14 +195,14 @@ class NativeSingleReadTests(unittest.IsolatedAsyncioTestCase):
                          BACnetTimeStamp.date_time(UNSPECIFIED, UNSPECIFIED))
         unset = await self.reads(POINT, P.ACCESS_EVENT_AUTHENTICATION_FACTOR,
                                  "authentication_factor", (0, 0, b""))
-        self.assertEqual(unset.__reduce__()[1][1], FACTORS[1][0])
+        self.assertEqual(unset.octets, FACTORS[1][0])
         stamp = BACnetTimeStamp.sequence_number(4)
         await self.server.report_access_event_local(POINT, 1, 7, time=stamp,
                                                     authentication_factor=(6, 2, b"\x12\x34"))
         await self.reads(POINT, P.ACCESS_EVENT_TIME, "timestamp", stamp)
         factor = await self.reads(POINT, P.ACCESS_EVENT_AUTHENTICATION_FACTOR,
                                   "authentication_factor", (6, 2, b"\x12\x34"))
-        self.assertEqual(factor.__reduce__()[1][1], FACTORS[0][0])
+        self.assertEqual(factor.octets, FACTORS[0][0])
         # The read form goes straight back into the report route.
         await self.server.report_access_event_local(POINT, 1, 8, authentication_factor=unset.value)
         await self.reads(POINT, P.ACCESS_EVENT_AUTHENTICATION_FACTOR, "authentication_factor",
@@ -209,7 +228,7 @@ class NativeSingleReadTests(unittest.IsolatedAsyncioTestCase):
                                 {"kind": "level", "value": 2})
         await self.client.write_property(self.address, LOAD, P.REQUESTED_SHED_LEVEL, read)
         self.assertEqual(await self.server.read_property(LOAD, P.REQUESTED_SHED_LEVEL), read)
-        self.assertEqual(read.__reduce__()[1][1], bytes.fromhex("1902"))
+        self.assertEqual(read.octets, bytes.fromhex("1902"))
 
     async def test_empty_subordinate_list_and_event_parameters_set_locally(self):
         await self.reads(VIEW, P.SUBORDINATE_LIST, "list", [])
@@ -218,7 +237,7 @@ class NativeSingleReadTests(unittest.IsolatedAsyncioTestCase):
                                                PropertyValue.application_data(raw),
                                                source_object=None)
         read = await self.reads(ENROLLMENT, P.EVENT_PARAMETERS, "event_parameter", expected)
-        self.assertEqual(read.__reduce__()[1][1], raw)
+        self.assertEqual(read.octets, raw)
         await self.client.write_property(self.address, ENROLLMENT, P.EVENT_PARAMETERS, read)
         self.assertEqual(await self.server.read_property(ENROLLMENT, P.EVENT_PARAMETERS), read)
 

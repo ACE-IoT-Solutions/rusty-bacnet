@@ -77,8 +77,8 @@ impl BACnetServer {
     /// `color_reference` serves Color_Reference, the Color or Color
     /// Temperature object the output takes its colour from (instance 4194303
     /// names none). `override_color_reference` adds Color_Override and
-    /// Override_Color_Reference; `color_override` (default False) sets the
-    /// override on, and needs it. A reference to another object type raises
+    /// Override_Color_Reference; `color_override=True` sets the override on,
+    /// and needs it (False, the default, means no override). A reference to another object type raises
     /// BacnetProtocolError (VALUE_OUT_OF_RANGE); `lighting_color` follows the
     /// references once the server runs.
     #[pyo3(signature = (
@@ -236,16 +236,17 @@ impl<'py> IntoPyObject<'py> for LightingColorValue {
 }
 
 /// The colour link the keywords describe, or `None` without a
-/// `color_reference`. The override keywords need one, and `color_override`
-/// needs `override_color_reference` (ValueError otherwise); the object
-/// checks each reference's type.
+/// `color_reference`. An override reference, or `color_override=True`,
+/// needs one, and `color_override=True` also needs `override_color_reference`
+/// (ValueError otherwise); `color_override=False` alone means no override.
+/// The object checks each reference's type.
 fn color_link(
     reference: Option<PyObjectIdentifier>,
     active: Option<bool>,
     override_reference: Option<PyObjectIdentifier>,
 ) -> PyResult<Option<ColorLink>> {
     let Some(reference) = reference else {
-        if active.is_some() || override_reference.is_some() {
+        if active == Some(true) || override_reference.is_some() {
             return Err(PyValueError::new_err(
                 "color_override and override_color_reference need a color_reference",
             ));
@@ -257,12 +258,12 @@ fn color_link(
             active: active.unwrap_or(false),
             reference: reference.to_rust(),
         }),
-        (None, Some(_)) => {
+        (None, Some(true)) => {
             return Err(PyValueError::new_err(
-                "color_override needs an override_color_reference",
+                "color_override=True needs an override_color_reference",
             ))
         }
-        (None, None) => None,
+        (None, Some(false) | None) => None,
     };
     Ok(Some(ColorLink {
         reference: reference.to_rust(),

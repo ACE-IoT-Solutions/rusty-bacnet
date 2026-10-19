@@ -92,6 +92,16 @@ class LightingAndColorTests(unittest.IsolatedAsyncioTestCase):
                                               source_object=None)
             self.assertEqual(await server.lighting_color(LIGHT), (WARM, 2700))
 
+    async def test_color_override_false_alone_means_no_override(self):
+        server = new_server()
+        server.add_lighting_output(1, "Light", color_reference=COLOR, color_override=False)
+        server.add_binary_lighting_output(1, "Unlinked", color_override=False)
+        async with running(server):
+            self.assertEqual((await server.read_property(LIGHT, P.COLOR_REFERENCE)).value, COLOR)
+            await self.assert_unknown(server, LIGHT, P.COLOR_OVERRIDE)
+            await self.assert_unknown(server, LIGHT, P.OVERRIDE_COLOR_REFERENCE)
+            await self.assert_unknown(server, BINARY_LIGHT, P.COLOR_REFERENCE)
+
     async def test_an_active_override_given_at_build_time_takes_the_override_colour(self):
         server = new_server()
         server.add_color_temperature(1, "Warm", present_value=3000)
@@ -108,7 +118,7 @@ class LightingAndColorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             server.add_binary_lighting_output(1, "B", override_color_reference=WARM)
         with self.assertRaises(ValueError):
-            server.add_lighting_output(1, "L", color_reference=COLOR, color_override=False)
+            server.add_lighting_output(1, "L", color_reference=COLOR, color_override=True)
         with self.assertRaises(BacnetProtocolError) as raised:
             server.add_lighting_output(1, "L", color_reference=ObjectIdentifier(O.ANALOG_VALUE, 1))
         self.assertEqual(raised.exception.error_code, ErrorCode.VALUE_OUT_OF_RANGE.to_raw())
@@ -162,8 +172,17 @@ class ValueSourceAndProfileTests(unittest.IsolatedAsyncioTestCase):
                     after = await server.read_property(oid, P.VALUE_SOURCE)
                     self.assertEqual((after.tag, after.value),
                                      ("value_source", ObjectIdentifier(O.DEVICE, DEVICE)))
-            source = await server.read_property(ObjectIdentifier(O.BINARY_VALUE, 1), P.VALUE_SOURCE)
-            self.assertEqual(source.tag, "value_source")
+            # Read-only: the application, or a writer while out of service.
+            binary = ObjectIdentifier(O.BINARY_VALUE, 1)
+            source = await server.read_property(binary, P.VALUE_SOURCE)
+            self.assertEqual((source.tag, source.value), ("value_source", None))
+            await server.write_property_local(binary, P.OUT_OF_SERVICE,
+                                              PropertyValue.boolean(True), source_object=None)
+            await server.write_property_local(binary, P.PRESENT_VALUE,
+                                              PropertyValue.enumerated(1), source_object=None)
+            source = await server.read_property(binary, P.VALUE_SOURCE)
+            self.assertEqual((source.tag, source.value),
+                             ("value_source", ObjectIdentifier(O.DEVICE, DEVICE)))
             with self.assertRaises(BacnetProtocolError) as raised:
                 await server.read_property(ObjectIdentifier(O.COLOR, 2), P.VALUE_SOURCE)
             self.assertEqual(raised.exception.error_code, ErrorCode.UNKNOWN_PROPERTY.to_raw())
@@ -234,8 +253,10 @@ class ValueSourceAndProfileTests(unittest.IsolatedAsyncioTestCase):
         async with running(second):
             copied = await second.read_property(ObjectIdentifier(O.ANALOG_VALUE, 1), P.TAGS)
         self.assertEqual(copied, read)
-        self.assertEqual([element.__reduce__()[1] for element in copied.__reduce__()[1][0]],
-                         [element.__reduce__()[1] for element in read.__reduce__()[1][0]])
+        # Independently encoded: each name in context tag 0, then its value.
+        self.assertEqual(read.octets, bytes.fromhex(
+            "0d05007a6f6e652103" "0d080065786861757374" "0d06006c6162656c" "7506006e6f727468"))
+        self.assertEqual(copied.octets, read.octets)
 
     def test_profiles_the_object_refuses_raise_and_shapes_are_checked(self):
         server = new_server()

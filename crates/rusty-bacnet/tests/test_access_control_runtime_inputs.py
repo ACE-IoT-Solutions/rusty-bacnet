@@ -109,13 +109,12 @@ class RuntimeInputStubContractTests(unittest.TestCase):
                     self.assertIn(phrase, docs)
 
 
-def factor_octets(value: PropertyValue) -> bytes:
-    """The octets a typed authentication factor read holds (#1499)."""
-    assert value.tag == "authentication_factor", value.tag
-    return value.__reduce__()[1][1]
-
-
 class RuntimeInputLiveServerTests(unittest.TestCase):
+    def factor_octets(self, value: PropertyValue) -> bytes:
+        """The octets a typed authentication factor read holds (#1499)."""
+        self.assertEqual(value.tag, "authentication_factor")
+        return value.octets
+
     def assert_error(self, raised: BacnetProtocolError, error_class: ErrorClass,
                      code: ErrorCode) -> None:
         self.assertEqual(raised.error_class, error_class.to_raw())
@@ -139,12 +138,12 @@ class RuntimeInputLiveServerTests(unittest.TestCase):
             ))
             self.assertEqual((await read(POINT, P.ACCESS_EVENT)).value, GRANTED)
             self.assertEqual((await read(POINT, P.ACCESS_EVENT_TAG)).value, 7)
-            self.assertEqual(factor_octets(await read(POINT, P.ACCESS_EVENT_AUTHENTICATION_FACTOR)),
+            self.assertEqual(self.factor_octets(await read(POINT, P.ACCESS_EVENT_AUTHENTICATION_FACTOR)),
                              CARD_OCTETS)
 
             await server.report_credential_read_local(
                 READER, CARD, update_time=BACnetTimeStamp.sequence_number(5))
-            self.assertEqual(factor_octets(await read(READER, P.PRESENT_VALUE)),
+            self.assertEqual(self.factor_octets(await read(READER, P.PRESENT_VALUE)),
                              CARD_OCTETS)
 
             await server.report_door_state_local(
@@ -201,13 +200,13 @@ class RuntimeInputLiveServerTests(unittest.TestCase):
             await server.report_credential_read_local(READER, other_card)
             await server.report_door_state_local(DOOR, door_status=0)
             await server.report_door_state_local(DOOR, door_alarm_state=0)
-            self.assertEqual(factor_octets(await read(READER, P.PRESENT_VALUE)),
+            self.assertEqual(self.factor_octets(await read(READER, P.PRESENT_VALUE)),
                              CARD_OCTETS)
             self.assertEqual((await read(DOOR, P.DOOR_STATUS)).value, OPENED)
             self.assertEqual((await read(DOOR, P.DOOR_ALARM_STATE)).value, FORCED_OPEN)
             for oid in (READER, DOOR):
                 await out_of_service(oid, False)
-            self.assertEqual(factor_octets(await read(READER, P.PRESENT_VALUE)),
+            self.assertEqual(self.factor_octets(await read(READER, P.PRESENT_VALUE)),
                              other_octets)
             self.assertEqual((await read(DOOR, P.DOOR_STATUS)).value, 0)
             self.assertEqual((await read(DOOR, P.DOOR_ALARM_STATE)).value, 0)
@@ -252,7 +251,7 @@ class RuntimeInputLiveServerTests(unittest.TestCase):
                 self.assertEqual(notification.monitored_object_identifier, READER)
                 self.assertIn(
                     CARD_OCTETS,
-                    [factor_octets(item["value"]) for item in notification.values
+                    [self.factor_octets(item["value"]) for item in notification.values
                      if item["property_id"] == P.PRESENT_VALUE],
                 )
         finally:

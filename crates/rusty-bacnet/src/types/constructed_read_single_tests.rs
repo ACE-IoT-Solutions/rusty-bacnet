@@ -220,6 +220,14 @@ fn event_parameters_read_as_a_mapping_per_algorithm() {
             },
             "{'kind': 'none'}",
         ),
+        (
+            BACnetEventParameter::Opaque {
+                tag: 3,
+                data: vec![0x09, 0x05, 0x1e, 0x0c, 0, 0x80, 0, 7, 0x19, 0x55, 0x1f],
+            },
+            "{'kind': 'other', 'tag': 3, \
+             'data': b'\\x09\\x05\\x1e\\x0c\\x00\\x80\\x00\\x07\\x19\\x55\\x1f'}",
+        ),
     ];
     for (parameter, expected) in cases {
         assert_single(

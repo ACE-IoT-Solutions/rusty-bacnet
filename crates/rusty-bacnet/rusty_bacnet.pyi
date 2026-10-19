@@ -1643,6 +1643,15 @@ class PropertyValue:
         as in every other date the binding reads."""
         ...
 
+    @property
+    def octets(self) -> bytes:
+        """The value's octets as a write of it carries them: a typed
+        constructed element's are the octets it was read from, a whole typed
+        collection's its elements' back to back, and any other value its
+        application-tagged encoding. Raises ValueError for a value that
+        doesn't encode."""
+        ...
+
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -4366,10 +4375,10 @@ class BACnetServer:
         ``color_reference`` serves Color_Reference, the Color or Color
         Temperature object the output takes its colour from (instance
         4194303 names none). ``override_color_reference`` adds Color_Override
-        and Override_Color_Reference, and ``color_override`` (False when
-        omitted) turns the override on; it needs an
-        ``override_color_reference``, and both need a ``color_reference``
-        (ValueError otherwise). A reference to another object type raises
+        and Override_Color_Reference, and ``color_override=True`` turns the
+        override on; it needs an ``override_color_reference``, and both need
+        a ``color_reference`` (ValueError otherwise). ``color_override=False``
+        on its own means no override. A reference to another object type raises
         BacnetProtocolError (VALUE_OUT_OF_RANGE). All three rows take writes;
         ``lighting_color`` follows them. Profile keywords as on
         ``add_analog_input``.

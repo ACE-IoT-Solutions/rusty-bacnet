@@ -286,6 +286,19 @@ impl PyPropertyValue {
         }
     }
 
+    /// The value's octets as a WriteProperty of it carries them (#1499): a
+    /// typed constructed element's are the octets it was read from, a whole
+    /// typed collection's its elements' back to back, and a primitive's its
+    /// application-tagged encoding. A value that doesn't encode raises
+    /// ValueError.
+    #[getter]
+    fn octets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let mut encoded = BytesMut::new();
+        encode_property_value(&mut encoded, &self.inner)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
+    }
+
     fn __repr__(&self) -> String {
         match (&self.inner, self.element) {
             (primitives::PropertyValue::ApplicationData(octets), Some(element)) => {
