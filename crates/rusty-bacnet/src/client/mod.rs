@@ -131,6 +131,10 @@ pub struct BACnetClient {
     sc_heartbeat_interval_ms: Option<u64>,
     sc_heartbeat_timeout_ms: Option<u64>,
     reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
+    /// The failover hub's URL (#1829); requires `reconnect`.
+    sc_failover_hub: Option<String>,
+    /// The bound on each hub dial and Connect-Request (#1829).
+    sc_connect_timeout_ms: Option<u64>,
     // IPv6 config
     ipv6_interface: Option<String>,
     /// The device instance whose VMAC an ipv6 client uses (H.7.2); `None`
@@ -143,7 +147,9 @@ pub struct BACnetClient {
 }
 
 mod client_methods {
+    mod bbmd_management;
     mod cov_discovery;
+    mod discovery_streams;
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
     mod foreign_registration;

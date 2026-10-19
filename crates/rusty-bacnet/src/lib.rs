@@ -9,8 +9,10 @@ use pyo3::prelude::*;
 
 mod bip_options;
 mod client;
+mod discovery;
 mod endpoint;
 mod errors;
+mod event_stream;
 mod group_members;
 mod hub;
 mod hub_bindings;
@@ -20,6 +22,7 @@ mod object_audit_policy;
 mod py_async;
 mod read_range;
 mod reinitialize;
+mod sc_events;
 mod sc_identity;
 mod sc_inspection;
 mod sc_npdu;
@@ -60,6 +63,8 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bip_options::PyBbmd>()?;
     m.add_class::<sc_reconnect::PyScReconnect>()?;
     sc_peer::register(m)?;
+    sc_events::register(m)?;
+    discovery::register(m)?;
     sc_inspection::register(m)?;
     endpoint::register(m)?;
     reinitialize::register(m)?;

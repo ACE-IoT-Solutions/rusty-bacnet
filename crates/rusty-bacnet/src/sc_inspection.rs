@@ -34,6 +34,19 @@ impl PyScPemInspection {
     fn key_file_permissions(&self) -> Option<PyScKeyFilePermissions> {
         self.0.key_file_permissions.map(PyScKeyFilePermissions)
     }
+    /// Whether a peer-trust certificate signed the identity leaf directly:
+    /// `"direct"`, `"not_direct"`, `"unknown"`, or `"not_assessed"` without
+    /// peer trust (#1846).
+    #[getter]
+    fn direct_issuer(&self) -> &'static str {
+        self.0.direct_issuer.as_str()
+    }
+    /// Zero-based peer-trust index of the CA that signed the leaf, when
+    /// `direct_issuer` is `"direct"`; else `None`.
+    #[getter]
+    fn direct_issuer_index(&self) -> Option<usize> {
+        self.0.direct_issuer_index
+    }
     #[getter]
     fn certificates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(

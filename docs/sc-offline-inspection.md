@@ -26,11 +26,11 @@ required. Omitting peer trust or the key means that input is not assessed;
 supplying an empty value raises an input error. Certificates retain their original
 order within each role. Identity entries precede peer-trust entries in the report.
 The first identity certificate is the leaf for key comparison; there is no chain
-sorting or path construction. In Rust, `direct_issuer` says whether one
+sorting or path construction. `direct_issuer` says whether one
 peer-trust certificate signed that leaf directly (its subject is the leaf's
 issuer name and the leaf's signature verifies with its key): `direct`, with
 `direct_issuer_index`, `not_direct`, `unknown`, or `not_assessed` without peer
-trust. The Python report does not expose it yet.
+trust. Python reports carry both as frozen getters with the same names.
 
 Each entry contains SHA-256 of the exact decoded DER and optional bounded metadata.
 Malformed DER produces a `certificate/malformed` finding, unavailable validity and

@@ -1662,6 +1662,111 @@ class CovNotificationIterator:
     def __anext__(self) -> Awaitable[CovNotification]: ...
 
 
+class IHave:
+    """An I-Have this client received (#1850), frozen."""
+
+    @property
+    def device_identifier(self) -> ObjectIdentifier: ...
+    @property
+    def object_identifier(self) -> ObjectIdentifier: ...
+    @property
+    def object_name(self) -> str: ...
+    @property
+    def source_mac(self) -> bytes:
+        """The link-layer peer it came from: the device, or the router that
+        passed it on."""
+        ...
+    @property
+    def source_network(self) -> int | None:
+        """SNET, when a router passed it on from another network."""
+        ...
+    @property
+    def source_address(self) -> bytes | None:
+        """SADR, when a router passed it on from another network."""
+        ...
+
+
+class IHaveIterator:
+    """Async iterator over every I-Have from one ``i_have_events()`` call.
+    The client never waits for it: one more than 256 behind loses the
+    oldest and adds them to ``missed``. A cancel that lands while an item
+    is being delivered can drop it uncounted; prefer ``async for``.
+    Iteration ends when the client stops."""
+
+    def __aiter__(self) -> IHaveIterator: ...
+    def __anext__(self) -> Awaitable[IHave]: ...
+    @property
+    def missed(self) -> int:
+        """I-Haves lost so far because this iterator fell behind."""
+        ...
+
+
+class DiscoveredRouter:
+    """A router heard from during ``discover_routers()`` (#1850), frozen."""
+
+    @property
+    def mac(self) -> bytes:
+        """The router's MAC on the local network: the next hop to ``networks``."""
+        ...
+    @property
+    def networks(self) -> list[int]:
+        """Every network it listed, ascending, each once."""
+        ...
+
+
+class NetworkReport:
+    """A network-layer report this client received (#1850), frozen. Fields
+    that don't apply to its ``kind`` are None."""
+
+    @property
+    def kind(self) -> Literal["i_am_router_to_network", "network_number_is",
+                              "reject_message_to_network", "other"]: ...
+    @property
+    def source_mac(self) -> bytes:
+        """The link-layer peer that sent it: for an I-Am-Router-To-Network,
+        the router to send through."""
+        ...
+    @property
+    def source_network(self) -> int | None:
+        """SNET, when a router passed it on from another network."""
+        ...
+    @property
+    def source_address(self) -> bytes | None:
+        """SADR, when a router passed it on from another network."""
+        ...
+    @property
+    def networks(self) -> list[int] | None:
+        """The networks an I-Am-Router-To-Network lists, in its order."""
+        ...
+    @property
+    def network(self) -> int | None:
+        """A Network-Number-Is's network, or the one a refused message was for."""
+        ...
+    @property
+    def configured(self) -> bool | None:
+        """Whether a Network-Number-Is sender had its number configured."""
+        ...
+    @property
+    def reason(self) -> int | None:
+        """A Reject-Message-To-Network's reason octet."""
+        ...
+
+
+class NetworkReportIterator:
+    """Async iterator over the network reports from one
+    ``network_reports()`` call. The client never waits for it: one more
+    than 64 behind loses the oldest and adds them to ``missed``. A cancel
+    that lands while an item is being delivered can drop it uncounted;
+    prefer ``async for``. Iteration ends when the client stops."""
+
+    def __aiter__(self) -> NetworkReportIterator: ...
+    def __anext__(self) -> Awaitable[NetworkReport]: ...
+    @property
+    def missed(self) -> int:
+        """Reports lost so far because this iterator fell behind."""
+        ...
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -1763,6 +1868,30 @@ class BacnetReadRangeViolationError(BacnetError):
             ``"zero_first_sequence_number"``.
     """
     rule: str
+
+class BacnetBvlcNakError(BacnetError):
+    """Raised when a BBMD answers a management request (``read_bdt`` and
+    its siblings, #1841) with a BVLC-Result NAK. No reply raises
+    ``BacnetTimeoutError`` instead, so a refusal and silence never share a
+    class.
+
+    Attributes:
+        result_code: The BVLC result code it sent, such as 0x0010 (Write-BDT
+            refused), 0x0030 (registration refused) or 0x0050 (delete refused).
+    """
+    result_code: int
+
+class BacnetBvlcUnexpectedResponseError(BacnetError):
+    """Raised when a management request (``read_bdt`` and its siblings,
+    #1841) is answered by a BVLC message it doesn't take, such as a success
+    result to a table read.
+
+    Attributes:
+        expected: The BVLC function code the request takes as its answer.
+        got: The BVLC function code that came.
+    """
+    expected: int
+    got: int
 
 class BacnetTransportError(BacnetError, OSError):
     """Raised when a transport socket or I/O operation fails.
@@ -1924,6 +2053,15 @@ class ForeignRegistrationStatus(TypedDict):
     renewal_hints: int
 
 
+class FdtEntry(TypedDict):
+    """A Foreign Device Table entry, as ``read_fdt()`` returns it.
+    ``seconds_remaining`` is what the BBMD reports, its grace period
+    included."""
+    address: str
+    ttl: int
+    seconds_remaining: int
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -2042,6 +2180,19 @@ class ScPemInspection:
     def key_consistency(self) -> Literal["not_assessed", "match", "mismatch", "unusable", "unknown"]: ...
     @property
     def key_file_permissions(self) -> ScKeyFilePermissions | None: ...
+    @property
+    def direct_issuer(self) -> Literal["not_assessed", "direct", "not_direct", "unknown"]:
+        """Whether a ``peer_trust`` certificate signed the identity leaf
+        directly (its subject is the leaf's issuer and the leaf's signature
+        verifies with its key). ``not_assessed`` without peer trust;
+        ``unknown`` when the leaf can't be parsed or a candidate's signature
+        algorithm is unsupported. Informational: it changes no acceptance."""
+        ...
+    @property
+    def direct_issuer_index(self) -> int | None:
+        """Zero-based ``peer_trust`` index of the CA that signed the leaf
+        when ``direct_issuer`` is ``direct``; else None."""
+        ...
 
 def inspect_sc_pem(
     identity_pem: bytes | bytearray, *, peer_trust_pem: bytes | bytearray | None = None,
@@ -2109,6 +2260,95 @@ class ScPeerInfo:
     def leaf_sha256(self) -> bytes: ...
     @property
     def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
+
+class ScEvent:
+    """One SC hub-connector event (#1829), frozen. Fields that don't apply
+    to the event's kind are None.
+
+    A failover reads ``disconnected``, then ``reconnect_attempt`` and
+    ``connect_failed`` for each failed primary attempt, then
+    ``failover_engaged`` and ``connected`` on the failover hub. A primary
+    restore reads ``primary_restored``, then ``connected`` on the primary.
+    """
+    @property
+    def kind(self) -> Literal["connected", "disconnected", "connect_failed",
+                              "reconnect_attempt", "failover_engaged",
+                              "primary_restored", "reconnect_gave_up", "other"]: ...
+    @property
+    def hub(self) -> Literal["primary", "failover"] | None:
+        """The hub connected to, lost, failed or being dialled."""
+        ...
+    @property
+    def hub_vmac(self) -> bytes | None:
+        """The hub's VMAC from its Connect-Accept, on ``connected``."""
+        ...
+    @property
+    def cause(self) -> Literal["local_close", "peer_close", "heartbeat_timeout",
+                               "websocket", "tls", "nak", "connect_timeout",
+                               "malformed_result", "unexpected_connect_reply",
+                               "rejection_expired", "other"] | None:
+        """Why a ``disconnected`` link ended or a ``connect_failed`` attempt failed."""
+        ...
+    @property
+    def cause_detail(self) -> str | None:
+        """Diagnostic text for a ``websocket``, ``tls`` or ``other`` cause; not stable."""
+        ...
+    @property
+    def error_class(self) -> int | None:
+        """The NAK's error class, for a ``nak`` cause."""
+        ...
+    @property
+    def error_code(self) -> int | None:
+        """The NAK's error code, for a ``nak`` cause."""
+        ...
+    @property
+    def attempt(self) -> int | None:
+        """A ``reconnect_attempt``'s number, from 1; the attempts made, for
+        ``reconnect_gave_up``."""
+        ...
+    @property
+    def backoff(self) -> float | None:
+        """Seconds a ``reconnect_attempt`` waited first."""
+        ...
+
+class ScLinkStatus:
+    """A frozen snapshot of the SC hub link (#1829)."""
+    @property
+    def state(self) -> Literal["disconnected", "connecting", "connected", "disconnecting"]: ...
+    @property
+    def active_hub(self) -> Literal["primary", "failover"] | None:
+        """The hub in use or, while reconnecting, being dialled; None before
+        the first attempt."""
+        ...
+    @property
+    def hub_vmac(self) -> bytes | None:
+        """The connected hub's VMAC; None while not connected."""
+        ...
+    @property
+    def heartbeat_age(self) -> float | None:
+        """Seconds since the last message from the hub; None while not connected."""
+        ...
+    @property
+    def heartbeat_rtt(self) -> float | None:
+        """Round-trip seconds of the latest answered Heartbeat-Request on
+        this connection; None until one is answered."""
+        ...
+
+class ScEventIterator:
+    """Async iterator over ``ScEvent`` from one ``connection_events()`` call.
+
+    The connector never waits for it: an iterator more than 64 events behind
+    loses the oldest and adds them to ``missed``. A cancel that lands while
+    an event is being delivered can drop it uncounted: prefer ``async for``
+    over polling ``__anext__`` with short timeouts. Iteration ends when the
+    client stops.
+    """
+    def __aiter__(self) -> ScEventIterator: ...
+    def __anext__(self) -> Awaitable[ScEvent]: ...
+    @property
+    def missed(self) -> int:
+        """Events lost so far because this iterator fell behind."""
+        ...
 
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
@@ -2200,8 +2440,18 @@ class BACnetClient:
         foreign_device: Optional[ForeignDevice] = None,
         reconnect: Optional[ScReconnect] = None,
         sc_npdu_per_origin_limit: int | None = None,
+        sc_failover_hub: str | None = None,
+        sc_connect_timeout_ms: int | None = None,
     ) -> None:
-        """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
+        """``sc_failover_hub`` (SC only, needs ``reconnect``, else
+        ValueError): a second hub's ``wss://`` URL, dialled with the same TLS
+        settings when the primary can't be reached; the client keeps trying
+        the primary and returns to it. ``sc_connect_timeout_ms`` (SC only, at
+        least 1, default 10000) bounds each hub dial and Connect-Request.
+        Follow the link with ``connection_events()`` and
+        ``connection_status()`` (#1829).
+
+        ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
         ValueError): run the client as a BBMD, or register it with a BBMD
         on another subnet as a foreign device, so its Who-Is reaches that
         subnet (#938). See ``Bbmd`` and ``ForeignDevice``.
@@ -2474,6 +2724,44 @@ class BACnetClient:
         0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
         past 4194303 raises ``ValueError`` before anything is sent.
         """
+        ...
+
+    def who_has_replies(
+        self,
+        object: ObjectIdentifier | str,
+        low_limit: Optional[int] = None,
+        high_limit: Optional[int] = None,
+        timeout_ms: int = 3000,
+    ) -> Awaitable[list[IHave]]:
+        """Broadcast a Who-Has for ``object`` (an identifier, or a name) and
+        collect the I-Haves that answer it for ``timeout_ms``: one per device
+        and object, in arrival order; an empty list when none answer. The
+        limits follow ``who_has_by_id()``'s rule (#1850). It holds the
+        started client for the whole wait, so ``stop()`` waits up to
+        ``timeout_ms`` for it."""
+        ...
+
+    def i_have_events(self) -> Awaitable[IHaveIterator]:
+        """Follow every I-Have the client receives from now on, an answer to
+        its own Who-Has or not (#1850). RuntimeError before start and after
+        stop."""
+        ...
+
+    def discover_routers(
+        self, network: Optional[int] = None, timeout_ms: int = 3000,
+    ) -> Awaitable[list[DiscoveredRouter]]:
+        """Broadcast a Who-Is-Router-To-Network for ``network`` (or every
+        network) and collect the routers that answer for ``timeout_ms``, one
+        per router MAC in the order first heard; for a ``network``, only the
+        routers listing it. An empty list when none answer. ``network`` 0 or
+        65535 raises BacnetError (#1850). It holds the started client for
+        the whole wait, so ``stop()`` waits up to ``timeout_ms`` for it."""
+        ...
+
+    def network_reports(self) -> Awaitable[NetworkReportIterator]:
+        """Follow the I-Am-Router-To-Network, Network-Number-Is and
+        Reject-Message-To-Network messages the client receives from now on
+        (#1850). RuntimeError before start and after stop."""
         ...
 
     def discovered_devices(self) -> Awaitable[list[DiscoveredDevice]]:
@@ -3167,6 +3455,50 @@ class BACnetClient:
         RuntimeError for non-SC, stopped or closing clients. Historical results
         own data only. Observation time is not certificate validation time.
         """
+        ...
+
+    # --- BBMD management (Annex J, #1841) ---
+    # Each sends one BVLC request to the B/IP ``address`` (``"ip"`` or
+    # ``"ip:port"``) and waits up to three seconds. A NAK raises
+    # BacnetBvlcNakError (with ``result_code``), no reply BacnetTimeoutError,
+    # a reply of the wrong kind BacnetBvlcUnexpectedResponseError. A non-B/IP
+    # client raises BacnetError; a bad address ValueError, before any I/O.
+
+    def read_bdt(self, address: str) -> Awaitable[list[tuple[str, str]]]:
+        """Read a BBMD's Broadcast Distribution Table as ``("ip:port", "mask")`` rows."""
+        ...
+
+    def write_bdt(self, address: str, entries: Sequence[str | tuple[str, str]]) -> Awaitable[None]:
+        """Ask a BBMD to take ``entries`` (rows as ``Bbmd(bdt=)`` takes them)
+        as its BDT. A BBMD that follows the 2020 standard refuses with 0x0010."""
+        ...
+
+    def read_fdt(self, address: str) -> Awaitable[list[FdtEntry]]:
+        """Read a BBMD's Foreign Device Table."""
+        ...
+
+    def delete_fdt_entry(self, address: str, entry: str) -> Awaitable[None]:
+        """Ask a BBMD to delete the foreign device at ``entry``
+        (``"ip:port"``) from its FDT; a refusal is 0x0050."""
+        ...
+
+    def register_foreign_device_bvlc(self, address: str, ttl: int) -> Awaitable[None]:
+        """Register once as a foreign device for ``ttl`` seconds (0 to
+        65535); a refusal is 0x0030. Nothing is renewed and broadcasts don't
+        go through the BBMD: ``foreign_device=`` does that."""
+        ...
+
+    def connection_events(self) -> Awaitable[ScEventIterator]:
+        """Subscribe to the SC hub-connector events from now on (#1829); the
+        first connection, made during ``async with``, is already behind it.
+        A slow reader never holds up the connector: see
+        ``ScEventIterator.missed``. RuntimeError for a stopped or non-SC
+        client."""
+        ...
+
+    def connection_status(self) -> Awaitable[ScLinkStatus]:
+        """Snapshot the SC hub link without I/O (#1829). RuntimeError for a
+        stopped or non-SC client."""
         ...
 
     def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
