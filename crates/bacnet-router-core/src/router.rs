@@ -60,6 +60,7 @@ mod groups;
 mod host;
 mod ingress;
 mod init;
+mod originate;
 mod output;
 mod reject;
 mod reply;
@@ -75,6 +76,7 @@ pub use duplicates::Duplicates;
 pub use groups::{Group, GroupClassifier, Groups};
 pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
+pub use originate::{OriginateError, Request, SourceSelection};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 pub use reject::RejectOrigin;
 pub use reply::{ReplyPlan, ReplyPlanError};
@@ -135,6 +137,12 @@ pub struct Storage<
     counters: Counters,
     /// The last global broadcasts seen (#1698).
     recent: Recent<B>,
+    /// When the next sweep is due. Kept here rather than in the
+    /// [`Router`], with the latest time, so the router itself stays small
+    /// on a firmware stack.
+    next_sweep: Instant,
+    /// The latest time any call has passed in.
+    latest: Instant,
 }
 
 impl<
@@ -163,6 +171,8 @@ impl<
             out: Outputs::NEW,
             counters: Counters::ZERO,
             recent: Recent::NEW,
+            next_sweep: Instant::ZERO,
+            latest: Instant::ZERO,
         }
     }
 }
@@ -200,6 +210,8 @@ impl<
             .field("discovery", &self.discovery)
             .field("pending", &self.out.pending(self.port_count))
             .field("counters", &self.counters)
+            .field("next_sweep", &self.next_sweep)
+            .field("latest", &self.latest)
             .finish_non_exhaustive()
     }
 }
@@ -222,9 +234,6 @@ pub struct Router<
     storage: S,
     groups: core::marker::PhantomData<G>,
     options: Options,
-    next_sweep: Instant,
-    /// The latest time any call has passed in.
-    latest: Instant,
 }
 
 /// A [`Router`] over [`Storage`] it borrows, as firmware runs one: the
@@ -273,8 +282,6 @@ where
         f.debug_struct("Router")
             .field("storage", self.storage.borrow())
             .field("options", &self.options)
-            .field("next_sweep", &self.next_sweep)
-            .field("latest", &self.latest)
             .finish()
     }
 }
@@ -351,6 +358,8 @@ where
         store.out = Outputs::NEW;
         store.counters = Counters::ZERO;
         store.recent = Recent::NEW;
+        store.next_sweep = now + options.sweep;
+        store.latest = now;
         store.ports[..ports.len()].clone_from_slice(ports);
         // Release custom rules from ports a prior router used in this storage.
         store.ports[ports.len()..].fill_with(|| PortConfig::ZERO);
@@ -365,8 +374,6 @@ where
             storage,
             groups: core::marker::PhantomData,
             options,
-            next_sweep: now + options.sweep,
-            latest: now,
         })
     }
 
@@ -377,8 +384,9 @@ where
     /// `now`, or the latest time passed in when that is later, which it
     /// then stays (the clock rule in the module docs).
     fn clock(&mut self, now: Instant) -> Instant {
-        self.latest = self.latest.max(now);
-        self.latest
+        let store = self.store();
+        store.latest = store.latest.max(now);
+        store.latest
     }
 
     /// Queue the startup announcements, port by port: a Network-Number-Is
@@ -404,6 +412,26 @@ where
         let now = self.clock(now);
         let options = self.options;
         self.store().receive(frame, now, &options, host)
+    }
+
+    /// Send a request from the router's own application to another
+    /// network, through the routing table (#1699): toward the next router
+    /// with its DNET, DADR and a full hop count, or onto a directly attached
+    /// network to the DADR, from the address [`Request::source`] selects.
+    /// The send is polled as any is, with [`Kind::Originate`] and
+    /// [`Cause::Local`], and carries no reject origin: a later refusal
+    /// answers no one.
+    ///
+    /// Refused, sending nothing, for the cases [`OriginateError`] lists: a
+    /// network with no route also starts a search for one, polled as a
+    /// Who-Is-Router on every port, and a busy or failed route is refused
+    /// as the router refuses others' traffic for it. Like
+    /// [`receive`](Self::receive), it drops what an earlier call left
+    /// unpolled.
+    pub fn originate(&mut self, request: &Request<'_>, now: Instant) -> Result<(), OriginateError> {
+        let now = self.clock(now);
+        let options = self.options;
+        self.store().originate(request, now, &options)
     }
 
     /// The next thing to do. Its NPDU stays in the router's scratch until
@@ -524,7 +552,7 @@ where
     /// does). A change that lets another call move it must say so here,
     /// since such a host would then need a wake after that call.
     pub fn next_deadline(&self) -> Option<Instant> {
-        Some(self.next_sweep)
+        Some(self.storage.borrow().next_sweep)
     }
 
     /// Run the sweep, if it is due: purge learned routes not confirmed
@@ -536,7 +564,7 @@ where
     /// before the latest one passed in is taken as that one.
     pub fn on_deadline(&mut self, now: Instant, host: &mut impl Host) {
         let now = self.clock(now);
-        if now < self.next_sweep {
+        if now < self.storage.borrow().next_sweep {
             return;
         }
         let options = self.options;
@@ -555,9 +583,9 @@ where
             .expire(now, options.discovery_age, |network| {
                 host.observe(Event::DiscoveryExpired { network });
             });
-        self.next_sweep += options.sweep;
-        if self.next_sweep <= now {
-            self.next_sweep = now + options.sweep;
+        store.next_sweep += options.sweep;
+        if store.next_sweep <= now {
+            store.next_sweep = now + options.sweep;
         }
     }
 

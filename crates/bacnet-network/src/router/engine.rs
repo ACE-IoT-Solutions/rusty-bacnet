@@ -258,6 +258,7 @@ published!(
     available_announced,
     duplicate_drops,
     not_next_hop,
+    originated,
 );
 
 // The engine's counts are all `u32`s and the totals all `u64`s, so their

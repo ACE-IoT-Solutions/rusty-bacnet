@@ -92,6 +92,9 @@ pub enum Kind {
     /// The router's own Router-Busy or Router-Available, of this type, for
     /// a port that clogged or drained (#1697).
     Congestion(NetworkMessageType),
+    /// A request from the router's own application
+    /// ([`Router::originate`](super::Router::originate), #1699).
+    Originate,
 }
 
 /// What prompted a send.
@@ -100,7 +103,8 @@ pub enum Cause {
     /// A received frame: the send carries that frame's link data
     /// attributes, as every output an arrival prompts does today.
     Ingress,
-    /// The router itself (the startup announcements): no attributes.
+    /// The router itself (the startup announcements, its congestion
+    /// messages and its application's requests): no attributes.
     Local,
 }
 
@@ -131,6 +135,7 @@ enum Tag {
     Announce,
     Solicit,
     Congestion,
+    Originate,
 }
 
 /// Where a written NPDU goes.
@@ -204,6 +209,7 @@ impl Current {
             Kind::Announce(code) => (Tag::Announce, code.to_raw()),
             Kind::Solicit => (Tag::Solicit, 0),
             Kind::Congestion(code) => (Tag::Congestion, code.to_raw()),
+            Kind::Originate => (Tag::Originate, 0),
         };
         let mut current = Self {
             active: true,
@@ -256,6 +262,7 @@ impl Current {
             Tag::Announce => Kind::Announce(NetworkMessageType::from_raw(self.code)),
             Tag::Solicit => Kind::Solicit,
             Tag::Congestion => Kind::Congestion(NetworkMessageType::from_raw(self.code)),
+            Tag::Originate => Kind::Originate,
         }
     }
 }

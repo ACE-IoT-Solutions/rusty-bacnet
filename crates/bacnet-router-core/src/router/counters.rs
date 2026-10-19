@@ -71,6 +71,9 @@ pub struct Counters {
     /// rejects under [`Options::next_hop_rejects`](super::Options::next_hop_rejects),
     /// Router-Busy and Router-Available always.
     pub not_next_hop: u32,
+    /// Requests the router's own application sent through the engine
+    /// ([`Router::originate`](super::Router::originate), #1699).
+    pub originated: u32,
 }
 
 impl Counters {
@@ -96,6 +99,7 @@ impl Counters {
         available_announced: 0,
         duplicate_drops: 0,
         not_next_hop: 0,
+        originated: 0,
     };
 }
 

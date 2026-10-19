@@ -73,4 +73,7 @@ pub struct Counters {
     /// learned route goes through another router, left unchanged
     /// ([`RouterOptions::next_hop_rejects`](super::RouterOptions::next_hop_rejects), #1698).
     pub not_next_hop: u64,
+    /// Requests the router's own application sent through the engine
+    /// ([`BACnetRouter::originate`](super::BACnetRouter::originate), #1699).
+    pub originated: u64,
 }

@@ -73,6 +73,7 @@ mod limits;
 mod local_control;
 mod local_delivery;
 mod options;
+mod originate;
 mod port_groups;
 mod replies;
 mod send_queue;
@@ -85,13 +86,16 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bacnet_npdu::Mac;
-pub use bacnet_router_core::router::{Congestion, Duplicates};
+pub use bacnet_router_core::router::{
+    Congestion, Duplicates, OriginateError, Request, SourceSelection,
+};
 use bacnet_router_core::{Instant, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 pub use counters::Counters;
+pub use originate::OriginateFailure;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -172,6 +176,10 @@ pub struct RouterPort<T: TransportPort> {
 /// route answers, the hop count, and the router's own address on any port.
 pub struct BACnetRouter {
     replies: Arc<replies::ReplyLifetime>,
+    /// The port queues, for the router's own requests ([`Self::originate`]):
+    /// held weakly, as replies hold them, so stopping the dispatch tasks
+    /// still closes the local receivers.
+    outputs: std::sync::Weak<Outputs>,
     /// The engine, the gate and the ports' groups.
     shared: Arc<Shared>,
     /// Dispatch tasks (one per port).
@@ -543,6 +551,7 @@ impl BACnetRouter {
         Ok((
             Self {
                 replies,
+                outputs: Arc::downgrade(&outputs),
                 shared,
                 dispatch_tasks,
                 sender_tasks,
@@ -654,6 +663,8 @@ mod late_refusal_tests;
 mod limit_tests;
 #[cfg(test)]
 mod mstp_extended_tests;
+#[cfg(test)]
+mod originate_tests;
 #[cfg(test)]
 mod priority_harness;
 #[cfg(test)]
