@@ -3,7 +3,7 @@
 
 use tokio::sync::watch;
 
-use super::{ScConnectionState, ScReconnectConfig, ScTransport, WebSocketPort};
+use super::{ScActiveHub, ScConnectionState, ScReconnectConfig, ScTransport, WebSocketPort};
 
 impl<W: WebSocketPort> ScTransport<W> {
     /// Configure the device UUID before start (builder-style).
@@ -66,6 +66,18 @@ impl<W: WebSocketPort> ScTransport<W> {
     /// Set a failover WebSocket to try if the primary connection fails (builder-style).
     pub fn with_failover(mut self, ws: W) -> Self {
         self.failover_ws = Some(ws);
+        self
+    }
+
+    /// Say which hub the WebSocket given to [`Self::new`] reaches (builder-style;
+    /// default [`ScActiveHub::Primary`]).
+    ///
+    /// With [`ScActiveHub::Failover`] the transport starts on the failover hub,
+    /// for when the primary could not be dialled: a failed handshake does not
+    /// fall back further, and with [`Self::with_reconnect`] and
+    /// [`Self::with_connector`] it restores the primary later.
+    pub fn with_initial_hub(mut self, hub: ScActiveHub) -> Self {
+        self.initial_hub = hub;
         self
     }
 

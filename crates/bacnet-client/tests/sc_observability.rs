@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::sc::{
-    ScActiveHub, ScConnectionState, ScEvent, ScReconnectConfig, ScTransport,
+    ScActiveHub, ScConnectError, ScConnectionState, ScEvent, ScReconnectConfig, ScTransport,
+    ScWebSocketErrorKind,
 };
 use bacnet_transport::sc_hub::{ScHub, ScHubTlsConfig};
 use bacnet_transport::sc_tls::{ScNodeTlsConfig, TlsWebSocket};
@@ -215,4 +216,103 @@ async fn stopping_and_restarting_the_primary_hub_reads_as_ordered_events() {
     client.stop().await.unwrap();
     primary.stop().await;
     failover.stop().await;
+}
+
+/// Start the primary hub on `addr`, retrying while the port lingers.
+async fn rebind(pki: &Pki, addr: &str) -> ScHub {
+    for _ in 0..100 {
+        if let Ok(hub) = pki.hub(0, addr, PRIMARY_VMAC).await {
+            return hub;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("could not bind the primary hub on {addr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreachable_primary_builds_on_the_failover_hub_and_restores_later() {
+    let pki = Pki::new();
+    // An address nobody listens on until the primary starts there.
+    let primary_addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let mut failover = pki.hub(1, "127.0.0.1:0", FAILOVER_VMAC).await.unwrap();
+    let mut client = BACnetClient::sc_builder()
+        .hub_url(&format!("wss://localhost:{}", primary_addr.port()))
+        .failover_hub_url(&url(&failover))
+        .reconnect(ScReconnectConfig {
+            initial_delay_ms: 100,
+            max_delay_ms: 100,
+            max_retries: 1,
+        })
+        .tls_config(pki.node.clone())
+        .vmac([0x02, 0, 0, 0, 0, 0x23])
+        .device_uuid([0x23; 16])
+        .build()
+        .await
+        .unwrap();
+    let transport = client.transport();
+    let status = transport.connection_status();
+    assert_eq!(status.state, ScConnectionState::Connected);
+    assert_eq!(status.active_hub, Some(ScActiveHub::Failover));
+    assert_eq!(status.hub_vmac, Some(FAILOVER_VMAC));
+    assert_eq!(peer_leaf(transport).await, vec![pki.hubs[1].0.to_vec()]);
+    let mut events = transport.connection_events();
+    let mut seen = Vec::new();
+
+    let mut primary = rebind(&pki, &primary_addr.to_string()).await;
+    until_event(&mut events, &mut seen, |e| {
+        matches!(e, ScEvent::PrimaryRestored)
+    })
+    .await;
+    let next = tokio::time::timeout(WAIT, events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        is_connected(&next, ScActiveHub::Primary, PRIMARY_VMAC),
+        "{next:?}"
+    );
+    assert_eq!(
+        transport.connection_status().active_hub,
+        Some(ScActiveHub::Primary)
+    );
+    assert_eq!(peer_leaf(transport).await, vec![pki.hubs[0].0.to_vec()]);
+    client.stop().await.unwrap();
+    primary.stop().await;
+    failover.stop().await;
+}
+
+#[tokio::test]
+async fn failover_settings_are_checked_before_any_dial() {
+    let pki = Pki::new();
+    let builder = || {
+        BACnetClient::sc_builder()
+            .hub_url("wss://localhost:1")
+            .tls_config(pki.node.clone())
+            .vmac([0x02, 0, 0, 0, 0, 0x24])
+            .device_uuid([0x24; 16])
+    };
+    let error = builder()
+        .failover_hub_url("wss://localhost:2")
+        .build()
+        .await
+        .err()
+        .expect("a failover hub needs reconnect");
+    assert!(error.to_string().contains("requires reconnect"), "{error}");
+    let error = builder()
+        .failover_hub_url("https://localhost:2")
+        .reconnect(ScReconnectConfig::default())
+        .build()
+        .await
+        .err()
+        .expect("a non-wss failover URL is refused");
+    assert!(matches!(
+        ScConnectError::from_error(&error),
+        Some(ScConnectError::WebSocket {
+            kind: ScWebSocketErrorKind::UnsupportedScheme,
+            ..
+        })
+    ));
 }

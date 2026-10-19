@@ -106,6 +106,13 @@ impl ScClientBuilder {
         if let Some(config) = &self.reconnect {
             config.validate()?;
         }
+        if self.failover_hub_url.is_some() && self.reconnect.is_none() {
+            // Without reconnection a lost connection is never re-established,
+            // so the failover hub would never be reached or left again.
+            return Err(Error::Encoding(
+                "SC client builder: failover_hub_url requires reconnect".into(),
+            ));
+        }
         self.validate_identity()?;
         self.options.validate()?;
         self.config.validate_request_settings()?;
@@ -127,12 +134,27 @@ impl ScClientBuilder {
             self.tls_config.as_ref().cloned().ok_or_else(|| {
                 Error::Encoding("SC client builder: tls_config is required".into())
             })?;
-        let ws = Box::pin(bacnet_transport::sc_tls::TlsWebSocket::connect(
-            &self.hub_url,
-            tls_config.clone(),
-        ))
-        .await?;
-        let mut transport = self.sc_transport(ws);
+        use bacnet_transport::sc::ScActiveHub;
+        use bacnet_transport::sc_tls::TlsWebSocket;
+        TlsWebSocket::validate_url(&self.hub_url)?;
+        if let Some(url) = &self.failover_hub_url {
+            TlsWebSocket::validate_url(url)?;
+        }
+        // An unreachable primary starts the client on the failover hub; the
+        // transport restores the primary once it answers (Annex AB.5.2).
+        let (ws, hub) = match Box::pin(TlsWebSocket::connect(&self.hub_url, tls_config.clone()))
+            .await
+        {
+            Ok(ws) => (ws, ScActiveHub::Primary),
+            Err(primary) => match &self.failover_hub_url {
+                Some(url) => match Box::pin(TlsWebSocket::connect(url, tls_config.clone())).await {
+                    Ok(ws) => (ws, ScActiveHub::Failover),
+                    Err(_) => return Err(primary),
+                },
+                None => return Err(primary),
+            },
+        };
+        let mut transport = self.sc_transport(ws).with_initial_hub(hub);
         if let Some(failover_url) = self.failover_hub_url {
             let tls_config = tls_config.clone();
             transport = transport.with_failover_connector(move || {

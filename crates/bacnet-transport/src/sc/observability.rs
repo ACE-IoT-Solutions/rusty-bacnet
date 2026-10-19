@@ -42,7 +42,10 @@ pub enum ScDisconnectCause {
     /// The hub closed it: a Disconnect-Request from the hub, or the
     /// WebSocket closed or ended.
     PeerClose,
-    /// Nothing arrived from the hub within the heartbeat timeout (Annex AB.6.3).
+    /// Nothing arrived from the hub within the heartbeat timeout. Annex
+    /// AB.6.3 has the connecting node probe an idle link with Heartbeat-Request;
+    /// dropping the connection when the silence outlasts the timeout is this
+    /// stack's local policy.
     HeartbeatTimeout,
     /// A TCP, TLS or WebSocket failure of the given kind.
     WebSocket(ScWebSocketErrorKind),
@@ -67,7 +70,8 @@ pub enum ScDisconnectCause {
     /// A rejection NAK could not be sent within the remaining heartbeat
     /// budget, so the socket was retired.
     RejectionExpired,
-    /// Any other failure, with its text.
+    /// Any other failure, with its text. The text is for diagnostics only:
+    /// it is not stable and should not be matched on.
     Other(String),
 }
 
@@ -109,6 +113,11 @@ impl ScDisconnectCause {
             // Completes a Disconnect-Request this node sent.
             ScFunction::DisconnectAck => Self::LocalClose,
             _ => match decode_sc_bvlc_result(msg) {
+                // Even refused, our Disconnect-Request ends the connection.
+                Ok(ScBvlcResult::Nak {
+                    result_for: ScFunction::DisconnectRequest,
+                    ..
+                }) => Self::LocalClose,
                 Ok(ScBvlcResult::Nak {
                     result_for,
                     error_class,
@@ -127,10 +136,16 @@ impl ScDisconnectCause {
 
 /// A hub-connector event, in the order the connector acts.
 ///
-/// A failover reads `Disconnected`, then `ReconnectAttempt` and
-/// `ConnectFailed` for each failed primary attempt, then `FailoverEngaged`
-/// and `Connected` on the failover hub. A primary restore reads
-/// `PrimaryRestored`, then `Connected` on the primary.
+/// - A failover reads `Disconnected`, then `ReconnectAttempt` and
+///   `ConnectFailed` for each failed primary attempt, then `FailoverEngaged`
+///   and `Connected` on the failover hub.
+/// - Losing the failover hub retries the primary first, then the failover
+///   hub, within each attempt; both share the attempt number.
+/// - A primary restore reads `PrimaryRestored`, then `Connected` on the
+///   primary. The replaced failover connection gets no `Disconnected`.
+///   Failed restore probes while on the failover hub are not reported.
+/// - A stop during a reconnect backoff ends the stream without a terminal
+///   event: the last one is `Disconnected` or the latest `ConnectFailed`.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScEvent {
@@ -159,14 +174,14 @@ pub enum ScEvent {
         /// Why it failed.
         cause: ScDisconnectCause,
     },
-    /// A reconnect attempt starts after `backoff`.
+    /// A reconnect attempt is dialling `hub`, after waiting `backoff`.
     #[non_exhaustive]
     ReconnectAttempt {
-        /// The hub to be dialled.
+        /// The hub being dialled.
         hub: ScActiveHub,
         /// The attempt number, from 1.
         attempt: u32,
-        /// The jittered delay before this attempt dials.
+        /// The jittered delay waited before this attempt.
         backoff: Duration,
     },
     /// The primary hub could not be reached; the connector turns to the
@@ -177,7 +192,9 @@ pub enum ScEvent {
     /// Reconnection stopped; the transport stays disconnected.
     #[non_exhaustive]
     ReconnectGaveUp {
-        /// Reconnect attempts made in this episode.
+        /// Attempts made in this episode, the highest `attempt` number
+        /// reported. The single failover dial after the primary attempts
+        /// are used up is not counted.
         attempts: u32,
     },
 }
@@ -237,37 +254,41 @@ impl ScObserver {
         let _ = self.events.send(event);
     }
 
+    /// Mark the link connected and report it. A handshake always learns the
+    /// hub VMAC, so without one neither happens: the flag and the event
+    /// stay paired.
     pub(super) fn connected(&self, hub: ScActiveHub, hub_vmac: Option<Vmac>) {
+        let Some(hub_vmac) = hub_vmac else {
+            return;
+        };
         {
             let mut link = self.link();
             *link = Link {
                 connected: true,
                 hub: Some(hub),
-                hub_vmac,
+                hub_vmac: Some(hub_vmac),
                 last_activity: Some(Instant::now()),
                 ..Link::default()
             };
         }
-        if let Some(hub_vmac) = hub_vmac {
-            self.emit(ScEvent::Connected { hub, hub_vmac });
-        }
+        self.emit(ScEvent::Connected { hub, hub_vmac });
     }
 
     /// Report the live connection's end once, whichever path sees it first.
+    /// Always clears the per-connection fields, so a late call (stop after a
+    /// reconnect that raced it) leaves a consistent status.
     pub(super) fn disconnected(&self, cause: ScDisconnectCause) {
-        let hub = {
+        let (was_connected, hub) = {
             let mut link = self.link();
-            if !link.connected {
-                return;
-            }
+            let was_connected = link.connected;
             let hub = link.hub;
             *link = Link {
                 hub,
                 ..Link::default()
             };
-            hub
+            (was_connected, hub)
         };
-        if let Some(hub) = hub {
+        if let (true, Some(hub)) = (was_connected, hub) {
             self.emit(ScEvent::Disconnected { hub, cause });
         }
     }

@@ -119,6 +119,7 @@ pub struct ScTransport<W: WebSocketPort> {
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
     failover_ws: Option<W>,
+    initial_hub: ScActiveHub,
     primary_connector: Option<WebSocketConnector<W>>,
     failover_connector: Option<WebSocketConnector<W>>,
     reconnect_config: Option<ScReconnectConfig>,
@@ -159,6 +160,7 @@ impl<W: WebSocketPort> ScTransport<W> {
             heartbeat_interval_ms: heartbeat::DEFAULT_HEARTBEAT_INTERVAL_MS,
             heartbeat_timeout_ms: heartbeat::DEFAULT_HEARTBEAT_TIMEOUT_MS,
             failover_ws: None,
+            initial_hub: ScActiveHub::Primary,
             primary_connector: None,
             failover_connector: None,
             reconnect_config: None,
@@ -235,11 +237,13 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         )
         .await
         {
-            Ok(()) => (primary_ws.clone(), ScActiveHub::Primary),
+            Ok(()) => (primary_ws.clone(), self.initial_hub),
             Err(primary_err) => {
-                observer.connect_failed(ScActiveHub::Primary, &primary_err);
+                observer.connect_failed(self.initial_hub, &primary_err);
                 // Primary failed — try failover if configured.
-                if !conn.lock().await.connect_retry_allowed {
+                if self.initial_hub == ScActiveHub::Failover
+                    || !conn.lock().await.connect_retry_allowed
+                {
                     self.local_vmac = conn.lock().await.local_vmac;
                     return Err(primary_err);
                 } else if let Some(failover) = dial_failover_ws(
@@ -297,7 +301,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             .map(|cfg| cfg.initial_delay_ms.max(1))
             .unwrap_or(heartbeat_interval_ms.max(1));
 
-        let mut primary_ws = Some(primary_ws.clone());
+        let mut primary_ws = (self.initial_hub == ScActiveHub::Primary).then(|| primary_ws.clone());
         let mut ws_clone = ws.clone();
         let mut active_hub = active_hub;
         let hub_limits = self.hub_limits.clone();

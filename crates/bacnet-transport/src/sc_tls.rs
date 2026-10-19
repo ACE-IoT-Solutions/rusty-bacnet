@@ -96,6 +96,14 @@ impl TlsWebSocket {
         boxed(|| Self::connect_with_subprotocol(url, tls_config, BACNET_SC_HUB_SUBPROTOCOL)).await
     }
 
+    /// Check a `wss` URL the way [`Self::connect`] parses it (scheme, host,
+    /// TLS server name), without any I/O.
+    pub fn validate_url(url: &str) -> Result<(), Error> {
+        let uri = parse_wss_uri(url)?;
+        tcp_addr_from_uri(&uri)?;
+        tls_server_name_from_uri(&uri).map(drop)
+    }
+
     /// Dial a direct-connection peer `wss` URI with node operational credentials.
     ///
     /// This is the dial-out half of an optional direct connection: the caller

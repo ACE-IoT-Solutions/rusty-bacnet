@@ -88,6 +88,23 @@ async fn publish_connected_ws<W: WebSocketPort>(
     c.hub_vmac
 }
 
+enum Step<W> {
+    Up(Arc<W>),
+    Failed,
+    Stop,
+}
+
+struct Attempt<'a, W> {
+    target: ScActiveHub,
+    /// The lost socket, when it is the target and may be reused.
+    reuse: Option<&'a Arc<W>>,
+    /// Whether `target` is the hub whose connection was lost.
+    lost: bool,
+    attempt: u32,
+    delay: Duration,
+    backoff: Duration,
+}
+
 pub(super) struct Recovery<'a, W: WebSocketPort> {
     pub config: &'a ScReconnectConfig,
     /// Transport-task owned: retries and reconnect episodes share one log window.
@@ -115,9 +132,15 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         let mut backoff = initial_backoff;
         let max_backoff = Duration::from_millis(self.config.max_delay_ms);
         let mut attempts = 0;
-        for attempt in 1..=self.config.max_retries {
+        // Losing the failover hub sends each attempt to the primary first,
+        // then back to the failover hub, so the connector keeps working toward
+        // the primary (Annex AB.5.2). Losing the primary retries the primary.
+        let targets: &[ScActiveHub] = match active_hub {
+            ScActiveHub::Primary => &[ScActiveHub::Primary],
+            ScActiveHub::Failover => &[ScActiveHub::Primary, ScActiveHub::Failover],
+        };
+        'attempts: for attempt in 1..=self.config.max_retries {
             let delay = jittered_backoff(backoff, initial_backoff, max_backoff);
-            self.observer.reconnect_attempt(active_hub, attempt, delay);
             tokio::time::sleep(delay).await;
             if !self.conn.lock().await.connect_retry_allowed {
                 if let Some(suppressed) = self.retry_diagnostic() {
@@ -126,61 +149,23 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 break;
             }
             attempts = attempt;
-            {
-                let mut c = self.conn.lock().await;
-                c.reset_for_connect_retry();
-                self.state_tx.send_replace(c.state);
-            }
-            let reconnect_ws = match dial_reconnect_ws(
-                active_hub,
-                self.primary_connector,
-                self.failover_connector,
-                self.connect_timeout_ms,
-            )
-            .await
-            {
-                Ok(Some(ws)) => ws,
-                Ok(None) if current_reusable => current_ws.clone(),
-                Ok(None) => {
-                    if let Some(suppressed) = self.retry_diagnostic() {
-                        warn!(suppressed, "SC retired socket cannot be reused without a fresh connector (suppressed {suppressed} reconnect diagnostics)");
-                    }
-                    break;
-                }
-                Err(e) => {
-                    self.observer.connect_failed(active_hub, &e);
-                    if let Some(suppressed) = self.retry_diagnostic() {
-                        warn!(%e, attempt, suppressed, "SC reconnection redial failed (suppressed {suppressed} reconnect diagnostics)");
-                    }
-                    backoff = (backoff * 2).min(max_backoff);
-                    continue;
-                }
-            };
-            let probe_conn = connect_probe_from(self.conn).await;
-            match perform_handshake(&*reconnect_ws, &probe_conn, None, self.connect_timeout_ms)
-                .await
-            {
-                Ok(()) => {
-                    self.publish(&reconnect_ws, &probe_conn, active_hub).await;
-                    let suppressed = self.diagnostic_throttle.take_suppressed();
-                    info!(attempt, suppressed, "SC reconnected after backoff (suppressed {suppressed} reconnect diagnostics)");
-                    return Some((reconnect_ws, active_hub));
-                }
-                Err(e) => {
-                    self.observer.connect_failed(active_hub, &e);
-                    absorb_failed_connect_probe(self.conn, &probe_conn).await;
-                    if !self.conn.lock().await.connect_retry_allowed {
-                        if let Some(suppressed) = self.retry_diagnostic() {
-                            warn!(%e, attempt, suppressed, "SC reconnection failed without retry eligibility (suppressed {suppressed} reconnect diagnostics)");
-                        }
-                        break;
-                    }
-                    if let Some(suppressed) = self.retry_diagnostic() {
-                        warn!(%e, attempt, suppressed, "SC reconnection failed, retrying in {:?} (suppressed {suppressed} reconnect diagnostics)", backoff);
-                    }
-                    backoff = (backoff * 2).min(max_backoff);
+            for &target in targets {
+                let lost = target == active_hub;
+                let try_hub = Attempt {
+                    target,
+                    reuse: (lost && current_reusable).then_some(current_ws),
+                    lost,
+                    attempt,
+                    delay,
+                    backoff,
+                };
+                match self.try_hub(try_hub).await {
+                    Step::Up(ws) => return Some((ws, target)),
+                    Step::Failed => {}
+                    Step::Stop => break 'attempts,
                 }
             }
+            backoff = (backoff * 2).min(max_backoff);
         }
         // Preserve the existing order: only primary exhaustion tries failover.
         // An untouched preconfigured failover is consumed once, never poisoned
@@ -233,6 +218,84 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         }
         self.observer.gave_up(attempts);
         None
+    }
+
+    /// One dial and handshake to one hub within a reconnect attempt.
+    async fn try_hub(&mut self, at: Attempt<'_, W>) -> Step<W> {
+        let Attempt {
+            target,
+            reuse,
+            lost,
+            attempt,
+            delay,
+            backoff,
+        } = at;
+        let connector = match target {
+            ScActiveHub::Primary => self.primary_connector,
+            ScActiveHub::Failover => self.failover_connector,
+        };
+        if connector.is_none() && reuse.is_none() {
+            // Without a connector only the lost hub's own socket can be
+            // reused. Another hub without one is simply skipped.
+            if lost {
+                if let Some(suppressed) = self.retry_diagnostic() {
+                    warn!(suppressed, "SC retired socket cannot be reused without a fresh connector (suppressed {suppressed} reconnect diagnostics)");
+                }
+                return Step::Stop;
+            }
+            return Step::Failed;
+        }
+        self.observer.reconnect_attempt(target, attempt, delay);
+        {
+            let mut c = self.conn.lock().await;
+            c.reset_for_connect_retry();
+            self.state_tx.send_replace(c.state);
+        }
+        let ws = match dial_reconnect_ws(
+            target,
+            self.primary_connector,
+            self.failover_connector,
+            self.connect_timeout_ms,
+        )
+        .await
+        {
+            Ok(Some(ws)) => ws,
+            Ok(None) => reuse.expect("checked above").clone(),
+            Err(e) => {
+                self.observer.connect_failed(target, &e);
+                if let Some(suppressed) = self.retry_diagnostic() {
+                    warn!(%e, attempt, suppressed, "SC reconnection redial failed (suppressed {suppressed} reconnect diagnostics)");
+                }
+                return Step::Failed;
+            }
+        };
+        let probe_conn = connect_probe_from(self.conn).await;
+        match perform_handshake(&*ws, &probe_conn, None, self.connect_timeout_ms).await {
+            Ok(()) => {
+                self.publish(&ws, &probe_conn, target).await;
+                let suppressed = self.diagnostic_throttle.take_suppressed();
+                info!(
+                    attempt,
+                    suppressed,
+                    "SC reconnected after backoff (suppressed {suppressed} reconnect diagnostics)"
+                );
+                Step::Up(ws)
+            }
+            Err(e) => {
+                self.observer.connect_failed(target, &e);
+                absorb_failed_connect_probe(self.conn, &probe_conn).await;
+                if !self.conn.lock().await.connect_retry_allowed {
+                    if let Some(suppressed) = self.retry_diagnostic() {
+                        warn!(%e, attempt, suppressed, "SC reconnection failed without retry eligibility (suppressed {suppressed} reconnect diagnostics)");
+                    }
+                    return Step::Stop;
+                }
+                if let Some(suppressed) = self.retry_diagnostic() {
+                    warn!(%e, attempt, suppressed, "SC reconnection failed, retrying in {:?} (suppressed {suppressed} reconnect diagnostics)", backoff);
+                }
+                Step::Failed
+            }
+        }
     }
 
     /// Gate only per-attempt diagnostics, never recovery or wire decisions.

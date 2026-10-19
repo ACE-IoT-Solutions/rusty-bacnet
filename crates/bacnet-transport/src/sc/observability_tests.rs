@@ -391,3 +391,261 @@ async fn failover_and_primary_restore_are_events_in_order() {
     assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
     drop(primary_hub);
 }
+
+#[test]
+fn closing_messages_map_to_local_or_peer_close() {
+    let ack = message(ScFunction::DisconnectAck, 1, Vec::new());
+    assert_eq!(
+        ScDisconnectCause::from_received(&ack),
+        ScDisconnectCause::LocalClose
+    );
+    // A refused Disconnect-Request still completes the close we started.
+    let refused = nak(1, ScFunction::DisconnectRequest, ErrorCode::OTHER);
+    assert_eq!(
+        ScDisconnectCause::from_received(&refused),
+        ScDisconnectCause::LocalClose
+    );
+    let request = message(ScFunction::DisconnectRequest, 1, Vec::new());
+    assert_eq!(
+        ScDisconnectCause::from_received(&request),
+        ScDisconnectCause::PeerClose
+    );
+}
+
+/// The stop path closes the record again after the task is gone, so a
+/// reconnect that published after the first close leaves no live fields.
+#[tokio::test(start_paused = true)]
+async fn a_late_close_clears_a_connection_published_after_the_first_close() {
+    let observer = ScObserver::new();
+    let mut events = observer.subscribe();
+    observer.connected(ScActiveHub::Primary, Some(PRIMARY));
+    observer.disconnected(ScDisconnectCause::LocalClose);
+    // The racing reconnect publishes after the stop's first close...
+    observer.connected(ScActiveHub::Failover, Some(FAILOVER));
+    assert_eq!(
+        observer.status(ScConnectionState::Disconnected).hub_vmac,
+        Some(FAILOVER)
+    );
+    // ...and the second close, after the task is joined, clears it.
+    observer.disconnected(ScDisconnectCause::LocalClose);
+    let status = observer.status(ScConnectionState::Disconnected);
+    assert_eq!(status.hub_vmac, None);
+    assert_eq!(status.heartbeat_age, None);
+    let mut seen = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        seen.push(event);
+    }
+    assert!(matches!(
+        seen.last(),
+        Some(ScEvent::Disconnected {
+            cause: ScDisconnectCause::LocalClose,
+            ..
+        })
+    ));
+    // A connect without a hub VMAC marks nothing and reports nothing.
+    observer.connected(ScActiveHub::Primary, None);
+    assert_eq!(observer.status(ScConnectionState::Connected).hub_vmac, None);
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+}
+
+type Started = (
+    ScTransport<LoopbackWebSocket>,
+    mpsc::Receiver<crate::port::ReceivedNpdu>,
+    LoopbackWebSocket,
+    broadcast::Receiver<ScEvent>,
+);
+
+async fn started(
+    reconnect: ScReconnectConfig,
+    primary: impl Fn() -> Dial + Send + Sync + 'static,
+) -> Started {
+    let (client, hub) = LoopbackWebSocket::pair();
+    let mut transport = ScTransport::new(client, [0x01; 6])
+        .with_device_uuid([1; 16])
+        .with_connect_timeout_ms(100)
+        .with_reconnect(reconnect)
+        .with_connector(primary);
+    let mut events = transport.connection_events();
+    let (rx, ()) = tokio::join!(transport.start(), hub_accept(&hub, PRIMARY));
+    assert_eq!(
+        next(&mut events).await,
+        connected(ScActiveHub::Primary, PRIMARY)
+    );
+    (transport, rx.unwrap(), hub, events)
+}
+
+/// The hub ends the connection; the transport answers and the hub closes.
+async fn hub_closes(hub: LoopbackWebSocket, events: &mut broadcast::Receiver<ScEvent>) {
+    send(&hub, &message(ScFunction::DisconnectRequest, 7, Vec::new())).await;
+    assert!(matches!(
+        next(events).await,
+        ScEvent::Disconnected {
+            cause: ScDisconnectCause::PeerClose,
+            ..
+        }
+    ));
+    let ack = decode_sc_message(&hub.recv().await.unwrap()).unwrap();
+    assert_eq!(ack.function, ScFunction::DisconnectAck);
+}
+
+#[tokio::test(start_paused = true)]
+async fn giving_up_reports_the_attempts_made() {
+    let (tx, _hubs) = mpsc::unbounded_channel();
+    let reconnect = ScReconnectConfig {
+        initial_delay_ms: 25,
+        max_delay_ms: 25,
+        max_retries: 2,
+    };
+    let (mut transport, _rx, hub, mut events) =
+        started(reconnect, connector(Arc::new(AtomicBool::new(false)), tx)).await;
+    hub_closes(hub, &mut events).await;
+    for attempt in 1..=2 {
+        assert!(matches!(
+            next(&mut events).await,
+            ScEvent::ReconnectAttempt { hub: ScActiveHub::Primary, attempt: a, .. } if a == attempt
+        ));
+        assert!(matches!(
+            next(&mut events).await,
+            ScEvent::ConnectFailed {
+                hub: ScActiveHub::Primary,
+                ..
+            }
+        ));
+    }
+    assert_eq!(
+        next(&mut events).await,
+        ScEvent::ReconnectGaveUp { attempts: 2 }
+    );
+    assert_eq!(
+        transport.connection_status().state,
+        ScConnectionState::Disconnected
+    );
+    transport.stop().await.unwrap();
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_during_backoff_ends_the_stream_without_a_terminal_event() {
+    let (tx, _hubs) = mpsc::unbounded_channel();
+    let reconnect = ScReconnectConfig {
+        initial_delay_ms: 60_000,
+        max_delay_ms: 60_000,
+        max_retries: 3,
+    };
+    let (mut transport, _rx, hub, mut events) =
+        started(reconnect, connector(Arc::new(AtomicBool::new(true)), tx)).await;
+    hub_closes(hub, &mut events).await;
+    // The episode now sleeps its backoff; nothing is reported until it dials.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    transport.stop().await.unwrap();
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    let status = transport.connection_status();
+    assert_eq!(status.state, ScConnectionState::Disconnected);
+    assert_eq!(status.hub_vmac, None);
+    assert_eq!(status.heartbeat_age, None);
+}
+
+/// Losing the failover hub tries the primary first, then the failover hub,
+/// in each attempt (Annex AB.5.2).
+#[tokio::test(start_paused = true)]
+async fn losing_the_failover_hub_tries_the_primary_first() {
+    let (client, primary_hub) = LoopbackWebSocket::pair();
+    let primary_up = Arc::new(AtomicBool::new(false));
+    let (primary_tx, mut primary_dials) = mpsc::unbounded_channel();
+    let (failover_tx, mut failover_dials) = mpsc::unbounded_channel();
+    let mut transport = ScTransport::new(client, [0x01; 6])
+        .with_device_uuid([1; 16])
+        .with_connect_timeout_ms(100)
+        .with_reconnect(ScReconnectConfig {
+            initial_delay_ms: 25,
+            max_delay_ms: 25,
+            max_retries: 1,
+        })
+        .with_connector(connector(primary_up.clone(), primary_tx))
+        .with_failover_connector(connector(Arc::new(AtomicBool::new(true)), failover_tx));
+    let mut events = transport.connection_events();
+    let (rx, ()) = tokio::join!(transport.start(), hub_accept(&primary_hub, PRIMARY));
+    let _rx = rx.unwrap();
+    assert_eq!(
+        next(&mut events).await,
+        connected(ScActiveHub::Primary, PRIMARY)
+    );
+    hub_closes(primary_hub, &mut events).await;
+    let failover_hub = failover_dials.recv().await.unwrap();
+    hub_accept(&failover_hub, FAILOVER).await;
+    let mut seen = Vec::new();
+    while !matches!(seen.last(), Some(ScEvent::Connected { .. })) {
+        seen.push(next(&mut events).await);
+    }
+    assert_eq!(
+        seen.last(),
+        Some(&connected(ScActiveHub::Failover, FAILOVER))
+    );
+
+    // The failover hub goes away while the primary is still down: the one
+    // attempt dials the primary, then the failover hub again.
+    drop(failover_hub);
+    assert!(matches!(
+        next(&mut events).await,
+        ScEvent::Disconnected {
+            hub: ScActiveHub::Failover,
+            ..
+        }
+    ));
+    let mut order = Vec::new();
+    for _ in 0..3 {
+        order.push(match next(&mut events).await {
+            ScEvent::ReconnectAttempt {
+                hub, attempt: 1, ..
+            } => ("attempt", hub),
+            ScEvent::ConnectFailed { hub, .. } => ("failed", hub),
+            other => panic!("unexpected {other:?}"),
+        });
+    }
+    assert_eq!(
+        order,
+        [
+            ("attempt", ScActiveHub::Primary),
+            ("failed", ScActiveHub::Primary),
+            ("attempt", ScActiveHub::Failover),
+        ]
+    );
+    let failover_hub = failover_dials.recv().await.unwrap();
+    hub_accept(&failover_hub, FAILOVER).await;
+    assert_eq!(
+        next(&mut events).await,
+        connected(ScActiveHub::Failover, FAILOVER)
+    );
+
+    // Lost again with the primary back: the first dial reaches the primary.
+    primary_up.store(true, Ordering::SeqCst);
+    drop(failover_hub);
+    assert!(matches!(
+        next(&mut events).await,
+        ScEvent::Disconnected {
+            hub: ScActiveHub::Failover,
+            ..
+        }
+    ));
+    assert!(matches!(
+        next(&mut events).await,
+        ScEvent::ReconnectAttempt {
+            hub: ScActiveHub::Primary,
+            attempt: 1,
+            ..
+        }
+    ));
+    let primary_hub = primary_dials.recv().await.unwrap();
+    hub_accept(&primary_hub, PRIMARY).await;
+    assert_eq!(
+        next(&mut events).await,
+        connected(ScActiveHub::Primary, PRIMARY)
+    );
+    assert_eq!(
+        transport.connection_status().active_hub,
+        Some(ScActiveHub::Primary)
+    );
+    transport.stop().await.unwrap();
+    drop(primary_hub);
+}

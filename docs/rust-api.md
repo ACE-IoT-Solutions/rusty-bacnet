@@ -1362,6 +1362,34 @@ it and read the link state through `connection_state_changes()`. Pure
 `ScConnection` codec/manual WebSocket use and later handshake validation are
 outside this guard.
 
+### Hub-connector events and link status
+
+`ScTransport::connection_events()` returns a `tokio::sync::broadcast`
+receiver of `ScEvent`s (#959): `Connected { hub, hub_vmac }`,
+`Disconnected { hub, cause }`, `ConnectFailed { hub, cause }`,
+`ReconnectAttempt { hub, attempt, backoff }`, `FailoverEngaged`,
+`PrimaryRestored` and `ReconnectGaveUp { attempts }`. `hub` is an
+`ScActiveHub` (`Primary` or `Failover`, Annex AB.5.2). The cause is an
+`ScDisconnectCause`: local close, peer close, heartbeat timeout, a WebSocket
+or TLS error kind, a BVLC-Result NAK with its typed `ErrorClass` and
+`ErrorCode`, connect timeout, a malformed result, an unexpected connect reply,
+rejection expiry, or `Other` with diagnostic text that is not stable to match.
+Events are sent without waiting: a receiver more than `SC_EVENT_CAPACITY` (64)
+events behind gets `RecvError::Lagged` and loses the oldest. Subscribe before
+`start()` to see the first connection.
+
+`ScTransport::connection_status()` returns an `ScLinkStatus` snapshot: the
+connection state, the active hub, the hub VMAC from Connect-Accept, the
+heartbeat age (time since the hub last sent anything accepted) and the
+round-trip time of the latest answered Heartbeat-Request. It never waits on
+the connection, so poll it as often as a UI redraws.
+
+`with_initial_hub(ScActiveHub::Failover)` starts the transport on the
+failover hub when the WebSocket given to `new` reaches it; with a primary
+connector and reconnect configuration the primary is restored later. Losing
+the failover hub makes each reconnect attempt dial the primary first, then
+the failover hub.
+
 `with_advertised_uris` configures known direct-connection URIs; it does not enable
 accepting connections. Address-Resolution requests receive an ACK (with a
 possibly empty URI list) only while a registered direct listener is live, its
@@ -5549,7 +5577,10 @@ async fn connect(ipv6: bool) -> Result<BACnetClient<AnyTransport<NoSerial>>,
 With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
 `build_any::<NoSerial>().await` call. SC validates identity, reconnect and
 client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;
-each retry uses the builder's TLS policy. Use `client.stop().await` to shut down
+each retry uses the builder's TLS policy. `.failover_hub_url(...)` adds a
+failover hub with the same TLS policy. It requires `.reconnect(...)`, and both
+URLs are checked before dialling. When the primary cannot be dialled, `build()`
+starts on the failover hub and the transport restores the primary later. Use `client.stop().await` to shut down
 the selected transport and its background work.
 
 ### Transport access and BBMD helpers
@@ -5562,7 +5593,8 @@ the transport in place. What you take from it can outlive the borrow, which
 suits a long-lived UI:
 
 ```rust
-// BACnet/SC (sc_builder): an owned watch receiver, and a drop-count snapshot.
+// BACnet/SC (sc_builder): an owned watch receiver, an event stream, and
+// link-status and drop-count snapshots.
 let mut state = sc_client.transport().connection_state_changes();
 tokio::spawn(async move {
     while state.changed().await.is_ok() {
@@ -5570,6 +5602,8 @@ tokio::spawn(async move {
         // update the status bar
     }
 });
+let mut events = sc_client.transport().connection_events(); // ScEvent: failover, restore, causes
+let link = sc_client.transport().connection_status(); // ScLinkStatus: active hub, hub VMAC, heartbeat
 let drops = sc_client.transport().npdu_drop_counts();
 
 // B/IP (bip_builder): counter snapshots to poll, and the BBMD state if any.

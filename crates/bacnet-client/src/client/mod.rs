@@ -735,13 +735,17 @@ impl ScClientBuilder {
     /// Set the failover hub WebSocket URL, dialled with the same TLS policy
     /// when the primary hub cannot be reached (Annex AB.5.2).
     ///
-    /// The connector turns to it when the primary rejects or times out the
-    /// first Connect-Request, and, with [`reconnect`](Self::reconnect), once
-    /// the reconnect attempts to the primary are used up. While on the
-    /// failover hub it keeps trying the primary and returns to it when it
-    /// can. [`build`](Self::build) still needs a TLS connection to the
-    /// primary hub. Follow it through `connection_events()` and
-    /// `connection_status()` on [`BACnetClient::transport`].
+    /// Requires [`reconnect`](Self::reconnect): building with a failover
+    /// hub and no reconnect configuration fails before any dial. Both URLs
+    /// are checked (scheme, host) before dialling.
+    ///
+    /// [`build`](Self::build) starts on the failover hub when the primary
+    /// cannot be dialled, and the connector also turns to it when the primary
+    /// refuses the first Connect-Request or the reconnect attempts to the
+    /// primary are used up. While on the failover hub it keeps trying the
+    /// primary and returns to it when it can. Follow it through
+    /// `connection_events()` and `connection_status()` on
+    /// [`BACnetClient::transport`].
     pub fn failover_hub_url(mut self, url: &str) -> Self {
         self.failover_hub_url = Some(url.to_string());
         self
@@ -751,7 +755,8 @@ impl ScClientBuilder {
     ///
     /// Reconnects redial the hub that was in use, with exponential backoff
     /// from `initial_delay_ms` up to `max_delay_ms`, for `max_retries`
-    /// attempts, before turning to the failover hub, if one is set.
+    /// attempts, before turning to the failover hub, if one is set. Required
+    /// by [`failover_hub_url`](Self::failover_hub_url).
     pub fn reconnect(mut self, config: bacnet_transport::sc::ScReconnectConfig) -> Self {
         self.reconnect = Some(config);
         self
