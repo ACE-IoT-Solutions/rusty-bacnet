@@ -3,9 +3,10 @@
 //! and the networks they reach (Tab switches).
 //! Every state is marked by text as well as colour.
 //!
-//! From [`WIDE_WIDTH`] columns the BDT and FDT sit side by side, with the
-//! matrix beneath them when the height allows; Tab then moves the focus
-//! (the accented pane) instead of switching what is shown.
+//! From [`WIDE_WIDTH`] columns, once the whole BDT fits beside the FDT, the
+//! two sit side by side, with the matrix beneath them when the height
+//! allows; Tab then moves the focus (the accented pane) instead of switching
+//! what is shown. A table longer than its pane counts the rows it hides.
 
 use std::time::Duration;
 
@@ -86,7 +87,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), inner);
         return;
     }
-    if wide(state.view, inner) {
+    if wide(app, area) {
         return side_by_side(frame, inner, app, theme);
     }
     match state.view {
@@ -344,9 +345,64 @@ fn note(frame: &mut Frame, area: Rect, text: String, theme: &Theme) {
     );
 }
 
+/// Width of the BDT's Mask column.
+const MASK: u16 = 15;
+/// The BDT's header; its last column is also its narrowest content.
+const BDT_HEADER: [&str; 3] = ["BBMD", "Mask", "How peers forward to it (Annex J.4.5)"];
+
+/// The BDT's rows as text: address, mask and how peers forward to it.
+fn bdt_rows(app: &App) -> Vec<[String; 3]> {
+    let Some(Fetched {
+        bbmd,
+        result: Ok(entries),
+        ..
+    }) = &app.network.bdt
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let mut forwarding = entry.explain();
+            if entry.address == *bbmd {
+                forwarding = format!("(this BBMD) {forwarding}");
+            }
+            [
+                entry.address.to_string(),
+                entry.mask.to_string(),
+                forwarding,
+            ]
+        })
+        .collect()
+}
+
+/// Width the BDT needs to show every row whole.
+fn bdt_width(app: &App) -> u16 {
+    let forwarding = bdt_rows(app)
+        .iter()
+        .map(|[_, _, f]| f.chars().count())
+        .chain([BDT_HEADER[2].len()])
+        .max()
+        .unwrap_or(0);
+    ADDRESS + MASK + 2 * 2 + u16::try_from(forwarding).unwrap_or(u16::MAX)
+}
+
+/// The rows that fit `height` (a header line included): when some don't,
+/// the last line says how many are hidden instead.
+fn fit_rows<'a>(mut rows: Vec<Row<'a>>, height: u16, theme: &Theme) -> Vec<Row<'a>> {
+    let room = usize::from(height.saturating_sub(1));
+    if rows.len() > room {
+        let shown = room.saturating_sub(1);
+        let hidden = rows.len() - shown;
+        rows.truncate(shown);
+        rows.push(Row::new([format!("+{hidden} more")]).style(theme.warn()));
+    }
+    rows
+}
+
 fn bdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let Some(read) = &app.network.bdt else { return };
-    let entries = match &read.result {
+    match &read.result {
         Ok(entries) if entries.is_empty() => {
             return note(
                 frame,
@@ -355,33 +411,17 @@ fn bdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 theme,
             )
         }
-        Ok(entries) => entries,
+        Ok(_) => {}
         Err(error) => return note(frame, area, format!("BDT of {}: {error}", read.bbmd), theme),
-    };
-    let rows: Vec<Row> = entries
-        .iter()
-        .map(|entry| {
-            let mut forwarding = entry.explain();
-            if entry.address == read.bbmd {
-                forwarding = format!("(this BBMD) {forwarding}");
-            }
-            Row::new([
-                entry.address.to_string(),
-                entry.mask.to_string(),
-                forwarding,
-            ])
-        })
-        .collect();
+    }
+    let rows: Vec<Row> = bdt_rows(app).into_iter().map(Row::new).collect();
     let widths = [
         Constraint::Length(ADDRESS),
-        Constraint::Length(15),
+        Constraint::Length(MASK),
         Constraint::Min(10),
     ];
-    let table = Table::new(rows, widths)
-        .header(
-            Row::new(["BBMD", "Mask", "How peers forward to it (Annex J.4.5)"])
-                .style(theme.accent()),
-        )
+    let table = Table::new(fit_rows(rows, area.height, theme), widths)
+        .header(Row::new(BDT_HEADER).style(theme.accent()))
         .column_spacing(2);
     frame.render_widget(table, area);
 }
@@ -429,7 +469,7 @@ fn fdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Constraint::Length(FDT_TTL),
         Constraint::Length(FDT_MARK),
     ];
-    let table = Table::new(rows, widths)
+    let table = Table::new(fit_rows(rows, area.height, theme), widths)
         .header(Row::new(["Foreign device", "TTL", "Left", ""]).style(theme.accent()))
         .column_spacing(2);
     frame.render_widget(table, area);
@@ -530,16 +570,25 @@ fn legend(width: usize) -> Vec<String> {
     lines
 }
 
-/// Whether `view` is drawn in the wide layout in `area` (inside the
-/// tables' border): the BDT and FDT side by side, and the matrix beneath
-/// them when it fits.
-fn wide(view: View, area: Rect) -> bool {
-    area.width + 2 >= WIDE_WIDTH
-        && match view {
-            View::Bdt | View::Fdt => true,
-            View::Matrix => area.height >= WIDE_MATRIX_ROWS,
-            View::Networks => false,
-        }
+/// Whether the screen, drawn in `body`, uses the wide layout: from
+/// [`WIDE_WIDTH`] columns, when the whole BDT fits beside the FDT, on the
+/// BDT and FDT views, and on the matrix when it also fits beneath them.
+/// Tab then moves the focus between the panes.
+pub(super) fn wide(app: &App, body: Rect) -> bool {
+    if app.transport != "BIP" || body.width < WIDE_WIDTH {
+        return false;
+    }
+    // Inside the tables' border, below the foreign-device panel.
+    let width = body.width.saturating_sub(2);
+    let height = body
+        .height
+        .saturating_sub(panel_height(app, body.width) + 2);
+    let fits = bdt_width(app) + 2 + FDT_WIDTH + 2 <= width;
+    fits && match app.network.view {
+        View::Bdt | View::Fdt => true,
+        View::Matrix => height >= WIDE_MATRIX_ROWS,
+        View::Networks => false,
+    }
 }
 
 /// The wide layout: the BDT and FDT side by side, the matrix beneath them
@@ -560,7 +609,8 @@ fn side_by_side(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .as_ref()
                 .and_then(|f| f.result.as_ref().ok().map(Vec::len)),
         );
-        // The longer table, its header and the borders, at most half.
+        // The longer table, its header and the borders, at most half; a
+        // longer table says how many rows it hides.
         let height = (bdt_rows.max(fdt_rows) + 3).min(area.height / 2);
         let [top, bottom] =
             Layout::vertical([Constraint::Length(height), Constraint::Min(3)]).areas(area);
@@ -568,8 +618,13 @@ fn side_by_side(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     } else {
         (area, None)
     };
-    let [left, right] =
-        Layout::horizontal([Constraint::Min(10), Constraint::Length(FDT_WIDTH + 2)]).areas(top);
+    // The FDT takes only its own width, and the BDT, whose text is longer,
+    // the rest.
+    let [left, right] = Layout::horizontal([
+        Constraint::Min(bdt_width(app) + 2),
+        Constraint::Length(FDT_WIDTH + 2),
+    ])
+    .areas(top);
     let pane = |frame: &mut Frame, view: View, name: &str, area: Rect| {
         let style = if view == state.view {
             theme.accent()

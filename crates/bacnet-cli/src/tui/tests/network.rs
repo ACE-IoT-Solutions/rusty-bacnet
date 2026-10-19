@@ -390,9 +390,11 @@ async fn a_refusing_bbmd_raises_the_refusal_banner() {
     let mut server = bbmd_server(3302, false).await;
     let bbmd = server_address(&server);
     let mut net = Net::start(plan(Some(bbmd))).await;
-    net.pump_until("the refusal", |app| app.network.refusal().is_some())
-        .await;
-    let banner = net.app.network.refusal().unwrap();
+    net.pump_until("the refusal", |app| {
+        app.network.registration_banner().is_some()
+    })
+    .await;
+    let banner = net.app.network.registration_banner().unwrap();
     assert!(banner.contains(&format!("BBMD {bbmd} refused")), "{banner}");
     assert!(banner.contains("register-foreign-device-nak"), "{banner}");
     // On every screen, and in the panel.

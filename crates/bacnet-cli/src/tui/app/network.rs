@@ -101,7 +101,8 @@ pub(crate) struct NetworkState {
 }
 
 impl NetworkState {
-    /// The configured BBMD accepted us: start the panel on it.
+    /// The connection registers as a foreign device: start the panel on its
+    /// BBMD, whether it accepted the first attempt or is still retrying.
     pub(crate) fn foreign_device(&mut self, foreign: Foreign) {
         self.foreign = Some(foreign);
         self.target.get_or_insert(foreign.bbmd);
@@ -127,7 +128,7 @@ impl NetworkState {
     ///
     /// It keys on the counters rather than the last outcome, since a fresh
     /// attempt reads `Pending` while the earlier ones went unanswered.
-    pub(crate) fn refusal(&self) -> Option<String> {
+    pub(crate) fn registration_banner(&self) -> Option<String> {
         let (snapshot, _) = self.registration.as_ref()?;
         let bbmd = snapshot
             .last_bbmd
@@ -150,11 +151,21 @@ impl NetworkState {
                  accepted; broadcasts through it are not delivered."
             ));
         }
-        // Attempts that ended with no answer; the one in flight is not yet.
-        let pending = snapshot.last_outcome == Some(ForeignRegistrationOutcome::Pending);
+        // Attempts that ended with no answer. The last one doesn't count
+        // while in flight, or when it never reached the BBMD (not sent, or
+        // cancelled). The snapshot keeps no per-outcome totals, so earlier
+        // attempts that failed locally can't be told from timeouts.
+        let not_the_bbmds = matches!(
+            snapshot.last_outcome,
+            Some(
+                ForeignRegistrationOutcome::Pending
+                    | ForeignRegistrationOutcome::LocalError
+                    | ForeignRegistrationOutcome::Cancelled
+            )
+        );
         let unanswered = snapshot
             .attempts
-            .saturating_sub(snapshot.accepted + snapshot.refused + u64::from(pending));
+            .saturating_sub(snapshot.accepted + snapshot.refused + u64::from(not_the_bbmds));
         let plural = if unanswered == 1 { "" } else { "s" };
         if snapshot.accepted == 0 && unanswered > 0 {
             return Some(format!(

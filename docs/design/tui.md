@@ -113,11 +113,13 @@ What M0 draws (80x24):
   the device table uses its wide columns; below 120 the planned Browse panes
   stack and the focused pane fills the width. Below 80x24 the TUI shows a
   "terminal too small" notice and nothing else.
-- From 160 columns (`WIDE_WIDTH`) panes that are tabs or stacks at 120 sit
-  side by side, and fixed columns are sized to their content so the slack goes
-  to one meaningful column. The Network screen shows the BDT and FDT beside
-  each other, with the consistency matrix beneath them when the height allows;
-  Tab then moves the accent between panes instead of switching them.
+- From 160 columns (`WIDE_WIDTH`, maintainer decision D1 in #1887) panes that
+  stack at 120 sit side by side, and the slack goes to content rather than to
+  one stretched column.
+  - Network: once the whole BDT fits beside the FDT, the two sit side by side,
+    with the consistency matrix beneath them when the height allows (20 rows
+    inside the tables' border). Tab then moves the accent between panes, and
+    the footer says so. A table longer than its pane ends with `+N more`.
 
 ### 4.2 Screens
 
