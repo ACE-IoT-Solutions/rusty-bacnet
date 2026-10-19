@@ -127,21 +127,36 @@ fn assert_property_error<T: std::fmt::Debug>(
     }
 }
 
-fn assert_history_surface(object: &mut dyn BACnetObject, label: &str) {
+/// `message_texts`: whether the object serves the optional
+/// Event_Message_Texts (Event Enrollment does since #1507; Alert Enrollment
+/// doesn't).
+fn assert_history_surface(object: &mut dyn BACnetObject, label: &str, message_texts: bool) {
     let properties = object.property_list();
     assert!(
         properties.contains(&PropertyIdentifier::EVENT_TIME_STAMPS),
         "{label}: Event_Time_Stamps missing from Property_List"
     );
-    assert!(
-        !properties.contains(&PropertyIdentifier::EVENT_MESSAGE_TEXTS),
-        "{label}: optional Event_Message_Texts must remain absent"
+    assert_eq!(
+        properties.contains(&PropertyIdentifier::EVENT_MESSAGE_TEXTS),
+        message_texts,
+        "{label}: Event_Message_Texts in Property_List"
     );
-    assert_property_error(
-        object.read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, None),
-        ErrorCode::UNKNOWN_PROPERTY,
-        &format!("{label}: Event_Message_Texts read"),
-    );
+    if message_texts {
+        assert_eq!(
+            object
+                .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, None)
+                .unwrap(),
+            PropertyValue::List(vec![PropertyValue::CharacterString(String::new()); 3]),
+            "{label}: Event_Message_Texts starts empty"
+        );
+        assert!(!object.is_writable_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS));
+    } else {
+        assert_property_error(
+            object.read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, None),
+            ErrorCode::UNKNOWN_PROPERTY,
+            &format!("{label}: Event_Message_Texts read"),
+        );
+    }
     assert_property_error(
         object.write_property(
             PropertyIdentifier::EVENT_TIME_STAMPS,
@@ -165,8 +180,8 @@ fn enrollment_event_time_stamp_arrays_preserve_order_indexes_and_choices() {
 
     assert_seeded_timestamp_reads(&event, &expected, "Event Enrollment");
     assert_seeded_timestamp_reads(&alert, &expected, "Alert Enrollment");
-    assert_history_surface(&mut event, "Event Enrollment");
-    assert_history_surface(&mut alert, "Alert Enrollment");
+    assert_history_surface(&mut event, "Event Enrollment", true);
+    assert_history_surface(&mut alert, "Alert Enrollment", false);
 }
 
 #[test]
@@ -321,6 +336,10 @@ fn enrollment_property_metadata_is_complete_and_pins_timestamp_requirements() {
         PropertyIdentifier::EVENT_DETECTION_ENABLE,
         PropertyIdentifier::NOTIFICATION_CLASS,
         PropertyIdentifier::EVENT_TIME_STAMPS,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
         PropertyIdentifier::FAULT_TYPE,
         PropertyIdentifier::FAULT_PARAMETERS,
         PropertyIdentifier::TIME_DELAY_NORMAL,

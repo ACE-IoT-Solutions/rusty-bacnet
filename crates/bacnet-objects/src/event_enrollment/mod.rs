@@ -288,11 +288,13 @@ impl BACnetObject for EventEnrollmentObject {
         {
             return result;
         }
+        // Event_Time_Stamps, Event_Message_Texts and the reporting options
+        // (Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair,
+        // #1507), all optional or required rows of Table 12-14.
+        if let Some(result) = self.event_history.read(property, array_index) {
+            return result;
+        }
         match property {
-            p if p == PropertyIdentifier::EVENT_TIME_STAMPS => self
-                .event_history
-                .read(p, array_index)
-                .expect("EventHistory handles Event_Time_Stamps"),
             p if p == PropertyIdentifier::OBJECT_TYPE => Ok(PropertyValue::Enumerated(
                 ObjectType::EVENT_ENROLLMENT.to_raw(),
             )),
@@ -366,7 +368,7 @@ impl BACnetObject for EventEnrollmentObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
@@ -445,6 +447,12 @@ impl BACnetObject for EventEnrollmentObject {
             }
             return Err(common::invalid_data_type_error());
         }
+        if let Some(result) =
+            self.event_history
+                .write(property, array_index, &value, self.event_detection_enable)
+        {
+            return result;
+        }
         if let Some(result) = common::write_object_name(&mut self.name, property, &value) {
             return result;
         }
@@ -454,7 +462,7 @@ impl BACnetObject for EventEnrollmentObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
+            array_index,
         ))
     }
 
@@ -633,7 +641,20 @@ impl BACnetObject for EventEnrollmentObject {
                 | PropertyIdentifier::EVENT_PARAMETERS
                 | PropertyIdentifier::FAULT_PARAMETERS
                 | PropertyIdentifier::TIME_DELAY_NORMAL
+                | PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG
+                | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF
+                | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT
         )
+    }
+
+    fn event_algorithm_inhibit_reference_internal(
+        &self,
+    ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
+        self.event_history.options.inhibit_reference().cloned()
+    }
+
+    fn follow_event_algorithm_inhibit_internal(&mut self, inhibit: bool) -> bool {
+        self.event_history.options.follow(inhibit)
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
