@@ -109,13 +109,27 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(priority.slots[9].as_deref(), Some("55"));
     assert_eq!(priority.relinquish_default.as_deref(), Some("0"));
     assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55"));
-    for (w, h) in [(120, 40), (80, 24)] {
+    for (w, h) in [(200, 50), (120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains(">10 site defined"), "{text}");
         assert!(text.contains("Relinquish_Default  0"), "{text}");
         assert_snapshot!(format!("browser_ao1_{w}x{h}"), text);
     }
     site.stop().await;
+}
+
+/// Pin the open object's Event_Time_Stamps: AI:1's carry the wall clock
+/// of its fault transition, which the wide panes now show in full.
+fn pin_time_stamps(site: &mut Site) {
+    let browser = site.app.browser.as_mut().unwrap();
+    let ViewState::Ready(view) = &mut browser.view else {
+        panic!("no object open");
+    };
+    for row in &mut view.properties {
+        if row.property == PropertyIdentifier::EVENT_TIME_STAMPS {
+            row.value = Ok("[unspecified, 2026-10-19 07:30:00.00, unspecified]".into());
+        }
+    }
 }
 
 /// AI:1 is out of service and in fault: the badges say so in text, not
@@ -130,15 +144,76 @@ async fn ai1_out_of_service_and_in_fault_shows_both_badges() {
     // it in alarm.
     assert_eq!(view.health.badges(), ["[ALM]", "[FLT]", "[OOS]"]);
     assert!(view.priority.is_none(), "an input has no priority array");
-    for (w, h) in [(120, 40), (80, 24)] {
+    pin_time_stamps(&mut site);
+    for (w, h) in [(200, 50), (120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains("Status: [ALM] [FLT] [OOS]"), "{text}");
         assert_snapshot!(format!("browser_ai1_{w}x{h}"), text);
     }
+    // A 30-character name keeps its gap before the value.
+    let text = screen(&mut site.app, 120, 40);
+    assert!(
+        text.contains("reliability-evaluation-inhibit  false"),
+        "{text}"
+    );
     // Colour adds nothing the text lacks.
     let plain = screen(&mut site.app, 120, 40);
     site.app.color = true;
     assert_eq!(screen(&mut site.app, 120, 40), plain);
+    site.stop().await;
+}
+
+/// At 200 columns the priority array sits beside the properties and the
+/// object list is wider than at 120.
+#[tokio::test(start_paused = true)]
+async fn a_wide_terminal_puts_the_priority_array_beside_the_properties() {
+    let mut site = Site::start_with(vec![Server::lab(100, LAB)], ClientLimits::default()).await;
+    open_device(&mut site).await;
+    open_object(&mut site, "analog-output").await;
+    let wide = screen(&mut site.app, 200, 50);
+    let full = screen(&mut site.app, 120, 40);
+    // Both panes start on the same row.
+    let row = wide
+        .lines()
+        .find(|line| line.contains("┌ analog-output 1"))
+        .expect("properties pane");
+    assert!(row.contains("┌ Priority array: 10 in control"), "{wide}");
+    let objects = |text: &str| {
+        text.lines()
+            .find(|line| line.contains("┌ Objects"))
+            .and_then(|line| line.find('┐'))
+            .expect("objects pane")
+    };
+    assert!(objects(&wide) > objects(&full), "{wide}\n{full}");
+    site.stop().await;
+}
+
+/// A long value wraps under the value column at 80 columns, and the pane
+/// scrolls through the wrapped lines to the last one.
+#[tokio::test(start_paused = true)]
+async fn a_long_value_wraps_under_its_column_at_80_columns() {
+    let mut site = Site::start_with(vec![Server::lab(100, LAB)], ClientLimits::default()).await;
+    open_device(&mut site).await;
+    let mut view = open_object(&mut site, "analog-input 1").await;
+    let long = "\"Zone 3 space temperature, north wall, beside the return grille \
+                (sensor out for calibration until the next service visit)\"";
+    for row in &mut view.properties {
+        if row.property == PropertyIdentifier::DESCRIPTION {
+            row.value = Ok(long.into());
+        }
+    }
+    let browser = site.app.browser.as_mut().unwrap();
+    browser.view = ViewState::Ready(Box::new(view));
+    let text = screen(&mut site.app, 80, 24);
+    // Continuation lines start under the value, not under the name.
+    let under_value = format!("│{}beside the return grille", " ".repeat(33));
+    assert!(text.contains(&under_value), "{text}");
+    assert!(text.contains("next service visit)\""), "{text}");
+    assert_snapshot!("browser_ai1_long_value_80x24", text);
+    // End shows the last property, past the wrapped lines.
+    site.press(KeyCode::End).await;
+    let text = screen(&mut site.app, 80, 24);
+    assert!(text.contains("event-algorithm-inhibit "), "{text}");
     site.stop().await;
 }
 

@@ -113,6 +113,16 @@ What M0 draws (80x24):
   the device table uses its wide columns; below 120 the planned Browse panes
   stack and the focused pane fills the width. Below 80x24 the TUI shows a
   "terminal too small" notice and nothing else.
+- From 160 columns (`WIDE_WIDTH`, maintainer decision D1 in #1887) panes that
+  stack at 120 sit side by side, and the slack goes to content rather than to
+  one stretched column. The browser widens its object list to between three
+  tenths and a third of the width and puts the priority array beside the
+  properties.
+- The browser's properties pane sizes its name column from the object's
+  longest property name, capped so the value keeps at least a third of the
+  pane (and 12 columns), and always leaves two spaces before the value. A name
+  longer than the cap puts its value on the next line. Long values wrap under
+  the value column, and scrolling counts the wrapped lines.
 
 ### 4.2 Screens
 
