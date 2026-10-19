@@ -254,8 +254,9 @@ pub use bacnet_bip_core as bip_core;
 #[cfg(feature = "mstp")]
 pub use bacnet_mstp_core as mstp_core;
 /// `bacnet-npdu`, the network-layer vocabulary the router speaks: the NPDU
-/// view and encoder, the message types and reject reasons, the network
-/// priority, [`NpduLimits`](npdu::NpduLimits), [`Mac`],
+/// view and encoder, the message types and reject reasons, a reject's
+/// data ([`RejectMessageToNetwork`](npdu::RejectMessageToNetwork)), the
+/// network priority, [`NpduLimits`](npdu::NpduLimits), [`Mac`],
 /// [`MAX_NPDU`] and [`MAX_MAC_LEN`]. A
 /// router image names them through this, so its version can't drift apart
 /// from the router's.

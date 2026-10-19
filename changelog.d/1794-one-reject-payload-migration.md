@@ -5,4 +5,4 @@ section: Migration notes
   `decode_reject_message_to_network` leave `bacnet_encoding::npdu`, and
   router-core's `message::Reject` is gone: use
   `bacnet_npdu::RejectMessageToNetwork`, whose `decode` (was `parse`) returns
-  a `PayloadLengthError` and whose `dnet` field is now `network`.
+  a `RejectLengthError` and whose `dnet` field is now `network`.

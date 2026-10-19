@@ -19,7 +19,7 @@ use crate::RejectMessageReason;
 /// assert_eq!(reject.reason, RejectMessageReason::MESSAGE_TOO_LONG);
 /// assert_eq!(reject.network, 3000);
 /// assert_eq!(reject.to_bytes(), [4, 0x0B, 0xB8]);
-/// # Ok::<(), bacnet_npdu::PayloadLengthError>(())
+/// # Ok::<(), bacnet_npdu::RejectLengthError>(())
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RejectMessageToNetwork {
@@ -36,13 +36,13 @@ impl RejectMessageToNetwork {
 
     /// Read exactly a reason octet and a network number. Any other length
     /// is refused, so a router never acts on a cut-short or padded reject.
-    pub const fn decode(payload: &[u8]) -> Result<Self, PayloadLengthError> {
+    pub const fn decode(payload: &[u8]) -> Result<Self, RejectLengthError> {
         match *payload {
             [reason, high, low] => Ok(Self {
                 reason: RejectMessageReason::from_raw(reason),
                 network: u16::from_be_bytes([high, low]),
             }),
-            _ => Err(PayloadLengthError {
+            _ => Err(RejectLengthError {
                 length: payload.len(),
             }),
         }
@@ -56,25 +56,27 @@ impl RejectMessageToNetwork {
     }
 }
 
-/// A network message's data isn't the length its layout gives it: it ends
-/// inside a field, or goes on past the last one.
+/// A Reject-Message-To-Network's data isn't
+/// [`RejectMessageToNetwork::LEN`] octets: it ends inside the network, or
+/// goes on past it.
 ///
 /// It is `#[non_exhaustive]`: only the crate builds one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct PayloadLengthError {
+pub struct RejectLengthError {
     /// The data's length, in octets.
     pub length: usize,
 }
 
-impl fmt::Display for PayloadLengthError {
+impl fmt::Display for RejectLengthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} octets of message data don't fit its layout",
-            self.length
+            "a reject's data is {} octets, not {}",
+            self.length,
+            RejectMessageToNetwork::LEN
         )
     }
 }
 
-impl core::error::Error for PayloadLengthError {}
+impl core::error::Error for RejectLengthError {}

@@ -2,7 +2,7 @@
 //! the lengths it refuses, and that writing undoes reading.
 
 use bacnet_npdu::{
-    NetworkMessageType, Npdu, PayloadLengthError, RejectMessageReason, RejectMessageToNetwork,
+    NetworkMessageType, Npdu, RejectLengthError, RejectMessageReason, RejectMessageToNetwork,
 };
 use proptest::prelude::*;
 
@@ -68,11 +68,8 @@ fn a_reject_in_an_npdu_reads_back() {
 
 #[test]
 fn the_length_error_says_what_was_wrong() {
-    let refused: PayloadLengthError = RejectMessageToNetwork::decode(&[0, 1]).unwrap_err();
-    assert_eq!(
-        refused.to_string(),
-        "2 octets of message data don't fit its layout"
-    );
+    let refused: RejectLengthError = RejectMessageToNetwork::decode(&[0, 1]).unwrap_err();
+    assert_eq!(refused.to_string(), "a reject's data is 2 octets, not 3");
 }
 
 proptest! {
