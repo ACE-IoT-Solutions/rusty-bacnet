@@ -115,11 +115,21 @@ What M0 draws (80x24):
   "terminal too small" notice and nothing else.
 - From 160 columns (`WIDE_WIDTH`, maintainer decision D1 in #1887) panes that
   stack at 120 sit side by side, and the slack goes to content rather than to
-  one stretched column.
+  one stretched column. The browser widens its object list to between three
+  tenths and a third of the width and puts the priority array beside the
+  properties.
   - Network: once the whole BDT fits beside the FDT, the two sit side by side,
     with the consistency matrix beneath them when the height allows (20 rows
     inside the tables' border). Tab then moves the accent between panes, and
     the footer says so. A table longer than its pane ends with `+N more`.
+- The browser's properties pane sizes its name column from the object's
+  longest property name, capped so the value keeps at least a third of the
+  pane (and 12 columns), and always leaves two spaces before the value. A name
+  longer than the cap puts its value on the next line. Long values wrap under
+  the value column, and scrolling counts the wrapped lines. A wrap prefers to
+  break after `; `, then after `, ` (so a weekly schedule breaks between days),
+  then at any space, and splits a word only between grapheme clusters. Control
+  characters in device-supplied text show as spaces.
 
 ### 4.2 Screens
 
@@ -131,7 +141,7 @@ What M0 draws (80x24):
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
 | SC (#967) | Hub connector status (state, primary or failover hub, hub VMAC, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory and pre-dial lint (#968) are a third view on the same screen |
 | MS/TP (#969, #970) | Participant panel (`--mstp`), or the passive monitor (`tui --mstp-monitor PORT`): a station grid, the token ring with rotation and hold times, Max_Master findings, error counters, and the safe-join wizard (`J`) that hands the port to a participant through the T2 join dialog |
-| Capture (#971) | Frame list (number, UTC time, link, direction, source and destination, link message, APDU type, invoke ID, service, error/reject/abort/NAK) over a bounded ring (50k frames by default); the selected frame's decode tree beside a hex view that marks the selected field's octets; Space pauses; filters by device, MAC, network, service, PDU type, errors, broadcasts and text. Sources: the session's frame tap (#957) and the MS/TP monitor's stream (#958). **Planned:** pcap export and a libpcap source |
+| Capture (#971) | Frame list (number, UTC time, link, direction, source and destination, link message, APDU type, invoke ID, service, error/reject/abort/NAK) over a bounded ring (50k frames by default); the selected frame's decode tree beside a hex view that marks the selected field's octets; Space pauses; filters by device, MAC, network, service, PDU type, errors, broadcasts and text; pcap export (B/IP as LINKTYPE 1 or 228 with made-up IPv4 and UDP headers, MS/TP as 165). Sources: the session's frame tap (#957), the MS/TP monitor's stream (#958), libpcap with `--capture-device` |
 | Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; arm dialog (`W`), write and relinquish forms (`w`, `n`), the preview and its confirmation, the session ledger (`u`) and the exit guard (#964) |
 
 ### 4.3 Keybindings
@@ -159,7 +169,7 @@ M0 keys:
 Since M0: `a`, `x`, `3`/`1` and `:` for the watch list (#965); `W` to arm or
 disarm writes, `w`/`n` to write or relinquish on an open object, and `u` for
 the ledger (#964); `4` for the Network screen, with `r`, `m`, Tab and
-`:bbmd` there (#966); `5` for the SC screen, with Tab between the hub's certificates, the doctor (#967) and this node's credentials (#968); `6` for MS/TP, with `J` on the monitor (#970); `7` for Capture, with Space, Tab, `/` and `z` (#971).
+`:bbmd` there (#966); `5` for the SC screen, with Tab between the hub's certificates, the doctor (#967) and this node's credentials (#968); `6` for MS/TP, with `J` on the monitor (#970); `7` for Capture, with Space, Tab, `/`, `e`/`E` and `z` (#971).
 
 Only key presses count; Windows also reports releases. Mouse capture will be
 opt-in (`--mouse`) because it breaks native text selection.
@@ -519,13 +529,16 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   commands. A client session finds the transport's frame tap (#957) by
   downcasting the concrete transport the CLI built (B/IP, B/IPv6, SC,
   MS/TP) and subscribes when the screen first asks, so an SC session's
-  handshake comes before it.
+  handshake comes before it. libpcap (`--capture-device`, `pcap` feature)
+  reads on a blocking thread for the whole run, outside sessions; dropping
+  its feed sets the flag the thread checks between 100 ms reads, which is
+  how the TUI stops it instead of the one-shot's `ctrlc` handler.
 - **Capture flow.** Each pump summarises frames (headers only) off the UI
   thread and offers them to the event channel when a batch reaches 256
   frames or every 250 ms, whichever comes first, so a busy source costs
   the shared channel a few events a second and can't crowd out device or
   COV events. A batch the channel refuses is dropped and its frames counted
-  with what the source lost (tap queue, monitor lag), in the screen's own
+  with what the source lost (tap queue, monitor lag, libpcap queue), in the screen's own
   dropped count, not the status bar's; the counts ride on the next batch
   that gets through, and a waited-for last one when the source ends, so
   the count is exact while a source runs. The ring numbers frames
@@ -534,6 +547,11 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   `App::settle` decodes the selected frame into its tree only when the
   selection changes and only on the Capture screen; going to the tree or
   the hex view pauses the list, so the tree keeps its place.
+  Export takes the frames the filter keeps as shared references (the ring
+  holds each frame in an `Arc`), so the UI thread copies no octets; the
+  coordinator streams each file through a buffered writer on a blocking
+  thread, removes a file it couldn't finish, reports what it wrote, and
+  joins those tasks before it exits.
 
 ### 6.6 Profiles and workspaces (#962)
 

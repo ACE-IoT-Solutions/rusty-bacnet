@@ -255,6 +255,11 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = 50_000,
               value_parser = clap::value_parser!(u32).range(1..=1_000_000))]
         capture_ring: u32,
+        /// Also capture B/IP traffic on the -p port from this network device
+        /// with libpcap, for the Capture screen (needs the pcap feature and
+        /// capture rights).
+        #[arg(long, value_name = "DEVICE")]
+        capture_device: Option<String>,
     },
 
     /// Discover BACnet devices (WhoIs).
