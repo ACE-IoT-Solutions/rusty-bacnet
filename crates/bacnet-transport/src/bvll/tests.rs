@@ -129,7 +129,7 @@ fn error_mapping_covers_every_codec_error() {
     let texts = [
         "BVLL datagram too short: 2 octets, header needs 4",
         "BVLC type 0x82 is not B/IP (0x81)",
-        "unknown BVLC function 0xc",
+        "unknown BVLC function 0x0C",
         "BVLC length 6 does not match the 8-octet datagram",
         "BVLC_RESULT cannot carry a 3-octet payload",
         "table of 9 octets is not a whole number of 10-octet entries",
@@ -142,6 +142,13 @@ fn error_mapping_covers_every_codec_error() {
                 assert_eq!(refused.message().to_string(), text, "{error:?}");
             }
             other => panic!("{error:?} mapped to {other:?}"),
+        }
+        // The hex octets read as the codec's own text does (#1803).
+        if matches!(
+            error,
+            BvllError::NotBip { .. } | BvllError::UnknownFunction { .. }
+        ) {
+            assert_eq!(text, error.to_string());
         }
     }
     let encoding = [

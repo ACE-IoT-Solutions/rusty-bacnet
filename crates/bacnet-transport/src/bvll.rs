@@ -85,7 +85,7 @@ pub(crate) use payload_label;
 /// Decode failures become a static [`Error::Decoding`] at the offset of the
 /// field at fault: 0 for the datagram as a whole, its type octet or a B/IP
 /// address, 1 for the function, 2 for the Length field, 4 for the payload.
-/// The text is the codec's, with hexadecimal in lower case (#1776). Encode
+/// The text is the codec's, octets in upper-case hexadecimal (#1803). Encode
 /// failures become [`Error::Encoding`], and so does an error the codec adds
 /// later, until it is placed here.
 pub fn bvll_error(error: BvllError) -> Error {
@@ -97,7 +97,7 @@ pub fn bvll_error(error: BvllError) -> Error {
         ),
         BvllError::NotBip { bvlc_type } => (
             0,
-            "BVLC type {:#x} is not B/IP (0x81)",
+            "BVLC type {:#04X} is not B/IP (0x81)",
             [bvlc_type.into(), 0],
         ),
         BvllError::TableLength {
@@ -114,7 +114,7 @@ pub fn bvll_error(error: BvllError) -> Error {
             [length as u64, 0],
         ),
         BvllError::UnknownFunction { function } => {
-            (1, "unknown BVLC function {:#x}", [function.into(), 0])
+            (1, "unknown BVLC function {:#04X}", [function.into(), 0])
         }
         BvllError::LengthMismatch { declared, received } => (
             2,

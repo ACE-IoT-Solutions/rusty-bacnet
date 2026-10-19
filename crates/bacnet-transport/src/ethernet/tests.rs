@@ -55,12 +55,20 @@ fn rejects_short_frame() {
 #[test]
 fn rejects_invalid_llc() {
     let mut buf = vec![0u8; 20];
-    buf[14] = 0x00; // wrong DSAP
+    buf[14] = 0x0B; // wrong DSAP
     buf[15] = 0x82;
     buf[16] = 0x03;
     buf[12] = 0x00;
     buf[13] = 0x04; // length = 4
-    assert!(decode_ethernet_frame(&buf).is_err());
+
+    // The octets print upper case and zero-padded, as before #1776 (#1803).
+    match decode_ethernet_frame(&buf) {
+        Err(Error::Decoding(refused)) => assert_eq!(
+            refused.message().to_string(),
+            "invalid DSAP: expected 0x82, got 0x0B"
+        ),
+        other => panic!("expected a decoding error, got {other:?}"),
+    }
 }
 
 #[test]

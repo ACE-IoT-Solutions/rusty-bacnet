@@ -10,7 +10,9 @@
 //! replaced by the next number:
 //!
 //! - `{}`: the number in decimal;
-//! - `{:#x}`: the number in hexadecimal;
+//! - `{:#x}`: the number in hexadecimal, lower case, without padding;
+//! - `{:#04X}`: an octet in hexadecimal, upper case and zero-padded to two
+//!   digits, such as `0x0B` (#1803); a wider number prints all its digits;
 //! - `{t}`: the name of the application datatype the number is the tag of
 //!   (Clause 20.2.1.4), such as `Unsigned` for 2. The names live in the
 //!   display code, so one label serves every type.
@@ -85,7 +87,8 @@ impl DecodingKind {
 /// It displays as `decoding error at offset {offset}: {context}: {label}`,
 /// leaving out `{context}: ` when the context is empty, and with each `{}`
 /// in the label replaced by the next of [`values`](Self::values) in decimal,
-/// or each `{:#x}` in hexadecimal. An [`index`](Self::index) follows the
+/// each `{:#x}` in hexadecimal, or each `{:#04X}` as an upper-case,
+/// zero-padded octet such as `0x0B`. An [`index`](Self::index) follows the
 /// context as `[{index}]`.
 ///
 /// ```
@@ -293,7 +296,7 @@ fn write_label(f: &mut fmt::Formatter<'_>, label: &str, values: [u64; 2]) -> fmt
     while let Some(at) = rest.find('{') {
         let (before, from) = rest.split_at(at);
         f.write_str(before)?;
-        let placeholder = ["{}", "{:#x}", "{t}"]
+        let placeholder = ["{}", "{:#x}", "{:#04X}", "{t}"]
             .into_iter()
             .find(|placeholder| from.starts_with(placeholder));
         match placeholder.zip(next.clone().next()) {
@@ -301,6 +304,7 @@ fn write_label(f: &mut fmt::Formatter<'_>, label: &str, values: [u64; 2]) -> fmt
                 next.next();
                 match placeholder {
                     "{:#x}" => write!(f, "{value:#x}")?,
+                    "{:#04X}" => write!(f, "{value:#04X}")?,
                     "{t}" => f.write_str(datatype_name(value))?,
                     _ => write!(f, "{value}")?,
                 }
@@ -334,6 +338,11 @@ mod tests {
         assert_eq!(
             display("unknown PDU type nibble: {:#x}", [0xF, 0]),
             "decoding error at offset 3: unknown PDU type nibble: 0xf"
+        );
+        // An octet pads to two upper-case digits; a wider value keeps them all.
+        assert_eq!(
+            display("type {:#04X}, function {:#04X}", [0x0B, 0x1FF]),
+            "decoding error at offset 3: type 0x0B, function 0x1FF"
         );
         assert_eq!(
             display("no placeholder", [7, 8]),

@@ -10,8 +10,8 @@ use bytes::BytesMut;
 /// Decode failures become a static [`Error::Decoding`] at the offset of the
 /// field at fault: 0 for the datagram as a whole, its type octet or a
 /// B/IPv6 address, 1 for the function, 2 for the Length field, 4 for the
-/// payload. The text is the codec's, with hexadecimal in lower case
-/// (#1776). Encode failures become [`Error::Encoding`], and so does an error
+/// payload. The text is the codec's, octets in upper-case hexadecimal
+/// (#1803). Encode failures become [`Error::Encoding`], and so does an error
 /// the codec adds later, until it is placed here.
 pub fn bvll6_error(error: Bvll6Error) -> Error {
     let (offset, label, values) = match error {
@@ -22,7 +22,7 @@ pub fn bvll6_error(error: Bvll6Error) -> Error {
         ),
         Bvll6Error::NotBip6 { bvlc_type } => (
             0,
-            "BVLC type {:#x} is not B/IPv6 (0x82)",
+            "BVLC type {:#04X} is not B/IPv6 (0x82)",
             [bvlc_type.into(), 0],
         ),
         Bvll6Error::AddressLength { length } => (
@@ -31,7 +31,7 @@ pub fn bvll6_error(error: Bvll6Error) -> Error {
             [length as u64, 0],
         ),
         Bvll6Error::UnknownFunction { function } => {
-            (1, "unknown BVLC6 function {:#x}", [function.into(), 0])
+            (1, "unknown BVLC6 function {:#04X}", [function.into(), 0])
         }
         Bvll6Error::LengthMismatch { declared, received } => (
             2,
@@ -128,7 +128,7 @@ mod tests {
             (
                 Bvll6Error::UnknownFunction { function: 0x0B },
                 1,
-                "unknown BVLC6 function 0xb",
+                "unknown BVLC6 function 0x0B",
             ),
             (
                 Bvll6Error::LengthMismatch {
@@ -162,6 +162,13 @@ mod tests {
                     assert_eq!(refused.message().to_string(), text, "{error:?}");
                 }
                 other => panic!("{error:?} mapped to {other:?}"),
+            }
+            // The hex octets read as the codec's own text does (#1803).
+            if matches!(
+                error,
+                Bvll6Error::NotBip6 { .. } | Bvll6Error::UnknownFunction { .. }
+            ) {
+                assert_eq!(text, error.to_string());
             }
         }
         let encoding = [
