@@ -219,6 +219,26 @@ impl DurationStats {
     }
 }
 
+/// Count, maximum and total of a series of counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CountStats {
+    /// Samples taken.
+    pub count: u64,
+    /// The largest, once there is a sample.
+    pub max: Option<u64>,
+    /// All samples added up (saturating).
+    pub total: u64,
+}
+
+impl CountStats {
+    fn add(&mut self, sample: u64) {
+        self.count = self.count.saturating_add(1);
+        self.max = Some(self.max.map_or(sample, |max| max.max(sample)));
+        self.total = self.total.saturating_add(sample);
+    }
+}
+
 /// What one station did on the line.
 ///
 /// A station gets an entry when it sends a valid frame or one is addressed
@@ -252,6 +272,13 @@ pub struct StationStats {
     /// when that frame came straight after the Token: how quickly it took
     /// up the token.
     pub token_usage_delay: DurationStats,
+    /// How long it held the token: from the end of a Token addressed to it
+    /// to the start of the Token it passed on, when the monitor saw both.
+    pub token_hold: DurationStats,
+    /// Frames it sent during each of those holds, Tokens and Poll For
+    /// Master frames left out: at most its Max_Info_Frames (Clause 9.5.3),
+    /// so the largest is a lower bound for that setting.
+    pub frames_per_token: CountStats,
     /// The highest station it polled.
     highest_polled: Option<u8>,
     /// The station it polled last.
@@ -444,6 +471,17 @@ pub struct MonitorStats {
     last_token_sent: BTreeMap<u8, Duration>,
     /// A Token or Poll For Master has been seen since the last lost token.
     token_seen: bool,
+    /// The station the last Token went to, when it arrived, and the frames
+    /// it has sent since; cleared when the line shows someone else has it.
+    holding: Option<Holding>,
+}
+
+/// A token hold in progress, as far as the monitor can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Holding {
+    station: u8,
+    since: Duration,
+    frames: u64,
 }
 
 impl MonitorStats {
@@ -548,6 +586,7 @@ impl MonitorStats {
                     regenerated_by: source,
                 });
                 self.last_frame = None;
+                self.holding = None;
             }
         }
         self.last_activity = Some(self.last_activity.map_or(end, |last| last.max(end)));
@@ -583,6 +622,8 @@ impl MonitorStats {
                 && token.source == source
                 && token.destination == destination;
         }
+        self.track_hold(start, end, header);
+        let sender = self.stations.entry(source).or_default();
         match frame_type {
             FrameType::TOKEN if retry => {
                 sender.token_retries = sender.token_retries.saturating_add(1);
@@ -608,6 +649,43 @@ impl MonitorStats {
         if destination != BROADCAST_MAC {
             let receiver = self.stations.entry(destination).or_default();
             receiver.frames_received.add(frame_type);
+        }
+    }
+
+    /// Follow the token from holder to holder: a Token pass ends the
+    /// sender's hold and starts its successor's, and the holder's other
+    /// frames, polls aside, count toward its frames per token. A Token or
+    /// poll from any other station means the monitor lost track (a new
+    /// token, or a missed frame), so that hold goes unmeasured. A retried
+    /// Token comes from a station that no longer holds the token, so it
+    /// restarts its successor's hold without a second sample.
+    fn track_hold(&mut self, start: Duration, end: Duration, header: FrameHeader) {
+        let FrameHeader {
+            frame_type,
+            destination,
+            source,
+            ..
+        } = header;
+        let held = self.holding.filter(|holding| holding.station == source);
+        let passing = frame_type == FrameType::TOKEN && destination != BROADCAST_MAC;
+        if passing {
+            if let Some(holding) = held {
+                let sender = self.stations.entry(source).or_default();
+                sender.token_hold.add(start.saturating_sub(holding.since));
+                sender.frames_per_token.add(holding.frames);
+            }
+            self.holding = Some(Holding {
+                station: destination,
+                since: end,
+                frames: 0,
+            });
+        } else if let Some(mut holding) = held {
+            if frame_type != FrameType::POLL_FOR_MASTER {
+                holding.frames = holding.frames.saturating_add(1);
+            }
+            self.holding = Some(holding);
+        } else if frame_type == FrameType::TOKEN || frame_type == FrameType::POLL_FOR_MASTER {
+            self.holding = None;
         }
     }
 }

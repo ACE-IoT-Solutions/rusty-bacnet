@@ -204,13 +204,22 @@ fn join(key: KeyEvent) -> Option<Action> {
     })
 }
 
-/// The MS/TP screen: `z` counts from now, Space pauses or follows.
+/// The MS/TP screen: `z` counts from now, Space pauses or follows; on the
+/// monitor, Tab changes view, `J` starts the join wizard, `+` and `-` pick
+/// a MAC and Enter takes it to the join confirmation.
 fn mstp(key: KeyEvent) -> Option<Action> {
     if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
         return None;
     }
     Some(match key.code {
-        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Esc => Action::Mstp(MstpKey::Back),
+        KeyCode::Tab => Action::Mstp(MstpKey::Cycle { back: false }),
+        KeyCode::BackTab => Action::Mstp(MstpKey::Cycle { back: true }),
+        KeyCode::Char('J') => Action::Mstp(MstpKey::Join),
+        KeyCode::Char('+' | '=') => Action::Mstp(MstpKey::Pick { back: false }),
+        KeyCode::Char('-') => Action::Mstp(MstpKey::Pick { back: true }),
+        KeyCode::Enter => Action::Mstp(MstpKey::Accept),
+        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),

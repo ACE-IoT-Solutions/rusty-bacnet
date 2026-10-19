@@ -87,6 +87,90 @@ fn each_flag_names_its_allowed_values() {
     }
 }
 
+/// `tui --mstp-monitor PORT` takes the baud rate and Max_Info_Frames from
+/// either side of the subcommand, and refuses `--mstp`, the flags the join
+/// wizard proposes, other transports' flags and a profile (#970).
+#[test]
+fn the_monitor_flag_takes_baud_and_refuses_what_it_proposes() {
+    let cli = parse([
+        "bacnet",
+        "--mstp-baud",
+        "19200",
+        "tui",
+        "--mstp-monitor",
+        "/dev/ttyUSB1",
+        "--mstp-max-info-frames",
+        "3",
+    ])
+    .unwrap();
+    let Some(crate::args::Command::Tui { mstp_monitor, .. }) = &cli.command else {
+        panic!("expected tui");
+    };
+    assert_eq!(mstp_monitor.as_deref(), Some("/dev/ttyUSB1"));
+    assert_eq!((cli.mstp_baud, cli.mstp_max_info_frames), (19_200, 3));
+    for (args, diagnostic) in [
+        (
+            vec![
+                "bacnet",
+                "--mstp",
+                "/dev/x",
+                "tui",
+                "--mstp-monitor",
+                "/dev/y",
+            ],
+            "--mstp cannot be used with --mstp-monitor",
+        ),
+        (
+            vec![
+                "bacnet",
+                "tui",
+                "--mstp-monitor",
+                "/dev/y",
+                "--mstp-mac",
+                "3",
+            ],
+            "--mstp-mac cannot be used with --mstp-monitor: the join wizard (J) proposes it",
+        ),
+        (
+            vec![
+                "bacnet",
+                "--mstp-max-master",
+                "9",
+                "tui",
+                "--mstp-monitor",
+                "/dev/y",
+            ],
+            "--mstp-max-master cannot be used with --mstp-monitor",
+        ),
+        (
+            vec!["bacnet", "tui", "--mstp-monitor", "/dev/y", "--sc"],
+            "--sc cannot be used with --mstp-monitor: it belongs to another transport",
+        ),
+        (
+            vec!["bacnet", "tui", "--mstp-monitor", " "],
+            "--mstp-monitor needs a serial port name",
+        ),
+        (
+            vec![
+                "bacnet",
+                "tui",
+                "--mstp-monitor",
+                "/dev/y",
+                "--profile",
+                "lab",
+            ],
+            "cannot be used with",
+        ),
+        (
+            vec!["bacnet", "discover", "--mstp-baud", "9600"],
+            "--mstp-baud requires --mstp PORT (or tui --mstp-monitor PORT)",
+        ),
+    ] {
+        let error = parse_vec(args.clone()).unwrap_err().to_string();
+        assert!(error.contains(diagnostic), "{args:?}: {error}");
+    }
+}
+
 #[test]
 fn the_flags_reach_the_transport_settings() {
     let cli = parse([
@@ -364,9 +448,11 @@ async fn the_cli_client_discovers_and_reads_a_server_on_the_trunk() {
         .build()
         .await
         .unwrap();
-    let (mut client, diagnostics) = build_client_on(client_line, &settings(CLIENT_MAC), 6000, 0)
-        .await
-        .unwrap();
+    let mode = bacnet_transport::mstp::MstpExecutionMode::DedicatedThread;
+    let (mut client, diagnostics) =
+        build_client_on(client_line, &settings(CLIENT_MAC), 6000, 0, mode)
+            .await
+            .unwrap();
     assert_eq!(client.local_mac(), [CLIENT_MAC]);
     let style = crate::core::target::AddressStyle::of(client.transport());
     assert_eq!(style, crate::core::target::AddressStyle::Mstp);

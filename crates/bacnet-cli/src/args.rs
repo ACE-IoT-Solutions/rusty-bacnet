@@ -221,6 +221,12 @@ pub(crate) enum Command {
         /// subscriptions, registrations or writes.
         #[arg(long)]
         passive: bool,
+        /// Listen to an MS/TP trunk on this serial port without transmitting:
+        /// stations, token ring and errors on the MS/TP screen, where J finds
+        /// a free MAC to join with. Takes --mstp-baud and
+        /// --mstp-max-info-frames; not --mstp or a profile.
+        #[arg(long, value_name = "PORT", conflicts_with = "profile")]
+        mstp_monitor: Option<String>,
         /// Use global transport flags without reading or writing profiles.
         #[arg(long)]
         no_profile: bool,

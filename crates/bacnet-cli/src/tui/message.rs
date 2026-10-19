@@ -117,10 +117,12 @@ pub(crate) enum Command {
         /// Its broadcast address.
         broadcast: Ipv4Addr,
     },
-    /// Join the MS/TP trunk on this port: the operator confirmed it (T2).
+    /// Join the MS/TP trunk with these settings, on the port chosen: the
+    /// operator confirmed it (T2). From a monitor session, the monitor ends
+    /// first.
     JoinTrunk {
-        /// The serial port chosen.
-        port: String,
+        /// The settings, port included.
+        settings: crate::mstp::MstpArgs,
     },
     /// Send a Who-Is and report when its listen window ends.
     WhoIs {
@@ -280,6 +282,8 @@ pub(crate) enum WorkerEvent {
     /// An MS/TP screen report.
     #[cfg_attr(not(feature = "serial"), allow(dead_code))]
     Mstp(super::mstp::MstpReport),
+    /// An MS/TP monitor report (#970).
+    Monitor(super::monitor::MonitorReport),
 }
 
 #[cfg(test)]

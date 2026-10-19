@@ -1,6 +1,6 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
-use super::session::{ConnectPlan, SessionOptions};
+use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
@@ -208,19 +208,32 @@ async fn run(
                             active = start(plan, generation, &sink, &options).await;
                         } else { reject(&sink, "select a profile before connecting").await; }
                     }
-                    Command::JoinTrunk { port } => {
-                        if active.is_some() { reject(&sink, "disconnect before joining again").await; continue; }
+                    Command::JoinTrunk { settings } => {
                         // A profile joins through its reviewed preview and its own confirmation.
                         if profiles.is_some() { reject(&sink, "review the profile before joining").await; continue; }
-                        match plan.as_mut() {
-                            Some(next) if next.args.mstp.is_some() => {
-                                if let Some(mstp) = &mut next.args.mstp { mstp.port = port; }
-                                next.await_interface = false;
-                                generation += 1;
-                                active = start(next, generation, &sink, &options).await;
+                        if let Err(error) = settings.validate() { reject(&sink, &error).await; continue; }
+                        let Some(next) = plan.as_mut() else { reject(&sink, NO_TRUNK).await; continue; };
+                        match next.kind {
+                            TransportKind::MstpMonitor if options.safety.passive => { reject(&sink, "passive: this session never joins the trunk").await; continue; }
+                            TransportKind::MstpMonitor => {
+                                // One owner of the port at a time: the monitor's
+                                // session stops it and closes the port before
+                                // `retire` returns, and only then does the
+                                // participant open it.
+                                if let Err(error) = retire(&mut active).await {
+                                    sink.deliver(WorkerEvent::Fatal { error }).await;
+                                    break;
+                                }
+                                next.kind = TransportKind::Mstp;
                             }
-                            _ => reject(&sink, "this session has no MS/TP trunk to join").await,
+                            TransportKind::Mstp if active.is_some() => { reject(&sink, "disconnect before joining again").await; continue; }
+                            TransportKind::Mstp => {}
+                            _ => { reject(&sink, NO_TRUNK).await; continue; }
                         }
+                        next.args.mstp = Some(settings);
+                        next.await_interface = false;
+                        generation += 1;
+                        active = start(next, generation, &sink, &options).await;
                     }
                     Command::Reconnect => {
                         if profiles.is_some() { reject(&sink, "review the profile before reconnecting").await; continue; }
@@ -241,6 +254,9 @@ async fn run(
         tracing::error!("{error}");
     }
 }
+
+/// Why a JoinTrunk is refused outside an MS/TP session.
+const NO_TRUNK: &str = "this session has no MS/TP trunk to join";
 
 /// Why an MS/TP plan refuses Connect and Reconnect.
 const JOIN_FIRST: &str = "confirm joining the trunk first: an MS/TP session joins only on y";
