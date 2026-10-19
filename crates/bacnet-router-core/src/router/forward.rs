@@ -35,7 +35,8 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// Drop a relay whose hop count has run out, counting it and telling
     /// the host, which logs it as the hosted router does

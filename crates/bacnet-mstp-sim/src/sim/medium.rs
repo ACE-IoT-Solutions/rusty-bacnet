@@ -43,9 +43,16 @@ impl Sim {
             self.listening_masters(driver)
         };
         let cut_after = self.take_cut_off(driver);
-        let tx = self
-            .line
-            .begin(driver, octets, now, corruption, post_drive, inter_octet_gap);
+        let timing = self.timing_of(driver);
+        let tx = self.line.begin(
+            timing,
+            driver,
+            octets,
+            now,
+            corruption,
+            post_drive,
+            inter_octet_gap,
+        );
         self.meta.insert(
             tx,
             TxMeta {
@@ -63,6 +70,22 @@ impl Sim {
             self.perturb("an injected corruption");
         }
         tx
+    }
+
+    /// The character grid `driver` sends on: a master's UART at its own
+    /// rate error, anything else at the line's nominal rate.
+    fn timing_of(&self, driver: Driver) -> crate::WireTiming {
+        let Driver::Station(station) = driver else {
+            return self.timing;
+        };
+        self.nodes
+            .iter()
+            .find(|node| node.station == station)
+            .and_then(|node| match &node.kind {
+                NodeKind::Master(master) => Some(master.spec.skew.baud_ppm),
+                NodeKind::Scripted(_) => None,
+            })
+            .map_or(self.timing, |ppm| self.timing.with_rate_error(ppm))
     }
 
     /// Masters other than the driver with their receivers on, and how many
