@@ -62,7 +62,22 @@ fn packet_info_keeps_destination_and_arrival_index_together() {
 }
 
 #[test]
-fn short_duplicate_or_missing_ipv6_packet_info_is_invalid() {
+fn duplicate_or_missing_ipv6_packet_info_is_invalid() {
+    assert_eq!(
+        decode_control(7, true).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    let missing = packet_info([], IpVersion::V6).unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::InvalidData);
+}
+
+/// Where nix hands IPv6 packet info over as bytes (DragonFly, OpenBSD and
+/// NetBSD), a payload too short for an `in6_pktinfo` is invalid. This is
+/// those targets' guarantee only: on Linux, Android, Apple and FreeBSD nix
+/// decodes the struct itself and trusts the kernel's length, and the zeroed
+/// control buffer keeps that read in bounds.
+#[test]
+fn bytes_parsed_ipv6_packet_info_rejects_a_short_payload() {
     let whole = in6_pktinfo_bytes(destination(), 7);
     assert_eq!(ipv6_packet_info(&whole).unwrap(), (destination(), 7));
     assert_eq!(
@@ -71,12 +86,6 @@ fn short_duplicate_or_missing_ipv6_packet_info_is_invalid() {
             .kind(),
         io::ErrorKind::InvalidData
     );
-    assert_eq!(
-        decode_control(7, true).unwrap_err().kind(),
-        io::ErrorKind::InvalidData
-    );
-    let missing = packet_info([], IpVersion::V6).unwrap_err();
-    assert_eq!(missing.kind(), io::ErrorKind::InvalidData);
 }
 
 /// A datagram that arrives without its packet info, here because the

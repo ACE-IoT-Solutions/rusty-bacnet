@@ -91,6 +91,16 @@ mod unix;
 /// link-layer address (`IP_RECVIF`) on the BSDs, whose padding can take 84
 /// octets on a 32-bit BSD, plus a receive timestamp where one was asked for.
 /// Its alignment covers any `cmsghdr`.
+///
+/// It is also what keeps nix's decoding in bounds. nix reads each message
+/// it decodes as a whole struct, without checking `cmsg_len`: `IP_RECVIF`,
+/// for one, reads a full `sockaddr_dl` (54 octets on FreeBSD) where the
+/// kernel sends about 17. So the buffer must be zeroed for each receive and
+/// stay large enough for the messages plus the largest struct nix decodes
+/// here, never smaller; such a read then lands on zeros inside it, and a
+/// malformed message gives wrong values rather than an out-of-bounds read.
+/// `the_control_buffer_holds_every_message_a_datagram_carries` checks the
+/// size against whole-struct payloads.
 #[cfg(any(unix, windows))]
 #[repr(C, align(8))]
 struct ControlBuffer([u8; 256]);
@@ -489,69 +499,12 @@ fn octets_at<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
     bytes.get(offset..offset.checked_add(N)?)?.try_into().ok()
 }
 
-/// The destination and arrival interface in a Winsock control buffer,
-/// parsed from its bytes: every read is bounds-checked against `control`.
+/// The Winsock control-message parser, built on every host for its tests.
+#[cfg(any(windows, test))]
+#[path = "udp_metadata_winsock.rs"]
+mod winsock;
 #[cfg(windows)]
-fn windows_destination(control: &[u8], version: IpVersion) -> io::Result<(IpAddr, Option<u32>)> {
-    use std::mem::{offset_of, size_of};
-    use windows_sys::Win32::Networking::WinSock::*;
-
-    let invalid = || invalid_metadata("invalid Windows UDP control message");
-    let data_offset = size_of::<CMSGHDR>().next_multiple_of(size_of::<usize>());
-    let mut rest = control;
-    let mut destination = None;
-    while rest.len() >= size_of::<CMSGHDR>() {
-        let field = |offset| octets_at::<4>(rest, offset).map(i32::from_ne_bytes);
-        let length = octets_at(rest, offset_of!(CMSGHDR, cmsg_len)).map(usize::from_ne_bytes);
-        let level = field(offset_of!(CMSGHDR, cmsg_level));
-        let kind = field(offset_of!(CMSGHDR, cmsg_type));
-        let (Some(length), Some(level), Some(kind)) = (length, level, kind) else {
-            return Err(invalid());
-        };
-        // The message must hold its header and lie whole inside the buffer.
-        if length < data_offset || length > rest.len() {
-            return Err(invalid());
-        }
-        let data = &rest[data_offset..length];
-        let candidate = match version {
-            IpVersion::V4 if level == IPPROTO_IP && kind == IP_PKTINFO => {
-                let address = octets_at::<4>(data, offset_of!(IN_PKTINFO, ipi_addr));
-                let index = octets_at(data, offset_of!(IN_PKTINFO, ipi_ifindex));
-                address
-                    .zip(index)
-                    .filter(|_| data.len() >= size_of::<IN_PKTINFO>())
-                    .map(|(address, index)| {
-                        (
-                            IpAddr::V4(Ipv4Addr::from(address)),
-                            Some(u32::from_ne_bytes(index)),
-                        )
-                    })
-            }
-            IpVersion::V6 if level == IPPROTO_IPV6 && kind == IPV6_PKTINFO => {
-                let address = octets_at::<16>(data, offset_of!(IN6_PKTINFO, ipi6_addr));
-                let index = octets_at(data, offset_of!(IN6_PKTINFO, ipi6_ifindex));
-                address
-                    .zip(index)
-                    .filter(|_| data.len() >= size_of::<IN6_PKTINFO>())
-                    .map(|(address, index)| {
-                        (
-                            IpAddr::V6(Ipv6Addr::from(address)),
-                            Some(u32::from_ne_bytes(index)),
-                        )
-                    })
-            }
-            _ => None,
-        };
-        if let Some(candidate) = candidate {
-            if destination.replace(candidate).is_some() {
-                return Err(invalid_metadata("duplicate UDP destination metadata"));
-            }
-        }
-        let next = length.next_multiple_of(size_of::<usize>());
-        rest = rest.get(next..).unwrap_or_default();
-    }
-    destination.ok_or_else(|| invalid_metadata("missing UDP destination metadata"))
-}
+use winsock::windows_destination;
 
 #[cfg(test)]
 #[path = "udp_metadata_tests.rs"]

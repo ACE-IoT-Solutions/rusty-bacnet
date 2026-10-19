@@ -1,7 +1,7 @@
 ---
 section: Changed
 ---
-- B/IP and B/IPv6 read UDP packet info and receive stamps, and B/IPv6 sends
-  its source, through nix's safe socket API on Linux, macOS and the BSDs,
-  removing most of bacnet-transport's Unix unsafe code; other targets keep
-  the libc path (#1882).
+- B/IP and B/IPv6 read packet info and receive stamps, and send the B/IPv6
+  source, through nix's safe socket API on Linux, macOS and the BSDs. Short
+  messages nix decodes rely on it trusting the kernel; undecoded ones cost
+  an allocation per datagram (#1882).
