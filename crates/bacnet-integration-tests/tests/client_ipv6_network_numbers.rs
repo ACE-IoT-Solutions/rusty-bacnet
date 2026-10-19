@@ -1,5 +1,15 @@
 //! Standalone-client wire qualification on an explicitly isolated IPv6 link.
-#![cfg(all(feature = "ipv6", unix))]
+// The packet-info oracle (wire.rs) needs nix's decoded IPV6_PKTINFO, which
+// it gives only on these targets.
+#![cfg(all(
+    feature = "ipv6",
+    any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_vendor = "apple"
+    )
+))]
 #![forbid(unsafe_code)]
 #![allow(clippy::print_stderr)] // the qualification helpers log each observed wire frame
 #[path = "ipv6_network_numbers/observer.rs"]

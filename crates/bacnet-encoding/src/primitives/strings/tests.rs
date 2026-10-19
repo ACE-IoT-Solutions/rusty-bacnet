@@ -137,6 +137,7 @@ fn the_sink_encoders_match_the_bytes_mut_encoders() {
 /// A value too long for a header's 32-bit length is refused, with its
 /// encoded length and the sink's room, and the longest one that fits is
 /// accepted. The check takes the length alone, so no 4 GiB value is built.
+/// `write_tagged` runs it before any write, so a refusal leaves the sink as is.
 #[test]
 fn a_length_past_32_bits_is_refused() {
     let mut storage = [0xA5; 8];
@@ -168,8 +169,12 @@ fn a_length_past_32_bits_is_refused() {
             })
         );
     }
-    // The longest header still fits the encoders' staging buffer.
+    // The longest header, an extended tag number with a four-octet length,
+    // fills the encoders' staging buffer exactly.
     let mut header = [0; MAX_HEADER];
     let mut header_tail = &mut header[..];
-    assert!(encode_tag_to_sink(&mut header_tail, 3, TagClass::Context, u32::MAX).is_ok());
+    assert_eq!(
+        encode_tag_to_sink(&mut header_tail, 254, TagClass::Context, u32::MAX),
+        Ok(MAX_HEADER)
+    );
 }
