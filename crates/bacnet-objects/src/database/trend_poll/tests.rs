@@ -14,6 +14,8 @@ mod acquisition_tests;
 mod alignment_tests;
 #[path = "any_value_tests.rs"]
 mod any_value_tests;
+#[path = "cov_tests.rs"]
+mod cov_tests;
 #[path = "member_tests.rs"]
 mod member_tests;
 #[path = "multiple_tests.rs"]
@@ -159,8 +161,7 @@ fn lifecycle_and_configuration_changes_reset_owned_schedule() {
     write(&mut db, oid, P::LOG_INTERVAL, PropertyValue::Unsigned(50));
     db.poll_trend_logs();
     assert_eq!(count(&db, oid), 2);
-    // A zero interval would ask a Trend Log for COV logging, which is
-    // refused (#1354); TRIGGERED without a Trigger leaves it unpolled.
+    // TRIGGERED without a Trigger leaves it unpolled.
     write(&mut db, oid, P::LOGGING_TYPE, PropertyValue::Enumerated(2));
     db.poll_trend_logs();
     assert!(!db.trend_poll.0.contains_key(&oid));
@@ -344,14 +345,21 @@ fn full_reference_and_logging_mode_changes_retire_previous_selection() {
         last_datum(&db, oid),
         failure(ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT)
     );
-    for disabled_mode in [1, 2] {
-        mode.store(disabled_mode, Ordering::SeqCst);
-        db.poll_trend_logs();
-        assert!(!db.trend_poll.0.contains_key(&oid));
-        assert_eq!(count(&db, oid), 4 + u64::from(disabled_mode - 1));
-        mode.store(0, Ordering::SeqCst);
-        db.poll_trend_logs();
-    }
+    // TRIGGERED without a Trigger retires the schedule.
+    mode.store(2, Ordering::SeqCst);
+    db.poll_trend_logs();
+    assert!(!db.trend_poll.0.contains_key(&oid));
+    assert_eq!(count(&db, oid), 4);
+    mode.store(0, Ordering::SeqCst);
+    db.poll_trend_logs();
+    assert_eq!(count(&db, oid), 5);
+    // COV (#1480) is a new selection: it logs the value at once.
+    mode.store(1, Ordering::SeqCst);
+    db.poll_trend_logs();
+    assert!(matches!(
+        db.trend_poll.0[&oid].configuration.mode,
+        Mode::Cov { .. }
+    ));
     assert_eq!(count(&db, oid), 6);
 }
 
@@ -427,8 +435,8 @@ fn last_datum(db: &ObjectDatabase, oid: ObjectIdentifier) -> LogDatum {
 /// A failure datum.
 fn failure(class: ErrorClass, code: ErrorCode) -> LogDatum {
     LogDatum::Failure {
-        error_class: class.to_raw().into(),
-        error_code: code.to_raw().into(),
+        error_class: class,
+        error_code: code,
     }
 }
 

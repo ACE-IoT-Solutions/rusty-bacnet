@@ -123,8 +123,8 @@ fn polled(members: Vec<BACnetDeviceObjectPropertyReference>) -> Vec<LogValue> {
 
 fn failed(class: ErrorClass, code: ErrorCode) -> LogValue {
     LogValue::Failure {
-        error_class: class.to_raw().into(),
-        error_code: code.to_raw().into(),
+        error_class: class,
+        error_code: code,
     }
 }
 

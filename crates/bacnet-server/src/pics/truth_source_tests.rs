@@ -608,6 +608,9 @@ fn pics_log_family_writability_comes_from_runtime_routes() {
                 PropertyIdentifier::ALIGN_INTERVALS,
                 PropertyIdentifier::INTERVAL_OFFSET,
                 PropertyIdentifier::TRIGGER,
+                // The COV rows (#1480).
+                PropertyIdentifier::COV_RESUBSCRIPTION_INTERVAL,
+                PropertyIdentifier::CLIENT_COV_INCREMENT,
             ][..],
         ),
         (
@@ -713,6 +716,9 @@ fn pics_log_family_writability_comes_from_runtime_routes() {
                 "{object_type:?} {property:?}"
             );
         }
+        // The Trend Log's two COV rows (#1480) are writable above; that
+        // Table 12-29 only permits them is pinned with the RPM rows in
+        // handlers/tests/property_metadata/log.rs.
         let texts = PropertyIdentifier::EVENT_MESSAGE_TEXTS;
         for property in options.iter().chain([&texts]) {
             assert_eq!(optional(*property), Some(true), "{object_type:?}");

@@ -22,14 +22,17 @@ use crate::log_reporting::{impl_buffer_ready_reporting, BufferReadyReporting};
 use crate::log_window::LogWindow;
 use crate::traits::BACnetObject;
 use acquisition::{Acquisition, Rules};
+use cov_settings::CovSettings;
 
 mod acquisition;
+mod cov_settings;
 mod metadata;
 mod multiple;
 mod multiple_metadata;
 mod references;
 
 pub use acquisition::DEFAULT_LOG_INTERVAL;
+pub use cov_settings::DEFAULT_COV_RESUBSCRIPTION_INTERVAL;
 pub use multiple::TrendLogMultipleObject;
 pub use references::MAX_LOG_DEVICE_OBJECT_PROPERTIES;
 
@@ -39,9 +42,10 @@ pub use references::MAX_LOG_DEVICE_OBJECT_PROPERTIES;
 /// Log_DeviceObjectProperty names. The database's trend poller samples it
 /// every Log_Interval while Logging_Type is POLLED, at clock-aligned times
 /// when Align_Intervals asks for them, and once for each Trigger while it is
-/// TRIGGERED; the application may also call `add_record()`. Records are kept
-/// only while Enable is TRUE and the local time lies between Start_Time and
-/// Stop_Time. COV logging isn't carried out, so Logging_Type refuses it.
+/// TRIGGERED, and while it is COV it logs each change of a property of this
+/// device as a COV notification would report it (#1480); the application may
+/// also call `add_record()`. Records are kept only while Enable is TRUE and
+/// the local time lies between Start_Time and Stop_Time.
 pub struct TrendLogObject {
     oid: ObjectIdentifier,
     name: String,
@@ -53,6 +57,7 @@ pub struct TrendLogObject {
     reliability: Reliability,
     log_device_object_property: Option<BACnetDeviceObjectPropertyReference>,
     acquisition: Acquisition,
+    cov: CovSettings,
     window: LogWindow,
     reporting: BufferReadyReporting,
     clock: Option<Arc<dyn ClockReader>>,
@@ -73,6 +78,7 @@ impl TrendLogObject {
             reliability: Reliability::NO_FAULT_DETECTED,
             log_device_object_property: None,
             acquisition: Acquisition::new(Rules::TrendLog),
+            cov: CovSettings::default(),
             window: LogWindow::default(),
             reporting: BufferReadyReporting::default(),
             clock: None,
@@ -213,22 +219,50 @@ impl TrendLogObject {
         Ok(())
     }
 
-    /// Set Logging_Type, as a client's write does: POLLED or TRIGGERED. This
-    /// device has no COV acquisition yet (#1480), so COV, like any other
-    /// value, is PROPERTY / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED (Clause
-    /// 12.25.26) and changes nothing. POLLED with a zero Log_Interval sets
-    /// [`DEFAULT_LOG_INTERVAL`]; TRIGGERED sets Log_Interval to zero.
+    /// Set Logging_Type, as a client's write does: POLLED, TRIGGERED or COV.
+    /// Any other value is PROPERTY / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
+    /// (Clause 12.25.26) and changes nothing. POLLED with a zero Log_Interval
+    /// sets [`DEFAULT_LOG_INTERVAL`]; TRIGGERED and COV set Log_Interval to
+    /// zero.
+    ///
+    /// While COV, the database's trend poller looks at the referenced
+    /// property on each pass and logs it, with the monitored object's
+    /// Status_Flags, whenever its change passes the Clause 13.1 COV test
+    /// (held to Client_COV_Increment when set) or those flags have changed.
+    /// The first pass after the log starts collecting logs the current value;
+    /// Enable turned off and on within one pass (about 100 ms) isn't seen
+    /// and restarts nothing. Only
+    /// references to this device are followed: one naming another device
+    /// logs PROPERTY / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED once, since no
+    /// COV subscription is made to a peer.
     pub fn set_logging_type(&mut self, logging_type: LoggingType) -> Result<(), Error> {
         self.acquisition.set_logging_type(logging_type)
     }
 
     /// Set Log_Interval in hundredths of a second, as a client's write does.
     /// While Logging_Type is TRIGGERED it is read-only and this is PROPERTY /
-    /// WRITE_ACCESS_DENIED. A POLLED log's nonzero interval set to zero would
-    /// switch it to COV logging (Clause 12.25.9), which is refused with
-    /// PROPERTY / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED, as COV itself is.
+    /// WRITE_ACCESS_DENIED. Clause 12.25.9's switches apply: a POLLED log's
+    /// nonzero interval set to zero turns it to COV, and a nonzero interval
+    /// set on a COV log turns it to POLLED.
     pub fn set_log_interval(&mut self, hundredths: u32) -> Result<(), Error> {
         self.acquisition.set_log_interval(hundredths)
+    }
+
+    /// Set Client_COV_Increment, the increment a COV log holds a numeric
+    /// value's changes to (Clause 12.25.11). `None`, NULL, uses the
+    /// referenced property's own criteria: the object's COV_Increment for a
+    /// numeric Present_Value, any change otherwise. An increment that is
+    /// negative or not finite is PROPERTY / VALUE_OUT_OF_RANGE.
+    pub fn set_client_cov_increment(&mut self, increment: Option<f32>) -> Result<(), Error> {
+        self.cov.set_client_cov_increment(increment)
+    }
+
+    /// Set COV_Resubscription_Interval in seconds (Clause 12.25.10); zero is
+    /// PROPERTY / VALUE_OUT_OF_RANGE. It is stored and served, but unused
+    /// until the log subscribes to another device's property, which it
+    /// doesn't yet: COV logging follows this device's properties only.
+    pub fn set_cov_resubscription_interval(&mut self, seconds: u32) -> Result<(), Error> {
+        self.cov.set_resubscription_interval(seconds)
     }
 
     /// Set Start_Time, the local date and time from which records are kept,
@@ -325,6 +359,7 @@ impl BACnetObject for TrendLogObject {
         if let Some(value) = self
             .acquisition
             .read(property)
+            .or_else(|| self.cov.read(property))
             .or_else(|| self.window.read(property))
         {
             return Ok(value);
@@ -408,7 +443,11 @@ impl BACnetObject for TrendLogObject {
                 code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
-        if let Some(result) = self.acquisition.write(property, &value) {
+        if let Some(result) = self
+            .acquisition
+            .write(property, &value)
+            .or_else(|| self.cov.write(property, &value))
+        {
             return result;
         }
         if let Some(result) = self.window.write(property, &value) {
@@ -492,6 +531,10 @@ impl BACnetObject for TrendLogObject {
 
     fn refresh_log_window_internal(&mut self) -> bool {
         self.lifecycle().refresh_window()
+    }
+
+    fn log_collecting_internal(&self) -> bool {
+        self.log_enable && self.window.is_open()
     }
 
     impl_buffer_ready_reporting!(reporting, log_buffer);

@@ -60,7 +60,7 @@ pub use enums::*;
 pub(crate) use mapping::scale as scale_from_py;
 pub use object_identifier::PyObjectIdentifier;
 pub(crate) use property_reference::{
-    check_device, local_device, localize, property_references_from_py,
+    check_device, local_device, localize, property_reference_from_py, property_references_from_py,
 };
 pub use property_value::PyPropertyValue;
 pub(crate) use read_value::{decode_read_ack, decode_read_value};

@@ -127,7 +127,8 @@ fn expected_rows(kind: ObjectType, triggered: bool) -> Vec<(P, bool, bool)> {
         rows.extend([P::START_TIME, P::STOP_TIME].map(|p| (p, true, true)));
     } else {
         rows.extend([
-            // Both trend objects take POLLED or TRIGGERED (#1235, #1354).
+            // Both trend objects take POLLED or TRIGGERED (#1235, #1354), a
+            // Trend Log COV too (#1480).
             (P::LOGGING_TYPE, false, true),
             // Writable on both trend objects (#1234).
             (P::LOG_DEVICE_OBJECT_PROPERTY, false, true),
@@ -136,6 +137,12 @@ fn expected_rows(kind: ObjectType, triggered: bool) -> Vec<(P, bool, bool)> {
         // #1353, #1354).
         rows.extend([P::START_TIME, P::STOP_TIME].map(|p| (p, !trend, true)));
         rows.extend([P::ALIGN_INTERVALS, P::INTERVAL_OFFSET, P::TRIGGER].map(|p| (p, true, true)));
+        if trend {
+            // A Trend Log's two COV rows, optional and writable (#1480).
+            rows.extend(
+                [P::COV_RESUBSCRIPTION_INTERVAL, P::CLIENT_COV_INCREMENT].map(|p| (p, true, true)),
+            );
+        }
     }
     // Every log's BUFFER_READY rows, the configuration ones writable (#1347).
     // Tables 12-29 and 12-35 (footnote 4) and 12-31 (footnote 3) require
