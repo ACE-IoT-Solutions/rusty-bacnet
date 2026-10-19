@@ -60,6 +60,8 @@ owo-colors = "4.3.0"
 ratatui = { version = "0.30.2", optional = true, default-features = false, features = ["crossterm", "layout-cache"] }
 crossterm = { version = "0.29", optional = true, features = ["event-stream"] }
 futures-util = { workspace = true, optional = true }
+# Grapheme clusters for wrapping property values; ratatui already locks it.
+unicode-segmentation = { version = "1.13", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -89,6 +91,7 @@ tui = [
     "dep:ratatui",
     "dep:crossterm",
     "dep:futures-util",
+    "dep:unicode-segmentation",
     "dep:toml",
     "dep:getrandom",
     "dep:directories",

@@ -12,6 +12,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::{Theme, FULL_WIDTH, WIDE_WIDTH};
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
@@ -122,7 +123,7 @@ fn card_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
             .map(|(label, value)| {
                 Line::from(vec![
                     Span::styled(format!(" {label:<CARD_LABEL$}"), theme.dim()),
-                    Span::raw(value.clone()),
+                    Span::raw(sanitize(value)),
                 ])
             })
             .collect(),
@@ -275,38 +276,79 @@ fn name_width(widths: impl Iterator<Item = usize>, inner: usize) -> usize {
     widths.max().unwrap_or(0).min(cap)
 }
 
-/// `text` broken into lines at most `width` columns wide, at spaces where
-/// it can be and inside a word longer than a line.
+/// `text` with each control character (a newline, a tab, an escape) as a
+/// space, as the log pane shows them: a device-supplied value must not
+/// move the cursor or break a row.
+fn sanitize(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
+/// How good a break at the space at `at` is: after `; ` best, then after
+/// `, `, then any space.
+fn break_rank(graphemes: &[(&str, usize)], at: usize) -> u8 {
+    match at.checked_sub(1).map(|before| graphemes[before].0) {
+        Some(";") => 2,
+        Some(",") => 1,
+        _ => 0,
+    }
+}
+
+/// `text` (sanitized) broken into lines at most `width` columns wide.
+/// A line breaks at the last `; ` that fits, else the last `, `, as long
+/// as the line keeps at least half the width; else at the last space;
+/// and inside a word, between grapheme clusters, only when no space fits.
+/// Leading spaces stay on the first line; trailing spaces are dropped.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
+    let text = sanitize(text);
+    let graphemes: Vec<(&str, usize)> = text
+        .trim_end()
+        .graphemes(true)
+        .map(|g| (g, text_width(g)))
+        .collect();
+    let line_text = |from: usize, to: usize| -> String {
+        graphemes[from..to].iter().map(|(g, _)| *g).collect()
+    };
     let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut used = 0;
-    // Trailing spaces would only add a blank line.
-    for word in text.trim_end().split(' ') {
-        let word_width = text_width(word);
-        if used > 0 && used + 1 + word_width <= width {
-            line.push(' ');
-            line.push_str(word);
-            used += 1 + word_width;
-            continue;
+    let mut start = 0;
+    loop {
+        // The most graphemes from `start` that fit, at least one.
+        let mut used = 0;
+        let mut fit = start;
+        while fit < graphemes.len() && (fit == start || used + graphemes[fit].1 <= width) {
+            used += graphemes[fit].1;
+            fit += 1;
         }
-        if used > 0 {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
+        if fit == graphemes.len() {
+            lines.push(line_text(start, fit));
+            return lines;
         }
-        for ch in word.chars() {
-            let ch_width = text_width(ch.encode_utf8(&mut [0; 4]));
-            if used > 0 && used + ch_width > width {
-                lines.push(std::mem::take(&mut line));
-                used = 0;
-            }
-            line.push(ch);
-            used += ch_width;
+        // A space at `at` ends the line before it; the one just past the
+        // fit counts too.
+        let spaces: Vec<usize> = (start + 1..=fit)
+            .filter(|&at| graphemes[at].0 == " ")
+            .collect();
+        let half =
+            |at: usize| graphemes[start..at].iter().map(|(_, w)| w).sum::<usize>() * 2 >= width;
+        let preferred = [2, 1].iter().find_map(|&rank| {
+            spaces
+                .iter()
+                .rev()
+                .find(|&&at| break_rank(&graphemes, at) == rank && half(at))
+        });
+        let (end, next) = match preferred.or(spaces.last()) {
+            Some(&at) => (at, at + 1),
+            None => (fit, fit),
+        };
+        lines.push(line_text(start, end).trim_end().to_string());
+        start = next;
+        // A continuation line starts with the next word.
+        while start < graphemes.len() && graphemes[start].0 == " " {
+            start += 1;
         }
     }
-    lines.push(line);
-    lines
 }
 
 /// The status line and one row per property for a pane `inner` columns
@@ -442,8 +484,51 @@ mod tests {
         assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("72.5 °F", 4), ["72.5", "°F"]);
         assert_eq!(wrap("ab    ", 2), ["ab"]);
+        // Leading spaces stay; a continuation line starts with a word.
+        assert_eq!(wrap("  lead", 10), ["  lead"]);
+        assert_eq!(wrap("  lead on", 6), ["  lead", "on"]);
+        // Control characters become spaces.
+        assert_eq!(wrap("a\nb\tc\u{1b}", 10), ["a b c"]);
         for line in wrap("[a, bb, ccc, dddd, eeeee, ffffff]", 9) {
             assert!(text_width(&line) <= 9, "{line:?}");
         }
+    }
+
+    #[test]
+    fn wrap_prefers_entry_boundaries() {
+        let week = "[Mon 07:00 = 1, 18:00 = 0; Tue 07:00 = 1, 18:00 = 0; Wed none]";
+        assert_eq!(
+            wrap(week, 30),
+            [
+                "[Mon 07:00 = 1, 18:00 = 0;",
+                "Tue 07:00 = 1, 18:00 = 0;",
+                "Wed none]"
+            ]
+        );
+        // A `, ` that would leave less than half a line loses to a space.
+        assert_eq!(wrap("a, bbbbb ccccc", 12), ["a, bbbbb", "ccccc"]);
+    }
+
+    #[test]
+    fn wrap_splits_words_between_grapheme_clusters() {
+        let width = |line: &str| line.graphemes(true).map(text_width).sum::<usize>();
+        // A ZWJ family and a combining accent are each one cluster.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let text = format!("ab{family}cde\u{301}fe\u{301}");
+        for columns in 1..8 {
+            let lines = wrap(&text, columns);
+            assert_eq!(lines.concat(), text, "{columns}: {lines:?}");
+            for line in &lines {
+                assert!(
+                    width(line) <= columns.max(text_width(family)),
+                    "{columns}: {lines:?}"
+                );
+                assert!(!line.starts_with('\u{200D}') && !line.starts_with('\u{301}'));
+            }
+        }
+        assert_eq!(
+            wrap("e\u{301}e\u{301}e\u{301}", 2),
+            ["e\u{301}e\u{301}", "e\u{301}"]
+        );
     }
 }

@@ -122,7 +122,10 @@ What M0 draws (80x24):
   longest property name, capped so the value keeps at least a third of the
   pane (and 12 columns), and always leaves two spaces before the value. A name
   longer than the cap puts its value on the next line. Long values wrap under
-  the value column, and scrolling counts the wrapped lines.
+  the value column, and scrolling counts the wrapped lines. A wrap prefers to
+  break after `; `, then after `, ` (so a weekly schedule breaks between days),
+  then at any space, and splits a word only between grapheme clusters. Control
+  characters in device-supplied text show as spaces.
 
 ### 4.2 Screens
 

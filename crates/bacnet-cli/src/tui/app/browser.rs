@@ -174,9 +174,9 @@ impl Browser {
                 let at = self.scroll.get();
                 self.scroll.set(match movement {
                     Movement::Up => at.saturating_sub(1),
-                    Movement::Down => at + 1,
+                    Movement::Down => at.saturating_add(1),
                     Movement::PageUp => at.saturating_sub(10),
-                    Movement::PageDown => at + 10,
+                    Movement::PageDown => at.saturating_add(10),
                     Movement::Home => 0,
                     // The view clamps it to the last line.
                     Movement::End => usize::MAX,
