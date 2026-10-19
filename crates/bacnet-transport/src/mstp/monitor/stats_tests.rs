@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bacnet_mstp_codec::{FrameHeader, FrameType};
 
-use super::script::{analyse, Damage, LineScript, ScriptedRing, TURNAROUND};
+use super::script::{analyse, Damage, LineScript, ScriptedRing, TURNAROUND, USAGE_TIMEOUT};
 use super::stats::{
     octet_time, LineErrorKind, LineEvent, MaxMaster, MonitorStats, NO_TOKEN_SILENCE,
     SILENCE_BUCKET_BOUNDS,
@@ -92,6 +92,34 @@ fn rotation_and_usage_delay_are_timed() {
     assert_eq!(two.token_usage_delay.max, Some(TURNAROUND));
     assert_eq!(one.token_usage_delay.count, 19);
     assert_eq!(one.token_usage_delay.min, Some(TURNAROUND));
+}
+
+/// A hold runs from the Token to the holder to the Token it passes on;
+/// its data frames count, its polls and the answers it gets don't.
+#[test]
+fn holds_are_timed_and_their_frames_counted() {
+    let mut ring = acceptance_ring(40);
+    let stats = analyse_ring(&ring);
+    let one = stats.station(1).unwrap();
+    // Station 1 holds first, before any Token to it: 19 of its 20 holds.
+    assert_eq!(one.token_hold.count, 19);
+    let frames = &one.frames_per_token;
+    assert_eq!((frames.max, frames.total), (Some(1), 19));
+    let two = stats.station(2).unwrap();
+    assert_eq!(two.token_hold.count, 20);
+    let frames = &two.frames_per_token;
+    assert_eq!((frames.max, frames.total), (Some(0), 0));
+    // A hold with a poll that nobody answers lasts at least its timeout.
+    assert!(two.token_hold.max.unwrap() >= USAGE_TIMEOUT);
+    assert!(one.token_hold.min.unwrap() >= TURNAROUND);
+
+    // Across a lost token the monitor can't tell who held it: the new
+    // token's first holder isn't timed, and the ring goes on as before.
+    ring.lose_token(Duration::from_millis(600));
+    ring.rotate(4, answer_from_5);
+    let after = analyse_ring(&ring);
+    assert_eq!(after.station(1).unwrap().token_hold.count, 19 + 2);
+    assert_eq!(after.station(2).unwrap().token_hold.count, 20 + 2);
 }
 
 #[test]
