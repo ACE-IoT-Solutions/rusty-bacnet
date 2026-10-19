@@ -81,6 +81,41 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
     }
 
+    /// Answer a confirmed request refused for capacity with a server Abort,
+    /// on one of the abort workers. The Abort's addressing is rebuilt from
+    /// `received` here rather than copied ahead of admission, so an admitted
+    /// request never pays for it (#1713).
+    fn spawn_overload_abort(
+        ctx: &DispatchContext<T>,
+        source_mac: &[u8],
+        received: &bacnet_network::layer::ReceivedApdu,
+        invoke_id: u8,
+        reply_tx: Option<oneshot::Sender<Bytes>>,
+    ) {
+        let network = Arc::clone(&ctx.services.network);
+        let mac = MacAddr::from_slice(source_mac);
+        let source = received.source_network.clone();
+        let route = received.response_route();
+        let peer = super::request_peer::canonical_requester(&mac, source.as_ref());
+        let _ = ctx
+            .request_tasks
+            .try_spawn(Class::Abort, peer, || async move {
+                requests::confirmed_response::send_overload_response(
+                    &network,
+                    &Apdu::Abort(AbortPdu {
+                        sent_by_server: true,
+                        invoke_id,
+                        abort_reason: AbortReason::OUT_OF_RESOURCES,
+                    }),
+                    &mac,
+                    source.as_ref(),
+                    &route,
+                    reply_tx,
+                )
+                .await;
+            });
+    }
+
     /// Dispatch a received APDU.
     ///
     /// ConfirmedRequest and UnconfirmedRequest handlers are spawned as
@@ -159,31 +194,27 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         LsoAdmission::New(pending) => pending,
                     };
                     let invoke_id = req.invoke_id;
-                    let abort_network = Arc::clone(network);
-                    let abort_mac = MacAddr::from_slice(source_mac);
-                    let abort_source = received.source_network.clone();
-                    let abort_route = route.clone();
                     let mut reply_tx = received.reply_tx.take();
                     let services = services.clone();
-                    let source_mac = MacAddr::from_slice(source_mac);
+                    let requester_mac = MacAddr::from_slice(source_mac);
                     let source_network = received.source_network.clone();
                     let descendants = request_tasks.spawner();
                     let peer = super::request_peer::canonical_requester(
-                        &source_mac,
+                        &requester_mac,
                         source_network.as_ref(),
                     );
                     let class = super::request_admission::confirmed_class(
                         req.service_choice,
                         &req.service_request,
                     );
-                    let result = request_tasks.try_spawn(class, peer.clone(), || {
+                    let result = request_tasks.try_spawn(class, peer, || {
                         let reply_tx = reply_tx.take();
                         async move {
                             Self::handle_admitted_confirmed_request(
                                 &services,
                                 &descendants,
                                 RequestOrigin {
-                                    mac: &source_mac,
+                                    mac: &requester_mac,
                                     network: source_network,
                                     route,
                                 },
@@ -195,21 +226,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         }
                     });
                     if result == Err(Rejection::Overloaded) {
-                        let _ = request_tasks.try_spawn(Class::Abort, peer, || async move {
-                            requests::confirmed_response::send_overload_response(
-                                &abort_network,
-                                &Apdu::Abort(AbortPdu {
-                                    sent_by_server: true,
-                                    invoke_id,
-                                    abort_reason: AbortReason::OUT_OF_RESOURCES,
-                                }),
-                                &abort_mac,
-                                abort_source.as_ref(),
-                                &abort_route,
-                                reply_tx,
-                            )
-                            .await;
-                        });
+                        Self::spawn_overload_abort(ctx, source_mac, &received, invoke_id, reply_tx);
                     }
                     return;
                 }
@@ -223,26 +240,24 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     ConfirmedRequestAdmission::New(pending) => pending,
                 };
                 let invoke_id = req.invoke_id;
-                let abort_network = Arc::clone(network);
-                let abort_mac = MacAddr::from_slice(source_mac);
-                let abort_source = received.source_network.clone();
-                let abort_route = route.clone();
                 let mut reply_tx = received.reply_tx.take();
                 let services = services.clone();
-                let source_mac = MacAddr::from_slice(source_mac);
+                let requester_mac = MacAddr::from_slice(source_mac);
                 let source_network = received.source_network.clone();
                 let descendants = request_tasks.spawner();
-                let peer =
-                    super::request_peer::canonical_requester(&source_mac, source_network.as_ref());
+                let peer = super::request_peer::canonical_requester(
+                    &requester_mac,
+                    source_network.as_ref(),
+                );
                 let class = super::request_admission::confirmed_class(
                     req.service_choice,
                     &req.service_request,
                 );
-                let result = request_tasks.try_spawn(class, peer.clone(), || {
+                let result = request_tasks.try_spawn(class, peer, || {
                     Self::run_admitted_confirmed_request(requests::read_property::AdmittedRequest {
                         services,
                         request_tasks: descendants,
-                        source_mac,
+                        source_mac: requester_mac,
                         source_network,
                         route,
                         req,
@@ -255,21 +270,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     // before service execution is reported by a server Abort.
                     // Eight owned sends bound this response work. If all are
                     // busy, the counted silent drop is a known local limitation.
-                    let _ = request_tasks.try_spawn(Class::Abort, peer, || async move {
-                        requests::confirmed_response::send_overload_response(
-                            &abort_network,
-                            &Apdu::Abort(AbortPdu {
-                                sent_by_server: true,
-                                invoke_id,
-                                abort_reason: AbortReason::OUT_OF_RESOURCES,
-                            }),
-                            &abort_mac,
-                            abort_source.as_ref(),
-                            &abort_route,
-                            reply_tx,
-                        )
-                        .await;
-                    });
+                    Self::spawn_overload_abort(ctx, source_mac, &received, invoke_id, reply_tx);
                 }
             }
             Apdu::UnconfirmedRequest(req) => {
