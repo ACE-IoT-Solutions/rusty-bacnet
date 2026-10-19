@@ -195,80 +195,84 @@ impl Owner {
 #[tokio::test]
 async fn registered_port_real_owners_snapshot_wildcard_and_release() {
     for full in [true, false] {
-        let mut owner = Owner::start(full, true).await;
-        let address = owner.address();
-        let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-        assert_ne!(address.port(), 0);
-        for (property, value) in [
-            (
-                P::OBJECT_IDENTIFIER,
-                PropertyValue::ObjectIdentifier(port()),
-            ),
-            (
-                P::BACNET_IP_UDP_PORT,
-                PropertyValue::Unsigned(address.port().into()),
-            ),
-            (
-                P::MAC_ADDRESS,
-                PropertyValue::OctetString(
-                    bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], address.port()).to_vec(),
+        port_retry::rerun_on_lost_port(async || {
+            let mut owner = Owner::start(full, true).await;
+            let address = owner.address();
+            let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            assert_ne!(address.port(), 0);
+            for (property, value) in [
+                (
+                    P::OBJECT_IDENTIFIER,
+                    PropertyValue::ObjectIdentifier(port()),
                 ),
-            ),
-            (P::APDU_LENGTH, PropertyValue::Unsigned(1476)),
-            (P::NETWORK_NUMBER, PropertyValue::Unsigned(17)),
-        ] {
+                (
+                    P::BACNET_IP_UDP_PORT,
+                    PropertyValue::Unsigned(address.port().into()),
+                ),
+                (
+                    P::MAC_ADDRESS,
+                    PropertyValue::OctetString(
+                        bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], address.port())
+                            .to_vec(),
+                    ),
+                ),
+                (P::APDU_LENGTH, PropertyValue::Unsigned(1476)),
+                (P::NETWORK_NUMBER, PropertyValue::Unsigned(17)),
+            ] {
+                assert_eq!(
+                    read(&peer, address, wildcard(), property).await,
+                    (port(), value)
+                );
+            }
             assert_eq!(
-                read(&peer, address, wildcard(), property).await,
-                (port(), value)
+                read(
+                    &peer,
+                    address,
+                    oid(ObjectType::NETWORK_PORT, 1),
+                    P::NETWORK_NUMBER
+                )
+                .await
+                .1,
+                PropertyValue::Unsigned(91)
             );
-        }
-        assert_eq!(
-            read(
-                &peer,
-                address,
-                oid(ObjectType::NETWORK_PORT, 1),
-                P::NETWORK_NUMBER
-            )
-            .await
-            .1,
-            PropertyValue::Unsigned(91)
-        );
-        assert_eq!(
-            read(
-                &peer,
-                address,
-                oid(ObjectType::DEVICE, 4194303),
-                P::OBJECT_IDENTIFIER
-            )
-            .await,
-            (device(), PropertyValue::ObjectIdentifier(device()))
-        );
-        if let Owner::Endpoint(endpoint) = &owner {
-            let selected = endpoint
-                .identity()
+            assert_eq!(
+                read(
+                    &peer,
+                    address,
+                    oid(ObjectType::DEVICE, 4194303),
+                    P::OBJECT_IDENTIFIER
+                )
+                .await,
+                (device(), PropertyValue::ObjectIdentifier(device()))
+            );
+            if let Owner::Endpoint(endpoint) = &owner {
+                let selected = endpoint
+                    .identity()
+                    .unwrap()
+                    .network_ports()
+                    .iter()
+                    .find(|entry| entry.instance == 2)
+                    .unwrap();
+                assert_eq!(selected.udp_port, address.port());
+                assert_eq!(
+                    selected.mac.as_slice(),
+                    bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], address.port())
+                );
+            }
+            let db = owner.database();
+            assert!(db.write().await.remove(&port()).is_err());
+            assert!(db
+                .write()
+                .await
+                .get_mut(&port())
                 .unwrap()
-                .network_ports()
-                .iter()
-                .find(|entry| entry.instance == 2)
-                .unwrap();
-            assert_eq!(selected.udp_port, address.port());
-            assert_eq!(
-                selected.mac.as_slice(),
-                bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], address.port())
-            );
-        }
-        let db = owner.database();
-        assert!(db.write().await.remove(&port()).is_err());
-        assert!(db
-            .write()
-            .await
-            .get_mut(&port())
-            .unwrap()
-            .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
-            .is_err());
-        owner.stop().await;
-        assert!(db.write().await.remove(&port()).unwrap().is_some());
-        let _reused = std::net::UdpSocket::bind(address).unwrap();
+                .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
+                .is_err());
+            owner.stop().await;
+            assert!(db.write().await.remove(&port()).unwrap().is_some());
+            std::net::UdpSocket::bind(address).map(drop)
+        })
+        .await;
     }
 }
 

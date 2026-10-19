@@ -376,10 +376,10 @@ impl Fixture {
             clean &= tokio::time::timeout(Duration::from_secs(5), boxed(|| hub.stop()))
                 .await
                 .is_ok();
-            // Successful stop releases the listener before returning.
-            clean &= tokio::net::TcpListener::bind(hub.local_addr().unwrap())
-                .await
-                .is_ok();
+            // A finished stop has joined the accept task that owned the
+            // listener, which the hub's own state reports (#1398, #1419);
+            // rebinding the freed port could lose it to another process.
+            clean &= !hub.status().await.listening;
         }
         clean
     }
