@@ -58,7 +58,6 @@ pub(super) async fn handle_bip_register(
             client
                 .register_foreign_device_bvlc(&mac, ttl)
                 .await
-                .map(|_| ())
                 .map_err(|e| e.to_string())
         })
     });
@@ -257,11 +256,8 @@ pub(super) async fn handle_bip_discover(
             }
         };
         match client.register_foreign_device_bvlc(&bbmd_mac, ttl).await {
-            Ok(result) => {
-                eprintln!(
-                    "{}",
-                    format!("Registered as foreign device with BBMD: {result:?}").green()
-                );
+            Ok(()) => {
+                eprintln!("{}", "Registered as foreign device with the BBMD".green());
             }
             Err(e) => {
                 output::print_error(&format!("BBMD registration failed: {e}"));
