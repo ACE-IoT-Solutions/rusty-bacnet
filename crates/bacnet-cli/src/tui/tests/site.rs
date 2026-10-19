@@ -60,6 +60,9 @@ pub(super) struct Quirks {
     /// Answer every ReadPropertyMultiple with an OBJECT / UNKNOWN_OBJECT
     /// error, as a device that fails a whole request for one bad object.
     pub(super) fail_rpm: bool,
+    /// Never answer WriteProperty or WritePropertyMultiple: a write still
+    /// in flight when the session ends.
+    pub(super) swallow_writes: bool,
 }
 
 struct Port {
@@ -77,6 +80,8 @@ struct Ports {
     outstanding: HashMap<MacAddr, (usize, usize)>,
     /// Every confirmed request: its destination, service and when it went.
     requests: Vec<(MacAddr, u8, tokio::time::Instant)>,
+    /// Frames each port has sent, broadcasts and replies included.
+    sent: HashMap<MacAddr, usize>,
 }
 
 /// Every port sees every broadcast; a unicast reaches the port with that MAC.
@@ -94,6 +99,16 @@ impl Hub {
             .outstanding
             .get(&MacAddr::from_slice(mac))
             .map_or(0, |(_, most)| *most)
+    }
+
+    /// Every frame the port with `mac` has put on the hub.
+    pub(super) fn frames_from(&self, mac: &[u8]) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .sent
+            .get(&MacAddr::from_slice(mac))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The services of the confirmed requests sent to `mac`, in order,
@@ -162,6 +177,7 @@ impl HubPort {
     fn deliver(&self, npdu: &[u8], to: Option<&[u8]>) {
         let kind = apdu_kind(npdu);
         let mut inner = self.hub.inner.lock().unwrap();
+        *inner.sent.entry(self.mac.clone()).or_default() += 1;
         if let (Some(to), Some((pdu_type, request))) = (to, kind) {
             let to = MacAddr::from_slice(to);
             match (pdu_type, request) {
@@ -178,7 +194,12 @@ impl HubPort {
                     let Some(port) = inner.ports.iter_mut().find(|port| port.mac == to) else {
                         return;
                     };
-                    if port.quirks.silent {
+                    let write = [
+                        ConfirmedServiceChoice::WRITE_PROPERTY.to_raw(),
+                        ConfirmedServiceChoice::WRITE_PROPERTY_MULTIPLE.to_raw(),
+                    ]
+                    .contains(&service);
+                    if port.quirks.silent || (write && port.quirks.swallow_writes) {
                         return;
                     }
                     if service == ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw() {
@@ -318,6 +339,8 @@ pub(super) struct Server {
     pub(super) database: Option<ObjectDatabase>,
     /// How its port misbehaves.
     pub(super) quirks: Quirks,
+    /// Deny every write by mutation policy (SERVICE_REQUEST_DENIED).
+    pub(super) deny_writes: bool,
 }
 
 impl Server {
@@ -328,6 +351,7 @@ impl Server {
             instance,
             database: None,
             quirks: Quirks::default(),
+            deny_writes: false,
         }
     }
 
@@ -397,10 +421,16 @@ impl Site {
                 Some(database) => (lab_identity(server.instance), database),
                 None => bare_device(server.instance),
             };
+            let policy = if server.deny_writes {
+                bacnet_server::mutation::MutationPolicy::DenyAll
+            } else {
+                bacnet_server::mutation::MutationPolicy::Permissive
+            };
             let builder = BACnetServer::generic_builder()
                 .device(identity)
                 .transport(HubPort::join(&hub, [10, 0, 0, server.octet], server.quirks))
-                .database(database);
+                .database(database)
+                .mutation_policy(policy);
             started.push(bounded(Box::pin(builder.build())).await.unwrap());
         }
         let client = BACnetClient::generic_builder()

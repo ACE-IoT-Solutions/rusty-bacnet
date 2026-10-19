@@ -83,6 +83,14 @@ async fn a_directed_bip6_who_is_resolves_beside_the_loop() {
     };
     assert!(local.starts_with("bip6:0x0010E1 ([::1]:"), "{local}");
     assert!(local.ends_with(')'), "{local}");
+    // The write session opens beside the loop; a flags-only one can't arm.
+    assert!(matches!(
+        next_event(&mut events).await,
+        WorkerEvent::Safety(crate::tui::safety::SafetyEvent::Ready {
+            workspace: false,
+            ..
+        })
+    ));
 
     // Nobody answers this lookup, yet Cancel ends it at once, well inside
     // the three seconds the lookup may wait.

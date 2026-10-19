@@ -110,9 +110,10 @@ impl Store {
         }
         let text = fs::read_to_string(&path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let profile: Profile =
+        let mut profile: Profile =
             toml::from_str(&text).map_err(|e| format!("invalid profile {name}: {e}"))?;
         profile.validate()?;
+        profile.revoke_if_raised();
         Ok(profile)
     }
     /// Save a complete synced temporary file, then atomically publish it.
@@ -141,8 +142,9 @@ impl Store {
 }
 
 /// Cleanup only files this attempt created. A stale temporary name or another
-/// writer's collision must survive an unsuccessful create_new.
-fn publish(temp: &Path, path: &Path, text: &str, create: bool) -> std::io::Result<()> {
+/// writer's collision must survive an unsuccessful create_new. The session
+/// ledger is saved the same way.
+pub(crate) fn publish(temp: &Path, path: &Path, text: &str, create: bool) -> std::io::Result<()> {
     let mut created = false;
     let result = (|| -> std::io::Result<()> {
         let mut options = OpenOptions::new();

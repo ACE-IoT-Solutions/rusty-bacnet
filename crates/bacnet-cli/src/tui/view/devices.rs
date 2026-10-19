@@ -220,6 +220,9 @@ fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         (Link::Picking, _) => String::new(),
         (Link::Connecting, _) => "Connecting...".to_string(),
         (Link::Failed(error), _) => format!("Connection failed: {error}"),
+        (Link::Passive, _) => {
+            "Passive: no network client; nothing is transmitted. u shows the ledger.".into()
+        }
         (Link::Up { .. }, 0) => "No devices yet. Press d to send a Who-Is.".to_string(),
         (Link::Up { .. }, _) => format!(
             "No device matches \"{}\". Esc clears the filter.",

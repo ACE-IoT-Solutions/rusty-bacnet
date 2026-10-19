@@ -38,6 +38,7 @@ fn options(lifetime: u32, poll_secs: u64, max_rate: u32) -> SessionOptions {
             // The site's client: a 2 s timeout, sent four times.
             request_budget: Duration::from_secs(8),
         },
+        ..SessionOptions::default()
     }
 }
 

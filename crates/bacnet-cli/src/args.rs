@@ -148,16 +148,21 @@ pub(crate) enum Command {
     /// Launch interactive shell.
     Shell,
 
-    /// Open the full-screen terminal UI (read-only).
+    /// Open the full-screen terminal UI (read-only until W arms writes).
     ///
     /// Opens B/IP profiles by default. Explicit transport flags without
     /// --profile retain a nonpersistent B/IP, B/IPv6 or SC connection.
+    /// Writes need a profile, whose workspace holds the ledger and audit log.
     /// Needs an interactive terminal: stdin and stdout must be
     /// a TTY and TERM must not be "dumb".
     Tui {
         /// Named BACnet/IP profile to preview before connecting.
         #[arg(long, value_name = "NAME", conflicts_with = "no_profile")]
         profile: Option<String>,
+        /// Transmit nothing: no client is built, so no discovery, reads,
+        /// subscriptions, registrations or writes.
+        #[arg(long)]
+        passive: bool,
         /// Use global transport flags without reading or writing profiles.
         #[arg(long)]
         no_profile: bool,

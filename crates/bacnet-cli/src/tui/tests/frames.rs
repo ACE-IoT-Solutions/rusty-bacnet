@@ -133,6 +133,7 @@ fn who_is_form_on_bip6_hints_vmac_targets() {
             style: AddressStyle::Bip6,
             color: false,
             picker: None,
+            passive: false,
             now: t0(),
         },
         LogRing::new(100),

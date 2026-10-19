@@ -27,6 +27,10 @@ pub(crate) struct Profile {
     /// Explicit first-use authorization, persisted before connecting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) authorized_at_unix: Option<u64>,
+    /// The write policy that authorization covered. A policy raised past
+    /// it (or a file from before this was recorded) needs authorizing again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authorized_safety: Option<Safety>,
 }
 
 /// Profile transport discriminator.
@@ -65,20 +69,52 @@ impl Default for Bip {
     }
 }
 
-/// Persisted write policy, reserved for future write operations.
+/// Whether a profile may arm a write session (`W`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Writes {
+    /// Read-only for good: `W` says why and arms nothing.
     Never,
+    /// A time-boxed write session may be armed.
     Session,
 }
 
-/// Safety settings never enable any writes in this TUI.
+/// A profile's write policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Safety {
+    /// Whether a write session may be armed.
     pub(crate) writes: Writes,
+    /// Allow dangerous operations (today, commanding priority 6) inside an
+    /// armed write session.
     pub(crate) dangerous: bool,
+}
+
+impl Safety {
+    /// The read-only policy, which an authorization recorded before write
+    /// policies existed is taken to cover.
+    pub(crate) const READ_ONLY: Self = Self {
+        writes: Writes::Never,
+        dangerous: false,
+    };
+
+    /// True when `self` allows something `from` did not: writes where
+    /// there were none, or dangerous operations.
+    pub(crate) fn raises(&self, from: &Self) -> bool {
+        (self.writes == Writes::Session && from.writes == Writes::Never)
+            || (self.dangerous && !from.dangerous)
+    }
+}
+
+impl Default for Safety {
+    /// Sessions may be armed, with nothing dangerous. Arming is itself the
+    /// explicit, time-boxed step.
+    fn default() -> Self {
+        Self {
+            writes: Writes::Session,
+            dangerous: false,
+        }
+    }
 }
 
 impl Default for Profile {
@@ -87,23 +123,34 @@ impl Default for Profile {
             version: 1,
             transport: Transport::Bip,
             bip: Bip::default(),
-            safety: Safety {
-                writes: Writes::Never,
-                dangerous: false,
-            },
+            safety: Safety::default(),
             authorized_at_unix: None,
+            authorized_safety: None,
         }
     }
 }
 
 impl Profile {
+    /// Drop an authorization that doesn't cover the current write policy,
+    /// so connecting asks for it again before anything can be armed.
+    pub(crate) fn revoke_if_raised(&mut self) {
+        let covered = self
+            .authorized_safety
+            .as_ref()
+            .unwrap_or(&Safety::READ_ONLY);
+        if self.authorized_at_unix.is_some() && self.safety.raises(covered) {
+            self.authorized_at_unix = None;
+            self.authorized_safety = None;
+        }
+    }
+
     /// Deterministic validation before any bind, probe, or registration.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.version != 1 {
             return Err(format!("unsupported profile version {}", self.version));
         }
-        if self.safety.dangerous {
-            return Err("dangerous must be false; this TUI is read-only".into());
+        if self.safety.dangerous && self.safety.writes == Writes::Never {
+            return Err("dangerous = true needs writes = \"session\"".into());
         }
         let b = &self.bip;
         if b.interface.is_multicast() || b.interface.is_broadcast() {

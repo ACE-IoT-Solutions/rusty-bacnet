@@ -146,6 +146,8 @@ pub(crate) enum Command {
     },
     /// A watch list request.
     Watch(super::watched::WatchCommand),
+    /// A write session request.
+    Safety(super::safety::SafetyCommand),
 }
 
 /// One row of the device table, already formatted for display.
@@ -252,6 +254,16 @@ pub(crate) enum WorkerEvent {
     },
     /// A watch list report.
     Watch(super::watched::WatchEvent),
+    /// A write session report.
+    Safety(super::safety::SafetyEvent),
+    /// A passive session started: there is no client.
+    Passive,
+    /// The client holds, or keeps asking for, an entry in this BBMD's
+    /// foreign-device table.
+    ForeignDevice {
+        /// The BBMD.
+        bbmd: String,
+    },
 }
 
 #[cfg(test)]

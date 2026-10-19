@@ -15,10 +15,12 @@
 //!
 //! - [`point`]: the device browser's data, shared by the worker and the app.
 //! - [`watched`]: the watch list's messages.
+//! - [`safety`]: write sessions: levels, tiers, the ledger and the audit log.
 //!
-//! The TUI is read-only: discovery, the device browser's reads, the watch
-//! list's reads and finite COV subscriptions, and finite foreign-device
-//! registrations, with no device application writes.
+//! The TUI is read-only by default: discovery, the device browser's reads,
+//! the watch list's reads and finite COV subscriptions, and finite
+//! foreign-device registrations. Writes need a write session armed with
+//! `W` on a profile that allows it; `--passive` transmits nothing at all.
 
 mod app;
 mod event_loop;
@@ -27,6 +29,7 @@ mod log_layer;
 mod message;
 mod point;
 mod profile;
+mod safety;
 mod terminal;
 mod view;
 mod watched;
@@ -52,6 +55,7 @@ use self::terminal::Signals;
 use self::worker::coordinator;
 use self::worker::session::{ConnectPlan, SessionOptions, TransportKind};
 use self::worker::watch::WatchOptions;
+use self::worker::write::SafetyOptions;
 use self::worker::{EventSink, COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY};
 use crate::args::{Cli, Command};
 use crate::core::interfaces::list_ipv4_interfaces;
@@ -68,13 +72,21 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("{hint}");
         std::process::exit(1);
     }
-    let (fps, log_file, options) = match &cli.command {
+    let kind = if cli.sc {
+        TransportKind::Sc
+    } else if cli.ipv6 {
+        TransportKind::Bip6
+    } else {
+        TransportKind::Bip
+    };
+    let (fps, log_file, mut options) = match &cli.command {
         Some(Command::Tui {
             fps,
             log_file,
             max_rate,
             cov_lifetime,
             poll_interval,
+            passive,
             ..
         }) => (
             *fps,
@@ -87,6 +99,10 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
                     workspace: None,
                     request_budget: worker::watch::DEFAULT_REQUEST_BUDGET,
                 },
+                safety: SafetyOptions {
+                    passive: *passive,
+                    ..SafetyOptions::default()
+                },
             },
         ),
         _ => (
@@ -95,16 +111,11 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
             SessionOptions {
                 max_rate: worker::browse::DEFAULT_MAX_RATE,
                 watch: WatchOptions::default(),
+                safety: SafetyOptions::default(),
             },
         ),
     };
-    let kind = if cli.sc {
-        TransportKind::Sc
-    } else if cli.ipv6 {
-        TransportKind::Bip6
-    } else {
-        TransportKind::Bip
-    };
+    options.safety.transport = kind.label();
     if kind == TransportKind::Sc && !cfg!(feature = "sc-tls") {
         eprintln!("Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls");
         std::process::exit(1);
@@ -121,7 +132,13 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     {
         (None, Some(service), Some(connection), None)
     } else {
-        let (interface, broadcast, picker) = choose_interface(&cli, kind, &log);
+        // A passive session binds nothing, so there is no interface to pick.
+        let (interface, broadcast, picker) = if options.safety.passive {
+            let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);
+            (interface, cli.broadcast, None)
+        } else {
+            choose_interface(&cli, kind, &log)
+        };
         let args =
             TransportArgs::from_cli(&cli, interface, broadcast).map_err(std::io::Error::other)?;
         let plan = ConnectPlan {
@@ -138,6 +155,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
             style: kind.style(),
             color,
             picker,
+            passive: options.safety.passive,
             now: tokio::time::Instant::now().into_std(),
         },
         log,

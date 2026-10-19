@@ -29,8 +29,11 @@ pub(crate) enum Screen {
     Preview,
 }
 
+/// Number of editor fields.
+pub(crate) const FIELDS: usize = 11;
+
 /// Text fields have a fixed order shared by the editor and its renderer.
-pub(crate) const LABELS: [&str; 10] = [
+pub(crate) const LABELS: [&str; FIELDS] = [
     "Name",
     "Interface",
     "UDP port",
@@ -41,6 +44,7 @@ pub(crate) const LABELS: [&str; 10] = [
     "TTL seconds",
     "Renewal sec",
     "Writes",
+    "Dangerous",
 ];
 
 /// State retained while a connection is running or the dialog is closed.
@@ -52,7 +56,7 @@ pub(crate) struct Connection {
     pub(crate) screen: Screen,
     pub(crate) name: String,
     pub(crate) saved: Option<Profile>,
-    pub(crate) fields: [String; 10],
+    pub(crate) fields: [String; FIELDS],
     pub(crate) focus: usize,
     pub(crate) creating: bool,
     pub(crate) error: Option<String>,
@@ -124,6 +128,7 @@ impl Connection {
                 Writes::Session => "session",
             }
             .into(),
+            p.safety.dangerous.to_string(),
         ];
         self.focus = usize::from(!self.creating);
         self.screen = Screen::Edit;
@@ -166,7 +171,12 @@ impl Connection {
         profile.safety.writes = match f[9].as_str() {
             "never" => Writes::Never,
             "session" => Writes::Session,
-            _ => return Err("Writes must be never or session; this TUI remains read-only".into()),
+            _ => return Err("Writes must be never or session".into()),
+        };
+        profile.safety.dangerous = match f[10].as_str() {
+            "false" => false,
+            "true" => true,
+            _ => return Err("Dangerous must be true or false".into()),
         };
         if self
             .saved
@@ -174,7 +184,10 @@ impl Connection {
             .is_some_and(|saved| saved.bip != profile.bip)
         {
             profile.authorized_at_unix = None;
+            profile.authorized_safety = None;
         }
+        // Raising the write policy needs a fresh authorization too.
+        profile.revoke_if_raised();
         profile.validate()?;
         self.overrides.resolve(&profile)?;
         Ok(profile)
@@ -191,16 +204,16 @@ impl Connection {
         self.error = None;
         let request = match (&self.screen, key) {
             (Screen::Edit, Key::Next) => {
-                self.focus = (self.focus + 1) % 10;
+                self.focus = (self.focus + 1) % FIELDS;
                 if !self.creating && self.focus == 0 {
                     self.focus = 1;
                 }
                 None
             }
             (Screen::Edit, Key::Prev) => {
-                self.focus = (self.focus + 9) % 10;
+                self.focus = (self.focus + FIELDS - 1) % FIELDS;
                 if !self.creating && self.focus == 0 {
-                    self.focus = 9;
+                    self.focus = FIELDS - 1;
                 }
                 None
             }

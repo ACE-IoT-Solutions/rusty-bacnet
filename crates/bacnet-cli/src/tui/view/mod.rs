@@ -9,6 +9,7 @@ mod chrome;
 mod connection;
 mod devices;
 mod dialogs;
+mod safety;
 mod watch;
 
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -83,6 +84,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         Overlay::Help => chrome::help(frame, area, &theme),
         Overlay::WhoIs(form) => dialogs::who_is(frame, area, app, form, &theme),
         Overlay::Picker(picker) => dialogs::picker(frame, area, picker, &theme),
+        Overlay::Safety(modal) => safety::draw(frame, area, app, modal, &theme),
     }
 }
 

@@ -171,6 +171,9 @@ impl WatchList {
 impl App {
     /// Watch `point`: add its row and ask the worker to start it.
     pub(super) fn watch_point(&mut self, point: Point, out: &mut Vec<Command>) {
+        if !self.may_transmit() {
+            return;
+        }
         if !matches!(self.link, Link::Up { .. }) {
             self.flash("Not connected.", FLASH_FOR);
             return;

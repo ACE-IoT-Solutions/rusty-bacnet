@@ -18,7 +18,8 @@ use tokio::time::Instant;
 
 use super::browse::limits::RateCap;
 use super::watch::WatchOptions;
-use super::{DeviceFeed, EventSink, COMMAND_CHANNEL_CAPACITY};
+use super::write::SafetyOptions;
+use super::{passive, DeviceFeed, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::core::target::AddressStyle;
 use crate::transport::{self, TransportArgs};
 use crate::tui::message::{
@@ -79,6 +80,8 @@ pub(crate) struct SessionOptions {
     pub(crate) max_rate: u32,
     /// The watch list's settings.
     pub(crate) watch: WatchOptions,
+    /// The write session's settings, `--passive` included.
+    pub(crate) safety: SafetyOptions,
 }
 
 /// Capacity of the session's queue to the watch worker: a burst of adds
@@ -103,6 +106,9 @@ async fn connect(
     commands: mpsc::Receiver<Command>,
     mut options: SessionOptions,
 ) {
+    if options.safety.passive {
+        return Box::pin(passive::serve(&sink, commands, &options.safety)).await;
+    }
     let args = plan.args;
     // The CLI's clients keep bacnet-client's default of three retries.
     options.watch.request_budget = Duration::from_millis(args.timeout_ms) * 4;
@@ -129,6 +135,10 @@ async fn connect(
                         Ok(()) => tracing::info!("BBMD {bbmd} accepted the foreign-device registration; it renews automatically"),
                         Err(error) => tracing::warn!("{error}; retrying in the background"),
                     }
+                    // Accepted or retrying, the BBMD may hold an FDT entry
+                    // for us until its TTL runs out: part of the footprint.
+                    let bbmd = bbmd.to_string();
+                    sink.deliver(WorkerEvent::ForeignDevice { bbmd }).await;
                 }
                 Box::pin(serve(client, style, sink, commands, options)).await;
             }
@@ -233,15 +243,23 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
     tracing::info!("connected; local address {local}");
     let mut devices = client.device_events();
     let mut collisions = client.device_collision_events();
-    if sink.deliver(WorkerEvent::Connected { local }).await {
+    if sink
+        .deliver(WorkerEvent::Connected {
+            local: local.clone(),
+        })
+        .await
+    {
         let (browse, browse_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (watch, watch_rx) = mpsc::channel(WATCH_CHANNEL_CAPACITY);
+        let (safety, safety_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        let quiet = options.safety.passive;
         // The browser and the watch list run beside this loop under
         // `join!`, so their jobs keep being polled while an arm here awaits;
         // the loop ending drops `browse` and `watch`, which ends them.
         let session = async {
             let browse = browse;
             let watch = watch;
+            let safety = safety;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
             let mut resolving: Option<Resolving<'_>> = None;
@@ -253,6 +271,15 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                     biased;
                     () = sink.cancelled() => break,
                     command = commands.recv() => match command {
+                        Some(command) if quiet && passive::transmits(&command) => {
+                            passive::refuse(&sink, command).await;
+                        }
+                        Some(Command::Safety(command)) => {
+                            // Polled beside this loop, so waiting can't deadlock.
+                            if safety.send(command).await.is_err() {
+                                tracing::debug!("the write session has ended");
+                            }
+                        }
                         Some(Command::WhoIs { op, spec }) => {
                             let superseded = listening.take().map(|(old, _)| old);
                             let superseded = superseded.or(resolving.take().map(|lookup| lookup.op));
@@ -330,6 +357,13 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                     }
                 }
             }
+            // A write request queued behind the end of the session still
+            // reaches the write worker, which records it as not sent.
+            while let Ok(command) = commands.try_recv() {
+                if let Command::Safety(command) = command {
+                    let _ = safety.send(command).await;
+                }
+            }
         };
         tokio::join!(
             Box::pin(session),
@@ -340,6 +374,14 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                 watch_rx,
                 &rate,
                 &options.watch
+            )),
+            Box::pin(super::write::run(
+                &client,
+                &sink,
+                safety_rx,
+                &rate,
+                &options.safety,
+                &local
             ))
         );
     }

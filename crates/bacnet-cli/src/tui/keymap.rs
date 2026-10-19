@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::devices::Movement;
 use super::app::picker::PickerKey;
+use super::app::safety::ModalKey;
 use super::app::watch::Screen;
 use super::app::whois::FormKey;
 use super::app::{Action, App, FilterKey, Overlay};
@@ -27,6 +28,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
             _ => None,
         },
         Overlay::Command(_) => command_line(key),
+        Overlay::Safety(_) => safety(key),
         Overlay::None if app.filter_editing => filter(key),
         Overlay::None if app.screen == Screen::Watch => watch(key),
         Overlay::None => main(key),
@@ -83,6 +85,10 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('s') => Action::CycleSort,
         KeyCode::Char('S') => Action::ReverseSort,
         KeyCode::Char('a') => Action::AddWatch,
+        KeyCode::Char('w') => Action::OpenWrite { relinquish: false },
+        KeyCode::Char('n') => Action::OpenWrite { relinquish: true },
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
@@ -101,12 +107,27 @@ fn watch(key: KeyEvent) -> Option<Action> {
     Some(match key.code {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('?') => Action::ToggleHelp,
         KeyCode::Char('L') => Action::ToggleLog,
         _ => return None,
     })
+}
+
+/// Write session dialogs: forms, confirmations, the ledger and the exit
+/// guard take typed characters; `q` types a `q` here rather than quitting.
+fn safety(key: KeyEvent) -> Option<Action> {
+    Some(Action::Modal(match key.code {
+        KeyCode::Esc => ModalKey::Esc,
+        KeyCode::Enter => ModalKey::Enter,
+        KeyCode::Tab | KeyCode::Down => ModalKey::Next,
+        KeyCode::BackTab | KeyCode::Up => ModalKey::Prev,
+        KeyCode::Backspace => ModalKey::Backspace,
+        _ => ModalKey::Char(typed(key)?),
+    }))
 }
 
 fn command_line(key: KeyEvent) -> Option<Action> {

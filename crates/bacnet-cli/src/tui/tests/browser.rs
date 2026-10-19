@@ -52,7 +52,7 @@ pub(super) async fn open_device(site: &mut Site) {
 
 /// Select the object whose label matches `filter`, read it, and return
 /// what was read.
-async fn open_object(site: &mut Site, filter: &str) -> ObjectView {
+pub(super) async fn open_object(site: &mut Site, filter: &str) -> ObjectView {
     site.press(KeyCode::Char('/')).await;
     type_text(&mut site.app, filter);
     site.press(KeyCode::Enter).await;

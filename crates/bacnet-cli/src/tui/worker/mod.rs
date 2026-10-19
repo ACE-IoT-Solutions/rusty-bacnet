@@ -9,8 +9,10 @@
 
 pub(crate) mod browse;
 pub(crate) mod coordinator;
+pub(crate) mod passive;
 pub(crate) mod session;
 pub(crate) mod watch;
+pub(crate) mod write;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

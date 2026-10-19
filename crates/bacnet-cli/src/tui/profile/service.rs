@@ -102,8 +102,10 @@ impl Service {
                 .map_err(|e| format!("cannot timestamp authorization: {e}"))?
                 .as_secs();
             profile.authorized_at_unix = Some(at);
+            profile.authorized_safety = Some(profile.safety.clone());
             store.save(name, &profile, false)?;
             resolved.authorized_at_unix = Some(at);
+            resolved.authorized_safety = profile.authorized_safety.clone();
         }
         store.workspace(name)?;
         Ok(resolved)
