@@ -115,7 +115,10 @@ impl PyForeignDevice {
 /// devices register (default False: every registration is refused).
 /// `management_acl` lists the IPv4 addresses allowed to delete Foreign
 /// Device Table entries (default: none). `bdt_persist_path` names a file
-/// holding a BDT to start with instead, when it loads.
+/// holding a BDT to start with instead, when it loads. `alone_on_subnet`
+/// says this BBMD is the only device of its B/IP network on its subnet, as
+/// behind a NAT router: it then skips the local rebroadcast of forwarded and
+/// distributed broadcasts (default False).
 #[pyclass(name = "Bbmd", module = "rusty_bacnet", frozen, skip_from_py_object)]
 pub(crate) struct PyBbmd {
     options: BbmdOptions,
@@ -125,12 +128,13 @@ pub(crate) struct PyBbmd {
 impl PyBbmd {
     /// Check and keep the BBMD's settings.
     #[new]
-    #[pyo3(signature = (bdt=None, *, accept_foreign_devices=false, management_acl=None, bdt_persist_path=None))]
+    #[pyo3(signature = (bdt=None, *, accept_foreign_devices=false, management_acl=None, bdt_persist_path=None, alone_on_subnet=false))]
     fn new(
         bdt: Option<Vec<Bound<'_, PyAny>>>,
         accept_foreign_devices: bool,
         management_acl: Option<Vec<String>>,
         bdt_persist_path: Option<PathBuf>,
+        alone_on_subnet: bool,
     ) -> PyResult<Self> {
         let bdt = bdt
             .unwrap_or_default()
@@ -148,6 +152,7 @@ impl PyBbmd {
                 foreign_device_policy: accept_foreign_devices.then(ForeignDevicePolicy::default),
                 management_acl,
                 bdt_persist_path,
+                alone_on_subnet,
                 ..BbmdOptions::default()
             },
         })
@@ -188,6 +193,13 @@ impl PyBbmd {
     #[getter]
     fn bdt_persist_path(&self) -> Option<PathBuf> {
         self.options.bdt_persist_path.clone()
+    }
+
+    /// Whether this BBMD is the only device of its B/IP network on its
+    /// subnet.
+    #[getter]
+    fn alone_on_subnet(&self) -> bool {
+        self.options.alone_on_subnet
     }
 
     fn __repr__(&self) -> String {

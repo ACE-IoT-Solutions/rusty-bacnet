@@ -2374,7 +2374,10 @@ server and endpoint builders take it as `.mode(...)`, so a BBMD that also
 registers as a foreign device can't be built. `BbmdOptions` carries what the
 BBMD setters above take: the BDT, the foreign-device policy (`None` refuses
 every registration), the Delete-FDT-Entry ACL (empty denies every source), the
-persisted-BDT path and the `FanoutPolicy`. `BipTransport::set_mode` maps a mode
+persisted-BDT path, the `FanoutPolicy` and `alone_on_subnet` (true for a BBMD
+that is the only device of its B/IP network on its subnet, as behind a NAT
+router: it then skips the local rebroadcast of forwarded and distributed
+broadcasts; false by default). `BipTransport::set_mode` maps a mode
 onto those setters and replaces whatever was set up before; the setters remain
 for code that builds a transport by hand, and `start()` still refuses a
 transport set up as both.

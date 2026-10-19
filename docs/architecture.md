@@ -245,6 +245,16 @@ At start the transport asks the host for the mask of the subnet the BBMD's
 own address is on, for the last of those conditions; where the host doesn't
 report one, a forward from the BBMD's own subnet is rebroadcast.
 
+A BBMD that is the only device of its B/IP network on its subnet, as a BBMD
+behind a NAT router usually is (Annex J.7.5), can say so
+(`BbmdOptions::alone_on_subnet`, `LocalSubnet::alone` in the core). It then
+skips the local rebroadcast of a peer's Forwarded-NPDU and of a foreign
+device's Distribute-Broadcast-To-Network, which nothing on the subnet would
+receive (Annex J.4.5); peers and foreign devices get them as before. It is
+off by default: any other device of the network on that subnet would stop
+hearing remote broadcasts. Running a BBMD under its public NAT address is
+#940's work, not this setting's.
+
 `BbmdState` maps `std::time::Instant` onto the core's nanosecond clock
 (`bacnet-time`'s `Instant`, which `bacnet-mstp-core` takes too) with a
 centred `bacnet_time::HostClock`: the state's creation sits at the middle

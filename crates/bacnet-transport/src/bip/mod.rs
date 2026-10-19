@@ -270,6 +270,7 @@ impl BipTransport {
             initial_bdt: bdt,
             management_acl: Vec::new(),
             foreign_device_policy: None,
+            alone_on_subnet: false,
         });
     }
 
@@ -307,6 +308,22 @@ impl BipTransport {
             // Log a warning if called before `enable_bbmd()` so misconfiguration
             // does not fail silently.
             warn!("set_bbmd_management_acl called before enable_bbmd(); ACL will be ignored");
+        }
+    }
+
+    /// Say whether this BBMD is the only device of its B/IP network on its
+    /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). It then
+    /// sends a peer's Forwarded-NPDU and a foreign device's
+    /// Distribute-Broadcast-To-Network only to its peers and foreign
+    /// devices, skipping the local rebroadcast (Annex J.4.5). Off by default;
+    /// turn it on only when no other device of the network shares the
+    /// subnet, since such a device would stop receiving remote broadcasts.
+    /// Must be called after `enable_bbmd()` and before `start()`.
+    pub fn set_bbmd_alone_on_subnet(&mut self, alone: bool) {
+        if let Some(config) = &mut self.bbmd_config {
+            config.alone_on_subnet = alone;
+        } else {
+            warn!("set_bbmd_alone_on_subnet called before enable_bbmd(); setting will be ignored");
         }
     }
 
@@ -840,6 +857,9 @@ impl Drop for BipTransport {
 
 #[cfg(test)]
 mod acl_tests;
+
+#[cfg(test)]
+mod alone_tests;
 #[cfg(test)]
 mod bbmd_start_tests;
 #[cfg(test)]

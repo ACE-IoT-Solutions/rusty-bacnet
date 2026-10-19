@@ -265,6 +265,10 @@ pub struct BbmdState {
     /// reports it: a peer's Forwarded-NPDU sent from that subnet at this
     /// BBMD's own port isn't broadcast on it again (Annex J.4.5).
     subnet_mask: Option<Ipv4Addr>,
+    /// Whether this BBMD is the only device of its B/IP network on its
+    /// subnet: it then skips the local rebroadcast of forwarded and
+    /// distributed broadcasts (Annex J.4.5, J.7.5).
+    alone_on_subnet: bool,
     /// Allowed source IPs for Delete-Foreign-Device-Table-Entry.
     /// Empty means deny all (fail closed).
     management_acl: Vec<[u8; 4]>,
@@ -282,6 +286,7 @@ impl BbmdState {
             clock: HostClock::centred(Instant::now()),
             tables: Tables::new(address(local_ip, local_port)),
             subnet_mask: None,
+            alone_on_subnet: false,
             management_acl: Vec::new(),
             foreign_device_policy: None,
             rate_tracker: ForeignDeviceRateTracker::new(),
@@ -503,6 +508,24 @@ impl BbmdState {
     /// Set the mask of the subnet this BBMD's own address is on.
     pub(crate) fn set_subnet_mask(&mut self, mask: Option<Ipv4Addr>) {
         self.subnet_mask = mask;
+    }
+
+    /// Whether this BBMD is set up as the only device of its B/IP network on
+    /// its subnet ([`Self::set_alone_on_subnet`]).
+    pub fn alone_on_subnet(&self) -> bool {
+        self.alone_on_subnet
+    }
+
+    /// Say whether this BBMD is the only device of its B/IP network on its
+    /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). When it
+    /// is, a peer's Forwarded-NPDU and a foreign device's
+    /// Distribute-Broadcast-To-Network go only to the peers and foreign
+    /// devices, not to the subnet's broadcast address, where nothing would
+    /// receive them (Annex J.4.5). Off by default: with another device of
+    /// the network on the subnet, that device stops receiving remote
+    /// broadcasts.
+    pub fn set_alone_on_subnet(&mut self, alone: bool) {
+        self.alone_on_subnet = alone;
     }
 
     /// Check if a sender is a registered (non-expired) foreign device, for
