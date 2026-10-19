@@ -120,7 +120,7 @@ async fn the_ai1_row_follows_its_value_by_cov() {
     }
     site.run_for(Duration::from_millis(500)).await;
     let row = &site.app.watch.rows()[0];
-    assert_eq!(row.value.as_ref().unwrap().as_deref(), Ok("74"));
+    assert_eq!(row.value.as_ref().unwrap().as_deref(), Ok("74 °F"));
     assert!(row.history.len() >= 20, "{:?}", row.history);
     assert_eq!(row.flags.unwrap().badges(), ["[ALM]", "[FLT]", "[OOS]"]);
     assert_eq!(site.app.watch.stats.subscriptions, 1);

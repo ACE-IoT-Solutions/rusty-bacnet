@@ -97,7 +97,7 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(listed(&site), expected);
     let card = browser.card.as_ref().unwrap();
     assert!(
-        card.rows.contains(&("Vendor", "\"Rusty Lab\"".into())),
+        card.rows.contains(&("Vendor", "Rusty Lab".into())),
         "{card:?}"
     );
 
@@ -108,7 +108,7 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(priority.winner(), Some(10));
     assert_eq!(priority.slots[9].as_deref(), Some("55"));
     assert_eq!(priority.relinquish_default.as_deref(), Some("0"));
-    assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55"));
+    assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55 %"));
     for (w, h) in [(120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains(">10 site defined"), "{text}");
@@ -130,9 +130,16 @@ async fn ai1_out_of_service_and_in_fault_shows_both_badges() {
     // it in alarm.
     assert_eq!(view.health.badges(), ["[ALM]", "[FLT]", "[OOS]"]);
     assert!(view.priority.is_none(), "an input has no priority array");
+    let stamps = view.value(PropertyIdentifier::EVENT_TIME_STAMPS).unwrap();
+    assert!(
+        stamps.starts_with("[seq 0, 20") && stamps.ends_with(", seq 0]"),
+        "the to-fault stamp is a date and time: {stamps}"
+    );
     for (w, h) in [(120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains("Status: [ALM] [FLT] [OOS]"), "{text}");
+        // The to-fault stamp is the server's wall clock.
+        let text = super::values::mask_lines(&text, "event-time-stamps");
         assert_snapshot!(format!("browser_ai1_{w}x{h}"), text);
     }
     // Colour adds nothing the text lacks.

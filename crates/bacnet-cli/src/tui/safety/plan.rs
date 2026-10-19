@@ -17,8 +17,8 @@ use bacnet_types::primitives::PropertyValue;
 use bytes::BytesMut;
 
 use super::{Effect, Gate, Occupancy, Planned, Preview, Stored, Tier, WriteSpec};
+use crate::tui::format::{decode_all, Floats, RawRow, StateTexts, ValueFormat};
 use crate::tui::point::PRIORITIES;
-use crate::tui::worker::browse::format::{decode_all, value_text, RawRow};
 
 /// What is read before a write, besides the target property.
 pub(crate) const PRE_READ: [PropertyIdentifier; 4] = [
@@ -145,22 +145,32 @@ pub(crate) fn coerce(value: PropertyValue, like: Option<&PropertyValue>) -> Prop
     }
 }
 
-fn stored(property: PropertyIdentifier, value: &PropertyValue) -> Result<Stored, String> {
+/// `value` encoded, with its text. Previews keep every digit of a float
+/// ([`Floats::Exact`]): what is shown is what is sent.
+fn stored(
+    format: &ValueFormat<'_>,
+    property: PropertyIdentifier,
+    value: &PropertyValue,
+) -> Result<Stored, String> {
     let mut buf = BytesMut::new();
     encode_property_value(&mut buf, value).map_err(|e| format!("cannot encode the value: {e}"))?;
     Ok(Stored {
-        text: value_text(property, &buf),
+        text: format.value(property, &buf),
         bytes: buf.to_vec(),
     })
 }
 
 /// The slot in control and Present_Value's text for `slots`, falling back
 /// to Relinquish_Default when every slot is NULL (Clause 19.2).
-fn effective(slots: &[PropertyValue], default: Option<&str>) -> (Option<u8>, String) {
+fn effective(
+    format: &ValueFormat<'_>,
+    slots: &[PropertyValue],
+    default: Option<&str>,
+) -> (Option<u8>, String) {
     match slots.iter().position(|v| *v != PropertyValue::Null) {
         Some(i) => {
-            let text =
-                stored(PropertyIdentifier::PRESENT_VALUE, &slots[i]).map_or_else(|e| e, |s| s.text);
+            let text = stored(format, PropertyIdentifier::PRESENT_VALUE, &slots[i])
+                .map_or_else(|e| e, |s| s.text);
             (Some(i as u8 + 1), text)
         }
         None => (None, default.unwrap_or("?").to_string()),
@@ -174,6 +184,8 @@ fn plan(
     ours: &impl Fn(&WriteSpec, Option<u8>, &[u8]) -> bool,
     dangerous: bool,
 ) -> Result<Planned, String> {
+    let texts = StateTexts::from_rows(rows);
+    let format = ValueFormat::new(spec.object.object_type(), &texts, Floats::Exact);
     let present_value = spec.property == PropertyIdentifier::PRESENT_VALUE && spec.index.is_none();
     // No Priority_Array (or an error reading it) means not commandable. One
     // that was read but isn't 16 values can't be previewed honestly.
@@ -212,12 +224,12 @@ fn plan(
                 .into(),
         );
     }
-    let value = stored(spec.property, &value)?;
+    let value = stored(&format, spec.property, &value)?;
     let out_of_service = match raw(rows, PropertyIdentifier::OUT_OF_SERVICE).and_then(first) {
         Some(PropertyValue::Boolean(on)) => Some(on),
         _ => None,
     };
-    let default_text = default.map(|d| value_text(PropertyIdentifier::PRESENT_VALUE, d));
+    let default_text = default.map(|d| format.value(PropertyIdentifier::RELINQUISH_DEFAULT, d));
     let (priority, before, occupancy, effect) = match slots {
         Some(slots) if commandable => {
             let priority = spec.priority.unwrap_or(DEFAULT_PRIORITY);
@@ -227,18 +239,18 @@ fn plan(
             let slot = &slots[usize::from(priority) - 1];
             let before = match slot {
                 PropertyValue::Null => None,
-                held => Some(stored(PropertyIdentifier::PRESENT_VALUE, held)?),
+                held => Some(stored(&format, PropertyIdentifier::PRESENT_VALUE, held)?),
             };
             let occupancy = match &before {
                 None => Occupancy::Empty,
                 Some(held) if ours(spec, Some(priority), &held.bytes) => Occupancy::Ours,
                 Some(_) => Occupancy::Other,
             };
-            let (held_by, now) = effective(&slots, default_text.as_deref());
+            let (held_by, now) = effective(&format, &slots, default_text.as_deref());
             let mut after = slots.clone();
             let new = first(&value.bytes).unwrap_or(PropertyValue::Null);
             after[usize::from(priority) - 1] = new;
-            let (_, then) = effective(&after, default_text.as_deref());
+            let (_, then) = effective(&format, &after, default_text.as_deref());
             let effect = if now == then {
                 Effect::Unchanged {
                     held_by: held_by.filter(|slot| *slot < priority),
@@ -257,7 +269,7 @@ fn plan(
             }
             let before = match current {
                 Some(bytes) => Some(Stored {
-                    text: value_text(spec.property, bytes),
+                    text: format.value(spec.property, bytes),
                     bytes: bytes.to_vec(),
                 }),
                 None => {
@@ -362,6 +374,50 @@ mod tests {
         assert_eq!(planned.gate, Gate::Allowed(Tier::T1));
         // The integer was sent as the REAL the object holds.
         assert_eq!(planned.value.bytes, encoded(&[PropertyValue::Real(42.0)]));
+    }
+
+    #[test]
+    fn a_preview_keeps_every_digit_of_a_float() {
+        // The screens round to six digits; a preview shows what is sent.
+        let planned = one(spec(Some("72.12345"), 8));
+        assert_eq!(planned.value.text, "72.12345");
+        assert_eq!(
+            planned.effect,
+            Effect::Changes {
+                from: "55".into(),
+                to: "72.12345".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_binary_preview_names_the_states() {
+        let mut slots = vec![PropertyValue::Null; 16];
+        slots[7] = PropertyValue::Enumerated(1);
+        let rows = vec![
+            (
+                PropertyIdentifier::PRESENT_VALUE,
+                Ok(encoded(&[PropertyValue::Enumerated(1)])),
+            ),
+            (PropertyIdentifier::PRIORITY_ARRAY, Ok(encoded(&slots))),
+            (
+                PropertyIdentifier::RELINQUISH_DEFAULT,
+                Ok(encoded(&[PropertyValue::Enumerated(0)])),
+            ),
+        ];
+        let spec = WriteSpec {
+            object: ObjectIdentifier::new(ObjectType::BINARY_OUTPUT, 1).unwrap(),
+            value: None,
+            ..spec(None, 8)
+        };
+        let preview = preview(&[spec], &[rows], |_, _, _| true, false, false).unwrap();
+        assert_eq!(
+            preview.items[0].effect,
+            Effect::Changes {
+                from: "active".into(),
+                to: "inactive".into()
+            }
+        );
     }
 
     #[test]

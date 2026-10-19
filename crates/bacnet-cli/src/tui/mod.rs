@@ -30,6 +30,7 @@
 
 mod app;
 mod event_loop;
+mod format;
 mod keymap;
 mod log_layer;
 mod message;

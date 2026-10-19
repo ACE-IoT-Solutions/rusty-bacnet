@@ -33,6 +33,7 @@ use tokio::time::Instant;
 
 use self::csv::{field, unix_ms, CsvLog};
 use self::jobs::{Lifetime, Polled, Refusal, Started};
+use self::sample::{Reading, RowFormat};
 use super::browse::limits::RateCap;
 use super::EventSink;
 use crate::tui::app::objects::{kebab, object_label};
@@ -118,8 +119,11 @@ struct Row {
     /// After a renewal failed: when to subscribe again, and the wait that
     /// led there.
     resubscribe: Option<(Instant, Duration)>,
-    /// Samples since the last tick, with their wall-clock time for the CSV.
-    pending: VecDeque<(Sample, u128)>,
+    /// How its values are written, from its first read.
+    format: RowFormat,
+    /// Samples since the last tick, each with its value in full and its
+    /// wall-clock time for the CSV.
+    pending: VecDeque<(Sample, Result<String, String>, u128)>,
 }
 
 enum Op {
@@ -220,6 +224,7 @@ impl<'s> State<'s> {
                         removing: false,
                         maybe_subscribed: false,
                         resubscribe: None,
+                        format: RowFormat::default(),
                         pending: VecDeque::new(),
                     },
                 );
@@ -347,9 +352,9 @@ impl<'s> State<'s> {
                     entry.backoff = Duration::ZERO;
                     entry.retry_at = None;
                 }
-                for (id, sample) in polled.samples {
+                for (id, reading) in polled.readings {
                     if let Some(row) = self.rows.get_mut(&id) {
-                        push(self.sink, row, sample);
+                        push(self.sink, row, reading);
                     }
                 }
             }
@@ -369,9 +374,10 @@ impl<'s> State<'s> {
         };
         row.mac = started.mac.clone();
         let read_first = started.first.is_some();
-        if let Some((sample, units)) = started.first {
-            push(self.sink, row, sample);
-            if let Some(units) = units {
+        if let Some((reading, format)) = started.first {
+            row.format = format;
+            push(self.sink, row, reading);
+            if let Some(units) = row.format.units_name() {
                 self.outbox.push_back(WatchEvent::Units { row: id, units });
             }
         }
@@ -439,8 +445,8 @@ impl<'s> State<'s> {
                 let id = received.notification.subscriber_process_identifier;
                 if let Some(row) = self.rows.get_mut(&id) {
                     if matches!(row.mode, Mode::Starting | Mode::Cov(_)) {
-                        if let Some(sample) = sample::from_notification(&row.point, &received) {
-                            push(self.sink, row, sample);
+                        if let Some(reading) = sample::from_notification(&row.point, &received) {
+                            push(self.sink, row, reading);
                         }
                     }
                 }
@@ -462,9 +468,9 @@ impl<'s> State<'s> {
                 Mode::Cov(_) | Mode::Starting => "cov",
                 _ => "polled",
             };
-            for (sample, at) in row.pending.drain(..) {
+            for (sample, logged, at) in row.pending.drain(..) {
                 if let Some(log) = &self.csv {
-                    if !log.line(csv_line(&row.point, &sample, at, source)) {
+                    if !log.line(csv_line(&row.point, &sample, &logged, at, source)) {
                         self.sink.add_dropped(1);
                     }
                 }
@@ -665,17 +671,26 @@ impl<'s> State<'s> {
     }
 }
 
-/// Add a sample to a row's ring, dropping and counting the oldest when full.
-fn push(sink: &EventSink, row: &mut Row, sample: Sample) {
+/// Write a reading out and add it to a row's ring, dropping and counting
+/// the oldest when full.
+fn push(sink: &EventSink, row: &mut Row, reading: Reading) {
     if row.pending.len() >= PENDING_PER_ROW {
         row.pending.pop_front();
         sink.add_dropped(1);
     }
-    row.pending.push_back((sample, unix_ms()));
+    let (sample, logged) = row.format.sample(&row.point, reading);
+    row.pending.push_back((sample, logged, unix_ms()));
 }
 
-fn csv_line(point: &Point, sample: &Sample, at: u128, source: &str) -> String {
-    let value = match &sample.value {
+/// One CSV line: the value in full (`logged`), not the screen's rounding.
+fn csv_line(
+    point: &Point,
+    sample: &Sample,
+    logged: &Result<String, String>,
+    at: u128,
+    source: &str,
+) -> String {
+    let value = match logged {
         Ok(value) => value.clone(),
         Err(error) => format!("error: {error}"),
     };
