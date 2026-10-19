@@ -1,7 +1,8 @@
 //! The one-shot write guard (#972), from real CLI processes: a mutating
 //! command without `--allow-write`, or device management without `--yes`
-//! when stdin is not a terminal, exits with status 2 and sends nothing.
-//! With the flags, the same commands reach the lab device.
+//! when stdin is not a terminal, exits with status 4 and sends nothing.
+//! With the flags, the same commands reach the lab device. A finite
+//! `subscribe` (the default) is cancelled when the command is stopped.
 #[allow(dead_code)]
 mod support;
 
@@ -41,6 +42,8 @@ const MUTATING: &[(&str, &[&str])] = &[
     ("control", &["enable"]),
     ("dcc", &["disable-initiation", "--duration", "5"]),
     ("reinit", &["warmstart"]),
+    ("subscribe", &["ai:1", "--lifetime", "0"]),
+    ("cov", &["ai:1", "--confirmed", "--lifetime", "0"]),
 ];
 
 /// The class each refused command reports.
@@ -56,6 +59,7 @@ fn canonical(command: &str) -> &str {
         "wp" => "write",
         "ts" => "time-sync",
         "dcc" => "control",
+        "cov" => "subscribe",
         other => other,
     }
 }
@@ -98,7 +102,7 @@ async fn a_mutating_one_shot_without_allow_write_sends_nothing() {
     for &(command, rest) in MUTATING {
         // Table errors name the missing flag.
         let output = run(args(&["--format", "table"], command, &target, rest)).await;
-        assert_eq!(output.status.code(), Some(2), "{command}");
+        assert_eq!(output.status.code(), Some(4), "{command}");
         assert!(output.stdout.is_empty(), "{command}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -110,7 +114,7 @@ async fn a_mutating_one_shot_without_allow_write_sends_nothing() {
 
         // JSON: the stable shape, on stderr.
         let output = run(args(&["--json"], command, &target, rest)).await;
-        assert_eq!(output.status.code(), Some(2), "{command}");
+        assert_eq!(output.status.code(), Some(4), "{command}");
         assert!(output.stdout.is_empty(), "{command}");
         let refusal: Value = serde_json::from_slice(&output.stderr).unwrap();
         let missing = match class(command) {
@@ -135,7 +139,7 @@ async fn device_management_off_a_terminal_needs_yes_as_well() {
             continue;
         }
         let output = run(args(&["--json", "--allow-write"], command, &target, rest)).await;
-        assert_eq!(output.status.code(), Some(2), "{command}");
+        assert_eq!(output.status.code(), Some(4), "{command}");
         assert!(output.stdout.is_empty(), "{command}");
         let refusal: Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(refusal["reason"], "yes-required", "{command}");
@@ -199,4 +203,79 @@ async fn with_the_flags_the_commands_reach_the_device() {
     let read: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(read["value"], "43.5", "{read}");
     assert!(reinitialized.load(Ordering::SeqCst));
+}
+
+/// The lab device's Active_COV_Subscriptions, as the CLI reads it.
+async fn active_subscriptions(target: &str) -> String {
+    let output = run(args(
+        &["--json"],
+        "read",
+        target,
+        &["device:1234", "active-cov-subscriptions"],
+    ))
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let read: Value = serde_json::from_slice(&output.stdout).unwrap();
+    read["value"].as_str().unwrap().to_string()
+}
+
+/// `subscribe` without `--lifetime` asks for a finite subscription, needs
+/// no flag, and cancels it when stopped by Ctrl+C (SIGINT) or SIGTERM.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_default_subscription_is_finite_and_cancelled_when_stopped() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let (mut server, target) = lab(Arc::new(AtomicBool::new(false))).await;
+    let empty = active_subscriptions(&target).await;
+    for signal in ["-INT", "-TERM"] {
+        let mut child = support::command()
+            .args(args(
+                &["--format", "table"],
+                "subscribe",
+                &target,
+                &["ai:2"],
+            ))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        // Wait for the confirmation line: the subscription is in place.
+        // The reader stays open so later notifications have somewhere to go.
+        let stdout = child.stdout.take().unwrap();
+        let (first, _reader) = support::bounded(tokio::task::spawn_blocking(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            (line, reader)
+        }))
+        .await
+        .unwrap();
+        assert!(first.contains("lifetime 300s"), "{first}");
+        let active = active_subscriptions(&target).await;
+        assert_ne!(active, empty, "no subscription after {first}");
+
+        let pid = child.id().to_string();
+        let killed = std::process::Command::new("kill")
+            .args([signal, &pid])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let status = support::bounded(tokio::task::spawn_blocking(move || child.wait()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(status.success(), "{signal}: {status:?}");
+        assert_eq!(
+            active_subscriptions(&target).await,
+            empty,
+            "{signal} left the subscription"
+        );
+    }
+    server.stop().await.unwrap();
 }

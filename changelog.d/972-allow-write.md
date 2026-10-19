@@ -1,7 +1,7 @@
 ---
 section: Changed
 ---
-- **Breaking (CLI):** one-shot commands and the shell refuse anything that
-  changes a device without `--allow-write`, and communication control and
-  reinitialize also need `--yes` or a typed confirmation; a refused command
-  exits with status 2 and sends nothing (#972).
+- **Breaking (CLI):** commands that change a device need `--allow-write`,
+  and DCC and reinitialize also `--yes` or a typed confirmation; a refusal
+  exits with status 4 and sends nothing. `subscribe` defaults to 300
+  seconds, renewed and cancelled on exit (#972).

@@ -46,7 +46,9 @@ is previewed, kept in a revertible ledger and recorded in an audit log.
 
 One-shot commands and the shell refuse anything that changes a device unless
 given `--allow-write`; communication control and reinitialize also need
-`--yes` when stdin is not a terminal, or the device instance typed at one.
+`--yes` when stdin is not a terminal, or, at one, the device instance typed
+(the target as given, for an address target). A refused command exits with
+status 4.
 
 The [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/main/docs/CLI.md)
 lists every command and option.

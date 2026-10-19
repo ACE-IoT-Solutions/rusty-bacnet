@@ -3,15 +3,17 @@
 //! safety levels (#964), so a command can't be guarded in one front end and
 //! not in another.
 //!
-//! - **Read**: discovery, reads, COV subscriptions and foreign-device
-//!   registration, plus the commands that never reach a device (`devices`,
-//!   `capture`, `sc-check`, the shell's own `target`, `status`, `help`). A
-//!   COV subscription and a registration do leave an entry on the remote
-//!   side, but only to deliver what the client watches, and the TUI makes
-//!   both from its read-only level; neither changes a point, a table the
-//!   site configured, or how the device runs.
+//! - **Read**: discovery, reads, finite COV subscriptions and
+//!   foreign-device registration, plus the commands that never reach a
+//!   device (`devices`, `capture`, `sc-check`, the shell's own `target`,
+//!   `status`, `help`). A subscription and a registration do leave an entry
+//!   on the remote side, but only to deliver what the client watches, and
+//!   it lapses on its own: `subscribe` cancels its subscription when it
+//!   stops, and a registration runs out with its TTL. The TUI makes both
+//!   from its read-only level.
 //! - **Write**: anything that changes a value, an object, a file, an
-//!   alarm's acknowledgment, the device's clock or a BBMD table.
+//!   alarm's acknowledgment, the device's clock or a BBMD table, and a
+//!   subscription that never expires ([`of_subscribe`]).
 //! - **Device management**: communication control and reinitialize, which
 //!   change whether and how the device runs at all.
 
@@ -103,6 +105,18 @@ const COMMANDS: &[(&str, Class)] = &[
     ("reinit", DeviceManagement),
 ];
 
+/// The class of `subscribe` (`cov`) asking for `lifetime` seconds. A
+/// finite subscription is renewed while the CLI watches and cancelled when
+/// it stops, so it is a read; one of 0 never expires (Clause 13.14.1.1.4)
+/// and outlives the CLI, so it is a write.
+pub(crate) fn of_subscribe(lifetime: u32) -> Class {
+    if lifetime == 0 {
+        Write
+    } else {
+        Read
+    }
+}
+
 /// The class of a one-shot subcommand or shell command, by name or alias;
 /// `None` for a word that is neither.
 pub(crate) fn of(command: &str) -> Option<Class> {
@@ -187,6 +201,9 @@ mod tests {
             ]
         );
         assert_eq!(of("subscribe"), Some(Read));
+        assert_eq!(of_subscribe(300), Read);
+        assert_eq!(of_subscribe(1), Read);
+        assert_eq!(of_subscribe(0), Write);
         assert_eq!(of("register"), Some(Read));
         assert_eq!(of("no-such-command"), None);
     }

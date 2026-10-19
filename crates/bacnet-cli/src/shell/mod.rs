@@ -502,8 +502,8 @@ impl guard::Confirm for ShellConfirm<'_> {
 }
 
 /// The write guard for one shell command, under the flags the shell was
-/// started with (#972); true when it may run. An unknown word passes, for
-/// the dispatcher to report.
+/// started with (#972); true when it may run. A word with no class is
+/// reported as unknown here, so the dispatchers only see classified ones.
 fn allowed(
     cmd: &str,
     args: &[String],
@@ -511,12 +511,27 @@ fn allowed(
     policy: Policy,
     confirm: &mut dyn guard::Confirm,
 ) -> bool {
-    if !crate::core::class::of(cmd).is_some_and(|class| class.mutates()) {
+    let Some(class) = crate::core::class::of(cmd) else {
+        output::print_error(&format!(
+            "Unknown command: '{cmd}'. Type 'help' for available commands."
+        ));
+        return false;
+    };
+    let args = maybe_prepend_default_target(args, session);
+    let class = if matches!(cmd, "subscribe" | "cov") {
+        // A malformed option is the handler's to report; it sends nothing.
+        cov_control::subscribe_options(args.get(2..).unwrap_or(&[]))
+            .map_or(class, |(lifetime, _)| {
+                crate::core::class::of_subscribe(lifetime)
+            })
+    } else {
+        class
+    };
+    if !class.mutates() {
         return true;
     }
-    let args = maybe_prepend_default_target(args, session);
     let target = args.first().map(String::as_str);
-    match guard::check(cmd, target, policy, confirm) {
+    match guard::check(cmd, Some(class), target, policy, confirm) {
         Ok(()) => true,
         Err(refusal) => {
             output::print_error(&shell_refusal(&refusal));

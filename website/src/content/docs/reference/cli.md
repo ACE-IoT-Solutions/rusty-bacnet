@@ -19,6 +19,16 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 | Packet analysis | `capture` | In the Linux release executables; a source build needs the `pcap` feature |
 | Alarm/device/file operations | See the full reference | Not ordinary read-only onboarding |
 
+## Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | The command completed |
+| 1 | It failed while running, for example a timeout or an error from the device |
+| 2 | The arguments did not parse; nothing is sent |
+| 3 | `sc-check` could not complete |
+| 4 | After v0.13.0: the write guard refused the command (`--allow-write` or `--yes` missing); nothing is sent |
+
 ## Names and aliases
 
 The Cargo package is `bacnet-cli`; its executable is `bacnet`. Examples use `ai:1` for analog input 1, `av:1` for analog value 1, and `pv` for present value. Full object/property names are useful in teaching material; short aliases are convenient in an operator's terminal.

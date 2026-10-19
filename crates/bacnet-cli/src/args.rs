@@ -292,9 +292,12 @@ pub(crate) enum Command {
         target: String,
         /// Object specifier.
         object: String,
-        /// Subscription lifetime in seconds.
-        #[arg(long)]
-        lifetime: Option<u32>,
+        /// Subscription lifetime in seconds. The subscription is renewed
+        /// while the command watches and cancelled when it stops (Ctrl+C,
+        /// or SIGTERM on Unix). 0 asks for one that never expires and stays
+        /// after the CLI exits, which needs --allow-write.
+        #[arg(long, default_value_t = crate::commands::subscribe::DEFAULT_LIFETIME)]
+        lifetime: u32,
         /// Use confirmed notifications.
         #[arg(long)]
         confirmed: bool,

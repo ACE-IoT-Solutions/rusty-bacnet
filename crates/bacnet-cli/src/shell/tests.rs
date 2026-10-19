@@ -234,8 +234,8 @@ fn the_shell_guards_writes_with_the_launch_flags() {
     for line in [
         "read 10.0.0.1 ai:1 pv",
         "subscribe 10.0.0.1 ai:1",
+        "cov 10.0.0.1 ai:1 --lifetime 60 --confirmed",
         "help",
-        "bogus",
     ] {
         let w = tokenize(line);
         assert!(allowed(&w[0], &w[1..], &session, none, &mut tty), "{line}");
@@ -244,6 +244,8 @@ fn the_shell_guards_writes_with_the_launch_flags() {
         "write 10.0.0.1 av:1 pv 1",
         "wpm 10.0.0.1 av:1 pv=1",
         "ts 10.0.0.1",
+        "subscribe 10.0.0.1 ai:1 --lifetime 0",
+        "cov 10.0.0.1 ai:1 --confirmed --lifetime 0",
     ] {
         let w = tokenize(line);
         assert!(!allowed(&w[0], &w[1..], &session, none, &mut tty), "{line}");
@@ -259,10 +261,47 @@ fn the_shell_guards_writes_with_the_launch_flags() {
     assert!(!allowed(&w[0], &w[1..], &session, allow, &mut tty));
 }
 
+/// A word with no class is refused at the gate, whatever the flags, so it
+/// never reaches `dispatch_common` or the B/IP commands.
+#[test]
+fn an_unclassified_word_never_reaches_a_dispatcher() {
+    let session = Session::new();
+    let all = Policy {
+        allow_write: true,
+        yes: true,
+    };
+    let mut tty = Typed(vec![], vec![]);
+    for word in ["bogus", "WRITE", "write-property", ""] {
+        assert!(
+            !allowed(word, &[], &session, all, &mut tty),
+            "{word:?} passed the gate"
+        );
+    }
+    assert!(tty.1.is_empty());
+}
+
+#[test]
+fn subscribe_options_default_to_a_finite_lifetime() {
+    let words = |line: &str| tokenize(line);
+    assert_eq!(cov_control::subscribe_options(&[]), Ok((300, false)));
+    assert_eq!(
+        cov_control::subscribe_options(&words("--confirmed --lifetime 0")),
+        Ok((0, true))
+    );
+    assert!(cov_control::subscribe_options(&words("--lifetime")).is_err());
+    assert!(cov_control::subscribe_options(&words("--lifetime x")).is_err());
+}
+
 #[test]
 fn a_shell_refusal_names_the_launch_flags() {
-    let refusal =
-        guard::check("write", None, Policy::default(), &mut Typed(vec![], vec![])).unwrap_err();
+    let refusal = guard::check(
+        "write",
+        crate::core::class::of("write"),
+        None,
+        Policy::default(),
+        &mut Typed(vec![], vec![]),
+    )
+    .unwrap_err();
     assert_eq!(
         shell_refusal(&refusal),
         "write is a write command and needs --allow-write; nothing was sent. \

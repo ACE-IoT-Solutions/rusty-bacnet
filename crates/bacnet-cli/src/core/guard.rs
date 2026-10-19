@@ -7,11 +7,13 @@ use std::io::{BufRead, IsTerminal, Write};
 
 use serde::Serialize;
 
-use super::class::{self, Class};
+use super::class::Class;
 use super::target::{parse_target, Target};
 
 /// The process exit status of a refused one-shot command.
-pub(crate) const EXIT_REFUSED: u8 = 2;
+/// 1 is a runtime error, 2 a usage error from clap, and 3 an `sc-check`
+/// that could not complete.
+pub(crate) const EXIT_REFUSED: u8 = 4;
 
 /// What the command line allows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -136,18 +138,21 @@ fn confirmation(target: &str) -> (String, String) {
     }
 }
 
-/// May `command` (a one-shot subcommand name or a shell word) run under
-/// `policy`? `target` is what a device-management confirmation names.
-/// Device management asks `confirm` only when the flags allow it and
-/// `--yes` is absent at a terminal.
+/// May `command` (a one-shot subcommand name or a shell word) of `class`
+/// run under `policy`? The caller gives the class: [`super::class::of`] by name,
+/// or [`super::class::of_subscribe`] when the arguments decide it. `None` refuses
+/// it as unclassified. `target` is what a device-management confirmation
+/// names. Device management asks `confirm` only when the flags allow it
+/// and `--yes` is absent at a terminal.
 pub(crate) fn check(
     command: &str,
+    class: Option<Class>,
     target: Option<&str>,
     policy: Policy,
     confirm: &mut dyn Confirm,
 ) -> Result<(), Refusal> {
     let refuse = |reason, class, missing| Err(Refusal::new(reason, command, class, missing));
-    let Some(class) = class::of(command) else {
+    let Some(class) = class else {
         return refuse(Reason::Unclassified, None, vec![]);
     };
     match class {
@@ -191,6 +196,22 @@ pub(crate) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`super::check`], classified by name.
+    fn check(
+        command: &str,
+        target: Option<&str>,
+        policy: Policy,
+        confirm: &mut dyn Confirm,
+    ) -> Result<(), Refusal> {
+        super::check(
+            command,
+            crate::core::class::of(command),
+            target,
+            policy,
+            confirm,
+        )
+    }
 
     /// A terminal, or not, with typed answers.
     struct Fake {

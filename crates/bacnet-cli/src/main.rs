@@ -193,14 +193,18 @@ async fn execute_command<T: TransportPort + 'static>(
         } => {
             let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
+            let subscription = commands::subscribe::Subscription {
+                object_type,
+                instance,
+                lifetime: *lifetime,
+                confirmed: *confirmed,
+            };
             commands::subscribe::subscribe_cmd(
                 client,
                 &to,
-                object_type,
-                instance,
-                *lifetime,
-                *confirmed,
+                subscription,
                 format,
+                commands::subscribe::stop_signal(),
             )
             .await?;
         }
@@ -509,7 +513,11 @@ fn guard_one_shot(cli: &Cli, confirm: &mut dyn guard::Confirm) -> Result<(), gua
     };
     // A name that wasn't captured classifies as nothing, so it is refused.
     let name = cli.command_name.as_deref().unwrap_or_default();
-    guard::check(name, target, cli.policy(), confirm)
+    let class = core::class::of(name).map(|class| match command {
+        Command::Subscribe { lifetime, .. } => core::class::of_subscribe(*lifetime),
+        _ => class,
+    });
+    guard::check(name, class, target, cli.policy(), confirm)
 }
 
 /// Stack for the thread that parses the command line; see `main`.

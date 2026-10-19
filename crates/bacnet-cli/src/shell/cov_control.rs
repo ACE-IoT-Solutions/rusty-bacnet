@@ -1,5 +1,27 @@
 use super::*;
 
+/// `subscribe`'s options after the target and object: the lifetime
+/// (default 300 seconds; 0 never expires) and `--confirmed`. The write
+/// guard reads the lifetime too, since 0 makes it a write.
+pub(super) fn subscribe_options(options: &[String]) -> Result<(u32, bool), String> {
+    let mut lifetime = commands::subscribe::DEFAULT_LIFETIME;
+    let mut confirmed = false;
+    let mut words = options.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--lifetime" => {
+                let value = words.next().ok_or("--lifetime requires a value")?;
+                lifetime = value
+                    .parse()
+                    .map_err(|_| "--lifetime requires a numeric value")?;
+            }
+            "--confirmed" => confirmed = true,
+            _ => {}
+        }
+    }
+    Ok((lifetime, confirmed))
+}
+
 pub(super) async fn handle_subscribe<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     args: &[String],
@@ -26,42 +48,26 @@ pub(super) async fn handle_subscribe<T: TransportPort + 'static>(
         }
     };
 
-    let mut lifetime = None;
-    let mut confirmed = false;
-
-    let mut i = 2;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--lifetime" => {
-                if i + 1 < args.len() {
-                    match args[i + 1].parse::<u32>() {
-                        Ok(l) => lifetime = Some(l),
-                        Err(_) => {
-                            output::print_error("--lifetime requires a numeric value");
-                            return;
-                        }
-                    }
-                    i += 2;
-                    continue;
-                } else {
-                    output::print_error("--lifetime requires a value");
-                    return;
-                }
-            }
-            "--confirmed" => confirmed = true,
-            _ => {}
+    let (lifetime, confirmed) = match subscribe_options(&args[2..]) {
+        Ok(options) => options,
+        Err(e) => {
+            output::print_error(&e);
+            return;
         }
-        i += 1;
-    }
+    };
 
-    if let Err(e) = commands::subscribe::subscribe_cmd(
-        client,
-        &to,
+    let subscription = commands::subscribe::Subscription {
         object_type,
         instance,
         lifetime,
         confirmed,
+    };
+    if let Err(e) = commands::subscribe::subscribe_cmd(
+        client,
+        &to,
+        subscription,
         format,
+        commands::subscribe::stop_signal(),
     )
     .await
     {
