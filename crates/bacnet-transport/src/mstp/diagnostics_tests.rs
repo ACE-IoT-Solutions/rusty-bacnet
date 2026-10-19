@@ -104,6 +104,22 @@ async fn frames_are_counted_by_kind_and_outlive_the_transport() {
     );
 }
 
+/// The handle publishes the node's place in the ring: after joining a
+/// ring with station 7 the station passes its token there and is no sole
+/// master, and the last state stays readable after the transport stops.
+#[tokio::test(start_paused = true)]
+async fn the_node_state_follows_the_ring_and_outlives_the_transport() {
+    let mut bus = Bus::start(config(3, 7)).await;
+    let observer = bus.transport.diagnostics();
+    let token = bus.join(7).await;
+    assert_eq!(token.destination, 7);
+    let node = observer.node_state().expect("published after an event");
+    assert_eq!(node.next_station, 7);
+    assert!(!node.sole_master);
+    bus.stop().await;
+    assert_eq!(observer.node_state(), Some(node));
+}
+
 /// A wait for a reply that ends in T_reply_timeout is counted.
 #[tokio::test(start_paused = true)]
 async fn reply_timeouts_are_counted() {

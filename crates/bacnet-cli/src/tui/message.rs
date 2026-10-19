@@ -117,6 +117,11 @@ pub(crate) enum Command {
         /// Its broadcast address.
         broadcast: Ipv4Addr,
     },
+    /// Join the MS/TP trunk on this port: the operator confirmed it (T2).
+    JoinTrunk {
+        /// The serial port chosen.
+        port: String,
+    },
     /// Send a Who-Is and report when its listen window ends.
     WhoIs {
         /// Operation id.
@@ -272,6 +277,9 @@ pub(crate) enum WorkerEvent {
     /// An SC screen report.
     #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
     Sc(super::sc::ScReport),
+    /// An MS/TP screen report.
+    #[cfg_attr(not(feature = "serial"), allow(dead_code))]
+    Mstp(super::mstp::MstpReport),
 }
 
 #[cfg(test)]

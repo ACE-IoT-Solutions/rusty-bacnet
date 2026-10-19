@@ -147,6 +147,7 @@ fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> TransportArgs {
         ipv6_interface: None,
         device_instance: None,
         foreign_device: None,
+        mstp: None,
     }
 }
 

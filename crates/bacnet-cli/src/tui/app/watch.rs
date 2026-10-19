@@ -34,6 +34,8 @@ pub(crate) enum Screen {
     Network,
     /// BACnet/SC: the hub connector, the connection doctor, certificates.
     Sc,
+    /// MS/TP: this station, its token state and its counters.
+    Mstp,
 }
 
 /// One watched point as shown.

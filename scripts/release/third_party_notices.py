@@ -31,12 +31,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Each release target with the CLI's features there: packet capture (pcap)
-# only on Linux, as in .github/workflows/release.yml. The Python extension has
+# Each release target with the CLI's features there: packet capture (pcap) and
+# MS/TP (serial, #969)
+# only on Linux, as in scripts/release/build_linux.sh. The Python extension has
 # the same features everywhere.
 TARGETS = {
-    "x86_64-unknown-linux-gnu": "sc-tls,pcap",
-    "aarch64-unknown-linux-gnu": "sc-tls,pcap",
+    "x86_64-unknown-linux-gnu": "sc-tls,pcap,serial",
+    "aarch64-unknown-linux-gnu": "sc-tls,pcap,serial",
     "x86_64-apple-darwin": "sc-tls",
     "aarch64-apple-darwin": "sc-tls",
     "x86_64-pc-windows-msvc": "sc-tls",

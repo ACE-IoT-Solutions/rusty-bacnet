@@ -22,6 +22,8 @@
 //! - `sc_screen`: the SC screen from synthetic reports, with its frames;
 //!   `sc_hub`: the SC worker against in-process mTLS hubs; `sc_lint`: the
 //!   credential lint on the preview, in the coordinator and on the SC screen.
+//! - `mstp_screen`: the MS/TP screen and the join confirmation from
+//!   synthetic reports and keys, with their frames, and the sampler.
 //!
 //! Snapshot workflow: CI runs plain `cargo nextest run -p bacnet-cli`, where a
 //! changed frame fails the test. After an intended UI change, run
@@ -43,6 +45,7 @@ mod inprocess;
 #[path = "../../../tests/support/lab.rs"]
 mod lab;
 mod load;
+mod mstp_screen;
 mod network;
 mod network_frames;
 mod profile_ui;
@@ -93,6 +96,7 @@ pub(super) fn new_app(picker: Option<Picker>) -> App {
             style: AddressStyle::Bip,
             color: false,
             picker,
+            join: None,
             passive: false,
             now: t0(),
         },
