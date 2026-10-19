@@ -626,11 +626,13 @@ impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
             config: ClientConfig::default(),
             options: ClientOptions::default(),
             hub_url: String::new(),
+            failover_hub_url: None,
             tls_config: None,
             vmac: [0; 6],
             device_uuid: [0; 16],
             heartbeat_interval_ms: 30_000,
             heartbeat_timeout_ms: 60_000,
+            connect_timeout_ms: 10_000,
             reconnect: None,
             npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy::default(),
         }
@@ -646,11 +648,13 @@ pub struct ScClientBuilder {
     config: ClientConfig,
     options: ClientOptions,
     hub_url: String,
+    failover_hub_url: Option<String>,
     tls_config: Option<bacnet_transport::sc_tls::ScNodeTlsConfig>,
     vmac: bacnet_transport::sc_frame::Vmac,
     device_uuid: [u8; 16],
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
+    connect_timeout_ms: u64,
     reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
     npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
 }
@@ -721,6 +725,14 @@ impl ScClientBuilder {
         self
     }
 
+    /// Set the connect timeout in milliseconds (default 10 000). It bounds
+    /// each hub dial (TCP, TLS and WebSocket upgrade), including the ones
+    /// `build()` makes, and each Connect-Request handshake.
+    pub fn connect_timeout_ms(mut self, ms: u64) -> Self {
+        self.connect_timeout_ms = ms;
+        self
+    }
+
     /// Set the maximum queued, unconsumed NPDUs per ingress path and source.
     ///
     /// Defaults to 32. The accepted range is 1 through 256; checked before
@@ -730,7 +742,31 @@ impl ScClientBuilder {
         self
     }
 
+    /// Set the failover hub WebSocket URL, dialled with the same TLS policy
+    /// when the primary hub cannot be reached (Annex AB.5.2).
+    ///
+    /// Requires [`reconnect`](Self::reconnect): building with a failover
+    /// hub and no reconnect configuration fails before any dial. Both URLs
+    /// are checked (scheme, host) before dialling.
+    ///
+    /// [`build`](Self::build) starts on the failover hub when the primary
+    /// cannot be dialled, and the connector also turns to it when the primary
+    /// refuses the first Connect-Request or the reconnect attempts to the
+    /// primary are used up. While on the failover hub it keeps trying the
+    /// primary and returns to it when it can. Follow it through
+    /// `connection_events()` and `connection_status()` on
+    /// [`BACnetClient::transport`].
+    pub fn failover_hub_url(mut self, url: &str) -> Self {
+        self.failover_hub_url = Some(url.to_string());
+        self
+    }
+
     /// Enable automatic reconnection with the given configuration.
+    ///
+    /// Reconnects redial the hub that was in use, with exponential backoff
+    /// from `initial_delay_ms` up to `max_delay_ms`, for `max_retries`
+    /// attempts, before turning to the failover hub, if one is set. Required
+    /// by [`failover_hub_url`](Self::failover_hub_url).
     pub fn reconnect(mut self, config: bacnet_transport::sc::ScReconnectConfig) -> Self {
         self.reconnect = Some(config);
         self
@@ -760,6 +796,7 @@ impl ScClientBuilder {
             .with_npdu_per_origin_limit(self.npdu_admission_policy.per_origin_limit)
             .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
             .with_heartbeat_timeout_ms(self.heartbeat_timeout_ms)
+            .with_connect_timeout_ms(self.connect_timeout_ms)
     }
 
     #[cfg(test)]

@@ -91,6 +91,11 @@ class OptionTests(unittest.TestCase):
                           default.management_acl, default.bdt_persist_path),
                          ([], False, [], None))
 
+    def test_bbmd_alone_on_its_subnet_is_off_by_default(self):
+        # A BBMD alone behind its NAT skips the local rebroadcast (#1668).
+        self.assertFalse(Bbmd().alone_on_subnet)
+        self.assertTrue(Bbmd(alone_on_subnet=True).alone_on_subnet)
+
     def test_bbmd_refuses_bad_settings(self):
         for kwargs in ({"bdt": ["10.0.5"]}, {"bdt": [("10.0.5.2", "mask")]},
                        {"bdt": [42]}, {"management_acl": ["10.0.0"]}):

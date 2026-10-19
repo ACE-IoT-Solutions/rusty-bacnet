@@ -5,7 +5,8 @@
 //! owner's configuration, which cannot change while it owns the port. BBMD
 //! mode adds BBMD_Broadcast_Distribution_Table, BBMD_Accept_FD_Registrations
 //! and BBMD_Foreign_Device_Table, each read from the transport's own tables
-//! at the moment of the read.
+//! at the moment of the read, unless a written value waits for activation
+//! (`pending`).
 //!
 //! The mode is the last one published. After its owner stops, the port keeps
 //! reporting it, as it keeps the last published bind; a BBMD's rows then show
@@ -16,7 +17,7 @@ use std::sync::Arc;
 
 use bacnet_encoding::constructed::{encode_bdt_entry, encode_fdt_entry, encode_host_n_port};
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
-use bacnet_types::constructed::BACnetHostNPort;
+use bacnet_types::constructed::{BACnetBDTEntry, BACnetHostNPort};
 use bacnet_types::enums::{IPMode, PropertyIdentifier as P};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
@@ -79,17 +80,9 @@ impl LiveMode {
             (Self::Foreign { lifetime, .. }, P::FD_SUBSCRIPTION_LIFETIME) => {
                 Some(Ok(PropertyValue::Unsigned((*lifetime).into())))
             }
-            (Self::Bbmd(tables), P::BBMD_BROADCAST_DISTRIBUTION_TABLE) => Some(
-                tables
-                    .broadcast_distribution_table()
-                    .iter()
-                    .map(|entry| {
-                        let mut buf = BytesMut::new();
-                        encode_bdt_entry(&mut buf, entry).map(|()| framed(buf))
-                    })
-                    .collect::<Result<_, _>>()
-                    .map(PropertyValue::List),
-            ),
+            (Self::Bbmd(tables), P::BBMD_BROADCAST_DISTRIBUTION_TABLE) => {
+                Some(bdt_value(&tables.broadcast_distribution_table()))
+            }
             (Self::Bbmd(tables), P::BBMD_ACCEPT_FD_REGISTRATIONS) => Some(Ok(
                 PropertyValue::Boolean(tables.accepts_foreign_device_registrations()),
             )),
@@ -107,6 +100,19 @@ impl LiveMode {
             _ => None,
         }
     }
+}
+
+/// A BDT as the BBMD_Broadcast_Distribution_Table value: one encoded
+/// entry per list element.
+pub(super) fn bdt_value(table: &[BACnetBDTEntry]) -> Result<PropertyValue, Error> {
+    table
+        .iter()
+        .map(|entry| {
+            let mut buf = BytesMut::new();
+            encode_bdt_entry(&mut buf, entry).map(|()| framed(buf))
+        })
+        .collect::<Result<_, _>>()
+        .map(PropertyValue::List)
 }
 
 /// One constructed value, already encoded, as the property value.

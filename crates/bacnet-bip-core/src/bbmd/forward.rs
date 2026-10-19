@@ -278,7 +278,8 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     /// to its own network layer and sends it on unchanged, origin and all,
     /// to the destinations returned: the live foreign devices but `origin`
     /// and, when [`rebroadcasts_forwarded`](Self::rebroadcasts_forwarded)
-    /// says so, the subnet's broadcast address first. The peers don't get
+    /// says so and the BBMD isn't [`alone`](LocalSubnet::alone) on its
+    /// subnet, the subnet's broadcast address first. The peers don't get
     /// it again.
     pub fn forwarded_npdu<'o>(
         &self,
@@ -296,7 +297,7 @@ impl<const B: usize, const F: usize> Tables<B, F> {
             return Err(ForwardRefusal::NotFromPeer);
         }
         let mut writer = Writer::new(out);
-        if self.rebroadcasts_forwarded(subnet.mask, sender, arrival) {
+        if !subnet.alone && self.rebroadcasts_forwarded(subnet.mask, sender, arrival) {
             writer.push_local(subnet.broadcast);
         }
         self.foreign_device_targets_into(&mut writer, cx, origin);
@@ -342,7 +343,8 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     /// send. The caller delivers
     /// an accepted one to its own network layer. It goes out as a
     /// Forwarded-NPDU with `sender` as its origin: first to the subnet's
-    /// broadcast address, then to the
+    /// broadcast address, unless the BBMD is [`alone`](LocalSubnet::alone)
+    /// there, then to the
     /// [`broadcast_targets`](Self::broadcast_targets) excluding `sender`.
     pub fn distribute_broadcast<'n, 'o>(
         &self,
@@ -356,7 +358,9 @@ impl<const B: usize, const F: usize> Tables<B, F> {
             return Err(DistributeRefusal::NotRegistered);
         }
         let mut writer = Writer::new(out);
-        writer.push_local(subnet.broadcast);
+        if !subnet.alone {
+            writer.push_local(subnet.broadcast);
+        }
         self.peer_targets(&mut writer, sender);
         self.foreign_device_targets_into(&mut writer, cx, sender);
         Ok(Distribution {

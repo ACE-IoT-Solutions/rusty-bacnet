@@ -46,8 +46,10 @@ fn bbmd_mode_maps_every_option_onto_its_setter() {
         management_acl: vec![[10, 0, 0, 9]],
         bdt_persist_path: Some(PathBuf::from("bdt.bin")),
         fanout_policy: fanout.clone(),
+        alone_on_subnet: true,
     }));
     let config = transport.bbmd_config.as_ref().unwrap();
+    assert!(config.alone_on_subnet);
     assert_eq!(config.initial_bdt, [row]);
     assert_eq!(config.foreign_device_policy, Some(policy));
     assert_eq!(config.management_acl, [[10, 0, 0, 9]]);

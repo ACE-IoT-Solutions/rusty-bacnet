@@ -1367,6 +1367,34 @@ it and read the link state through `connection_state_changes()`. Pure
 `ScConnection` codec/manual WebSocket use and later handshake validation are
 outside this guard.
 
+### Hub-connector events and link status
+
+`ScTransport::connection_events()` returns a `tokio::sync::broadcast`
+receiver of `ScEvent`s (#959): `Connected { hub, hub_vmac }`,
+`Disconnected { hub, cause }`, `ConnectFailed { hub, cause }`,
+`ReconnectAttempt { hub, attempt, backoff }`, `FailoverEngaged`,
+`PrimaryRestored` and `ReconnectGaveUp { attempts }`. `hub` is an
+`ScActiveHub` (`Primary` or `Failover`, Annex AB.5.2). The cause is an
+`ScDisconnectCause`: local close, peer close, heartbeat timeout, a WebSocket
+or TLS error kind, a BVLC-Result NAK with its typed `ErrorClass` and
+`ErrorCode`, connect timeout, a malformed result, an unexpected connect reply,
+rejection expiry, or `Other` with diagnostic text that is not stable to match.
+Events are sent without waiting: a receiver more than `SC_EVENT_CAPACITY` (64)
+events behind gets `RecvError::Lagged` and loses the oldest. Subscribe before
+`start()` to see the first connection.
+
+`ScTransport::connection_status()` returns an `ScLinkStatus` snapshot: the
+connection state, the active hub, the hub VMAC from Connect-Accept, the
+heartbeat age (time since the hub last sent anything accepted) and the
+round-trip time of the latest answered Heartbeat-Request. It never waits on
+the connection, so poll it as often as a UI redraws.
+
+`with_initial_hub(ScActiveHub::Failover)` starts the transport on the
+failover hub when the WebSocket given to `new` reaches it; with a primary
+connector and reconnect configuration the primary is restored later. Losing
+the failover hub makes each reconnect attempt dial the primary first, then
+the failover hub.
+
 `with_advertised_uris` configures known direct-connection URIs; it does not enable
 accepting connections. Address-Resolution requests receive an ACK (with a
 possibly empty URI list) only while a registered direct listener is live, its
@@ -2379,7 +2407,10 @@ server and endpoint builders take it as `.mode(...)`, so a BBMD that also
 registers as a foreign device can't be built. `BbmdOptions` carries what the
 BBMD setters above take: the BDT, the foreign-device policy (`None` refuses
 every registration), the Delete-FDT-Entry ACL (empty denies every source), the
-persisted-BDT path and the `FanoutPolicy`. `BipTransport::set_mode` maps a mode
+persisted-BDT path, the `FanoutPolicy` and `alone_on_subnet` (true for a BBMD
+that is the only device of its B/IP network on its subnet, as behind a NAT
+router: it then skips the local rebroadcast of forwarded and distributed
+broadcasts; false by default). `BipTransport::set_mode` maps a mode
 onto those setters and replaces whatever was set up before; the setters remain
 for code that builds a transport by hand, and `start()` still refuses a
 transport set up as both.
@@ -5554,7 +5585,12 @@ async fn connect(ipv6: bool) -> Result<BACnetClient<AnyTransport<NoSerial>>,
 With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
 `build_any::<NoSerial>().await` call. SC validates identity, reconnect and
 client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;
-each retry uses the builder's TLS policy. Use `client.stop().await` to shut down
+each retry uses the builder's TLS policy. `.failover_hub_url(...)` adds a
+failover hub with the same TLS policy. It requires `.reconnect(...)`, and both
+URLs are checked before dialling. When the primary cannot be dialled, `build()`
+starts on the failover hub and the transport restores the primary later.
+Each build-time dial is bounded by `.connect_timeout_ms(...)` (default 10 s),
+like the transport's own redials. Use `client.stop().await` to shut down
 the selected transport and its background work.
 
 ### Transport access and BBMD helpers
@@ -5567,7 +5603,8 @@ the transport in place. What you take from it can outlive the borrow, which
 suits a long-lived UI:
 
 ```rust
-// BACnet/SC (sc_builder): an owned watch receiver, and a drop-count snapshot.
+// BACnet/SC (sc_builder): an owned watch receiver, an event stream, and
+// link-status and drop-count snapshots.
 let mut state = sc_client.transport().connection_state_changes();
 tokio::spawn(async move {
     while state.changed().await.is_ok() {
@@ -5575,6 +5612,8 @@ tokio::spawn(async move {
         // update the status bar
     }
 });
+let mut events = sc_client.transport().connection_events(); // ScEvent: failover, restore, causes
+let link = sc_client.transport().connection_status(); // ScLinkStatus: active hub, hub VMAC, heartbeat
 let drops = sc_client.transport().npdu_drop_counts();
 
 // B/IP (bip_builder): counter snapshots to poll, and the BBMD state if any.
@@ -8029,9 +8068,10 @@ one zero DNS address, UDP47808 and declared port capacity1476. Device62 and its
 discrete APDU sizes remain independent; neither constructor discovers a NIC or
 binds a transport.
 
-The snapshot denies activation-dependent network writes and derives its readonly
-MAC from configured IP/UDP. Reconstruct it to change configuration. It has no
-pending activation, inert Command, or obsolete port62 projection. Link_Speed is
+The snapshot denies activation-dependent network writes, except a registered
+BBMD's two writable rows (see below), and derives its readonly MAC from
+configured IP/UDP. Reconstruct it to change configuration. It has no inert
+Command or obsolete port62 projection. Link_Speed is
 optional and zero means unknown. The former raw `new` constructor and configuration
 setters are removed. `new_non_bip` takes explicit Ethernet/VIRTUAL number, MAC and
 capacity and exposes common application rows only; it does not claim a complete
@@ -8049,7 +8089,7 @@ A transport reports its registration capability through `TransportPort::bip_port
 - **BBMD** adds BBMD_Broadcast_Distribution_Table and BBMD_Foreign_Device_Table (BACnetLISTs of `BACnetBDTEntry` and `BACnetFDTEntry`) and BBMD_Accept_FD_Registrations. The object holds the transport's own BBMD state through the `bacnet_types::bip_port::BbmdTables` view and reads it on every property read, so a BDT change, a new or expired registration, or a policy change made through `BipTransport::bbmd_state()` shows on the next read. FDT entries carry each registrant's time to live and the seconds it has left, grace period included; an entry past its time no longer appears even before the purge task removes it. The BDT includes the BBMD's own row.
 - **NORMAL** has none of them: reading one answers UNKNOWN_PROPERTY.
 
-All five are read-only for now, and the PICS draft lists them as not writable. Clauses 12.56.34, 12.56.35, 12.56.37 and 12.56.38 make the BDT, Accept_FD_Registrations and both FD properties writable, with a write setting Changes_Pending until ReinitializeDevice activates it; until that activation path exists, a write answers WRITE_ACCESS_DENIED, as every configuration row of this object does. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. NAT traversal (BACnet_IP_NAT_Traversal, BACnet_IP_Global_Address) and B/IP multicast (BACnet_IP_Multicast_Address) are not modeled yet.
+In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked against the transport's BDT policy at once, through `BbmdTables::check_broadcast_distribution_table`: a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`): without one nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. An activated BDT isn't written to the persisted-BDT file. The other rows stay read-only: FD_BBMD_Address and FD_Subscription_Lifetime are writable by Clauses 12.56.37 and 12.56.38, but a running foreign device can't change its BBMD or time-to-live yet, so they answer WRITE_ACCESS_DENIED, as the other configuration rows of this object do. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. NAT traversal (BACnet_IP_NAT_Traversal, BACnet_IP_Global_Address) and B/IP multicast (BACnet_IP_Multicast_Address) are not modeled yet.
 
 The BBMD state lock is a synchronous `std::sync::Mutex` (it was a Tokio mutex before #939): the transport and the Network Port view hold it only for short, synchronous critical sections, so the object can read it under the database read lock without awaiting. Lock order stays ObjectDatabase, then the BBMD state; the transport never takes the database.
 

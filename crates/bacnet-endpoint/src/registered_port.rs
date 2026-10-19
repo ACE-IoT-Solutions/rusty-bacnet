@@ -86,6 +86,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             capacity as u32,
             port.mode,
         )?;
+        // Written values activate only through a ReinitializeDevice handler.
+        db.set_network_port_activation_internal(oid, self.reinitialize.is_some())?;
         // The port's configured number is the local network number from the
         // start (#1403); the Number owner copies every later change from the
         // port, as the full server's does.
