@@ -80,7 +80,7 @@ tokio-serial = "5"
 
 # The pseudo-terminal that plain `bacnet` opens the TUI on (#974).
 [target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
+nix = { workspace = true, features = ["term"] }
 
 [features]
 default = ["tui"]

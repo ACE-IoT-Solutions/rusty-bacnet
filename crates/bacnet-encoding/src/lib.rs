@@ -2,9 +2,7 @@
 // Tests always build with std, so feature-off test runs need no imports of
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
-// The library has no unsafe. One unit test still builds a 4 GiB `str` with
-// `from_utf8_unchecked`, so tests keep the workspace `deny` until #1881.
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 
 // `format!` and `vec!` without std's prelude. Without `alloc` the crate
 // links no allocator at all (#1614).

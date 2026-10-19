@@ -36,18 +36,23 @@ fn write_tagged<S: EncodeSink + ?Sized>(
     payload: &[u8],
 ) -> Result<usize, SinkFull> {
     let contents = lead.len().saturating_add(payload.len());
-    let Ok(length) = u32::try_from(contents) else {
-        return Err(SinkFull {
-            needed: contents.saturating_add(MAX_HEADER),
-            available: sink.remaining_capacity().unwrap_or(u32::MAX as usize),
-        });
-    };
+    let length = header_length(sink, contents)?;
     let mut header = [0; MAX_HEADER];
     let mut tail = &mut header[..];
     let header_len = encode_tag_to_sink(&mut tail, tag, class, length)
         .expect("seven octets hold any tag header");
     sink.write_parts(&[&header[..header_len], lead, payload])?;
     Ok(header_len + contents)
+}
+
+/// The header length for a value of `contents` octets bound for `sink`, or
+/// the refusal of one too long for a 32-bit length. It takes the length
+/// alone, so a test can reach the refusal without a 4 GiB value.
+fn header_length<S: EncodeSink + ?Sized>(sink: &S, contents: usize) -> Result<u32, SinkFull> {
+    u32::try_from(contents).map_err(|_| SinkFull {
+        needed: contents.saturating_add(MAX_HEADER),
+        available: sink.remaining_capacity().unwrap_or(u32::MAX as usize),
+    })
 }
 
 /// Append `lead` and `payload` as one value, without a tag.
