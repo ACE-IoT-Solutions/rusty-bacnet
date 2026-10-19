@@ -49,8 +49,8 @@ It isn't BTL certified; [Conformance](#conformance) explains what is covered.
   assuming a Rust option exists there.
 - **CLI.** The `bacnet` tool does discovery, reads and writes, COV
   subscriptions, alarms, file transfer and BBMD management over BACnet/IP,
-  BACnet/IPv6 and BACnet/SC, with an interactive shell and optional packet
-  capture.
+  BACnet/IPv6 and BACnet/SC, as one-shot commands with JSON output or in a
+  full-screen terminal UI, with optional packet capture.
 - **Shared endpoints.** One device can send requests and
   answer a limited set of them (ReadProperty by default) through a single
   BACnet/IP, BACnet/SC or MS/TP transport, from Rust or Python. Use the

@@ -7,8 +7,9 @@ paraphrased. Anything marked **planned** does not exist yet.
 
 ## 1. Summary
 
-`bacnet` is a clap one-shot CLI plus a rustyline shell (`crates/bacnet-cli`).
-This design adds a full-screen terminal UI, `bacnet tui`, built on ratatui 0.30
+`bacnet` is a clap one-shot CLI (`crates/bacnet-cli`); until 0.14.0 it also had
+a rustyline shell, which #974 removed. This design adds a full-screen terminal
+UI, `bacnet tui` (and plain `bacnet` on a terminal), built on ratatui 0.30
 and crossterm 0.29. It is for people who commission, service and debug BACnet
 networks, and for people building on rusty-bacnet. The one-shot commands stay
 as the scriptable, JSON-producing and screen-reader-friendly interface.
@@ -174,9 +175,9 @@ no accessibility layer. Mitigations:
 ## 5. Safety model
 
 The project README asks for authorization before use on a network. The
-one-shot CLI and the shell guard writes with `--allow-write`, and DCC and
-reinitialize also with `--yes` or a typed confirmation (#972). Both front ends
-and the TUI take a command's class (read, write or device management) from one
+one-shot CLI guards writes with `--allow-write`, and DCC and reinitialize
+also with `--yes` or a typed confirmation (#972). The one-shots and the TUI
+take a command's class (read, write or device management) from one
 table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 
 **Session levels** (always shown in the status bar):
@@ -313,9 +314,14 @@ distinctly.
 - `bacnet tui` opens the TUI. With no TTY on stdin or stdout, or with
   `TERM=dumb`, it exits non-zero with a hint on stderr and writes nothing to
   stdout, so `bacnet tui > out.txt` leaves `out.txt` empty.
-- A bare `bacnet` and `bacnet shell` still open the rustyline shell. Switching a
-  bare `bacnet` to the TUI, with `--no-tui` and `BACNET_NO_TUI` as escape
-  hatches, is #974.
+- A bare `bacnet` opens the TUI too (#974), when the same terminal check
+  passes: `entry.rs` rewrites the parsed command line into `bacnet ... tui`
+  with the `tui` flags at their defaults, so the global flags, profiles and
+  the MS/TP join confirmation take the one path. Without a terminal, with
+  `--no-tui`, with `BACNET_NO_TUI` set (anything but empty or `0`), or in a
+  build without `tui`, it prints the usage to stderr and exits 2. The
+  rustyline shell, `bacnet shell`, is gone; its WritePropertyMultiple became
+  the `writem` one-shot.
 - The global transport flags (`-i`, `-p`, `-b`, `-t`, `--ipv6`, `--sc*`) feed
   both modes. B/IP profiles (§6.6) provide settings that explicit flags
   override, including values equal to the CLI defaults. Bare `tui` opens
@@ -327,23 +333,23 @@ distinctly.
   empty stdout and a non-zero exit; stable `--sc-*` error phases; feature-off
   rebuild advice. Consumers include `scripts/release/cli_smoke.sh`, the README,
   the website guides and the integration tests in `crates/bacnet-cli/tests/`.
-- The shell's hand-written argument parsers have drifted from clap. The planned
-  command bar reuses shared parsing (`src/core/`) instead of adding a third
-  parser.
+- The planned command bar reuses shared parsing (`src/core/`) and clap
+  rather than adding a parser of its own, as the removed shell had.
 
 ### 6.2 Crate and module layout
 
 Everything stays in `crates/bacnet-cli`, behind the `tui` cargo feature
-(opt-in until the TUI ships in 0.14.0, #975), and outside the workspace's `default-members` as before. A separate
-crate is not justified until a second consumer exists. Building without
-the feature drops ratatui and crossterm; `bacnet tui` then prints rebuild
-advice and exits 1.
+(a default feature since 0.14.0, #974), and outside the workspace's `default-members` as before. A separate
+crate is not justified until a second consumer exists. Building with
+`--no-default-features` drops ratatui and crossterm; `bacnet tui` then prints
+rebuild advice and exits 1, and a bare `bacnet` prints the usage and exits 2.
 
 ```
 crates/bacnet-cli/src/
-  main.rs            dispatch: one-shot | shell | tui (the hand-built runtime from #950)
+  main.rs            dispatch: one-shot | tui (the hand-built runtime from #950)
+  entry.rs           bare `bacnet`: the TUI, or the usage and exit 2 (#974)
   args.rs            + Tui flags and explicit-value provenance
-  core/              code shared by one-shot, shell and TUI: interface listing,
+  core/              code shared by one-shot and TUI: interface listing,
                      Who-Is range parsing (more as later screens need it)
   commands/          one-shot handlers (contract unchanged)
   tui/
@@ -423,7 +429,7 @@ signals ------------------+      if dirty: terminal.draw(view)
 - **Terminal ownership.** In TUI mode tracing goes to an in-app ring buffer
   (1,000 lines, shown in the `L` pane) and optionally to `--log-file`. Nothing
   writes to stdout or stderr while raw mode is on; that is why the BIP
-  interface picker is a dialog rather than the shell's stderr prompt.
+  interface picker is a dialog rather than a stderr prompt.
 - **Teardown.** Setup mirrors `ratatui::init` and teardown calls
   `ratatui::try_restore`. The panic hook is our own so that it shares one
   idempotent restore with normal exit and signal exit and so that its order is
@@ -501,8 +507,7 @@ B/IP and BACnet/SC profiles are implemented behind `tui`. The entry flow,
 schema and keys are in the [CLI reference](../CLI.md#terminal-ui). MS/TP
 profiles (#969) add a `transport` value and their own table. An SC profile's
 failover hub goes to the client builder with the default reconnect policy,
-which the builder needs for failover; the SC screen (#967) shows which hub is in use. The shell
-history lives in the platform data directory.
+which the builder needs for failover; the SC screen (#967) shows which hub is in use.
 
 - Each transport keeps its settings in its own table (`[bip]` or `[sc]`), and
   exactly the one `transport` names is present. B/IP files from before SC
@@ -673,10 +678,10 @@ TSM counters; an opt-in SC hub admin view of connected nodes.
 | Unbounded channels hide overload | Bounded channels; visible drop counter; per-wake drain budget; resync after loss |
 | MS/TP timing on USB adapters, macOS and Windows | DedicatedThread; passive monitor by default; label macOS and Windows experimental until hardware evidence exists |
 | An active MS/TP join or careless writes disturb a live site | Read-only default, write sessions, tiers, ledger, exit guard, safe-join wizard |
-| Breaking the one-shot contract | The TUI is additive; contract tests stay unchanged; the shell is retired only by decision (#974) |
+| Breaking the one-shot contract | The TUI is additive; contract tests stay unchanged; the shell was retired by decision (#974) |
 | Scope creep into a second product | Milestones ship independently; P1 and P2 items need their own issues |
 | Audit logs leak secrets | Audit records redact passwords and never contain key material; SC key-log export is out of scope |
-| Compile time and binary size growth | Non-generic views; the `tui` feature can be turned off; release-profile tuning measured in #973 |
+| Compile time and binary size growth | Non-generic views; `--no-default-features` turns the `tui` feature off; release-profile tuning measured in #973 |
 
 ## 12. Milestones
 
@@ -692,7 +697,8 @@ TSM counters; an opt-in SC hub admin view of connected nodes.
 ## 13. Decisions (maintainer, 2026-10-01)
 
 - **Entry point:** ship `bacnet tui` first; a bare `bacnet` switches to the TUI
-  after M1 and the shell is retired later (#974).
+  after M1 and the shell is retired later (#974). Done in 0.14.0 (decided
+  2026-10-19): the shell went without a deprecation release.
 - **Packaging:** one binary with a default-on `tui` feature; the code lives in
   `tui/` inside bacnet-cli with a shared `core/`.
 - **Terminal size:** 80x24 functional, 120x40 full layout, a notice below the

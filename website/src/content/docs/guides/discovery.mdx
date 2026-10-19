@@ -43,6 +43,8 @@ Use a BBMD designated by the site owner. Registration changes BBMD foreign-devic
 
 ## Keep discovery and device-instance lookup in one session
 
+In v{release}, the interactive shell keeps them together:
+
 ```sh
 bacnet shell
 ```
@@ -59,6 +61,8 @@ status
 
 Use an instance that the current session actually discovered. A discovery run in another process is not a documented persistent cache for this shell or a later one-shot process.
 
+In the development branch after v{release}, the shell is removed: plain `bacnet` on a terminal opens the terminal UI, whose device list keeps what it discovers for the session. A one-shot command takes an explicit target address instead.
+
 ## Find an object by name
 
 For a one-shot command, use the parser-backed option:
@@ -67,7 +71,7 @@ For a one-shot command, use the parser-backed option:
 bacnet find --name "Zone Temp" --wait 3
 ```
 
-The one-shot command takes the name only through `--name`. Shell grammar is a separate surface and must not be assumed identical to the one-shot command line.
+The one-shot command takes the name only through `--name`. The v{release} shell's grammar is a separate surface and must not be assumed identical to the one-shot command line.
 
 ## When discovery is empty
 

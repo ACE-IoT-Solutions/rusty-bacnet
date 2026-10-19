@@ -3,8 +3,8 @@
 `bacnet` is the command-line tool of [Rusty BACnet](https://github.com/jscott3201/rusty-bacnet),
 a BACnet protocol stack in Rust. It discovers devices, reads and writes
 properties, subscribes to COV, handles alarms, files and routing, and decodes
-captured traffic, as one-shot commands, in an interactive shell, or in a
-full-screen terminal UI (`bacnet tui`).
+captured traffic, as one-shot commands with JSON output, or in a full-screen
+terminal UI (plain `bacnet` on a terminal, or `bacnet tui`).
 
 ## Install
 
@@ -14,8 +14,8 @@ cargo install bacnet-cli --locked --features sc-tls
 
 The binary is called `bacnet`. Features:
 
-- `tui`: `bacnet tui`, the full-screen terminal UI. It is off by default, and
-  out of the release binaries, until the terminal UI ships in 0.14.0.
+- `tui` (default): the full-screen terminal UI. `--no-default-features`
+  builds the one-shot commands without it.
 - `sc-tls`: the BACnet/SC transport (WebSocket over TLS) and offline credential
   inspection in the development checkout.
 - `pcap`: `bacnet capture`, live or from a pcap file. It needs libpcap and its
@@ -30,7 +30,7 @@ Prebuilt binaries are attached to each
 bacnet discover
 bacnet read 192.168.1.100 ai:1 pv
 bacnet --json readm 192.168.1.100 ai:1 pv,object-name
-bacnet tui    # built with --features tui; create/select a B/IP or SC profile
+bacnet        # on a terminal: the TUI; create/select a B/IP or SC profile
 bacnet tui --profile plant-a
 bacnet tui --no-profile -i 127.0.0.1 -p 0 -b 127.0.0.255
 ```
@@ -46,7 +46,7 @@ read-only until `W` arms a time-boxed write session on a profile; every write
 is previewed, kept in a revertible ledger and recorded in an audit log.
 `--passive` transmits nothing.
 
-One-shot commands and the shell refuse anything that changes a device unless
+One-shot commands refuse anything that changes a device unless
 given `--allow-write`; communication control and reinitialize also need
 `--yes` when stdin is not a terminal, or, at one, the device instance typed
 (the target as given, for an address target). A refused command exits with

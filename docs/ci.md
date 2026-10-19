@@ -2050,10 +2050,10 @@ binaries with the licence files it ships, identical texts printed once.
   `MIT-0`, `Unlicense` and `WTFPL`, whose terms don't ask for the notice in a
   binary (so MIT, BSD-*, ISC, Apache-2.0, MPL-2.0 and unknown ones all count),
   unless `ALLOW_NO_LICENSE_FILE` in the script names it with the reason. The
-  list is empty: every such crate ships a licence file. One crate ships none
-  and is listed at the end with its reason: `clipboard-win` (BSL-1.0, in the
-  Windows CLI through rustyline), whose licence exempts machine-executable
-  object code.
+  list is empty: every such crate ships a licence file. A crate under one of
+  those exempt licences that ships none would be listed at the end with its
+  reason; none does since the shell and rustyline went (#974), which took
+  `clipboard-win` (BSL-1.0) with them.
 - libpcap's licence and version come from the pinned tarball, which Validate
   fetches with `libpcap.sh`, as the Linux builds do.
 - The file depends only on `Cargo.lock`, the crate sources and libpcap, so a
