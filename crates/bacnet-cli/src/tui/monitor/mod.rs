@@ -15,10 +15,10 @@
 //! coordinator ends the monitor session, which closes the port, before the
 //! participant session opens it.
 //!
-//! Live capture (#971) is not built yet. When it is, it can subscribe to the
-//! monitor's frame stream ([`worker::serve`] holds the `MstpMonitor`, whose
-//! `frames()` gives each subscriber its own lossy stream), beside the one
-//! this worker reads.
+//! The Capture screen (#971) takes its own lossy subscription to the
+//! monitor's frame stream: [`worker::serve`] holds the `MstpMonitor`, whose
+//! `frames()` gives each subscriber its own stream, and runs the capture
+//! pump beside the watcher, which hands it the session's capture commands.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;

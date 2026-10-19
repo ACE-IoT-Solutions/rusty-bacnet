@@ -15,7 +15,9 @@ use clap::{CommandFactory, FromArgMatches};
 mod args;
 mod commands;
 mod core;
-#[allow(dead_code)] // Public API consumed by capture command handler (Task 4).
+// The one-shot capture (`pcap`) and the TUI's Capture screen each use a
+// part of it.
+#[cfg_attr(not(all(feature = "pcap", feature = "tui")), allow(dead_code))]
 mod decode;
 mod entry;
 mod foreign;

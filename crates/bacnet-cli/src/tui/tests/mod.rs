@@ -36,6 +36,10 @@ mod app_core;
 mod bip6_worker;
 mod browser;
 mod build_retirement;
+mod capture;
+mod capture_frames;
+mod capture_live;
+mod capture_views;
 mod connections;
 #[cfg(unix)]
 mod crash;

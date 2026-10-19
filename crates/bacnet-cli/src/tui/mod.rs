@@ -22,6 +22,8 @@
 //! - [`mstp`]: the MS/TP screen's messages and diagnostics sampling (#969).
 //! - [`monitor`]: the MS/TP passive monitor, its analysis and the safe-join
 //!   hand-off (#970).
+//! - [`capture`]: live capture for the Capture screen, its sources, ring
+//!   and filter (#971).
 //!
 //! The TUI is read-only by default: discovery, the device browser's reads,
 //! the watch list's reads and finite COV subscriptions, and finite
@@ -29,6 +31,7 @@
 //! `W` on a profile that allows it; `--passive` transmits nothing at all.
 
 mod app;
+mod capture;
 mod event_loop;
 mod format;
 mod keymap;
@@ -102,6 +105,10 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         TransportKind::Bip6
     } else {
         TransportKind::Bip
+    };
+    let capture_ring = match &cli.command {
+        Some(Command::Tui { capture_ring, .. }) => *capture_ring as usize,
+        _ => capture::DEFAULT_RING,
     };
     let (fps, log_file, mut options) = match &cli.command {
         Some(Command::Tui {
@@ -216,6 +223,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     if let Some(plan) = &monitor {
         app.start_monitor(plan, !options.safety.passive);
     }
+    app.capture = app::capture::CaptureState::new(capture_ring);
 
     let signals = Signals::install()?;
     // Before any network traffic: a terminal that passes the TTY check can

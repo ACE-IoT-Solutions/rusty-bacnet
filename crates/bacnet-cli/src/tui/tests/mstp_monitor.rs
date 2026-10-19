@@ -56,7 +56,7 @@ fn i_am(instance: u32) -> Vec<u8> {
 /// 5 answering station 1 but never given the token; station 1 announces
 /// itself once, station 2's first broadcasts are damaged; one lost token;
 /// and so on to 9.5 s.
-fn acceptance_line() -> Vec<(Duration, Vec<u8>)> {
+pub(super) fn acceptance_line() -> Vec<(Duration, Vec<u8>)> {
     let mut ring = ScriptedRing::new(BAUD).master(1, 127).master(2, 3);
     let (mut announced, mut sent) = (false, 0);
     let mut traffic = |line: &mut LineScript, holder: u8| {
@@ -113,7 +113,7 @@ pub(super) struct Run {
 impl Run {
     /// Play `chunks` into a monitor on [`PORT`]; `participant` is the port's
     /// other life, for a join.
-    async fn start(
+    pub(super) async fn start(
         chunks: Vec<(Duration, Vec<u8>)>,
         participant: Option<LoopbackSerial>,
         passive: bool,

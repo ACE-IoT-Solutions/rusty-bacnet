@@ -92,7 +92,10 @@ impl App {
                 }
                 self.flash(error, FLASH_FOR);
             }
-            WorkerEvent::Connected { local } => self.link = Link::Up { local },
+            WorkerEvent::Connected { local } => {
+                self.link = Link::Up { local };
+                self.start_capture(out);
+            }
             WorkerEvent::ConnectFailed { error } => {
                 self.link = Link::Failed(error.clone());
                 self.flash(error, FLASH_FOR);
@@ -102,12 +105,16 @@ impl App {
                     op.replies += usize::from(op.spec.wants(row.instance));
                 }
                 self.devices.upsert(row);
+                self.resolve_capture_devices();
             }
             WorkerEvent::Lost(row) => self.devices.remove(row.instance),
             WorkerEvent::Collision { retained, incoming } => {
                 self.duplicates.record(&retained, &incoming);
             }
-            WorkerEvent::Snapshot(rows) => self.devices.replace_all(rows),
+            WorkerEvent::Snapshot(rows) => {
+                self.devices.replace_all(rows);
+                self.resolve_capture_devices();
+            }
             WorkerEvent::WhoIsSent { op } => {
                 let now = self.now;
                 if let Some(op) = self.running_op_mut(op) {
@@ -139,13 +146,22 @@ impl App {
                 }
             }
             WorkerEvent::Safety(event) => self.safety_event(event, out),
-            WorkerEvent::Passive => self.link = Link::Passive,
+            WorkerEvent::Passive => {
+                self.link = Link::Passive;
+                // The monitor's session captures; a plain passive one can't.
+                self.start_capture(out);
+            }
             WorkerEvent::ForeignDevice(foreign) => self.network.foreign_device(foreign),
             WorkerEvent::Network(event) => self.network_event(event),
             WorkerEvent::Discovery(event) => self.discovery_event(event),
             WorkerEvent::Sc(report) => self.sc_report(report),
             WorkerEvent::Mstp(report) => self.mstp.report(report),
             WorkerEvent::Monitor(report) => self.monitor_report(report),
+            WorkerEvent::Capture(event) => {
+                if let Some(text) = self.capture.event(event) {
+                    self.flash(text, FLASH_FOR);
+                }
+            }
         }
     }
 }
