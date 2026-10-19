@@ -24,7 +24,7 @@ expression: text
 "│           │ First use requires your explicit authorization:                                              │           │"
 "│           │ I am authorized to use BACnet on this network.                                               │           │"
 "│           │ a attest, save authorization and connect | Esc cancel                                        │           │"
-"│           │ e edit | r reload from disk | p profiles | n new B/IP | s new SC                             │           │"
+"│           │ e edit | r reload from disk | p profiles | n/s/m new B/IP, SC, MS/TP                         │           │"
 "│           │                                                                                              │           │"
 "│           │                                                                                              │           │"
 "│           │                                                                                              │           │"

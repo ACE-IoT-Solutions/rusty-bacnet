@@ -321,6 +321,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-serial",
  "toml",
  "tracing",
  "tracing-subscriber",

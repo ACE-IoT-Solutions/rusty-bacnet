@@ -135,6 +135,33 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_parser = crate::transport::parse_sc_device_uuid_arg)]
     pub(crate) sc_device_uuid: Option<[u8; 16]>,
 
+    /// Join an MS/TP trunk as a master station on this serial port (see
+    /// `bacnet mstp-ports`); needs --mstp-mac and the `serial` feature.
+    /// B/IP, B/IPv6 and SC flags are refused with it.
+    #[arg(long, global = true, value_name = "PORT")]
+    pub(crate) mstp: Option<String>,
+
+    /// MS/TP baud rate: 9600, 19200, 38400, 57600, 76800 or 115200.
+    #[arg(long, global = true, value_name = "BAUD",
+          default_value_t = crate::mstp::DEFAULT_BAUD, value_parser = crate::mstp::parse_baud)]
+    pub(crate) mstp_baud: u32,
+
+    /// This station's MS/TP MAC, 0 to 127; no other device on the trunk
+    /// may have it. Required with --mstp.
+    #[arg(long, global = true, value_name = "MAC",
+          value_parser = crate::mstp::parse_master_mac)]
+    pub(crate) mstp_mac: Option<u8>,
+
+    /// Highest master MAC on the trunk (Max_Master), 0 to 127.
+    #[arg(long, global = true, value_name = "MAC",
+          default_value_t = crate::mstp::MAX_MASTER_MAC, value_parser = crate::mstp::parse_max_master)]
+    pub(crate) mstp_max_master: u8,
+
+    /// Frames this station sends per token (Max_Info_Frames), 1 to 255.
+    #[arg(long, global = true, value_name = "N",
+          default_value_t = 1, value_parser = crate::mstp::parse_max_info_frames)]
+    pub(crate) mstp_max_info_frames: u8,
+
     /// Output format (table, json).
     #[arg(long, global = true)]
     pub(crate) format: Option<String>,
@@ -371,6 +398,10 @@ pub(crate) enum Command {
     /// List cached discovered devices.
     Devices,
 
+    /// List the serial ports to pass to --mstp (a JSON array of names,
+    /// possibly empty). Opens no port.
+    MstpPorts,
+
     /// Read BBMD broadcast distribution table.
     Bdt {
         /// Target device.
@@ -519,6 +550,7 @@ pub(crate) fn capture_sources(matches: &clap::ArgMatches) -> Result<Vec<String>,
             "--renewal requires --foreign-bbmd (or a named TUI profile containing a BBMD)",
         ));
     }
+    crate::mstp::check_matches(matches)?;
     Ok(explicit)
 }
 

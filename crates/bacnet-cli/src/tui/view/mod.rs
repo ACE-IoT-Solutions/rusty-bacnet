@@ -9,6 +9,7 @@ mod chrome;
 mod connection;
 mod devices;
 mod dialogs;
+mod mstp;
 mod network;
 mod networks;
 mod safety;
@@ -74,6 +75,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         _ if app.screen == Screen::Watch => watch::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Network => network::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Sc => sc::draw(frame, body, app, &theme),
+        _ if app.screen == Screen::Mstp => mstp::draw(frame, body, app, &theme),
         Some(open) => browser::draw(frame, body, open, &theme),
         None => who_has::devices(frame, body, app, &theme),
     }
@@ -94,6 +96,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         Overlay::WhoIs(form) => dialogs::who_is(frame, area, app, form, &theme),
         Overlay::Picker(picker) => dialogs::picker(frame, area, picker, &theme),
         Overlay::Safety(modal) => safety::draw(frame, area, app, modal, &theme),
+        Overlay::Join(dialog) => mstp::join(frame, area, dialog, &theme),
     }
 }
 

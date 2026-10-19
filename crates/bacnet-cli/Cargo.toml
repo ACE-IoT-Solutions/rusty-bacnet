@@ -70,6 +70,10 @@ futures-util.workspace = true
 insta = "1.48"
 tokio = { workspace = true, features = ["test-util"] }
 
+# The MS/TP one-shot test's pseudo-terminal pair (#969).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio-serial = "5"
+
 [features]
 default = []
 # The full-screen terminal UI (`bacnet tui`). Opt-in until the TUI epic ships in
@@ -84,6 +88,9 @@ sc-tls = [
     "dep:time",
 ]
 pcap = ["dep:pcap", "dep:ctrlc", "dep:libc"]
+# MS/TP over a serial port (`--mstp`, `mstp-ports`). Released in the Linux
+# CLI; built and tested on macOS and Windows as experimental (#969).
+serial = ["bacnet-transport/serial"]
 
 [lints]
 workspace = true

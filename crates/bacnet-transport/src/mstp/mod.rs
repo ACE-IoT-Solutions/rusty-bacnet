@@ -16,7 +16,8 @@
 //! - [`MstpConfig`], mapped onto [`MstpCoreConfig`] and validated by the
 //!   core's rules.
 //! - [`MstpDiagnostics`], the core's counters added up ([`MstpCounters`])
-//!   plus counts kept at the transport boundary.
+//!   plus counts kept at the transport boundary, and the node's place in
+//!   the token ring ([`MstpNodeState`]).
 //! - [`monitor`], a receive-only monitor that listens to a trunk without
 //!   joining it and keeps per-station statistics.
 
@@ -32,7 +33,8 @@ pub mod monitor;
 mod queues;
 mod replies;
 mod totals;
-pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot};
+pub use bacnet_mstp_core::MasterState;
+pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot, MstpNodeState};
 pub use totals::{MstpCounters, QueueCounters};
 
 // ---------------------------------------------------------------------------

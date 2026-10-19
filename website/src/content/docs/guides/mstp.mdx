@@ -13,7 +13,7 @@ MS/TP is a token-passing serial transport. Fast protocol code is useful, but it 
 
 ## Choose the supported surface
 
-The Python package supports `transport="mstp"` on `BACnetClient` and `BACnetServer`, and `MstpEndpoint` for one device that both requests and responds; every release wheel includes it. Rust has the serial transport itself. The `bacnet` CLI does not expose MS/TP transport flags; do not substitute an invented `--mstp` or `--serial` option into CLI instructions.
+The Python package supports `transport="mstp"` on `BACnetClient` and `BACnetServer`, and `MstpEndpoint` for one device that both requests and responds; every release wheel includes it. Rust has the serial transport itself. The v{release} `bacnet` CLI has no MS/TP transport flags. In the development branch after v{release}, it joins a trunk as a master station with `--mstp PORT` and `--mstp-mac` (in the Linux release executables, or a source build with the `serial` feature), and `bacnet mstp-ports` lists the ports; the [CLI reference on `dev`](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/CLI.md#mstp) has the flags, the Linux `dialout` group and the FTDI latency timer.
 
 Treat Linux as the initial documentation/qualification lane. Serial path examples for macOS or Windows are not evidence that those platform/adapter combinations are qualified.
 

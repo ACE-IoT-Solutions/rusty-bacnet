@@ -42,6 +42,8 @@ pub(crate) enum TransportKind {
     Bip6,
     /// BACnet/SC.
     Sc,
+    /// MS/TP over a serial port.
+    Mstp,
 }
 
 impl TransportKind {
@@ -51,6 +53,7 @@ impl TransportKind {
             Self::Bip => "BIP",
             Self::Bip6 => "BIP6",
             Self::Sc => "SC",
+            Self::Mstp => "MSTP",
         }
     }
 
@@ -60,6 +63,7 @@ impl TransportKind {
             Self::Bip => AddressStyle::Bip,
             Self::Bip6 => AddressStyle::Bip6,
             Self::Sc => AddressStyle::Hex,
+            Self::Mstp => AddressStyle::Mstp,
         }
     }
 }
@@ -189,6 +193,43 @@ async fn connect(
             failed(
                 &sink,
                 Error::Encoding("BACnet/SC requires the 'sc-tls' feature".into()),
+            )
+            .await;
+        }
+        #[cfg(feature = "serial")]
+        TransportKind::Mstp => {
+            let mut handle = None;
+            let build = async {
+                let (client, diagnostics) = crate::mstp::build_client(&args).await?;
+                handle = Some(diagnostics);
+                Ok(client)
+            };
+            let built = finish_build(Box::pin(build), &sink).await;
+            // A built client always came with its handle, from settings.
+            if let (Some(client), Some(handle), Some(station)) = (built, handle, args.mstp.clone())
+            {
+                tracing::info!(
+                    "joined the MS/TP trunk on {} as station {}",
+                    station.port,
+                    station.mac
+                );
+                let report = crate::tui::mstp::MstpReport::Joined(station);
+                sink.deliver(WorkerEvent::Mstp(report)).await;
+                let sampler = crate::tui::mstp::sample(handle, sink.clone());
+                // The sampler never finishes, so the session always does,
+                // and stops its client; the sampler is dropped with it.
+                tokio::select! {
+                    biased;
+                    () = Box::pin(serve(client, style, sink, commands, options)) => {}
+                    () = sampler => {}
+                }
+            }
+        }
+        #[cfg(not(feature = "serial"))]
+        TransportKind::Mstp => {
+            failed(
+                &sink,
+                Error::Encoding("MS/TP requires the 'serial' feature".into()),
             )
             .await;
         }
@@ -403,7 +444,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                             }
                         }
                         Some(Command::Disconnect) => break,
-                        Some(Command::Connect { .. } | Command::Reconnect | Command::Profile(_)) => {}
+                        Some(Command::Connect { .. } | Command::JoinTrunk { .. } | Command::Reconnect | Command::Profile(_)) => {}
                         None => break,
                     },
                     vmac = resolved(&mut resolving), if resolving.is_some() => {

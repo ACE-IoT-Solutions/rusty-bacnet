@@ -17,6 +17,7 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 | Write a value | `write` | Requires explicit site authorization and cleanup; after v0.13.0 also `--allow-write` |
 | Inspect BBMD tables | `bdt`, `fdt` | Table inspection is different from changing registration |
 | Packet analysis | `capture` | In the Linux release executables; a source build needs the `pcap` feature |
+| Join an MS/TP trunk | `--mstp PORT --mstp-mac N`, `mstp-ports` | After v0.13.0: in the Linux release executables; a source build needs the `serial` feature |
 | Alarm/device/file operations | See the full reference | Not ordinary read-only onboarding |
 
 ## Exit status

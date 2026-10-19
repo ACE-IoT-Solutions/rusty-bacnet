@@ -25,6 +25,7 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
     let (endpoint, state) = match &app.link {
         Link::Down => (app.transport.to_string(), "disconnected"),
         Link::Disconnecting => (app.transport.to_string(), "disconnecting"),
+        Link::Picking if app.transport == "MSTP" => (app.transport.to_string(), "confirm joining"),
         Link::Picking => (app.transport.to_string(), "choose an interface"),
         Link::Connecting => (app.transport.to_string(), "connecting"),
         Link::Up { local } => (format!("{} {local}", app.transport), "up"),
@@ -150,6 +151,14 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("?", "help"),
                 ("q", "quit"),
             ],
+            _ if app.screen == Screen::Mstp => &[
+                ("z", "clear counters"),
+                ("Space", "pause/follow"),
+                ("x", "disconnect"),
+                ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
             _ if app.screen == Screen::Watch => &[
                 ("x", "remove"),
                 (":", "command"),
@@ -223,7 +232,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Screens",
         &[
-            ("3 4 5 1  x", "Watch list; network; SC; devices; unwatch"),
+            ("3-6  1  x", "Watch; network; SC; MS/TP; devices; unwatch"),
             (":", "watch DEV OBJ [PROP]; csv on|off; find NAME"),
             ("r  m  Tab", "Network: read BBMD/routers; survey; next tab"),
         ],

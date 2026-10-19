@@ -1,7 +1,10 @@
-//! Versioned, private connection profiles (B/IP and BACnet/SC). Resolution
+//! Versioned, private connection profiles (B/IP, BACnet/SC and MS/TP). Resolution
 //! never performs I/O; [`checks`] does the file checks before connecting.
 
 pub(crate) mod checks;
+pub(crate) mod mstp;
+#[cfg(test)]
+mod mstp_tests;
 pub(crate) mod overrides;
 pub(crate) mod sc;
 #[cfg(test)]
@@ -14,6 +17,7 @@ pub(crate) mod tests;
 
 use crate::transport::TransportArgs;
 use crate::tui::worker::session::TransportKind;
+pub(crate) use mstp::Mstp;
 pub(crate) use overrides::Overrides;
 pub(crate) use sc::Sc;
 use serde::{Deserialize, Serialize};
@@ -22,9 +26,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 /// Settings persisted for one named connection.
 ///
 /// Each transport keeps its settings in its own table, and exactly the one
-/// `transport` names is present. MS/TP (#969) adds a [`Transport`] variant
-/// and an `mstp` table the same way. Files written before SC support (B/IP
-/// only) have the same shape and load unchanged.
+/// `transport` names is present. Files written before SC and MS/TP support
+/// (B/IP only) have the same shape and load unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Profile {
@@ -38,6 +41,9 @@ pub(crate) struct Profile {
     /// BACnet/SC settings, present for `transport = "sc"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) sc: Option<Box<Sc>>,
+    /// MS/TP settings, present for `transport = "mstp"` (#969).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mstp: Option<Box<Mstp>>,
     /// Recorded policy. The current TUI always remains read-only.
     pub(crate) safety: Safety,
     /// Explicit first-use authorization, persisted before connecting.
@@ -57,6 +63,8 @@ pub(crate) enum Transport {
     Bip,
     /// BACnet/SC.
     Sc,
+    /// MS/TP over a serial port.
+    Mstp,
 }
 
 impl Transport {
@@ -65,6 +73,7 @@ impl Transport {
         match self {
             Self::Bip => TransportKind::Bip,
             Self::Sc => TransportKind::Sc,
+            Self::Mstp => TransportKind::Mstp,
         }
     }
 }
@@ -153,6 +162,7 @@ impl Default for Profile {
             transport: Transport::Bip,
             bip: Some(Bip::default()),
             sc: None,
+            mstp: None,
             safety: Safety::default(),
             authorized_at_unix: None,
             authorized_safety: None,
@@ -167,6 +177,16 @@ impl Profile {
             transport: Transport::Sc,
             bip: None,
             sc: Some(Box::default()),
+            ..Self::default()
+        }
+    }
+
+    /// A new MS/TP profile; its port and MAC are still to be chosen.
+    pub(crate) fn mstp_default() -> Self {
+        Self {
+            transport: Transport::Mstp,
+            bip: None,
+            mstp: Some(Box::default()),
             ..Self::default()
         }
     }
@@ -192,11 +212,15 @@ impl Profile {
         if self.safety.dangerous && self.safety.writes == Writes::Never {
             return Err("dangerous = true needs writes = \"session\"".into());
         }
-        match (self.transport, &self.bip, &self.sc) {
-            (Transport::Bip, Some(bip), None) => bip.validate(),
-            (Transport::Sc, None, Some(sc)) => sc.validate(),
+        match (self.transport, &self.bip, &self.sc, &self.mstp) {
+            (Transport::Bip, Some(bip), None, None) => bip.validate(),
+            (Transport::Sc, None, Some(sc), None) => sc.validate(),
+            (Transport::Mstp, None, None, Some(mstp)) => mstp.validate(),
             (Transport::Bip, ..) => Err("a B/IP profile needs a [bip] table and no other".into()),
             (Transport::Sc, ..) => Err("an SC profile needs an [sc] table and no other".into()),
+            (Transport::Mstp, ..) => {
+                Err("an MS/TP profile needs an [mstp] table and no other".into())
+            }
         }
     }
 
@@ -210,6 +234,7 @@ impl Profile {
             timeout_ms: 0,
             min_interval_ms: 0,
             foreign_device: None,
+            mstp: None,
             sc: false,
             sc_url: None,
             sc_failover_url: None,
@@ -244,6 +269,11 @@ impl Profile {
             args.sc_key = Some(sc.key.clone());
             args.sc_vmac = Some(vmac.0);
             args.sc_device_uuid = Some(uuid.0);
+        }
+        if let Some(mstp) = &self.mstp {
+            args.timeout_ms = mstp.timeout_ms;
+            args.min_interval_ms = mstp.min_interval_ms;
+            args.mstp = Some(mstp.args());
         }
         Ok(args)
     }
@@ -293,5 +323,8 @@ impl Profile {
     }
     pub(crate) fn sc_mut(&mut self) -> &mut Sc {
         self.sc.as_mut().expect("an SC profile")
+    }
+    pub(crate) fn mstp_mut(&mut self) -> &mut Mstp {
+        self.mstp.as_mut().expect("an MS/TP profile")
     }
 }

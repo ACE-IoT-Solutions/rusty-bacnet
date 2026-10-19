@@ -29,6 +29,7 @@ pub(super) fn sc_app() -> App {
             style: AddressStyle::Hex,
             color: false,
             picker: None,
+            join: None,
             passive: false,
             now: t0(),
         },

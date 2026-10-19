@@ -29,6 +29,8 @@ pub struct TransportArgs {
     pub device_instance: Option<u32>,
     /// `--foreign-bbmd`, with `--ttl` and `--renewal` (#938).
     pub foreign_device: Option<ForeignDeviceConfig>,
+    /// `--mstp` and its settings (#969).
+    pub mstp: Option<crate::mstp::MstpArgs>,
 }
 
 impl TransportArgs {
@@ -70,6 +72,7 @@ impl TransportArgs {
             ipv6_interface,
             device_instance: cli.device_instance,
             foreign_device: crate::foreign::config(cli.foreign_bbmd, cli.ttl, cli.renewal),
+            mstp: crate::mstp::MstpArgs::from_cli(cli)?,
         })
     }
 }
@@ -292,6 +295,7 @@ mod tests {
             ipv6_interface: None,
             device_instance: None,
             foreign_device: None,
+            mstp: None,
         }
     }
 
