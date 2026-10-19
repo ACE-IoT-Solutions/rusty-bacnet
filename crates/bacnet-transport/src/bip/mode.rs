@@ -61,7 +61,8 @@ pub struct BbmdOptions {
     /// The source addresses allowed to delete Foreign Device Table entries.
     /// Empty denies every source.
     pub management_acl: Vec<[u8; 4]>,
-    /// A file holding a BDT to start with instead of `bdt`, when it loads
+    /// A file holding a BDT to start with instead of `bdt`, when it loads,
+    /// and where an activated BDT is saved
     /// ([`BipTransport::set_bdt_persist_path`]).
     pub bdt_persist_path: Option<PathBuf>,
     /// The forwarding queue and rate limits.
@@ -74,6 +75,18 @@ pub struct BbmdOptions {
 }
 
 impl BipTransport {
+    /// The persisted-BDT file's path, if one is set.
+    #[cfg(test)]
+    pub(super) fn bdt_persist_path(&self) -> Option<&std::path::Path> {
+        self.bdt_file.as_deref().map(crate::bbmd::BdtFile::path)
+    }
+
+    /// How many saves of an activated BDT to the persisted-BDT file have
+    /// failed ([`set_bdt_persist_path`](Self::set_bdt_persist_path)).
+    pub fn bdt_persist_failures(&self) -> u64 {
+        self.bdt_file.as_ref().map_or(0, |file| file.failures())
+    }
+
     /// Set up this transport's B/IP mode, replacing the one set up before,
     /// with the setters below: [`enable_bbmd`](Self::enable_bbmd) and the
     /// BBMD setters for [`BipMode::Bbmd`], and
@@ -85,7 +98,7 @@ impl BipTransport {
     pub fn set_mode(&mut self, mode: BipMode) {
         self.bbmd_config = None;
         self.foreign_device = None;
-        self.bdt_persist_path = None;
+        self.bdt_file = None;
         self.set_fanout_policy(FanoutPolicy::default());
         match mode {
             BipMode::Normal => {}

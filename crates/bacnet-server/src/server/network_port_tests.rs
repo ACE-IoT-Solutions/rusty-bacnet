@@ -8,6 +8,8 @@ mod network_port_activation_refusal_tests;
 mod network_port_activation_tests;
 #[path = "network_port_bip_mode_tests.rs"]
 mod network_port_bip_mode_tests;
+#[path = "network_port_foreign_activation_tests.rs"]
+mod network_port_foreign_activation_tests;
 #[path = "network_port_mode_tests.rs"]
 mod network_port_mode_tests;
 #[path = "sc_network_number_tests.rs"]

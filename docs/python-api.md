@@ -635,7 +635,8 @@ unicast) or `("ip:port", "mask")` pairs; the BBMD's own row is added when
 missing. Without `accept_foreign_devices=True` every registration is
 refused, and `management_acl` lists the addresses allowed to delete Foreign
 Device Table entries (none by default). `bdt_persist_path` names a file
-holding a BDT, 10 octets per row, to start with instead when it loads;
+holding a BDT, 10 octets per row, to start with instead when it loads; a
+BDT activated through the registered Network Port is saved there (#1826).
 Write-BDT from the network is always refused. Both classes check their
 values when built and raise `ValueError`, or `OverflowError` for an integer
 out of range (a `ttl` outside 1 to 65535, say).
@@ -3671,9 +3672,16 @@ time-to-live. With an `on_reinitialize` handler (see
 [ReinitializeDevice](#reinitializedevice)), a BBMD port's
 BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations accept
 writes, set Changes_Pending, and take effect on an accepted ACTIVATE_CHANGES or
-WARMSTART (#1578, #1566). Without one nothing could activate a written value,
-so those writes raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
-Changes_Pending stays FALSE. Local Network Number behavior
+WARMSTART (#1578, #1566). A foreign device's FD_BBMD_Address (an IPv4
+`BACnetHostNPort`, written as `PropertyValue.application_data`) and
+FD_Subscription_Lifetime do the same (#1825): once activated, the next
+registration goes to the new BBMD with the new time-to-live. Without an
+`on_reinitialize` handler nothing could activate a written value, so writes
+to these rows raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
+Changes_Pending stays FALSE. A stopped transport refuses FD_BBMD_Address and
+FD_Subscription_Lifetime writes the same way, and values accepted while it
+ran, then left pending across a stop, fail the check ACTIVATE_CHANGES makes
+before the handler runs (INVALID_CONFIGURATION_DATA). Local Network Number behavior
 is described below; complete Network Port conformance and multiport routing
 remain outside this registration contract.
 
@@ -3813,8 +3821,9 @@ server = BACnetServer(1234, reinit_password="secret",
   token, so stopping the server at once can drop the reply: wait a short
   while (a few token rotations, say half a second) before `server.stop()`.
 - With a handler, a registered BBMD port's BBMD_Broadcast_Distribution_Table
-  and BBMD_Accept_FD_Registrations take writes, and ACTIVATE_CHANGES or
-  WARMSTART puts them into effect (see
+  and BBMD_Accept_FD_Registrations, and a foreign device's FD_BBMD_Address and
+  FD_Subscription_Lifetime, take writes, and ACTIVATE_CHANGES or WARMSTART
+  puts them into effect (see
   [Registered B/IP Network Port](#registered-bip-network-port)).
 - With target Audit Reporters configured, an accepted reset, backup or restore
   step is recorded (DEVICE_RESET, DEVICE_BACKUP or DEVICE_RESTORE; nothing for

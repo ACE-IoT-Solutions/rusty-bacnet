@@ -66,7 +66,7 @@ async fn start_on_free_port(
         let port = free_port();
         let mut transport = build(port);
         let started = transport.start().await;
-        if let Some(path) = &transport.bdt_persist_path {
+        if let Some(path) = transport.bdt_persist_path() {
             let _ = std::fs::remove_file(path);
         }
         match started {
@@ -380,7 +380,7 @@ async fn wildcard_bbmd_does_not_fall_back_when_the_persisted_bdt_cannot_choose()
     let text = started.unwrap_err().to_string();
     let expected = format!(
         "the persisted BDT {} has rows for several local IPv4 addresses",
-        bbmd.bdt_persist_path.as_ref().unwrap().display()
+        bbmd.bdt_persist_path().unwrap().display()
     );
     assert!(text.contains(&expected), "{text}");
     assert!(bbmd.socket.is_none() && bbmd.bbmd.is_none());

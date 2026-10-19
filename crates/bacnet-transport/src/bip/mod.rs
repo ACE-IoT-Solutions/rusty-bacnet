@@ -36,8 +36,7 @@ use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Cast, Link, Mode};
 use bacnet_bip_core::LocalSubnet;
 use bacnet_npdu::NpduLimits;
-use bacnet_types::bip_port::{BbmdTables, BipPortMode};
-use bacnet_types::constructed::BACnetHostNPort;
+use bacnet_types::bip_port::{BbmdTables, BipPortMode, ForeignRegistration};
 use bacnet_types::error::Error;
 
 mod access;
@@ -47,6 +46,7 @@ mod client_snapshot;
 mod exchange;
 pub use exchange::BvlcExchangeError;
 mod foreign_device;
+mod foreign_target;
 mod mode;
 mod node;
 mod send;
@@ -123,8 +123,9 @@ pub struct BipTransport {
     bbmd: Option<Arc<std::sync::Mutex<BbmdState>>>,
     /// BBMD FDT expiry purge task.
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
-    /// Foreign device config (when registered as a foreign device).
-    foreign_device: Option<ForeignDeviceConfig>,
+    /// Foreign device registration (when registered as a foreign device),
+    /// shared with the Network Port object that can change it.
+    foreign_device: Option<Arc<foreign_target::ForeignTarget>>,
     /// The node engine of the running transport: its link, its own
     /// management exchanges and a foreign device's registration.
     node: Option<Arc<NodeHandle>>,
@@ -132,10 +133,10 @@ pub struct BipTransport {
     node_task: Option<JoinHandle<()>>,
     /// This transport's own management exchanges, across restarts.
     client_record: Arc<ClientRecord>,
-    /// Optional path for loading an externally provisioned persisted BDT
-    /// (wire format, 10 bytes per entry) at startup. Inbound Write-BDT does
-    /// not update this file.
-    bdt_persist_path: Option<std::path::PathBuf>,
+    /// Optional persisted-BDT file (wire format, 10 bytes per entry): loaded
+    /// at startup, and rewritten when a Network Port activation changes the
+    /// BDT. Inbound Write-BDT does not update it.
+    bdt_file: Option<Arc<bbmd::BdtFile>>,
     /// Management request and response rate limiter.
     management_limiter: Arc<std::sync::Mutex<ManagementRateLimiter>>,
     /// Broadcast forwarding fanout policy.
@@ -205,7 +206,7 @@ impl BipTransport {
             node: None,
             node_task: None,
             client_record: Arc::default(),
-            bdt_persist_path: None,
+            bdt_file: None,
             management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
             fanout_policy,
             fanout_task: None,
@@ -291,12 +292,15 @@ impl BipTransport {
         self.enable_foreign_device_registration(policy);
     }
 
-    /// Set the path for loading an externally provisioned persisted BDT
-    /// (wire format, 10 bytes per entry) at startup.
-    /// Must be called before `start()`. Inbound Write-BDT does not update
-    /// this file — no additional serialization dependencies needed.
+    /// Set the path of a persisted BDT (wire format, 10 bytes per entry) to
+    /// load at startup. Must be called before `start()`. A BDT written to
+    /// the registered Network Port object and activated by
+    /// ReinitializeDevice is saved there (#1826), replacing the file whole,
+    /// so a restart keeps it; a failed save is logged and counted
+    /// ([`bdt_persist_failures`](Self::bdt_persist_failures)) and leaves
+    /// the new BDT in use. Inbound Write-BDT never updates it.
     pub fn set_bdt_persist_path(&mut self, path: std::path::PathBuf) {
-        self.bdt_persist_path = Some(path);
+        self.bdt_file = Some(Arc::new(bbmd::BdtFile::new(path)));
     }
 
     /// Set the management ACL for BBMD Delete-FDT-Entry.
@@ -338,8 +342,17 @@ impl BipTransport {
     /// observe outcomes.
     /// `start()` fails on a transport that is also a BBMD
     /// ([`enable_bbmd`](Self::enable_bbmd)).
+    ///
+    /// A registered Network Port object can move it to another BBMD or
+    /// time-to-live while it runs (FD_BBMD_Address and
+    /// FD_Subscription_Lifetime, activated by ReinitializeDevice); a later
+    /// start keeps the values it moved to.
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
-        self.foreign_device = Some(config);
+        self.foreign_device = Some(Arc::new(foreign_target::ForeignTarget::new(
+            config,
+            self.broadcast_address,
+            self.interface,
+        )));
     }
 
     /// Get the BBMD state (if BBMD mode is enabled). It appears when
@@ -545,17 +558,17 @@ impl TransportPort for BipTransport {
         let mode = match (&self.foreign_device, staged_bbmd || self.bbmd.is_some()) {
             // A BBMD that also registers elsewhere has no single mode.
             (Some(_), true) => return None,
-            (Some(fd), false) => BipPortMode::Foreign {
-                bbmd: BACnetHostNPort::from_socket_addr(
-                    SocketAddrV4::new(fd.bbmd_ip, fd.bbmd_port).into(),
-                ),
-                subscription_lifetime: fd.ttl,
+            (Some(target), false) => BipPortMode::Foreign {
+                registration: Arc::clone(target) as Arc<dyn ForeignRegistration>,
             },
             // Staged configuration replaces any earlier state at the next
             // start, so only started, current state is lent.
             (None, true) => BipPortMode::Bbmd {
                 tables: self.bbmd.as_ref().filter(|_| !staged_bbmd).map(|state| {
-                    Arc::new(bbmd::LiveTables(Arc::clone(state))) as Arc<dyn BbmdTables>
+                    Arc::new(bbmd::LiveTables {
+                        state: Arc::clone(state),
+                        file: self.bdt_file.clone(),
+                    }) as Arc<dyn BbmdTables>
                 }),
             },
             (None, false) => BipPortMode::Normal,
@@ -597,12 +610,12 @@ impl TransportPort for BipTransport {
                     .into(),
             ));
         }
-        let renewal_interval = self
-            .foreign_device
+        let foreign_config = self.foreign_device_config();
+        let renewal_interval = foreign_config
             .as_ref()
             .map(ForeignDeviceConfig::interval)
             .transpose()?;
-        if let Some(foreign) = &self.foreign_device {
+        if let Some(foreign) = &foreign_config {
             foreign.check_bbmd(self.broadcast_address, self.interface)?;
         }
 
@@ -640,8 +653,8 @@ impl TransportPort for BipTransport {
         // before it consumes the configuration, so a start cancelled at the
         // lookup is retried whole.
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
-            let mut state =
-                initial_bbmd_state(config, self.bdt_persist_path.as_deref(), &own_address)?;
+            let path = self.bdt_file.as_deref().map(bbmd::BdtFile::path);
+            let mut state = initial_bbmd_state(config, path, &own_address)?;
             let (ip, _) = state.local_address();
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
@@ -683,7 +696,7 @@ impl TransportPort for BipTransport {
 
         // The node engine: its link decides receives and sends, and it runs
         // this transport's own exchanges and a foreign device's registration.
-        let mode = match (&self.foreign_device, &self.bbmd) {
+        let mode = match (&foreign_config, &self.bbmd) {
             (Some(fd), _) => Mode::Foreign(
                 fd.engine(renewal_interval.expect("validated foreign-device interval")),
             ),
@@ -713,6 +726,13 @@ impl TransportPort for BipTransport {
             }
         };
 
+        if let (Some(target), Some(used)) = (&self.foreign_device, &foreign_config) {
+            if let Err(error) = target.attach(&node, used) {
+                node.stop();
+                self.client_record.stop();
+                return Err(error);
+            }
+        }
         self.client_record.attach(&node);
         self.port = local_port;
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
@@ -922,9 +942,13 @@ mod unanswerable_tests;
 mod wildcard_ingress_tests;
 
 #[cfg(test)]
+mod bdt_activation_persist_tests;
+#[cfg(test)]
 mod client_management_tests;
 #[cfg(test)]
 mod foreign_lifecycle_tests;
+#[cfg(test)]
+mod foreign_retarget_tests;
 #[cfg(test)]
 mod registration_schedule_tests;
 #[cfg(test)]

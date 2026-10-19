@@ -12,8 +12,8 @@ use bacnet_transport::bbmd::BdtEntry;
 use bacnet_types::constructed::BACnetBDTEntry;
 use bacnet_types::enums::{PropertyIdentifier as P, ReinitializedState};
 
-const TRUE: [u8; 1] = [0x11];
-const FALSE: [u8; 1] = [0x10];
+pub(super) const TRUE: [u8; 1] = [0x11];
+pub(super) const FALSE: [u8; 1] = [0x10];
 
 /// A BBMD server on loopback, its port registered, that accepts every
 /// ReinitializeDevice.
@@ -48,7 +48,7 @@ async fn bbmd_server_with(handler: bool) -> BACnetServer<BipTransport> {
 
 /// WriteProperty of `octets` to the port's `property`: the error class and
 /// code, if refused.
-async fn wp(
+pub(super) async fn wp(
     server: &BACnetServer<BipTransport>,
     property: P,
     octets: Vec<u8>,
@@ -70,7 +70,10 @@ async fn wp(
     }
 }
 
-async fn reinitialize(server: &BACnetServer<BipTransport>, state: ReinitializedState) -> Apdu {
+pub(super) async fn reinitialize(
+    server: &BACnetServer<BipTransport>,
+    state: ReinitializedState,
+) -> Apdu {
     let mut request = BytesMut::new();
     ReinitializeDeviceRequest {
         reinitialized_state: state,

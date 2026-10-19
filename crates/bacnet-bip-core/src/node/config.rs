@@ -28,7 +28,9 @@ pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 pub const MIN_BUDGET: u16 = 64;
 
 /// How a B/IP node takes part in its network. It is fixed for the life of
-/// a [`Node`](super::Node); changing it means building a new one.
+/// a [`Node`](super::Node); changing it means building a new one. A foreign
+/// device can still move to another BBMD or time-to-live
+/// ([`Node::retarget`](super::Node::retarget)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// A device on one of the network's subnets: local broadcasts go to the
@@ -245,6 +247,9 @@ pub enum ConfigError {
     BbmdIsSelf,
     /// The datagram budget is below [`MIN_BUDGET`] octets.
     Budget,
+    /// [`Node::retarget`](super::Node::retarget) on a node that is not a
+    /// foreign device.
+    NotForeign,
 }
 
 impl fmt::Display for ConfigError {
@@ -259,6 +264,7 @@ impl fmt::Display for ConfigError {
             Self::BbmdAddress => "the BBMD's address is unspecified or a group address",
             Self::BbmdIsSelf => "the BBMD is this node's own address",
             Self::Budget => "the datagram budget is below 64 octets",
+            Self::NotForeign => "only a foreign device can change its BBMD",
         })
     }
 }

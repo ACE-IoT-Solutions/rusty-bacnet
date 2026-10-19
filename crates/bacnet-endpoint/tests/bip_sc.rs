@@ -57,13 +57,10 @@ fn bip_builder_applies_the_mode_concretely() {
         .mode(foreign())
         .build_transport()
         .unwrap();
-    assert!(matches!(
-        transport.bip_port().unwrap().mode,
-        BipPortMode::Foreign {
-            subscription_lifetime: 60,
-            ..
-        }
-    ));
+    let BipPortMode::Foreign { registration } = transport.bip_port().unwrap().mode else {
+        panic!("foreign mode");
+    };
+    assert_eq!(registration.subscription_lifetime(), 60);
 }
 
 /// One mode at a time: a later `mode` replaces an earlier one, so a BBMD

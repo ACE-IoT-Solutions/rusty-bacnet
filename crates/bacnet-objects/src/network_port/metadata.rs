@@ -58,9 +58,9 @@ const BBMD: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::BBMD_FOREIGN_DEVICE_TABLE, RequiredRead, None, ReadOnly),
 ];
 // Table 12-71 footnote 13 and Table 12-72: FOREIGN mode has these. Clauses
-// 12.56.37 and 12.56.38 make them writable, but a foreign device's BBMD and
-// time-to-live can't change while its transport runs, so they are read-only
-// here.
+// 12.56.37 and 12.56.38 make them writable, with a write waiting for a
+// ReinitializeDevice as the BBMD rows' do (#1825). They are listed read-only
+// here and become writable only for an owner that activates changes.
 const FOREIGN: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::FD_BBMD_ADDRESS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::FD_SUBSCRIPTION_LIFETIME, RequiredRead, None, ReadOnly),
