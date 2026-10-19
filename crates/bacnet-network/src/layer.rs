@@ -103,6 +103,10 @@ use tokio::task::JoinHandle;
 mod issuance;
 pub use issuance::IssuedApdu;
 
+#[path = "layer_receive.rs"]
+mod receive;
+pub use receive::Counters;
+
 #[path = "layer_admission.rs"]
 mod admission;
 pub(crate) use admission::AdmissionSender;
@@ -252,13 +256,6 @@ impl std::fmt::Debug for ReceivedApdu {
     }
 }
 
-/// Whether an NPDU destination names the global broadcast network. Ingress
-/// has already dropped one that also carries a DADR (#1379), so on a
-/// delivered NPDU this is a plain global broadcast.
-pub(crate) fn is_global_broadcast(destination: Option<&NpduAddress>) -> bool {
-    destination.is_some_and(|destination| destination.network == 0xFFFF)
-}
-
 /// Refuse a caller-supplied DNET that a send naming one network cannot take.
 /// Network numbers start at 1 (Clause 6.2.2.1); the local network is reached
 /// with no DNET at all, and `local_form` tells the caller how to do that.
@@ -302,13 +299,6 @@ pub(crate) fn check_broadcast_apdu(apdu: &[u8], what: &str) -> Result<(), Error>
     )))
 }
 
-pub(crate) fn is_group_delivery(link_layer_group: bool, destination: Option<&NpduAddress>) -> bool {
-    match destination {
-        None => link_layer_group,
-        Some(destination) => destination.network == 0xFFFF || destination.mac_address.is_empty(),
-    }
-}
-
 /// A remote device reached through a local router.
 #[derive(Debug, Clone, Copy)]
 pub struct RoutedTarget<'a> {
@@ -333,16 +323,19 @@ pub struct RoutedTarget<'a> {
 /// before admission and counted by [`Self::address_length_drops`]; one whose
 /// DNET 0xFFFF carries a DADR is dropped and counted by
 /// [`Self::global_broadcast_dadr_drops`], and a broadcast whose APDU isn't an
-/// Unconfirmed-Request by [`Self::broadcast_pdu_type_drops`].
+/// Unconfirmed-Request by [`Self::broadcast_pdu_type_drops`]. These rules
+/// are `bacnet-router-core`'s, the router engine's own (#1795): the layer
+/// also drops a malformed NPDU, and one whose DNET names one network, APDU
+/// or network message, which no node but a router acts on (Clauses
+/// 6.5.2.1 and 6.5.2.2). [`Self::counters`] totals every drop by reason.
 pub struct NetworkLayer<T: TransportPort> {
     transport: T,
     response_scope: bacnet_transport::port::DirectResponseScope,
     dispatch_task: Option<JoinHandle<()>>,
     network_control_tx: Option<AdmissionSender<ReceivedNetworkControl>>,
     network_control_ingress_sequence: Arc<AtomicU64>,
-    address_length_drops: Arc<AtomicU64>,
-    global_broadcast_dadr_drops: Arc<AtomicU64>,
-    broadcast_pdu_type_drops: Arc<AtomicU64>,
+    /// What the dispatch task's node dropped, since the layer was made.
+    node_totals: Arc<receive::NodeTotals>,
     local_network_number: LocalNetworkNumber,
     /// The group destinations the transport's local broadcast stands for,
     /// taken when the layer is made and again when the transport starts and
@@ -361,9 +354,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
             dispatch_task: None,
             network_control_tx: None,
             network_control_ingress_sequence: Arc::new(AtomicU64::new(0)),
-            address_length_drops: Arc::new(AtomicU64::new(0)),
-            global_broadcast_dadr_drops: Arc::new(AtomicU64::new(0)),
-            broadcast_pdu_type_drops: Arc::new(AtomicU64::new(0)),
+            node_totals: Arc::default(),
             local_network_number: LocalNetworkNumber::default(),
         }
     }
@@ -758,7 +749,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// reports a source MAC that long, so a nonzero count with well-formed
     /// traffic points at a custom transport.
     pub fn address_length_drops(&self) -> u64 {
-        self.address_length_drops.load(Ordering::Relaxed)
+        self.counters().address_length_drops
     }
 
     /// Inbound NPDUs dropped since this layer was created because their DNET
@@ -773,7 +764,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// this one is well formed, only contradictory, and points at the peer
     /// that sent it.
     pub fn global_broadcast_dadr_drops(&self) -> u64 {
-        self.global_broadcast_dadr_drops.load(Ordering::Relaxed)
+        self.counters().global_broadcast_dadr_drops
     }
 
     /// Inbound NPDUs dropped since this layer was created because they were
@@ -789,7 +780,15 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// from the first APDU octet, with no decode; network messages, and an
     /// APDU sent with no DNET, are not affected.
     pub fn broadcast_pdu_type_drops(&self) -> u64 {
-        self.broadcast_pdu_type_drops.load(Ordering::Relaxed)
+        self.counters().broadcast_pdu_type_drops
+    }
+
+    /// What this layer has dropped on receipt since it was created, by
+    /// reason: the totals of the receive rules it shares with the router's
+    /// engine (`bacnet-router-core`'s `node`, #1795). Reading them takes no
+    /// lock.
+    pub fn counters(&self) -> Counters {
+        self.node_totals.load()
     }
 
     /// Encode an APDU into an NPDU whose destination is `dest_network` /
@@ -846,13 +845,6 @@ pub(crate) fn next_ingress_sequence(sequence: &AtomicU64) -> u64 {
         })
         .unwrap_or(u64::MAX);
     previous.saturating_add(1)
-}
-
-/// Count one dropped NPDU in `counter`, saturating at `u64::MAX`. Shared by
-/// [`NetworkLayer`] and the router for each of their drop counters.
-pub(crate) fn count_drop(counter: &AtomicU64) {
-    #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1));
 }
 
 impl<T: TransportPort> NetworkLayer<T> {

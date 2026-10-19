@@ -6,10 +6,10 @@ use super::host::Host;
 use super::tasks::Task;
 use super::Group;
 use super::Storage;
+pub(super) use crate::node::is_unconfirmed;
+use crate::node::{admit, Count};
 use crate::npdu::RejectMessageReason;
-use crate::npdu::{
-    Address, AddressField, DecodeError, Malformed, NetworkPriority, Npdu, GLOBAL_NETWORK,
-};
+use crate::npdu::{Address, AddressField, Malformed, NetworkPriority, Npdu, GLOBAL_NETWORK};
 use crate::table::{Reachability, Route};
 use crate::{Instant, Mac, PortId};
 
@@ -120,6 +120,10 @@ pub enum Discard {
     /// ([`Options::duplicates`](super::Options::duplicates), #1698):
     /// neither relayed nor delivered.
     Duplicate,
+    /// Only a [`Node`](crate::node::Node) gives this: an NPDU whose DNET
+    /// names one network is for a device elsewhere, which a node that
+    /// doesn't route drops (Clauses 6.5.2.1, 6.5.2.2 and 6.5.4).
+    Routed,
 }
 
 /// What the router knows about the frame in hand.
@@ -159,12 +163,6 @@ fn local<'f>(at: &Arrival<'_>, npdu: &Npdu<'f>, group: bool, global: bool) -> Lo
     }
 }
 
-/// Whether an APDU is an Unconfirmed-Request: the high nibble of its first
-/// octet (Clause 20.1). An empty one names no type.
-pub(super) fn is_unconfirmed(apdu: &[u8]) -> bool {
-    apdu.first().is_some_and(|&first| first >> 4 == 1)
-}
-
 impl<
         const P: usize,
         const R: usize,
@@ -188,59 +186,50 @@ impl<
             bump(&mut self.counters.unknown_port);
             return Received::Discarded(Discard::UnknownPort);
         };
-        let Ok(source_mac) = Mac::from_slice(frame.source) else {
-            bump(&mut self.counters.address_length_drops);
-            return Received::Discarded(Discard::SourceTooLong {
-                length: frame.source.len(),
-            });
+        // The checks a node makes too, in one place (crate::node).
+        let admitted = match admit(frame.source, frame.npdu) {
+            Ok(admitted) => admitted,
+            Err(refused) => {
+                let counters = &mut self.counters;
+                bump(match refused.count {
+                    Count::AddressLength => &mut counters.address_length_drops,
+                    Count::GlobalDadr => &mut counters.global_broadcast_dadr_drops,
+                    Count::BroadcastType => &mut counters.broadcast_pdu_type_drops,
+                    Count::Malformed => &mut counters.malformed,
+                });
+                // A global broadcast draws no reject, and an NPDU without a
+                // DNET has no network to name.
+                if let Some((source_mac, Some(dnet), source)) = refused.reject_to {
+                    if dnet != GLOBAL_NETWORK {
+                        let at = Arrival {
+                            port: frame.port,
+                            network: config.network,
+                            source: frame.source,
+                            source_mac,
+                            link_group: frame.link_group,
+                            now,
+                        };
+                        self.reject(
+                            &at,
+                            source,
+                            dnet,
+                            RejectMessageReason::ADDRESSING_ERROR,
+                            host,
+                        );
+                    }
+                }
+                return Received::Discarded(refused.discard);
+            }
         };
+        let npdu = admitted.npdu;
         let at = Arrival {
             port: frame.port,
             network: config.network,
             source: frame.source,
-            source_mac,
+            source_mac: admitted.source,
             link_group: frame.link_group,
             now,
         };
-        let npdu = match Npdu::decode(frame.npdu) {
-            Ok(npdu) => npdu,
-            Err(DecodeError::AddressTooLong {
-                field,
-                length,
-                dnet,
-                source,
-            }) => {
-                bump(&mut self.counters.address_length_drops);
-                // A global broadcast draws no reject, and an NPDU without a
-                // DNET has no network to name.
-                if let Some(dnet) = dnet.filter(|&dnet| dnet != GLOBAL_NETWORK) {
-                    self.reject(
-                        &at,
-                        source,
-                        dnet,
-                        RejectMessageReason::ADDRESSING_ERROR,
-                        host,
-                    );
-                }
-                return Received::Discarded(Discard::AddressTooLong { field, length });
-            }
-            Err(DecodeError::Malformed(fault)) => {
-                bump(&mut self.counters.malformed);
-                return Received::Discarded(Discard::Malformed(fault));
-            }
-        };
-        if let Some(destination) = npdu.destination {
-            let global = destination.network == GLOBAL_NETWORK;
-            if global && !destination.mac.is_empty() {
-                bump(&mut self.counters.global_broadcast_dadr_drops);
-                return Received::Discarded(Discard::GlobalWithDadr);
-            }
-            let broadcast = global || destination.mac.is_empty();
-            if broadcast && !npdu.is_network_message() && !is_unconfirmed(npdu.payload) {
-                bump(&mut self.counters.broadcast_pdu_type_drops);
-                return Received::Discarded(Discard::BroadcastNotUnconfirmed);
-            }
-        }
         if let Some(kind) = npdu.message_type {
             return self.network_message(&at, &npdu, kind, options, host);
         }

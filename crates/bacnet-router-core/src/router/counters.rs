@@ -104,6 +104,6 @@ impl Counters {
 }
 
 /// Add one to a count, saturating.
-pub(super) fn bump(count: &mut u32) {
+pub(crate) fn bump(count: &mut u32) {
     *count = count.saturating_add(1);
 }

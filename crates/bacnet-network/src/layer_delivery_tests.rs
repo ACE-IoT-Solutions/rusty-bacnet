@@ -5,29 +5,6 @@ use bacnet_transport::loopback::LoopbackTransport;
 use std::net::Ipv4Addr;
 use tokio::time::{timeout, Duration};
 
-#[test]
-fn effective_group_delivery_respects_npdu_destination_precedence() {
-    let remote_unicast = NpduAddress {
-        network: 200,
-        mac_address: MacAddr::from_slice(&[0x11]),
-    };
-    let remote_broadcast = NpduAddress {
-        network: 200,
-        mac_address: MacAddr::new(),
-    };
-    let global_broadcast = NpduAddress {
-        network: 0xFFFF,
-        mac_address: MacAddr::new(),
-    };
-
-    assert!(!is_group_delivery(false, None));
-    assert!(is_group_delivery(true, None));
-    assert!(!is_group_delivery(false, Some(&remote_unicast)));
-    assert!(!is_group_delivery(true, Some(&remote_unicast)));
-    assert!(is_group_delivery(false, Some(&remote_broadcast)));
-    assert!(is_group_delivery(false, Some(&global_broadcast)));
-}
-
 #[tokio::test]
 async fn send_receive_apdu_unicast_is_not_marked_as_group_delivery() {
     let transport_a = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);

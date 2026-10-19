@@ -33,6 +33,10 @@
 //!   [`Storage`] takes each frame a port receives, says what it means for
 //!   the router's own application, and asks for the sends it calls for,
 //!   which the caller polls. It takes the time with every call.
+//! - [`node`]: the receive side of a node that doesn't route: the checks
+//!   every arriving frame passes, which the router runs too, and what a
+//!   node keeps of what passes. The hosted non-router network layer runs
+//!   on it.
 //!
 //! A port is identified by its index, a [`PortId`]; its MAC is a [`Mac`] of
 //! up to [`MAX_MAC_LEN`] octets. To the engine a port is data, so any link
@@ -238,6 +242,7 @@ pub mod discovery;
 pub mod message;
 #[cfg(feature = "mstp")]
 pub mod mstp;
+pub mod node;
 pub mod router;
 pub mod table;
 
