@@ -2,32 +2,52 @@
 //! target BBMD's BDT or FDT, the consistency matrix, or the routers heard
 //! and the networks they reach (Tab switches).
 //! Every state is marked by text as well as colour.
+//!
+//! From [`WIDE_WIDTH`] columns the BDT and FDT sit side by side, with the
+//! matrix beneath them when the height allows; Tab then moves the focus
+//! (the accented pane) instead of switching what is shown.
 
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, LineGauge, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 use bacnet_transport::bip::ForeignRegistrationOutcome;
 
-use super::Theme;
+use super::{Theme, WIDE_WIDTH};
 use crate::tui::app::devices::age_label;
 use crate::tui::app::network::{Fetched, NetworkState, View};
+use crate::tui::app::objects::kebab;
 use crate::tui::app::App;
 use crate::tui::network::matrix::{Cell, Matrix};
 
-/// Height of the foreign-device panel, borders included.
+/// Height of the foreign-device panel, borders included, with the
+/// registration counters on the status line.
 const PANEL_HEIGHT: u16 = 7;
 
 /// Width of the BBMD address column: `255.255.255.255:65535`.
 const ADDRESS: u16 = 21;
 
+/// Widths of the FDT's TTL and Left columns, and of its marker column.
+const FDT_TTL: u16 = 8;
+const FDT_MARK: u16 = 11;
+/// Width of the FDT table, column gaps included.
+const FDT_WIDTH: u16 = ADDRESS + 2 * FDT_TTL + FDT_MARK + 3 * 2;
+
+/// Rows the wide layout needs inside its border to fit the matrix beneath
+/// the BDT and FDT.
+const WIDE_MATRIX_ROWS: u16 = 20;
+
 /// The Network screen.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let [panel, tables] =
-        Layout::vertical([Constraint::Length(PANEL_HEIGHT), Constraint::Min(3)]).areas(area);
+    let [panel, tables] = Layout::vertical([
+        Constraint::Length(panel_height(app, area.width)),
+        Constraint::Min(3),
+    ])
+    .areas(area);
     foreign_panel(frame, panel, app, theme);
     let state = &app.network;
     let tabs = [
@@ -66,6 +86,9 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), inner);
         return;
     }
+    if wide(state.view, inner) {
+        return side_by_side(frame, inner, app, theme);
+    }
     match state.view {
         View::Bdt => bdt(frame, inner, app, theme),
         View::Fdt => fdt(frame, inner, app, theme),
@@ -91,9 +114,13 @@ fn subtitle(app: &App) -> String {
         View::Matrix => state.matrix.as_ref().map(|(_, at)| *at),
         View::Networks => None,
     };
-    let target = state
-        .target
-        .map_or_else(|| "no BBMD".to_string(), |t| t.to_string());
+    let target = match state.target {
+        None => "no BBMD".to_string(),
+        Some(t) if state.foreign.is_some() && !state.tables_are_ours() => {
+            format!("{t}, not our BBMD")
+        }
+        Some(t) => t.to_string(),
+    };
     match (busy, at) {
         (Some(busy), _) => format!("| {target} | {busy} "),
         (None, Some(at)) => format!("| {target} | read {} ago ", age_label(app.now, at)),
@@ -124,8 +151,13 @@ fn foreign_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
         return;
     };
-    let [head, status, result, gauge, own] =
-        Layout::vertical([Constraint::Length(1); 5]).areas(inner);
+    let (word, style, counts) = status(app, theme);
+    let inline = counters_inline(&word, &counts, inner.width);
+    // The counters take their own line when they don't fit the status's.
+    let lines = 5 + usize::from(!inline);
+    let areas = Layout::vertical(vec![Constraint::Length(1); lines]).split(inner);
+    let [head, status_area] = [areas[0], areas[1]];
+    let [result, gauge, own] = [areas[lines - 3], areas[lines - 2], areas[lines - 1]];
     let line = Line::from(vec![
         Span::styled("BBMD ", theme.dim()),
         Span::styled(foreign.bbmd.to_string(), theme.accent()),
@@ -140,33 +172,24 @@ fn foreign_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let snapshot = state.registration.as_ref().map(|(s, _)| *s);
     let refused =
         snapshot.and_then(|s| s.last_outcome) == Some(ForeignRegistrationOutcome::Refused);
-    let (word, style) = match (snapshot, state.lease_left(app.now)) {
-        (_, _) if refused => ("REFUSED".to_string(), theme.danger()),
-        (Some(s), Some(left)) if s.registered => (
-            format!(
-                "registered, lease {} s left (TTL; the BBMD's FDT adds 30 s grace)",
-                seconds(left)
-            ),
-            theme.accent(),
-        ),
-        (Some(_), _) => ("not registered".to_string(), theme.warn()),
-        (None, _) => ("waiting for the first answer".to_string(), theme.dim()),
-    };
-    let counts = snapshot.map_or_else(String::new, |s| {
-        format!(
-            "   attempts {}  accepted {}  refused {}  lapses {}",
-            s.attempts, s.accepted, s.refused, s.lapses
-        )
-    });
-    let line = Line::from(vec![
+    let mut line = vec![
         Span::styled("Status ", theme.dim()),
         Span::styled(word, style),
-        Span::styled(counts, theme.dim()),
-    ]);
-    frame.render_widget(Paragraph::new(line), status);
+    ];
+    if inline && !counts.is_empty() {
+        line.push(Span::styled(format!("   {counts}"), theme.dim()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(line)), status_area);
+    if !inline {
+        let line = Line::from(vec![
+            Span::styled("Counts ", theme.dim()),
+            Span::styled(counts, theme.dim()),
+        ]);
+        frame.render_widget(Paragraph::new(line), areas[2]);
+    }
 
     let last = match snapshot.and_then(|s| s.last_result) {
-        Some(code) => format!("{code} (0x{:04X})", code.to_raw()),
+        Some(code) => format!("{} (0x{:04X})", kebab(code), code.to_raw()),
         None => "none yet".to_string(),
     };
     let outcome = snapshot
@@ -207,7 +230,49 @@ fn foreign_panel(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             gauge,
         ),
     }
-    frame.render_widget(Paragraph::new(own_line(state, app, theme)), own);
+    frame.render_widget(Paragraph::new(own_line(state, app, theme, own.width)), own);
+}
+
+/// The registration status word and its style, and the counters (empty
+/// before the first snapshot).
+fn status(app: &App, theme: &Theme) -> (String, Style, String) {
+    let state = &app.network;
+    let snapshot = state.registration.as_ref().map(|(s, _)| *s);
+    let refused =
+        snapshot.and_then(|s| s.last_outcome) == Some(ForeignRegistrationOutcome::Refused);
+    let (word, style) = match (snapshot, state.lease_left(app.now)) {
+        (_, _) if refused => ("REFUSED".to_string(), theme.danger()),
+        (Some(s), Some(left)) if s.registered => (
+            format!("registered, lease {} s left", seconds(left)),
+            theme.accent(),
+        ),
+        (Some(_), _) => ("not registered".to_string(), theme.warn()),
+        (None, _) => ("waiting for the first answer".to_string(), theme.dim()),
+    };
+    let counts = snapshot.map_or_else(String::new, |s| {
+        format!(
+            "attempts {}  accepted {}  refused {}  lapses {}",
+            s.attempts, s.accepted, s.refused, s.lapses
+        )
+    });
+    (word, style, counts)
+}
+
+/// Whether the counters fit on the status line, `width` columns wide.
+fn counters_inline(word: &str, counts: &str, width: u16) -> bool {
+    let need = "Status ".len() + word.chars().count() + 3 + counts.chars().count();
+    counts.is_empty() || need <= usize::from(width)
+}
+
+/// Height of the foreign-device panel at `width`, borders included: one
+/// more line when the counters don't fit beside the status.
+fn panel_height(app: &App, width: u16) -> u16 {
+    if app.network.foreign.is_none() {
+        return PANEL_HEIGHT;
+    }
+    // Only the text's width matters here, not its colour.
+    let (word, _, counts) = status(app, &Theme { color: false });
+    PANEL_HEIGHT + u16::from(!counters_inline(&word, &counts, width.saturating_sub(2)))
 }
 
 fn outcome_label(outcome: ForeignRegistrationOutcome) -> &'static str {
@@ -221,8 +286,21 @@ fn outcome_label(outcome: ForeignRegistrationOutcome) -> &'static str {
     }
 }
 
-/// What the BBMD recorded for us, from the last FDT read.
-fn own_line<'a>(state: &NetworkState, app: &App, theme: &Theme) -> Line<'a> {
+/// What the BBMD recorded for us, from the last FDT read. Only the BBMD we
+/// register with is expected to hold our entry: after `:bbmd` the line says
+/// whose tables are shown instead.
+fn own_line<'a>(state: &NetworkState, app: &App, theme: &Theme, width: u16) -> Line<'a> {
+    if let (Some(target), false) = (state.target, state.tables_are_ours()) {
+        let mut text = format!("Our FDT entry not checked: tables are from {target}, not our BBMD");
+        // The way back, when the line has room for it.
+        if let Some(ours) = state.foreign.map(|f| f.bbmd) {
+            let back = format!("; :bbmd {ours} for ours");
+            if text.chars().count() + back.chars().count() <= usize::from(width) {
+                text.push_str(&back);
+            }
+        }
+        return Line::styled(text, theme.dim());
+    }
     let label = Span::styled("As the BBMD sees us ", theme.dim());
     let Some(Fetched {
         result: Ok(entries),
@@ -236,8 +314,9 @@ fn own_line<'a>(state: &NetworkState, app: &App, theme: &Theme) -> Line<'a> {
             label,
             Span::styled(entry.address.to_string(), theme.selected()),
             Span::styled(
+                // The BBMD keeps an FDT entry 30 s past its TTL (Annex J).
                 format!(
-                    "  TTL {} s, {} s left",
+                    "  TTL {} s + 30 s grace, {} s left",
                     entry.ttl,
                     state.remaining(entry, app.now)
                 ),
@@ -346,9 +425,9 @@ fn fdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .collect();
     let widths = [
         Constraint::Length(ADDRESS),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Min(10),
+        Constraint::Length(FDT_TTL),
+        Constraint::Length(FDT_TTL),
+        Constraint::Length(FDT_MARK),
     ];
     let table = Table::new(rows, widths)
         .header(Row::new(["Foreign device", "TTL", "Left", ""]).style(theme.accent()))
@@ -386,25 +465,20 @@ fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let n = matrix.bbmds.len();
     let shown = shown(n, area.width);
     let findings = matrix.findings.len().max(1);
-    let [grid, legend, list] = Layout::vertical([
+    let mut legend_lines = vec![Line::raw("")];
+    legend_lines.extend(
+        legend(usize::from(area.width))
+            .into_iter()
+            .map(|line| Line::styled(line, theme.dim())),
+    );
+    let [grid, legend_area, list] = Layout::vertical([
         Constraint::Length(shown as u16 + 1 + u16::from(shown < n)),
-        Constraint::Length(3),
+        Constraint::Length(legend_lines.len() as u16),
         Constraint::Min(findings.min(8) as u16),
     ])
     .areas(area);
     grid_table(frame, grid, matrix, theme);
-    let legend_lines = vec![
-        Line::raw(""),
-        Line::styled(
-            "Row lists column: uni = all-ones mask, sent to the BBMD; dir = directed broadcast; \
-             * = masks differ; MISS = should be listed; - = not listed; ? = not read",
-            theme.dim(),
-        ),
-    ];
-    frame.render_widget(
-        Paragraph::new(legend_lines).wrap(Wrap { trim: true }),
-        legend,
-    );
+    frame.render_widget(Paragraph::new(legend_lines), legend_area);
     let lines: Vec<Line> = if matrix.consistent() {
         vec![Line::styled(
             format!("All {n} BDTs agree: each BBMD lists itself, every entry is listed back, and masks match."),
@@ -420,6 +494,103 @@ fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             .collect()
     };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), list);
+}
+
+/// The matrix legend's entries, packed into lines by [`legend`].
+const LEGEND: [&str; 6] = [
+    "uni = all-ones mask, sent to the BBMD",
+    "dir = directed broadcast",
+    "* = masks differ",
+    "MISS = should be listed",
+    "- = not listed",
+    "? = not read",
+];
+
+/// The legend as lines at most `width` columns wide, breaking only between
+/// entries.
+fn legend(width: usize) -> Vec<String> {
+    // One column spare for the `;` that ends a broken line.
+    let room = width.saturating_sub(1);
+    let mut lines = Vec::new();
+    let mut line = "Row lists column:".to_string();
+    for (i, item) in LEGEND.iter().enumerate() {
+        let sep = if i == 0 { " " } else { "; " };
+        if line.chars().count() + sep.len() + item.chars().count() > room {
+            if i > 0 {
+                line.push(';');
+            }
+            lines.push(std::mem::take(&mut line));
+            line.push_str(item);
+        } else {
+            line.push_str(sep);
+            line.push_str(item);
+        }
+    }
+    lines.push(line);
+    lines
+}
+
+/// Whether `view` is drawn in the wide layout in `area` (inside the
+/// tables' border): the BDT and FDT side by side, and the matrix beneath
+/// them when it fits.
+fn wide(view: View, area: Rect) -> bool {
+    area.width + 2 >= WIDE_WIDTH
+        && match view {
+            View::Bdt | View::Fdt => true,
+            View::Matrix => area.height >= WIDE_MATRIX_ROWS,
+            View::Networks => false,
+        }
+}
+
+/// The wide layout: the BDT and FDT side by side, the matrix beneath them
+/// when the height allows. The selected table's pane is accented.
+fn side_by_side(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let state = &app.network;
+    let (top, bottom) = if area.height >= WIDE_MATRIX_ROWS {
+        let rows = |len: Option<usize>| len.unwrap_or(1).max(1) as u16;
+        let bdt_rows = rows(
+            state
+                .bdt
+                .as_ref()
+                .and_then(|f| f.result.as_ref().ok().map(Vec::len)),
+        );
+        let fdt_rows = rows(
+            state
+                .fdt
+                .as_ref()
+                .and_then(|f| f.result.as_ref().ok().map(Vec::len)),
+        );
+        // The longer table, its header and the borders, at most half.
+        let height = (bdt_rows.max(fdt_rows) + 3).min(area.height / 2);
+        let [top, bottom] =
+            Layout::vertical([Constraint::Length(height), Constraint::Min(3)]).areas(area);
+        (top, Some(bottom))
+    } else {
+        (area, None)
+    };
+    let [left, right] =
+        Layout::horizontal([Constraint::Min(10), Constraint::Length(FDT_WIDTH + 2)]).areas(top);
+    let pane = |frame: &mut Frame, view: View, name: &str, area: Rect| {
+        let style = if view == state.view {
+            theme.accent()
+        } else {
+            theme.dim()
+        };
+        let block = Block::bordered()
+            .title(Line::styled(format!(" {name} "), style))
+            .border_style(style);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        inner
+    };
+    let inner = pane(frame, View::Bdt, "BDT", left);
+    bdt(frame, inner, app, theme);
+    let inner = pane(frame, View::Fdt, "FDT", right);
+    fdt(frame, inner, app, theme);
+    if let Some(bottom) = bottom {
+        let inner = pane(frame, View::Matrix, "Matrix", bottom);
+        matrix(frame, inner, app, theme);
+    }
 }
 
 /// Width of a grid cell, and of the `+k more` column.
@@ -497,6 +668,21 @@ mod tests {
         assert_eq!(cell_text(Cell::Unknown), "?");
         assert_eq!(seconds(Duration::from_millis(400)), 1);
         assert_eq!(seconds(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn the_legend_breaks_between_entries_within_the_width() {
+        for width in [40, 78, 118, 198] {
+            let lines = legend(width);
+            assert!(
+                lines.iter().all(|line| line.chars().count() <= width),
+                "{width}: {lines:?}"
+            );
+            let text = lines.join(" ");
+            assert!(LEGEND.iter().all(|item| text.contains(item)), "{text}");
+        }
+        assert_eq!(legend(118).len(), 2);
+        assert_eq!(legend(198).len(), 1);
     }
 
     #[test]

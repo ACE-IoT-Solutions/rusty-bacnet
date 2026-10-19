@@ -113,6 +113,11 @@ What M0 draws (80x24):
   the device table uses its wide columns; below 120 the planned Browse panes
   stack and the focused pane fills the width. Below 80x24 the TUI shows a
   "terminal too small" notice and nothing else.
+- From 160 columns (`WIDE_WIDTH`) panes that are tabs or stacks at 120 sit
+  side by side, and fixed columns are sized to their content so the slack goes
+  to one meaningful column. The Network screen shows the BDT and FDT beside
+  each other, with the consistency matrix beneath them when the height allows;
+  Tab then moves the accent between panes instead of switching them.
 
 ### 4.2 Screens
 
@@ -121,7 +126,7 @@ What M0 draws (80x24):
 | Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, address, network, vendor, max APDU, segmentation, last seen); sort and filter; duplicate-instance banner. **Planned:** Who-Has search and a Networks tab |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with a filter; property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965) | Watched points with value, units, flags, COV or polled, last-update age and a bar sparkline. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
-| Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, refusal banner); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
+| Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
 | SC (#967) | Hub connector status (state, primary or failover hub, hub VMAC, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory and pre-dial lint (#968) are a third view on the same screen |
 | MS/TP (#969, #970) | Participant panel (`--mstp`), or the passive monitor (`tui --mstp-monitor PORT`): a station grid, the token ring with rotation and hold times, Max_Master findings, error counters, and the safe-join wizard (`J`) that hands the port to a participant through the T2 join dialog |
 | Capture (planned) | Frame list, decode tree, hex view, filters, pcap export |

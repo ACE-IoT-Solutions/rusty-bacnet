@@ -394,7 +394,7 @@ async fn a_refusing_bbmd_raises_the_refusal_banner() {
         .await;
     let banner = net.app.network.refusal().unwrap();
     assert!(banner.contains(&format!("BBMD {bbmd} refused")), "{banner}");
-    assert!(banner.contains("REGISTER_FOREIGN_DEVICE_NAK"), "{banner}");
+    assert!(banner.contains("register-foreign-device-nak"), "{banner}");
     // On every screen, and in the panel.
     let text = screen(&mut net.app, 120, 40);
     assert!(text.contains("REFUSED BBMD"), "{text}");

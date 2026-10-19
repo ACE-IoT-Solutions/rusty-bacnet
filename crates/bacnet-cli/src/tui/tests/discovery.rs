@@ -147,6 +147,7 @@ fn the_networks_tab_flags_a_network_two_routers_claim() {
     let frame = screen(&mut app, 120, 40);
     assert!(frame.contains("DUPLICATE"), "{frame}");
     assert_snapshot!("networks_tab_120x40", frame);
+    assert_snapshot!("networks_tab_80x24", screen(&mut app, 80, 24));
 
     // The route to 3 moved to 10.0.0.7: a new search starts from nothing,
     // so the old claim no longer flags it.
