@@ -295,11 +295,12 @@ async fn subscribe_cov_routed_ack_and_initial_notification_return_to_remote_subs
 
 async fn make_acknowledge_alarm_server() -> BACnetServer<BipTransport> {
     use bacnet_objects::event::{EventStateChange, EventTransition, EventTransitionCommit};
+    use bacnet_types::enums::EngineeringUnits;
     use bacnet_types::enums::EventState;
     use bacnet_types::primitives::BACnetTimeStamp;
 
     let mut db = ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(1, "Zone Temp", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.commit_event_transition_internal(EventTransitionCommit {
         change: EventStateChange {
             from: EventState::NORMAL,

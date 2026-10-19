@@ -19,7 +19,9 @@ use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
@@ -33,7 +35,7 @@ fn oid(t: ObjectType, i: u32) -> ObjectIdentifier {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let identity = DeviceIdentity::new(1001, 42)?.with_bip_port(1, 0, Ipv4Addr::LOCALHOST, 0)?;
-    let mut point = AnalogInputObject::new(1, "composed-ai-1", 0)?;
+    let mut point = AnalogInputObject::new(1, "composed-ai-1", EngineeringUnits::SQUARE_METERS)?;
     point.set_present_value(11.0);
     let db = build_database_with_extra(&identity, vec![Box::new(point)])?;
 

@@ -294,7 +294,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         peer: &canonical_peer,
                         apdu: &coordinator_apdu,
                         response: TsmResponse::Reject {
-                            reason: rej.reject_reason.to_raw(),
+                            reason: rej.reject_reason,
                         },
                         phase_gate: false,
                         owner: None,
@@ -331,7 +331,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 debug!(invoke_id = abt.invoke_id, "Received Abort PDU");
                 // Carries no service choice (Clause 20.1.9).
                 let response = TsmResponse::Abort {
-                    reason: abt.abort_reason.to_raw(),
+                    reason: abt.abort_reason,
                 };
                 let coordinator_apdu = Apdu::Abort(abt.clone());
                 let outcome = complete_terminal_response(

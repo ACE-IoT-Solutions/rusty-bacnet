@@ -501,8 +501,8 @@ fn encode_error(buf: &mut BytesMut, pdu: &ErrorPdu) -> Result<(), Error> {
     if formal.is_some() {
         buf.put_slice(&pdu.error_data);
     } else {
-        primitives::encode_app_enumerated(buf, pdu.error_class.to_raw() as u32);
-        primitives::encode_app_enumerated(buf, pdu.error_code.to_raw() as u32);
+        primitives::encode_app_enumerated(buf, u32::from(pdu.error_class.to_raw()));
+        primitives::encode_app_enumerated(buf, u32::from(pdu.error_code.to_raw()));
         if !pdu.error_data.is_empty() {
             buf.put_slice(&pdu.error_data);
         }

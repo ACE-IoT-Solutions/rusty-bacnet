@@ -6,6 +6,7 @@ use crate::trend::TrendLogMultipleObject;
 use bacnet_encoding::constructed::decode_log_multiple_record;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::BACnetLogMultipleRecord;
+use bacnet_types::enums::EngineeringUnits;
 
 const THIS_DEVICE: u32 = 100;
 
@@ -21,10 +22,10 @@ pub(super) fn clocked_database() -> (ObjectDatabase, Arc<Mutex<Duration>>, Arc<W
     let (mut db, trend, time, clock) = fixture(u32::MAX);
     db.remove(&trend).unwrap();
     db.remove(&target()).unwrap();
-    let mut av = AnalogValueObject::new(1, "AV", 95).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(42.5).unwrap();
     db.add(Box::new(av)).unwrap();
-    let mut ao = AnalogOutputObject::new(1, "AO", 95).unwrap();
+    let mut ao = AnalogOutputObject::new(1, "AO", EngineeringUnits::NO_UNITS).unwrap();
     ao.write_property_from(
         P::PRESENT_VALUE,
         None,

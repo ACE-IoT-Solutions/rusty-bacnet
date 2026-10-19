@@ -507,7 +507,7 @@ async fn bip_device_writes_reach_the_lowest_of_several_devices() {
         matches!(
             refused,
             Error::Protocol { code, .. }
-                if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+                if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED
         ),
         "{refused:?}"
     );

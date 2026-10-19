@@ -522,6 +522,7 @@ mod rpm;
 async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
     use bacnet_objects::{analog::AnalogValueObject, audit::ObjectAuditPolicy};
     use bacnet_server::server::{BACnetServer, ServerConfig};
+    use bacnet_types::enums::EngineeringUnits;
     let (mut sink, mut records) = network().await;
     let policy = ObjectAuditPolicy {
         level: Some(AuditLevel::NONE),
@@ -532,7 +533,8 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
         .unwrap()
         .build_database()
         .unwrap();
-    let mut remote = AnalogValueObject::new(7, "remote", 62).unwrap();
+    let mut remote =
+        AnalogValueObject::new(7, "remote", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     remote.set_audit_policy(policy);
     remote_db.add(Box::new(remote)).unwrap();
     let mut remote_server = BACnetServer::start_clockless(
@@ -546,7 +548,8 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
     .await
     .unwrap();
     let mut db = database(false);
-    let mut local = AnalogValueObject::new(7, "unrelated same OID", 62).unwrap();
+    let mut local =
+        AnalogValueObject::new(7, "unrelated same OID", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     local.set_audit_policy(policy);
     db.add(Box::new(local)).unwrap();
     let mut session = session(db, SessionRole::ClientOnly, &sink);

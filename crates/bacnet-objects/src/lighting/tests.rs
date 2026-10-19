@@ -471,11 +471,8 @@ fn lighting_output_relinquish_default_write_recaptures_present_value() {
 fn assert_property_error(error: Error, expected_code: bacnet_types::enums::ErrorCode) {
     match error {
         Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-            );
-            assert_eq!(code, expected_code.to_raw() as u32);
+            assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
+            assert_eq!(code, expected_code);
         }
         other => panic!("expected PROPERTY / {expected_code:?}, got {other:?}"),
     }

@@ -27,8 +27,8 @@ pub(crate) fn encode_error_in(
     code: ErrorCode,
 ) {
     tags::encode_opening_tag(buf, tag_number);
-    primitives::encode_app_enumerated(buf, class.to_raw() as u32);
-    primitives::encode_app_enumerated(buf, code.to_raw() as u32);
+    primitives::encode_app_enumerated(buf, u32::from(class.to_raw()));
+    primitives::encode_app_enumerated(buf, u32::from(code.to_raw()));
     tags::encode_closing_tag(buf, tag_number);
 }
 

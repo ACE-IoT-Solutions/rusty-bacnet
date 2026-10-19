@@ -13,7 +13,7 @@ use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::trend::TrendLogObject;
 use bacnet_objects::DeviceIdentity;
-use bacnet_types::enums::{ObjectType, PropertyIdentifier, Reliability};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 /// The vendor identifier the lab devices report.
@@ -58,7 +58,8 @@ fn set(object: &mut dyn BACnetObject, property: PropertyIdentifier, value: Prope
 /// (commanded to 55 at priority 10), AV:1, BI:1, BO:1, BV:1, MSV:1, NC:1
 /// and TL:1.
 pub fn lab_database(instance: u32) -> ObjectDatabase {
-    let mut ai1 = AnalogInputObject::new(1, "Zone Temp", 64).unwrap();
+    let mut ai1 =
+        AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_FAHRENHEIT).unwrap();
     ai1.set_present_value(72.5);
     set(
         &mut ai1,
@@ -70,10 +71,11 @@ pub fn lab_database(instance: u32) -> ObjectDatabase {
         PropertyIdentifier::RELIABILITY,
         PropertyValue::Enumerated(Reliability::OPEN_LOOP.to_raw()),
     );
-    let mut ai2 = AnalogInputObject::new(2, "Outside Air", 64).unwrap();
+    let mut ai2 =
+        AnalogInputObject::new(2, "Outside Air", EngineeringUnits::DEGREES_FAHRENHEIT).unwrap();
     ai2.set_present_value(51.0);
 
-    let mut ao1 = AnalogOutputObject::new(1, "Damper", 98).unwrap();
+    let mut ao1 = AnalogOutputObject::new(1, "Damper", EngineeringUnits::PERCENT).unwrap();
     let operator = CommandOrigin::Local {
         owner_device: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),
         initiating_object: None,
@@ -92,7 +94,10 @@ pub fn lab_database(instance: u32) -> ObjectDatabase {
             Box::new(ai1),
             Box::new(ai2),
             Box::new(ao1),
-            Box::new(AnalogValueObject::new(1, "Setpoint", 64).unwrap()),
+            Box::new(
+                AnalogValueObject::new(1, "Setpoint", EngineeringUnits::DEGREES_FAHRENHEIT)
+                    .unwrap(),
+            ),
             Box::new(BinaryInputObject::new(1, "Fan Status").unwrap()),
             Box::new(BinaryOutputObject::new(1, "Fan Command").unwrap()),
             Box::new(BinaryValueObject::new(1, "Occupied").unwrap()),
@@ -107,8 +112,10 @@ pub fn lab_database(instance: u32) -> ObjectDatabase {
 pub fn large_database(instance: u32, count: u32) -> ObjectDatabase {
     let points = (1..=count)
         .map(|n| {
-            Box::new(AnalogValueObject::new(n, format!("Point {n}"), 95).unwrap())
-                as Box<dyn BACnetObject>
+            Box::new(
+                AnalogValueObject::new(n, format!("Point {n}"), EngineeringUnits::NO_UNITS)
+                    .unwrap(),
+            ) as Box<dyn BACnetObject>
         })
         .collect();
     database(instance, points)

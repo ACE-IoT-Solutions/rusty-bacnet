@@ -1,5 +1,6 @@
 //! AV/BV registration with independently optional Audit policy.
 use super::super::*;
+use bacnet_types::enums::EngineeringUnits;
 
 #[pymethods]
 impl BACnetServer {
@@ -19,7 +20,8 @@ impl BACnetServer {
             auditable_operations,
             audit_priority_filter,
         )?;
-        let mut obj = AnalogValueObject::new(instance, name, units).map_err(to_py_err)?;
+        let mut obj = AnalogValueObject::new(instance, name, EngineeringUnits::from_raw(units))
+            .map_err(to_py_err)?;
         obj.set_audit_policy(audit_policy);
         self.push_pending(Box::new(obj))
     }

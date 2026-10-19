@@ -155,8 +155,8 @@ impl BACnetObject for SourceReporter {
     ) -> Result<(), Error> {
         if self.active() && property == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::WRITE_ACCESS_DENIED,
             });
         }
         self.wrapped
@@ -173,8 +173,8 @@ impl BACnetObject for SourceReporter {
     ) -> Result<(), Error> {
         if self.active() && property == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::WRITE_ACCESS_DENIED,
             });
         }
         self.wrapped

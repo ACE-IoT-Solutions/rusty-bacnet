@@ -1,4 +1,5 @@
 use super::super::*;
+use bacnet_types::enums::EngineeringUnits;
 
 #[pymethods]
 impl BACnetServer {
@@ -11,7 +12,8 @@ impl BACnetServer {
         units: u32,
         present_value: f32,
     ) -> PyResult<()> {
-        let mut ai = AnalogInputObject::new(instance, name, units).map_err(to_py_err)?;
+        let mut ai = AnalogInputObject::new(instance, name, EngineeringUnits::from_raw(units))
+            .map_err(to_py_err)?;
         ai.set_present_value(present_value);
         self.push_pending(Box::new(ai))
     }
@@ -19,7 +21,8 @@ impl BACnetServer {
     /// Add an Analog Output object to the server (before starting).
     #[pyo3(signature = (instance, name, units=62))]
     fn add_analog_output(&self, instance: u32, name: &str, units: u32) -> PyResult<()> {
-        let ao = AnalogOutputObject::new(instance, name, units).map_err(to_py_err)?;
+        let ao = AnalogOutputObject::new(instance, name, EngineeringUnits::from_raw(units))
+            .map_err(to_py_err)?;
         self.push_pending(Box::new(ao))
     }
 
@@ -448,7 +451,8 @@ impl BACnetServer {
         scale: Option<&Bound<'_, PyAny>>,
         prescale: Option<(u32, u32)>,
     ) -> PyResult<()> {
-        let mut obj = AccumulatorObject::new(instance, name, units).map_err(to_py_err)?;
+        let mut obj = AccumulatorObject::new(instance, name, EngineeringUnits::from_raw(units))
+            .map_err(to_py_err)?;
         if let Some(scale) = scale {
             obj.set_scale(crate::types::scale_from_py(scale)?);
         }
@@ -470,7 +474,8 @@ impl BACnetServer {
     /// Add a Pulse Converter object to the server (before starting).
     #[pyo3(signature = (instance, name, units=62))]
     fn add_pulse_converter(&self, instance: u32, name: &str, units: u32) -> PyResult<()> {
-        let obj = PulseConverterObject::new(instance, name, units).map_err(to_py_err)?;
+        let obj = PulseConverterObject::new(instance, name, EngineeringUnits::from_raw(units))
+            .map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 
@@ -584,7 +589,7 @@ fn staging_config(
     StagingConfig {
         present_value,
         min_present_value,
-        units,
+        units: EngineeringUnits::from_raw(units),
         priority_for_writing,
         stages: stages
             .into_iter()

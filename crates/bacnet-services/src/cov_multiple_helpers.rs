@@ -7,7 +7,7 @@ use bytes::BytesMut;
 
 pub(super) fn reject(reason: RejectReason, _message: &'static str) -> Error {
     Error::Reject {
-        reason: reason.to_raw(),
+        reason,
     }
 }
 
@@ -31,8 +31,7 @@ pub(super) fn decode_required_bool(
     let (tag, _) = tags::decode_tag(data, offset).map_err(|error| Error::Reject {
         reason: error
             .reject_reason()
-            .unwrap_or(RejectReason::INVALID_DATA_ENCODING)
-            .to_raw(),
+            .unwrap_or(RejectReason::INVALID_DATA_ENCODING),
     })?;
     if !tag.is_context(context_tag) {
         return Err(reject(

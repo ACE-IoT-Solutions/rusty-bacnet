@@ -88,8 +88,8 @@ fn advance(db: &mut ObjectDatabase, oid: ObjectIdentifier, elapsed: Duration) ->
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
         Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -98,8 +98,8 @@ fn assert_property_error(error: Error, expected: ErrorCode) {
 fn assert_priority_range_error(error: Error) {
     assert!(
         matches!(error, Error::Protocol { class, code }
-        if class == ErrorClass::SERVICES.to_raw() as u32
-            && code == ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32),
+        if class == ErrorClass::SERVICES
+            && code == ErrorCode::PARAMETER_OUT_OF_RANGE),
         "{error:?}"
     );
 }

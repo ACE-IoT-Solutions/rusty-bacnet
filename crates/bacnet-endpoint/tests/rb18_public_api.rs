@@ -22,7 +22,7 @@ use bacnet_endpoint::{ClientRoleHandle as TopClient, DeviceIdentity as TopIdenti
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::LoopbackSerial;
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -70,7 +70,7 @@ fn object_id(instance: u32) -> bacnet_types::primitives::ObjectIdentifier {
 async fn owner_shutdown_with_live_handles_fails_closed() {
     let (ta, tb) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
     let mut db = bacnet_objects::database::ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(1, "rb18", 0).unwrap();
+    let mut ai = AnalogInputObject::new(1, "rb18", EngineeringUnits::SQUARE_METERS).unwrap();
     ai.set_present_value(1.0);
     db.add(Box::new(ai)).unwrap();
     let mut a = EndpointSession::new(ta, SessionRole::Both, session_config())
@@ -138,7 +138,8 @@ async fn role_teardown_while_other_session_remains() {
     // still drives its own stop.
     let (tc, ts) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
     let mut db = bacnet_objects::database::ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(9, "rb18-teardown", 0).unwrap();
+    let mut ai =
+        AnalogInputObject::new(9, "rb18-teardown", EngineeringUnits::SQUARE_METERS).unwrap();
     ai.set_present_value(9.0);
     db.add(Box::new(ai)).unwrap();
     let mut client = EndpointSession::new(tc, SessionRole::ClientOnly, session_config()).unwrap();
