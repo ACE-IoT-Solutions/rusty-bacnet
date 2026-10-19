@@ -85,9 +85,9 @@ pub enum LineErrorKind {
     /// The data CRC (or an extended frame's CRC-32K) failed.
     DataCrc,
     /// Any other check failed: a header naming source 255, a Length out of
-    /// range, a frame longer than the decoder's storage. Counted as a
-    /// framing error.
-    Framing,
+    /// range, a frame longer than the decoder's storage. (Not a UART framing
+    /// error, Clause 9.5.1.3: the operating system doesn't report those.)
+    Malformed,
 }
 
 impl LineErrorKind {
@@ -97,7 +97,7 @@ impl LineErrorKind {
         match error {
             FrameError::HeaderCrcMismatch => Self::HeaderCrc,
             FrameError::DataCrcMismatch { .. } => Self::DataCrc,
-            _ => Self::Framing,
+            _ => Self::Malformed,
         }
     }
 }
@@ -233,32 +233,81 @@ pub struct StationStats {
     pub frames_received: FrameTypeCounts,
     /// When it last sent a valid frame.
     pub last_seen: Option<Duration>,
-    /// Token frames addressed to it.
+    /// Token frames addressed to it, retries left out.
     pub tokens_received: u64,
-    /// Token frames it sent.
+    /// Token frames it sent, retries left out.
     pub tokens_passed: u64,
     /// Token frames it sent again to the same station with nothing heard in
-    /// between: its successor did not start using the token in time.
+    /// between, because its successor didn't start using the token in time
+    /// (Clause 9.5.6.6). They count here only.
     pub token_retries: u64,
     /// The station it last passed the token to.
     pub next_station: Option<u8>,
-    /// The highest station it sent a Poll For Master to.
-    ///
-    /// A master polls only up to its own Max_Master (Clause 9.5.6), so this
-    /// is the monitor's inferred Max_Master for it: a lower bound until the
-    /// master has polled through its whole range, which it does a step at a
-    /// time as it holds the token.
-    pub max_master_inferred: Option<u8>,
-    /// Time between successive Token frames it sent: one rotation of the
-    /// ring, seen from this station.
+    /// What its polls say about its Max_Master; see [`MaxMaster`].
+    pub max_master: Option<MaxMaster>,
+    /// Time between successive Token passes it made, retries left out: one
+    /// rotation of the ring, seen from this station.
     pub token_rotation: DurationStats,
     /// Time from a Token addressed to it to the start of its next frame,
     /// when that frame came straight after the Token: how quickly it took
     /// up the token.
     pub token_usage_delay: DurationStats,
+    /// The highest station it polled.
+    highest_polled: Option<u8>,
+    /// The station it polled last.
+    last_polled: Option<u8>,
+    /// The Max_Master a wrap of its polls showed.
+    wrapped_at: Option<u8>,
+}
+
+/// A master's Max_Master as the monitor infers it from the stations it
+/// polls with Poll For Master (Clause 9.5.6).
+///
+/// A master polls only the addresses between itself and its successor,
+/// a step at a time, wrapping from its Max_Master to 0. So the highest
+/// address it polls is a safe lower bound, and for most masters, those
+/// whose successor sits above them, it never reaches Max_Master at all.
+/// Only the master whose gap wraps, normally the highest one in the ring,
+/// shows its Max_Master: a poll of 0 straight after a poll of an address
+/// above its own is the wrap, and the address before it is Max_Master.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MaxMaster {
+    /// Max_Master is at least this: the highest station it has polled.
+    AtLeast(u8),
+    /// Max_Master is this: its polls wrapped to 0 just after it.
+    Exact(u8),
+}
+
+impl MaxMaster {
+    /// The value, whether exact or a lower bound.
+    #[must_use]
+    pub fn value(self) -> u8 {
+        match self {
+            Self::AtLeast(value) | Self::Exact(value) => value,
+        }
+    }
 }
 
 impl StationStats {
+    fn record_poll(&mut self, source: u8, destination: u8) {
+        if destination == 0 {
+            if let Some(previous) = self.last_polled.filter(|previous| *previous > source) {
+                self.wrapped_at = Some(previous);
+            }
+        }
+        self.last_polled = Some(destination);
+        let highest = self
+            .highest_polled
+            .map_or(destination, |highest| highest.max(destination));
+        self.highest_polled = Some(highest);
+        // A poll above the wrap contradicts it: it was something else.
+        self.wrapped_at = self.wrapped_at.filter(|wrap| *wrap >= highest);
+        self.max_master = Some(match self.wrapped_at {
+            Some(wrap) => MaxMaster::Exact(wrap),
+            None => MaxMaster::AtLeast(highest),
+        });
+    }
+
     /// Whether the station sent at least one valid frame: it is on the line,
     /// as opposed to only addressed.
     #[must_use]
@@ -282,8 +331,8 @@ pub struct LineErrors {
     pub header_crc: u64,
     /// Frames whose data CRC (or CRC-32K) failed.
     pub data_crc: u64,
-    /// Frames rejected by any other check ([`LineErrorKind::Framing`]).
-    pub framing: u64,
+    /// Frames rejected by any other check ([`LineErrorKind::Malformed`]).
+    pub malformed: u64,
     /// Partial frames given up after the line went quiet in the middle.
     pub frame_aborts: u64,
     /// Octets dropped as noise between frames.
@@ -336,6 +385,11 @@ impl SilenceHistogram {
 /// on FTDI parts) and hands them over in batches, so every time the
 /// statistics hold, and every interval worked out from them, is uncertain
 /// by about `resolution`.
+///
+/// Frames that arrive in one read are taken to have come back to back,
+/// so any gap between them inside the read counts as none. Over a USB
+/// adapter that batches octets, this skews the shortest silence buckets
+/// and [`StationStats::token_usage_delay`] toward zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TimingQuality {
@@ -369,9 +423,11 @@ pub struct MonitorStats {
     pub errors: LineErrors,
     /// Per-station statistics, by address.
     pub stations: BTreeMap<u8, StationStats>,
-    /// Token frames to a single station.
+    /// Token frames to a single station, retries left out.
     pub token_passes: u64,
-    /// Silences of at least [`NO_TOKEN_SILENCE`] after earlier traffic.
+    /// Silences of at least [`NO_TOKEN_SILENCE`] (less the timestamp
+    /// resolution, so read jitter can't hide one) once a master has been
+    /// heard passing or polling: a line with no master never loses a token.
     pub lost_tokens: u64,
     /// The latest of them.
     pub last_lost_token: Option<LostToken>,
@@ -386,6 +442,8 @@ pub struct MonitorStats {
     last_frame: Option<(Duration, FrameHeader)>,
     /// When each station last sent a Token, for its rotation time.
     last_token_sent: BTreeMap<u8, Duration>,
+    /// A Token or Poll For Master has been seen since the last lost token.
+    token_seen: bool,
 }
 
 impl MonitorStats {
@@ -443,16 +501,14 @@ impl MonitorStats {
             LineEvent::Frame { header, .. } => Some(header.source),
             _ => None,
         };
-        if !matches!(event, LineEvent::FrameAbort) {
-            self.note_activity(start, at, regenerated_by);
-        }
+        self.note_activity(start, at, regenerated_by);
         match *event {
             LineEvent::Frame { header, .. } => self.record_frame(start, at, header),
             LineEvent::Error { kind, .. } => {
                 let slot = match kind {
                     LineErrorKind::HeaderCrc => &mut self.errors.header_crc,
                     LineErrorKind::DataCrc => &mut self.errors.data_crc,
-                    LineErrorKind::Framing => &mut self.errors.framing,
+                    LineErrorKind::Malformed => &mut self.errors.malformed,
                 };
                 *slot = slot.saturating_add(1);
                 // Whatever came before is no longer the frame straight
@@ -482,7 +538,9 @@ impl MonitorStats {
         if let Some(previous) = self.last_activity {
             let silence = start.saturating_sub(previous);
             self.silences.add(silence);
-            if silence >= NO_TOKEN_SILENCE {
+            let threshold = NO_TOKEN_SILENCE.saturating_sub(self.timing.resolution);
+            if silence >= threshold && self.token_seen {
+                self.token_seen = false;
                 self.lost_tokens = self.lost_tokens.saturating_add(1);
                 self.last_lost_token = Some(LostToken {
                     at: start,
@@ -511,6 +569,7 @@ impl MonitorStats {
         let sender = self.stations.entry(source).or_default();
         sender.frames_sent.add(frame_type);
         sender.last_seen = Some(end);
+        let mut retry = false;
         // The frame straight after a Token to this station: how soon it
         // took the token up.
         if let Some((token_end, token)) = previous {
@@ -519,16 +578,18 @@ impl MonitorStats {
                     .token_usage_delay
                     .add(start.saturating_sub(token_end));
             }
-            if frame_type == FrameType::TOKEN
+            retry = frame_type == FrameType::TOKEN
                 && token.frame_type == FrameType::TOKEN
                 && token.source == source
-                && token.destination == destination
-            {
-                sender.token_retries = sender.token_retries.saturating_add(1);
-            }
+                && token.destination == destination;
         }
         match frame_type {
+            FrameType::TOKEN if retry => {
+                sender.token_retries = sender.token_retries.saturating_add(1);
+                self.token_seen = true;
+            }
             FrameType::TOKEN if destination != BROADCAST_MAC => {
+                self.token_seen = true;
                 sender.tokens_passed = sender.tokens_passed.saturating_add(1);
                 sender.next_station = Some(destination);
                 if let Some(earlier) = self.last_token_sent.insert(source, start) {
@@ -539,11 +600,8 @@ impl MonitorStats {
                 receiver.tokens_received = receiver.tokens_received.saturating_add(1);
             }
             FrameType::POLL_FOR_MASTER if destination != BROADCAST_MAC => {
-                sender.max_master_inferred = Some(
-                    sender
-                        .max_master_inferred
-                        .map_or(destination, |highest| highest.max(destination)),
-                );
+                sender.record_poll(source, destination);
+                self.token_seen = true;
             }
             _ => {}
         }

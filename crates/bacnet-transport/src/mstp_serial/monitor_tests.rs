@@ -9,7 +9,7 @@ use tokio_serial::{SerialPort as _, SerialStream};
 use super::ReceiveOnlyPort;
 use crate::mstp::codec::FrameType;
 use crate::mstp::monitor::script::{analyse, ScriptedRing};
-use crate::mstp::monitor::{MonitorConfig, MstpMonitor};
+use crate::mstp::monitor::{MaxMaster, MonitorConfig, MstpMonitor};
 
 const BAUD: u32 = 38_400;
 /// Generous: a loaded CI host can be slow to pass octets through a PTY.
@@ -54,7 +54,10 @@ async fn monitor_over_a_pseudo_terminal_counts_the_ring_and_writes_nothing() {
 
     assert_eq!(last.present_stations().collect::<Vec<_>>(), [1, 2, 5]);
     assert_eq!(last.station(5).unwrap().tokens_received, 0);
-    assert_eq!(last.station(2).unwrap().max_master_inferred, Some(3));
+    assert_eq!(
+        last.station(2).unwrap().max_master,
+        Some(MaxMaster::Exact(3))
+    );
     assert_eq!(last.frames, expected.frames);
     assert_eq!(last.errors, expected.errors);
     assert_eq!(last.lost_tokens, 0);

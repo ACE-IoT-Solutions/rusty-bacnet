@@ -2147,9 +2147,10 @@ port that way, keeping only its read half, with no kernel RS-485 transmit setup
 and no GPIO. The monitor decodes the stream with the codec's `StreamDecoder`
 and publishes `MonitorStats` through a `watch` channel: frames per station and
 type, header and data CRC errors, other rejected frames, token passes, rotation
-times and retries, lost tokens (silences of at least T_no_token after
-traffic), each master's Max_Master as the highest station it polls for, and a
-silence histogram. `frames()` subscribes to a bounded, lossy stream of the same
+times and retries, lost tokens (silences of at least T_no_token after a
+Token or Poll For Master), each master's Max_Master (`MaxMaster::AtLeast` the
+highest station it polls, which for most masters stays below it, or
+`MaxMaster::Exact` once its polls wrap to 0), and a silence histogram. `frames()` subscribes to a bounded, lossy stream of the same
 events; a subscriber that falls behind loses the oldest and counts them.
 COBS-encoded frames are decoded and checked only.
 

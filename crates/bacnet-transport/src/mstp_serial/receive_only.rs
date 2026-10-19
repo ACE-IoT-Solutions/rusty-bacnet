@@ -31,6 +31,9 @@ use super::SerialConfig;
 /// opening, for such an adapter: pass the level that keeps its driver off.
 /// It doesn't change the port's kernel RS-485 settings, and a kernel in
 /// RS-485 mode only drives RTS around transmissions, which never happen.
+/// On Linux the lines go up as the port opens, before `request_to_send`
+/// can lower RTS, so such an adapter's driver may be on for that brief
+/// window; no open from user space avoids it.
 #[derive(Debug)]
 pub struct ReceiveOnlyPort {
     read: ReadHalf<SerialStream>,

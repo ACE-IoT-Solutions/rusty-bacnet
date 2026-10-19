@@ -7,7 +7,8 @@ use bacnet_mstp_codec::{FrameHeader, FrameType};
 
 use super::script::{analyse, Damage, LineScript, ScriptedRing, TURNAROUND};
 use super::stats::{
-    octet_time, LineErrorKind, LineEvent, MonitorStats, NO_TOKEN_SILENCE, SILENCE_BUCKET_BOUNDS,
+    octet_time, LineErrorKind, LineEvent, MaxMaster, MonitorStats, NO_TOKEN_SILENCE,
+    SILENCE_BUCKET_BOUNDS,
 };
 
 const BAUD: u32 = 38_400;
@@ -51,7 +52,8 @@ fn ring_reports_present_stations_token_holders_and_max_master() {
     assert_eq!(five.frames_received.data_expecting_reply, 20);
 
     let two = stats.station(2).unwrap();
-    assert_eq!(two.max_master_inferred, Some(3));
+    // Its polls wrap from 3 to 0, which shows Max_Master exactly.
+    assert_eq!(two.max_master, Some(MaxMaster::Exact(3)));
     assert_eq!(two.next_station, Some(1));
     assert_eq!(two.tokens_received, 20);
     assert_eq!(two.tokens_passed, 20);
@@ -60,7 +62,7 @@ fn ring_reports_present_stations_token_holders_and_max_master() {
 
     let one = stats.station(1).unwrap();
     // Station 1's successor is the next address, so it never polls.
-    assert_eq!(one.max_master_inferred, None);
+    assert_eq!(one.max_master, None);
     assert_eq!(one.next_station, Some(2));
     assert!(one.is_master() && two.is_master());
 
@@ -127,7 +129,7 @@ fn crc_errors_are_counted_exactly() {
     let stats = analyse_ring(&ring);
     assert_eq!(stats.errors.header_crc, HEADER_ERRORS as u64);
     assert_eq!(stats.errors.data_crc, DATA_ERRORS as u64);
-    assert_eq!(stats.errors.framing, 0);
+    assert_eq!(stats.errors.malformed, 0);
     assert_eq!(stats.errors.frame_aborts, 0);
     let two = stats.station(2).unwrap();
     assert_eq!(
@@ -136,7 +138,7 @@ fn crc_errors_are_counted_exactly() {
     );
     // The damage cost nothing else.
     assert_eq!(stats.token_passes, 40);
-    assert_eq!(two.max_master_inferred, Some(3));
+    assert_eq!(two.max_master, Some(MaxMaster::Exact(3)));
 }
 
 #[test]
@@ -152,9 +154,16 @@ fn one_lost_token_is_one_event() {
     assert!(lost.silence < Duration::from_millis(602), "{lost:?}");
     assert_eq!(stats.silences.counts[SILENCE_BUCKET_BOUNDS.len()], 1);
     assert_eq!(stats.silences.longest, Some(lost.silence));
-    // The generation poll gives station 1 a Max_Master estimate too.
-    assert_eq!(stats.station(1).unwrap().max_master_inferred, Some(2));
-    assert_eq!(stats.station(2).unwrap().max_master_inferred, Some(3));
+    // The generation poll gives station 1 a Max_Master estimate too, but
+    // only a lower bound: its polls never wrap.
+    assert_eq!(
+        stats.station(1).unwrap().max_master,
+        Some(MaxMaster::AtLeast(2))
+    );
+    assert_eq!(
+        stats.station(2).unwrap().max_master,
+        Some(MaxMaster::Exact(3))
+    );
 }
 
 #[test]
@@ -183,7 +192,7 @@ fn a_coarse_adapter_changes_times_not_counts() {
         let other = coarse.station(*address).unwrap();
         assert_eq!(other.frames_sent, station.frames_sent, "station {address}");
         assert_eq!(other.tokens_received, station.tokens_received);
-        assert_eq!(other.max_master_inferred, station.max_master_inferred);
+        assert_eq!(other.max_master, station.max_master);
     }
 }
 
@@ -210,9 +219,92 @@ fn a_token_sent_twice_is_a_retry() {
         .frame(FrameType::POLL_FOR_MASTER, 3, 2, &[]);
     let stats = analyse(BAUD, line.chunks());
     let one = stats.station(1).unwrap();
+    // The second Token is a retry, not a second pass (Clause 9.5.6.6).
     assert_eq!(one.token_retries, 1);
-    assert_eq!(one.tokens_passed, 2);
-    assert_eq!(stats.station(2).unwrap().tokens_received, 2);
+    assert_eq!(one.tokens_passed, 1);
+    assert_eq!(stats.token_passes, 1);
+    assert_eq!(stats.station(2).unwrap().tokens_received, 1);
+    assert_eq!(one.token_rotation.count, 0);
+}
+
+/// Stations 1 and 2 pass the token back and forth four times each; with
+/// `retry`, station 1 sends its second Token twice.
+fn back_and_forth(retry: bool) -> MonitorStats {
+    let mut line = LineScript::new(BAUD);
+    for round in 0..4 {
+        line.frame(FrameType::TOKEN, 2, 1, &[]);
+        if retry && round == 1 {
+            line.idle(Duration::from_millis(20))
+                .frame(FrameType::TOKEN, 2, 1, &[]);
+        }
+        line.frame(FrameType::TOKEN, 1, 2, &[]);
+    }
+    analyse(BAUD, line.chunks())
+}
+
+#[test]
+fn a_retry_takes_no_rotation_sample() {
+    let quiet = back_and_forth(false);
+    let rotation = quiet.station(1).unwrap().token_rotation;
+    assert_eq!(rotation.count, 3);
+    assert_eq!(rotation.min, rotation.max);
+
+    let stats = back_and_forth(true);
+    let one = stats.station(1).unwrap();
+    assert_eq!(one.token_retries, 1);
+    assert_eq!(one.tokens_passed, 4);
+    // Every sample is a whole rotation, measured from the first of the two
+    // Tokens: the retry neither ends one nor starts one.
+    assert_eq!(one.token_rotation.count, 3);
+    assert_eq!(one.token_rotation.min, rotation.min);
+    assert!(one.token_rotation.max > rotation.max);
+}
+
+#[test]
+fn a_line_without_masters_never_loses_a_token() {
+    // Only slaves answering, and noise, with long silences between.
+    let mut line = LineScript::new(BAUD);
+    for _ in 0..3 {
+        line.frame(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 255, 130, &REPLY)
+            .idle(Duration::from_millis(700))
+            .raw(&[0x00, 0xF0])
+            .idle(Duration::from_millis(700));
+    }
+    let stats = analyse(BAUD, line.chunks());
+    assert_eq!(stats.lost_tokens, 0);
+    assert_eq!(stats.silences.counts[SILENCE_BUCKET_BOUNDS.len()], 5);
+}
+
+#[test]
+fn a_frame_abort_is_line_activity() {
+    // Silences of 300 ms either side of a partial frame: no silence long
+    // enough to lose the token in.
+    let mut line = LineScript::new(BAUD);
+    line.frame(FrameType::TOKEN, 2, 1, &[])
+        .idle(Duration::from_millis(300))
+        .raw(&[0x55, 0xFF, 0x00, 0x03])
+        .idle(Duration::from_millis(300))
+        .frame(FrameType::TOKEN, 1, 2, &[]);
+    let stats = analyse(BAUD, line.chunks());
+    assert_eq!(stats.errors.frame_aborts, 1);
+    assert_eq!(stats.lost_tokens, 0);
+    assert!(stats.silences.longest.unwrap() < Duration::from_millis(310));
+}
+
+#[test]
+fn the_lost_token_threshold_allows_for_the_resolution() {
+    let token = |destination, source| LineEvent::Frame {
+        header: FrameHeader::new(FrameType::TOKEN, destination, source),
+        wire_length: 8,
+    };
+    let eight_octets = octet_time(BAUD) * 8;
+    for (resolution, lost) in [(Duration::ZERO, 0), (Duration::from_millis(16), 1)] {
+        let mut stats = MonitorStats::new(BAUD, resolution);
+        stats.record(Duration::from_millis(10), &token(2, 1));
+        // 490 ms of silence, then the next frame.
+        stats.record(Duration::from_millis(500) + eight_octets, &token(1, 2));
+        assert_eq!(stats.lost_tokens, lost, "{resolution:?}");
+    }
 }
 
 #[test]
@@ -263,14 +355,14 @@ fn events_fed_by_hand() {
     stats.record(
         Duration::from_millis(25),
         &LineEvent::Error {
-            kind: LineErrorKind::Framing,
+            kind: LineErrorKind::Malformed,
             destination: Some(3),
             octets: 8,
         },
     );
     assert_eq!(stats.timing.resolution, Duration::from_millis(16));
     assert_eq!(stats.timing.octet_time, octet_time(BAUD));
-    assert_eq!(stats.errors.framing, 1);
+    assert_eq!(stats.errors.malformed, 1);
     let one = stats.station(1).unwrap();
     assert_eq!(one.token_rotation.count, 1);
     assert_eq!(one.token_rotation.last, Some(Duration::from_millis(10)));
@@ -289,4 +381,32 @@ fn octet_time_is_ten_bit_times() {
     assert_eq!(octet_time(9_600), Duration::from_nanos(1_041_666));
     assert_eq!(octet_time(76_800), Duration::from_nanos(130_208));
     assert_eq!(octet_time(0), Duration::ZERO);
+}
+
+#[test]
+fn max_master_is_exact_only_after_a_wrap_from_above() {
+    let mut stats = MonitorStats::new(BAUD, Duration::ZERO);
+    let mut at = Duration::ZERO;
+    let mut poll = |stats: &mut MonitorStats, destination: u8| {
+        at += Duration::from_millis(30);
+        stats.record(
+            at,
+            &LineEvent::Frame {
+                header: FrameHeader::new(FrameType::POLL_FOR_MASTER, destination, 9),
+                wire_length: 8,
+            },
+        );
+        stats.station(9).unwrap().max_master
+    };
+    // Below its own address and then 0 is no wrap past Max_Master.
+    assert_eq!(poll(&mut stats, 1), Some(MaxMaster::AtLeast(1)));
+    assert_eq!(poll(&mut stats, 0), Some(MaxMaster::AtLeast(1)));
+    // Up through its gap and round to 0: Max_Master is the last one.
+    assert_eq!(poll(&mut stats, 10), Some(MaxMaster::AtLeast(10)));
+    assert_eq!(poll(&mut stats, 12), Some(MaxMaster::AtLeast(12)));
+    assert_eq!(poll(&mut stats, 0), Some(MaxMaster::Exact(12)));
+    assert_eq!(poll(&mut stats, 1), Some(MaxMaster::Exact(12)));
+    // A later poll above it shows that wasn't the wrap after all.
+    assert_eq!(poll(&mut stats, 15), Some(MaxMaster::AtLeast(15)));
+    assert_eq!(MaxMaster::Exact(12).value(), 12);
 }

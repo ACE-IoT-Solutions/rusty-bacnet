@@ -63,7 +63,10 @@ async fn monitor_publishes_what_the_engine_computes_and_writes_nothing() {
 
     assert_eq!(last.present_stations().collect::<Vec<_>>(), [1, 2, 5]);
     assert_eq!(last.station(5).unwrap().tokens_received, 0);
-    assert_eq!(last.station(2).unwrap().max_master_inferred, Some(3));
+    assert_eq!(
+        last.station(2).unwrap().max_master,
+        Some(MaxMaster::Exact(3))
+    );
     assert_eq!(last.lost_tokens, 1);
     // The task's statistics are the engine's. Tokio's timer wakes the
     // player on whole milliseconds, so the times agree to within one.
@@ -76,7 +79,7 @@ async fn monitor_publishes_what_the_engine_computes_and_writes_nothing() {
         assert_eq!(seen.frames_sent, station.frames_sent, "station {address}");
         assert_eq!(seen.frames_received, station.frames_received);
         assert_eq!(seen.tokens_received, station.tokens_received);
-        assert_eq!(seen.max_master_inferred, station.max_master_inferred);
+        assert_eq!(seen.max_master, station.max_master);
         assert_eq!(seen.token_rotation.count, station.token_rotation.count);
     }
     let silence = last.last_lost_token.unwrap().silence;

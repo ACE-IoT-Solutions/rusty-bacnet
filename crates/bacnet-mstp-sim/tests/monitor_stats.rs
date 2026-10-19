@@ -8,7 +8,7 @@ use std::time::Duration as StdDuration;
 
 use bacnet_mstp_codec::{decode_frame_in_place, FrameType};
 use bacnet_mstp_sim::{Fault, MasterSpec, Sim, SimConfig, WireFrame};
-use bacnet_transport::mstp::monitor::{LineErrorKind, LineEvent, MonitorStats};
+use bacnet_transport::mstp::monitor::{LineErrorKind, LineEvent, MaxMaster, MonitorStats};
 
 use common::*;
 
@@ -25,7 +25,7 @@ fn monitor(frames: &[WireFrame]) -> MonitorStats {
                 wire_length,
             },
             _ => LineEvent::Error {
-                kind: LineErrorKind::Framing,
+                kind: LineErrorKind::Malformed,
                 destination: None,
                 octets: frame.octets.len(),
             },
@@ -54,7 +54,10 @@ fn a_misconfigured_ring_of_cores_is_read_correctly() {
 
     assert_eq!(stats.present_stations().collect::<Vec<_>>(), [1, 2, 5]);
     assert_eq!(stats.station(5).unwrap().tokens_received, 0);
-    assert_eq!(stats.station(2).unwrap().max_master_inferred, Some(3));
+    assert_eq!(
+        stats.station(2).unwrap().max_master,
+        Some(MaxMaster::Exact(3))
+    );
     assert_eq!(
         stats
             .station(5)
@@ -91,7 +94,9 @@ fn a_ring_that_falls_silent_shows_one_lost_token() {
     sim.run_until(ms(4_000));
     // Part way through its first sweep, the estimate is a lower bound.
     let early = monitor(sim.frames());
-    let partial = early.station(1).unwrap().max_master_inferred.unwrap();
+    let Some(MaxMaster::AtLeast(partial)) = early.station(1).unwrap().max_master else {
+        panic!("{:?}", early.station(1));
+    };
     assert!((2..127).contains(&partial), "{partial}");
     sim.run_until(ms(7_000));
     let stats = monitor(sim.frames());
@@ -100,6 +105,10 @@ fn a_ring_that_falls_silent_shows_one_lost_token() {
     let lost = stats.last_lost_token.unwrap();
     assert_eq!(lost.regenerated_by, Some(1));
     assert!(lost.silence > StdDuration::from_millis(800), "{lost:?}");
-    // Alone, station 1 polls every address up to its Max_Master in turn.
-    assert_eq!(stats.station(1).unwrap().max_master_inferred, Some(127));
+    // Alone, station 1 polls every address up to its Max_Master in turn,
+    // then wraps to 0, which pins it down.
+    assert_eq!(
+        stats.station(1).unwrap().max_master,
+        Some(MaxMaster::Exact(127))
+    );
 }

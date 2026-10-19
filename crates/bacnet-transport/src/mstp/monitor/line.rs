@@ -95,7 +95,7 @@ pub(crate) fn feed_chunk(
             sink(
                 clock.stamp(at, clock.fed),
                 LineEvent::Error {
-                    kind: LineErrorKind::Framing,
+                    kind: LineErrorKind::Malformed,
                     destination: None,
                     octets: 0,
                 },

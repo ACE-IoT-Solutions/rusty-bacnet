@@ -73,7 +73,7 @@ mod stats;
 
 pub use stats::{
     octet_time, DurationStats, FrameTypeCounts, LineErrorKind, LineErrors, LineEvent, LostToken,
-    MonitorStats, SilenceHistogram, StationStats, TimingQuality, NO_TOKEN_SILENCE,
+    MaxMaster, MonitorStats, SilenceHistogram, StationStats, TimingQuality, NO_TOKEN_SILENCE,
     SILENCE_BUCKET_BOUNDS,
 };
 
