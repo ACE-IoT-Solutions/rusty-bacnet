@@ -93,6 +93,8 @@ fn a_refused_who_has_is_shown_and_a_reject_is_flashed() {
         app.who_has.as_ref().unwrap().failed.as_deref(),
         Some("no active connection")
     );
+    // The reason as the worker writes it; its kebab-case conversion is
+    // tested in `worker::discovery`. The app flashes it as given.
     let reject = DiscoveryEvent::Rejected {
         router: "10.0.0.1:47808".into(),
         network: 99,

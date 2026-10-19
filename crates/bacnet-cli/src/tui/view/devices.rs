@@ -117,15 +117,16 @@ enum Field {
     Seen,
 }
 
-/// The narrowest the vendor column gets before the device's other columns
-/// are cut: the header.
-const MIN_VENDOR: usize = "Vendor".len();
-
 /// The columns for a table `width` columns wide, each sized to its content
 /// over every visible row (not just those on screen, so scrolling doesn't
 /// move them). From [`FULL_WIDTH`] the headers are spelled out. Instance and
-/// address are never cut; the vendor gives way first, down to its header,
-/// and the Via column appears only when the whole of it fits.
+/// address are never cut, and the Via column appears only when the whole of
+/// it fits.
+///
+/// The vendor column is the one that gives way when a row is too wide. A
+/// vendor ID (at most five digits) never needs to; the shrink is there for
+/// the vendor names #1896 brings. It stops at the header's own width, sort
+/// marker included, so the header is never clipped.
 fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     let full = width >= FULL_WIDTH;
     let sorted = sorted_field(app.devices.sort().0);
@@ -150,16 +151,20 @@ fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     let mut routed = false;
     for row in app.devices.visible() {
         for column in &mut columns {
-            column.fit(text_width(&cell(column.kind, row, app, false)));
+            column.fit(cell_width(column.kind, row, app));
         }
         if let Some(router) = &row.via {
             routed = true;
             via.fit(text_width(router));
         }
     }
+    let min_vendor = columns
+        .iter()
+        .find(|column| column.kind == Field::Vendor)
+        .map_or(0, |column| text_width(&column.header));
     // Inside the borders.
     let room = usize::from(width.saturating_sub(2));
-    columns::shrink(&mut columns, Field::Vendor, room, MIN_VENDOR);
+    columns::shrink(&mut columns, Field::Vendor, room, min_vendor);
     if routed {
         columns::insert_if_room(&mut columns, 3, via, room);
     }
@@ -180,6 +185,24 @@ fn cell(field: Field, row: &DeviceRow, app: &App, selected: bool) -> String {
         Field::Apdu => row.max_apdu.to_string(),
         Field::Segmentation => segmentation_label(row.segmentation),
         Field::Seen => age_label(app.now, row.last_seen),
+    }
+}
+
+/// The width of [`cell`]'s text, without building it where the cell is a
+/// number or a string the row already holds: the columns are measured over
+/// every visible row on every frame.
+fn cell_width(field: Field, row: &DeviceRow, app: &App) -> usize {
+    let digits = |n: u32| n.checked_ilog10().map_or(1, |d| d as usize + 1);
+    match field {
+        Field::Marker => 1,
+        Field::Instance => digits(row.instance),
+        Field::Address => text_width(&row.address),
+        Field::Via => row.via.as_deref().map_or(0, text_width),
+        Field::Network => row.network.map_or("local".len(), |n| digits(n.into())),
+        // A vendor name (#1896) will need text_width here.
+        Field::Vendor => digits(row.vendor_id.into()),
+        Field::Apdu => digits(row.max_apdu),
+        Field::Segmentation | Field::Seen => text_width(&cell(field, row, app, false)),
     }
 }
 
@@ -287,4 +310,45 @@ fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     };
     let lines = vec![Line::raw(""), Line::from(Span::styled(text, theme.dim()))];
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::tests::{at, connected_app, routed_row, row};
+
+    /// Measuring a cell gives the width of the text the table draws.
+    #[test]
+    fn cell_widths_match_the_drawn_text() {
+        let mut app = connected_app();
+        app.now = at(4_000);
+        let mut wide = row(4_194_303, "192.168.100.102:47808", 65_535, 0);
+        wide.max_apdu = 50;
+        let rows = [
+            row(0, "10.0.0.1:47808", 0, 3_999),
+            wide,
+            routed_row(9, (65_534, &[1, 2, 3, 4, 5, 6]), "10.0.0.9:47808", 99, 10),
+        ];
+        let fields = [
+            Field::Marker,
+            Field::Instance,
+            Field::Address,
+            Field::Via,
+            Field::Network,
+            Field::Vendor,
+            Field::Apdu,
+            Field::Segmentation,
+            Field::Seen,
+        ];
+        for row in &rows {
+            for field in fields {
+                let text = cell(field, row, &app, false);
+                assert_eq!(
+                    cell_width(field, row, &app),
+                    text_width(&text),
+                    "{field:?} {text:?}"
+                );
+            }
+        }
+    }
 }

@@ -121,7 +121,8 @@ fn addresses_format_per_transport_and_read_back() {
 
 /// A routed station as the TUI's tables and the capture show it parses
 /// back to the same station: B/IP, MS/TP and SC MACs, and every network
-/// number a router can name.
+/// number a router can name. The broadcast form `NET:*` is display-only
+/// and does not parse.
 #[test]
 fn routed_stations_read_back_as_the_same_target() {
     let stations: [(u16, &[u8], &str); 4] = [
@@ -142,7 +143,9 @@ fn routed_stations_read_back_as_the_same_target() {
             "{shown}"
         );
     }
+    // A broadcast on a network is shown, never typed back: it is not a target.
     assert_eq!(routed_station(2, &[]), "2:*");
+    assert!(parse_target("2:*").is_err());
 }
 
 #[cfg(feature = "tui")]

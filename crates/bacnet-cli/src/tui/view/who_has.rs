@@ -105,7 +105,10 @@ fn cell(field: Field, row: &FoundRow) -> String {
 /// The columns for a panel `width` wide, sized to the results. Device,
 /// object, address and network are never cut; the name takes the room
 /// left, cut with `…` when it is longer, and the Via column appears only
-/// when the whole of it fits beside every name in full.
+/// when the whole of it fits beside every name in full. Unlike the device
+/// table, where Via goes in after the vendor has given way, here Via is
+/// placed before the name shrinks: the name has the room first, and the
+/// router is left out rather than a name cut to make space for it.
 fn columns(width: u16, found: &[FoundRow]) -> Vec<Column<Field>> {
     let network = if width >= FULL_WIDTH {
         "Network"

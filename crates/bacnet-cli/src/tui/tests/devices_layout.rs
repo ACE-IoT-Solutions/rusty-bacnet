@@ -131,6 +131,60 @@ fn a_shorter_address_leaves_room_for_the_router_at_80_columns() {
     assert!(frame.contains("2:0x05") && frame.contains("10.0.1.1:47808"));
 }
 
+/// The longest addresses there are, a B/IP one and a routed SC station on
+/// the highest network, stay whole at 80 columns beside the widest instance.
+#[test]
+fn the_longest_addresses_are_whole_at_80_columns() {
+    let mut app = connected_app();
+    let local = row(4_194_303, "255.255.255.255:65535", 65_535, 1);
+    let sc = (65_534, &[0xAB, 0xCD, 0xEF, 1, 2, 3][..]);
+    let routed = routed_row(4_194_302, sc, "255.255.255.254:65535", 65_535, 1);
+    worker(&mut app, WorkerEvent::Discovered(local));
+    worker(&mut app, WorkerEvent::Discovered(routed));
+    tick(&mut app, at(2));
+    let frame = screen(&mut app, 80, 24);
+    for (instance, address) in [
+        ("4194303", "255.255.255.255:65535"),
+        ("4194302", "65534:0xABCDEF010203"),
+    ] {
+        let line = frame.lines().find(|line| line.contains(instance));
+        assert!(
+            line.is_some_and(|line| line.contains(address) && line.contains("65535")),
+            "{instance}:\n{frame}"
+        );
+    }
+    assert!(!header(&frame).contains("Via"), "no room for it:\n{frame}");
+}
+
+/// A routed device that moves to another router is filtered again: the
+/// filter matches the router, so the new one must be checked.
+#[test]
+fn a_new_router_is_filtered_again() {
+    let mut app = connected_app();
+    let first = routed_row(2001, (2, &[5]), "10.0.1.1:47808", 24, 1);
+    worker(&mut app, WorkerEvent::Discovered(first));
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "10.0.9.");
+    assert!(visible(&mut app).is_empty());
+    let moved = routed_row(2001, (2, &[5]), "10.0.9.9:47808", 24, 2);
+    worker(&mut app, WorkerEvent::Updated(moved));
+    assert_eq!(visible(&mut app), [2001]);
+}
+
+/// Two routers reporting the same station for one instance: the banner
+/// names the station through each router, not the station twice.
+#[test]
+fn a_routed_duplicate_names_both_routers() {
+    let mut app = connected_app();
+    let retained = routed_row(2001, (2, &[5]), "10.0.1.1:47808", 24, 1);
+    let incoming = routed_row(2001, (2, &[5]), "10.0.1.2:47808", 24, 2);
+    worker(&mut app, WorkerEvent::Collision { retained, incoming });
+    let banner = app.duplicates.banner().join(" ");
+    for router in ["10.0.1.1:47808", "10.0.1.2:47808"] {
+        assert!(banner.contains(&format!("2:0x05 via {router}")), "{banner}");
+    }
+}
+
 #[test]
 fn the_sort_marker_widens_its_column_rather_than_crowd_it() {
     let mut app = site();

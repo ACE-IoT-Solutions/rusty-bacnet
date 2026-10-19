@@ -357,9 +357,11 @@ impl AddressStyle {
     }
 }
 
-/// A routed station in the target syntax, `NET:0xMAC` with the MAC in
-/// upper-case hex (`2:0x7F000001C335`, an MS/TP station `2:0x05`), which
-/// [`parse_target`] reads back; `NET:*` for a broadcast on that network.
+/// A routed station for display, `NET:0xMAC` with the MAC in upper-case
+/// hex (`2:0x7F000001C335`, an MS/TP station `2:0x05`): a station is
+/// written in the target syntax, so [`parse_target`] reads it back. An
+/// empty MAC, a broadcast on that network, is written `NET:*`, which is
+/// shown only (the capture's routed destinations) and is not a target.
 pub(crate) fn routed_station(network: u16, mac: &[u8]) -> String {
     if mac.is_empty() {
         return format!("{network}:*");

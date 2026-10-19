@@ -442,18 +442,18 @@ expires according to its TTL plus grace (J.5.2.2–J.5.2.3).
 A global or unbounded Who-Is can draw a reply from every device on a site, so
 the first Enter shows a one-line warning with the number of devices already
 known, and a second Enter sends it. The table shows instance, address,
-network, vendor, max APDU, segmentation and time since the last I-Am. A
+network, vendor ID, max APDU, segmentation and time since the last I-Am. A
 routed device's address is its station in the CLI's target syntax,
 `NET:0xMAC` (`2:0x7F000001C335`, or `2:0x05` for an MS/TP station), which
-the one-shot commands take back as a target; the router it answered through is in a
-`Via` column when the whole column fits, and otherwise left out. Each column
-is as wide as its header or its widest cell, so a wide terminal leaves the
-spare room at the right; instance and address are never cut, and the vendor
-gives way first. The filter also matches the router. When two addresses answer for the
-same instance, a `DUPLICATE` banner names both. If the UI falls behind a burst
-of I-Am traffic, events are dropped rather than queued without limit; the
-status bar's `drop` counter shows how many, and the table is refreshed from the
-client's discovery table afterwards.
+the one-shot commands take back as a target. The router it answered through
+is in a `Via` column when the whole column fits, and otherwise left out. Each
+column is as wide as its header or its widest cell, so a wide terminal leaves
+the spare room at the right; instance and address are never cut. The filter
+also matches the router. When two addresses answer for the same instance, a
+`DUPLICATE` banner names both (a routed one as `2:0x05 via ROUTER`). If the
+UI falls behind a burst of I-Am traffic, events are dropped rather than
+queued without limit; the status bar's `drop` counter shows how many, and the
+table is refreshed from the client's discovery table afterwards.
 
 **Keys:**
 
@@ -553,17 +553,17 @@ devices whose I-Have answers it in a panel below the device table: the
 device, the object as the browser labels it (`analog-input 3`), the object's
 name (cut with `…` when it doesn't fit, control characters shown as spaces),
 the address it answered from as the device table writes it, the router in a
-`Via` column when there is room, and the network. `:find`
-alone closes the panel. A router's Reject-Message-To-Network is flashed
-with its reason in kebab-case (`not-directly-connected`). The Network screen's last tab, Networks, works on
-every transport: `r` clears the map and broadcasts a
-Who-Is-Router-To-Network, and each router that announces itself, asked or
-not, is listed against the networks it reaches. A network number that more
-than one router claims is flagged DUPLICATE: two networks may share the
-number, the routers form a loop, or the route moved since the last search.
-The tab's title shows the local network's number once a Network-Number-Is is
-heard, and a router's Reject-Message-To-Network for a message the TUI sent is
-shown in the footer with the network and the reason.
+`Via` column, and the network. The name has the room first: the `Via` column
+is shown only when it fits beside every name in full. `:find` alone closes
+the panel. The Network screen's last tab, Networks, works on every
+transport: `r` clears the map and broadcasts a Who-Is-Router-To-Network, and
+each router that announces itself, asked or not, is listed against the
+networks it reaches. A network number that more than one router claims is
+flagged DUPLICATE: two networks may share the number, the routers form a
+loop, or the route moved since the last search. The tab's title shows the
+local network's number once a Network-Number-Is is heard, and a router's
+Reject-Message-To-Network for a message the TUI sent is shown in the footer
+with the network and the reason, in kebab-case (`not-directly-connected`).
 
 **SC screen.** `5` shows the BACnet/SC hub connector: its state, the hub in
 use (primary or failover) and its VMAC, the latest reconnect attempt and its
