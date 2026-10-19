@@ -352,6 +352,94 @@ fn join_line() -> Vec<(Duration, Vec<u8>)> {
     ring.line.chunks().to_vec()
 }
 
+/// [`join_line`], with station 3 answering from 12 s and station 4 from
+/// 16 s: after the wizard has proposed 3, then 4.
+fn crowding_line() -> Vec<(Duration, Vec<u8>)> {
+    let mut ring = ScriptedRing::new(BAUD).master(1, 10).master(2, 10);
+    until(
+        &mut ring,
+        Duration::from_secs(22),
+        &mut |line: &mut LineScript, _| {
+            let now = line.chunks().last().map_or(Duration::ZERO, |(at, _)| *at);
+            for (station, from) in [(3, 12), (4, 16)] {
+                if now >= Duration::from_secs(from) {
+                    line.frame(
+                        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                        255,
+                        station,
+                        &ANNOUNCE,
+                    );
+                }
+            }
+        },
+    );
+    ring.line.chunks().to_vec()
+}
+
+/// A proposal is checked against the newest reading on Enter and again on
+/// `y`: a station that turns up at the proposed MAC after the listen
+/// window is never offered, and never joined as.
+#[tokio::test(start_paused = true)]
+async fn a_mac_taken_after_the_proposal_is_never_joined() {
+    let mut run = Run::start(crowding_line(), None, false).await;
+    run.listen_for(Duration::ZERO).await;
+    assert_eq!(propose(&mut run).await.mac, 3);
+    run.listen_for(Duration::from_secs(14)).await;
+    assert!(press(&mut run.app, KeyCode::Enter).is_empty());
+    assert_eq!(run.app.overlay, Overlay::None, "mstp:3 is taken now");
+    let flash = run.app.flash.as_ref().unwrap().text.clone();
+    assert!(flash.contains("mstp:3 is no longer free"), "{flash}");
+    let monitor = run.app.monitor.as_deref().unwrap();
+    assert_eq!(monitor.join_settings().unwrap().mac, 4, "proposed again");
+
+    // Enter offers 4; station 4 turns up while the dialog is open; `y`
+    // sends nothing.
+    press(&mut run.app, KeyCode::Enter);
+    assert!(matches!(run.app.overlay, Overlay::Join(_)));
+    run.listen_for(Duration::from_secs(18)).await;
+    assert!(press(&mut run.app, KeyCode::Char('y')).is_empty());
+    assert_eq!(run.app.overlay, Overlay::None);
+    let monitor = run.app.monitor.as_deref().unwrap();
+    assert_eq!(monitor.joining, None);
+    assert_eq!(monitor.join_settings().unwrap().mac, 5);
+    assert_eq!(run.app.link, Link::Passive);
+    assert_eq!(run.quit().await, b"");
+}
+
+/// A join the coordinator refuses, or the command queue doesn't admit,
+/// leaves the session monitoring, passive, with the reason shown.
+#[tokio::test(start_paused = true)]
+async fn a_refused_join_keeps_the_monitor() {
+    // A passive coordinator refuses every join; let the screen ask anyway.
+    let mut run = Run::start(join_line(), None, true).await;
+    run.app.monitor.as_deref_mut().unwrap().join_allowed = true;
+    run.listen_for(Duration::ZERO).await;
+    propose(&mut run).await;
+    run.press(KeyCode::Enter).await;
+    let join = press(&mut run.app, KeyCode::Char('y'));
+    assert_eq!(join.len(), 1);
+    run.send(join).await;
+    run.pump_until(|app| app.monitor.as_deref().is_some_and(|m| m.joining.is_none()))
+        .await;
+    let flash = run.app.flash.as_ref().unwrap().text.clone();
+    assert!(flash.starts_with("Not joined: passive"), "{flash}");
+    assert_eq!(run.app.link, Link::Passive);
+    assert_eq!(run.app.level(), crate::tui::safety::Level::Passive);
+    let before = run.sample().elapsed;
+    run.listen_for(before + Duration::from_secs(2)).await;
+
+    // Not admitted to the command queue: the same.
+    run.press(KeyCode::Enter).await;
+    let mut join = press(&mut run.app, KeyCode::Char('y'));
+    let command = join.pop().unwrap();
+    run.app
+        .command_rejected(command, Link::Passive, "Command not admitted: full".into());
+    assert!(run.app.monitor.as_deref().unwrap().joining.is_none());
+    assert_eq!(run.app.link, Link::Passive);
+    assert!(run.app.join_again.is_none());
+    assert_eq!(run.quit().await, b"");
+}
+
 /// The device the joined station finds.
 const PEER: u32 = 2002;
 
@@ -447,11 +535,15 @@ pub(super) async fn join_and_discover(
             settings: settings.clone()
         }]
     );
-    assert!(run.app.monitor.is_none());
-    assert_eq!(run.app.level(), crate::tui::safety::Level::ReadOnly);
+    // Still the monitor, and passive, until the new session starts.
+    let monitor = run.app.monitor.as_deref().unwrap();
+    assert_eq!(monitor.joining.as_ref(), Some(settings));
+    assert_eq!(run.app.level(), crate::tui::safety::Level::Passive);
     run.send(join).await;
     run.pump_until(|app| matches!(app.link, Link::Up { .. } | Link::Failed(_)))
         .await;
+    assert!(run.app.monitor.is_none());
+    assert_eq!(run.app.level(), crate::tui::safety::Level::ReadOnly);
     assert!(
         matches!(run.app.link, Link::Up { .. }),
         "{:?}",
@@ -569,6 +661,32 @@ async fn the_analysis_is_honest_about_what_the_line_shows() {
     // to reach: the proposal stays in its gap, which it polls.
     let proposal = analysis::propose(&sample).unwrap();
     assert_eq!(proposal.candidates, (2..=19).collect::<Vec<u8>>());
+    assert_eq!(proposal.candidates[proposal.preferred], 2);
+
+    // Early on station 1 has polled only 2 to 8, but passing the token to
+    // 20 proves its Max_Master reaches 20: 9 to 19 aren't excluded.
+    let mut ring = ScriptedRing::new(BAUD).master(1, 127).master(20, 127);
+    ring.rotate(14, |_, _| {});
+    let sample = stats_of(&ring.line).await;
+    let one = sample.stats.station(1).unwrap().max_master;
+    assert_eq!(
+        one,
+        Some(bacnet_transport::mstp::monitor::MaxMaster::AtLeast(8))
+    );
+    let proposal = analysis::propose(&sample).unwrap();
+    assert_eq!(proposal.candidates, (2..=19).collect::<Vec<u8>>());
+
+    // Masters 1, 3 and 5: only 0 and 2 are within every bound the line
+    // proves (station 1 reaches 3), and the gap above the lowest master is
+    // preferred to 0.
+    let mut ring = ScriptedRing::new(BAUD)
+        .master(1, 10)
+        .master(3, 10)
+        .master(5, 10);
+    until(&mut ring, Duration::from_secs(3), &mut |_, _| {});
+    let sample = stats_of(&ring.line).await;
+    let proposal = analysis::propose(&sample).unwrap();
+    assert_eq!(proposal.candidates, [0, 2]);
     assert_eq!(proposal.candidates[proposal.preferred], 2);
 }
 

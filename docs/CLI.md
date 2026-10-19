@@ -625,10 +625,11 @@ first) has four views, Tab to change:
   its Max_Master as its polls show it: `N` once its polls wrap there, `≥N` the
   highest it has polled so far, `?` before any poll.
 - **Findings**: a Max_Master that leaves a station out (only when the polls
-  show the exact value), a Max_Master far above the highest station, a wide
-  gap between two masters, a rotation over 2 s and a hold over 500 ms, each
-  with a suggestion. `:mstp rotation MS` and `:mstp hold MS` move those
-  thresholds.
+  show the exact value), a Max_Master more than 8 above the highest station,
+  a gap of more than 8 empty addresses between two masters, a rotation over
+  2 s and a hold over 500 ms, each with a suggestion. The two 8s are rules of
+  thumb, not values from the standard. `:mstp rotation MS` and
+  `:mstp hold MS` move the time thresholds.
 - **Errors**: header and data CRC errors, malformed or oversize frames,
   partial frames, noise, lost tokens with when and who started the ring again,
   and extended (COBS, Clause 9.10) frames, which are decoded but not
@@ -641,8 +642,14 @@ every Max_Master the line shows, with a Max_Master that reaches every station
 heard and `--mstp-max-info-frames`. `+` and `-` pick another free MAC; Enter
 opens the same join confirmation as `--mstp`, and `y` there stops the monitor,
 closes the port and joins on it, so only one of them holds the port at a time.
-From then on the session is a participant (`READ-ONLY`), and a later join is
-confirmed again. With `--passive` the wizard proposes but never joins. The
+Enter and `y` each check the proposal against the newest reading first: if
+a station has turned up at that MAC, the dialog closes and the wizard
+proposes again. Until the participant session starts the screen stays on the
+monitor; a join the worker refuses leaves it listening, with the reason
+shown. From then on the session is a participant (`READ-ONLY`), and a later
+join is confirmed again. If the join fails once the monitor has closed the
+port (the port can't be opened, say), `c` confirms a join again; to listen
+again, quit and restart with `--mstp-monitor`. With `--passive` the wizard proposes but never joins. The
 monitor is the place to start on an unfamiliar trunk; like the participant, it
 has hardware evidence only on Linux, and macOS and Windows are experimental.
 

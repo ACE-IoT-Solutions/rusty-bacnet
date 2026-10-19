@@ -265,16 +265,16 @@ impl App {
             dialog.port(),
             dialog.settings.mac
         );
-        tracing::info!("{text}");
         if let (JoinOrigin::Monitor { .. }, Command::JoinTrunk { settings }) =
             (&dialog.origin, &command)
         {
-            // The monitor ends and the session joins: it transmits from
-            // now on, and a later join is confirmed again like `--mstp`'s.
-            self.join_again = Some(Box::new(JoinDialog::for_flags(settings.clone(), vec![])));
-            self.monitor = None;
-            self.safety.passive = false;
+            // The monitor keeps listening until the new session starts.
+            let settings = settings.clone();
+            if !self.confirm_monitor_join(&settings) {
+                return;
+            }
         }
+        tracing::info!("{text}");
         self.overlay = Overlay::None;
         if let Command::Profile(Request::Connect { profile, .. }) = &command {
             let kind = profile.transport.kind();

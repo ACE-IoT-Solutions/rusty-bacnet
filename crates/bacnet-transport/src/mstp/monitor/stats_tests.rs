@@ -122,6 +122,46 @@ fn holds_are_timed_and_their_frames_counted() {
     assert_eq!(after.station(2).unwrap().token_hold.count, 20 + 2);
 }
 
+/// A Token or poll from a station that doesn't hold the token means a
+/// frame went missing: the hold in progress is dropped, not measured.
+#[test]
+fn a_frame_from_someone_else_drops_the_hold() {
+    let mut script = LineScript::new(BAUD);
+    script
+        .frame(FrameType::TOKEN, 2, 1, &[])
+        .frame(
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+            255,
+            2,
+            &ANNOUNCE,
+        )
+        .frame(FrameType::POLL_FOR_MASTER, 5, 4, &[])
+        .frame(FrameType::TOKEN, 1, 2, &[])
+        .frame(FrameType::TOKEN, 2, 1, &[]);
+    let stats = analyse(BAUD, script.chunks());
+    assert_eq!(stats.station(2).unwrap().token_hold.count, 0);
+    assert_eq!(stats.station(1).unwrap().token_hold.count, 1);
+}
+
+/// A retried Token ends its sender's hold once, and the successor's hold
+/// runs from the retry.
+#[test]
+fn a_token_retry_gives_one_hold_sample() {
+    let mut script = LineScript::new(BAUD);
+    script
+        .frame(FrameType::TOKEN, 1, 2, &[])
+        .frame(FrameType::TOKEN, 2, 1, &[])
+        .idle(USAGE_TIMEOUT)
+        .frame(FrameType::TOKEN, 2, 1, &[])
+        .frame(FrameType::TOKEN, 1, 2, &[]);
+    let stats = analyse(BAUD, script.chunks());
+    let one = stats.station(1).unwrap();
+    assert_eq!((one.token_retries, one.token_hold.count), (1, 1));
+    let two = stats.station(2).unwrap().token_hold;
+    assert_eq!(two.count, 1);
+    assert!(two.max.unwrap() < USAGE_TIMEOUT, "timed from the retry");
+}
+
 #[test]
 fn crc_errors_are_counted_exactly() {
     const HEADER_ERRORS: usize = 3;

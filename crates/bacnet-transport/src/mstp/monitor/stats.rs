@@ -622,7 +622,7 @@ impl MonitorStats {
                 && token.source == source
                 && token.destination == destination;
         }
-        self.track_hold(start, end, header, retry);
+        self.track_hold(start, end, header);
         let sender = self.stations.entry(source).or_default();
         match frame_type {
             FrameType::TOKEN if retry => {
@@ -656,8 +656,10 @@ impl MonitorStats {
     /// sender's hold and starts its successor's, and the holder's other
     /// frames, polls aside, count toward its frames per token. A Token or
     /// poll from any other station means the monitor lost track (a new
-    /// token, or a missed frame), so that hold goes unmeasured.
-    fn track_hold(&mut self, start: Duration, end: Duration, header: FrameHeader, retry: bool) {
+    /// token, or a missed frame), so that hold goes unmeasured. A retried
+    /// Token comes from a station that no longer holds the token, so it
+    /// restarts its successor's hold without a second sample.
+    fn track_hold(&mut self, start: Duration, end: Duration, header: FrameHeader) {
         let FrameHeader {
             frame_type,
             destination,
@@ -667,7 +669,7 @@ impl MonitorStats {
         let held = self.holding.filter(|holding| holding.station == source);
         let passing = frame_type == FrameType::TOKEN && destination != BROADCAST_MAC;
         if passing {
-            if let (Some(holding), false) = (held, retry) {
+            if let Some(holding) = held {
                 let sender = self.stations.entry(source).or_default();
                 sender.token_hold.add(start.saturating_sub(holding.since));
                 sender.frames_per_token.add(holding.frames);

@@ -9,6 +9,10 @@ impl App {
     /// a disconnected or connecting state for a command that was dropped.
     pub(crate) fn command_rejected(&mut self, command: Command, prior_link: Link, error: String) {
         self.link = prior_link;
+        if matches!(command, Command::JoinTrunk { .. }) && self.monitor_join_refused(&error) {
+            self.dirty = true;
+            return;
+        }
         if let Command::Profile(_) = command {
             if let Some(connection) = &mut self.connection {
                 connection.reply(Err(error.clone()));
@@ -54,6 +58,7 @@ impl App {
             }
             WorkerEvent::SessionStarted { generation } => {
                 self.generation = generation;
+                self.monitor_joined();
                 self.reset_session();
                 if self.link != Link::Disconnecting {
                     self.link = Link::Connecting;
@@ -77,6 +82,7 @@ impl App {
                     connection.reply(result);
                 }
             }
+            WorkerEvent::Rejected { error } if self.monitor_join_refused(&error) => {}
             WorkerEvent::Rejected { error } => {
                 if self.link == Link::Connecting {
                     self.link = Link::Failed(error.clone());

@@ -101,6 +101,9 @@ pub(crate) struct MonitorState {
     pub(crate) listen: Duration,
     /// The join wizard, once started.
     pub(crate) wizard: Option<Wizard>,
+    /// A join sent and not yet taken up: the settings, until the new
+    /// session starts or the join is refused.
+    pub(crate) joining: Option<MstpArgs>,
 }
 
 impl MonitorState {
@@ -119,6 +122,7 @@ impl MonitorState {
             thresholds: Thresholds::default(),
             listen: DEFAULT_LISTEN,
             wizard: None,
+            joining: None,
         }
     }
 
@@ -166,6 +170,37 @@ impl MonitorState {
         Some(std::array::from_fn(|i| {
             (now[i].0, now[i].1.saturating_sub(base[i].1))
         }))
+    }
+
+    /// Check the chosen MAC against the newest reading before joining with
+    /// it: still free and still polled, the proposal is refreshed and its
+    /// settings returned. Otherwise the wizard proposes again from that
+    /// reading, and the error says why.
+    pub(crate) fn recheck(&mut self) -> Result<MstpArgs, String> {
+        let (Some(Wizard::Proposed { proposal, selected }), Some(latest)) =
+            (&self.wizard, self.latest.as_deref())
+        else {
+            return Err("No proposal to join with.".into());
+        };
+        let mac = proposal.candidates[*selected];
+        let fresh = match analysis::propose(latest) {
+            Ok(fresh) => fresh,
+            Err(why) => {
+                self.wizard = Some(Wizard::Failed(why.clone()));
+                return Err(why);
+            }
+        };
+        let kept = fresh.candidates.iter().position(|c| *c == mac);
+        self.wizard = Some(Wizard::Proposed {
+            selected: kept.unwrap_or(fresh.preferred),
+            proposal: fresh,
+        });
+        match kept {
+            Some(_) => self.join_settings().ok_or_else(|| "No proposal.".into()),
+            None => Err(format!(
+                "mstp:{mac} is no longer free or polled; see the new proposal."
+            )),
+        }
     }
 
     /// The settings the proposal joins with, on the monitor's port.
@@ -271,16 +306,21 @@ impl App {
 
     /// Enter on a proposal: the join confirmation (T2) with its settings.
     fn open_monitor_join(&mut self) {
-        let Some(monitor) = self.monitor.as_deref() else {
+        let Some(monitor) = self.monitor.as_deref_mut() else {
             return;
         };
-        let Some(settings) = monitor.join_settings() else {
+        if monitor.joining.is_some() || monitor.join_settings().is_none() {
             return;
-        };
+        }
         if !monitor.join_allowed {
             self.flash("Passive: this session never joins the trunk.", FLASH_FOR);
             return;
         }
+        // The line may have changed since the proposal.
+        let settings = match monitor.recheck() {
+            Ok(settings) => settings,
+            Err(why) => return self.flash(why, FLASH_FOR),
+        };
         let note = format!(
             "Free after {} s of listening. The monitor closes the port first.",
             monitor.listen.as_secs()
@@ -309,6 +349,56 @@ impl App {
             }
         };
         self.flash(text, FLASH_FOR);
+    }
+
+    /// `y` on the monitor's proposal: check it once more, then send the join
+    /// and keep monitoring until the new session starts. `false`, with the
+    /// dialog closed and the reason shown, when the proposal no longer holds.
+    pub(super) fn confirm_monitor_join(&mut self, settings: &MstpArgs) -> bool {
+        let Some(monitor) = self.monitor.as_deref_mut() else {
+            return false;
+        };
+        match monitor.recheck() {
+            Ok(fresh) if fresh == *settings => {
+                monitor.joining = Some(fresh);
+                true
+            }
+            outcome => {
+                self.overlay = Overlay::None;
+                let why = outcome
+                    .err()
+                    .unwrap_or_else(|| "The proposal changed; review it again (Enter).".into());
+                self.flash(why, FLASH_FOR);
+                false
+            }
+        }
+    }
+
+    /// The join from the monitor was refused (by the coordinator, or the
+    /// command queue): keep listening, and say why. `false` when no join
+    /// from the monitor was waiting.
+    pub(super) fn monitor_join_refused(&mut self, error: &str) -> bool {
+        let Some(monitor) = self.monitor.as_deref_mut() else {
+            return false;
+        };
+        if monitor.joining.take().is_none() {
+            return false;
+        }
+        self.link = super::Link::Passive;
+        self.flash(format!("Not joined: {error}. Still listening."), FLASH_FOR);
+        true
+    }
+
+    /// A new session started: a join from the monitor has taken over. The
+    /// session transmits from now on, and a later join is confirmed again
+    /// like `--mstp`'s.
+    pub(super) fn monitor_joined(&mut self) {
+        let Some(settings) = self.monitor.as_deref_mut().and_then(|m| m.joining.take()) else {
+            return;
+        };
+        self.join_again = Some(Box::new(JoinDialog::for_flags(settings, vec![])));
+        self.monitor = None;
+        self.safety.passive = false;
     }
 
     /// A monitor report; one that ended the monitor fails the link.

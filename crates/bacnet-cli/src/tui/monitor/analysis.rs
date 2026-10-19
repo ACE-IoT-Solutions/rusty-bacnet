@@ -19,11 +19,13 @@ use crate::mstp::MAX_MASTER_MAC;
 /// A station heard from before but not for this long is shown as silent.
 pub(crate) const SILENT_AFTER: Duration = Duration::from_secs(10);
 
-/// A Max_Master more than this above the highest station wastes polls.
+/// A Max_Master more than this above the highest station is reported as
+/// wasting polls. A rule of thumb, not a value from the standard.
 pub(crate) const HIGH_HEADROOM: u8 = 8;
 
 /// A run of more than this many empty addresses between two masters is
-/// polled address by address for as long as it stays empty.
+/// reported: it is polled address by address for as long as it stays
+/// empty. A rule of thumb, not a value from the standard.
 pub(crate) const GAP_LIMIT: u8 = 8;
 
 /// The default thresholds: a token rotation over 2 s, a hold over 500 ms.
@@ -251,14 +253,20 @@ pub(crate) fn findings(sample: &MonitorSample, thresholds: &Thresholds) -> Vec<F
             // Only an exact value can be too low: a station above it is
             // never polled by this master, so never brought into the ring.
             let above: Vec<String> = sample_above(sample, v);
-            if !above.is_empty() {
+            // A master the ring never polls only answers, so it looks like
+            // a slave: say "if".
+            let which = match above.as_slice() {
+                [] => None,
+                [one] => Some(format!("{one}: if {one} is a master")),
+                many => Some(format!("{}: if any of them is a master", many.join(", "))),
+            };
+            if let Some(which) = which {
                 add(
                     Severity::Warning,
                     format!(
-                        "mstp:{mac}: Max_Master is {v} (its polls wrap there), below {}: a \
-                         master there never gets the token from it. Suggest Max_Master \
-                         {highest} on every master.",
-                        above.join(", ")
+                        "mstp:{mac}: Max_Master is {v} (its polls wrap there), below \
+                         {which}, it never gets the token from mstp:{mac}. Suggest \
+                         Max_Master {highest} on every master."
                     ),
                 );
             }
@@ -365,6 +373,17 @@ impl Proposal {
     }
 }
 
+/// What the line proves about `master`'s Max_Master: an exact value as it
+/// is; a lower bound raised to the master's own MAC and to its successor,
+/// which it found by polling within its range (Clause 9.5.6.5, 9.5.6.6);
+/// nothing for a master that never polled.
+fn lower_bound(master: u8, station: &StationStats) -> Option<u8> {
+    match station.max_master? {
+        MaxMaster::Exact(v) => Some(v),
+        MaxMaster::AtLeast(v) => Some(v.max(master).max(station.next_station.unwrap_or(0))),
+    }
+}
+
 /// Whether `master` provably polls `mac`: `mac` lies between it and its
 /// successor, within the Max_Master its polls showed. A master that never
 /// passed the token (a sole master) polls all the way round to itself.
@@ -405,7 +424,7 @@ pub(crate) fn propose(sample: &MonitorSample) -> Result<Proposal, String> {
     };
     let bounds: Vec<u8> = masters
         .iter()
-        .filter_map(|(_, s)| s.max_master.map(MaxMaster::value))
+        .filter_map(|(mac, s)| lower_bound(*mac, s))
         .collect();
     let candidates: Vec<u8> = (0..=MAX_MASTER_MAC)
         .filter(|mac| !taken(*mac))
@@ -419,8 +438,14 @@ pub(crate) fn propose(sample: &MonitorSample) -> Result<Proposal, String> {
                 .into(),
         );
     }
+    // Above the highest master, else in a gap above the lowest, else 0.
     let top = masters.iter().map(|(mac, _)| *mac).max().unwrap_or(0);
-    let preferred = candidates.iter().position(|mac| *mac > top).unwrap_or(0);
+    let bottom = masters.iter().map(|(mac, _)| *mac).min().unwrap_or(0);
+    let preferred = candidates
+        .iter()
+        .position(|mac| *mac > top)
+        .or_else(|| candidates.iter().position(|mac| *mac > bottom))
+        .unwrap_or(0);
     let exact = masters
         .iter()
         .filter_map(|(_, s)| match s.max_master {
