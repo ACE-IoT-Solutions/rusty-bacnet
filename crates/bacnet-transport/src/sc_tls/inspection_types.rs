@@ -48,6 +48,14 @@ vocabulary! {
     }
 }
 vocabulary! {
+    /// Whether a CA in the peer-trust input signed the identity leaf itself,
+    /// with no intermediate between them (the Annex AB.7.4 default check).
+    ScDirectIssuer {
+        NotAssessed => "not_assessed", Direct => "direct", NotDirect => "not_direct",
+        Unknown => "unknown"
+    }
+}
+vocabulary! {
     /// The component to which a finding applies.
     ScFindingArea {
         Certificate => "certificate", San => "san", KeyUsage => "key_usage",
@@ -194,4 +202,12 @@ pub struct ScPemInspection {
     pub key_consistency: ScKeyConsistency,
     /// None for bytes, omitted key, and platforms without Unix mode bits.
     pub key_file_permissions: Option<ScKeyFilePermissions>,
+    /// Whether a peer-trust certificate signed the identity leaf directly.
+    /// `NotAssessed` when no peer-trust input was supplied; `Unknown` when the
+    /// leaf could not be parsed or a candidate CA's signature algorithm is
+    /// unsupported by the verifier.
+    pub direct_issuer: ScDirectIssuer,
+    /// Zero-based peer-trust index of the CA that signed the leaf, when
+    /// `direct_issuer` is `Direct`.
+    pub direct_issuer_index: Option<usize>,
 }

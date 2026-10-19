@@ -143,7 +143,7 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("q", "quit"),
             ],
             _ if app.screen == Screen::Sc => &[
-                ("Tab", "certificates/doctor"),
+                ("Tab", "certificates/doctor/credentials"),
                 ("p", "profiles"),
                 ("x", "disconnect"),
                 ("Esc", "back"),

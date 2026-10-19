@@ -485,15 +485,51 @@ async fn refused_hub_certificates_each_land_on_tls_with_their_own_hint() {
     assert_eq!(distinct.len(), 4, "{hints:#?}");
 }
 
-/// A hub that refuses this node's expired certificate: the alert comes back
-/// typed, after TLS 1.3 finished on this side, and still lands on TLS.
+/// A hub that refuses this node's certificate, from a CA it does not trust:
+/// the alert comes back typed, after TLS 1.3 finished on this side, and
+/// still lands on TLS. Locally that leaf is only a lint warning (no bundle
+/// CA issued it directly), which the credentials view shows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hub_refusing_this_nodes_certificate_lands_on_tls() {
+    use crate::tui::sc::credentials::Level;
     let site = Site::new("tui alert CA");
     let cert = site.leaf("alert hub", ExtendedKeyUsagePurpose::ServerAuth, None, None);
     let mut hub = hub(&site, &cert, "127.0.0.1:0", PRIMARY_VMAC)
         .await
         .unwrap();
+    let url = format!("wss://{}", hub.local_addr().unwrap());
+    let rogue = Site::new("rogue CA").leaf(
+        "rogue node",
+        ExtendedKeyUsagePurpose::ClientAuth,
+        None,
+        None,
+    );
+    let app = refused(&site, &rogue, &url).await;
+    let last = app.sc.failure.as_ref().unwrap();
+    assert_eq!(
+        last.failure.fault,
+        Fault::Tls(ScTlsFailure::AlertReceived(ScTlsAlert::UnknownCa)),
+        "{}",
+        last.failure.detail
+    );
+    assert_eq!(last.diagnosis.failed, Some(Phase::Tls));
+    let Some(Ok(credentials)) = &app.sc.credentials else {
+        panic!("no credentials view: {:?}", app.sc.credentials);
+    };
+    assert_eq!(credentials.issuer.0, Level::Warning);
+    assert!(!app.sc.lint_refused());
+    hub.stop().await;
+}
+
+/// An expired node certificate never reaches the hub: the lint refuses the
+/// dial, and the screen opens on the credentials view saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_node_certificate_is_refused_before_the_hub() {
+    use crate::tui::app::sc::View;
+    let site = Site::new("tui lint CA");
+    // A listener that records accepts stands in for the hub.
+    let hub = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    hub.set_nonblocking(true).unwrap();
     let url = format!("wss://{}", hub.local_addr().unwrap());
     let expired = site.leaf(
         "expired node",
@@ -503,13 +539,19 @@ async fn a_hub_refusing_this_nodes_certificate_lands_on_tls() {
     );
     let app = refused(&site, &expired, &url).await;
     let last = app.sc.failure.as_ref().unwrap();
-    assert_eq!(
-        last.failure.fault,
-        Fault::Tls(ScTlsFailure::AlertReceived(ScTlsAlert::CertificateExpired)),
+    assert!(
+        last.failure
+            .detail
+            .contains("SC credential check refused the dial before connecting"),
         "{}",
         last.failure.detail
     );
-    assert_eq!(last.diagnosis.failed, Some(Phase::Tls));
-    assert!(last.diagnosis.hint.contains("clocks"));
-    hub.stop().await;
+    assert!(app.sc.lint_refused());
+    assert_eq!(app.sc.view, View::Credentials);
+    // The session has ended: a dial would have left a connection queued.
+    assert_eq!(
+        hub.accept().map(|_| ()).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the hub was dialled"
+    );
 }

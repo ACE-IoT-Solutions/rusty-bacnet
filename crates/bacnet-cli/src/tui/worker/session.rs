@@ -28,7 +28,7 @@ use crate::tui::message::{
 use crate::tui::network::Foreign;
 use crate::tui::point::BrowseResult;
 #[cfg(feature = "sc-tls")]
-use crate::tui::sc::{ScFailure, ScIdentity, ScReport};
+use crate::tui::sc::{credentials::Credentials, ScFailure, ScIdentity, ScReport};
 
 /// How often the worker checks whether the UI needs a resync.
 const RESYNC_EVERY: Duration = Duration::from_secs(1);
@@ -166,6 +166,10 @@ async fn connect(
                 sink.deliver(WorkerEvent::Sc(ScReport::Dialing(identity)))
                     .await;
             }
+            if let Some(credentials) = sc_credentials(&args) {
+                let report = ScReport::Credentials(Box::new(credentials));
+                sink.deliver(WorkerEvent::Sc(report)).await;
+            }
             // The doctor reads the typed error before it becomes text.
             let build = async {
                 let built = transport::build_sc_client(&args).await;
@@ -202,6 +206,27 @@ fn sc_identity(args: &TransportArgs) -> Option<ScIdentity> {
         vmac: args.sc_vmac?,
         uuid: args.sc_device_uuid?,
     })
+}
+
+/// This node's credentials for the SC screen (#968), read by the same lint
+/// that `build_sc_client` applies next; `None` without a certificate path,
+/// which the build refuses anyway.
+///
+/// For a profile, the coordinator's `prepare` checked the files a moment
+/// earlier and the operator confirmed its warnings. This reads them again
+/// (as the build does), so a warning that appears in between is shown here
+/// and logged by the build but never confirmed. That window is accepted by
+/// design: hard failures are refused again by the build, and flags-only
+/// sessions have no `prepare` result to reuse.
+#[cfg(feature = "sc-tls")]
+fn sc_credentials(args: &TransportArgs) -> Option<Result<Credentials, String>> {
+    let lint = crate::sc_check::lint::Lint::run(
+        args.sc_cert.as_deref()?,
+        args.sc_ca.as_deref(),
+        args.sc_key.as_deref(),
+        None,
+    );
+    Some(lint.map(|lint| Credentials::from_lint(&lint)))
 }
 
 /// Retain a partially completed builder through cancellation: it may already

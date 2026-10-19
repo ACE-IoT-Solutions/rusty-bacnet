@@ -158,7 +158,8 @@ fn sc(key: KeyEvent) -> Option<Action> {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
-        KeyCode::Tab | KeyCode::BackTab => Action::Sc(ScKey::Cycle),
+        KeyCode::Tab => Action::Sc(ScKey::Cycle { back: false }),
+        KeyCode::BackTab => Action::Sc(ScKey::Cycle { back: true }),
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,
@@ -262,6 +263,7 @@ fn connection(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('p') => Key::List,
         KeyCode::Char('c') => Key::Connect,
         KeyCode::Char('a') => Key::Attest,
+        KeyCode::Char('y') => Key::Confirm,
         _ => return None,
     }))
 }

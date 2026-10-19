@@ -59,7 +59,8 @@ fn create_save_preview_and_attest_are_separate_explicit_actions() {
         [Command::Profile(Request::Connect {
             name: "loopback".into(),
             profile,
-            attest: true
+            attest: true,
+            accepted: Vec::new()
         })]
     );
     assert_eq!(app.link, Link::Connecting);
