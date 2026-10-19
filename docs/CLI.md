@@ -435,7 +435,7 @@ client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `3` / `4` / `1` | Show the watch list / the Network screen (B/IP) / back to the devices |
+| `3` / `4` / `5` / `1` | Show the watch list / the Network screen (B/IP) / the SC screen / back to the devices |
 | `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS` |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
@@ -507,6 +507,22 @@ written. The matrix matches BBMDs by address, so a BBMD reached at an address
 other than its own BDT entry (behind NAT, its global address in peers' tables
 and its private one in its own) shows as two rows, one flagged with no entry
 for itself.
+
+**SC screen.** `5` shows the BACnet/SC hub connector: its state, the hub in
+use (primary or failover) and its VMAC, the latest reconnect attempt and its
+backoff, and how long ago the hub was last heard with the latest heartbeat
+round trip. Beside it are the local VMAC, the profile's device UUID, the hub
+VMAC and any duplicate-VMAC refusals. Tab switches the middle panel between
+the connected hub's certificate chain (subject, issuer, expiry) and the
+connection doctor. The doctor walks a failed dial through its phases (URL,
+DNS, TCP, TLS, the WebSocket upgrade with the hub subprotocol, and
+Connect-Request/Accept), marks the one that failed and says what to try: an
+untrusted CA, an expired or future-dated certificate (with clock skew when it
+is close), a key mismatch, a missing client-authentication key usage, a proxy
+that drops the upgrade, or a duplicate VMAC. A failed connect opens the
+doctor. Connects, losses, reconnect attempts, failover and the primary's
+return go on the screen's timeline and in the log pane, and the status bar
+names the hub in use. The one-shot `--sc` commands report errors as before.
 
 #### Write sessions
 

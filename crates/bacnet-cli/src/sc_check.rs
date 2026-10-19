@@ -9,6 +9,8 @@ use std::io::{self, Write};
 mod projection;
 #[cfg(feature = "sc-tls")]
 mod render;
+#[cfg(all(feature = "sc-tls", feature = "tui"))]
+pub(crate) use render::date;
 #[cfg(all(test, feature = "sc-tls"))]
 mod tests;
 

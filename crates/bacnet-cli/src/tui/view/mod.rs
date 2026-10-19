@@ -11,6 +11,7 @@ mod devices;
 mod dialogs;
 mod network;
 mod safety;
+mod sc;
 mod watch;
 
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -69,6 +70,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     match &app.browser {
         _ if app.screen == Screen::Watch => watch::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Network => network::draw(frame, body, app, &theme),
+        _ if app.screen == Screen::Sc => sc::draw(frame, body, app, &theme),
         Some(open) => browser::draw(frame, body, open, &theme),
         None => devices::table(frame, body, app, &theme),
     }
