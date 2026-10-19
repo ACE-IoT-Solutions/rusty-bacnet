@@ -105,6 +105,11 @@ async fn each_helper_reports_silence_as_no_reply() {
     let (peer, target) = peer().await;
     let mut transport = started().await;
     for helper in Helper::ALL {
+        // Read the clock before the request starts: its timeout begins when
+        // the exchange is admitted, on real time, before the pause below, so
+        // a reading taken after the datagram arrives would miss those
+        // milliseconds and come up short of the timeout.
+        let sent = tokio::time::Instant::now();
         let request = helper.call(&transport, &target);
         tokio::pin!(request);
         let mut packet = [0; 64];
@@ -113,7 +118,6 @@ async fn each_helper_reports_silence_as_no_reply() {
             received = peer.recv_from(&mut packet) => { received.unwrap(); }
         }
         tokio::time::pause();
-        let sent = tokio::time::Instant::now();
         let error = request.await.unwrap_err();
         let waited = sent.elapsed();
         tokio::time::resume();
