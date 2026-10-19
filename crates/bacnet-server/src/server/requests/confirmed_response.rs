@@ -306,30 +306,28 @@ pub(in crate::server) fn error_fields(error: &Error) -> (ErrorClass, ErrorCode) 
     }
 }
 
-/// Send one non-segmented confirmed-service response through its existing
-/// transport or reply-channel path.
+/// Send an encoded unsegmented response APDU, handing it off on an MS/TP
+/// reply channel when one waits for it.
 pub(in crate::server) async fn send_unsegmented_response<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
-    response: &Apdu,
-    source_mac: &[u8],
-    source_network: Option<&NpduAddress>,
-    route: &bacnet_network::response_route::ResponseRoute,
+    apdu: BytesMut,
+    target: ResponseTarget<'_>,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     pending: Option<PendingConfirmedRequest>,
 ) {
-    send_response(
-        network,
-        response,
-        ResponseTarget {
-            source_mac,
-            source_network,
-            route,
-        },
-        reply_tx,
-        true,
-        pending,
-    )
-    .await;
+    send_response(network, apdu, target, reply_tx, true, pending).await;
+}
+
+/// `response` encoded, in a buffer sized for it.
+pub(in crate::server) fn encoded_apdu(response: &Apdu) -> BytesMut {
+    // Five octets cover every APDU header; a ComplexAck adds its service ACK.
+    let body = match response {
+        Apdu::ComplexAck(ack) => ack.service_ack.len(),
+        _ => 0,
+    };
+    let mut buf = BytesMut::with_capacity(8 + body);
+    encode_apdu(&mut buf, response).expect("valid APDU encoding");
+    buf
 }
 
 /// Overload work shares the identical wire path without per-rejection error
@@ -344,7 +342,7 @@ pub(in crate::server) async fn send_overload_response<T: TransportPort + 'static
 ) {
     send_response(
         network,
-        response,
+        encoded_apdu(response),
         ResponseTarget {
             source_mac,
             source_network,
@@ -448,7 +446,7 @@ pub(in crate::server) struct ResponseTarget<'a> {
 
 async fn send_response<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
-    response: &Apdu,
+    buf: BytesMut,
     target: ResponseTarget<'_>,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     log_errors: bool,
@@ -459,9 +457,6 @@ async fn send_response<T: TransportPort + 'static>(
         source_network,
         route,
     } = target;
-    let mut buf = BytesMut::new();
-    encode_apdu(&mut buf, response).expect("valid APDU encoding");
-
     let reply_tx = if route.requires_direct_response() {
         None
     } else {
@@ -543,3 +538,50 @@ mod alarm_summary_tests;
 #[cfg(test)]
 #[path = "typed_error_reply_tests.rs"]
 mod typed_error_reply_tests;
+
+#[cfg(test)]
+mod encoded_apdu_tests {
+    use super::*;
+
+    /// The one encoding a response now gets (#1713) is the encoder's own.
+    #[test]
+    fn encoded_apdu_is_the_encoder_output_for_every_reply_kind() {
+        let replies = [
+            Apdu::SimpleAck(SimpleAck {
+                invoke_id: 7,
+                service_choice: ConfirmedServiceChoice::WRITE_PROPERTY,
+            }),
+            Apdu::ComplexAck(ComplexAck {
+                segmented: false,
+                more_follows: false,
+                invoke_id: 7,
+                sequence_number: None,
+                proposed_window_size: None,
+                service_choice: ConfirmedServiceChoice::READ_PROPERTY,
+                service_ack: Bytes::from(vec![0x5a; 1400]),
+            }),
+            error_apdu_from_error(
+                7,
+                ConfirmedServiceChoice::READ_PROPERTY,
+                &Error::Protocol {
+                    class: ErrorClass::OBJECT,
+                    code: ErrorCode::UNKNOWN_OBJECT,
+                },
+            ),
+            Apdu::Reject(RejectPdu {
+                invoke_id: 7,
+                reject_reason: RejectReason::UNRECOGNIZED_SERVICE,
+            }),
+            Apdu::Abort(AbortPdu {
+                sent_by_server: true,
+                invoke_id: 7,
+                abort_reason: AbortReason::OUT_OF_RESOURCES,
+            }),
+        ];
+        for reply in &replies {
+            let mut expected = BytesMut::new();
+            encode_apdu(&mut expected, reply).unwrap();
+            assert_eq!(encoded_apdu(reply), expected, "{reply:?}");
+        }
+    }
+}

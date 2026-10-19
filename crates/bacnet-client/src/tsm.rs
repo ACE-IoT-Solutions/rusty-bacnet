@@ -6,6 +6,7 @@
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
 };
+use bacnet_types::map_hash::BuildMapHasher;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -248,8 +249,9 @@ struct PendingTransaction {
 /// asked for.
 pub struct Tsm {
     config: TsmConfig,
-    allocators: HashMap<MacAddr, InvokeIdAllocator>,
-    pending: HashMap<(MacAddr, u8), PendingTransaction>,
+    // Only this client inserts: see bacnet_types::map_hash (#1713).
+    allocators: HashMap<MacAddr, InvokeIdAllocator, BuildMapHasher>,
+    pending: HashMap<(MacAddr, u8), PendingTransaction, BuildMapHasher>,
     coordinator: Option<Arc<bacnet_endpoint_core::coordinator::OutboundTransactionCoordinator>>,
 }
 
@@ -258,8 +260,8 @@ impl Tsm {
     pub fn new(config: TsmConfig) -> Self {
         Self {
             config,
-            allocators: HashMap::new(),
-            pending: HashMap::new(),
+            allocators: HashMap::default(),
+            pending: HashMap::default(),
             coordinator: None,
         }
     }
