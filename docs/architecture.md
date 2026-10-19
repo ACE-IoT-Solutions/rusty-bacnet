@@ -231,11 +231,15 @@ The core decides; the transport does the I/O and keeps the host's policy:
   registered foreign device's Distribute-Broadcast-To-Network to the local
   subnet, the peers and the other foreign devices, or its NAK; the BBMD's own
   broadcasts. Each decision writes its destinations into storage the caller
-  passes.
-- **In the transport**: the foreign-device source list and registration rate
-  limit (the core asks them through its admission check), the
-  Delete-FDT-Entry list, the FDT and fan-out counters, BDT persistence, the
-  management rate limiter, the fan-out queue and its budgets, and the sockets.
+  passes. The answers to the four management requests a BBMD serves
+  (Register-Foreign-Device, Read-BDT, Read-FDT, Delete-FDT-Entry) come from
+  `Tables::serve` too.
+- **In the transport**: the foreign-device policy, source list and
+  registration rate limit and the Delete-FDT-Entry list, which reach the
+  core through its `bbmd::Rules` trait (a refused registration doesn't use up
+  the rate limit), the FDT and fan-out counters, BDT persistence, the
+  management rate limiter (applied to a table ACK after `serve` built it),
+  the fan-out queue and its budgets, and the sockets.
 
 At start the transport asks the host for the mask of the subnet the BBMD's
 own address is on, for the last of those conditions; where the host doesn't

@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
-use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, Reservation};
+use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, Request};
 use bacnet_bip_core::Arrival;
 use bacnet_time::HostClock;
 use bacnet_types::error::{DecodeError, DecodingKind, Error};
@@ -25,10 +25,12 @@ use crate::bvll::bvll_error;
 
 mod forward;
 mod policy;
+mod serve;
 mod tables;
 pub(crate) use forward::Forward;
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
+pub(crate) use serve::Reply;
 pub(crate) use tables::{lock, LiveTables};
 
 /// Rows the BDT holds, this BBMD's own row included.
@@ -386,7 +388,8 @@ impl BbmdState {
         self.register_foreign_device_at(ip, port, ttl, Instant::now())
     }
 
-    /// Register or re-register a foreign device at the given `now` instant.
+    /// Register or re-register a foreign device at the given `now` instant,
+    /// as a Register-Foreign-Device from `ip:port` is answered.
     ///
     /// Without a policy every registration is refused. With one, the core
     /// purges lapsed entries and checks the time-to-live; then this
@@ -399,60 +402,15 @@ impl BbmdState {
         ttl: u16,
         now: Instant,
     ) -> BvlcResultCode {
-        let Some(policy) = &self.foreign_device_policy else {
-            self.counters.registrations_rejected += 1;
-            return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-        };
-        let mut limits = core_bbmd::RegistrationLimits::DEFAULT;
-        limits.min_ttl = policy.min_ttl;
-        limits.max_ttl = policy.max_ttl;
-        limits.max_entries_per_source = policy.max_entries_per_source;
-        limits.reserved_capacity = policy.reserved_capacity;
-        let reservation = if policy.reserved_sources.contains(&ip) {
-            Reservation::Reserved
-        } else {
-            Reservation::Ordinary
-        };
-        let rate_tracker = &mut self.rate_tracker;
-        let admit = || {
-            policy
-                .allowed_sources
-                .as_ref()
-                .is_none_or(|allowed| allowed.contains(&ip))
-                && !rate_tracker.is_rate_exceeded(
-                    ip,
-                    now,
-                    policy.rate_window,
-                    policy.registration_rate_per_source,
-                    policy.registration_rate_global,
-                )
-        };
-        let outcome = self.tables.fdt.register(
-            address(ip, port),
-            ttl,
-            self.clock.instant(now),
-            &limits,
-            reservation,
-            admit,
-        );
-        self.counters.registrations_expired += outcome.purged as u64;
-        match outcome.result {
-            Ok(_) => {
-                self.rate_tracker.record(ip);
-                self.counters.registrations_accepted += 1;
-                BvlcResultCode::SUCCESSFUL_COMPLETION
-            }
-            Err(refusal) => {
-                if refusal == RegistrationRefusal::TableFull {
-                    self.counters.capacity_exhausted += 1;
-                }
-                self.counters.registrations_rejected += 1;
-                refusal.result_code()
-            }
+        let sender = address(ip, port);
+        match self.serve(Request::Register { sender, ttl }, now) {
+            Reply::Result(code) => code,
+            other => unreachable!("a registration is answered with a result, not {other:?}"),
         }
     }
 
-    /// Delete a foreign device entry.
+    /// Delete a foreign device entry, lapsed or not, on the host's own
+    /// authority: no access list applies.
     pub fn delete_foreign_device(&mut self, ip: [u8; 4], port: u16) -> BvlcResultCode {
         if self.tables.fdt.delete(address(ip, port)) {
             BvlcResultCode::SUCCESSFUL_COMPLETION
@@ -622,6 +580,9 @@ mod foreign_device_tests;
 
 #[cfg(test)]
 mod run_tests;
+
+#[cfg(test)]
+mod serve_tests;
 
 #[cfg(test)]
 mod tests;
