@@ -201,6 +201,8 @@ fn keys_read_the_target_and_need_a_bbmd() {
     worker(&mut app, WorkerEvent::Network(stale));
     assert_eq!(app.network.bdt, None);
     press(&mut app, KeyCode::BackTab);
+    assert_eq!(app.network.view, View::Networks);
+    press(&mut app, KeyCode::BackTab);
     assert_eq!(app.network.view, View::Matrix);
     assert_eq!(
         press(&mut app, KeyCode::Char('r')),

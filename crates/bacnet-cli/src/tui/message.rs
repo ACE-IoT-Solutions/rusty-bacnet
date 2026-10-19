@@ -150,6 +150,8 @@ pub(crate) enum Command {
     Safety(super::safety::SafetyCommand),
     /// A Network screen request.
     Network(super::network::NetworkCommand),
+    /// A Who-Has or router discovery request.
+    Discovery(super::network::discovery::DiscoveryCommand),
 }
 
 /// One row of the device table, already formatted for display.
@@ -265,6 +267,8 @@ pub(crate) enum WorkerEvent {
     ForeignDevice(super::network::Foreign),
     /// A Network screen report.
     Network(super::network::NetworkEvent),
+    /// An I-Have, a router announcement or another network report.
+    Discovery(super::network::discovery::DiscoveryEvent),
     /// An SC screen report.
     #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
     Sc(super::sc::ScReport),

@@ -4,6 +4,7 @@ use super::session::{ConnectPlan, SessionOptions};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
+use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
@@ -139,6 +140,18 @@ async fn run(
                         };
                         if let Some(error) = error {
                             let event = Box::new(WorkerEvent::Network(NetworkEvent::Refused { command: request, reason: error }));
+                            sink.deliver(WorkerEvent::Session { generation, event }).await;
+                        }
+                    }
+                    Command::Discovery(ref request) => {
+                        let request = request.clone();
+                        // A refused send is answered, so the screen stops waiting.
+                        let error = match &active {
+                            Some(active) => active.commands.try_send(command).err().map(|e| format!("session command not admitted: {e}")),
+                            None => Some("no active connection".into()),
+                        };
+                        if let Some(error) = error {
+                            let event = Box::new(WorkerEvent::Discovery(DiscoveryEvent::Refused { command: request, reason: error }));
                             sink.deliver(WorkerEvent::Session { generation, event }).await;
                         }
                     }

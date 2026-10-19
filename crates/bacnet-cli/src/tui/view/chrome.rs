@@ -125,10 +125,18 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Line::raw("")
     } else {
         let hints: &[(&str, &str)] = match app.link {
+            _ if app.networks_tab() => &[
+                ("r", "ask routers"),
+                ("Tab", "tables"),
+                (":", "find NAME"),
+                ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
             _ if app.screen == Screen::Network => &[
                 ("r", "read tables"),
                 ("m", "survey BBMDs"),
-                ("Tab", "BDT/FDT/matrix"),
+                ("Tab", "BDT/FDT/matrix/networks"),
                 (":", "bbmd ADDRESS"),
                 ("Esc", "back"),
                 ("?", "help"),
@@ -216,8 +224,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Screens",
         &[
             ("3 4 5 1  x", "Watch list; network; SC; devices; unwatch"),
-            (":", "watch DEVICE OBJECT [PROPERTY]; csv on|off"),
-            ("r  m  Tab", "Network: read BBMD; survey BDTs; next table"),
+            (":", "watch DEV OBJ [PROP]; csv on|off; find NAME"),
+            ("r  m  Tab", "Network: read BBMD/routers; survey; next tab"),
         ],
     ),
     (

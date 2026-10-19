@@ -436,7 +436,7 @@ client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `3` / `4` / `5` / `1` | Show the watch list / the Network screen (B/IP) / the SC screen / back to the devices |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS` |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS`, `find NAME` |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -507,6 +507,18 @@ written. The matrix matches BBMDs by address, so a BBMD reached at an address
 other than its own BDT entry (behind NAT, its global address in peers' tables
 and its private one in its own) shows as two rows, one flagged with no entry
 for itself.
+
+**Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has for the
+object named NAME (the rest of the line, exactly as typed) and lists the
+devices whose I-Have answers it in a panel below the device table; `:find`
+alone closes the panel. The Network screen's last tab, Networks, works on
+every transport: `r` broadcasts a Who-Is-Router-To-Network, and each router
+that announces itself, asked or not, is listed against the networks it
+reaches. A network number that more than one router claims is flagged
+DUPLICATE: two networks may share the number, or the routers form a loop. The
+tab's title shows the local network's number once a Network-Number-Is is
+heard, and a router's Reject-Message-To-Network for a message the TUI sent is
+shown in the footer with the network and the reason.
 
 **SC screen.** `5` shows the BACnet/SC hub connector: its state, the hub in
 use (primary or failover) and its VMAC, the latest reconnect attempt and its

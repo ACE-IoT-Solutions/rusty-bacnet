@@ -12,6 +12,9 @@
 //!   write session.
 //! - `bbmd ADDRESS`: show and read that BBMD's tables on the Network screen
 //!   (`ip` or `ip:port`, port 47808 by default).
+//! - `find NAME`: broadcast a Who-Has for the object named NAME, the rest
+//!   of the line as typed, and list the answers below the device table;
+//!   `find` alone closes the list.
 
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -25,7 +28,7 @@ use crate::tui::watched::{Point, WatchCommand};
 
 /// The usage line shown for an unknown command.
 pub(crate) const USAGE: &str =
-    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS";
+    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS | find NAME";
 
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,8 @@ pub(crate) enum Line {
     Writem(Vec<WriteSpec>),
     /// Show a BBMD's tables.
     Bbmd(std::net::SocketAddrV4),
+    /// Search for an object by name; empty closes the search.
+    Find(String),
 }
 
 fn device(word: &str, command: &str) -> Result<u32, String> {
@@ -105,6 +110,11 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
         ["csv", "on"] => Ok(Line::Csv(true)),
         ["csv", "off"] => Ok(Line::Csv(false)),
         ["bbmd", address] => Ok(Line::Bbmd(crate::foreign::parse_bbmd_arg(address)?)),
+        ["find", ..] => {
+            // A name may hold several spaces in a row: keep it as typed.
+            let rest = text.trim_start().strip_prefix("find").unwrap_or_default();
+            Ok(Line::Find(rest.trim().to_string()))
+        }
         [] => Err(USAGE.into()),
         _ => Err(format!("unknown command '{}'; {USAGE}", text.trim())),
     }
@@ -135,6 +145,7 @@ impl App {
                     Ok(Line::Csv(on)) => out.push(Command::Watch(WatchCommand::Csv(on))),
                     Ok(Line::Writem(specs)) => self.prepare(specs, true, out),
                     Ok(Line::Bbmd(bbmd)) => self.set_bbmd(bbmd, out),
+                    Ok(Line::Find(name)) => self.find(name, out),
                     Err(error) => self.flash(error, FLASH_FOR),
                 }
             }
@@ -178,6 +189,12 @@ mod tests {
             .contains("device instance"));
         assert!(parse("watch 100 ai:1 object-list[2]").is_err());
         assert!(parse("watch 100 ai:x").is_err());
+        assert_eq!(
+            parse("find  Supply  Air Temp "),
+            Ok(Line::Find("Supply  Air Temp".into()))
+        );
+        assert_eq!(parse("find"), Ok(Line::Find(String::new())));
+        assert!(parse("finder x").unwrap_err().contains("unknown command"));
         assert!(parse("read 100 ai:1")
             .unwrap_err()
             .contains("unknown command"));

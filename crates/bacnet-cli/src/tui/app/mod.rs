@@ -15,6 +15,7 @@ pub(crate) mod picker;
 pub(crate) mod safety;
 pub(crate) mod sc;
 pub(crate) mod watch;
+pub(crate) mod who_has;
 pub(crate) mod whois;
 
 use std::time::{Duration, Instant};
@@ -265,6 +266,8 @@ pub(crate) struct App {
     pub(crate) network: network::NetworkState,
     /// The SC screen: hub connector status, the doctor, certificates.
     pub(crate) sc: sc::ScState,
+    /// The `:find` search shown below the device table.
+    pub(crate) who_has: Option<who_has::WhoHasSearch>,
     /// The screen in the body.
     pub(crate) screen: Screen,
     next_req: super::point::ReqId,
@@ -322,6 +325,7 @@ impl App {
             safety: safety::SafetyState::new(config.passive),
             network: network::NetworkState::default(),
             sc: sc::ScState::default(),
+            who_has: None,
             screen: Screen::Main,
             next_req: 0,
             duplicates: Duplicates::default(),
@@ -584,6 +588,7 @@ impl App {
         self.watch = WatchList::default();
         self.network = network::NetworkState::default();
         self.sc = sc::ScState::default();
+        self.who_has = None;
         // A new session starts read-only; its worker reports the policy
         // and the ledger again.
         self.safety.armed = None;
@@ -771,6 +776,7 @@ impl App {
             WorkerEvent::Passive => self.link = Link::Passive,
             WorkerEvent::ForeignDevice(foreign) => self.network.foreign_device(foreign),
             WorkerEvent::Network(event) => self.network_event(event),
+            WorkerEvent::Discovery(event) => self.discovery_event(event),
             WorkerEvent::Sc(report) => self.sc_report(report),
         }
     }

@@ -54,7 +54,7 @@ and IT/OT engineers, operators, and rusty-bacnet developers.
 
 | ID | Workflow | Transports | Priority | Issue |
 |---|---|---|---|---|
-| W1 | What is on this network? Who-Is ranges, live I-Am table, duplicate instances; Who-Has; routers and networks | all | P0 | #961 (done), #960 |
+| W1 | What is on this network? Who-Is ranges, live I-Am table, duplicate instances; Who-Has; routers and networks | all | P0 | #961 (done), #960 (done) |
 | W2 | Why can't I see device X? Interface and port, BBMD/FD, router path, SC handshake phase, MS/TP token | all | P0 | #962, #966, #967, #970 |
 | W3 | Point checkout: browse, read values and status flags, override at a priority, release | all | P0 | #963, #964 |
 | W4 | Watch live values (COV with renewal, polling fallback) | all | P0 | #965 |
@@ -646,7 +646,7 @@ cargo nextest run -p bacnet-cli --release -E 'test(drawing_a_full_device_table)'
 | #957 | No link-level frame tap on any transport, so BVLC control traffic, SC control messages and MS/TP Token, PFM and Reply-Postponed frames are invisible | #971 |
 | #958 | No MS/TP passive monitor, per-station statistics or master list; `MstpDiagnostics` not exposed from builders | #970, #971 |
 | #959 | SC reconnect, failover and disconnect causes appear only as tracing lines; no active-hub indication, heartbeat statistics or peer certificate; no failover or reconnect options on `ScClientBuilder` | #967 |
-| #960 | I-Have is dropped; the client can't send Who-Is-Router-To-Network or What-Is-Network-Number or receive I-Am-Router-To-Network (Clause 6.4); the CLI `find` and `whois-router` are stubs | W1 (Who-Has, network map) |
+| #960 | Done: `i_have_events`, `who_has_replies`, `network_reports`, `discover_routers`; `find`, `whois-router`, `:find` and the Networks tab. Was: I-Have is dropped; the client can't send Who-Is-Router-To-Network or What-Is-Network-Number or receive I-Am-Router-To-Network (Clause 6.4); the CLI `find` and `whois-router` are stubs | W1 (Who-Has, network map) |
 | #938 | Foreign-device mode on `BipClientBuilder`; surfacing a refused registration (BVLC-Result NAK); a separate re-registration interval; `discover --bbmd` should send Distribute-Broadcast-To-Network (Annex J.5) | #966 |
 
 Later gaps, not filed yet: routed variants for ReadRange, file access, DCC,

@@ -1,5 +1,6 @@
 //! The Network screen: the foreign-device panel on top, and below it the
-//! target BBMD's BDT or FDT, or the consistency matrix (Tab switches).
+//! target BBMD's BDT or FDT, the consistency matrix, or the routers heard
+//! and the networks they reach (Tab switches).
 //! Every state is marked by text as well as colour.
 
 use std::time::Duration;
@@ -33,6 +34,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         (View::Bdt, "BDT"),
         (View::Fdt, "FDT"),
         (View::Matrix, "Matrix"),
+        (View::Networks, "Networks"),
     ];
     let mut title = vec![Span::styled(" ", theme.accent())];
     for (view, name) in tabs {
@@ -55,6 +57,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .border_style(theme.dim());
     let inner = block.inner(tables);
     frame.render_widget(block, tables);
+    if state.view == View::Networks {
+        super::who_has::networks(frame, inner, app, theme);
+        return;
+    }
     if app.transport != "BIP" {
         let text = "B/IP only: BBMDs and foreign devices belong to BACnet/IP (Annex J).";
         frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), inner);
@@ -64,12 +70,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         View::Bdt => bdt(frame, inner, app, theme),
         View::Fdt => fdt(frame, inner, app, theme),
         View::Matrix => matrix(frame, inner, app, theme),
+        View::Networks => {}
     }
 }
 
 /// Which BBMD the tables are from, and how fresh they are.
 fn subtitle(app: &App) -> String {
     let state = &app.network;
+    if state.view == View::Networks {
+        return super::who_has::networks_subtitle(app);
+    }
     let busy = match state.view {
         View::Matrix if state.surveying => Some("surveying"),
         View::Bdt | View::Fdt if state.reading => Some("reading"),
@@ -79,6 +89,7 @@ fn subtitle(app: &App) -> String {
         View::Bdt => state.bdt.as_ref().map(|f| f.at),
         View::Fdt => state.fdt.as_ref().map(|f| f.at),
         View::Matrix => state.matrix.as_ref().map(|(_, at)| *at),
+        View::Networks => None,
     };
     let target = state
         .target

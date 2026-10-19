@@ -96,7 +96,7 @@ fn set_bdt(transport: &BipTransport, peers: &[SocketAddrV4]) {
 
 /// A flags-only B/IP connection on loopback, registering with `bbmd` when
 /// given, for a 60 s time-to-live.
-fn plan(bbmd: Option<SocketAddrV4>) -> ConnectPlan {
+pub(super) fn plan(bbmd: Option<SocketAddrV4>) -> ConnectPlan {
     let mut profile = Profile::default();
     profile.bip_mut().interface = Ipv4Addr::LOCALHOST;
     profile.bip_mut().port = 0;
@@ -111,15 +111,15 @@ fn plan(bbmd: Option<SocketAddrV4>) -> ConnectPlan {
 }
 
 /// The app and the worker, wired as the event loop wires them.
-struct Net {
-    app: App,
+pub(super) struct Net {
+    pub(super) app: App,
     events: mpsc::Receiver<WorkerEvent>,
     commands: mpsc::Sender<Command>,
     task: JoinHandle<()>,
 }
 
 impl Net {
-    async fn start(plan: ConnectPlan) -> Self {
+    pub(super) async fn start(plan: ConnectPlan) -> Self {
         let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
         let (commands, rx) = mpsc::channel(16);
         let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
@@ -139,14 +139,14 @@ impl Net {
     }
 
     /// Hand the worker what `update` asked for.
-    async fn send(&mut self, commands: Vec<Command>) {
+    pub(super) async fn send(&mut self, commands: Vec<Command>) {
         for command in commands {
             self.commands.send(command).await.unwrap();
         }
     }
 
     /// Apply worker events until `done` holds.
-    async fn pump_until(&mut self, what: &str, done: impl Fn(&App) -> bool) {
+    pub(super) async fn pump_until(&mut self, what: &str, done: impl Fn(&App) -> bool) {
         // A bound on the whole wait too, since status polls keep arriving.
         let deadline = tokio::time::Instant::now() + PUMP_LIMIT;
         loop {
@@ -168,19 +168,19 @@ impl Net {
     }
 
     /// Press a key and send what it asks for.
-    async fn press(&mut self, code: KeyCode) {
+    pub(super) async fn press(&mut self, code: KeyCode) {
         let commands = press(&mut self.app, code);
         self.send(commands).await;
     }
 
     /// Run a `:` command line.
-    async fn command_line(&mut self, text: &str) {
+    pub(super) async fn command_line(&mut self, text: &str) {
         self.press(KeyCode::Char(':')).await;
         type_text(&mut self.app, text);
         self.press(KeyCode::Enter).await;
     }
 
-    async fn stop(self) {
+    pub(super) async fn stop(self) {
         drop((self.commands, self.events));
         tokio::time::timeout(STEP, self.task)
             .await
