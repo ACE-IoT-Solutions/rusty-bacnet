@@ -3,82 +3,6 @@ use bacnet_types::enums::EngineeringUnits;
 
 #[pymethods]
 impl BACnetServer {
-    /// Add an Analog Input object to the server (before starting).
-    #[pyo3(signature = (instance, name, units=62, present_value=0.0))]
-    fn add_analog_input(
-        &self,
-        instance: u32,
-        name: &str,
-        units: u32,
-        present_value: f32,
-    ) -> PyResult<()> {
-        let mut ai = AnalogInputObject::new(instance, name, EngineeringUnits::from_raw(units))
-            .map_err(to_py_err)?;
-        ai.set_present_value(present_value);
-        self.push_pending(Box::new(ai))
-    }
-
-    /// Add an Analog Output object to the server (before starting).
-    #[pyo3(signature = (instance, name, units=62))]
-    fn add_analog_output(&self, instance: u32, name: &str, units: u32) -> PyResult<()> {
-        let ao = AnalogOutputObject::new(instance, name, EngineeringUnits::from_raw(units))
-            .map_err(to_py_err)?;
-        self.push_pending(Box::new(ao))
-    }
-
-    /// Add a Binary Input object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_input(&self, instance: u32, name: &str) -> PyResult<()> {
-        let bi = BinaryInputObject::new(instance, name).map_err(to_py_err)?;
-        self.push_pending(Box::new(bi))
-    }
-
-    /// Add a Binary Output object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_output(&self, instance: u32, name: &str) -> PyResult<()> {
-        let bo = BinaryOutputObject::new(instance, name).map_err(to_py_err)?;
-        self.push_pending(Box::new(bo))
-    }
-
-    /// Add a Multi-State Input object to the server (before starting).
-    #[pyo3(signature = (instance, name, number_of_states))]
-    fn add_multistate_input(
-        &self,
-        instance: u32,
-        name: &str,
-        number_of_states: u32,
-    ) -> PyResult<()> {
-        let msi =
-            MultiStateInputObject::new(instance, name, number_of_states).map_err(to_py_err)?;
-        self.push_pending(Box::new(msi))
-    }
-
-    /// Add a Multi-State Output object to the server (before starting).
-    #[pyo3(signature = (instance, name, number_of_states))]
-    fn add_multistate_output(
-        &self,
-        instance: u32,
-        name: &str,
-        number_of_states: u32,
-    ) -> PyResult<()> {
-        let mso =
-            MultiStateOutputObject::new(instance, name, number_of_states).map_err(to_py_err)?;
-        self.push_pending(Box::new(mso))
-    }
-
-    /// Add a Multi-State Value object to the server (before starting).
-    #[pyo3(signature = (instance, name, number_of_states))]
-    fn add_multistate_value(
-        &self,
-        instance: u32,
-        name: &str,
-        number_of_states: u32,
-    ) -> PyResult<()> {
-        let msv =
-            MultiStateValueObject::new(instance, name, number_of_states).map_err(to_py_err)?;
-        self.push_pending(Box::new(msv))
-    }
-
     /// Add a Calendar object to the server (before starting).
     #[pyo3(signature = (instance, name))]
     fn add_calendar(&self, instance: u32, name: &str) -> PyResult<()> {
@@ -207,33 +131,6 @@ impl BACnetServer {
     #[pyo3(signature = (instance, name))]
     fn add_program(&self, instance: u32, name: &str) -> PyResult<()> {
         let obj = ProgramObject::new(instance, name).map_err(to_py_err)?;
-        self.push_pending(Box::new(obj))
-    }
-
-    /// Add a Lighting Output object to the server (before starting).
-    ///
-    /// Its Lighting_Command reads and writes as `application_data` holding
-    /// the context-tagged BACnetLightingCommand, operation NONE until written
-    /// (#1263). The object carries each command out (#1384): fades and ramps
-    /// move Tracking_Value to the new level over time, steps change the level
-    /// at once, and the warn commands blink and hold the level for
-    /// Egress_Time when Blink_Warn_Enable is TRUE.
-    ///
-    /// A Present_Value or Relinquish_Default level above 0.0 and below 1.0 is
-    /// stored as 1.0, and one outside 0.0 to 100.0 is refused with
-    /// VALUE_OUT_OF_RANGE (#1385), but for Present_Value's warn values -1.0,
-    /// -2.0 and -3.0. Tracking_Value reads the same level as Present_Value
-    /// whenever no fade or ramp is running.
-    #[pyo3(signature = (instance, name))]
-    fn add_lighting_output(&self, instance: u32, name: &str) -> PyResult<()> {
-        let obj = LightingOutputObject::new(instance, name).map_err(to_py_err)?;
-        self.push_pending(Box::new(obj))
-    }
-
-    /// Add a Binary Lighting Output object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_lighting_output(&self, instance: u32, name: &str) -> PyResult<()> {
-        let obj = BinaryLightingOutputObject::new(instance, name).map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 

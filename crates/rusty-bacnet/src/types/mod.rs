@@ -38,6 +38,7 @@ mod device;
 mod enums;
 mod mapping;
 mod object_identifier;
+mod object_profile;
 mod property_reference;
 mod property_value;
 mod read_value;
@@ -59,6 +60,7 @@ pub use device::PyDiscoveredDevice;
 pub use enums::*;
 pub(crate) use mapping::scale as scale_from_py;
 pub use object_identifier::PyObjectIdentifier;
+pub(crate) use object_profile::object_profile_from_py;
 pub(crate) use property_reference::{
     check_device, local_device, localize, property_reference_from_py, property_references_from_py,
 };

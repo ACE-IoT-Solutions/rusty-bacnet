@@ -392,7 +392,7 @@ its octets.
 | any | Value_Source_Array; Value_Source (one value) | `"value_source"` | `None` (none), an `ObjectIdentifier` or `(device, object)` (an object), or an `AuditRecipientAddress` mapping, `{"kind": "address", "network_number", "mac_address"}` (an address) | none |
 | Accumulator | Scale (one value) | `"scale"` | a `float` for a float scale, an `int` for a power-of-ten scale | `add_accumulator(scale=...)` |
 | Accumulator | Prescale (one value) | `"prescale"` | `(multiplier, modulo_divide)` | `add_accumulator(prescale=...)` |
-| any object serving Tags | Tags | `"name_value"` | `{"name": str, "value": None or PropertyValue}` | no new constructor; read values can be written back |
+| any object serving Tags | Tags | `"name_value"` | `{"name": str, "value": None or PropertyValue}` | the `tags=` keyword of the object builders (see [Object profiles and Value_Source](#object-profiles-and-value_source)); read values can also be written back |
 
 Single reference reads use these forms through local reads, client and endpoint
 RP/RPM, and device-aware singular and batch reads. A property-reference mapping
@@ -2412,6 +2412,39 @@ server.add_multistate_output(instance=1, name="Speed", number_of_states=3)
 server.add_multistate_value(instance=1, name="Season", number_of_states=4)
 ```
 
+#### Object profiles and Value_Source
+
+The analog, binary and multi-state builders, `add_color`,
+`add_color_temperature` and the two lighting outputs take `tags`,
+`profile_location` and `profile_name` (#1553). Each serves its row only when
+given: Tags is a list of `{"name": str, "value": PropertyValue or None}`
+mappings, the form a typed Tags read gives, so a read's `.value` builds the
+same tags; Profile_Location and Profile_Name are read-only over the network.
+The object refuses a tag name with a semicolon, a tag value that isn't
+primitive, a location whose URI scheme isn't http, https or bacnet, and a
+profile name without its vendor-number prefix, with BacnetProtocolError.
+
+`add_analog_value`, `add_binary_value` and `add_multistate_value` take
+`present_value_access`: `"commandable"` (the default; writes go through
+Priority_Array), `"writable"` (a write replaces Present_Value) or
+`"read_only"` (peers write it only while out of service). With a
+noncommandable access, `value_source_tracking=True` serves Value_Source: the
+writer of the last Present_Value write, who alone may then correct it (#1552).
+A commandable object tracks its writers through Priority_Array already, so
+asking it to track raises ValueError. `add_color` and `add_color_temperature`
+take `value_source_tracking` too.
+
+```python
+server.add_analog_value(
+    instance=2,
+    name="Remote setpoint",
+    present_value_access="writable",
+    value_source_tracking=True,
+    tags=[{"name": "zone", "value": PropertyValue.unsigned(3)}, {"name": "hvac"}],
+    profile_name="555-setpoint",
+)
+```
+
 #### Schedule & Notification
 
 ```python
@@ -3312,6 +3345,25 @@ moves to or from NaN or an infinity; the report has no Status_Flags.
 
 ```python
 server.add_lighting_output(instance=1, name="Dimmer")
+# Trims bound Tracking_Value; a colour link names the Color or Color
+# Temperature object that sets the output's colour (#1554).
+server.add_color(instance=1, name="Dimmer colour", present_value=(0.3127, 0.3290))
+server.add_color_temperature(instance=1, name="Dimmer white", present_value=2700)
+server.add_lighting_output(
+    instance=2,
+    name="Trimmed dimmer",
+    high_end_trim=90.0,
+    low_end_trim=10.0,
+    trim_fade_time=2000,
+    color_reference=ObjectIdentifier(ObjectType.COLOR, 1),
+    override_color_reference=ObjectIdentifier(ObjectType.COLOR_TEMPERATURE, 1),
+)
+server.add_binary_lighting_output(
+    instance=1, name="Switch", color_reference=ObjectIdentifier(ObjectType.COLOR, 1)
+)
+# Once started: the colour the output shows, as (source, (x, y)) or
+# (source, kelvin), following Color_Override; None without a colour object.
+source, colour = await server.lighting_color(ObjectIdentifier(ObjectType.LIGHTING_OUTPUT, 2))
 server.add_binary_lighting_output(instance=1, name="On/Off Light")
 ```
 

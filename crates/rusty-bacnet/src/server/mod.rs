@@ -217,6 +217,7 @@ mod server_methods {
     mod foreign_registration;
     mod life_safety_methods;
     mod lifecycle;
+    mod lighting_methods;
     mod loop_methods;
     mod network_port;
     mod notification_forwarder;
