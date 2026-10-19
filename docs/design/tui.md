@@ -208,7 +208,7 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 |---|---|---|
 | T0 | Reads, discovery, capture | None, except that a global or full-range Who-Is gets a one-line warning with the expected response volume and needs a second Enter (M0) |
 | T1 | Writes at priorities 9 to 16, non-commandable property writes | Preview (old to new, slot occupancy, whether the effective value changes), then Enter |
-| T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image |
+| T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image: it is logged (`L`, `--log-file`), not yet written to the ledger or the audit log |
 | T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. DCC defaults to a finite duration |
 | Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3); the deprecated plain-disable DCC option, which current-revision servers ignore (Clause 16.1) | Expert flag only |
 
@@ -300,7 +300,9 @@ distinctly.
   request-rate cap.
 - An active MS/TP join is T2: joining a trunk means taking part in token
   passing (Clause 9.5), so a duplicate or out-of-range MAC affects every device
-  on it.
+  on it. As built in #969, every join, a flags-only session's later ones
+  included, shows the dialog and needs `y`; one-shot commands take `--mstp`
+  as the request.
 - The first use of a profile records an authorization attestation with a
   timestamp.
 

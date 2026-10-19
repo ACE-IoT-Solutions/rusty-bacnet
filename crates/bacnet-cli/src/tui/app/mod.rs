@@ -278,6 +278,9 @@ pub(crate) struct App {
     pub(crate) sc: sc::ScState,
     /// The MS/TP screen: this station, its token state and counters.
     pub(crate) mstp: mstp::MstpState,
+    /// A flags-only MS/TP session's join confirmation, shown again before
+    /// every later join.
+    pub(crate) join_again: Option<Box<mstp::JoinDialog>>,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
     /// The screen in the body.
@@ -319,6 +322,7 @@ pub(crate) struct App {
 impl App {
     /// Initial state.
     pub(crate) fn new(config: AppConfig, log: LogRing) -> Self {
+        let join_again = config.join.clone().map(Box::new);
         let (link, overlay) = match (config.picker, config.join) {
             (Some(picker), _) => (Link::Picking, Overlay::Picker(picker)),
             (None, Some(join)) => (Link::Picking, Overlay::Join(Box::new(join))),
@@ -339,6 +343,7 @@ impl App {
             network: network::NetworkState::default(),
             sc: sc::ScState::default(),
             mstp: mstp::MstpState::default(),
+            join_again,
             who_has: None,
             screen: Screen::Main,
             next_req: 0,
@@ -710,6 +715,9 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             if matches!(app.link, Link::Down | Link::Failed(_)) {
                 if app.connection.is_some() {
                     app.open_connection();
+                } else if let Some(join) = app.join_again.clone() {
+                    // Joining again is confirmed again (T2).
+                    app.overlay = Overlay::Join(join);
                 } else {
                     app.link = Link::Connecting;
                     out.push(Command::Reconnect);

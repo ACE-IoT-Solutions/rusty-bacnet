@@ -199,6 +199,8 @@ async fn run(
                         // Like Reconnect: a profile session connects only through
                         // its reviewed preview, never through the interface picker.
                         if profiles.is_some() { reject(&sink, "review the profile before connecting").await; continue; }
+                        // MS/TP joins only through its confirmation (JoinTrunk), every time.
+                        if plan.as_ref().is_some_and(|plan| plan.args.mstp.is_some()) { reject(&sink, JOIN_FIRST).await; continue; }
                         if let Some(plan) = &mut plan {
                             plan.args.interface = interface; plan.args.broadcast = broadcast;
                             plan.await_interface = false;
@@ -223,6 +225,8 @@ async fn run(
                     Command::Reconnect => {
                         if profiles.is_some() { reject(&sink, "review the profile before reconnecting").await; continue; }
                         if active.is_some() { reject(&sink, "disconnect before reconnecting").await; continue; }
+                        // MS/TP joins only through its confirmation (JoinTrunk), every time.
+                        if plan.as_ref().is_some_and(|plan| plan.args.mstp.is_some()) { reject(&sink, JOIN_FIRST).await; continue; }
                         if let Some(plan) = &plan {
                             if plan.await_interface { reject(&sink, "choose an interface, or confirm joining the trunk, first").await; continue; }
                             generation += 1;
@@ -237,6 +241,9 @@ async fn run(
         tracing::error!("{error}");
     }
 }
+
+/// Why an MS/TP plan refuses Connect and Reconnect.
+const JOIN_FIRST: &str = "confirm joining the trunk first: an MS/TP session joins only on y";
 
 async fn reject(sink: &EventSink, error: &str) {
     sink.deliver(WorkerEvent::Rejected {

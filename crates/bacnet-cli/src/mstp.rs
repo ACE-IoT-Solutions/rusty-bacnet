@@ -60,6 +60,28 @@ pub(crate) fn parse_max_info_frames(text: &str) -> Result<u8, String> {
         .ok_or_else(|| "must be 1 to 255".into())
 }
 
+/// The global flags of the other transports, which MS/TP has no use for:
+/// B/IP's interface, port, broadcast and foreign-device settings, B/IPv6's
+/// and BACnet/SC's.
+const OTHER_TRANSPORT_FLAGS: [&str; 16] = [
+    "interface",
+    "port",
+    "broadcast",
+    "foreign_bbmd",
+    "ttl",
+    "renewal",
+    "ipv6",
+    "ipv6_interface",
+    "device_instance",
+    "sc",
+    "sc_url",
+    "sc_ca",
+    "sc_cert",
+    "sc_key",
+    "sc_vmac",
+    "sc_device_uuid",
+];
+
 /// Why `--mstp` needs `--mstp-mac`.
 const NEEDS_MAC: &str =
     "--mstp needs --mstp-mac (0 to 127): a station address no other device on the trunk uses";
@@ -68,8 +90,10 @@ const NEEDS_MAC: &str =
 const ABOVE_MAX_MASTER: &str = "no station would ever pass this one the token";
 
 /// The flag checks that take two flags, at parse time, so they fail as a
-/// usage error (exit status 2, nothing on stdout): `--mstp` needs
-/// `--mstp-mac`, and the MAC may not be above `--mstp-max-master`.
+/// usage error (exit status 2, nothing on stdout), on whichever side of the
+/// subcommand each flag is: `--mstp` needs a port name, `--mstp-mac`, and no
+/// other transport's flags; the MAC may not be above `--mstp-max-master`;
+/// and the other MS/TP flags need `--mstp`.
 pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Error> {
     use clap::error::ErrorKind;
     if matches.get_one::<String>("mstp").is_none() {
@@ -89,6 +113,27 @@ pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Erro
             )),
             None => Ok(()),
         };
+    }
+    let given = |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
+    // Clap's `conflicts_with` misses these too when they sit on the other
+    // side of the subcommand, and MS/TP would ignore them without a word.
+    if let Some(id) = OTHER_TRANSPORT_FLAGS.iter().find(|id| given(id)) {
+        return Err(clap::Error::raw(
+            ErrorKind::ArgumentConflict,
+            format!(
+                "--{} cannot be used with --mstp: it belongs to another transport\n",
+                id.replace('_', "-")
+            ),
+        ));
+    }
+    if matches
+        .get_one::<String>("mstp")
+        .is_some_and(|port| port.trim().is_empty())
+    {
+        return Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "--mstp needs a serial port name (see `bacnet mstp-ports`)\n",
+        ));
     }
     let Some(&mac) = matches.get_one::<u8>("mstp_mac") else {
         return Err(clap::Error::raw(

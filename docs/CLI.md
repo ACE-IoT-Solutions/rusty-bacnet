@@ -588,7 +588,9 @@ the port: a dialog states the station, baud rate, Max_Master and
 Max_Info_Frames, lists the serial ports (the one given first, then the
 others `mstp-ports` lists; a profile's own port only), and joins on `y`. Like
 the write session's T2 changes, nothing but `y` goes ahead; Esc goes back to
-the profile, or quits a flags-only session. `--passive` joins nothing. The
+the profile, or quits a flags-only session before its first join. Every later
+join (`c` after a disconnect or a failed join) shows the dialog again, and
+declining it then leaves the session disconnected. `--passive` joins nothing. The
 one-shot commands take `--mstp` itself as the request.
 
 **MS/TP screen.** `6` shows this station (port, MAC, baud rate, Max_Master,
@@ -1200,7 +1202,10 @@ does, and `COMn` in number order on Windows.
 
 Flag mistakes are usage errors: the CLI exits with status 2 before opening the
 port and prints nothing on stdout, and the message on stderr names the values
-the flag takes. A port that can't be opened exits with status 1.
+the flag takes. That includes an empty port name and, on either side of the
+subcommand, any B/IP, B/IPv6 or BACnet/SC flag (`-i`, `-p`, `-b`,
+`--foreign-bbmd`, `--ttl`, `--renewal`, `--ipv6*`, `--device-instance`,
+`--sc*`), which MS/TP would otherwise ignore. A port that can't be opened exits with status 1.
 
 The station runs its token handling on a dedicated thread. Its timing defaults
 suit a USB adapter: it waits up to 100 ms for the rest of a frame, and its

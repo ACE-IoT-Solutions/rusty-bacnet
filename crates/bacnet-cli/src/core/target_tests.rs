@@ -269,6 +269,9 @@ fn mstp_targets_name_a_station() {
     assert_eq!(mac(parse_target("mstp:0x7F")), [0x7F]);
     assert_eq!(mac(parse_target("mstp:0Xfe")), [0xFE]);
     for bad in [
+        "mstp:+5",
+        "mstp:0x+5",
+        "mstp: 5",
         "mstp:255",
         "mstp:0xFF",
         "mstp:256",

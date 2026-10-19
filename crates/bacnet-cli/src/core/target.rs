@@ -61,9 +61,11 @@ pub(crate) const MSTP_TEXT_PREFIX: &str = "mstp:";
 /// An MS/TP station's MAC from the text after `mstp:`: 0 to 254, in decimal
 /// or as `0x` and hex. 255 is the broadcast address, not a station.
 fn parse_mstp_station(text: &str) -> Result<u8, String> {
+    // Digits only: the integer parsers would also take a leading `+`.
     let value = match text.strip_prefix("0x").or(text.strip_prefix("0X")) {
-        Some(hex) => u8::from_str_radix(hex, 16).ok(),
-        None => text.parse::<u8>().ok(),
+        Some(hex) if hex.bytes().all(|b| b.is_ascii_hexdigit()) => u8::from_str_radix(hex, 16).ok(),
+        None if text.bytes().all(|b| b.is_ascii_digit()) => text.parse::<u8>().ok(),
+        _ => None,
     };
     match value {
         Some(station) if station != bacnet_transport::mstp::codec::BROADCAST_MAC => Ok(station),

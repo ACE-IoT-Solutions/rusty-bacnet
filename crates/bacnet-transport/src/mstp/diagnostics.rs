@@ -240,12 +240,12 @@ impl Counters {
         totals.add(take());
     }
 
-    /// Add the queues' counters to the totals after a send changed them.
     /// Publish the node's state, after the counters of the same event.
     pub(super) fn publish_node(&self, snapshot: MasterSnapshot) {
         *self.node.lock().unwrap_or_else(PoisonError::into_inner) = Some(snapshot.into());
     }
 
+    /// Add the queues' counters to the totals after a send changed them.
     pub(super) fn publish_queues(&self, queues: &SharedQueues) {
         let mut totals = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
         let (unicast, broadcast) = queues.take_counters();

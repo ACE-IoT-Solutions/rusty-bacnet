@@ -81,6 +81,31 @@ async fn invalid_mstp_flags_are_refused_with_the_allowed_values() {
             ],
             "cannot be used with",
         ),
+        // Split across the subcommand, either way round.
+        (
+            vec!["--sc", "devices", "--mstp", "/dev/x", "--mstp-mac", "1"],
+            "--sc cannot be used with --mstp",
+        ),
+        (
+            vec!["--mstp", "/dev/x", "--mstp-mac", "1", "devices", "--ipv6"],
+            "--ipv6 cannot be used with --mstp",
+        ),
+        (
+            vec![
+                "--mstp",
+                "/dev/x",
+                "--mstp-mac",
+                "1",
+                "devices",
+                "--foreign-bbmd",
+                "192.0.2.10",
+            ],
+            "--foreign-bbmd cannot be used with --mstp",
+        ),
+        (
+            vec!["--mstp", "", "--mstp-mac", "1", "devices"],
+            "--mstp needs a serial port name",
+        ),
     ] {
         let output = support::run(&args).await;
         support::failure(&output, diagnostic);

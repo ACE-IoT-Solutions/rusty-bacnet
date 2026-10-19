@@ -137,8 +137,8 @@ pub(crate) struct Cli {
 
     /// Join an MS/TP trunk as a master station on this serial port (see
     /// `bacnet mstp-ports`); needs --mstp-mac and the `serial` feature.
-    #[arg(long, global = true, value_name = "PORT",
-          conflicts_with_all = ["sc", "ipv6", "foreign_bbmd"])]
+    /// B/IP, B/IPv6 and SC flags are refused with it.
+    #[arg(long, global = true, value_name = "PORT")]
     pub(crate) mstp: Option<String>,
 
     /// MS/TP baud rate: 9600, 19200, 38400, 57600, 76800 or 115200.

@@ -51,6 +51,16 @@ fn parse<const N: usize>(args: [&'static str; N]) -> Result<crate::args::Cli, cl
     })
 }
 
+/// [`parse`] for a command line built at run time.
+fn parse_vec(args: Vec<&'static str>) -> Result<crate::args::Cli, clap::Error> {
+    crate::parse_on_large_stack(move || {
+        use clap::{CommandFactory, FromArgMatches};
+        let mut matches = crate::args::Cli::command().try_get_matches_from(args)?;
+        crate::args::capture_sources(&matches)?;
+        crate::args::Cli::from_arg_matches_mut(&mut matches)
+    })
+}
+
 #[test]
 fn each_flag_names_its_allowed_values() {
     for rate in BAUD_RATES {
@@ -157,20 +167,53 @@ fn the_cross_flag_checks_are_usage_errors() {
     );
     let error = parse(["bacnet", "--mstp-mac", "9", "devices"]).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-    for other in ["--sc", "--ipv6"] {
-        let error = parse([
+    // Another transport's flag, before or after the subcommand, on the
+    // same side as --mstp or the other one: refused, never dropped.
+    let mstp = ["--mstp", "/dev/x", "--mstp-mac", "1"];
+    for other in [
+        &["--sc"][..],
+        &["--ipv6"],
+        &["--foreign-bbmd", "192.0.2.10"],
+        &["-i", "10.0.0.5"],
+        &["--sc-url", "wss://hub:443"],
+        &["--ttl", "60"],
+        &["-p", "47809"],
+        &["--device-instance", "5"],
+    ] {
+        let shapes = [
+            [&["bacnet"][..], &mstp, other, &["devices"]].concat(),
+            [&["bacnet"][..], other, &["devices"], &mstp].concat(),
+            [&["bacnet"][..], &mstp, &["devices"], other].concat(),
+            [&["bacnet"][..], &["devices"], other, &mstp].concat(),
+        ];
+        for line in shapes {
+            let error = parse_vec(line.clone()).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{line:?}");
+            assert!(
+                error.to_string().contains("cannot be used with --mstp"),
+                "{error}"
+            );
+        }
+    }
+    for empty in ["", " "] {
+        let error = parse_vec(vec![
             "bacnet",
             "--mstp",
-            "/dev/x",
+            empty,
             "--mstp-mac",
             "1",
-            other,
             "devices",
         ])
         .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{other}");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
+        assert!(
+            error.to_string().contains("needs a serial port name"),
+            "{error}"
+        );
     }
     assert!(parse(["bacnet", "devices"]).unwrap().mstp.is_none());
+    // The other transports' flags are still fine without --mstp.
+    assert!(parse_vec(vec!["bacnet", "--sc", "devices", "--ttl", "60"]).is_ok());
 }
 
 /// A profile's settings get the flags' checks, naming its keys.

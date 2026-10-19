@@ -196,6 +196,31 @@ fn joining_from_flags_needs_y_and_takes_the_port_chosen() {
     assert!(app.quit);
 }
 
+/// Every later join from a flags-only session is confirmed again: after a
+/// failed join or a disconnect, `c` reopens the dialog rather than joining,
+/// and declining it then stays disconnected instead of quitting.
+#[test]
+fn joining_again_is_confirmed_again() {
+    let mut app = mstp_app(Some(JoinDialog::for_flags(settings(), vec![])));
+    let join = [Command::JoinTrunk {
+        port: "/dev/ttyUSB0".into(),
+    }];
+    assert_eq!(press(&mut app, KeyCode::Char('y')), join);
+    for link in [Link::Failed("Serial open failed".into()), Link::Down] {
+        app.link = link;
+        assert!(
+            press(&mut app, KeyCode::Char('c')).is_empty(),
+            "c must not join"
+        );
+        assert!(matches!(app.overlay, Overlay::Join(_)), "{:?}", app.overlay);
+        assert!(press(&mut app, KeyCode::Esc).is_empty());
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.quit, "declining a later join does not quit");
+        press(&mut app, KeyCode::Char('c'));
+        assert_eq!(press(&mut app, KeyCode::Char('y')), join);
+    }
+}
+
 /// A profile's connection waits for the same confirmation; declining goes
 /// back to the profile with nothing sent.
 #[test]
@@ -303,11 +328,21 @@ async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
     let (sink, mut events) = EventSink::channel(32);
     let (commands, rx) = tokio::sync::mpsc::channel(16);
     let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
-    commands.send(Command::Reconnect).await.unwrap();
-    let WorkerEvent::Rejected { error } = event(&mut events).await else {
-        panic!("Reconnect must not join");
+    // Nothing but JoinTrunk joins, before or after a first join.
+    let rejected = async |events: &mut tokio::sync::mpsc::Receiver<WorkerEvent>| {
+        let WorkerEvent::Rejected { error } = event(events).await else {
+            panic!("only JoinTrunk may join");
+        };
+        assert!(error.contains("confirm joining the trunk"), "{error}");
     };
-    assert!(error.contains("confirm joining the trunk"), "{error}");
+    let connect = || Command::Connect {
+        interface: std::net::Ipv4Addr::LOCALHOST,
+        broadcast: std::net::Ipv4Addr::BROADCAST,
+    };
+    commands.send(Command::Reconnect).await.unwrap();
+    rejected(&mut events).await;
+    commands.send(connect()).await.unwrap();
+    rejected(&mut events).await;
     let chosen = missing("chosen");
     commands
         .send(Command::JoinTrunk {
@@ -327,6 +362,19 @@ async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
             }
         }
     }
+    // The failed join cleared the wait; Reconnect and Connect still refuse.
+    for command in [Command::Reconnect, connect()] {
+        commands.send(command).await.unwrap();
+        rejected(&mut events).await;
+    }
+    commands
+        .send(Command::JoinTrunk { port: chosen })
+        .await
+        .unwrap();
+    assert_eq!(
+        event(&mut events).await,
+        WorkerEvent::SessionStarted { generation: 2 }
+    );
     drop((commands, events));
     tokio::time::timeout(Duration::from_secs(5), task)
         .await

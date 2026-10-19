@@ -226,8 +226,9 @@ impl App {
         out.push(command);
     }
 
-    /// Esc in the join confirmation: back to the profile, or for a
-    /// flags-only session, which has nothing else to do, quit.
+    /// Esc in the join confirmation: back to the profile; for a flags-only
+    /// session's first join, which leaves it nothing else to do, quit; for a
+    /// later one, stay disconnected.
     pub(super) fn decline_join(&mut self) {
         let Overlay::Join(dialog) = &self.overlay else {
             return;
@@ -237,8 +238,11 @@ impl App {
                 connection.pending = false;
             }
             self.overlay = Overlay::Connection;
-        } else {
+        } else if self.link == Link::Picking {
             self.quit = true;
+        } else {
+            // Declining a later join leaves the session disconnected.
+            self.overlay = Overlay::None;
         }
     }
 }
