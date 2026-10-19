@@ -14,7 +14,7 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 | Read one or several properties | `read`, `readm` | Handle object/property errors individually |
 | Read log/list ranges | `read-range` | Bound request size and result volume |
 | Observe changes | `subscribe` | Creates remote subscription state |
-| Write a value | `write` | Requires explicit site authorization and cleanup |
+| Write a value | `write` | Requires explicit site authorization and cleanup; after v0.13.0 also `--allow-write` |
 | Inspect BBMD tables | `bdt`, `fdt` | Table inspection is different from changing registration |
 | Packet analysis | `capture` | In the Linux release executables; a source build needs the `pcap` feature |
 | Alarm/device/file operations | See the full reference | Not ordinary read-only onboarding |

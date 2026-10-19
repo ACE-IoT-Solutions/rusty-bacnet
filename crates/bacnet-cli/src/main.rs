@@ -29,6 +29,7 @@ mod transport;
 mod tui;
 
 use crate::core::destination::{self, Destination};
+use crate::core::guard;
 use crate::core::range::parse_discover_range;
 use crate::core::target;
 use args::{Cli, Command};
@@ -417,7 +418,7 @@ async fn run<T: TransportPort + 'static>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match &cli.command {
         None | Some(Command::Shell) => {
-            shell::run_shell(client, is_sc, format).await?;
+            shell::run_shell(client, is_sc, format, cli.policy()).await?;
         }
         Some(cmd) => {
             execute_command(&client, cmd, format).await?;
@@ -452,11 +453,13 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         // Capture provenance before FromArgMatches removes argument values.
         sc_check::validate(&matches).unwrap_or_else(|error| error.exit());
         let explicit_args = args::capture_sources(&matches).unwrap_or_else(|error| error.exit());
+        let command_name = matches.subcommand_name().map(str::to_owned);
         let mut cli = Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit());
         cli.explicit_args = explicit_args;
+        cli.command_name = command_name;
         cli
     });
-    dispatch(cli, |cli| {
+    dispatch(cli, &mut guard::Stdin, |cli| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -466,9 +469,11 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
 }
 
 /// The network path owns runtime/tracing/transport initialization. Keeping it
-/// behind this boundary makes offline dispatch testable without any of them.
+/// behind this boundary makes offline dispatch testable without any of them,
+/// and the write guard runs here, before any of them (#972).
 fn dispatch(
     cli: Cli,
+    confirm: &mut dyn guard::Confirm,
     network: impl FnOnce(Cli) -> CliResult,
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     if let Some(Command::ScCheck { at_unix }) = cli.command {
@@ -481,7 +486,30 @@ fn dispatch(
         );
         return Ok(std::process::ExitCode::from(status));
     }
+    if let Err(refusal) = guard_one_shot(&cli, confirm) {
+        // Errors go to stderr and leave stdout empty, in either format.
+        match resolve_format(&cli) {
+            OutputFormat::Json => eprintln!("{}", refusal.to_json()),
+            OutputFormat::Table => output::print_error(&refusal.message),
+        }
+        return Ok(std::process::ExitCode::from(guard::EXIT_REFUSED));
+    }
     network(cli).map(|()| std::process::ExitCode::SUCCESS)
+}
+
+/// The write guard for a one-shot command. A bare `bacnet` (the shell)
+/// passes: the shell guards each command it runs.
+fn guard_one_shot(cli: &Cli, confirm: &mut dyn guard::Confirm) -> Result<(), guard::Refusal> {
+    let Some(command) = &cli.command else {
+        return Ok(());
+    };
+    let target = match command {
+        Command::Control { target, .. } | Command::Reinit { target, .. } => Some(target.as_str()),
+        _ => None,
+    };
+    // A name that wasn't captured classifies as nothing, so it is refused.
+    let name = cli.command_name.as_deref().unwrap_or_default();
+    guard::check(name, target, cli.policy(), confirm)
 }
 
 /// Stack for the thread that parses the command line; see `main`.
@@ -589,7 +617,7 @@ async fn cli_main(cli: Cli) -> CliResult {
         let mut client = transport::build_bip_client(&args).await?;
         match &cli.command {
             None | Some(Command::Shell) => {
-                shell::run_bip_shell(client, cli.foreign_bbmd, format).await?;
+                shell::run_bip_shell(client, cli.foreign_bbmd, format, cli.policy()).await?;
             }
             Some(cmd) => {
                 // Broadcasts reach the remote network once the BBMD has
@@ -630,72 +658,5 @@ async fn run_tui(cli: Cli) -> CliResult {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::Ipv6Addr;
-
-    use bacnet_transport::bip6::Bip6Transport;
-
-    use super::*;
-
-    #[test]
-    fn sc_check_never_invokes_runtime_or_network_initialization() {
-        use clap::Parser;
-        let cli = parse_on_large_stack(|| {
-            Cli::parse_from([
-                "bacnet",
-                "sc-check",
-                "--sc-cert",
-                "missing-offline-input",
-                "--json",
-            ])
-        });
-        let result = dispatch(cli, |_| {
-            panic!("offline command entered network initialization")
-        });
-        assert_eq!(result.unwrap(), std::process::ExitCode::from(3));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sc_check_parser_preserves_non_utf8_credential_bytes() {
-        use clap::Parser;
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        let cli = parse_on_large_stack(|| {
-            let mut arguments = ["bacnet", "sc-check", "--sc-cert"]
-                .map(std::ffi::OsString::from)
-                .to_vec();
-            arguments.push(std::ffi::OsString::from_vec(b"identity-\xff.pem".to_vec()));
-            Cli::parse_from(arguments)
-        });
-        assert_eq!(
-            cli.sc_cert.unwrap().as_os_str().as_bytes(),
-            b"identity-\xff.pem"
-        );
-    }
-
-    /// A one-shot command's `[ip]:port` target is the VMAC of the node
-    /// there, found with a Virtual-Address-Resolution before the command
-    /// runs (Clause U.5); `bip6:1234` names the same VMAC directly.
-    #[tokio::test]
-    async fn a_bip6_address_target_resolves_to_the_vmac_there() {
-        let mut server = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(1234));
-        let _server_rx = server.start().await.unwrap();
-        let port = server.local_address().unwrap().port();
-        let mut client = BACnetClient::bip6_builder()
-            .interface(Ipv6Addr::LOCALHOST)
-            .port(0)
-            // An instance VMAC: a random one needs a multicast probe at start,
-            // which Linux loopback can't carry.
-            .device_instance(4321)
-            .build()
-            .await
-            .unwrap();
-        let target = format!("[::1]:{port}");
-        let mac = resolve_target_mac(&client, &target).await.unwrap();
-        assert_eq!(mac, [0x00, 0x04, 0xD2]);
-        let mac = resolve_target_mac(&client, "bip6:1234").await.unwrap();
-        assert_eq!(mac, [0x00, 0x04, 0xD2]);
-        client.stop().await.unwrap();
-        server.stop().await.unwrap();
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

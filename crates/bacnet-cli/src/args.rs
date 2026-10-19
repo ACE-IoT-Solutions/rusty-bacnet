@@ -26,6 +26,24 @@ pub(crate) struct Cli {
     #[arg(skip)]
     pub(crate) explicit_args: Vec<String>,
 
+    /// The subcommand's canonical name, captured before extraction, for the
+    /// write guard's classification (`core::class`).
+    #[arg(skip)]
+    pub(crate) command_name: Option<String>,
+
+    /// Let commands that change a device run: writes, object and file
+    /// changes, alarm acknowledgment, time sync and unregister, and (with
+    /// --yes or a typed confirmation) communication control and reinitialize.
+    /// Given to the shell, it holds for the whole session. The TUI ignores
+    /// it: its writes need an armed write session.
+    #[arg(long, global = true)]
+    pub(crate) allow_write: bool,
+
+    /// Confirm communication control and reinitialize without typing the
+    /// target; they need it when stdin is not a terminal.
+    #[arg(long, global = true)]
+    pub(crate) yes: bool,
+
     /// Network interface IP address to bind (omit to select interactively in shell mode).
     #[arg(short, long, global = true)]
     pub(crate) interface: Option<Ipv4Addr>,
@@ -131,6 +149,16 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
+}
+
+impl Cli {
+    /// What `--allow-write` and `--yes` allow.
+    pub(crate) fn policy(&self) -> crate::core::guard::Policy {
+        crate::core::guard::Policy {
+            allow_write: self.allow_write,
+            yes: self.yes,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -496,8 +524,10 @@ mod tests {
             use clap::{CommandFactory, FromArgMatches};
             let mut matches = Cli::command().try_get_matches_from(args)?;
             let explicit_args = capture_sources(&matches)?;
+            let command_name = matches.subcommand_name().map(str::to_owned);
             let mut cli = Cli::from_arg_matches_mut(&mut matches)?;
             cli.explicit_args = explicit_args;
+            cli.command_name = command_name;
             Ok(cli)
         })
     }
@@ -545,6 +575,27 @@ mod tests {
         assert!(args.foreign_device.is_none());
         let cli = parse(["bacnet", "register", "192.0.2.10", "--ttl", "45"]).unwrap();
         assert_eq!(cli.ttl, 45);
+    }
+
+    /// The guard classifies by canonical name, so an alias resolves to it;
+    /// the guard flags go on either side of the subcommand (#972).
+    #[test]
+    fn aliases_give_the_canonical_name_and_guard_flags_are_global() {
+        let cli = parse(["bacnet", "wp", "10.0.0.1", "av:1", "pv", "1"]).unwrap();
+        assert_eq!(cli.command_name.as_deref(), Some("write"));
+        assert_eq!(cli.policy(), crate::core::guard::Policy::default());
+        let cli = parse([
+            "bacnet",
+            "--allow-write",
+            "dcc",
+            "10.0.0.1",
+            "enable",
+            "--yes",
+        ])
+        .unwrap();
+        assert_eq!(cli.command_name.as_deref(), Some("control"));
+        assert!(cli.allow_write && cli.yes);
+        assert_eq!(parse(["bacnet"]).unwrap().command_name, None);
     }
 
     #[test]

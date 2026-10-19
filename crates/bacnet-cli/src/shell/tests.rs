@@ -205,3 +205,67 @@ fn status_shows_each_local_address_as_a_target() {
         ("Local MAC:", "[07]".to_string())
     );
 }
+
+/// A terminal that answers with the typed lines, recording each prompt.
+struct Typed(Vec<&'static str>, Vec<String>);
+
+impl guard::Confirm for Typed {
+    fn interactive(&self) -> bool {
+        true
+    }
+    fn ask(&mut self, prompt: &str) -> Option<String> {
+        self.1.push(prompt.to_string());
+        self.0.pop().map(str::to_string)
+    }
+}
+
+/// The shell guards each command under the flags it was started with
+/// (#972), and a device-management confirmation names the default target
+/// when the command leaves it out.
+#[test]
+fn the_shell_guards_writes_with_the_launch_flags() {
+    let mut session = Session::new();
+    let none = Policy::default();
+    let allow = Policy {
+        allow_write: true,
+        yes: false,
+    };
+    let mut tty = Typed(vec![], vec![]);
+    for line in [
+        "read 10.0.0.1 ai:1 pv",
+        "subscribe 10.0.0.1 ai:1",
+        "help",
+        "bogus",
+    ] {
+        let w = tokenize(line);
+        assert!(allowed(&w[0], &w[1..], &session, none, &mut tty), "{line}");
+    }
+    for line in [
+        "write 10.0.0.1 av:1 pv 1",
+        "wpm 10.0.0.1 av:1 pv=1",
+        "ts 10.0.0.1",
+    ] {
+        let w = tokenize(line);
+        assert!(!allowed(&w[0], &w[1..], &session, none, &mut tty), "{line}");
+        assert!(allowed(&w[0], &w[1..], &session, allow, &mut tty), "{line}");
+    }
+    assert!(tty.1.is_empty());
+    session.set_target(vec![], "1234".into());
+    let mut tty = Typed(vec!["1234"], vec![]);
+    let w = tokenize("reinit warmstart");
+    assert!(allowed(&w[0], &w[1..], &session, allow, &mut tty));
+    assert!(tty.1[0].contains("device instance (1234)"), "{:?}", tty.1);
+    // Input ended: declined.
+    assert!(!allowed(&w[0], &w[1..], &session, allow, &mut tty));
+}
+
+#[test]
+fn a_shell_refusal_names_the_launch_flags() {
+    let refusal =
+        guard::check("write", None, Policy::default(), &mut Typed(vec![], vec![])).unwrap_err();
+    assert_eq!(
+        shell_refusal(&refusal),
+        "write is a write command and needs --allow-write; nothing was sent. \
+         The shell takes it at launch: bacnet --allow-write shell"
+    );
+}

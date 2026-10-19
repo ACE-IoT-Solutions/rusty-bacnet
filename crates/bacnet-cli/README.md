@@ -44,6 +44,10 @@ read-only until `W` arms a time-boxed write session on a profile; every write
 is previewed, kept in a revertible ledger and recorded in an audit log.
 `--passive` transmits nothing.
 
+One-shot commands and the shell refuse anything that changes a device unless
+given `--allow-write`; communication control and reinitialize also need
+`--yes` when stdin is not a terminal, or the device instance typed at one.
+
 The [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/main/docs/CLI.md)
 lists every command and option.
 
