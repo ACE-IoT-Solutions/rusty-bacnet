@@ -104,8 +104,9 @@ fn hub_state(app: &App) -> Option<String> {
     })
 }
 
-/// Key hints, the filter line, or a status message.
-pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+/// Key hints, the filter line, or a status message. `tab_focus`: the
+/// Network screen's wide layout, where Tab moves the focus between panes.
+pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, tab_focus: bool) {
     let line = if let Overlay::Command(text) = &app.overlay {
         Line::from(vec![
             Span::styled(" :", theme.accent()),
@@ -131,6 +132,15 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("r", "ask routers"),
                 ("Tab", "tables"),
                 (":", "find NAME"),
+                ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+            _ if tab_focus => &[
+                ("r", "read tables"),
+                ("m", "survey BBMDs"),
+                ("Tab", "focus pane/networks"),
+                (":", "bbmd ADDRESS"),
                 ("Esc", "back"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -258,7 +268,7 @@ const SCREENS: Section = (
     &[
         ("3-7  1  x", "Watch/net/SC/MS-TP/capture; devices; unwatch"),
         (":", "watch DEV OBJ [PROP]; csv on|off; find NAME"),
-        ("r  m  Tab", "Network: read BBMD/routers; survey; next tab"),
+        ("r  m  Tab", "Network: read BBMD/routers; survey; tab/pane"),
     ],
 );
 
