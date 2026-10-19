@@ -86,13 +86,14 @@
 #
 # The router rows are from when that image joined, on 2026-10-13, same
 # toolchain and QEMU (#1679): peaks of 5648 octets on lm3s6965evb and 5640
-# on netduinoplus2. Most of it is the scenario's own frame, 3.8 KB on
-# ARMv7-M, which holds the 704-octet summary, the MS/TP core (528), the
+# on netduinoplus2. Most of it was the scenario's own frame, 3.8 KB on
+# ARMv7-M, which held the 704-octet summary, the MS/TP core (528), the
 # BBMD port with its node (712), the router (88) and the BBMD's tables
-# (72); the router's receive and the B/IP port's send go about 1.8 KB
-# deeper. micro:bit and SiFive E have no router row: the image's statics,
-# 15,504 octets, leave 880 octets of their 16 KiB for a stack that needs
-# 5.6 KB, so emulate-firmware.sh builds it for them but doesn't run it.
+# (72); the router's receive and the B/IP port's send went about 1.8 KB
+# deeper. Its peak is now 4456 octets (#1774, below). micro:bit and
+# SiFive E have no router row: the image's statics, 15,504 octets, leave
+# 880 octets of their 16 KiB for a stack that needs about 4.5 KB, so
+# emulate-firmware.sh builds it for them but doesn't run it.
 # Run there, it faults as its stack reaches the statics. No smaller router
 # image is offered: Clause 9.3 asks a router's MS/TP port for extended
 # frames, and their buffers are most of the statics.

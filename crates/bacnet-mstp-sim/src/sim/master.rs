@@ -592,11 +592,11 @@ impl Sim {
                 now,
                 Class::Scheduled,
                 station,
-                Event::Enqueue {
+                Event::AppSend {
                     node,
+                    incarnation,
                     destination,
                     npdu,
-                    priority: NetworkPriority::Normal,
                 },
             );
         }
@@ -617,11 +617,11 @@ impl Sim {
                 payload,
             },
             // Nothing holds the line open for it: it waits for the token.
-            None => Event::Enqueue {
+            None => Event::AppSend {
                 node,
+                incarnation,
                 destination: source,
                 npdu: payload,
-                priority: NetworkPriority::Normal,
             },
         };
         self.push(now + delay, Class::Scheduled, station, event);

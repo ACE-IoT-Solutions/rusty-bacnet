@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use bacnet_mstp_codec::FrameType;
-use bacnet_mstp_sim::{Answer, MasterSpec, Outbox, Received, Sim, SimConfig, BROADCAST};
+use bacnet_mstp_sim::{Answer, Fault, MasterSpec, Outbox, Received, Sim, SimConfig, BROADCAST};
 
 use common::*;
 
@@ -102,4 +102,46 @@ fn a_request_the_application_leaves_unanswered_is_postponed() {
         sent_by(sim.frames(), 3, FrameType::REPLY_POSTPONED).len(),
         1
     );
+}
+
+/// An answer the application planned before its node lost power is gone
+/// with the application's state: whether the node is back on when the
+/// answer falls due (30 ms) or still off (300 ms), it never sends it, and
+/// nothing is refused at its queue in the meantime.
+#[test]
+fn a_planned_answer_does_not_survive_a_power_cycle() {
+    for back_on in [30, 300] {
+        let answer_late = |received: &Received<'_>, _: &mut Outbox| {
+            (received.npdu == npdu(false, 0x44)).then(|| Answer::Reply {
+                delay: millis(200),
+                npdu: npdu(false, 0xA4),
+            })
+        };
+        let mut sim = Sim::new(SimConfig::new(BAUD));
+        sim.add_master(MasterSpec::new(0, 3, BAUD));
+        sim.add_master(MasterSpec::new(3, 3, BAUD).application(answer_late));
+        sim.enqueue(ms(1_000), 0, 3, &npdu(false, 0x44));
+        while sim.deliveries(3).is_empty() {
+            assert!(sim.now() < ms(2_000), "no delivery");
+            sim.run_for(millis(1));
+        }
+        let delivered = sim.deliveries(3)[0].at;
+        sim.inject(delivered + millis(10), Fault::PowerOff { station: 3 });
+        sim.inject(delivered + millis(back_on), Fault::PowerOn { station: 3 });
+        sim.run_until(ms(3_000));
+        sim.assert_no_violations();
+
+        assert!(
+            sim.frames()
+                .iter()
+                .all(|frame| frame.data != npdu(false, 0xA4)),
+            "back on after {back_on} ms:\n{}",
+            log(sim.frames())
+        );
+        assert!(
+            sim.rejects(3).is_empty(),
+            "back on after {back_on} ms: {:?}",
+            sim.rejects(3)
+        );
+    }
 }

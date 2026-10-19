@@ -37,8 +37,17 @@ impl WireTiming {
 
     /// The same nominal rate, sent `ppm` parts per million fast (or slow,
     /// when negative): the grid a node with that UART error sends on.
+    ///
+    /// # Panics
+    ///
+    /// If `ppm` is outside [`MAX_SKEW_PPM`](crate::MAX_SKEW_PPM) either
+    /// way.
     #[must_use]
     pub const fn with_rate_error(self, ppm: i32) -> Self {
+        assert!(
+            ppm.abs() <= crate::MAX_SKEW_PPM,
+            "a rate error outside the one percent Clause 9.2.3 allows"
+        );
         Self {
             baud: self.baud,
             ppm,

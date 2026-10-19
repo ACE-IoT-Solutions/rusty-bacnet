@@ -172,6 +172,8 @@ impl Sim {
         // check uses. A core that dispatched after hearing the other frame is
         // at fault whatever its adapter.
         let dispatched = |tx: Option<TxId>| tx.and_then(|tx| self.meta.get(&tx)?.dispatched);
+        // The nominal octet time, even for a node whose UART is skewed: at
+        // most 1% off, too little to change this classification.
         let first_heard = |tx: Option<TxId>| {
             tx.and_then(|tx| self.line.owner(tx))
                 .map(|t| t.start + self.timing.octet())

@@ -20,6 +20,21 @@ const MILLION: i128 = 1_000_000;
 /// How far one master's rates are off nominal, in parts per million.
 /// Positive is fast. The default is a perfect node.
 ///
+/// One percent is a stress band, far beyond a crystal-driven node, which
+/// is within about 100 ppm; it is what an RC oscillator or a fractional
+/// baud divider can reach.
+///
+/// Known limit (#1804): the simulator's deadlines are exact, so two nodes
+/// can stay in lockstep where real ones fall out of step through
+/// SilenceTimer's coarse resolution and their timers' phase. At 9,600 and
+/// 19,200 baud, adjacent masters at opposite clock edges keep colliding
+/// at token generation unless their adapters add deadline jitter; at
+/// 38,400 baud and above they collide once, then form a ring.
+///
+/// Only the core's clock is skewed. A [`HostSpec`](crate::HostSpec)
+/// adapter's own timers (read latency, drain, echo grace) stay on the
+/// line's clock; that combination is untested.
+///
 /// - `baud_ppm`: its UART's bit rate. A fast UART's bits are shorter, so
 ///   its frames take less time on the line; receivers take them as sent,
 ///   since a UART tolerates far more than the two percent two nodes at

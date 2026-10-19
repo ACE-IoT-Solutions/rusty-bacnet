@@ -123,6 +123,14 @@ pub(crate) enum Event {
         node: usize,
         send: ScriptSend,
     },
+    /// An NPDU the node's application sends, fenced to the incarnation
+    /// that decided it: a node that lost power since never sends it.
+    AppSend {
+        node: usize,
+        incarnation: u64,
+        destination: u8,
+        npdu: Vec<u8>,
+    },
     Enqueue {
         node: usize,
         destination: u8,
@@ -674,6 +682,20 @@ impl Sim {
                 }
             }
             Event::ScriptSend { node, send } => self.script_send(node, send),
+            Event::AppSend {
+                node,
+                incarnation,
+                destination,
+                npdu,
+            } => {
+                // Dropped, not refused, if the node lost power since: its
+                // application's state went with it.
+                if self.master_mut(node).is_some_and(|master| {
+                    master.incarnation == incarnation && master.core.is_some()
+                }) {
+                    self.enqueue_now(node, destination, &npdu, NetworkPriority::Normal);
+                }
+            }
             Event::Enqueue {
                 node,
                 destination,

@@ -22,7 +22,8 @@ pub const BROADCAST: u8 = 0xFF;
 /// An NPDU a master's core delivered to its application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Received<'a> {
-    /// When the core delivered it, on the simulator's clock.
+    /// When the core delivered it, on the line's clock, not the node's
+    /// own skewed one (see [`Skew`](crate::Skew)).
     pub at: Instant,
     /// The station that sent it.
     pub source: u8,
@@ -36,7 +37,8 @@ pub struct Received<'a> {
     pub expects_reply: bool,
 }
 
-/// How an application answers a delivered NPDU.
+/// How an application answers a delivered NPDU. Its delays run on the
+/// line's clock, whatever the node's [`Skew`](crate::Skew).
 ///
 /// For a request whose frame [awaits an answer](Received::expects_reply), an answer
 /// the core refuses as too late (it already sent Reply Postponed, or the

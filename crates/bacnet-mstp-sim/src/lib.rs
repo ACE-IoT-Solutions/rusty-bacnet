@@ -208,7 +208,14 @@
 //! deadline is serviced once that clock reaches it. The turnaround check
 //! measures on the same clock, since it checks a timer the core keeps; the
 //! usage-delay and reply-delay checks, and every record, stay on the line's
-//! clock, since they are what the node's peers rely on.
+//! clock, since they are what the node's peers rely on. So do application
+//! delays and host-adapter timers.
+//!
+//! One percent is a stress band, far wider than a crystal's 100 ppm. At its
+//! edges, adjacent masters' token-generation slots meet: at 38,400 baud
+//! and above they collide once and form a ring, but at 9,600 and 19,200
+//! baud the simulator's exact timers keep them in lockstep until the
+//! adapters add deadline jitter (#1804).
 //!
 //! **Scripted stations** decode the line with the codec's stream decoder
 //! and react to frames through a [`Script`]: a minimal master that answers
