@@ -19,6 +19,7 @@
 //! - [`network`]: the Network screen's messages and its BDT consistency
 //!   matrix (B/IP foreign-device status, BDT and FDT).
 //! - [`sc`]: the SC screen's messages and the connection doctor (#967).
+//! - [`mstp`]: the MS/TP screen's messages and diagnostics sampling (#969).
 //!
 //! The TUI is read-only by default: discovery, the device browser's reads,
 //! the watch list's reads and finite COV subscriptions, and finite
@@ -30,6 +31,9 @@ mod event_loop;
 mod keymap;
 mod log_layer;
 mod message;
+// Without `serial` no session joins a trunk; the MS/TP screen still draws.
+#[cfg_attr(not(feature = "serial"), allow(dead_code))]
+mod mstp;
 mod network;
 mod point;
 mod profile;
@@ -79,7 +83,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("{hint}");
         std::process::exit(1);
     }
-    let kind = if cli.sc {
+    let kind = if cli.mstp.is_some() {
+        TransportKind::Mstp
+    } else if cli.sc {
         TransportKind::Sc
     } else if cli.ipv6 {
         TransportKind::Bip6
@@ -127,6 +133,10 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls");
         std::process::exit(1);
     }
+    if kind == TransportKind::Mstp && !cfg!(feature = "serial") {
+        eprintln!("Error: {}", crate::mstp::NO_SERIAL);
+        std::process::exit(1);
+    }
 
     let log = LogRing::new(LOG_CAPACITY);
     if let Err(error) = init_tracing(cli.verbose, log_file.as_deref(), &log) {
@@ -134,11 +144,11 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         std::process::exit(1);
     }
 
-    let (plan, profiles, connection, picker) = if let Some((service, connection)) =
+    let (plan, profiles, connection, picker, join) = if let Some((service, connection)) =
         profile::startup::open(&cli, profile::store::Store::discover)
             .map_err(std::io::Error::other)?
     {
-        (None, Some(service), Some(connection), None)
+        (None, Some(service), Some(connection), None, None)
     } else {
         // A passive session binds nothing, so there is no interface to pick.
         let (interface, broadcast, picker) = if options.safety.passive {
@@ -149,12 +159,24 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         };
         let args =
             TransportArgs::from_cli(&cli, interface, broadcast).map_err(std::io::Error::other)?;
+        // Joining a trunk waits for its confirmation (T2), which can also
+        // pick another port; a passive session joins nothing.
+        let join = args
+            .mstp
+            .clone()
+            .filter(|_| !options.safety.passive)
+            .map(|settings| {
+                app::mstp::JoinDialog::for_flags(
+                    settings,
+                    crate::mstp::list_ports().unwrap_or_default(),
+                )
+            });
         let plan = ConnectPlan {
             kind,
             args,
-            await_interface: picker.is_some(),
+            await_interface: picker.is_some() || join.is_some(),
         };
-        (Some(plan), None, None, picker)
+        (Some(plan), None, None, picker, join)
     };
     let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     let mut app = Box::new(App::new(
@@ -163,6 +185,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
             style: kind.style(),
             color,
             picker,
+            join,
             passive: options.safety.passive,
             now: tokio::time::Instant::now().into_std(),
         },

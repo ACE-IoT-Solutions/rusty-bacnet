@@ -206,11 +206,25 @@ async fn run(
                             active = start(plan, generation, &sink, &options).await;
                         } else { reject(&sink, "select a profile before connecting").await; }
                     }
+                    Command::JoinTrunk { port } => {
+                        if active.is_some() { reject(&sink, "disconnect before joining again").await; continue; }
+                        // A profile joins through its reviewed preview and its own confirmation.
+                        if profiles.is_some() { reject(&sink, "review the profile before joining").await; continue; }
+                        match plan.as_mut() {
+                            Some(next) if next.args.mstp.is_some() => {
+                                if let Some(mstp) = &mut next.args.mstp { mstp.port = port; }
+                                next.await_interface = false;
+                                generation += 1;
+                                active = start(next, generation, &sink, &options).await;
+                            }
+                            _ => reject(&sink, "this session has no MS/TP trunk to join").await,
+                        }
+                    }
                     Command::Reconnect => {
                         if profiles.is_some() { reject(&sink, "review the profile before reconnecting").await; continue; }
                         if active.is_some() { reject(&sink, "disconnect before reconnecting").await; continue; }
                         if let Some(plan) = &plan {
-                            if plan.await_interface { reject(&sink, "choose an interface first").await; continue; }
+                            if plan.await_interface { reject(&sink, "choose an interface, or confirm joining the trunk, first").await; continue; }
                             generation += 1;
                             active = start(plan, generation, &sink, &options).await;
                         }

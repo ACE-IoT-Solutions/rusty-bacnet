@@ -19,6 +19,8 @@ pub(crate) enum Key {
     New,
     /// Start a new BACnet/SC profile.
     NewSc,
+    /// Start a new MS/TP profile.
+    NewMstp,
     Edit,
     Reload,
     List,
@@ -61,6 +63,20 @@ pub(crate) const SC_LABELS: [&str; 12] = [
     "Key file",
     "VMAC",
     "Device UUID",
+    "Timeout ms",
+    "Pacing ms",
+    "Writes",
+    "Dangerous",
+];
+
+/// MS/TP editor fields. The port is one `bacnet mstp-ports` lists.
+pub(crate) const MSTP_LABELS: [&str; 10] = [
+    "Name",
+    "Serial port",
+    "MAC (0-127)",
+    "Baud",
+    "Max master",
+    "Info frames",
     "Timeout ms",
     "Pacing ms",
     "Writes",
@@ -150,6 +166,7 @@ impl Connection {
         match self.transport {
             Transport::Bip => &BIP_LABELS,
             Transport::Sc => &SC_LABELS,
+            Transport::Mstp => &MSTP_LABELS,
         }
     }
     pub(crate) fn reply(&mut self, reply: Result<Reply, String>) {
@@ -221,6 +238,23 @@ impl Connection {
                 s.min_interval_ms.to_string(),
             ]);
         }
+        if let Some(m) = &p.mstp {
+            // A new profile's MAC starts blank: it is a choice, not a default.
+            let mac = if self.creating {
+                String::new()
+            } else {
+                m.mac.to_string()
+            };
+            fields.extend([
+                m.port.clone(),
+                mac,
+                m.baud.to_string(),
+                m.max_master.to_string(),
+                m.max_info_frames.to_string(),
+                m.timeout_ms.to_string(),
+                m.min_interval_ms.to_string(),
+            ]);
+        }
         fields.push(writes_text(p.safety.writes));
         fields.push(p.safety.dangerous.to_string());
         self.fields = fields;
@@ -233,6 +267,7 @@ impl Connection {
         let mut profile = self.saved.clone().unwrap_or_else(|| match self.transport {
             Transport::Bip => Profile::default(),
             Transport::Sc => Profile::sc_default(),
+            Transport::Mstp => Profile::mstp_default(),
         });
         let f = &self.fields;
         if let Some(b) = &mut profile.bip {
@@ -281,6 +316,21 @@ impl Connection {
                 .parse()
                 .map_err(|_| "Pacing must be an unsigned number")?;
         }
+        if let Some(m) = &mut profile.mstp {
+            m.port = f[1].trim().to_string();
+            m.mac = f[2].parse().map_err(|_| "MAC must be 0 to 127")?;
+            m.baud = f[3]
+                .parse()
+                .map_err(|_| "Baud must be 9600, 19200, 38400, 57600, 76800 or 115200")?;
+            m.max_master = f[4].parse().map_err(|_| "Max master must be 0 to 127")?;
+            m.max_info_frames = f[5].parse().map_err(|_| "Info frames must be 1 to 255")?;
+            m.timeout_ms = f[6]
+                .parse()
+                .map_err(|_| "Timeout must be an unsigned number")?;
+            m.min_interval_ms = f[7]
+                .parse()
+                .map_err(|_| "Pacing must be an unsigned number")?;
+        }
         let n = f.len();
         profile.safety.writes = match f[n - 2].as_str() {
             "never" => Writes::Never,
@@ -292,11 +342,9 @@ impl Connection {
             "true" => true,
             _ => return Err("Dangerous must be true or false".into()),
         };
-        if self
-            .saved
-            .as_ref()
-            .is_some_and(|saved| saved.bip != profile.bip || saved.sc != profile.sc)
-        {
+        if self.saved.as_ref().is_some_and(|saved| {
+            saved.bip != profile.bip || saved.sc != profile.sc || saved.mstp != profile.mstp
+        }) {
             profile.authorized_at_unix = None;
             profile.authorized_safety = None;
         }
@@ -377,6 +425,10 @@ impl Connection {
             }
             (_, Key::NewSc) => {
                 self.create(Profile::sc_default());
+                None
+            }
+            (_, Key::NewMstp) => {
+                self.create(Profile::mstp_default());
                 None
             }
             (Screen::Preview, Key::Edit) => {

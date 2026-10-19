@@ -264,13 +264,19 @@ fn rank(name: &str) -> (u8, u32) {
 /// `names` without repeats, preferred names first (see [`rank`]), and
 /// otherwise in the order given.
 pub(crate) fn order_ports(names: Vec<String>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut names: Vec<String> = names
-        .into_iter()
-        .filter(|name| seen.insert(name.clone()))
-        .collect();
+    let mut names = dedup(names);
     names.sort_by_key(|name| rank(name));
     names
+}
+
+#[cfg_attr(not(feature = "serial"), allow(dead_code))]
+/// `names` without repeats, each kept where it first appears.
+pub(crate) fn dedup(names: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .collect()
 }
 
 /// The serial ports the operating system reports, in [`order_ports`]'s
@@ -299,7 +305,7 @@ pub(crate) fn list_ports() -> Result<Vec<String>, String> {
 }
 
 /// The advice for a build without the `serial` feature.
-#[cfg(not(feature = "serial"))]
+#[cfg_attr(all(feature = "serial", not(feature = "tui")), allow(dead_code))]
 pub(crate) const NO_SERIAL: &str = "MS/TP requires the 'serial' feature. Rebuild with:\n  \
      cargo install bacnet-cli --features serial";
 

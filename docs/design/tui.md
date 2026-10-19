@@ -628,7 +628,7 @@ cargo nextest run -p bacnet-cli --release -E 'test(drawing_a_full_device_table)'
 | TUI (crossterm) | yes | yes (Terminal.app, iTerm2) | Windows Terminal; conhost on Windows 10 1703 and later. mintty and Git Bash are not supported terminals |
 | B/IP | yes | yes | yes; wildcard local-address discovery is missing (#952) |
 | BACnet/SC | yes | yes | yes |
-| MS/TP participant (planned) | yes: USB auto-direction, kernel RS-485 (`TIOCSRS485`), `serial-gpio` | experimental: USB auto-direction only, `/dev/cu.*` | experimental: USB auto-direction only, `COMn` |
+| MS/TP participant (#969) | yes, in the release binary: USB auto-direction (kernel RS-485 and `serial-gpio` stay library-only) | experimental, source builds with `serial`: USB auto-direction, `/dev/cu.*` | experimental, source builds with `serial`: USB auto-direction, `COMn` |
 | MS/TP passive monitor (planned) | yes | experimental | experimental (host timer resolution limits timing accuracy) |
 | Own-traffic capture (planned) | yes | yes | yes |
 | Wire capture (libpcap) | yes (root or CAP_NET_RAW) | builds | needs the Npcap SDK |

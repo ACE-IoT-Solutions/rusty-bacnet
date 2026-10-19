@@ -252,10 +252,11 @@ bacnet --ipv6 tui                        # BACnet/IPv6
 bacnet --sc --sc-url wss://hub:443 --sc-ca ca.pem --sc-cert me.pem \
   --sc-key me.key --sc-vmac 02:00:00:00:00:09 \
   --sc-device-uuid 00112233-4455-6677-8899-aabbccddeeff tui   # BACnet/SC
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui   # MS/TP (serial feature); confirm the join with y
 bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
 ```
 
-`bacnet tui` opens a profile dialog (B/IP or BACnet/SC) before connecting. With no saved
+`bacnet tui` opens a profile dialog (B/IP, BACnet/SC or MS/TP) before connecting. With no saved
 profiles it opens creation; with one it previews that connection; with several
 it shows a picker. `--profile NAME` selects one directly. The Devices screen is
 a live table of I-Am answers, with a Who-Is form. The status bar shows the
@@ -267,15 +268,15 @@ The design and planned screens (SC, MS/TP, capture) are in
 
 Explicit global network flags without `--profile`, or `--no-profile`, start
 the existing flags-only connection flow and do not read or write profiles or
-workspaces. B/IPv6 uses that flow only; named profiles support B/IP and
-BACnet/SC. Global flags can appear before or after `tui`. With `--profile`, a
+workspaces. B/IPv6 uses that flow only; named profiles support B/IP,
+BACnet/SC and MS/TP. Global flags can appear before or after `tui`. With `--profile`, a
 flag for the other transport (say `--port` on an SC profile) is an error.
 
 **Tui flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile <NAME>` | | Preview a named B/IP or SC profile; explicit global flags override saved values |
+| `--profile <NAME>` | | Preview a named B/IP, SC or MS/TP profile; explicit global flags override saved values |
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
 | `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. The ledger can still be viewed |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
@@ -417,6 +418,27 @@ writes = "session"
 dangerous = false
 ```
 
+An MS/TP profile has an `[mstp]` table. `port` and `mac` have no default;
+the rest default as shown:
+
+```toml
+version = 1
+transport = "mstp"
+
+[mstp]
+port = "/dev/serial/by-id/usb-FTDI_USB-RS485-if00-port0"
+mac = 3
+baud = 38400
+max_master = 127
+max_info_frames = 1
+timeout_ms = 6000
+min_interval_ms = 0
+
+[safety]
+writes = "session"
+dangerous = false
+```
+
 Local connection does not establish that a BBMD accepted registration. See
 `L` for the first outcome; refusal or timeout is logged while renewal retries
 continue. Disconnect stops local renewals and releases the client; it does
@@ -452,7 +474,7 @@ client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `3` / `4` / `5` / `1` | Show the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / back to the devices |
+| `3` / `4` / `5` / `6` / `1` | Show the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / back to the devices |
 | `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS`, `find NAME` |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
@@ -559,6 +581,27 @@ that drops the upgrade, or a duplicate VMAC. A failed connect opens the
 doctor. Connects, losses, reconnect attempts, failover and the primary's
 return go on the screen's timeline and in the log pane, and the status bar
 names the hub in use. The one-shot `--sc` commands report errors as before.
+
+**Joining an MS/TP trunk.** An MS/TP session adds a master to the trunk's
+token ring, which every station on it notices, so the TUI asks before it opens
+the port: a dialog states the station, baud rate, Max_Master and
+Max_Info_Frames, lists the serial ports (the one given first, then the
+others `mstp-ports` lists; a profile's own port only), and joins on `y`. Like
+the write session's T2 changes, nothing but `y` goes ahead; Esc goes back to
+the profile, or quits a flags-only session. `--passive` joins nothing. The
+one-shot commands take `--mstp` itself as the request.
+
+**MS/TP screen.** `6` shows this station (port, MAC, baud rate, Max_Master,
+Max_Info_Frames), whether it holds the token, the master state (Clause 9.5.6
+names), the next station and the one it polls, and a warning when it believes
+it is the only master. Beside it are the transport's counters, read once a
+second: frames received and sent, NPDUs delivered, tokens passed, retried and
+regenerated, invalid and aborted frames, reply timeouts, postponed and late
+replies, deadline misses, frames from another station with this MAC, queue
+refusals and serial errors. `z` counts from now (the transport keeps its totals;
+the screen shows the change since), and Space pauses the screen or follows the
+counters again. The receive-only monitor and the frame view are separate
+screens (#970, #971).
 
 #### Write sessions
 
