@@ -96,15 +96,15 @@ pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
         Target::Bip6(peer) => bip6_vmac(client.transport(), peer).await,
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
-                "Device {instance} is behind a router; only read, readm, write and \
-                 subscribe (and the shell's writem) reach routed devices"
+                "Device {instance} is behind a router; only read, readm, write, \
+                 writem and subscribe reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
-            "'{text}' is a routed target; only read, readm, write and subscribe (and \
-             the shell's writem) reach routed devices"
+            "'{text}' is a routed target; only read, readm, write, writem and \
+             subscribe reach routed devices"
         )),
     }
 }

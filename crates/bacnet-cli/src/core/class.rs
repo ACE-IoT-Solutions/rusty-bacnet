@@ -1,12 +1,12 @@
 //! What each command does to a device: read, write or device management
-//! (#972). One table serves the one-shot commands, the shell and the TUI's
-//! safety levels (#964), so a command can't be guarded in one front end and
-//! not in another.
+//! (#972). One table serves the one-shot commands and the TUI's safety
+//! levels (#964), so a command can't be guarded in one front end and not in
+//! another.
 //!
 //! - **Read**: discovery, reads, finite COV subscriptions and
 //!   foreign-device registration, plus the commands that never reach a
-//!   device (`devices`, `mstp-ports`, `capture`, `sc-check`, the shell's own `target`,
-//!   `status`, `help`). A subscription and a registration do leave an entry
+//!   device (`devices`, `mstp-ports`, `capture`, `sc-check`, `help`) and
+//!   `tui`, which guards its own writes. A subscription and a registration do leave an entry
 //!   on the remote side, but only to deliver what the client watches, and
 //!   it lapses on its own: `subscribe` cancels its subscription when it
 //!   stops, and a registration runs out with its TTL. The TUI makes both
@@ -40,18 +40,12 @@ impl Class {
             Self::DeviceManagement => "device-management",
         }
     }
-
-    /// True for a class that needs `--allow-write`.
-    pub(crate) fn mutates(self) -> bool {
-        self != Self::Read
-    }
 }
 
 use Class::{DeviceManagement, Read, Write};
 
-/// Every one-shot subcommand and shell command, aliases included, with its
-/// class. A test checks this against the clap definitions and the shell's
-/// command list in both directions.
+/// Every subcommand, aliases included, with its class. A test checks this
+/// against the clap definitions in both directions.
 const COMMANDS: &[(&str, Class)] = &[
     // Discovery and reads.
     ("discover", Read),
@@ -72,19 +66,14 @@ const COMMANDS: &[(&str, Class)] = &[
     ("subscribe", Read),
     ("cov", Read),
     ("register", Read),
-    // Nothing reaches a device, or a front end whose own commands are
-    // classified one by one.
+    // Nothing reaches a device, or a front end whose own writes are
+    // guarded one by one.
     ("devices", Read),
     ("mstp-ports", Read),
     ("capture", Read),
     ("sc-check", Read),
-    ("shell", Read),
     ("tui", Read),
-    ("target", Read),
-    ("status", Read),
     ("help", Read),
-    ("exit", Read),
-    ("quit", Read),
     // Writes.
     ("write", Write),
     ("wp", Write),
@@ -118,7 +107,7 @@ pub(crate) fn of_subscribe(lifetime: u32) -> Class {
     }
 }
 
-/// The class of a one-shot subcommand or shell command, by name or alias;
+/// The class of a subcommand, by name or alias;
 /// `None` for a word that is neither.
 pub(crate) fn of(command: &str) -> Option<Class> {
     COMMANDS
@@ -147,7 +136,7 @@ mod tests {
         })
     }
 
-    /// A new subcommand or shell command can't skip classification, and an
+    /// A new subcommand can't skip classification, and an
     /// alias has its command's class.
     #[test]
     fn every_command_and_alias_has_a_class() {
@@ -159,15 +148,11 @@ mod tests {
                 assert_eq!(of(alias), Some(class), "alias {alias} of {name}");
             }
         }
-        for word in crate::shell::COMMANDS {
-            assert!(of(word).is_some(), "shell command {word} has no class");
-        }
         // And the table names nothing that no longer exists.
         for (name, _) in COMMANDS {
             let known = clap
                 .iter()
                 .any(|(n, aliases)| n == name || aliases.iter().any(|a| a == name))
-                || crate::shell::COMMANDS.contains(name)
                 || *name == "help";
             assert!(known, "{name} is classified but is no command");
         }
@@ -178,7 +163,7 @@ mod tests {
     fn the_mutating_commands_are_pinned() {
         let mutating: Vec<(&str, &str)> = COMMANDS
             .iter()
-            .filter(|(_, class)| class.mutates())
+            .filter(|(_, class)| *class != Read)
             .map(|&(name, class)| (name, class.name()))
             .collect();
         assert_eq!(

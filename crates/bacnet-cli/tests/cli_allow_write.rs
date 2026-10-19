@@ -21,6 +21,8 @@ use support::run;
 const MUTATING: &[(&str, &[&str])] = &[
     ("write", &["av:1", "pv", "42"]),
     ("wp", &["av:1", "pv", "42@8"]),
+    ("writem", &["av:1", "pv=42,on=Zone"]),
+    ("wpm", &["av:1", "pv=42@8", "bv:1", "pv=active"]),
     ("create-object", &["av:100"]),
     ("delete-object", &["av:1"]),
     ("file-write", &["1", "no-such-input.bin"]),
@@ -57,6 +59,7 @@ fn class(command: &str) -> &'static str {
 fn canonical(command: &str) -> &str {
     match command {
         "wp" => "write",
+        "wpm" => "writem",
         "ts" => "time-sync",
         "dcc" => "control",
         "cov" => "subscribe",
@@ -177,6 +180,7 @@ async fn with_the_flags_the_commands_reach_the_device() {
     for (globals, command, rest) in [
         (&["--allow-write"][..], "write", &["av:1", "pv", "42.5"][..]),
         (&[], "write", &["av:1", "pv", "43.5", "--allow-write"]),
+        (&["--allow-write"], "writem", &["av:1", "pv=44.5"]),
         (
             &["--allow-write", "--yes"],
             "control",
@@ -201,7 +205,7 @@ async fn with_the_flags_the_commands_reach_the_device() {
     server.stop().await.unwrap();
     assert!(output.status.success());
     let read: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(read["value"], "43.5", "{read}");
+    assert_eq!(read["value"], "44.5", "{read}");
     assert!(reinitialized.load(Ordering::SeqCst));
 }
 
