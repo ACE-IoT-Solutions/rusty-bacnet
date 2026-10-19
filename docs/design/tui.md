@@ -120,7 +120,7 @@ What M0 draws (80x24):
 | Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, address, network, vendor, max APDU, segmentation, last seen); sort and filter; duplicate-instance banner. **Planned:** Who-Has search and a Networks tab |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with a filter; property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965) | Watched points with value, units, flags, COV or polled, last-update age and a bar sparkline. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
-| Network, B/IP (planned) | Foreign-device panel, BDT, FDT, BDT consistency matrix, "what the BBMD sees me as" |
+| Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, refusal banner); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
 | SC (planned) | Hub connector status, connection-doctor phase timeline, local and peer certificates, VMAC and UUID |
 | MS/TP (planned) | Participant panel or passive monitor (station grid, token timing, Max_Master analysis, error counters, join wizard) |
 | Capture (planned) | Frame list, decode tree, hex view, filters, pcap export |
@@ -150,7 +150,8 @@ M0 keys:
 
 Since M0: `a`, `x`, `3`/`1` and `:` for the watch list (#965); `W` to arm or
 disarm writes, `w`/`n` to write or relinquish on an open object, and `u` for
-the ledger (#964). Planned: `1` to `7` and `Tab` to switch screens, and
+the ledger (#964); `4` for the Network screen, with `r`, `m`, Tab and
+`:bbmd` there (#966). Planned: `1` to `7` and `Tab` to switch screens, and
 `Space`, `e`, `c` and `J` on later screens.
 
 Only key presses count; Windows also reports releases. Mouse capture will be

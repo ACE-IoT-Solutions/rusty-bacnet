@@ -6,6 +6,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::devices::Movement;
+use super::app::network::NetworkKey;
 use super::app::picker::PickerKey;
 use super::app::safety::ModalKey;
 use super::app::watch::Screen;
@@ -31,6 +32,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         Overlay::Safety(_) => safety(key),
         Overlay::None if app.filter_editing => filter(key),
         Overlay::None if app.screen == Screen::Watch => watch(key),
+        Overlay::None if app.screen == Screen::Network => network(key),
         Overlay::None => main(key),
     }
 }
@@ -91,6 +93,7 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         _ => return None,
     })
@@ -106,10 +109,34 @@ fn watch(key: KeyEvent) -> Option<Action> {
     }
     Some(match key.code {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('L') => Action::ToggleLog,
+        _ => return None,
+    })
+}
+
+/// The Network screen: read, survey, switch tables and the global keys.
+fn network(key: KeyEvent) -> Option<Action> {
+    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+        return None;
+    }
+    Some(match key.code {
+        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('r') => Action::Network(NetworkKey::Refresh),
+        KeyCode::Char('m') => Action::Network(NetworkKey::Survey),
+        KeyCode::Tab => Action::Network(NetworkKey::Cycle { back: false }),
+        KeyCode::BackTab => Action::Network(NetworkKey::Cycle { back: true }),
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('x') => Action::Disconnect,
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('?') => Action::ToggleHelp,
         KeyCode::Char('L') => Action::ToggleLog,

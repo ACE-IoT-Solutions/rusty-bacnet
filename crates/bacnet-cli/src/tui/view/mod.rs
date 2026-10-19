@@ -9,6 +9,7 @@ mod chrome;
 mod connection;
 mod devices;
 mod dialogs;
+mod network;
 mod safety;
 mod watch;
 
@@ -38,7 +39,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         too_small(frame, area, &theme);
         return;
     }
-    let banner = app.duplicates.banner();
+    let mut banner = app.duplicates.banner().to_vec();
+    banner.extend(app.network.refusal());
     // Long addresses wrap rather than vanish off the edge.
     let banner_height: usize = banner
         .iter()
@@ -63,9 +65,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(area);
     chrome::status_bar(frame, status, app, &theme);
-    devices::banner(frame, banner_area, banner, &theme);
+    devices::banner(frame, banner_area, &banner, &theme);
     match &app.browser {
         _ if app.screen == Screen::Watch => watch::draw(frame, body, app, &theme),
+        _ if app.screen == Screen::Network => network::draw(frame, body, app, &theme),
         Some(open) => browser::draw(frame, body, open, &theme),
         None => devices::table(frame, body, app, &theme),
     }
