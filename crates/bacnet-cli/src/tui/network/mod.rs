@@ -4,8 +4,14 @@
 //!
 //! - [`matrix`]: the BDT consistency matrix, a pure function of the tables
 //!   a survey read.
+//! - [`discovery`]: Who-Has and router discovery messages, for every
+//!   transport (#960).
+//! - [`routers`]: the Networks tab's router map, a pure function of the
+//!   router announcements heard.
 
+pub(crate) mod discovery;
 pub(crate) mod matrix;
+pub(crate) mod routers;
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;

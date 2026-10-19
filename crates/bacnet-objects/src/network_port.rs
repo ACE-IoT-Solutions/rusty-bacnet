@@ -5,9 +5,10 @@
 //! discovery. Reconstruct it to change local configuration. An explicit B/IP
 //! owner may publish its actual bind and mode, and learn
 //! Network_Number/Quality, without changing configured provenance. In
-//! FOREIGN or BBMD mode the object serves that mode's properties, a BBMD's
-//! tables read live from the transport (see `bip_mode`). A BBMD's BDT and
-//! registration setting are writable, and wait for activation (`pending`).
+//! FOREIGN or BBMD mode the object serves that mode's properties, read live
+//! from the transport (see `bip_mode`). A BBMD's BDT and registration
+//! setting, and a foreign device's BBMD and time-to-live, are writable, and
+//! wait for activation (`pending`).
 //! Non-B/IP snapshots expose only the common application rows;
 //! they do not claim a complete transport-specific SC, Ethernet or MS/TP profile.
 
@@ -46,7 +47,7 @@ pub struct NetworkPortObject {
     /// new registration reserves the port.
     mode: bip_mode::LiveMode,
     /// Values written to the mode's properties, waiting for activation.
-    pending: bacnet_types::bip_port::BbmdChanges,
+    pending: pending::Pending,
     /// Whether the owner activates written values on ReinitializeDevice;
     /// without it the pending-activation rows refuse writes.
     activation: bool,
@@ -249,6 +250,8 @@ impl BACnetObject for NetworkPortObject {
     }
 }
 
+#[cfg(test)]
+mod foreign_pending_tests;
 #[cfg(test)]
 mod mode_tests;
 #[cfg(test)]

@@ -112,6 +112,42 @@ async fn a_routed_read_reaches_the_device_behind_the_router() {
     router.stop().await;
 }
 
+/// `whois-router` (#960) lists the router, at its B/IP address, with the
+/// network behind it; asking about a network nobody reaches lists none.
+#[tokio::test]
+async fn whois_router_lists_the_router_and_its_network() {
+    let (mut router, mut server, port) = site().await;
+    let whois_router = |extra: &'static [&'static str]| async move {
+        let bbmd = format!("127.0.0.1:{port}");
+        let mut args = vec![
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--foreign-bbmd",
+            &bbmd,
+            "--json",
+            "whois-router",
+            "--wait",
+            "2",
+        ];
+        args.extend_from_slice(extra);
+        let output = run(args).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let expected = json!([{ "router": format!("127.0.0.1:{port}"), "networks": [DNET] }]);
+    assert_eq!(whois_router(&[]).await, expected);
+    assert_eq!(whois_router(&["--dnet", "2"]).await, expected);
+    assert_eq!(whois_router(&["--dnet", "77"]).await, json!([]));
+    server.stop().await.unwrap();
+    router.stop().await;
+}
+
 /// A routed target that nothing answers fails with the network named, and
 /// a command with no routed client call refuses a routed target.
 #[tokio::test]

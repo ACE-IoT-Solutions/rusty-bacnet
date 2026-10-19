@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::constructed::BACnetHostNPort;
 
 #[tokio::test]
 async fn registration_token_follows_last_socket_worker_after_abort() {
@@ -132,18 +133,14 @@ async fn foreign_device_reports_its_bbmd_and_lifetime() {
         ttl: 60,
     });
     assert!(foreign.supports_local_nonrouter_number_controls());
-    let BipPortMode::Foreign {
-        bbmd,
-        subscription_lifetime,
-    } = foreign.bip_port().unwrap().mode
-    else {
+    let BipPortMode::Foreign { registration } = foreign.bip_port().unwrap().mode else {
         panic!("foreign mode");
     };
     assert_eq!(
-        bbmd,
+        registration.bbmd(),
         BACnetHostNPort::from_socket_addr(SocketAddrV4::new([10, 0, 0, 1].into(), 47809).into())
     );
-    assert_eq!(subscription_lifetime, 60);
+    assert_eq!(registration.subscription_lifetime(), 60);
     foreign
         .retain_network_port_lease_internal(Arc::new(()))
         .unwrap();

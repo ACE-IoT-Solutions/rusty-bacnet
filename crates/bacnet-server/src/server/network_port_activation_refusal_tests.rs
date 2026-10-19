@@ -52,6 +52,9 @@ impl BbmdTables for Tables {
         self.activated.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+    fn can_change(&self) -> bool {
+        true
+    }
 }
 
 /// A database with a BBMD port over `tables` holding a pending BDT, and the

@@ -21,6 +21,7 @@ use super::watch::Screen;
 use super::{App, Link, FLASH_FOR};
 use crate::tui::message::Command;
 use crate::tui::network::matrix::Matrix;
+use crate::tui::network::routers::RouterMap;
 use crate::tui::network::{own_entry, BdtRow, FdtRow, Foreign, NetworkCommand, NetworkEvent};
 
 /// The table below the foreign-device panel.
@@ -33,6 +34,9 @@ pub(crate) enum View {
     Fdt,
     /// The consistency matrix.
     Matrix,
+    /// The routers heard and the networks they reach (#960), on any
+    /// transport.
+    Networks,
 }
 
 /// A key on the Network screen.
@@ -85,6 +89,13 @@ pub(crate) struct NetworkState {
     pub(crate) surveying: bool,
     /// The table shown.
     pub(crate) view: View,
+    /// The routers heard and the networks they reach.
+    pub(crate) routers: RouterMap,
+    /// The local network's number and whether it was configured, from the
+    /// last Network-Number-Is heard.
+    pub(crate) local_number: Option<(u16, bool)>,
+    /// When the routers were last asked.
+    pub(crate) routers_asked: Option<Instant>,
 }
 
 impl NetworkState {
@@ -196,12 +207,13 @@ impl App {
     pub(super) fn network_key(&mut self, key: NetworkKey, out: &mut Vec<Command>) {
         match key {
             NetworkKey::Cycle { back } => {
-                let views = [View::Bdt, View::Fdt, View::Matrix];
+                let views = [View::Bdt, View::Fdt, View::Matrix, View::Networks];
                 let at = views.iter().position(|v| *v == self.network.view);
                 let step = if back { views.len() - 1 } else { 1 };
                 self.network.view = views[(at.unwrap_or(0) + step) % views.len()];
             }
             NetworkKey::Refresh if self.network.view == View::Matrix => self.survey(out),
+            NetworkKey::Refresh if self.network.view == View::Networks => self.ask_routers(out),
             NetworkKey::Refresh => self.read_tables(out),
             NetworkKey::Survey => {
                 self.network.view = View::Matrix;

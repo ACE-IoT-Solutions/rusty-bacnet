@@ -324,6 +324,59 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await owner.stop()
 
+    async def test_a_handler_makes_foreign_rows_writable_and_activate_changes_moves_them(self):
+        port = ObjectIdentifier(ObjectType.NETWORK_PORT, 1)
+        first, second = Peer(), Peer()
+
+        async def registration(peer):
+            """The time-to-live of the next Register-Foreign-Device `peer`
+            receives, polled since a test may not use add_reader."""
+            async with asyncio.timeout(10):
+                while True:
+                    try:
+                        datagram = peer.sock.recv(2048)
+                    except BlockingIOError:
+                        await asyncio.sleep(0.01)
+                        continue
+                    if datagram[:4] == b"\x81\x05\x00\x06":
+                        return int.from_bytes(datagram[4:6], "big")
+
+        def host_n_port(peer):
+            ip, number = peer.sock.getsockname()
+            # [0] { ip-address [1] } port [1]
+            return (b"\x0e\x1c" + socket.inet_aton(ip) + b"\x0f\x1a"
+                    + number.to_bytes(2, "big"))
+
+        bbmd = "127.0.0.1:%d" % first.sock.getsockname()[1]
+        owner = BACnetServer(4105, interface="127.0.0.1", port=0,
+                             broadcast_address="127.255.255.255", registered_network_port=1,
+                             foreign_device=ForeignDevice(bbmd, ttl=60),
+                             on_reinitialize=lambda request: None)
+        owner.add_bip_network_port(1, "foreign", ip_address="127.0.0.1", udp_port=0)
+        await owner.start()
+        try:
+            self.assertEqual(await registration(first), 60)
+            address = await owner.local_address()
+            async with BACnetClient(interface="127.0.0.1", port=0) as client:
+                await client.write_property(address, port, P.FD_BBMD_ADDRESS,
+                                            V.application_data(host_n_port(second)))
+                await client.write_property(address, port, P.FD_SUBSCRIPTION_LIFETIME,
+                                            V.unsigned(120))
+                self.assertEqual(await client.read_property(address, port, P.CHANGES_PENDING),
+                                 V.boolean(True))
+                await client.reinitialize_device(address, S.ACTIVATE_CHANGES)
+                self.assertEqual(await client.read_property(address, port, P.CHANGES_PENDING),
+                                 V.boolean(False))
+                self.assertEqual(
+                    await client.read_property(address, port, P.FD_SUBSCRIPTION_LIFETIME),
+                    V.unsigned(120))
+            # The next registration goes to the new BBMD, for the new lifetime.
+            self.assertEqual(await registration(second), 120)
+        finally:
+            await owner.stop()
+            first.close()
+            second.close()
+
 
 class LocalResetTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_local_reset_report_needs_a_running_server(self):

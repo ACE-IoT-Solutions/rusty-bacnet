@@ -1,12 +1,12 @@
 //! The B/IP mode of a registered port and the properties that mode adds
 //! (Clause 12.56.21, Table 12-71 footnotes 11 to 13).
 //!
-//! FOREIGN mode adds FD_BBMD_Address and FD_Subscription_Lifetime, from the
-//! owner's configuration, which cannot change while it owns the port. BBMD
-//! mode adds BBMD_Broadcast_Distribution_Table, BBMD_Accept_FD_Registrations
-//! and BBMD_Foreign_Device_Table, each read from the transport's own tables
-//! at the moment of the read, unless a written value waits for activation
-//! (`pending`).
+//! FOREIGN mode adds FD_BBMD_Address and FD_Subscription_Lifetime, read
+//! from the transport's registration at the moment of the read. BBMD mode
+//! adds BBMD_Broadcast_Distribution_Table, BBMD_Accept_FD_Registrations and
+//! BBMD_Foreign_Device_Table, each read from the transport's own tables at
+//! the moment of the read. In either mode a written value waiting for
+//! activation is read instead (`pending`).
 //!
 //! The mode is the last one published. After its owner stops, the port keeps
 //! reporting it, as it keeps the last published bind; a BBMD's rows then show
@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use bacnet_encoding::constructed::{encode_bdt_entry, encode_fdt_entry, encode_host_n_port};
-use bacnet_types::bip_port::{BbmdTables, BipPortMode};
+use bacnet_types::bip_port::{BbmdTables, BipPortMode, ForeignRegistration};
 use bacnet_types::constructed::{BACnetBDTEntry, BACnetHostNPort};
 use bacnet_types::enums::{IPMode, PropertyIdentifier as P};
 use bacnet_types::error::Error;
@@ -29,11 +29,9 @@ pub(super) enum LiveMode {
     /// No owner, or a NORMAL one.
     #[default]
     Normal,
-    /// A foreign device registering with `bbmd` for `lifetime` seconds.
-    Foreign {
-        bbmd: BACnetHostNPort,
-        lifetime: u16,
-    },
+    /// A foreign device, whose registration is read through the
+    /// transport's live view.
+    Foreign(Arc<dyn ForeignRegistration>),
     /// A BBMD, whose tables are read through the transport's live view.
     Bbmd(Arc<dyn BbmdTables>),
 }
@@ -43,13 +41,7 @@ impl LiveMode {
     pub(super) fn from_port(mode: BipPortMode) -> Result<Self, Error> {
         Ok(match mode {
             BipPortMode::Normal => Self::Normal,
-            BipPortMode::Foreign {
-                bbmd,
-                subscription_lifetime,
-            } => Self::Foreign {
-                bbmd,
-                lifetime: subscription_lifetime,
-            },
+            BipPortMode::Foreign { registration } => Self::Foreign(registration),
             BipPortMode::Bbmd {
                 tables: Some(tables),
             } => Self::Bbmd(tables),
@@ -61,10 +53,20 @@ impl LiveMode {
         })
     }
 
+    /// Whether the transport behind this mode takes written values, so its
+    /// pending-activation rows are writable at all.
+    pub(super) fn can_change(&self) -> bool {
+        match self {
+            Self::Normal => false,
+            Self::Foreign(registration) => registration.can_change(),
+            Self::Bbmd(tables) => tables.can_change(),
+        }
+    }
+
     pub(super) fn ip_mode(&self) -> IPMode {
         match self {
             Self::Normal => IPMode::NORMAL,
-            Self::Foreign { .. } => IPMode::FOREIGN,
+            Self::Foreign(_) => IPMode::FOREIGN,
             Self::Bbmd(_) => IPMode::BBMD,
         }
     }
@@ -73,13 +75,12 @@ impl LiveMode {
     /// including one another mode adds.
     pub(super) fn read(&self, property: P) -> Option<Result<PropertyValue, Error>> {
         match (self, property) {
-            (Self::Foreign { bbmd, .. }, P::FD_BBMD_ADDRESS) => {
-                let mut buf = BytesMut::new();
-                Some(encode_host_n_port(&mut buf, bbmd).map(|()| framed(buf)))
+            (Self::Foreign(registration), P::FD_BBMD_ADDRESS) => {
+                Some(host_n_port_value(&registration.bbmd()))
             }
-            (Self::Foreign { lifetime, .. }, P::FD_SUBSCRIPTION_LIFETIME) => {
-                Some(Ok(PropertyValue::Unsigned((*lifetime).into())))
-            }
+            (Self::Foreign(registration), P::FD_SUBSCRIPTION_LIFETIME) => Some(Ok(
+                PropertyValue::Unsigned(registration.subscription_lifetime().into()),
+            )),
             (Self::Bbmd(tables), P::BBMD_BROADCAST_DISTRIBUTION_TABLE) => {
                 Some(bdt_value(&tables.broadcast_distribution_table()))
             }
@@ -113,6 +114,12 @@ pub(super) fn bdt_value(table: &[BACnetBDTEntry]) -> Result<PropertyValue, Error
         })
         .collect::<Result<_, _>>()
         .map(PropertyValue::List)
+}
+
+/// A host and port as the FD_BBMD_Address value.
+pub(super) fn host_n_port_value(address: &BACnetHostNPort) -> Result<PropertyValue, Error> {
+    let mut buf = BytesMut::new();
+    encode_host_n_port(&mut buf, address).map(|()| framed(buf))
 }
 
 /// One constructed value, already encoded, as the property value.

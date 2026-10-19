@@ -10,10 +10,12 @@ mod connection;
 mod devices;
 mod dialogs;
 mod network;
+mod networks;
 mod safety;
 mod sc;
 mod sc_credentials;
 mod watch;
+mod who_has;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -73,7 +75,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         _ if app.screen == Screen::Network => network::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Sc => sc::draw(frame, body, app, &theme),
         Some(open) => browser::draw(frame, body, open, &theme),
-        None => devices::table(frame, body, app, &theme),
+        None => who_has::devices(frame, body, app, &theme),
     }
     if app.show_log {
         chrome::log_pane(frame, log, app, &theme);

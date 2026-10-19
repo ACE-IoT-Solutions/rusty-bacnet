@@ -335,6 +335,7 @@ dependencies = [
  "bacnet-network",
  "bacnet-npdu",
  "bacnet-objects",
+ "bacnet-router-core",
  "bacnet-services",
  "bacnet-transport",
  "bacnet-types",

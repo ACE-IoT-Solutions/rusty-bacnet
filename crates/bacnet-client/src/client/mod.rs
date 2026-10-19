@@ -523,6 +523,8 @@ pub struct BACnetClient<T: TransportPort> {
     event_tx: broadcast::Sender<ReceivedEventNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
+    i_have_tx: broadcast::Sender<ReceivedIHave>,
+    network_report_tx: broadcast::Sender<bacnet_network::layer::ReceivedNetworkReport>,
     dispatch_task: Option<JoinHandle<()>>,
     network_number_task: Option<JoinHandle<()>>,
     /// Owner-qualified channels feeding SegmentACKs to in-flight segmented sends.
@@ -864,7 +866,9 @@ mod inbound_replies;
 use inbound_replies::InboundReply;
 mod event_notifications;
 mod file_list;
+mod i_have;
 mod lifecycle;
+mod network_reports;
 mod object_mgmt;
 pub(crate) mod pacing;
 mod property;
@@ -898,6 +902,8 @@ pub use event_notifications::{
     EventNotificationDelivery, ReceivedEventNotification, DEFAULT_EVENT_CHANNEL_CAPACITY,
     MAX_EVENT_CHANNEL_CAPACITY,
 };
+pub use i_have::{ReceivedIHave, I_HAVE_CHANNEL_CAPACITY};
+pub use network_reports::{DiscoveredRouter, NETWORK_REPORT_CHANNEL_CAPACITY};
 pub use pacing::MAX_MIN_REQUEST_INTERVAL_MS;
 pub use write_group::WriteGroupDestination;
 

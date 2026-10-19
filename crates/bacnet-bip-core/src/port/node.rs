@@ -7,7 +7,8 @@ use bacnet_time::Instant;
 
 use super::{count, Datagrams, HeldBroadcast, Ingress, PortCounters, PortError};
 use crate::node::{
-    Action, Admission, Cast, Datagram, Inbound, LocalFailure, Mode, Node, Policy, SendRefusal,
+    Action, Admission, Cast, Datagram, Foreign, Inbound, Link, LocalFailure, Mode, Node, Policy,
+    SendRefusal,
 };
 use bacnet_npdu::MAX_NPDU;
 
@@ -38,25 +39,7 @@ impl<'h, const X: usize, const N: usize> NodePort<'h, X, N> {
     ///
     /// [`Link::max_npdu`]: crate::node::Link::max_npdu
     pub fn new(node: Node<X>, held: &'h mut [HeldBroadcast<N>]) -> Result<Self, PortError> {
-        let link = node.link();
-        let hold = match link.mode {
-            Mode::Normal => 0,
-            Mode::Foreign(foreign) => usize::from(foreign.hold),
-            Mode::Bbmd => return Err(PortError::Mode),
-        };
-        if hold > held.len() {
-            return Err(PortError::HeldStorage {
-                needed: hold,
-                available: held.len(),
-            });
-        }
-        let longest = link.max_npdu(Cast::Broadcast);
-        if hold > 0 && longest > N {
-            return Err(PortError::HeldLength {
-                needed: longest,
-                available: N,
-            });
-        }
+        check_hold::<N>(node.link(), held.len())?;
         Ok(Self {
             node,
             held,
@@ -126,6 +109,26 @@ impl<'h, const X: usize, const N: usize> NodePort<'h, X, N> {
     /// for it.
     pub fn start(&mut self, now: Instant, out: &mut impl Datagrams) {
         self.on_deadline(now, out);
+    }
+
+    /// Move a foreign device to `foreign`'s BBMD and time-to-live at `now`
+    /// ([`Node::retarget`]): its first attempt there goes out at once.
+    /// Refused, changing nothing, when the node is not a foreign device,
+    /// when the link refuses the registration, or when the port's held
+    /// slots can't take what `foreign` holds.
+    pub fn retarget(
+        &mut self,
+        foreign: Foreign,
+        now: Instant,
+        out: &mut impl Datagrams,
+    ) -> Result<(), PortError> {
+        let mut link = *self.node.link();
+        link.mode = Mode::Foreign(foreign);
+        check_hold::<N>(&link, self.held.len())?;
+        self.drain(now, out);
+        self.node.retarget(foreign, now).map_err(PortError::Link)?;
+        self.drain(now, out);
+        Ok(())
     }
 
     /// Send `npdu` to the node at `to`, as an Original-Unicast-NPDU (Annex
@@ -241,4 +244,28 @@ impl<'h, const X: usize, const N: usize> NodePort<'h, X, N> {
             }
         }
     }
+}
+
+/// Whether held slots of `N` octets, `available` of them, take what `link`
+/// holds; a BBMD's link has no place on a [`NodePort`].
+fn check_hold<const N: usize>(link: &Link, available: usize) -> Result<(), PortError> {
+    let hold = match link.mode {
+        Mode::Normal => 0,
+        Mode::Foreign(foreign) => usize::from(foreign.hold),
+        Mode::Bbmd => return Err(PortError::Mode),
+    };
+    if hold > available {
+        return Err(PortError::HeldStorage {
+            needed: hold,
+            available,
+        });
+    }
+    let longest = link.max_npdu(Cast::Broadcast);
+    if hold > 0 && longest > N {
+        return Err(PortError::HeldLength {
+            needed: longest,
+            available: N,
+        });
+    }
+    Ok(())
 }

@@ -313,6 +313,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
         let (watch, watch_rx) = mpsc::channel(WATCH_CHANNEL_CAPACITY);
         let (safety, safety_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (network, network_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        let (discovery, discovery_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         // Dropped with the session loop, which ends the SC worker.
         let (sc_stop, sc_stop_rx) = mpsc::channel::<()>(1);
         let quiet = options.safety.passive;
@@ -324,6 +325,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
             let watch = watch;
             let safety = safety;
             let network = network;
+            let discovery = discovery;
             let _sc_stop = sc_stop;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
@@ -394,6 +396,12 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                                 tracing::debug!("the network worker has ended");
                             }
                         }
+                        Some(Command::Discovery(command)) => {
+                            // Polled beside this loop too; each send is one datagram.
+                            if discovery.send(command).await.is_err() {
+                                tracing::debug!("the discovery worker has ended");
+                            }
+                        }
                         Some(Command::Disconnect) => break,
                         Some(Command::Connect { .. } | Command::Reconnect | Command::Profile(_)) => {}
                         None => break,
@@ -455,6 +463,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                 &local
             )),
             Box::pin(super::network::run(&client, &sink, network_rx)),
+            Box::pin(super::discovery::run(&client, &sink, discovery_rx, style)),
             Box::pin(super::sc::run(&client, &sink, sc_stop_rx))
         );
     }

@@ -25,6 +25,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             confirmed_cov_ack_policy,
             device_tx,
             device_collision_tx,
+            i_have_tx,
             seg_ack_senders,
         } = context;
         let InboundApdu {
@@ -539,6 +540,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         source_network,
                         &req.service_request,
                     );
+                } else if req.service_choice == UnconfirmedServiceChoice::I_HAVE {
+                    i_have::deliver(i_have_tx, source_mac, source_network, &req.service_request);
                 } else {
                     debug!(
                         service = req.service_choice.to_raw(),
