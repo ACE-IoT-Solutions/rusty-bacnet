@@ -13,6 +13,18 @@ use std::net::{IpAddr, SocketAddr};
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 const RUNS: usize = 1_000;
 
+/// Whether this platform's kernel stamps arrivals: Linux, macOS and the
+/// BSDs do. Elsewhere (Windows) the order is the read's.
+const STAMPS: bool = cfg!(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd"
+));
+
 fn held(arrival_stamp: Option<u128>, read: u64) -> Held {
     Held {
         datagram: ReceivedDatagram {
@@ -69,9 +81,13 @@ fn open(listener: bool) -> (Listeners, SocketAddr, Option<SocketAddr>) {
 /// Linux starts stamping arrivals a moment after the first socket on the
 /// host asks, and stops after the last one closes (see
 /// `request_arrival_stamps`). Held open, it keeps stamping on for the test.
-/// Elsewhere the first datagram is stamped already.
+/// Elsewhere the first datagram is stamped already, and where nothing
+/// stamps (Windows) the socket is just a socket.
 async fn stamping_on() -> UdpSocket {
     let socket = loopback_socket();
+    if !STAMPS {
+        return UdpSocket::from_std(socket.into()).unwrap();
+    }
     crate::udp_metadata::request_arrival_stamps(&socket).unwrap();
     let receiver = DestinationReceiver::configure(&socket, IpVersion::V4).unwrap();
     let socket = UdpSocket::from_std(socket.into()).unwrap();
@@ -122,19 +138,9 @@ async fn only_a_transport_reading_several_sockets_asks_for_receive_times() {
         .send_to(b"three", listener_at.unwrap())
         .await
         .unwrap();
-    // Linux, macOS and the BSDs stamp; elsewhere the order is the read's.
-    let stamps = cfg!(any(
-        target_os = "linux",
-        target_os = "android",
-        target_vendor = "apple",
-        target_os = "freebsd",
-        target_os = "dragonfly",
-        target_os = "netbsd",
-        target_os = "openbsd"
-    ));
     for _ in 0..2 {
         let (_, received) = next(&mut ordered).await;
-        assert_eq!(received.arrival_stamp.is_some(), stamps);
+        assert_eq!(received.arrival_stamp.is_some(), STAMPS);
     }
 }
 
