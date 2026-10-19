@@ -1,0 +1,492 @@
+{
+ "generator": "website/scripts/tui-screenshots/capture.py",
+ "font": "Menlo 12",
+ "shots": [
+  {
+   "name": "profiles-picker",
+   "file": "profiles-picker.png",
+   "alt": "The profile picker listing four saved profiles, with keys to preview, create or reload them.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "profiles-new-bip",
+   "file": "profiles-new-bip.png",
+   "alt": "The new B/IP profile form with its fields and their defaults.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "profiles-new-mstp",
+   "file": "profiles-new-mstp.png",
+   "alt": "The new MS/TP profile form: serial port, MAC, baud, Max_Master and Max_Info_Frames.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "profiles-preview-attest",
+   "file": "profiles-preview-attest.png",
+   "alt": "A B/IP profile preview in Foreign Device mode, asking for first-use authorization.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "profiles-passive",
+   "file": "profiles-passive.png",
+   "alt": "A passive session: the status bar reads PASSIVE and the device list says nothing is transmitted.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "discovery-whois-form",
+   "file": "discovery-whois-form.png",
+   "alt": "The Who-Is form with its Scope, Target, Range and Listen fields.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "discovery-whois-warning",
+   "file": "discovery-whois-warning.png",
+   "alt": "The Who-Is form warning that a global Who-Is with no range reaches every device.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "discovery-devices",
+   "file": "discovery-devices.png",
+   "alt": "The device table after a global Who-Is: two local devices and one routed device on network 2.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "discovery-filter",
+   "file": "discovery-filter.png",
+   "alt": "The device table filtered to instances containing 100.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "discovery-who-has",
+   "file": "discovery-who-has.png",
+   "alt": "A Who-Has panel below the device table, listing the device that has an object named Damper.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "browser-device",
+   "file": "browser-device.png",
+   "alt": "The device browser: the device card, the object list grouped by type, and an empty property pane.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "browser-status-flags",
+   "file": "browser-status-flags.png",
+   "alt": "An analog input in alarm, in fault and out of service, with its status badges.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "browser-priority-array",
+   "file": "browser-priority-array.png",
+   "alt": "A commandable analog output with its 16-slot priority array; priority 10 is in control.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "browser-trend-log",
+   "file": "browser-trend-log.png",
+   "alt": "A Trend Log object's properties in the browser.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "browser-schedule",
+   "file": "browser-schedule.png",
+   "alt": "A Schedule object's properties in the browser.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "browser-object-filter",
+   "file": "browser-object-filter.png",
+   "alt": "The object list filtered to binary objects.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-not-armed",
+   "file": "writes-not-armed.png",
+   "alt": "The footer refusing a write because no write session is armed.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-arm-dialog",
+   "file": "writes-arm-dialog.png",
+   "alt": "The dialog that arms a write session, with a reason and a length in minutes.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-form",
+   "file": "writes-form.png",
+   "alt": "The write form for an analog output: property, value and priority.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-preview-t1",
+   "file": "writes-preview-t1.png",
+   "alt": "A T1 write preview at priority 12: the slot changes but Present_Value does not.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-result",
+   "file": "writes-result.png",
+   "alt": "The result of a write the device acknowledged; the status bar counts one ledger entry.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-preview-t2",
+   "file": "writes-preview-t2.png",
+   "alt": "A T2 write preview at priority 8, which needs y to send.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-preview-t3",
+   "file": "writes-preview-t3.png",
+   "alt": "A T3 write preview at priority 5, which needs the device instance typed to send.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-blocked",
+   "file": "writes-blocked.png",
+   "alt": "A write at priority 6, blocked because the profile does not allow dangerous writes.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-relinquish",
+   "file": "writes-relinquish.png",
+   "alt": "The relinquish form, which writes NULL to one priority slot.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-writem-preview",
+   "file": "writes-writem-preview.png",
+   "alt": "A WritePropertyMultiple batch preview of two writes, confirmed at T2.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-ledger",
+   "file": "writes-ledger.png",
+   "alt": "The session ledger with one write and its undo value.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "writes-exit-guard",
+   "file": "writes-exit-guard.png",
+   "alt": "The exit guard listing a change still in effect, with revert, keep and cancel.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "watch-list",
+   "file": "watch-list.png",
+   "alt": "The watch list: COV and polled rows with values, units, status flags, age and sparklines.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "overview-log-pane",
+   "file": "overview-log-pane.png",
+   "alt": "The device browser with the log pane open below it.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "overview-help",
+   "file": "overview-help.png",
+   "alt": "The help overlay listing the keys by screen.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "network-fd-bdt",
+   "file": "network-fd-bdt.png",
+   "alt": "The Network screen: the foreign-device panel and the BBMD's broadcast distribution table.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "network-fdt",
+   "file": "network-fdt.png",
+   "alt": "The Network screen's FDT tab with this client's own entry.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "network-matrix",
+   "file": "network-matrix.png",
+   "alt": "The BDT consistency matrix after a survey: both BBMDs agree.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "network-networks",
+   "file": "network-networks.png",
+   "alt": "The Networks tab: one router reaches network 2.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "network-bbmd-unreachable",
+   "file": "network-bbmd-unreachable.png",
+   "alt": "The foreign-device panel when the BBMD never answers: not registered, attempts counting.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-preview",
+   "file": "sc-preview.png",
+   "alt": "A BACnet/SC profile preview: hub URL, PEM file paths and first-use authorization.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-profile-editor",
+   "file": "sc-profile-editor.png",
+   "alt": "The BACnet/SC profile editor.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-lint-warning",
+   "file": "sc-lint-warning.png",
+   "alt": "An SC profile preview warning that the operational certificate expires within 30 days.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-hub-certs",
+   "file": "sc-hub-certs.png",
+   "alt": "The SC screen connected: hub connector, VMAC and UUID, and the hub's certificate chain.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-doctor",
+   "file": "sc-doctor.png",
+   "alt": "The connection doctor with every phase passed.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-credentials",
+   "file": "sc-credentials.png",
+   "alt": "My credentials: this node's certificate, the CA bundle, the key match and the issuer check.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-devices",
+   "file": "sc-devices.png",
+   "alt": "The device table over BACnet/SC, with a VMAC as the address.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "sc-doctor-failure",
+   "file": "sc-doctor-failure.png",
+   "alt": "The connection doctor after a failed dial: TLS failed because the hub's CA is not trusted.",
+   "size": "120x36",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-monitor-stations",
+   "file": "mstp-monitor-stations.png",
+   "alt": "The MS/TP monitor's Stations view: an address map and a row per station heard.",
+   "size": "120x40",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-monitor-ring",
+   "file": "mstp-monitor-ring.png",
+   "alt": "The Token ring view: successors, rotation times and per-master token statistics.",
+   "size": "120x40",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-monitor-findings",
+   "file": "mstp-monitor-findings.png",
+   "alt": "The Findings view warning that one master's Max_Master leaves a station out.",
+   "size": "80x24",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-monitor-errors",
+   "file": "mstp-monitor-errors.png",
+   "alt": "The Errors view: CRC errors, noise, a lost token and the adapter's timing note.",
+   "size": "80x24",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-join-proposal",
+   "file": "mstp-join-proposal.png",
+   "alt": "The safe-join proposal: a free MAC, the Max_Master to use and the free addresses.",
+   "size": "80x24",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-join-confirm",
+   "file": "mstp-join-confirm.png",
+   "alt": "The join confirmation the safe join opens, naming the station and the port.",
+   "size": "80x24",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-participant-join",
+   "file": "mstp-participant-join.png",
+   "alt": "The confirmation shown before joining a trunk with --mstp.",
+   "size": "80x24",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "mstp-participant",
+   "file": "mstp-participant.png",
+   "alt": "The MS/TP screen as a participant: this station's token state and the transport counters.",
+   "size": "120x40",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "troubleshoot-narrow",
+   "file": "troubleshoot-narrow.png",
+   "alt": "The device browser at 80x24, where only the focused pane is shown.",
+   "size": "80x24",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  },
+  {
+   "name": "troubleshoot-too-small",
+   "file": "troubleshoot-too-small.png",
+   "alt": "The notice shown when the terminal is smaller than 80x24.",
+   "size": "70x20",
+   "source": "placeholder",
+   "command": "",
+   "keys": ""
+  }
+ ]
+}
