@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table};
 use ratatui::Frame;
 
-use super::{Theme, FULL_WIDTH, WIDE_WIDTH};
+use super::{ellipsize as fit, sanitize, text_width, Theme, FULL_WIDTH, WIDE_WIDTH};
 use crate::tui::app::devices::age_label;
 use crate::tui::app::objects::{kebab, object_label};
 use crate::tui::app::watch::WatchRow;
@@ -195,40 +195,6 @@ impl Column {
             _ => None,
         }
     }
-}
-
-/// Display width of `text`.
-fn text_width(text: &str) -> usize {
-    Span::raw(text).width()
-}
-
-/// `text` cut to `width` columns, with `…` in place of what didn't fit.
-fn fit(text: &str, width: usize) -> String {
-    if text_width(text) <= width {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let w = text_width(ch.encode_utf8(&mut [0; 4]));
-        if used + w + 1 > width {
-            break;
-        }
-        used += w;
-        out.push(ch);
-    }
-    if width > 0 {
-        out.push('…');
-    }
-    out
-}
-
-/// `text` with each control character as a space: a device's text must
-/// not move the cursor or break a row.
-fn sanitize(text: &str) -> String {
-    text.chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect()
 }
 
 /// Status_Flags as text badges without brackets, to fit the column:
