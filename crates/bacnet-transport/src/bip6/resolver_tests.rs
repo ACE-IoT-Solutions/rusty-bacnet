@@ -414,6 +414,7 @@ async fn feed(
         destination: IpAddr::V6(to),
         arrival_index: Some(1),
         os_group_delivery: None,
+        arrival_stamp: None,
     };
     receiver.handle_datagram(&frame, &datagram).await
 }
@@ -545,6 +546,7 @@ async fn only_the_configured_bbmds_nak_refuses_a_resolution() {
             destination: IpAddr::V6(receiver.local_ip),
             arrival_index: Some(1),
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         assert_eq!(receiver.handle_datagram(&nak, &datagram).await, None);
         resolver.with_state(|state, counts| state.poll(t0 + Duration::from_secs(3), counts));

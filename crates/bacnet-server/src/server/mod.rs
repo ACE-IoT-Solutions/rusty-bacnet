@@ -584,6 +584,11 @@ mod local_writes;
 mod network_port;
 #[cfg(test)]
 mod network_port_tests;
+/// Reruns a test whose closing rebind loses the freed port to another
+/// process (#1419).
+#[cfg(test)]
+#[path = "../../../bacnet-endpoint/tests/support/port_retry.rs"]
+mod port_retry;
 pub use confirmed_answer::{CovAckResult, Refusal};
 mod remote_writes;
 pub(crate) use remote_writes::RemoteRequestError;

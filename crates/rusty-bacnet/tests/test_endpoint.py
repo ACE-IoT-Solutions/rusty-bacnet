@@ -41,6 +41,8 @@ from rusty_bacnet import (
     ScEndpoint,
 )
 
+from port_retry import rerun_on_lost_port
+
 
 def address_port(address: str) -> int:
     """The port of a started endpoint's "host:port" local address.
@@ -301,6 +303,10 @@ class ScConstructorTests(unittest.TestCase):
 
 class BipLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_start_context_and_none_cleanup(self):
+        # The release probe can lose the freed port to another process (#1419).
+        await rerun_on_lost_port(self.concurrent_start_context_and_none_cleanup)
+
+    async def concurrent_start_context_and_none_cleanup(self):
         endpoint = BipEndpoint(**bip_kwargs(port=0))
         results = await asyncio.gather(endpoint.start(), endpoint.start(), return_exceptions=True)
         self.assertEqual(sum(result is None for result in results), 1)

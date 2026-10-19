@@ -99,6 +99,7 @@ async fn a_broadcast_listener_taps_only_what_the_node_keeps() {
             destination: IpAddr::V4(destination),
             arrival_index,
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         handle_datagram(data, &received, Arrival::BroadcastListener, &local, &ctx).await;
         let refused = ctx.drops.snapshot().listener_mismatch == 1;
