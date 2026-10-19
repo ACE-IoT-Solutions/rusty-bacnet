@@ -205,7 +205,9 @@ async fn with_the_flags_the_commands_reach_the_device() {
     assert!(reinitialized.load(Ordering::SeqCst));
 }
 
-/// The lab device's Active_COV_Subscriptions, as the CLI reads it.
+/// The lab device's Active_COV_Subscriptions, as the CLI reads it. Only the
+/// Unix signal test uses it.
+#[cfg(unix)]
 async fn active_subscriptions(target: &str) -> String {
     let output = run(args(
         &["--json"],
