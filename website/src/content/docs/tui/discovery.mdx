@@ -1,0 +1,81 @@
+---
+title: "Discover devices"
+description: "Send a scoped Who-Is from the terminal UI, sort and filter the device table, find objects by name, and reach routed devices."
+---
+
+import NextStep from '../../../components/NextStep.astro';
+import { release, repository } from '../../../lib/site.mjs';
+
+Screen `1` is the device table. It lists every device whose I-Am the session has heard, and keeps them for as long as the session lasts. Nothing is discovered until you ask.
+
+## Send a Who-Is
+
+Press `d` for the Who-Is form.
+
+![The Who-Is form with its Scope, Target, Range and Listen fields.](../../../assets/tui/discovery-whois-form.webp)
+
+| Field | Values |
+|---|---|
+| Scope | Local broadcast, global broadcast, directed to one address, or one remote network. Left, Right or Space change it |
+| Target | For directed: `IP` or `IP:port` on B/IP; `bip6:N`, `bip6:0xVMAC` or `[IPv6]:port` on B/IPv6; a 12-digit VMAC on BACnet/SC. For a remote network: its network number |
+| Range | Blank for every instance, one instance `N`, or `LOW-HIGH` (0 to 4194303) |
+| Listen | How many seconds to show the request as running while replies arrive, 1 to 60 (default 3) |
+
+Tab, Shift-Tab, Up and Down move between fields. Enter sends, Esc closes.
+
+Start with the smallest scope that answers your question: a directed Who-Is to a known address, or a range. A global or unbounded Who-Is can draw an I-Am from every device on a site, so the first Enter shows a warning with the number of devices already known, and only a second Enter sends it.
+
+![The Who-Is form warning that a global Who-Is with no range reaches every device.](../../../assets/tui/discovery-whois-warning.webp)
+
+Ctrl-C cancels a Who-Is that is still listening.
+
+## Read the device table
+
+![The device table after a global Who-Is: two local devices and one routed device on network 2.](../../../assets/tui/discovery-devices.webp)
+
+Each row is one device: its instance, address, network, vendor ID, Max APDU, segmentation, and how long ago its last I-Am arrived. The bottom border shows the latest request and how many replies it got.
+
+- **Address.** A local device shows its own address. A device behind a router shows its MAC on the remote network and the router it was heard through, such as `7f:00:00:01:c3:35 via 127.0.0.1:53180`.
+- **Network.** `local`, or the remote network number.
+- **Duplicates.** When two addresses answer for one instance, a `DUPLICATE` banner names both.
+
+If a burst of I-Am traffic outruns the UI, events are dropped rather than queued without limit. The status bar's `drop` counter shows how many, and the table is refreshed from the client's own discovery table afterwards.
+
+### Sort and filter
+
+- `s` sorts by the next column; the sorted column is marked with `*` and the title says which. `S` reverses the order.
+- `/` filters the rows by instance, address, network or vendor as you type. Enter keeps the filter, and Esc clears it.
+- Arrows, `j` and `k`, PgUp and PgDn, Home and End (or `g` and `G`) move.
+
+![The device table filtered to instances containing 100.](../../../assets/tui/discovery-filter.webp)
+
+Enter on a row opens the [device browser](/rusty-bacnet/tui/browser/).
+
+## Find an object by name
+
+`:find NAME` broadcasts a Who-Has for the object named NAME. The name is the rest of the line, exactly as typed, spaces included. Each device that answers with an I-Have is listed in a panel under the device table, with the object it named and the address it answered from. `:find` on its own closes the panel.
+
+![A Who-Has panel below the device table, listing the device that has an object named Damper.](../../../assets/tui/discovery-who-has.webp)
+
+## Routed devices and other networks
+
+A device on another BACnet network is reached through a router. To find one:
+
+- Send a Who-Is with the **remote network** scope and that network number, or a global Who-Is.
+- On the Network screen, the Networks tab (`4`, then Tab) asks every router which networks it reaches. See [Inspect BBMDs and routers](/rusty-bacnet/tui/network/#routers-and-networks).
+
+A routed device is browsed and watched like a local one. On the command bar, name it as `DNET:instance`, such as `:watch 2:2001 ai:1`.
+
+## Across a subnet: foreign-device registration
+
+On B/IP, a broadcast reaches only the local subnet. To discover devices beyond it, use a BBMD the site owner designates and join it as a foreign device: give the profile a BBMD, or start with `--foreign-bbmd ADDRESS`. The TUI registers, renews before the TTL runs out, and sends its broadcasts through the BBMD.
+
+Connecting does not prove that the BBMD accepted the registration. The Network screen's foreign-device panel shows the result of each attempt, and a refusal raises a red banner on every screen.
+
+## Sources and release scope
+
+These pages describe the `dev` branch after **v{release}**. Source review is not a claim of hardware qualification.
+
+<a href={`${repository}/blob/dev/docs/CLI.md#plain-bacnet`}>Devices screen reference</a> · <a href={`${repository}/blob/dev/crates/bacnet-cli/src/tui/app/whois.rs`}>Who-Is form</a> · <a href={`${repository}/blob/dev/crates/bacnet-cli/src/tui/app/who_has.rs`}>Who-Has panel</a>.
+
+<NextStep href="/rusty-bacnet/tui/browser/" label="Browse a device" description="Read the device card, the object list and each object's properties." />
