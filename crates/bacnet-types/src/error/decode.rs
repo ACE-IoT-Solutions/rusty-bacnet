@@ -410,3 +410,10 @@ mod tests {
         assert!(size_of::<super::super::SegmentationError>() <= 24);
     }
 }
+
+// On a 32-bit target the error is 48 octets: the other variants fit beside
+// DecodeError's niche, so the enum needs no tag of its own. A variant that
+// outgrows that space adds one, which the firmware decoders pay for
+// (#1802), so check-no-std's builds refuse it here.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<super::Error>() == 48);

@@ -137,12 +137,12 @@ impl RequestPayload {
         {
             return Err(bacnet_types::error::SegmentationError::PayloadCapacityExceeded.into());
         }
-        let charged =
-            self.saved_payload_bytes
-                .checked_add(data.len())
-                .ok_or(Error::Segmentation(
-                    bacnet_types::error::SegmentationError::PayloadAccountingOverflow,
-                ))?;
+        let charged = self
+            .saved_payload_bytes
+            .checked_add(data.len())
+            .ok_or_else(|| {
+                Error::from(bacnet_types::error::SegmentationError::PayloadAccountingOverflow)
+            })?;
         // Authoritative per-segment validation happens BEFORE copying. Insert
         // the original transiently, then replace the SAME key synchronously
         // with detached bytes of the validated length. No extra charge/save.

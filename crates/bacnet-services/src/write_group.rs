@@ -27,13 +27,11 @@ use bacnet_encoding::constructed::tagged::{
 const PRIORITY_RANGE: core::ops::RangeInclusive<u64> = 1..=16;
 
 /// `label` names the priority, with a placeholder for its value.
-fn check_priority(label: &'static str, value: u64) -> Result<u8, Error> {
-    if PRIORITY_RANGE.contains(&value) {
-        Ok(value as u8)
+fn check_priority(label: &'static str, value: u8) -> Result<u8, Error> {
+    if PRIORITY_RANGE.contains(&u64::from(value)) {
+        Ok(value)
     } else {
-        Err(EncodeError::new(label)
-            .with_value(u32::try_from(value).unwrap_or(u32::MAX))
-            .into())
+        Err(EncodeError::new(label).with_value(value.into()).into())
     }
 }
 
@@ -105,7 +103,7 @@ impl WriteGroupRequest {
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
         check_priority(
             "WriteGroup write-priority {} out of range 1-16",
-            u64::from(self.write_priority),
+            self.write_priority,
         )?;
         if self.change_list.is_empty() {
             return Err(Error::encode("WriteGroup change list must contain at least one entry"));
@@ -114,7 +112,7 @@ impl WriteGroupRequest {
             if let Some(priority) = entry.override_priority {
                 check_priority(
                     "WriteGroup override-priority {} out of range 1-16",
-                    u64::from(priority),
+                    priority,
                 )?;
             }
             let well_formed =
