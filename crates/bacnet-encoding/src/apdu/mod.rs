@@ -359,8 +359,19 @@ pub fn encode_apdu(buf: &mut BytesMut, apdu: &Apdu) -> Result<(), Error> {
 
 #[cfg(feature = "alloc")]
 fn encode_confirmed_request(buf: &mut BytesMut, pdu: &ConfirmedRequest) -> Result<(), Error> {
+    // Every refusal comes before the first octet, so a refused APDU leaves
+    // `buf` as it was.
     let max_segments = encode_max_segments(pdu.max_segments)?;
     let max_apdu = encode_max_apdu(pdu.max_apdu_length)?;
+    let window = pdu
+        .segmented
+        .then(|| {
+            valid_window_size(
+                "ConfirmedRequest proposed-window-size {} outside BACnet range 1..=127",
+                pdu.proposed_window_size.unwrap_or(1),
+            )
+        })
+        .transpose()?;
 
     let mut byte0 = PduType::CONFIRMED_REQUEST.to_raw() << 4;
     if pdu.segmented {
@@ -379,12 +390,9 @@ fn encode_confirmed_request(buf: &mut BytesMut, pdu: &ConfirmedRequest) -> Resul
 
     buf.put_u8(pdu.invoke_id);
 
-    if pdu.segmented {
+    if let Some(window) = window {
         buf.put_u8(pdu.sequence_number.unwrap_or(0));
-        buf.put_u8(valid_window_size(
-            "ConfirmedRequest proposed-window-size {} outside BACnet range 1..=127",
-            pdu.proposed_window_size.unwrap_or(1),
-        )?);
+        buf.put_u8(window);
     }
 
     buf.put_u8(pdu.service_choice.to_raw());
@@ -408,6 +416,17 @@ fn encode_simple_ack(buf: &mut BytesMut, pdu: &SimpleAck) {
 
 #[cfg(feature = "alloc")]
 fn encode_complex_ack(buf: &mut BytesMut, pdu: &ComplexAck) -> Result<(), Error> {
+    // Refused before the first octet, so `buf` stays as it was.
+    let window = pdu
+        .segmented
+        .then(|| {
+            valid_window_size(
+                "ComplexAck proposed-window-size {} outside BACnet range 1..=127",
+                pdu.proposed_window_size.unwrap_or(1),
+            )
+        })
+        .transpose()?;
+
     let mut byte0 = PduType::COMPLEX_ACK.to_raw() << 4;
     if pdu.segmented {
         byte0 |= 0x08;
@@ -419,12 +438,9 @@ fn encode_complex_ack(buf: &mut BytesMut, pdu: &ComplexAck) -> Result<(), Error>
 
     buf.put_u8(pdu.invoke_id);
 
-    if pdu.segmented {
+    if let Some(window) = window {
         buf.put_u8(pdu.sequence_number.unwrap_or(0));
-        buf.put_u8(valid_window_size(
-            "ComplexAck proposed-window-size {} outside BACnet range 1..=127",
-            pdu.proposed_window_size.unwrap_or(1),
-        )?);
+        buf.put_u8(window);
     }
 
     buf.put_u8(pdu.service_choice.to_raw());
@@ -434,6 +450,11 @@ fn encode_complex_ack(buf: &mut BytesMut, pdu: &ComplexAck) -> Result<(), Error>
 
 #[cfg(feature = "alloc")]
 fn encode_segment_ack(buf: &mut BytesMut, pdu: &SegmentAck) -> Result<(), Error> {
+    // Refused before the first octet, so `buf` stays as it was.
+    let window = valid_window_size(
+        "SegmentACK actual-window-size {} outside BACnet range 1..=127",
+        pdu.actual_window_size,
+    )?;
     let mut byte0 = PduType::SEGMENT_ACK.to_raw() << 4;
     if pdu.negative_ack {
         byte0 |= 0x02;
@@ -444,10 +465,7 @@ fn encode_segment_ack(buf: &mut BytesMut, pdu: &SegmentAck) -> Result<(), Error>
     buf.put_u8(byte0);
     buf.put_u8(pdu.invoke_id);
     buf.put_u8(pdu.sequence_number);
-    buf.put_u8(valid_window_size(
-        "SegmentACK actual-window-size {} outside BACnet range 1..=127",
-        pdu.actual_window_size,
-    )?);
+    buf.put_u8(window);
     Ok(())
 }
 

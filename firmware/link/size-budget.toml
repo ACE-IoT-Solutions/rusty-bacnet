@@ -97,11 +97,11 @@
 # apdu's fmt_functions dropped from 11 to 0 on every target, measured
 # 2026-10-18 with the same toolchain, when the owned APDU and NPDU encoders'
 # validation refusals became static range errors and ObjectIdentifier's
-# encoder lost its formatted assertions (#1777): 2.9-4.0 KB less flash. Its
-# text, rodata and flash budgets are the new sizes plus 12%. Checking each
-# character set's structure in the borrowed CharacterString view (#1778)
-# then added 0.2-0.5 KB of flash to the apdu and device images, within
-# their budgets.
+# encoder lost its formatted assertions (#1777): 2.9-4.0 KB less flash.
+# Checking each character set's structure in the borrowed CharacterString
+# view (#1778) then added 0.2-0.5 KB of flash to the apdu and device images.
+# The apdu text, rodata and flash budgets are the sizes after both, measured
+# 2026-10-18, plus 12%; the device budgets absorb its growth.
 #
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
@@ -333,11 +333,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.apdu]
-text = 41072
-rodata = 5104
+text = 41456
+rodata = 5248
 data = 64
 bss = 1184
-flash = 47312
+flash = 47840
 ram = 1184
 fmt_functions = 0
 div64_functions = 0
@@ -421,11 +421,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.apdu]
-text = 42848
-rodata = 5104
+text = 43408
+rodata = 5248
 data = 64
 bss = 1184
-flash = 48144
+flash = 48864
 ram = 1184
 fmt_functions = 0
 div64_functions = 0
@@ -509,11 +509,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.apdu]
-text = 49296
-rodata = 5712
+text = 50096
+rodata = 5888
 data = 64
 bss = 1184
-flash = 55040
+flash = 56000
 ram = 1184
 fmt_functions = 0
 div64_functions = 0
@@ -597,11 +597,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.apdu]
-text = 40800
-rodata = 5104
+text = 41200
+rodata = 5248
 data = 64
 bss = 1184
-flash = 47040
+flash = 47600
 ram = 1184
 fmt_functions = 0
 div64_functions = 0

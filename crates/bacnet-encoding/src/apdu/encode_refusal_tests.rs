@@ -28,8 +28,19 @@ fn request(max_segments: Option<u8>, max_apdu_length: u16, window: Option<u8>) -
     })
 }
 
+/// Encode `apdu` after octets already in the buffer; a refusal must leave
+/// them, and only them, there.
 fn encoded(apdu: &Apdu) -> Result<(), Error> {
-    encode_apdu(&mut BytesMut::new(), apdu)
+    let mut buf = BytesMut::from(&[0xAA, 0xBB][..]);
+    let result = encode_apdu(&mut buf, apdu);
+    if result.is_err() {
+        assert_eq!(
+            &buf[..],
+            &[0xAA, 0xBB],
+            "a refusal leaves the buffer as it was"
+        );
+    }
+    result
 }
 
 #[test]
@@ -58,6 +69,19 @@ fn header_fields_out_of_range_are_static_range_errors() {
     assert_eq!(
         refusal(encoded(&ack)),
         "value out of range: SegmentACK actual-window-size 0 outside BACnet range 1..=127"
+    );
+    let segmented_ack = Apdu::ComplexAck(ComplexAck {
+        segmented: true,
+        more_follows: true,
+        invoke_id: 1,
+        sequence_number: Some(0),
+        proposed_window_size: Some(0),
+        service_choice: ConfirmedServiceChoice::READ_PROPERTY,
+        service_ack: Bytes::new(),
+    });
+    assert_eq!(
+        refusal(encoded(&segmented_ack)),
+        "value out of range: ComplexAck proposed-window-size 0 outside BACnet range 1..=127"
     );
     assert_eq!(
         refusal(max_apdu_header_at_or_below(49).map(drop)),
