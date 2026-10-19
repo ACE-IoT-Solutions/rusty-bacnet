@@ -76,8 +76,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .await
     }
 
-    /// Send a WhoHas broadcast to find an object by identifier or name, asking
-    /// the devices in `range`, or every device for `None` (Clause 16.9, #1483).
+    /// Send a WhoHas as a global broadcast, as [`Self::who_is`] does, so that
+    /// devices behind routers hear it too, to find an object by identifier
+    /// or name, asking the devices in `range`, or every device for `None`
+    /// (Clause 16.9, #1483).
     pub async fn who_has(
         &self,
         object: WhoHasObject,
@@ -86,7 +88,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let mut buf = BytesMut::new();
         WhoHasRequest { range, object }.encode(&mut buf)?;
 
-        self.broadcast_unconfirmed(UnconfirmedServiceChoice::WHO_HAS, &buf)
+        self.broadcast_global_unconfirmed(UnconfirmedServiceChoice::WHO_HAS, &buf)
             .await
     }
 

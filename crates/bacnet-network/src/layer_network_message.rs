@@ -7,6 +7,16 @@ use super::*;
 use crate::network_number::NumberControl;
 use bacnet_npdu::{NetworkMessageType, RejectMessageToNetwork};
 use bacnet_router_core::message::{NetworkNumberIs, Networks};
+use bacnet_router_core::table::is_reserved;
+
+/// The network messages [`NetworkLayer::send_network_message`] sends: the
+/// two questions a non-routing node asks. The rest change routing tables,
+/// flow control or connections, or announce routes this node doesn't
+/// have, so each joins the list only deliberately, with its own review.
+pub const SENDABLE_NETWORK_MESSAGES: [NetworkMessageType; 2] = [
+    NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK,
+    NetworkMessageType::WHAT_IS_NETWORK_NUMBER,
+];
 
 /// A network message that tells a non-routing node something about the
 /// internetwork, read from a [`ReceivedNetworkControl`].
@@ -46,26 +56,37 @@ impl ReceivedNetworkReport {
     /// Read `control` as a report, or `None` for any other message type or
     /// a payload its parser refuses.
     ///
-    /// - I-Am-Router-To-Network: router-core's [`Networks`] view, with at
-    ///   least one network and none of 0 or 0xFFFF, which name no network
-    ///   a router can reach. A list with either is refused whole.
+    /// - I-Am-Router-To-Network: router-core's [`Networks`] view. Entries
+    ///   0 and 0xFFFF name no network a router can reach and are dropped,
+    ///   as router-core's table drops them ([`is_reserved`]); the message is
+    ///   refused only when no other entry is left.
     /// - Network-Number-Is: [`NumberControl::parse`], the reader the local
     ///   Number controls use, so a routed, unicast or malformed one is
     ///   ignored here too (Clause 6.4.20).
     /// - Reject-Message-To-Network: [`RejectMessageToNetwork::decode`],
     ///   exactly three octets.
     pub fn parse(control: &ReceivedNetworkControl) -> Option<Self> {
+        Self::parse_with(control, NumberControl::parse(control))
+    }
+
+    /// [`Self::parse`] for a caller that already read `control` with
+    /// [`NumberControl::parse`] and passes that result as `number`, so a
+    /// Network-Number-Is is read once.
+    pub fn parse_with(
+        control: &ReceivedNetworkControl,
+        number: Option<NumberControl>,
+    ) -> Option<Self> {
         let npdu = &control.npdu;
         let report = match npdu.message_type? {
             NetworkMessageType::I_AM_ROUTER_TO_NETWORK => {
                 let networks = Networks::parse(&npdu.payload).ok()?;
-                let listed: Vec<u16> = networks.iter().collect();
-                if listed.is_empty() || listed.iter().any(|&n| n == 0 || n == u16::MAX) {
+                let listed: Vec<u16> = networks.iter().filter(|&n| !is_reserved(n)).collect();
+                if listed.is_empty() {
                     return None;
                 }
                 NetworkReport::IAmRouterToNetwork(listed)
             }
-            NetworkMessageType::NETWORK_NUMBER_IS => match NumberControl::parse(control)? {
+            NetworkMessageType::NETWORK_NUMBER_IS => match number? {
                 NumberControl::NumberIs { number, flag } => NetworkReport::NetworkNumberIs {
                     network: number,
                     configured: flag == NetworkNumberIs::CONFIGURED,
@@ -94,18 +115,19 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// What-Is-Network-Number need (Clauses 6.4.1 and 6.4.19). A
     /// `destination_mac` that is one of the link's local broadcast
     /// destinations goes out as the local broadcast, as
-    /// [`Self::send_apdu`] does. A proprietary message type, which needs a
-    /// vendor ID this send doesn't take, is refused before anything is
-    /// sent.
+    /// [`Self::send_apdu`] does. Only the types in
+    /// [`SENDABLE_NETWORK_MESSAGES`] are sent; any other is refused before
+    /// anything is sent.
     pub async fn send_network_message(
         &self,
         message_type: NetworkMessageType,
         payload: &[u8],
         destination_mac: Option<&[u8]>,
     ) -> Result<(), Error> {
-        if message_type.is_proprietary() {
+        if !SENDABLE_NETWORK_MESSAGES.contains(&message_type) {
             return Err(Error::Encoding(format!(
-                "network message type {message_type} is proprietary and needs a vendor ID"
+                "network message type {message_type} is not one a non-routing node sends; \
+                 only Who-Is-Router-To-Network and What-Is-Network-Number are"
             )));
         }
         let npdu = Npdu {

@@ -17,13 +17,15 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
-use bacnet_services::who_has::WhoHasObject;
+use bacnet_services::who_has::{IHaveRequest, WhoHasObject};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::NoSerial;
+use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
+use bytes::BytesMut;
 use tokio::sync::broadcast::Receiver;
 
 const INSTANCE: u32 = 4321;
@@ -120,6 +122,37 @@ async fn who_has_collects_the_i_have_of_a_local_server() {
 
     client.stop().await.unwrap();
     server.stop().await.unwrap();
+}
+
+/// A peer that answers one Who-Has with the same I-Have twice is listed
+/// once.
+#[tokio::test(start_paused = true)]
+async fn the_same_answer_twice_is_listed_once() {
+    let (client_end, mut peer) = LoopbackTransport::pair(vec![0x0A], vec![STATION]);
+    let mut frames = peer.start().await.unwrap();
+    let mut client = client(client_end).await;
+    let answer = tokio::spawn(async move {
+        frames.recv().await.expect("the Who-Has");
+        let mut npdu = BytesMut::from(&[1u8, 0, 0x10, 0x01][..]);
+        IHaveRequest {
+            device_identifier: device(),
+            object_identifier: supply_air(),
+            object_name: NAME.into(),
+        }
+        .encode(&mut npdu)
+        .unwrap();
+        for _ in 0..2 {
+            peer.send_unicast(&npdu, &[0x0A]).await.unwrap();
+        }
+        peer
+    });
+    let replies = client
+        .who_has_replies(WhoHasObject::Name(NAME.into()), None, WAIT)
+        .await
+        .unwrap();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    drop(answer.await.unwrap());
+    client.stop().await.unwrap();
 }
 
 /// An I-Have the client didn't ask for still reaches `i_have_events`.
@@ -224,6 +257,27 @@ async fn the_router_and_its_remote_network_are_found_and_reached() {
         .0;
     assert_eq!(value, PropertyValue::CharacterString(NAME.into()));
 
+    client.stop().await.unwrap();
+    server.stop().await.unwrap();
+    router.stop().await;
+}
+
+/// The Who-Has is a global broadcast, so the router passes it on to network
+/// 2 and the server's I-Have comes back through it, naming its network.
+#[tokio::test(start_paused = true)]
+async fn who_has_finds_an_object_behind_the_router() {
+    let (mut router, mut server, mut client) = routed_site().await;
+    let replies = client
+        .who_has_replies(WhoHasObject::Name(NAME.into()), None, WAIT)
+        .await
+        .unwrap();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0].i_have.device_identifier, device());
+    assert_eq!(replies[0].source_mac.as_slice(), [ROUTER_MAC]);
+    assert_eq!(
+        replies[0].source_network.as_ref().map(|s| s.network),
+        Some(REMOTE)
+    );
     client.stop().await.unwrap();
     server.stop().await.unwrap();
     router.stop().await;

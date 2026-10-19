@@ -441,7 +441,7 @@ client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `3` / `4` / `5` / `1` | Show the watch list / the Network screen (B/IP) / the SC screen / back to the devices |
+| `3` / `4` / `5` / `1` | Show the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / back to the devices |
 | `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS`, `find NAME` |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
@@ -496,7 +496,8 @@ request rate over the last 10 s. Notifications the TUI couldn't
 keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
 
-**Network screen (B/IP).** `4` shows the foreign-device panel and one BBMD's
+**Network screen.** Its BBMD tabs are for B/IP, and its Networks tab
+(below) works on every transport. `4` shows the foreign-device panel and one BBMD's
 tables. With `--foreign-bbmd` (or a profile with a BBMD) the panel shows the
 BBMD, the TTL, the last BVLC-Result, a countdown to the next registration and
 the lease left; a refused registration raises a red banner on every screen.
@@ -518,11 +519,12 @@ for itself.
 object named NAME (the rest of the line, exactly as typed) and lists the
 devices whose I-Have answers it in a panel below the device table; `:find`
 alone closes the panel. The Network screen's last tab, Networks, works on
-every transport: `r` broadcasts a Who-Is-Router-To-Network, and each router
-that announces itself, asked or not, is listed against the networks it
-reaches. A network number that more than one router claims is flagged
-DUPLICATE: two networks may share the number, or the routers form a loop. The
-tab's title shows the local network's number once a Network-Number-Is is
+every transport: `r` clears the map and broadcasts a
+Who-Is-Router-To-Network, and each router that announces itself, asked or
+not, is listed against the networks it reaches. A network number that more
+than one router claims is flagged DUPLICATE: two networks may share the
+number, the routers form a loop, or the route moved since the last search.
+The tab's title shows the local network's number once a Network-Number-Is is
 heard, and a router's Reject-Message-To-Network for a message the TUI sent is
 shown in the footer with the network and the reason.
 
@@ -664,7 +666,8 @@ bacnet find --name "Zone Temp"           # find objects by name (WhoHas)
 bacnet find --name "Zone Temp" --wait 5  # wait 5 seconds for responses
 ```
 
-`find` prints every I-Have that answers within the wait, one row per device
+`find` sends its Who-Has as a global broadcast, so routers pass it to every
+network, and prints every I-Have that answers within the wait, one row per device
 and object. With `--json` it prints an array, empty when nothing answered:
 
 ```json

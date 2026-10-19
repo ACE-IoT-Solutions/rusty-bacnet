@@ -105,7 +105,7 @@ pub use issuance::IssuedApdu;
 
 #[path = "layer_network_message.rs"]
 mod network_message;
-pub use network_message::{NetworkReport, ReceivedNetworkReport};
+pub use network_message::{NetworkReport, ReceivedNetworkReport, SENDABLE_NETWORK_MESSAGES};
 
 #[path = "layer_receive.rs"]
 pub(crate) mod receive;

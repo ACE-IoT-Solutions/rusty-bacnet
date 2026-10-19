@@ -14,14 +14,14 @@ use tokio::time::{sleep, timeout, Duration};
 
 use super::{routed_path_limits::MAX_ROUTED_PATH_ENTRIES, BACnetClient, ClientConfig};
 
-const DNET: u16 = 100;
+pub(super) const DNET: u16 = 100;
 
-struct SentFrame {
+pub(super) struct SentFrame {
     npdu: Bytes,
     destination: MacAddr,
 }
 
-struct CaptureTransport {
+pub(super) struct CaptureTransport {
     local_mac: MacAddr,
     inbound_rx: Option<mpsc::Receiver<ReceivedNpdu>>,
     outbound_tx: mpsc::UnboundedSender<SentFrame>,
@@ -65,7 +65,7 @@ impl TransportPort for CaptureTransport {
     }
 }
 
-fn harness(
+pub(super) fn harness(
     local_mac: &[u8],
     max_apdu: u16,
 ) -> (
@@ -87,7 +87,7 @@ fn harness(
     )
 }
 
-fn routed_request(
+pub(super) fn routed_request(
     client: Arc<BACnetClient<CaptureTransport>>,
     router: Vec<u8>,
     dnet: u16,
@@ -107,7 +107,10 @@ fn routed_request(
     })
 }
 
-fn confirmed_request(frame: SentFrame, expected_router: &[u8]) -> apdu::ConfirmedRequest {
+pub(super) fn confirmed_request(
+    frame: SentFrame,
+    expected_router: &[u8],
+) -> apdu::ConfirmedRequest {
     assert_eq!(frame.destination.as_slice(), expected_router);
     let npdu = decode_npdu(frame.npdu).unwrap();
     let Apdu::ConfirmedRequest(request) = apdu::decode_apdu(npdu.payload).unwrap() else {
@@ -181,7 +184,11 @@ async fn inject_control(
         .unwrap();
 }
 
-async fn inject_reason_4(inbound: &mpsc::Sender<ReceivedNpdu>, immediate_source: &[u8], dnet: u16) {
+pub(super) async fn inject_reason_4(
+    inbound: &mpsc::Sender<ReceivedNpdu>,
+    immediate_source: &[u8],
+    dnet: u16,
+) {
     inject_control(
         inbound,
         immediate_source,

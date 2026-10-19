@@ -58,7 +58,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let inner = block.inner(tables);
     frame.render_widget(block, tables);
     if state.view == View::Networks {
-        super::who_has::networks(frame, inner, app, theme);
+        super::networks::draw(frame, inner, app, theme);
         return;
     }
     if app.transport != "BIP" {
@@ -78,7 +78,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn subtitle(app: &App) -> String {
     let state = &app.network;
     if state.view == View::Networks {
-        return super::who_has::networks_subtitle(app);
+        return super::networks::subtitle(app);
     }
     let busy = match state.view {
         View::Matrix if state.surveying => Some("surveying"),

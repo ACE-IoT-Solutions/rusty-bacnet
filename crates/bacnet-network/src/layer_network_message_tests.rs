@@ -32,12 +32,18 @@ fn i_am_router_lists_its_networks_in_order() {
         report(&[1, 0x80, 0x01, 0, 2, 0x0B, 0xB8], true),
         Some(NetworkReport::IAmRouterToNetwork(vec![2, 3000]))
     );
-    // Odd length, an empty list, and a list naming 0 or 0xFFFF are refused.
+    // Entries 0 and 0xFFFF are dropped and the rest kept.
+    assert_eq!(
+        report(&[1, 0x80, 0x01, 0, 0, 0, 2, 0xFF, 0xFF, 0, 5], true),
+        Some(NetworkReport::IAmRouterToNetwork(vec![2, 5]))
+    );
+    // Odd length, an empty list, and a list of nothing but 0 and 0xFFFF
+    // are refused.
     for bytes in [
         &[1, 0x80, 0x01, 0, 2, 0][..],
         &[1, 0x80, 0x01],
-        &[1, 0x80, 0x01, 0, 2, 0, 0],
-        &[1, 0x80, 0x01, 0xFF, 0xFF],
+        &[1, 0x80, 0x01, 0, 0],
+        &[1, 0x80, 0x01, 0xFF, 0xFF, 0, 0],
     ] {
         assert_eq!(report(bytes, true), None, "{bytes:?}");
     }
@@ -139,8 +145,21 @@ async fn a_local_network_message_has_no_dnet_and_goes_where_asked() {
 }
 
 #[tokio::test]
-async fn a_proprietary_message_is_refused_before_sending() {
-    let (result, frame) = sent(NetworkMessageType::from_raw(0x80), &[], None).await;
-    assert!(result.is_err());
-    assert!(frame.is_none());
+async fn only_the_two_questions_are_sent() {
+    for refused in [
+        NetworkMessageType::I_AM_ROUTER_TO_NETWORK,
+        NetworkMessageType::INITIALIZE_ROUTING_TABLE,
+        NetworkMessageType::ROUTER_BUSY_TO_NETWORK,
+        NetworkMessageType::NETWORK_NUMBER_IS,
+        NetworkMessageType::from_raw(0x14),
+        NetworkMessageType::from_raw(0x80),
+    ] {
+        let (result, frame) = sent(refused, &[0, 2], None).await;
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("not one a non-routing node sends"),
+            "{refused}: {error}"
+        );
+        assert!(frame.is_none(), "{refused}");
+    }
 }

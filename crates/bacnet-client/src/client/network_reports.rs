@@ -10,6 +10,7 @@
 use super::i_have::collect_until;
 use super::*;
 use bacnet_network::layer::{NetworkReport, ReceivedNetworkControl, ReceivedNetworkReport};
+use bacnet_network::network_number::NumberControl;
 use bacnet_npdu::NetworkMessageType;
 use bacnet_router_core::message::Networks;
 
@@ -29,16 +30,18 @@ pub struct DiscoveredRouter {
     pub networks: Vec<u16>,
 }
 
-/// Read `control` as a report and hand it to the subscribers. With no
-/// subscriber nothing is parsed. Never waits.
+/// Read `control` as a report and hand it to the subscribers; `number` is
+/// what [`NumberControl::parse`] made of it. With no subscriber nothing is
+/// parsed. Never waits.
 pub(super) fn publish(
     tx: &broadcast::Sender<ReceivedNetworkReport>,
     control: &ReceivedNetworkControl,
+    number: Option<NumberControl>,
 ) {
     if tx.receiver_count() == 0 {
         return;
     }
-    if let Some(report) = ReceivedNetworkReport::parse(control) {
+    if let Some(report) = ReceivedNetworkReport::parse_with(control, number) {
         let _ = tx.send(report);
     }
 }
@@ -161,28 +164,5 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn routers_are_kept_per_mac_with_every_network_once() {
-        let mut routers = Vec::new();
-        let mac = |octet: u8| MacAddr::from_slice(&[octet]);
-        record(&mut routers, mac(1), vec![5, 2]);
-        record(&mut routers, mac(9), vec![2]);
-        record(&mut routers, mac(1), vec![3, 5]);
-        assert_eq!(
-            routers,
-            [
-                DiscoveredRouter {
-                    mac: mac(1),
-                    networks: vec![2, 3, 5],
-                },
-                DiscoveredRouter {
-                    mac: mac(9),
-                    networks: vec![2],
-                },
-            ]
-        );
-    }
-}
+#[path = "network_reports_tests.rs"]
+mod tests;

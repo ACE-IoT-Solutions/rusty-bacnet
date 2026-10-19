@@ -39,6 +39,6 @@ expression: frame
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
-"│DUPLICATE: more than one router reaches this network number; two networks may share it, or the routers form a loop.   │"
+"│DUPLICATE: several routers claim one network number: a shared number, a loop, or a moved route (r asks again).        │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 " r ask routers  Tab tables  : find NAME  Esc back  ? help  q quit                                                       "

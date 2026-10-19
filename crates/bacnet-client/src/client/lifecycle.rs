@@ -137,11 +137,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     control = network_control_rx.recv(), if network_control_open => {
                         match control {
                             Some(control) => {
-                                // Subscribers first; a broadcast send never waits.
-                                network_reports::publish(&network_report_tx_dispatch, &control);
-                                if let Some((tx, parsed)) = number_tx
-                                    .as_ref()
-                                    .zip(bacnet_network::network_number::NumberControl::parse(&control))
+                                // Read once; subscribers first, and a broadcast
+                                // send never waits.
+                                let number = bacnet_network::network_number::NumberControl::parse(&control);
+                                network_reports::publish(&network_report_tx_dispatch, &control, number);
+                                if let Some((tx, parsed)) = number_tx.as_ref().zip(number)
                                 {
                                     if tx.try_send(parsed).is_err() {
                                         debug!("client Number control queue full or closed; dropping control");

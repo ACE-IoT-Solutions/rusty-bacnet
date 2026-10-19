@@ -10,6 +10,7 @@ mod connection;
 mod devices;
 mod dialogs;
 mod network;
+mod networks;
 mod safety;
 mod sc;
 mod sc_credentials;

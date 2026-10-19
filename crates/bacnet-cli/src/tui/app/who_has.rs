@@ -5,7 +5,7 @@
 //!   `:find` alone closes it.
 //! - The Network screen's Networks tab maps routers to the networks they
 //!   reach: every I-Am-Router-To-Network heard adds to it, and `r` there
-//!   asks every router again.
+//!   clears it and asks every router again.
 //! - A router's Reject-Message-To-Network is flashed, naming the network.
 
 use std::time::Instant;
@@ -15,6 +15,7 @@ use super::watch::Screen;
 use super::{App, Link, FLASH_FOR};
 use crate::tui::message::Command;
 use crate::tui::network::discovery::{DiscoveryCommand, DiscoveryEvent, FoundRow};
+use crate::tui::network::routers::RouterMap;
 
 /// The running or last Who-Has search.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,10 @@ impl App {
     /// `r` on the Networks tab: ask every router for its networks.
     pub(super) fn ask_routers(&mut self, out: &mut Vec<Command>) {
         if self.discovery_ready() {
+            // A newer announcement supersedes an older one (Clause
+            // 6.6.3.2): a router replaced or moved since the last search
+            // must not stay flagged, so each search starts a fresh map.
+            self.network.routers = RouterMap::default();
             self.network.routers_asked = Some(self.now);
             out.push(Command::Discovery(DiscoveryCommand::WhoIsRouter));
         }

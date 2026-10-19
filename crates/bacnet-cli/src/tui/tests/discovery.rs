@@ -147,6 +147,18 @@ fn the_networks_tab_flags_a_network_two_routers_claim() {
     let frame = screen(&mut app, 120, 40);
     assert!(frame.contains("DUPLICATE"), "{frame}");
     assert_snapshot!("networks_tab_120x40", frame);
+
+    // The route to 3 moved to 10.0.0.7: a new search starts from nothing,
+    // so the old claim no longer flags it.
+    assert_eq!(
+        press(&mut app, KeyCode::Char('r')),
+        [Command::Discovery(DiscoveryCommand::WhoIsRouter)]
+    );
+    assert!(app.network.routers.is_empty());
+    router(&mut app, "10.0.0.1:47808", &[2]);
+    router(&mut app, "10.0.0.7:47808", &[3]);
+    assert!(app.network.routers.duplicates().is_empty());
+    assert!(!screen(&mut app, 120, 40).contains("DUPLICATE"));
 }
 
 async fn bbmd_with_supply_air(instance: u32) -> BACnetServer<BipTransport> {
