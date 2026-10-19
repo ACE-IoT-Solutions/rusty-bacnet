@@ -77,7 +77,8 @@ impl Hasher for MapHasher {
 /// Builds a [`MapHasher`]: the `S` of a `HashMap<K, V, S>`.
 pub type BuildMapHasher = BuildHasherDefault<MapHasher>;
 
-#[cfg(test)]
+// The keys are `MacAddr`, which needs `alloc`.
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
     use crate::MacAddr;
