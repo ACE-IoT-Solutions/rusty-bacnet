@@ -50,6 +50,7 @@ fn state_with_row<'a>(sink: &'a EventSink, options: &'a WatchOptions) -> State<'
         row: 1,
         point: Point {
             device: DEVICE,
+            network: None,
             object: ai(1),
             property: PropertyIdentifier::PRESENT_VALUE,
         },
@@ -116,4 +117,32 @@ async fn a_flood_past_capacity_counts_every_lost_notification() {
         42 + 8 + 3,
         "the 8 pending from the flood and 3 more fell out of the ring"
     );
+}
+
+/// The log keeps the device a plain instance; a routed one's network has
+/// its own column, last, empty on this network.
+#[test]
+fn a_log_line_puts_a_routed_device_network_in_its_own_column() {
+    let sample = Sample {
+        value: Ok("72.5 °F".into()),
+        number: Some(72.5),
+        flags: None,
+        at: std::time::Instant::now(),
+    };
+    let mut point = Point {
+        device: 2001,
+        network: Some(2),
+        object: ai(1),
+        property: PropertyIdentifier::PRESENT_VALUE,
+    };
+    let line = csv_line(&point, &sample, &Ok("72.5".into()), 7, "polled");
+    assert_eq!(line, "7,2001,analog-input 1,present-value,72.5,,polled,2");
+    assert_eq!(
+        csv::HEADER.split(',').count(),
+        line.split(',').count(),
+        "a field per header column"
+    );
+    point.network = None;
+    let line = csv_line(&point, &sample, &Ok("72.5".into()), 7, "cov");
+    assert_eq!(line, "7,2001,analog-input 1,present-value,72.5,,cov,");
 }

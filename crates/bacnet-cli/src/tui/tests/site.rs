@@ -66,6 +66,9 @@ pub(super) struct Quirks {
     /// Fail any ReadProperty or ReadPropertyMultiple that asks for
     /// State_Text with PROPERTY / UNKNOWN_PROPERTY, as a device without it.
     pub(super) refuse_state_text: bool,
+    /// Fail any ReadProperty or ReadPropertyMultiple that asks for
+    /// Object_Name the same way, as a device that won't give names.
+    pub(super) refuse_object_name: bool,
 }
 
 struct Port {
@@ -218,30 +221,37 @@ impl HubPort {
                     let state_text = [[0x09, 110], [0x19, 110]]
                         .iter()
                         .any(|tag| npdu.windows(2).any(|pair| pair == tag));
-                    let answer = if read && port.quirks.refuse_state_text && state_text {
-                        // Error PDU: class PROPERTY (2), code UNKNOWN_PROPERTY (32).
-                        Some(vec![
-                            0x01, 0x00, 0x50, invoke_id, service, 0x91, 2, 0x91, 32,
-                        ])
-                    } else if (rpm && port.quirks.refuse_rpm) || (cov && port.quirks.refuse_cov) {
-                        Some(vec![0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
-                    } else if rpm && port.quirks.abort_first_rpm {
-                        port.quirks.abort_first_rpm = false;
-                        Some(vec![
-                            0x01,
-                            0x00,
-                            0x71,
-                            invoke_id,
-                            SEGMENTATION_NOT_SUPPORTED,
-                        ])
-                    } else if rpm && port.quirks.fail_rpm {
-                        // Error PDU: class OBJECT (1), code UNKNOWN_OBJECT (31).
-                        Some(vec![
-                            0x01, 0x00, 0x50, invoke_id, service, 0x91, 1, 0x91, 31,
-                        ])
-                    } else {
-                        None
-                    };
+                    // Object_Name (77), likewise.
+                    let object_name = [[0x09, 77], [0x19, 77]]
+                        .iter()
+                        .any(|tag| npdu.windows(2).any(|pair| pair == tag));
+                    let refused = (port.quirks.refuse_state_text && state_text)
+                        || (port.quirks.refuse_object_name && object_name);
+                    let answer =
+                        if (rpm && port.quirks.refuse_rpm) || (cov && port.quirks.refuse_cov) {
+                            Some(vec![0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
+                        } else if read && refused {
+                            // Error PDU: class PROPERTY (2), code UNKNOWN_PROPERTY (32).
+                            Some(vec![
+                                0x01, 0x00, 0x50, invoke_id, service, 0x91, 2, 0x91, 32,
+                            ])
+                        } else if rpm && port.quirks.abort_first_rpm {
+                            port.quirks.abort_first_rpm = false;
+                            Some(vec![
+                                0x01,
+                                0x00,
+                                0x71,
+                                invoke_id,
+                                SEGMENTATION_NOT_SUPPORTED,
+                            ])
+                        } else if rpm && port.quirks.fail_rpm {
+                            // Error PDU: class OBJECT (1), code UNKNOWN_OBJECT (31).
+                            Some(vec![
+                                0x01, 0x00, 0x50, invoke_id, service, 0x91, 1, 0x91, 31,
+                            ])
+                        } else {
+                            None
+                        };
                     if let Some(answer) = answer {
                         let back = ReceivedNpdu::unverified(
                             Bytes::copy_from_slice(&answer),

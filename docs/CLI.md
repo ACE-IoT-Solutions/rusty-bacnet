@@ -491,9 +491,14 @@ go through a write session (below).
 
 **Watch list.** `a` on an object in the browser watches its Present_Value;
 `:watch 1234 ai:1 [property]` on the command bar watches any property of a
-device in the table (`dnet:1234` for a routed one). `3` shows the list: device,
-object, property, value, units, status flags, source, the age of the last
-value and a sparkline. `x` stops watching the selected row.
+device in the table (`dnet:1234` for a routed one). `3` shows the list: device
+(`2:1234` when routed), object, the object's name, property, value, units,
+status flags, source, the age of the last value and a sparkline. Columns fit
+their content and the device and object are never cut. Below 120 columns the
+property shows only when some row watches another property than
+Present_Value, and units are left to the value's symbol; from 120 columns
+the property always shows, and from 160 the units column too, with more room
+for names and the sparkline. `x` stops watching the selected row.
 
 Each row subscribes for COV with a finite lifetime (`--cov-lifetime`, default
 300 s) that is renewed before it runs out: SubscribeCOV for Present_Value,
@@ -513,6 +518,9 @@ limits and `--max-rate`, once per lifetime. The list's title shows the
 request rate over the last 10 s. Notifications the TUI couldn't
 keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
+Its columns are `unix_ms,device,object,property,value,status_flags,source,network`:
+`device` is the plain instance and `network` a routed device's network,
+empty on the local network.
 
 **Network screen.** Its BBMD tabs are for B/IP, and its Networks tab
 (below) works on every transport. `4` shows the foreign-device panel and one BBMD's

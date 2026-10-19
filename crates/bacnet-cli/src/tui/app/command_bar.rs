@@ -70,9 +70,11 @@ fn mstp_setting(which: &str, value: &str) -> Result<Setting, String> {
     }
 }
 
-fn device(word: &str, command: &str) -> Result<u32, String> {
+/// A device instance, with the network when typed as `dnet:instance`.
+fn device(word: &str, command: &str) -> Result<(u32, Option<u16>), String> {
     match parse_target(word)? {
-        Target::Instance(instance) | Target::Routed { instance, .. } => Ok(instance),
+        Target::Instance(instance) => Ok((instance, None)),
+        Target::Routed { dnet, instance } => Ok((instance, Some(dnet))),
         _ => Err(format!(
             "'{word}': {command} takes a device instance (N or dnet:N) from the device table"
         )),
@@ -114,9 +116,11 @@ fn writes(device: u32, words: &[&str]) -> Result<Vec<WriteSpec>, String> {
 pub(crate) fn parse(text: &str) -> Result<Line, String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     match words.as_slice() {
-        ["writem", target, rest @ ..] => Ok(Line::Writem(writes(device(target, "writem")?, rest)?)),
+        ["writem", target, rest @ ..] => {
+            Ok(Line::Writem(writes(device(target, "writem")?.0, rest)?))
+        }
         [command, target, object_word, rest @ ..] if matches!(*command, "watch" | "w") => {
-            let device = device(target, "watch")?;
+            let (device, network) = device(target, "watch")?;
             let object = object(object_word)?;
             let property = match rest {
                 [] => PropertyIdentifier::PRESENT_VALUE,
@@ -128,6 +132,7 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
             };
             Ok(Line::Watch(Point {
                 device,
+                network,
                 object,
                 property,
             }))
@@ -193,6 +198,7 @@ mod tests {
             parse("watch 100 ai:1"),
             Ok(Line::Watch(Point {
                 device: 100,
+                network: None,
                 object: ai1,
                 property: PropertyIdentifier::PRESENT_VALUE
             }))
@@ -201,6 +207,7 @@ mod tests {
             parse("w 2:100 analog-input:1 sf"),
             Ok(Line::Watch(Point {
                 device: 100,
+                network: Some(2),
                 object: ai1,
                 property: PropertyIdentifier::STATUS_FLAGS
             }))

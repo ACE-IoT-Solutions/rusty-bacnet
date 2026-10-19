@@ -17,6 +17,9 @@ pub(crate) type RowId = u32;
 pub(crate) struct Point {
     /// Device instance, from the discovery table.
     pub(crate) device: u32,
+    /// The remote network the device is on, from the device table (or as
+    /// typed, for a device not in it yet); `None` on this network.
+    pub(crate) network: Option<u16>,
     /// The object.
     pub(crate) object: ObjectIdentifier,
     /// The property; Present_Value takes SubscribeCOV, any other property
@@ -25,6 +28,15 @@ pub(crate) struct Point {
 }
 
 impl Point {
+    /// The device as the CLI's target syntax writes it: `2001`, or
+    /// `2:2001` for one on network 2.
+    pub(crate) fn device_label(&self) -> String {
+        match self.network {
+            Some(network) => format!("{network}:{}", self.device),
+            None => self.device.to_string(),
+        }
+    }
+
     /// True when a SubscribeCOV on the whole object covers this property.
     /// The standard objects report Present_Value and Status_Flags to such a
     /// subscription (Table 13-1); anything else needs SubscribeCOVProperty.
@@ -108,12 +120,14 @@ pub(crate) enum WatchEvent {
         /// Its new source.
         source: Source,
     },
-    /// A row's Units, read when it started.
-    Units {
+    /// What a row's first read found besides its value.
+    Details {
         /// The row.
         row: RowId,
-        /// The units as text.
-        units: String,
+        /// The object's Object_Name, when the device gave it.
+        name: Option<String>,
+        /// The units as text, when the object has them.
+        units: Option<String>,
     },
     /// New values, oldest first per row.
     Samples(Vec<(RowId, Sample)>),

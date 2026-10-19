@@ -239,6 +239,7 @@ async fn a_watch_command_waits_for_room_in_a_full_session_queue() {
         row: 4,
         point: Point {
             device: 100,
+            network: None,
             object: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
             property: PropertyIdentifier::PRESENT_VALUE,
         },
