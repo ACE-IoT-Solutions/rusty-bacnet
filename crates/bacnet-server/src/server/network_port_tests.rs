@@ -2,6 +2,10 @@
 use super::*;
 use bacnet_objects::network_port::{BipPortConfig, NetworkPortObject};
 
+#[path = "network_port_activation_refusal_tests.rs"]
+mod network_port_activation_refusal_tests;
+#[path = "network_port_activation_tests.rs"]
+mod network_port_activation_tests;
 #[path = "network_port_bip_mode_tests.rs"]
 mod network_port_bip_mode_tests;
 #[path = "network_port_mode_tests.rs"]

@@ -1867,8 +1867,12 @@ class Bbmd:
     ``management_acl`` lists the IPv4 addresses allowed to delete Foreign
     Device Table entries (default: none). ``bdt_persist_path`` names a file
     holding a BDT, 10 octets per row, to start with instead of ``bdt`` when
-    it loads. Write-BDT from the network is always refused. Invalid values
-    raise ValueError, or OverflowError for an integer out of range.
+    it loads. ``alone_on_subnet`` says this BBMD is the only device of its
+    B/IP network on its subnet, as behind a NAT router: forwarded and
+    distributed broadcasts then go only to its peers and foreign devices,
+    not to its own subnet (default False). Write-BDT from the network is
+    always refused. Invalid values raise ValueError, or OverflowError for an
+    integer out of range.
     """
 
     def __init__(
@@ -1878,6 +1882,7 @@ class Bbmd:
         accept_foreign_devices: bool = False,
         management_acl: Optional[Sequence[str]] = None,
         bdt_persist_path: Optional[str | os.PathLike[str]] = None,
+        alone_on_subnet: bool = False,
     ) -> None: ...
     @property
     def bdt(self) -> list[tuple[str, str]]: ...
@@ -1887,6 +1892,8 @@ class Bbmd:
     def management_acl(self) -> list[str]: ...
     @property
     def bdt_persist_path(self) -> Optional[pathlib.Path]: ...
+    @property
+    def alone_on_subnet(self) -> bool: ...
 
 class ForeignRegistrationStatus(TypedDict):
     """A foreign device's registration, as ``foreign_registration()``

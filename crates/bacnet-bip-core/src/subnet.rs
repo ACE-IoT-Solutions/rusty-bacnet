@@ -27,15 +27,27 @@ pub struct LocalSubnet {
     /// Leave it `None` when it isn't known, or when the own address isn't
     /// on the subnet, as behind NAT; such a forward is then broadcast.
     pub mask: Option<Ipv4Addr>,
+    /// Whether the node is the only device of its B/IP network on the
+    /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). A BBMD
+    /// then skips the local broadcast of a peer's Forwarded-NPDU, as Annex
+    /// J.4.5 permits (leaving how the BBMD knows to the installation), and,
+    /// extending that permission, of a foreign device's
+    /// Distribute-Broadcast-To-Network: nothing there would receive either,
+    /// and the BBMD's own application still gets the message. `false` unless the caller sets it; set it only when
+    /// no other device of the network shares the subnet, or they stop
+    /// receiving remote broadcasts.
+    pub alone: bool,
 }
 
 impl LocalSubnet {
-    /// The subnet whose broadcasts go to `broadcast`, its mask not known.
+    /// The subnet whose broadcasts go to `broadcast`, its mask not known,
+    /// shared with other devices.
     #[must_use]
     pub const fn new(broadcast: SocketAddrV4) -> Self {
         Self {
             broadcast,
             mask: None,
+            alone: false,
         }
     }
 }

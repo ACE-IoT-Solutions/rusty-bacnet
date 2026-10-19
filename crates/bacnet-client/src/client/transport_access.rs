@@ -19,8 +19,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///
     /// Reading transport state and diagnostics while the client runs:
     ///
-    /// - BACnet/SC: the `connection_state_changes()` watch and
-    ///   `npdu_drop_counts()`.
+    /// - BACnet/SC: the `connection_state_changes()` watch, the
+    ///   `connection_events()` broadcast (reconnects, failover, primary
+    ///   restore, disconnect causes), the `connection_status()` snapshot
+    ///   (active hub, hub VMAC, heartbeat age and round-trip time),
+    ///   `hub_peer_info()` and `npdu_drop_counts()`.
     /// - B/IP: `management_counters()`, `fdt_counters()`,
     ///   `fanout_counters()`, `receive_counters()`, `send_counters()`, and
     ///   `bbmd_state()` for a brief read of the BBMD tables.

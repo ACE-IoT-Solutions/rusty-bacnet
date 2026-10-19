@@ -145,6 +145,69 @@ impl ObjectDatabase {
         )
     }
 
+    /// Say whether the registered port's owner activates written values,
+    /// answering ReinitializeDevice ACTIVATE_CHANGES and WARMSTART. Until it
+    /// does, the pending-activation rows refuse writes.
+    #[doc(hidden)]
+    pub fn set_network_port_activation_internal(
+        &mut self,
+        oid: ObjectIdentifier,
+        activation: bool,
+    ) -> Result<(), Error> {
+        self.builtin_network_port_mut(&oid)
+            .ok_or_else(|| invalid("selected Network Port authority disappeared"))?
+            .set_activation_internal(activation);
+        Ok(())
+    }
+
+    /// The Network Port objects, built-in ones only.
+    fn network_port_oids(&self) -> Vec<ObjectIdentifier> {
+        self.objects
+            .keys()
+            .filter(|oid| oid.object_type() == ObjectType::NETWORK_PORT)
+            .copied()
+            .collect()
+    }
+
+    /// Check, changing nothing, that every built-in Network Port's pending
+    /// values would still be taken: what a ReinitializeDevice ACTIVATE_CHANGES
+    /// or WARMSTART checks before its handler runs.
+    pub fn check_network_port_changes(&mut self) -> Result<(), Error> {
+        for oid in self.network_port_oids() {
+            if let Some(port) = self.builtin_network_port_mut(&oid) {
+                port.check_pending_changes()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Put the values written to every built-in Network Port into effect and
+    /// clear its Changes_Pending, as a ReinitializeDevice ACTIVATE_CHANGES
+    /// or WARMSTART does (Clause 12.56.13). How many ports had changes.
+    ///
+    /// Each port's changes go into effect all or none, but not across
+    /// ports: a port whose transport refuses its changes keeps them pending
+    /// while the others take theirs, and the first such error is returned
+    /// once every port has been tried.
+    pub fn activate_network_port_changes(&mut self) -> Result<usize, Error> {
+        let ports = self.network_port_oids();
+        let mut activated = 0;
+        let mut first_error = None;
+        for oid in ports {
+            let Some(port) = self.builtin_network_port_mut(&oid) else {
+                continue;
+            };
+            match port.activate_changes() {
+                Ok(true) => activated += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(activated), Err)
+    }
+
     pub(super) fn check_network_port_membership(
         &self,
         oid: &ObjectIdentifier,

@@ -48,6 +48,10 @@ impl<W: WebSocketPort> ScTransport<W> {
         if let Some(task) = restore_task {
             let _ = task.await;
         }
+        // A reconnect finishing on another worker can publish a connection
+        // after the abort above; once the task is gone, close the record again.
+        self.observer
+            .disconnected(super::ScDisconnectCause::LocalClose);
 
         if let Some(conn) = conn_for_state {
             let mut c = conn.lock().await;
@@ -87,6 +91,8 @@ impl<W: WebSocketPort> ScTransport<W> {
         }
         self.hub_limits.reset_apdu();
         self.state_tx.send_replace(ScConnectionState::Disconnected);
+        self.observer
+            .disconnected(super::ScDisconnectCause::LocalClose);
         self.ws_shared = None;
         self.connection = None;
         self.ws = None;

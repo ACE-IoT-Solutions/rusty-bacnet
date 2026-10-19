@@ -66,6 +66,11 @@ pub struct BbmdOptions {
     pub bdt_persist_path: Option<PathBuf>,
     /// The forwarding queue and rate limits.
     pub fanout_policy: FanoutPolicy,
+    /// Whether it is the only device of its B/IP network on its subnet, as
+    /// a BBMD behind a NAT router often is: it then skips the local
+    /// rebroadcast of forwarded and distributed broadcasts. Off by default;
+    /// see [`BipTransport::set_bbmd_alone_on_subnet`].
+    pub alone_on_subnet: bool,
 }
 
 impl BipTransport {
@@ -91,6 +96,7 @@ impl BipTransport {
                 management_acl,
                 bdt_persist_path,
                 fanout_policy,
+                alone_on_subnet,
             }) => {
                 self.enable_bbmd(bdt);
                 if let Some(policy) = foreign_device_policy {
@@ -101,6 +107,7 @@ impl BipTransport {
                     self.set_bdt_persist_path(path);
                 }
                 self.set_fanout_policy(fanout_policy);
+                self.set_bbmd_alone_on_subnet(alone_on_subnet);
             }
         }
     }
