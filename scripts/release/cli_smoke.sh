@@ -9,7 +9,9 @@
 # - capture --read decodes a one-packet pcap file, which exercises the
 #   statically linked libpcap, including its filter compiler, without needing
 #   capture privileges (skipped with --no-capture, for the macOS and Windows
-#   builds, which have no packet capture).
+#   builds, which have no packet capture);
+# - in the same Linux-only part, `mstp-ports --json` prints a JSON array: the
+#   Linux CLI is the one built with MS/TP (`serial`, #969).
 #
 # Bash on Windows is Git Bash, as GitHub's `shell: bash` gives it (#951).
 set -euo pipefail
@@ -115,4 +117,8 @@ EOF
 cap=$(bacnet --json capture --read "$tmp/whois.pcap" --decode)
 echo "$cap"
 grep -q '"service":"WHO_IS"' <<<"$cap" || { echo "capture did not decode the Who-Is"; exit 1; }
+ports=$(bacnet --json mstp-ports)
+echo "$ports"
+"$python" -c 'import json, sys; assert isinstance(json.loads(sys.argv[1]), list)' "$ports" \
+  || { echo "mstp-ports did not print a JSON array"; exit 1; }
 echo "CLI smoke test passed"

@@ -53,7 +53,25 @@ pub(crate) fn ip_to_bip_mac(ip: Ipv4Addr, port: u16) -> Vec<u8> {
 /// The forms [`parse_target`] takes, for error messages.
 pub(crate) const TARGET_FORMS: &str = "IP[:port], a 6-octet MAC or SC VMAC \
      (02:00:00:00:00:01 or 020000000001), bip6:INSTANCE, bip6:0xVMAC, [IPv6][:port], \
-     device instance, dnet:instance or dnet:0xMAC";
+     mstp:STATION, device instance, dnet:instance or dnet:0xMAC";
+
+/// The prefix of an MS/TP station's address, `mstp:5` or `mstp:0x05`.
+pub(crate) const MSTP_TEXT_PREFIX: &str = "mstp:";
+
+/// An MS/TP station's MAC from the text after `mstp:`: 0 to 254, in decimal
+/// or as `0x` and hex. 255 is the broadcast address, not a station.
+fn parse_mstp_station(text: &str) -> Result<u8, String> {
+    let value = match text.strip_prefix("0x").or(text.strip_prefix("0X")) {
+        Some(hex) => u8::from_str_radix(hex, 16).ok(),
+        None => text.parse::<u8>().ok(),
+    };
+    match value {
+        Some(station) if station != bacnet_transport::mstp::codec::BROADCAST_MAC => Ok(station),
+        _ => Err(format!(
+            "invalid MS/TP station '{MSTP_TEXT_PREFIX}{text}': expected 0 to 254, in decimal or 0xHH"
+        )),
+    }
+}
 
 /// Parse a target string into a [`Target`].
 ///
@@ -70,8 +88,12 @@ pub(crate) const TARGET_FORMS: &str = "IP[:port], a 6-octet MAC or SC VMAC \
 ///   [`format_vmac_text`](bacnet_transport::bip6::format_vmac_text) prints them
 /// - `[ipv6]` or `[ipv6]:port`: a B/IPv6 address (port 47808 when absent),
 ///   whose VMAC [`bip6_vmac`] finds
+/// - `mstp:station` or `mstp:0xHH`: an MS/TP station's 1-octet MAC, 0 to 254
 /// - `instance`: a device instance number (e.g., `1234`)
 pub(crate) fn parse_target(s: &str) -> Result<Target, String> {
+    if let Some(station) = s.strip_prefix(MSTP_TEXT_PREFIX) {
+        return parse_mstp_station(station).map(|mac| Target::Mac(vec![mac]));
+    }
     if s.starts_with(VMAC_TEXT_PREFIX) {
         return parse_vmac_text(s)
             .map(|vmac| Target::Mac(vmac.octets().to_vec()))
@@ -193,25 +215,45 @@ fn is_sc<T: TransportPort + 'static>(transport: &T) -> bool {
     }
 }
 
+/// True when `transport` is MS/TP: the only data link the CLI uses whose
+/// MACs are one octet.
+pub(crate) fn is_mstp<T: TransportPort + 'static>(transport: &T) -> bool {
+    transport.local_mac().len() == 1
+}
+
 /// [`parse_target`] for a command on `transport`. A `bip6:` VMAC names a
-/// B/IPv6 node, so any other transport refuses it here, rather than hand
-/// its link a 3-octet MAC it can't send to; B/IPv6 likewise refuses a
-/// 6-octet MAC.
+/// B/IPv6 node and `mstp:` an MS/TP station, so any other transport refuses
+/// them here, rather than hand its link a MAC it can't send to; B/IPv6
+/// refuses a 6-octet MAC, and MS/TP any MAC but a 1-octet one.
 pub(crate) fn parse_target_on<T: TransportPort + 'static>(
     transport: &T,
     s: &str,
 ) -> Result<Target, String> {
     let bip6 = as_bip6(transport).is_some();
+    let mstp = is_mstp(transport);
     if s.starts_with(VMAC_TEXT_PREFIX) && !bip6 {
         return Err(format!(
             "'{s}' is a B/IPv6 VMAC: bip6: addresses need the --ipv6 transport"
         ));
     }
-    let target = parse_target(s)?;
-    if bip6 && matches!(&target, Target::Mac(mac) if mac.len() == 6) {
+    if s.starts_with(MSTP_TEXT_PREFIX) && !mstp {
         return Err(format!(
-            "'{s}' is a 6-octet MAC; a B/IPv6 node is addressed by its 3-octet VMAC (bip6:...)"
+            "'{s}' is an MS/TP station: mstp: addresses need the --mstp transport"
         ));
+    }
+    let target = parse_target(s)?;
+    if let Target::Mac(mac) = &target {
+        if bip6 && mac.len() == 6 {
+            return Err(format!(
+                "'{s}' is a 6-octet MAC; a B/IPv6 node is addressed by its 3-octet VMAC (bip6:...)"
+            ));
+        }
+        if mstp && mac.len() != 1 {
+            return Err(format!(
+                "'{s}' is a {}-octet MAC; an MS/TP station is addressed by mstp:N",
+                mac.len()
+            ));
+        }
     }
     Ok(target)
 }
@@ -266,6 +308,8 @@ pub(crate) enum AddressStyle {
     Bip6,
     /// Hex octets (BACnet/SC VMACs and anything else).
     Hex,
+    /// A 1-byte MS/TP station, as `mstp:5`.
+    Mstp,
 }
 
 impl AddressStyle {
@@ -273,6 +317,8 @@ impl AddressStyle {
     pub(crate) fn of<T: TransportPort + 'static>(transport: &T) -> Self {
         if as_bip6(transport).is_some() {
             Self::Bip6
+        } else if is_mstp(transport) {
+            Self::Mstp
         } else if is_sc(transport) {
             Self::Hex
         } else {
@@ -282,8 +328,11 @@ impl AddressStyle {
 
     /// Format a MAC for display, in a form [`parse_target`] reads back.
     pub(crate) fn format(self, mac: &[u8]) -> String {
-        match (self, mac.len()) {
-            (Self::Bip, 6) | (Self::Bip6, 3) => crate::output::format_mac(mac),
+        match (self, mac) {
+            (Self::Mstp, [station]) => format!("{MSTP_TEXT_PREFIX}{station}"),
+            (Self::Bip, [_, _, _, _, _, _]) | (Self::Bip6, [_, _, _]) => {
+                crate::output::format_mac(mac)
+            }
             _ => hex(mac),
         }
     }

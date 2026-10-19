@@ -258,3 +258,69 @@ async fn a_bip6_vmac_needs_the_bip6_transport() {
     assert!(error.contains("3-octet VMAC"), "{error}");
     assert_eq!(AddressStyle::of(&bip6), AddressStyle::Bip6);
 }
+
+/// An MS/TP station is `mstp:N`, decimal or `0x` hex, 0 to 254; 255 is the
+/// broadcast address. What the CLI prints for one, it reads back.
+#[test]
+fn mstp_targets_name_a_station() {
+    assert_eq!(mac(parse_target("mstp:5")), [5]);
+    assert_eq!(mac(parse_target("mstp:0")), [0]);
+    assert_eq!(mac(parse_target("mstp:254")), [254]);
+    assert_eq!(mac(parse_target("mstp:0x7F")), [0x7F]);
+    assert_eq!(mac(parse_target("mstp:0Xfe")), [0xFE]);
+    for bad in [
+        "mstp:255",
+        "mstp:0xFF",
+        "mstp:256",
+        "mstp:",
+        "mstp:-1",
+        "mstp:0x",
+        "mstp:x",
+    ] {
+        let error = parse_target(bad).unwrap_err();
+        assert!(error.contains("expected 0 to 254"), "{bad}: {error}");
+    }
+    for station in [0u8, 7, 127, 254] {
+        let printed = AddressStyle::Mstp.format(&[station]);
+        assert_eq!(printed, format!("mstp:{station}"));
+        assert_eq!(mac(parse_target(&printed)), [station]);
+    }
+    // A wider MAC on an MS/TP style is shown as hex, never as a station.
+    assert_eq!(AddressStyle::Mstp.format(&[1, 2]), "01:02");
+    assert_eq!(AddressStyle::Bip.format(&[7]), "07");
+}
+
+/// `mstp:` targets need the MS/TP transport, and MS/TP takes only them as
+/// MACs (device instances and routed targets as anywhere).
+#[test]
+fn mstp_targets_need_the_mstp_transport() {
+    let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let error = parse_target_on(&bip, "mstp:5").unwrap_err();
+    assert!(error.contains("need the --mstp transport"), "{error}");
+    assert!(!is_mstp(&bip));
+
+    let (serial, _peer) = bacnet_transport::mstp::LoopbackSerial::pair();
+    let mstp = bacnet_transport::mstp::MstpTransport::new(
+        serial,
+        bacnet_transport::mstp::MstpConfig {
+            this_station: 3,
+            ..Default::default()
+        },
+    );
+    assert!(is_mstp(&mstp));
+    assert_eq!(AddressStyle::of(&mstp), AddressStyle::Mstp);
+    assert_eq!(mac(parse_target_on(&mstp, "mstp:5")), [5]);
+    for wide in ["10.0.0.1", "02:00:00:00:00:01"] {
+        let error = parse_target_on(&mstp, wide).unwrap_err();
+        assert!(error.contains("addressed by mstp:N"), "{wide}: {error}");
+    }
+    assert!(parse_target_on(&mstp, "bip6:5").is_err());
+    assert_eq!(parse_target_on(&mstp, "1234"), Ok(Target::Instance(1234)));
+    assert_eq!(
+        parse_target_on(&mstp, "2:0x05"),
+        Ok(Target::RoutedMac {
+            dnet: 2,
+            mac: vec![5]
+        })
+    );
+}

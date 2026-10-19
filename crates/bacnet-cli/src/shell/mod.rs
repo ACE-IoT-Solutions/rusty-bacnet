@@ -325,7 +325,7 @@ async fn handle_status<T: TransportPort + 'static>(
 
 /// The `status` line for this node's address: a B/IP MAC as `ip:port`, a
 /// B/IPv6 VMAC as `bip6:0x0004D2` followed by the B/IPv6 address it is bound
-/// to, and any other MAC as bytes.
+/// to, an MS/TP station as `mstp:5`, and any other MAC as bytes.
 fn local_address_line(mac: &[u8], bip6: Option<SocketAddrV6>) -> (&'static str, String) {
     match (mac.len(), bip6) {
         (3, Some(bound)) => (
@@ -333,6 +333,10 @@ fn local_address_line(mac: &[u8], bip6: Option<SocketAddrV6>) -> (&'static str, 
             format!("{} ({bound})", output::format_mac(mac)),
         ),
         (3 | 6, _) => ("Local address:", output::format_mac(mac)),
+        (1, _) => (
+            "Local address:",
+            crate::core::target::AddressStyle::Mstp.format(mac),
+        ),
         _ => ("Local MAC:", format!("{mac:02x?}")),
     }
 }

@@ -1450,7 +1450,7 @@ bash scripts/ci/local-macos.sh --quick  # lint, clippy and rustdoc only
 other optional feature, `serial` included (#958): the serial port crates build
 on all three systems, and its pseudo-terminal tests run on macOS too. The
 native-tests workflow reads the same list from the script. That includes
-per-crate features such as `bacnet-endpoint/sc-tls` and `bacnet-cli/{sc-tls,pcap}`, which nothing else in
+per-crate features such as `bacnet-endpoint/sc-tls` and `bacnet-cli/{sc-tls,pcap,serial}`, which nothing else in
 the workspace turns on, so a transport-only list never built them (#906). CI's
 `LINUX_FEATURES` is the same list plus `bacnet-transport/{serial-gpio,ethernet}`
 and `bacnet-integration-tests/ethernet`.
@@ -1967,7 +1967,9 @@ mounted. In the image it:
   `--compatibility manylinux2014` tags them `manylinux_2_17`, and
   `--auditwheel check` fails the build on a symbol or library outside that
   policy instead of copying a library into the wheel;
-- builds the CLI with `--features sc-tls,pcap`.
+- builds the CLI with `--features sc-tls,pcap,serial`. MS/TP (`serial`) is in
+  the Linux CLI only, until a USB RS-485 adapter has been tested on macOS and
+  Windows (#969).
 
 AWS-LC (`aws-lc-sys`, for BACnet/SC) builds with the image's GCC 10 through
 its default builder, which needs no CMake. Its build checks the compiler for
@@ -2028,7 +2030,7 @@ BACnet's own licence, then every third-party component in the release
 binaries with the licence files it ships, identical texts printed once.
 
 - The crates come from `cargo tree --locked --offline -e normal,no-proc-macro`
-  for the CLI (`-p bacnet-cli --features sc-tls,pcap` on Linux, `--features
+  for the CLI (`-p bacnet-cli --features sc-tls,pcap,serial` on Linux, `--features
   sc-tls` on macOS and Windows) and the Python extension (`-p rusty-bacnet`) on
   each of the five release targets, so build scripts, proc-macros,
   dev-dependencies and crates for other platforms, which no release binary

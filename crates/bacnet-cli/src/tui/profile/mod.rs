@@ -210,6 +210,7 @@ impl Profile {
             timeout_ms: 0,
             min_interval_ms: 0,
             foreign_device: None,
+            mstp: None,
             sc: false,
             sc_url: None,
             sc_failover_url: None,

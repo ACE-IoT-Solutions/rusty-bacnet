@@ -202,7 +202,11 @@ fn status_shows_each_local_address_as_a_target() {
     );
     assert_eq!(
         local_address_line(&[7], None),
-        ("Local MAC:", "[07]".to_string())
+        ("Local address:", "mstp:7".to_string())
+    );
+    assert_eq!(
+        local_address_line(&[7, 8], None),
+        ("Local MAC:", "[07, 08]".to_string())
     );
 }
 

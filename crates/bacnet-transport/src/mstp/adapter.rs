@@ -318,7 +318,8 @@ impl<S: SerialPort> Mac<'_, S> {
     }
 
     /// Carry out the core's actions, defer a finished request's reply
-    /// channel, and add the core's counters to the diagnostics' totals.
+    /// channel, and add the core's counters to the diagnostics' totals and
+    /// publish its state.
     fn settle(&mut self, core: &mut Core<'_>) {
         self.drain_actions(core);
         let finished = self
@@ -333,6 +334,7 @@ impl<S: SerialPort> Mac<'_, S> {
             increment(&self.counts.late_answers_expired);
         }
         self.counts.publish(|| core.take_counters());
+        self.counts.publish_node(core.snapshot());
     }
 
     /// Poll the core until it has nothing left.

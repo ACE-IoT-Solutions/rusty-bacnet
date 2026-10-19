@@ -24,10 +24,15 @@ cargo install --path crates/bacnet-cli --locked --features pcap
 
 # With BACnet/SC support
 cargo install --path crates/bacnet-cli --locked --features sc-tls
+
+# With MS/TP over a serial port
+cargo install --path crates/bacnet-cli --locked --features serial
 ```
 
-The features combine (`--features sc-tls,pcap`). Packet capture needs libpcap
-and its headers (`libpcap-dev` on Debian and Ubuntu).
+The features combine (`--features sc-tls,pcap,serial`). Packet capture needs libpcap
+and its headers (`libpcap-dev` on Debian and Ubuntu). The `serial` feature
+builds on Linux, macOS and Windows; the Linux release binary has it, and the
+macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 
 ## Global Options
 
@@ -51,6 +56,11 @@ and its headers (`libpcap-dev` on Debian and Ubuntu).
 | `--sc-key <FILE>` | | SC TLS private key PEM |
 | `--sc-vmac <HEX>` | | SC local VMAC as 12 hex digits or separated bytes |
 | `--sc-device-uuid <UUID>` | | SC device UUID as 32 hex digits or hyphenated text |
+| `--mstp <PORT>` | | Join an MS/TP trunk as a master station on this serial port; needs `--mstp-mac` and the `serial` feature. See [MS/TP](#mstp) |
+| `--mstp-mac <MAC>` | required with `--mstp` | This station's MAC, 0 to 127; no other device on the trunk may use it |
+| `--mstp-baud <BAUD>` | `38400` | 9600, 19200, 38400, 57600, 76800 or 115200 (Clause 9.2.3) |
+| `--mstp-max-master <MAC>` | `127` | Highest master MAC on the trunk (Max_Master), 0 to 127, at least `--mstp-mac` |
+| `--mstp-max-info-frames <N>` | `1` | Frames this station sends each time it holds the token (Max_Info_Frames), 1 to 255 |
 | `--format <FMT>` | auto | Output format: `table` or `json` |
 | `--json` | | JSON output shorthand |
 | `-v` | | Verbosity (`-v`, `-vv`, `-vvv`) |
@@ -73,7 +83,8 @@ Commands that take a `<target>` argument accept several formats:
 | B/IPv6 VMAC | `bip6:0x40ABCD` | Any 3-octet VMAC, as the CLI prints B/IPv6 addresses |
 | IPv6 bracket | `[2001:db8::10]` | B/IPv6 address (port 47808), resolved to the VMAC of the node there |
 | IPv6:port | `[fe80::1%3]:47809` | The same with a port; a link-local address takes a numeric zone |
-| 6-octet MAC or SC VMAC | `02:00:00:00:00:01`, `020000000001` | A MAC as six hex octets, such as a BACnet/SC VMAC; not on B/IPv6 |
+| 6-octet MAC or SC VMAC | `02:00:00:00:00:01`, `020000000001` | A MAC as six hex octets, such as a BACnet/SC VMAC; not on B/IPv6 or MS/TP |
+| MS/TP station | `mstp:5`, `mstp:0x05` | A station on the trunk, 0 to 254, with `--mstp`; device tables print MS/TP addresses this way |
 | Device instance | `1234` | Looks up address from discovered device cache |
 | DNET:instance | `2:1234` | Routed device (network:instance) |
 | DNET:0xMAC | `2:0x05` | Routed station by its MAC on that network (MS/TP station 5 here) |
@@ -115,7 +126,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `devices`, `capture`, `sc-check`, `shell`, `tui`; shell-only `target`, `status`, `help`, `exit`, `quit` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `devices`, `mstp-ports`, `capture`, `sc-check`, `shell`, `tui`; shell-only `target`, `status`, `help`, `exit`, `quit` | nothing |
 | write | `write` (`wp`), shell-only `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -1104,6 +1115,84 @@ despite the [Rust source break](rust-api.md#strict-local-node-tls-configuration)
 Credentials are offered when requested and compatible, not proof of remote hub
 verification. A trusted server without CertificateRequest can complete, and normal
 TLS resumption may not retransmit certificates. That work is still incomplete.
+
+### MS/TP
+
+With the `serial` feature, `--mstp PORT` joins an RS-485 trunk as a master
+station, and every command runs over it. Joining takes part in token passing,
+so it is never implicit: `--mstp` is the request, and `--mstp-mac` has no
+default. Pick a MAC that no other device on the trunk uses (two stations with
+one MAC break the token ring for everyone), and a baud rate the trunk already
+runs at.
+
+```bash
+# The serial ports to choose from: a JSON array of names, possibly empty.
+bacnet mstp-ports --json
+
+# Find the devices on the trunk as station 3, then read one.
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --mstp-baud 38400 discover
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --json read mstp:5 ai:1 pv
+
+# Or stay on the trunk in the shell, where a device instance works as a
+# target once discover has found it.
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3
+```
+
+The JSON from a read is the same on every transport:
+
+```json
+{
+  "object": "ANALOG_INPUT:1",
+  "property": "PRESENT_VALUE",
+  "value": "72.5"
+}
+```
+
+A station is addressed as `mstp:N` (or `mstp:0xNN`). A station behind a
+router is still `DNET:0xMAC`, as on any other transport. `mstp-ports` opens no
+port and needs no `--mstp`. Its order puts the likely choice first: the stable
+names under `/dev/serial/by-id/` on Linux, the call-out devices (`/dev/cu.*`)
+on macOS, which open without waiting for a carrier signal the way `/dev/tty.*`
+does, and `COMn` in number order on Windows.
+
+Flag mistakes are usage errors: the CLI exits with status 2 before opening the
+port and prints nothing on stdout, and the message on stderr names the values
+the flag takes. A port that can't be opened exits with status 1.
+
+The station runs its token handling on a dedicated thread. Its timing defaults
+suit a USB adapter: it waits up to 100 ms for the rest of a frame, and its
+usage and reply timeouts are the longest Clause 9.5 allows.
+
+**Platforms.** The Linux release binary includes MS/TP. On macOS and Windows,
+`serial` builds and runs in CI with in-memory and pseudo-terminal tests, but no
+USB RS-485 adapter has been tested there yet, so their release binaries leave
+it out; build from source with `--features serial` to try it. Only the Rust
+library's kernel RS-485 mode and `serial-gpio` direction control are
+Linux-only, and the CLI uses neither: it expects an adapter that switches
+direction by itself.
+
+**Linux permissions.** Serial devices belong to the `dialout` group on Debian,
+Ubuntu and Raspberry Pi OS (`uucp` on Arch). Add yourself once and log in again:
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+**USB adapter latency.** A USB adapter hands received octets to the host in
+batches, and an FTDI chip waits up to its latency timer, 16 ms by default,
+before sending a partial batch. That delay counts against the time a station
+has to answer a token or a poll (Clause 9.5), so set it to 1 ms on Linux:
+
+```bash
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer      # 16 by default
+echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+```
+
+The setting lasts until the adapter is unplugged; a udev rule can make it
+permanent. Other chips (CH340, CP210x) have no such timer. At 9600 and 19200
+baud, field reports of USB adapters show confirmed requests timing out while
+the token still circulates (#707); prefer 38400 or 76800 where the trunk
+allows. On-wire timing is not qualified on any adapter yet (#502).
 
 ## Object Type Shorthand
 
