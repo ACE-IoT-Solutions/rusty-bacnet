@@ -3,24 +3,7 @@
 
 use super::*;
 
-/// The socket option that asks for receive timestamps, where one is read,
-/// and the value it is set to.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const ARRIVAL_STAMP_OPTION: Option<(libc::c_int, libc::c_int)> = Some((
-    libc::SO_TIMESTAMPING,
-    (libc::SOF_TIMESTAMPING_RX_SOFTWARE | libc::SOF_TIMESTAMPING_SOFTWARE) as libc::c_int,
-));
-#[cfg(target_vendor = "apple")]
-const ARRIVAL_STAMP_OPTION: Option<(libc::c_int, libc::c_int)> =
-    Some((libc::SO_TIMESTAMP_MONOTONIC, 1));
 #[cfg(any(
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "netbsd",
-    target_os = "openbsd"
-))]
-const ARRIVAL_STAMP_OPTION: Option<(libc::c_int, libc::c_int)> = Some((libc::SO_TIMESTAMP, 1));
-#[cfg(not(any(
     target_os = "linux",
     target_os = "android",
     target_vendor = "apple",
@@ -28,8 +11,8 @@ const ARRIVAL_STAMP_OPTION: Option<(libc::c_int, libc::c_int)> = Some((libc::SO_
     target_os = "dragonfly",
     target_os = "netbsd",
     target_os = "openbsd"
-)))]
-const ARRIVAL_STAMP_OPTION: Option<(i32, i32)> = None;
+))]
+use nix::sys::socket::ControlMessageOwned;
 
 /// Ask the kernel to stamp each datagram `udp_socket` receives with the time
 /// it arrived, which [`ReceivedDatagram::arrival_stamp`] then carries: the
@@ -48,53 +31,64 @@ const ARRIVAL_STAMP_OPTION: Option<(i32, i32)> = None;
 /// it is read, which would order it by the read; `SO_TIMESTAMPING` leaves it
 /// unstamped, so it goes up in read order without claiming more.
 pub(crate) fn request_arrival_stamps(udp_socket: &Socket) -> io::Result<()> {
-    match ARRIVAL_STAMP_OPTION {
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_vendor = "apple",
-            target_os = "freebsd",
-            target_os = "dragonfly",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        ))]
-        Some((option, value)) => set_option(udp_socket, libc::SOL_SOCKET, option, value),
-        _ => {
-            let _ = udp_socket;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "receive timestamps are unsupported on this platform",
-            ))
-        }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use nix::sys::socket::{setsockopt, sockopt, TimestampingFlag};
+        let flags = TimestampingFlag::SOF_TIMESTAMPING_RX_SOFTWARE
+            | TimestampingFlag::SOF_TIMESTAMPING_SOFTWARE;
+        Ok(setsockopt(udp_socket, sockopt::Timestamping, &flags)?)
+    }
+    // nix has no setter for this one.
+    #[cfg(target_vendor = "apple")]
+    {
+        set_option(
+            udp_socket,
+            libc::SOL_SOCKET,
+            libc::SO_TIMESTAMP_MONOTONIC,
+            1,
+        )
+    }
+    #[cfg(any(
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        use nix::sys::socket::{setsockopt, sockopt};
+        Ok(setsockopt(udp_socket, sockopt::ReceiveTimestamp, &true)?)
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    {
+        let _ = udp_socket;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "receive timestamps are unsupported on this platform",
+        ))
     }
 }
 
-/// The receive stamp a `SOL_SOCKET` control message carries, if it is one.
-///
-/// # Safety
-///
-/// As [`unix_cmsg_payload`] for `header`.
+/// The receive stamp a control message carries, if it is one and holds a
+/// stamp: the software stamp of `SCM_TIMESTAMPING`, whose zero is no stamp.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-#[allow(unsafe_code)] // reads a [timespec; 3] payload
-pub(super) unsafe fn unix_arrival_stamp_cmsg(
-    header: &libc::cmsghdr,
-) -> io::Result<Option<CmsgMetadata>> {
-    if header.cmsg_type != libc::SCM_TIMESTAMPING {
-        return Ok(None);
-    }
-    // The software stamp, then two hardware ones; zero is no stamp. A short
-    // one is no stamp either: the datagram still goes up, in read order.
-    // SAFETY: `header` meets unix_cmsg_payload's contract (this fn's), its
-    // caller checked the SOL_SOCKET level and the type is checked above, so
-    // the payload is three timespecs, and those are integers, valid for
-    // every bit pattern.
-    let Ok([time, ..]) =
-        (unsafe { unix_cmsg_payload::<[libc::timespec; 3]>(header, "short receive timestamp") })
-    else {
-        return Ok(None);
+pub(super) fn arrival_stamp_cmsg(message: &ControlMessageOwned) -> Option<u128> {
+    let ControlMessageOwned::ScmTimestampsns(stamps) = message else {
+        return None;
     };
-    let stamp = arrival_stamp(time.tv_sec, time.tv_nsec, 1_000_000_000).filter(|&stamp| stamp != 0);
-    Ok(stamp.map(CmsgMetadata::ArrivalStamp))
+    arrival_stamp(
+        stamps.system.tv_sec(),
+        stamps.system.tv_nsec(),
+        1_000_000_000,
+    )
+    .filter(|&stamp| stamp != 0)
 }
 
 /// The control message type of a `SO_TIMESTAMP_MONOTONIC` stamp, a `u64` of
@@ -102,79 +96,36 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
 #[cfg(target_vendor = "apple")]
 pub(super) const SCM_TIMESTAMP_MONOTONIC: libc::c_int = 0x04;
 
-/// The receive stamp a `SOL_SOCKET` control message carries, if it is one.
-///
-/// # Safety
-///
-/// As [`unix_cmsg_payload`] for `header`.
+/// The receive stamp a control message carries, if it is one. nix doesn't
+/// decode `SCM_TIMESTAMP_MONOTONIC`, so its `u64` is read from the bytes. A
+/// short one is no stamp: the datagram still goes up, in read order.
 #[cfg(target_vendor = "apple")]
-#[allow(unsafe_code)] // reads a u64 payload
-pub(super) unsafe fn unix_arrival_stamp_cmsg(
-    header: &libc::cmsghdr,
-) -> io::Result<Option<CmsgMetadata>> {
-    if header.cmsg_type != SCM_TIMESTAMP_MONOTONIC {
-        return Ok(None);
+pub(super) fn arrival_stamp_cmsg(message: &ControlMessageOwned) -> Option<u128> {
+    let ControlMessageOwned::Unknown(raw) = message else {
+        return None;
+    };
+    if raw.cmsg_header.cmsg_level != libc::SOL_SOCKET
+        || raw.cmsg_header.cmsg_type != SCM_TIMESTAMP_MONOTONIC
+    {
+        return None;
     }
-    // A short stamp is no stamp: the datagram still goes up, in read order.
-    // SAFETY: `header` meets unix_cmsg_payload's contract (this fn's), its
-    // caller checked the SOL_SOCKET level and the type is checked above, so
-    // the payload is a u64, valid for every bit pattern.
-    let ticks = unsafe { unix_cmsg_payload::<u64>(header, "short receive timestamp") }.ok();
-    Ok(ticks.map(|ticks| CmsgMetadata::ArrivalStamp(u128::from(ticks))))
+    let ticks = octets_at(&raw.data_bytes, 0).map(u64::from_ne_bytes)?;
+    Some(u128::from(ticks))
 }
 
+/// The receive stamp a control message carries, if it is one: the
+/// `SCM_TIMESTAMP` time of day.
 #[cfg(any(
     target_os = "freebsd",
     target_os = "dragonfly",
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
-/// The receive stamp a `SOL_SOCKET` control message carries, if it is one.
-///
-/// # Safety
-///
-/// As [`unix_cmsg_payload`] for `header`.
-#[allow(unsafe_code)] // reads a timeval payload
-pub(super) unsafe fn unix_arrival_stamp_cmsg(
-    header: &libc::cmsghdr,
-) -> io::Result<Option<CmsgMetadata>> {
-    if header.cmsg_type != libc::SCM_TIMESTAMP {
-        return Ok(None);
-    }
-    // A short stamp is no stamp: the datagram still goes up, in read order.
-    // SAFETY: `header` meets unix_cmsg_payload's contract (this fn's), its
-    // caller checked the SOL_SOCKET level and the type is checked above, so
-    // the payload is a timeval, and that is integers, valid for every bit
-    // pattern.
-    let Ok(time) =
-        (unsafe { unix_cmsg_payload::<libc::timeval>(header, "short receive timestamp") })
-    else {
-        return Ok(None);
+pub(super) fn arrival_stamp_cmsg(message: &ControlMessageOwned) -> Option<u128> {
+    let ControlMessageOwned::ScmTimestamp(time) = message else {
+        return None;
     };
-    Ok(arrival_stamp(time.tv_sec, time.tv_usec, 1_000_000).map(CmsgMetadata::ArrivalStamp))
-}
-
-#[cfg(not(any(
-    windows,
-    target_os = "linux",
-    target_os = "android",
-    target_vendor = "apple",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "netbsd",
-    target_os = "openbsd"
-)))]
-supported_unix_item! {
-/// No receive stamps here, so no control message is one.
-///
-/// # Safety
-///
-/// None here; it shares the signature (and so the contract) of the
-/// per-platform parsers above, so callers treat it alike.
-#[allow(unsafe_code)] // unsafe fn, to match the other platforms
-pub(super) unsafe fn unix_arrival_stamp_cmsg(_header: &libc::cmsghdr) -> io::Result<Option<CmsgMetadata>> {
-    Ok(None)
-}
+    arrival_stamp(time.tv_sec(), time.tv_usec(), 1_000_000)
 }
 
 /// A realtime stamp of `seconds` and a `fraction` of `per_second` parts,
