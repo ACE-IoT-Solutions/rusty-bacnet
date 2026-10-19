@@ -288,4 +288,25 @@ mod tests {
         assert!(notice.unwrap().contains("no such device"));
         assert!(list.rows().is_empty());
     }
+
+    #[test]
+    fn a_later_start_without_a_name_or_units_keeps_the_first_ones() {
+        let mut list = WatchList::default();
+        let id = list.add(point(1)).unwrap();
+        let details = |name: Option<&str>, units: Option<&str>| WatchEvent::Details {
+            row: id,
+            name: name.map(Into::into),
+            units: units.map(Into::into),
+        };
+        list.apply(details(Some("Zone Temp"), Some("degrees-fahrenheit")));
+        list.apply(details(None, None));
+        let row = &list.rows()[0];
+        assert_eq!(row.name.as_deref(), Some("Zone Temp"));
+        assert_eq!(row.units.as_deref(), Some("degrees-fahrenheit"));
+        // A start that found new ones replaces them.
+        list.apply(details(Some("Zone 2"), Some("percent")));
+        let row = &list.rows()[0];
+        assert_eq!(row.name.as_deref(), Some("Zone 2"));
+        assert_eq!(row.units.as_deref(), Some("percent"));
+    }
 }

@@ -39,6 +39,6 @@ expression: text
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
-"│ 101 analog-value 1 (Point 1): polled: COV refused: BACnet reject: reason=9                                           │"
+"│ polled: COV refused: BACnet reject: reason=9 · analog-value 1, Point 1                                               │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 " x remove  : command  Esc back  ? help  q quit                                                                          "

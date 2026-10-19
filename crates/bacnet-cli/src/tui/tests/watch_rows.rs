@@ -135,6 +135,12 @@ fn watch_rows_keep_what_identifies_them_at_every_width() {
             );
         }
         assert!(text.contains("active (Running)"), "{text}");
+        // The line under the table leads with the source, whole.
+        let detail = lines[usize::from(h) - 3];
+        assert!(
+            detail.starts_with("\"│ polled: routed device · analog-input 1, Discharge"),
+            "{w}x{h}: {detail}"
+        );
         // The routed row's trend runs to the border.
         let routed = lines[3].trim_end_matches(['"', '│']);
         assert!(
@@ -250,4 +256,175 @@ async fn a_refused_name_read_alone_leaves_the_rest_of_the_row() {
     // The refused RPM, then four ReadProperty: value, flags, units, name.
     assert_eq!(reads(&site), [14, 12, 12, 12, 12]);
     site.stop().await;
+}
+
+/// Watch `line` on the site and run until its row has left `Starting`.
+async fn watch_line(site: &mut Site, line: &str) {
+    site.press(KeyCode::Char(':')).await;
+    type_text(&mut site.app, line);
+    site.press(KeyCode::Enter).await;
+    site.pump_until(|app| {
+        app.watch
+            .rows()
+            .iter()
+            .all(|row| !matches!(row.source, Source::Starting))
+    })
+    .await;
+    // Samples reach the screen on the worker's next tick.
+    site.run_for(Duration::from_millis(300)).await;
+}
+
+/// Watching Object_Name itself asks for it once, and the row's value is
+/// the name.
+#[tokio::test(start_paused = true)]
+async fn watching_the_name_itself_asks_for_it_once() {
+    let mut site = lab(Quirks::default()).await;
+    watch_line(&mut site, "watch 100 ai:1 object-name").await;
+    let row = &site.app.watch.rows()[0];
+    assert_eq!(row.name.as_deref(), Some("Zone Temp"));
+    let value = row.value.clone().unwrap().unwrap();
+    assert!(value.contains("Zone Temp"), "{value}");
+    assert_eq!(reads(&site), [14]);
+    site.stop().await;
+}
+
+/// When the name is the watched property, a read that fails for it isn't
+/// asked again: without the name there would be nothing to read.
+#[tokio::test(start_paused = true)]
+async fn a_refused_name_that_is_the_point_is_not_asked_again() {
+    let mut site = lab(Quirks {
+        refuse_object_name: true,
+        ..Quirks::default()
+    })
+    .await;
+    watch_line(&mut site, "watch 100 ai:1 object-name").await;
+    assert_eq!(site.app.watch.rows()[0].name, None);
+    assert_eq!(reads(&site), [14]);
+    site.stop().await;
+}
+
+/// A whole-request error the name can't explain (OBJECT class here) is
+/// not retried: one RPM.
+#[tokio::test(start_paused = true)]
+async fn an_object_error_is_not_retried_without_the_name() {
+    let mut site = lab(Quirks {
+        fail_rpm: true,
+        ..Quirks::default()
+    })
+    .await;
+    watch_line(&mut site, "watch 100 ai:1").await;
+    assert_eq!(reads(&site), [14]);
+    site.stop().await;
+}
+
+/// A device that doesn't answer isn't asked again without the name: one
+/// RPM, sent with its retries (four times), then the first poll's first
+/// send. A retry without the name would add four more before the poll.
+#[tokio::test(start_paused = true)]
+async fn a_silent_device_is_not_retried_without_the_name() {
+    let mut site = lab(Quirks {
+        silent: true,
+        ..Quirks::default()
+    })
+    .await;
+    watch_line(&mut site, "watch 100 ai:1").await;
+    let source = site.app.watch.rows()[0].source.clone();
+    assert!(
+        matches!(&source, Source::Polled(reason) if reason.contains("no answer")),
+        "{source:?}"
+    );
+    assert_eq!(reads(&site), [14; 5]);
+    site.stop().await;
+}
+
+/// Two properties of one object at 80 columns: the Property column shows
+/// so the rows differ, and the line under the table names the property.
+#[test]
+fn two_properties_of_one_object_stay_apart_at_80_columns() {
+    let mut app = connected_app();
+    worker(
+        &mut app,
+        WorkerEvent::Discovered(row(1001, "10.0.0.2:47808", 1, 0)),
+    );
+    command(&mut app, "watch 1001 ai:1");
+    command(&mut app, "watch 1001 ai:1 status-flags");
+    for row in [1, 2] {
+        watch(
+            &mut app,
+            WatchEvent::Details {
+                row,
+                name: Some("Zone Temp".into()),
+                units: None,
+            },
+        );
+        watch(
+            &mut app,
+            WatchEvent::Source {
+                row,
+                source: Source::Cov { lifetime: 300 },
+            },
+        );
+    }
+    let samples = vec![
+        (1, sample(&app, "72.5 °F", Some(72.5))),
+        (2, sample(&app, "{in-alarm}", None)),
+    ];
+    watch(&mut app, WatchEvent::Samples(samples));
+    app.screen = Screen::Watch;
+    press(&mut app, KeyCode::Down);
+    let text = screen(&mut app, 80, 24);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[2].contains("Property"), "{text}");
+    assert!(lines[3].contains("present-value"), "{text}");
+    assert!(lines[4].contains("status-flags"), "{text}");
+    let detail = lines[21];
+    assert!(
+        detail.contains(
+            "COV, lifetime 300 s, renewed before it runs out · analog-input 1 status-flags"
+        ),
+        "{detail}"
+    );
+    assert_snapshot!("watch_rows_properties_80x24", text);
+}
+
+/// The widest row at 80 columns: the largest instance, a long object type,
+/// a value past its cap and all four flags. Device and Object stay whole;
+/// the value is cut and Age and Source give way first.
+#[test]
+fn the_widest_row_keeps_its_device_and_object_at_80_columns() {
+    let mut app = connected_app();
+    worker(
+        &mut app,
+        WorkerEvent::Discovered(row(4_194_302, "10.0.0.2:47808", 1, 0)),
+    );
+    command(&mut app, "watch 4194302 multi-state-output:4194302");
+    watch(
+        &mut app,
+        WatchEvent::Source {
+            row: 1,
+            source: Source::Cov { lifetime: 300 },
+        },
+    );
+    let mut widest = sample(&app, "12 (Economizer Minimum Position)", Some(12.0));
+    widest.flags = Some(crate::tui::point::Health {
+        alarm: true,
+        fault: true,
+        overridden: true,
+        out_of_service: true,
+    });
+    watch(&mut app, WatchEvent::Samples(vec![(1, widest)]));
+    app.screen = Screen::Watch;
+    let text = screen(&mut app, 80, 24);
+    let line = text.lines().nth(3).unwrap();
+    assert!(
+        line.contains("│4194302 multi-state-output 4194302 "),
+        "{text}"
+    );
+    assert!(line.contains("ALM FLT OVR OOS"), "{text}");
+    let detail = text.lines().nth(21).unwrap();
+    assert!(
+        detail.contains("COV, lifetime 300 s, renewed before it runs out"),
+        "{detail}"
+    );
+    assert_snapshot!("watch_rows_widest_80x24", text);
 }

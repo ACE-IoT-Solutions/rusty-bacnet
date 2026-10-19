@@ -39,6 +39,6 @@ expression: text
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
-"│ 1001 analog-input 3 (Discharge Temp): COV, lifetime 300 s, renewed before it runs out                                │"
+"│ COV, lifetime 300 s, renewed before it runs out · analog-input 3, Discharge Temp                                     │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 " x remove  : command  Esc back  ? help  q quit                                                                          "

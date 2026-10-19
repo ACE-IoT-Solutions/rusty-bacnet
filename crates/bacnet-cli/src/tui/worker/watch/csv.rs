@@ -14,8 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Lines waiting for the writer thread.
 const QUEUE: usize = 4_096;
 
-/// The header line.
-pub(crate) const HEADER: &str = "unix_ms,device,object,property,value,status_flags,source";
+/// The header line. `device` is the instance alone and `network` the
+/// remote network of a routed device, empty on this network: added last
+/// so the earlier columns keep their places.
+pub(crate) const HEADER: &str = "unix_ms,device,object,property,value,status_flags,source,network";
 
 /// An open log.
 pub(crate) struct CsvLog {

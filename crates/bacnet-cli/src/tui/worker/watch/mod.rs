@@ -701,12 +701,13 @@ fn csv_line(
         .map(|flags| flags.badges().concat())
         .unwrap_or_default();
     format!(
-        "{at},{},{},{},{},{},{source}",
-        point.device_label(),
+        "{at},{},{},{},{},{},{source},{}",
+        point.device,
         field(&object_label(point.object)),
         field(&kebab(point.property)),
         field(&value),
         flags,
+        point.network.map(|n| n.to_string()).unwrap_or_default(),
     )
 }
 

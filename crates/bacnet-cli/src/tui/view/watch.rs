@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 
+use bacnet_types::enums::PropertyIdentifier;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::symbols::bar;
 use ratatui::text::{Line, Span};
@@ -173,11 +174,13 @@ impl Column {
         }
     }
 
-    /// Property from [`FULL_WIDTH`], Units only from [`WIDE_WIDTH`]: the
-    /// value carries the unit symbol, so a name gets the room first.
-    fn shown(self, tier: Tier) -> bool {
+    /// Property from [`FULL_WIDTH`], and below it only when some row
+    /// watches another property than Present_Value (`not_pv`), so two rows
+    /// of one object stay apart. Units only from [`WIDE_WIDTH`]: the value
+    /// carries the unit symbol, so a name gets the room first.
+    fn shown(self, tier: Tier, not_pv: bool) -> bool {
         match self {
-            Self::Property => tier != Tier::Narrow,
+            Self::Property => tier != Tier::Narrow || not_pv,
             Self::Units => tier == Tier::Wide,
             _ => true,
         }
@@ -247,7 +250,8 @@ fn cell(row: &WatchRow, app: &App, column: Column) -> String {
     match column {
         Column::Device => row.point.device_label(),
         Column::Object => object_label(row.point.object),
-        Column::Name => row.name.as_deref().map(sanitize).unwrap_or_default(),
+        // Sanitized when it was read.
+        Column::Name => row.name.clone().unwrap_or_default(),
         Column::Property => kebab(row.point.property),
         Column::Value => match &row.value {
             Some(Ok(value)) => sanitize(value),
@@ -263,17 +267,29 @@ fn cell(row: &WatchRow, app: &App, column: Column) -> String {
     }
 }
 
+/// The narrowest a value is cut to before columns go.
+const MIN_VALUE: usize = 8;
+
 /// The columns a table `inner` columns wide shows, each with its width,
 /// and the trend's width. `texts` holds each row's cells in [`COLUMNS`]
 /// order. Every column fits its content and header (Value and Units up to
 /// their caps); Name, shown only when some row has one, takes what is left
 /// after the trend's least, up to its cap; the trend takes the rest.
+///
+/// When even that doesn't fit, room comes from the least telling columns
+/// first: Value down to [`MIN_VALUE`], then Age and Source go (the line
+/// under the table names the source), then Flags is cut to its header,
+/// then the trend to one column. Device and Object are never cut.
 fn layout(texts: &[Vec<String>], inner: u16, tier: Tier) -> (Vec<(Column, usize)>, usize) {
     let caps = tier.caps();
+    let property = COLUMNS.iter().position(|c| *c == Column::Property);
+    let not_pv = texts
+        .iter()
+        .any(|row| property.is_some_and(|at| row[at] != "present-value"));
     let mut columns: Vec<(Column, usize)> = Vec::new();
     let mut name = None;
     for (i, column) in COLUMNS.into_iter().enumerate() {
-        if !column.shown(tier) {
+        if !column.shown(tier, not_pv) {
             continue;
         }
         let widest = texts.iter().map(|row| text_width(&row[i])).max();
@@ -288,10 +304,33 @@ fn layout(texts: &[Vec<String>], inner: u16, tier: Tier) -> (Vec<(Column, usize)
         let width = column.cap(&caps).map_or(width, |cap| width.min(cap));
         columns.push((column, width));
     }
-    let used: usize = columns.iter().map(|(_, w)| w + 1).sum();
-    let mut left = usize::from(inner).saturating_sub(used);
+    let inner = usize::from(inner);
+    let used = |columns: &[(Column, usize)]| columns.iter().map(|(_, w)| w + 1).sum::<usize>();
+    let mut trend = caps.trend;
+    let over = |columns: &[(Column, usize)], trend: usize| used(columns) + trend > inner;
+    if over(&columns, trend) {
+        let excess = used(&columns) + trend - inner;
+        if let Some((_, width)) = columns.iter_mut().find(|(c, _)| *c == Column::Value) {
+            *width = width.saturating_sub(excess).max(MIN_VALUE).min(*width);
+        }
+    }
+    for gone in [Column::Age, Column::Source] {
+        if over(&columns, trend) {
+            columns.retain(|(c, _)| *c != gone);
+        }
+    }
+    if over(&columns, trend) {
+        let excess = used(&columns) + trend - inner;
+        if let Some((column, width)) = columns.iter_mut().find(|(c, _)| *c == Column::Flags) {
+            *width = width.saturating_sub(excess).max(column.header().len());
+        }
+    }
+    if over(&columns, trend) {
+        trend = inner.saturating_sub(used(&columns)).max(1);
+    }
+    let mut left = inner.saturating_sub(used(&columns));
     if let Some((at, widest)) = name {
-        let room = left.saturating_sub(caps.trend + 1);
+        let room = left.saturating_sub(trend + 1);
         let width = widest.min(caps.name).min(room);
         if width >= MIN_NAME {
             columns.insert(at, (Column::Name, width));
@@ -299,6 +338,32 @@ fn layout(texts: &[Vec<String>], inner: u16, tier: Tier) -> (Vec<(Column, usize)
         }
     }
     (columns, left.max(1))
+}
+
+/// The line under the table for the selected `row`, `width` columns wide:
+/// where its values come from (`source`) first and whole, then the row
+/// itself (object, a property other than Present_Value, the whole name),
+/// cut to the room left.
+fn detail_line(row: &WatchRow, source: String, width: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let mut about = object_label(row.point.object);
+    if row.point.property != PropertyIdentifier::PRESENT_VALUE {
+        about = format!("{about} {}", kebab(row.point.property));
+    }
+    let source = format!(" {source}");
+    let room = width.saturating_sub(text_width(&source) + 3);
+    // The name gets what the object and property leave.
+    if let Some(name) = &row.name {
+        let left = room.saturating_sub(text_width(&about) + 2);
+        if left >= MIN_NAME {
+            about = format!("{about}, {}", fit(name, left));
+        }
+    }
+    let mut spans = vec![Span::styled(source, theme.dim())];
+    if room >= MIN_NAME {
+        spans.push(Span::styled(" · ", theme.dim()));
+        spans.push(Span::styled(fit(&about, room), theme.accent()));
+    }
+    spans
 }
 
 /// The watch screen.
@@ -379,22 +444,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Source::Polled(reason) => format!("polled: {reason}"),
             Source::Failed(error) => error.clone(),
         };
-        let name = row
-            .name
-            .as_deref()
-            .map(|name| format!(" ({})", sanitize(name)))
-            .unwrap_or_default();
-        let line = Line::from(vec![
-            Span::styled(
-                format!(
-                    " {} {}{name}: ",
-                    row.point.device_label(),
-                    object_label(row.point.object)
-                ),
-                theme.accent(),
-            ),
-            Span::styled(text, theme.dim()),
-        ]);
+        let line = Line::from(detail_line(row, text, usize::from(detail.width), theme));
         frame.render_widget(Paragraph::new(line), detail);
     }
 }
@@ -426,6 +476,7 @@ mod tests {
         row[0] = device.into();
         row[1] = object.into();
         row[2] = name.into();
+        row[3] = "present-value".into();
         row[4] = "72.5 °F".into();
         row
     }
@@ -458,5 +509,42 @@ mod tests {
         let (columns, _) = layout(&rows, 60, Tier::Narrow);
         assert!(columns.iter().all(|(c, _)| *c != Column::Name));
         assert!(columns.contains(&(Column::Object, 26)));
+    }
+
+    #[test]
+    fn a_row_too_wide_gives_up_value_then_age_and_source_before_identity() {
+        let mut widest = texts("4194302", "multi-state-output 4194302", "");
+        widest[4] = "12 (Economizer Minimum Position)".into();
+        widest[6] = "ALM FLT OVR OOS".into();
+        widest[7] = "COV".into();
+        widest[8] = "59m".into();
+        let (columns, trend) = layout(std::slice::from_ref(&widest), 78, Tier::Narrow);
+        let used: usize = columns.iter().map(|(_, w)| w + 1).sum();
+        assert!(used + trend <= 78, "{columns:?} {trend}");
+        assert!(columns.contains(&(Column::Device, 7)));
+        assert!(columns.contains(&(Column::Object, 26)));
+        assert!(columns.contains(&(Column::Value, MIN_VALUE)));
+        assert!(columns.contains(&(Column::Flags, 15)));
+        assert!(columns.iter().all(|(c, _)| *c != Column::Age));
+        // Narrower still: Source goes, then Flags is cut, then the trend.
+        let (columns, trend) = layout(&[widest], 60, Tier::Narrow);
+        let used: usize = columns.iter().map(|(_, w)| w + 1).sum();
+        assert!(used + trend <= 60, "{columns:?} {trend}");
+        assert!(columns.contains(&(Column::Device, 7)));
+        assert!(columns.contains(&(Column::Object, 26)));
+        assert!(columns.iter().all(|(c, _)| *c != Column::Source));
+    }
+
+    #[test]
+    fn below_full_width_the_property_shows_only_when_it_tells_rows_apart() {
+        let pv = texts("1", "ai 1", "");
+        let mut flags = pv.clone();
+        flags[3] = "status-flags".into();
+        let shows = |rows: &[Vec<String>]| {
+            let (columns, _) = layout(rows, 78, Tier::Narrow);
+            columns.iter().any(|(c, _)| *c == Column::Property)
+        };
+        assert!(!shows(std::slice::from_ref(&pv)));
+        assert!(shows(&[pv, flags]));
     }
 }

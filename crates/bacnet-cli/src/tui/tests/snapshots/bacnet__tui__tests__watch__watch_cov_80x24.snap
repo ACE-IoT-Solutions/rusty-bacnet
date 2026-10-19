@@ -23,6 +23,6 @@ expression: text
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"│ 100 analog-input 1 (Zone Temp): COV, lifetime 300 s, renewed before it runs o│"
+"│ COV, lifetime 300 s, renewed before it runs out · analog-input 1, Zone Temp  │"
 "└──────────────────────────────────────────────────────────────────────────────┘"
 " x remove  : command  Esc back  ? help  q quit                                  "
