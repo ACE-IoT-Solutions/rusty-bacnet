@@ -3792,14 +3792,25 @@ server = BACnetServer(1234, reinit_password="secret",
   native thread, so it must not await, block or wait for I/O: every other
   request waits for it. It may not call back into `rusty_bacnet` either; a
   binding method called there raises `RuntimeError`, since it would wait for
-  the lock the handler holds.
+  the lock the handler holds. That check covers only calls on the handler's
+  own thread. The handler must also never wait on the event loop or another
+  thread: `asyncio.run_coroutine_threadsafe(...).result()`, `Thread.join` on
+  a thread that makes binding calls, or any future's `.result()` deadlocks
+  the server while it holds the lock.
+- It must be a plain function. An `async def` handler is answered SERVICES /
+  OTHER (its coroutine is closed, never run); put async work in
+  `after_reinitialize`.
 - `after_reinitialize(request)` (it needs `on_reinitialize`) runs on the event
   loop that called `start()`, once the accepted request's SimpleACK has been
   handed to the transport (Clause 16.4.2: reply first, then restart). It never
   runs for a refusal, a password failure, a failed callable or a Network Port
-  activation the transport refused. A coroutine it returns runs as a task.
-  Restart from here, never from `on_reinitialize`; awaiting `server.stop()`
-  inside it is safe, since the reply has gone.
+  activation the transport refused, and a `stop()` that begins before the
+  hand-off drops it too. A coroutine it returns runs as a task, held until it
+  finishes, across restarts too. Restart from here, never from
+  `on_reinitialize`. On B/IP, B/IPv6 and SC the reply has been sent by then.
+  On MS/TP, hand-off means the frame is queued and still waits for the
+  token, so stopping the server at once can drop the reply: wait a short
+  while (a few token rotations, say half a second) before `server.stop()`.
 - With a handler, a registered BBMD port's BBMD_Broadcast_Distribution_Table
   and BBMD_Accept_FD_Registrations take writes, and ACTIVATE_CHANGES or
   WARMSTART puts them into effect (see
@@ -3810,7 +3821,11 @@ server = BACnetServer(1234, reinit_password="secret",
   the application makes on its own, as this device's DEVICE_RESET.
 
 `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` take the same two keywords plus
-`reinit_password`; see [Endpoint](#endpoint-one-transport-both-roles).
+`reinit_password`; see [Endpoint](#endpoint-one-transport-both-roles). An
+endpoint's only Audit Reporter is its source Reporter, which Clause 19.6.2
+casts as the operation source's; writing the DEVICE_RESET, DEVICE_BACKUP and
+DEVICE_RESTORE records of requests it carries out through that Reporter is
+this library's local choice.
 
 ### Runtime Object Access
 

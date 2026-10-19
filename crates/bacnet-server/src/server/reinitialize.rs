@@ -24,9 +24,10 @@ use super::*;
 ///   step) with [`ReinitializeContext::after_reply`]: Clause 16.4.2 has the
 ///   device acknowledge the request before it shuts down.
 /// - **The after-reply hook.** It runs once the SimpleACK has been handed
-///   to the transport (#1565). On an MS/TP reply channel that is the
-///   handoff to the node's reply slot, and the frame can still wait for the
-///   token, so a restart that tears the port down lets it drain first. It
+///   to the transport (#1565). On MS/TP, handed off means queued: on the
+///   reply channel or the transmit queue the frame still waits for the
+///   token, so stopping the server or the port at once can drop the reply
+///   there. Wait a short while (a few token rotations) first. It
 ///   never runs for a request answered
 ///   with an Error: the handler refused it or panicked, or the Network Port
 ///   activation below failed. Nor does it run when the reply could not be
@@ -39,7 +40,9 @@ use super::*;
 /// - **Be quick.** It runs synchronously on a runtime worker with the object
 ///   database write-locked, so every other request waits for it. Hand slow
 ///   work, such as writing backup files, to a task. On an endpoint session a
-///   blocking handler stalls the whole session.
+///   blocking handler stalls the whole session. Never wait on another task
+///   or thread from it (a `block_on`, a channel receive, a join): if that
+///   work needs the database, the server deadlocks.
 /// - **Database edits are raw.** On a full server, changes made through the
 ///   `&mut ObjectDatabase` skip what [`BACnetServer::write_local`] adds
 ///   around a write: the Object_Name uniqueness check, the COV fanout, the
@@ -203,15 +206,31 @@ impl ReinitializeContext {
     ///
     /// Hooks run in the order registered, on the task that answered the
     /// request, so each should be quick and hand longer work to a task or
-    /// thread of its own. They are dropped unrun when the request is
+    /// thread of its own. On MS/TP, handed off means queued: the frame
+    /// still waits for the token, so a hook that stops the server or the
+    /// port at once can drop the reply; wait a short while first. Hooks
+    /// registered through a clone of the context after the handler returns
+    /// never run. They are dropped unrun when the request is
     /// answered with an Error instead (the handler refused it or panicked,
     /// or the Network Port activation after it failed), when the reply
     /// could not be handed over, and when [`BACnetServer::stop`] aborts the
     /// request task first. A panic in one is logged and the next still runs.
     /// A context built with [`new`](Self::new) outside the server never runs
-    /// its hooks.
+    /// its hooks unless a test runs them itself.
     pub fn after_reply(&self, hook: impl FnOnce() + Send + 'static) {
         self.after_reply.hooks().push(Box::new(hook));
+    }
+
+    /// Test seam: take and run the hooks registered so far, as the server
+    /// does once the reply is handed off, and return how many there were.
+    /// For a binding's tests of a handler built on [`after_reply`](Self::after_reply);
+    /// never call it from a handler.
+    #[doc(hidden)]
+    pub fn run_after_reply_for_test(&self) -> usize {
+        let hooks = self.after_reply.take();
+        let count = hooks.0.len();
+        hooks.run();
+        count
     }
 
     /// Original verified direct-SC leaf and incarnation, separate from claims.
@@ -579,3 +598,7 @@ impl super::ScServerBuilder {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "reinitialize_hook_tests.rs"]
+mod hook_tests;

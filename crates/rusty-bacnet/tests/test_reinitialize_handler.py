@@ -2,8 +2,11 @@
 accepts or refuses under the server's lock, and after_reinitialize runs on the
 event loop once the SimpleACK has been handed to the link."""
 import asyncio
+import gc
 import socket
+import sys
 import unittest
+import warnings
 
 from rusty_bacnet import (
     BACnetClient, BACnetServer, Bbmd, BipEndpoint, ErrorClass, ErrorCode,
@@ -186,6 +189,30 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                              error(2, *SERVICES_OTHER))
             self.assertEqual(await self.peer.ask(address, 3, S.WARMSTART), ack(3))
         await self.run_server(owner, exchange)
+
+    async def test_an_async_handler_is_refused_without_a_never_awaited_warning(self):
+        ran = []
+
+        async def handler(request):
+            ran.append(request.invoke_id)
+        unraisable = []
+        previous = sys.unraisablehook
+        sys.unraisablehook = lambda hook_args: unraisable.append(hook_args.exc_value)
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                owner = server(on_reinitialize=handler)
+
+                async def exchange(address):
+                    self.assertEqual(await self.peer.ask(address, 1, S.WARMSTART),
+                                     error(1, *SERVICES_OTHER))
+                await self.run_server(owner, exchange)
+                gc.collect()
+        finally:
+            sys.unraisablehook = previous
+        self.assertEqual(ran, [])
+        self.assertTrue(any("plain function" in str(exc) for exc in unraisable), unraisable)
+        self.assertFalse([w for w in caught if "never awaited" in str(w.message)])
 
     async def test_a_password_failure_never_reaches_the_callable(self):
         seen = []

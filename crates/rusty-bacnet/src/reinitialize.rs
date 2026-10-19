@@ -7,8 +7,12 @@
 //! callable is entered through [`crate::py_async::attach`] and must return
 //! at once: it may not await, and [`crate::py_async::under_native_lock`]
 //! refuses any binding operation it starts, since that operation would wait
-//! for the lock the handler holds. The notification runs later, on the
-//! event loop that started the server, with no lock held.
+//! for the lock the handler holds. That guard is per thread: it can't see a
+//! callable that waits on the event loop or on another thread (a
+//! `run_coroutine_threadsafe(...).result()`, a `Thread.join`, any future's
+//! `.result()`), and such a wait deadlocks the server if the other side
+//! needs the database. The notification runs later, on the event loop that
+//! started the server, with no lock held.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -107,8 +111,11 @@ pub(crate) struct PyReinitialize {
     on_reinitialize: Py<PyAny>,
     after_reinitialize: Option<Arc<Py<PyAny>>>,
     /// The event loop the owner last started on, where the notification
-    /// runs, with the tasks it started there.
+    /// runs.
     after_reply: Mutex<Option<Arc<AfterReply>>>,
+    /// The notification's unfinished tasks, from every start, held until
+    /// each finishes so a restart never lets one be collected mid-run.
+    tasks: Py<PySet>,
 }
 
 /// Validate the constructor's `on_reinitialize` and `after_reinitialize`;
@@ -130,6 +137,7 @@ pub(crate) fn parse(
             on_reinitialize: handler.clone().unbind(),
             after_reinitialize: after_reinitialize.map(|after| Arc::new(after.clone().unbind())),
             after_reply: Mutex::new(None),
+            tasks: PySet::empty(handler.py())?.unbind(),
         }))),
         None if after_reinitialize.is_some() => Err(PyValueError::new_err(
             "after_reinitialize needs on_reinitialize",
@@ -157,15 +165,20 @@ impl PyReinitialize {
         let event_loop = py
             .import(intern!(py, "asyncio"))?
             .call_method0(intern!(py, "get_running_loop"))?;
+        self.set_event_loop(py, event_loop);
+        Ok(())
+    }
+
+    /// Point the notification at `event_loop`, keeping the one task set.
+    fn set_event_loop(&self, py: Python<'_>, event_loop: Bound<'_, PyAny>) {
         let after = AfterReply {
             event_loop: event_loop.unbind(),
-            tasks: PySet::empty(py)?.unbind(),
+            tasks: self.tasks.clone_ref(py),
         };
         *self
             .after_reply
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(after));
-        Ok(())
     }
 
     /// The Rust handler that runs the callable.
@@ -234,6 +247,20 @@ fn answer(value: &Bound<'_, PyAny>) -> PyResult<Answer> {
         if let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>() {
             return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
         }
+    }
+    let py = value.py();
+    if py
+        .import(intern!(py, "inspect"))?
+        .call_method1(intern!(py, "isawaitable"), (value,))?
+        .is_truthy()?
+    {
+        // Closed, so it never warns that it was never awaited.
+        if value.hasattr(intern!(py, "close"))? {
+            value.call_method0(intern!(py, "close"))?;
+        }
+        return Err(PyTypeError::new_err(
+            "on_reinitialize must be a plain function; use after_reinitialize for async work",
+        ));
     }
     Err(PyTypeError::new_err(
         "on_reinitialize must return None, a bool, or an (ErrorClass, ErrorCode) tuple",
@@ -370,3 +397,7 @@ impl EndpointReinitialize {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReinitializeRequest>()
 }
+
+#[cfg(test)]
+#[path = "reinitialize_tests.rs"]
+mod tests;

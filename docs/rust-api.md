@@ -7475,10 +7475,11 @@ class and code instead. The rules:
   inline. Accept or refuse, prepare, and register the restart, backup or
   restore step with `ReinitializeContext::after_reply(hook)` (Clause 16.4.2).
 - The server runs each registered hook, in order and with no server lock
-  held, once the SimpleACK has been handed to the transport (#1565). On an
-  MS/TP reply channel that is the handoff to the node's reply slot, and the
-  frame can still wait for the token, so a restart that tears the port down
-  should let the transport drain first. A
+  held, once the SimpleACK has been handed to the transport (#1565). On
+  MS/TP, handed off means queued: on the reply channel or the transmit queue
+  the frame still waits for the token, so stopping the server or the port at
+  once can drop the reply there; wait a short while (a few token rotations)
+  first. A
   request answered with an Error never runs its hooks: a refusal, a password
   failure, a handler panic, or a Network Port activation the transport
   refused. Neither does a reply that could not be handed over (the requester
@@ -7491,6 +7492,8 @@ class and code instead. The rules:
   held COV (Clause 16.1.2), even if the reply later fails.
 - It runs synchronously on a runtime worker with the database write-locked:
   keep it quick and hand slow work, such as writing backup files, to a task.
+  Never wait on another task or thread from it: if that work needs the
+  database, the server deadlocks.
 - Its edits through `&mut ObjectDatabase` are raw: they skip what
   `BACnetServer::write_local` adds around a write (the Object_Name uniqueness
   check, the COV fanout, the event pass, Schedule and Command follow-ups, and
@@ -8345,7 +8348,9 @@ after-reply hook, stalls every request behind it. The hooks registered with
 or the reply channel has taken it. With a source Audit Reporter configured,
 the session's Reporter records an accepted reset, backup or restore step as
 the server does (#1564), filtered by its Audit_Level and
-Auditable_Operations and sent to the Device's recipient. A panic or a returned Reject is answered
+Auditable_Operations and sent to the Device's recipient. Clause 19.6.2 casts
+that Reporter as the source-side one; routing these target-side records
+through it, the session's only Reporter, is a local choice. A panic or a returned Reject is answered
 `SERVICES / OTHER` and the session keeps serving. A close that wins while the
 request waits for the database refuses it before the handler runs.
 

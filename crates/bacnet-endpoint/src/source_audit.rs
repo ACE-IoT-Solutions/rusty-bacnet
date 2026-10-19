@@ -424,6 +424,10 @@ impl SourceAudit {
     /// such as an accepted ReinitializeDevice reset, backup or restore step
     /// (Clause 19.6, Table 19-5, #1564), with `source` as its requester.
     ///
+    /// Clause 19.6.2 casts this Reporter as the source-side one; sending
+    /// these target-side records through it, the session's only Reporter,
+    /// is a local choice.
+    ///
     /// The session's one Reporter filters it by its Audit_Level and
     /// Auditable_Operations. The record names this Device as its target and
     /// no object, property or value, carries the target timestamp, and has

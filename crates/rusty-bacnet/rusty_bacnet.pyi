@@ -3327,11 +3327,14 @@ ReinitializeHandler = Callable[
 ]
 """``on_reinitialize``: None or True accepts, False refuses with SERVICES /
 SERVICE_REQUEST_DENIED, an ``(ErrorClass, ErrorCode)`` tuple refuses with
-those. It must return at once; it runs while the device's objects are locked."""
+those. It must return at once and be a plain function; it runs while the
+device's objects are locked, so it must never wait on the event loop or another
+thread."""
 
 AfterReinitialize = Callable[[ReinitializeRequest], Optional[Awaitable[None]]]
 """``after_reinitialize``: runs on the event loop once an accepted request's
-SimpleACK has been handed to the transport; a returned coroutine runs as a task."""
+SimpleACK has been handed to the transport (on MS/TP: queued for the token);
+a returned coroutine runs as a task."""
 
 
 class BACnetServer:
@@ -3439,6 +3442,10 @@ class BACnetServer:
         has passed its password and state checks, while the server holds its
         object database, so it must return at once: no awaiting, no blocking,
         and no other ``rusty_bacnet`` call (one would raise RuntimeError).
+        That check sees only its own thread: never wait on the event loop or
+        another thread from it (``run_coroutine_threadsafe(...).result()``,
+        ``Thread.join``, any future's ``.result()``), which deadlocks the
+        server. An ``async def`` handler is answered SERVICES / OTHER.
         Return None or True to accept, False to refuse with SERVICES /
         SERVICE_REQUEST_DENIED, or an ``(ErrorClass, ErrorCode)`` tuple to
         refuse with those. An exception, or any other return value, answers
@@ -3451,7 +3458,10 @@ class BACnetServer:
         called with the ``ReinitializeRequest`` on the event loop that
         started the server, once the accepted request's SimpleACK has been
         handed to the transport. Restart, back up or restore here. It never
-        runs for a refused request. A coroutine it returns runs as a task.
+        runs for a refused request, nor after a ``stop()`` that began before
+        the hand-off. A coroutine it returns runs as a task. On MS/TP, handed
+        off means queued: the frame still waits for the token, so stopping
+        at once can drop the reply; wait a short while first.
 
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
@@ -5376,7 +5386,9 @@ class MstpEndpoint:
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
         ``on_reinitialize``, ``after_reinitialize`` and ``reinit_password``
-        are as for ``BipEndpoint``.
+        are as for ``BipEndpoint``. Here ``after_reinitialize`` runs once the
+        SimpleACK is queued, before the token sends it: stopping the endpoint
+        at once can drop the reply, so wait a short while first.
 
         ``max_apdu`` must fit the link: 480 by default, or 1476 with
         ``mstp_extended_frames=True``, which turns on extended frames (Types
