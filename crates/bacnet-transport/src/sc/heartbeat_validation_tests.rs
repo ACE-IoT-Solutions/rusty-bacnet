@@ -27,7 +27,7 @@ pub(super) async fn start_timed() -> (
 }
 
 /// Like [`start_timed`], with the liveness timeout in milliseconds.
-async fn start_timed_with_timeout(
+pub(super) async fn start_timed_with_timeout(
     timeout_ms: u64,
 ) -> (
     ScTransport<LoopbackWebSocket>,
