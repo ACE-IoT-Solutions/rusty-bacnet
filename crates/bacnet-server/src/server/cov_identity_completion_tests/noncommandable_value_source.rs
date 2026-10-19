@@ -31,7 +31,7 @@ fn families(access: PresentValueAccess, tracked: bool) -> Vec<Box<dyn BACnetObje
     vec![Box::new(av), Box::new(bv), Box::new(msv)]
 }
 
-async fn fixture(obj: Box<dyn BACnetObject>, hold: bool) -> Fixture {
+pub(super) async fn fixture(obj: Box<dyn BACnetObject>, hold: bool) -> Fixture {
     let f = Fixture::new(hold);
     let mut db = clocked_test_database();
     db.add(obj).unwrap();
@@ -39,7 +39,7 @@ async fn fixture(obj: Box<dyn BACnetObject>, hold: bool) -> Fixture {
     f
 }
 
-async fn subscribe(
+pub(super) async fn subscribe(
     f: &Fixture,
     oid: ObjectIdentifier,
     kind: CovNotificationKind,
@@ -53,7 +53,7 @@ async fn subscribe(
     f.table.write().await.admit_for_test(sub, 0).unwrap()
 }
 
-async fn fire(f: &Fixture, oid: ObjectIdentifier) {
+pub(super) async fn fire(f: &Fixture, oid: ObjectIdentifier) {
     BACnetServer::<TestTransport>::fire_cov_notifications(
         &crate::server::cov_notify_context::CovNotifyContext {
             db: &f.db,
@@ -69,7 +69,7 @@ async fn fire(f: &Fixture, oid: ObjectIdentifier) {
     .await;
 }
 
-async fn write(
+pub(super) async fn write(
     f: &Fixture,
     oid: ObjectIdentifier,
     property: PropertyIdentifier,

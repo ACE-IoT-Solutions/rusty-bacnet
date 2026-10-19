@@ -19,6 +19,7 @@ mod hub_bindings;
 mod log_records;
 mod mstp_py;
 mod object_audit_policy;
+mod object_options;
 mod py_async;
 mod read_range;
 mod reinitialize;

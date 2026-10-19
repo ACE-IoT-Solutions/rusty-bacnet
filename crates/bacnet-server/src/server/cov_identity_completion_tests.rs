@@ -386,3 +386,5 @@ mod value_source_contract;
 mod completion_order;
 
 mod noncommandable_value_source;
+
+mod single_source_value_source;
