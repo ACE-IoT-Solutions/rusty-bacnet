@@ -246,7 +246,7 @@ a live table of I-Am answers, with a Who-Is form. The status bar shows the
 session level: `READ-ONLY` by default (discovery, reads, finite COV
 subscriptions and foreign-device registrations), a red `WRITE mm:ss` while a
 write session is armed (see [Write sessions](#write-sessions)), or `PASSIVE`.
-The design and planned screens (BBMD, SC, MS/TP, capture) are in
+The design and planned screens (SC, MS/TP, capture) are in
 [docs/design/tui.md](design/tui.md).
 
 Explicit global network flags without `--profile`, or `--no-profile`, start
@@ -390,8 +390,8 @@ client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `3` / `1` | Show the watch list / back to the devices |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...` |
+| `3` / `4` / `1` | Show the watch list / the Network screen (B/IP) / back to the devices |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS` |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -444,6 +444,24 @@ limits and `--max-rate`, once per lifetime. The list's title shows the
 request rate over the last 10 s. Notifications the TUI couldn't
 keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
+
+**Network screen (B/IP).** `4` shows the foreign-device panel and one BBMD's
+tables. With `--foreign-bbmd` (or a profile with a BBMD) the panel shows the
+BBMD, the TTL, the last BVLC-Result, a countdown to the next registration and
+the lease left; a refused registration raises a red banner on every screen.
+Once the BBMD accepts, the TUI reads its FDT and shows the entry the BBMD
+recorded for us, the address it forwards broadcasts to; when no entry has our
+address, a NAT router may have rewritten it. `:bbmd ADDRESS` reads any other
+BBMD. Tab switches between the BDT, with what each entry's mask means for
+forwarding, the FDT, with each entry's seconds left, and the consistency
+matrix; `r` reads again. `m` reads the BDT of every BBMD the tables lead to (up
+to 16) and shows which lists which: a peer listed one way only, a BDT without
+its own entry, a BBMD listed with different masks, and BBMDs that refuse the
+read or don't answer are flagged. Every read is a BVLC request; nothing is
+written. The matrix matches BBMDs by address, so a BBMD reached at an address
+other than its own BDT entry (behind NAT, its global address in peers' tables
+and its private one in its own) shows as two rows, one flagged with no entry
+for itself.
 
 #### Write sessions
 

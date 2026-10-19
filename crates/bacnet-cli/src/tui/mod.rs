@@ -16,6 +16,8 @@
 //! - [`point`]: the device browser's data, shared by the worker and the app.
 //! - [`watched`]: the watch list's messages.
 //! - [`safety`]: write sessions: levels, tiers, the ledger and the audit log.
+//! - [`network`]: the Network screen's messages and its BDT consistency
+//!   matrix (B/IP foreign-device status, BDT and FDT).
 //!
 //! The TUI is read-only by default: discovery, the device browser's reads,
 //! the watch list's reads and finite COV subscriptions, and finite
@@ -27,6 +29,7 @@ mod event_loop;
 mod keymap;
 mod log_layer;
 mod message;
+mod network;
 mod point;
 mod profile;
 mod safety;
