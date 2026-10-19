@@ -18,8 +18,8 @@ use tokio::time::timeout;
 use super::super::data_attribute_tests::hub_accept;
 use super::super::test_waits::until;
 use super::super::{
-    LoopbackWebSocket, ScConnectError, ScConnectionState, ScReconnectConfig, ScTransport,
-    ScWebSocketErrorKind, WebSocketPort,
+    LoopbackWebSocket, ScConnectError, ScConnectionState, ScReconnectConfig, ScTlsAlert,
+    ScTransport, ScWebSocketErrorKind, WebSocketPort,
 };
 use super::*;
 use crate::port::TransportPort;
@@ -96,6 +96,7 @@ fn errors_map_to_their_disconnect_causes() {
             message: "fixture".into(),
             #[cfg(feature = "sc-tls")]
             untrusted_peer: None,
+            tls: None,
         }
         .into_bacnet_error()
     };
@@ -116,6 +117,17 @@ fn errors_map_to_their_disconnect_causes() {
         (
             websocket(ScWebSocketErrorKind::TcpDial),
             ScDisconnectCause::WebSocket(ScWebSocketErrorKind::TcpDial),
+        ),
+        (
+            ScConnectError::WebSocket {
+                kind: ScWebSocketErrorKind::TlsHandshake,
+                message: "fixture".into(),
+                #[cfg(feature = "sc-tls")]
+                untrusted_peer: None,
+                tls: Some(ScTlsFailure::AlertReceived(ScTlsAlert::UnknownCa)),
+            }
+            .into_bacnet_error(),
+            ScDisconnectCause::Tls(ScTlsFailure::AlertReceived(ScTlsAlert::UnknownCa)),
         ),
         (
             websocket(ScWebSocketErrorKind::Closed),

@@ -89,6 +89,7 @@ struct MstpEndpointConfig {
     apdu_timeout_ms: u64,
     apdu_retries: u8,
     min_request_interval_ms: u64,
+    reinitialize: crate::reinitialize::EndpointReinitialize,
 }
 
 #[cfg(test)]
@@ -153,7 +154,7 @@ impl MstpEndpointConfig {
             .device(config.identity.clone())
             .build_session()
             .map_err(to_py_err)?;
-        Ok(session)
+        Ok(config.reinitialize.install(session))
     }
 }
 
@@ -217,6 +218,9 @@ impl PyMstpEndpoint {
     ///         35 ms and 300 ms), as for `BACnetClient`. A pad over 15 ms, or
     ///         a timeout outside 20-35 ms or 255-300 ms, is a ValueError
     ///         here.
+    ///     on_reinitialize / after_reinitialize / reinit_password:
+    ///         Keyword-only. Execute ReinitializeDevice, as `BACnetServer`'s
+    ///         keywords of the same names do (#1566).
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -242,7 +246,10 @@ impl PyMstpEndpoint {
         mstp_echo_grace_ms=None,
         mstp_transmit_latency_pad_ms=None,
         mstp_usage_timeout_ms=None,
-        mstp_reply_timeout_ms=None
+        mstp_reply_timeout_ms=None,
+        on_reinitialize=None,
+        after_reinitialize=None,
+        reinit_password=None
     ))]
     fn new(
         device_instance: u32,
@@ -268,7 +275,15 @@ impl PyMstpEndpoint {
         mstp_transmit_latency_pad_ms: Option<u32>,
         mstp_usage_timeout_ms: Option<u32>,
         mstp_reply_timeout_ms: Option<u32>,
+        on_reinitialize: Option<&Bound<'_, PyAny>>,
+        after_reinitialize: Option<&Bound<'_, PyAny>>,
+        reinit_password: Option<String>,
     ) -> PyResult<Self> {
+        let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
+            on_reinitialize,
+            after_reinitialize,
+            reinit_password,
+        )?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
@@ -341,6 +356,7 @@ impl PyMstpEndpoint {
                 apdu_timeout_ms,
                 apdu_retries,
                 min_request_interval_ms,
+                reinitialize,
             },
         })
     }
@@ -449,6 +465,7 @@ impl PyMstpEndpoint {
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
@@ -474,6 +491,7 @@ impl PyMstpEndpoint {
             let borrowed = slf.borrow();
             (borrowed.lifecycle.clone(), borrowed.config.clone())
         };
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
@@ -519,6 +537,7 @@ impl PyMstpEndpoint {
     /// Clone the server role.
     fn server<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.lifecycle.session.clone();
+        let reinitialize = self.config.reinitialize.enabled();
         crate::py_async::future_into_py(py, async move {
             let handle = {
                 let guard = inner.lock().await;
@@ -533,7 +552,7 @@ impl PyMstpEndpoint {
                     )
                 })?
             };
-            Ok(PyEndpointServer::new(handle))
+            Ok(PyEndpointServer::new(handle, reinitialize))
         })
     }
 

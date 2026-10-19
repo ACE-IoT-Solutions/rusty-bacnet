@@ -7480,18 +7480,28 @@ handler directly, as its unit tests would; outside `bacnet-transport` only
 class and code instead. The rules:
 
 - The SimpleACK leaves only after the handler returns, so it must not restart
-  inline. Accept or refuse, prepare, and schedule the restart, backup or
-  restore step for after the reply (Clause 16.4.2).
-- Nothing yet signals when the SimpleACK has left (#1565), so any delay before
-  restarting is best effort, and on MS/TP it can need longer, since a
-  postponed reply waits for the token. `BACnetServer::stop()` seals responses
-  and aborts request tasks before joining them, so a restart path that stops
-  the server before the reply has left drops the SimpleACK.
-- On a full server, an accepted WARMSTART or COLDSTART immediately ends
-  DISABLE_INITIATION, cancels its timer and resumes held COV (Clause 16.1.2),
-  even if the reply later fails.
+  inline. Accept or refuse, prepare, and register the restart, backup or
+  restore step with `ReinitializeContext::after_reply(hook)` (Clause 16.4.2).
+- The server runs each registered hook, in order and with no server lock
+  held, once the SimpleACK has been handed to the transport (#1565). On
+  MS/TP, handed off means queued: on the reply channel or the transmit queue
+  the frame still waits for the token, so stopping the server or the port at
+  once can drop the reply there; wait a short while (a few token rotations)
+  first. A
+  request answered with an Error never runs its hooks: a refusal, a password
+  failure, a handler panic, or a Network Port activation the transport
+  refused. Neither does a reply that could not be handed over (the requester
+  retries) or a request task `BACnetServer::stop()` aborted first. Hooks run
+  on the request's task, so keep them short and spawn longer work; a panic in
+  one is logged and the next still runs. Start any `stop()` from a hook, never
+  from the handler.
+- On a full server, an accepted WARMSTART or COLDSTART ends
+  DISABLE_INITIATION as the handler accepts it, cancels its timer and resumes
+  held COV (Clause 16.1.2), even if the reply later fails.
 - It runs synchronously on a runtime worker with the database write-locked:
   keep it quick and hand slow work, such as writing backup files, to a task.
+  Never wait on another task or thread from it: if that work needs the
+  database, the server deadlocks.
 - Its edits through `&mut ObjectDatabase` are raw: they skip what
   `BACnetServer::write_local` adds around a write (the Object_Name uniqueness
   check, the COV fanout, the event pass, Schedule and Command follow-ups, and
@@ -7513,8 +7523,6 @@ use bacnet_types::enums::{ErrorClass, ErrorCode, ReinitializedState};
 let (restart_tx, mut restart_rx) = tokio::sync::mpsc::channel(1);
 tokio::spawn(async move {
     if let Some(state) = restart_rx.recv().await {
-        // Best effort: nothing yet reports that the SimpleACK has left (#1565).
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         restart_device(state); // application code
     }
 });
@@ -7524,11 +7532,10 @@ let server = BACnetServer::bip_builder()
     .on_reinitialize(move |request: &ReinitializeContext, _db: &mut ObjectDatabase| {
         match request.state {
             ReinitializedState::WARMSTART | ReinitializedState::COLDSTART => {
-                // Accept now; the task above restarts after its delay.
-                restart_tx.try_send(request.state).map_err(|_| Error::Protocol {
-                    class: ErrorClass::DEVICE,
-                    code: ErrorCode::CONFIGURATION_IN_PROGRESS,
-                })
+                // Accept now; restart once the SimpleACK has been handed off.
+                let (restart_tx, state) = (restart_tx.clone(), request.state);
+                request.after_reply(move || drop(restart_tx.try_send(state)));
+                Ok(())
             }
             _ => Err(Error::Protocol {
                 class: ErrorClass::SERVICES,
@@ -7539,6 +7546,22 @@ let server = BACnetServer::bip_builder()
     .build()
     .await?;
 ```
+
+With target Audit configured, an accepted request is audited (Clause 19.6,
+Table 19-5, #1564). Accepted means the handler accepted it and any Network
+Port activation succeeded, so a refusal, a password failure, a handler panic
+or a refused activation records nothing. WARMSTART and COLDSTART record
+DEVICE_RESET, START_BACKUP and END_BACKUP record DEVICE_BACKUP, and the three
+restore steps record DEVICE_RESTORE, each naming the requester as source with
+its invoke ID and this Device as the target, with no object, property, value
+or Result. ACTIVATE_CHANGES records nothing, since Table 19-5 gives it no
+operation. A restart that also ends DISABLE_INITIATION records the reset alone,
+not a DEVICE_ENABLE_COMM beside it. The record goes through the Reporter that
+monitors the local Device, as a DCC record does, and needs that operation's
+bit. A reset the application performs for its own reasons is reported with
+`BACnetServer::report_device_reset_local()`: a DEVICE_RESET record from this
+device with no invoke ID. Call it before restarting, and don't call it for a
+peer's accepted restart, which is recorded already.
 
 Endpoint sessions take the same handler; see
 [Endpoint ReinitializeDevice](#endpoint-reinitializedevice).
@@ -8327,8 +8350,15 @@ the Device and identity then advertise ReinitializeDevice next to RP (and WP
 when writes are on).
 
 The handler rules are the server's, with one addition: the session answers
-inbound requests on a single dispatch task, so a slow or blocking handler
-stalls every request behind it. A panic or a returned Reject is answered
+inbound requests on a single dispatch task, so a slow or blocking handler, or
+after-reply hook, stalls every request behind it. The hooks registered with
+`ReinitializeContext::after_reply` run once the egress reports the reply sent,
+or the reply channel has taken it. With a source Audit Reporter configured,
+the session's Reporter records an accepted reset, backup or restore step as
+the server does (#1564), filtered by its Audit_Level and
+Auditable_Operations and sent to the Device's recipient. Clause 19.6.2 casts
+that Reporter as the source-side one; routing these target-side records
+through it, the session's only Reporter, is a local choice. A panic or a returned Reject is answered
 `SERVICES / OTHER` and the session keeps serving. A close that wins while the
 request waits for the database refuses it before the handler runs.
 

@@ -121,7 +121,7 @@ What M0 draws (80x24):
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with a filter; property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965) | Watched points with value, units, flags, COV or polled, last-update age and a bar sparkline. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, refusal banner); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
-| SC (planned) | Hub connector status, connection-doctor phase timeline, local and peer certificates, VMAC and UUID |
+| SC (#967) | Hub connector status (state, primary or failover hub, hub VMAC, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory is #968 |
 | MS/TP (planned) | Participant panel or passive monitor (station grid, token timing, Max_Master analysis, error counters, join wizard) |
 | Capture (planned) | Frame list, decode tree, hex view, filters, pcap export |
 | Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; arm dialog (`W`), write and relinquish forms (`w`, `n`), the preview and its confirmation, the session ledger (`u`) and the exit guard (#964) |
@@ -151,7 +151,7 @@ M0 keys:
 Since M0: `a`, `x`, `3`/`1` and `:` for the watch list (#965); `W` to arm or
 disarm writes, `w`/`n` to write or relinquish on an open object, and `u` for
 the ledger (#964); `4` for the Network screen, with `r`, `m`, Tab and
-`:bbmd` there (#966). Planned: `1` to `7` and `Tab` to switch screens, and
+`:bbmd` there (#966); `5` for the SC screen, with Tab between the hub's certificates and the doctor (#967). Planned: `1` to `7` and `Tab` to switch screens, and
 `Space`, `e`, `c` and `J` on later screens.
 
 Only key presses count; Windows also reports releases. Mouse capture will be
@@ -499,7 +499,7 @@ B/IP and BACnet/SC profiles are implemented behind `tui`. The entry flow,
 schema and keys are in the [CLI reference](../CLI.md#terminal-ui). MS/TP
 profiles (#969) add a `transport` value and their own table. An SC profile's
 failover hub goes to the client builder with the default reconnect policy,
-which the builder needs for failover; the SC status screen is #967. The shell
+which the builder needs for failover; the SC screen (#967) shows which hub is in use. The shell
 history lives in the platform data directory.
 
 - Each transport keeps its settings in its own table (`[bip]` or `[sc]`), and

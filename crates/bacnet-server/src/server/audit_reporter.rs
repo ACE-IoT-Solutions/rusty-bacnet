@@ -17,8 +17,8 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(3);
 mod read;
 pub(super) use read::ReadAuditIntent;
 
-#[path = "audit_reporter_dcc.rs"]
-mod dcc;
+#[path = "audit_reporter_device.rs"]
+mod device;
 
 #[path = "audit_reporter_write.rs"]
 mod write;

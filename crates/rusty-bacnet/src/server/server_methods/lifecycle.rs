@@ -102,6 +102,10 @@ impl BACnetServer {
         let dcc_source_restriction = self.dcc_source_restriction.clone();
         let dcc_disable_rate_limit = self.dcc_disable_rate_limit;
         let reinit_password = self.reinit_password.clone();
+        let reinitialize = self.reinitialize.clone();
+        if let Some(reinitialize) = &reinitialize {
+            reinitialize.bind_event_loop(py)?;
+        }
         let request_admission_policy = self.request_admission_policy;
         let read_property_multiple_budget = self.read_property_multiple_budget;
         let get_alarm_summary_budget = self.get_alarm_summary_budget;
@@ -282,6 +286,11 @@ impl BACnetServer {
                 .dcc_disable_rate_limit(dcc_disable_rate_limit);
             if let Some(pw) = reinit_password {
                 builder = builder.reinit_password(pw);
+            }
+            // With a handler, a BBMD port's written rows become writable and
+            // ACTIVATE_CHANGES or WARMSTART activates them (#1578).
+            if let Some(reinitialize) = reinitialize {
+                builder = builder.on_reinitialize(reinitialize.handler());
             }
             let srv = builder.build().await.map_err(to_py_err)?;
 

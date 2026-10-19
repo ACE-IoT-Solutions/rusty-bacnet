@@ -265,6 +265,9 @@ pub(crate) enum WorkerEvent {
     ForeignDevice(super::network::Foreign),
     /// A Network screen report.
     Network(super::network::NetworkEvent),
+    /// An SC screen report.
+    #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
+    Sc(super::sc::ScReport),
 }
 
 #[cfg(test)]

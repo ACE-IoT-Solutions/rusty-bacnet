@@ -219,6 +219,7 @@ mod tests {
             dcc_source_restriction: None,
             dcc_disable_rate_limit: None,
             reinit_password: None,
+            reinitialize: None,
             request_admission_policy: server::RequestAdmissionPolicy::default(),
             read_property_multiple_budget: server::ReadPropertyMultipleBudget::default(),
             get_alarm_summary_budget: server::GetAlarmSummaryBudget::default(),

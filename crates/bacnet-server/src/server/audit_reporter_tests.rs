@@ -696,6 +696,9 @@ mod local_source;
 #[path = "audit_dcc_tests.rs"]
 mod dcc;
 
+#[path = "reinitialize_reply_tests.rs"]
+mod reinitialize_reply;
+
 #[path = "audit_write_group_tests.rs"]
 mod write_group;
 

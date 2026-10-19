@@ -6,7 +6,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use bacnet_transport::port::{DirectScIdentity, TransportProvenance};
-use bacnet_types::enums::ReinitializedState;
+use bacnet_types::enums::{AuditOperation, ReinitializedState};
 
 use super::requests::confirmed_response::error_apdu_from_error;
 use super::*;
@@ -20,21 +20,29 @@ use super::*;
 ///
 /// - **Reply first, restart later.** The SimpleACK goes out only after the
 ///   handler returns, so it must not restart the device inline. Accept or
-///   refuse, prepare, and schedule the restart (or the backup or restore
-///   step) to run after the reply: Clause 16.4.2 has the device acknowledge
-///   the request before it shuts down.
-/// - **No reply signal yet.** Nothing tells the application when the
-///   SimpleACK has left (#1565), so any delay before restarting is best
-///   effort, and on MS/TP it can need longer: a postponed reply waits for
-///   the token. [`BACnetServer::stop`] seals responses and aborts request
-///   tasks before joining them, so a restart path that stops the server
-///   before the reply has left drops the SimpleACK. On a full server, accepted
-///   WARMSTART/COLDSTART ends DISABLE_INITIATION immediately (Clause 16.1.2),
-///   cancels its timer and resumes held COV, even if the reply later fails.
+///   refuse, prepare, and register the restart (or the backup or restore
+///   step) with [`ReinitializeContext::after_reply`]: Clause 16.4.2 has the
+///   device acknowledge the request before it shuts down.
+/// - **The after-reply hook.** It runs once the SimpleACK has been handed
+///   to the transport (#1565). On MS/TP, handed off means queued: on the
+///   reply channel or the transmit queue the frame still waits for the
+///   token, so stopping the server or the port at once can drop the reply
+///   there. Wait a short while (a few token rotations) first. It
+///   never runs for a request answered
+///   with an Error: the handler refused it or panicked, or the Network Port
+///   activation below failed. Nor does it run when the reply could not be
+///   handed over; the requester retries then. [`BACnetServer::stop`] seals
+///   responses and aborts request tasks before joining them, so a restart
+///   path that stops the server starts from the hook, never from the
+///   handler. On a full server, accepted WARMSTART/COLDSTART ends
+///   DISABLE_INITIATION as the handler accepts (Clause 16.1.2), cancels its
+///   timer and resumes held COV, even if the reply later fails.
 /// - **Be quick.** It runs synchronously on a runtime worker with the object
 ///   database write-locked, so every other request waits for it. Hand slow
 ///   work, such as writing backup files, to a task. On an endpoint session a
-///   blocking handler stalls the whole session.
+///   blocking handler stalls the whole session. Never wait on another task
+///   or thread from it (a `block_on`, a channel receive, a join): if that
+///   work needs the database, the server deadlocks.
 /// - **Database edits are raw.** On a full server, changes made through the
 ///   `&mut ObjectDatabase` skip what [`BACnetServer::write_local`] adds
 ///   around a write: the Object_Name uniqueness check, the COV fanout, the
@@ -56,6 +64,13 @@ use super::*;
 ///   leaves them pending. With no handler set, a registered port's
 ///   pending-activation rows refuse writes, since nothing could activate
 ///   them.
+/// - **Audited once accepted.** With Audit Reporters configured, an accepted
+///   request (the handler accepted and any Network Port activation took)
+///   records DEVICE_RESET, DEVICE_BACKUP or DEVICE_RESTORE from the
+///   requester (Clause 19.6, Table 19-5, #1564); ACTIVATE_CHANGES, which
+///   the table doesn't list, and every refusal record nothing. Report a
+///   reset made for the application's own reasons with
+///   [`BACnetServer::report_device_reset_local`].
 /// - **Gate the requester.** Without `reinit_password` any peer reaches the
 ///   handler. [`MutationPolicy`](crate::mutation::MutationPolicy) and the
 ///   mutation authorizer don't cover ReinitializeDevice, so check the
@@ -69,6 +84,16 @@ use super::*;
 ///   the handler may have partly acted.
 pub type ReinitializeHandler =
     Arc<dyn Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error> + Send + Sync>;
+
+/// Records an accepted ReinitializeDevice request on an endpoint session
+/// (#1564): the Table 19-5 operation and the requester, called under the
+/// database guard once the request is accepted. The session supplies it
+/// when its Audit Reporter is configured.
+pub type EndpointReinitializeAudit = Arc<
+    dyn Fn(&mut ObjectDatabase, AuditOperation, &bacnet_objects::device::AuditWriteSource)
+        + Send
+        + Sync,
+>;
 
 /// The ReinitializeDevice request a [`ReinitializeHandler`] is asked to carry
 /// out, and who sent it.
@@ -94,6 +119,64 @@ pub struct ReinitializeContext {
     pub provenance: TransportProvenance,
     /// Confirmed-request invoke identifier.
     pub invoke_id: u8,
+    /// Work registered with [`after_reply`](Self::after_reply). Clones
+    /// share it, so a hook registered through a clone still belongs to the
+    /// request.
+    after_reply: AfterReplyHooks,
+}
+
+/// One piece of work registered with [`ReinitializeContext::after_reply`].
+type AfterReplyHook = Box<dyn FnOnce() + Send>;
+
+/// The hooks a request's handler registered, shared by its context's clones.
+#[derive(Clone, Default)]
+struct AfterReplyHooks(Arc<std::sync::Mutex<Vec<AfterReplyHook>>>);
+
+impl AfterReplyHooks {
+    fn hooks(&self) -> std::sync::MutexGuard<'_, Vec<AfterReplyHook>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn take(&self) -> AfterReply {
+        AfterReply(std::mem::take(&mut *self.hooks()))
+    }
+}
+
+/// Hooks are work the handler scheduled, not part of the request, so they
+/// never make two contexts unequal.
+impl PartialEq for AfterReplyHooks {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for AfterReplyHooks {}
+
+/// The after-reply hooks of an accepted request, taken from its context.
+/// Empty for a request answered with an Error.
+#[derive(Default)]
+#[must_use = "an accepted request's hooks run once its reply is handed off"]
+pub(in crate::server) struct AfterReply(Vec<AfterReplyHook>);
+
+impl AfterReply {
+    /// Whether no hook waits, as for every refusal.
+    #[cfg(test)]
+    pub(in crate::server) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Run each hook in registration order, once the SimpleACK has been
+    /// handed to the transport, with no server lock held. A panicking hook
+    /// is logged and the rest still run.
+    pub(in crate::server) fn run(self) {
+        for hook in self.0 {
+            if catch_unwind(AssertUnwindSafe(hook)).is_err() {
+                warn!("ReinitializeDevice after-reply hook panicked");
+            }
+        }
+    }
 }
 
 impl ReinitializeContext {
@@ -113,12 +196,63 @@ impl ReinitializeContext {
             source_network,
             provenance,
             invoke_id,
+            after_reply: AfterReplyHooks::default(),
         }
+    }
+
+    /// Run `hook` once this request's SimpleACK has been handed to the
+    /// transport, with no server lock held: the place to restart, or to
+    /// start the backup or restore step, after replying (Clause 16.4.2).
+    ///
+    /// Hooks run in the order registered, on the task that answered the
+    /// request, so each should be quick and hand longer work to a task or
+    /// thread of its own. On MS/TP, handed off means queued: the frame
+    /// still waits for the token, so a hook that stops the server or the
+    /// port at once can drop the reply; wait a short while first. Hooks
+    /// registered through a clone of the context after the handler returns
+    /// never run. They are dropped unrun when the request is
+    /// answered with an Error instead (the handler refused it or panicked,
+    /// or the Network Port activation after it failed), when the reply
+    /// could not be handed over, and when [`BACnetServer::stop`] aborts the
+    /// request task first. A panic in one is logged and the next still runs.
+    /// A context built with [`new`](Self::new) outside the server never runs
+    /// its hooks unless a test runs them itself.
+    pub fn after_reply(&self, hook: impl FnOnce() + Send + 'static) {
+        self.after_reply.hooks().push(Box::new(hook));
+    }
+
+    /// Test seam: take and run the hooks registered so far, as the server
+    /// does once the reply is handed off, and return how many there were.
+    /// For a binding's tests of a handler built on [`after_reply`](Self::after_reply);
+    /// never call it from a handler.
+    #[doc(hidden)]
+    pub fn run_after_reply_for_test(&self) -> usize {
+        let hooks = self.after_reply.take();
+        let count = hooks.0.len();
+        hooks.run();
+        count
     }
 
     /// Original verified direct-SC leaf and incarnation, separate from claims.
     pub fn direct_sc_identity(&self) -> Option<DirectScIdentity> {
         self.provenance.direct_sc_identity()
+    }
+
+    /// The requester as an endpoint's Audit record names it: its address,
+    /// the originating one when routed, with the request's invoke ID.
+    pub(in crate::server) fn audit_source(&self) -> bacnet_objects::device::AuditWriteSource {
+        use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
+        let (network_number, mac_address) = match &self.source_network {
+            Some(source) => (source.network, source.mac_address.clone()),
+            None => (0, self.source_mac.clone()),
+        };
+        bacnet_objects::device::AuditWriteSource {
+            device: BACnetRecipient::Address(BACnetAddress {
+                network_number,
+                mac_address,
+            }),
+            invoke_id: self.invoke_id,
+        }
     }
 }
 
@@ -167,9 +301,15 @@ impl Requester {
 /// with no handler is refused with SERVICES / SERVICE_REQUEST_DENIED.
 ///
 /// `still_open` runs once the write lock is held, so an owner that closed
-/// while the request waited refuses it before the handler runs. The guard is
-/// released before `on_accepted` runs. That callback runs synchronously on
-/// success, before reply construction and with no intervening suspension.
+/// while the request waited refuses it before the handler runs.
+/// `on_accepted` runs only once the request is accepted, meaning the handler
+/// accepted it and any Network Port activation succeeded, under the same
+/// guard and with no suspension before the reply is built: the place for the
+/// DCC restart transition and the Audit record (#1564).
+///
+/// A SimpleACK comes back with the hooks the handler registered, for the
+/// caller to run once it has handed the reply off. An Error comes back with
+/// none: they were dropped here.
 pub(in crate::server) async fn response(
     db: &RwLock<ObjectDatabase>,
     request: &ConfirmedRequestPdu,
@@ -177,8 +317,8 @@ pub(in crate::server) async fn response(
     handler: Option<&ReinitializeHandler>,
     requester: Requester,
     still_open: impl FnOnce() -> Result<(), Error>,
-    on_accepted: impl FnOnce(ReinitializedState),
-) -> Apdu {
+    on_accepted: impl FnOnce(&ReinitializeContext, &mut ObjectDatabase),
+) -> (Apdu, AfterReply) {
     let outcome = match handlers::handle_reinitialize_device(&request.service_request, password) {
         Ok(state) => match handler {
             Some(handler) => {
@@ -190,35 +330,51 @@ pub(in crate::server) async fn response(
                     request.invoke_id,
                 );
                 let mut db = db.write().await;
-                still_open()
+                let outcome = still_open()
                     .and_then(|()| check_network_ports(state, &mut db))
                     .and_then(|()| invoke(handler, &context, &mut db))
-                    .and_then(|()| activate_network_ports(state, &mut db))
-                    .map(|()| state)
+                    .and_then(|()| activate_network_ports(state, &mut db));
+                // Taken under the guard, so a clone the handler kept adds
+                // nothing later. A refusal drops them here, unrun.
+                let hooks = context.after_reply.take();
+                outcome.map(|()| {
+                    on_accepted(&context, &mut db);
+                    hooks
+                })
             }
             None => Err(services_error(ErrorCode::SERVICE_REQUEST_DENIED)),
         },
         Err(error) => Err(error),
     };
     match outcome {
-        Ok(state) => {
-            on_accepted(state);
-            Apdu::SimpleAck(SimpleAck {
+        Ok(hooks) => {
+            let ack = Apdu::SimpleAck(SimpleAck {
                 invoke_id: request.invoke_id,
                 service_choice: request.service_choice,
-            })
+            });
+            (ack, hooks)
         }
-        Err(error) => error_apdu_from_error(request.invoke_id, request.service_choice, &error),
+        Err(error) => (
+            error_apdu_from_error(request.invoke_id, request.service_choice, &error),
+            AfterReply::default(),
+        ),
     }
 }
 
-/// Full-server acceptance also owns the DCC restart transition. Acquire the
-/// timer slot before the handler's database lock, as DCC replacement/expiry do.
+/// Full-server acceptance also owns the DCC restart transition and the
+/// request's Audit record (#1564), through `audit`, the requester's. Acquire
+/// the timer slot before the handler's database lock, as DCC
+/// replacement/expiry do.
+///
+/// An accepted restart that ends DISABLE_INITIATION records only its
+/// DEVICE_RESET: the implicit re-enable is part of the reset, not a
+/// DeviceCommunicationControl operation of its own.
 pub(in crate::server) async fn server_response<T: TransportPort + 'static>(
     services: &super::request_services::RequestServices<T>,
     request: &ConfirmedRequestPdu,
     requester: Requester,
-) -> Apdu {
+    audit: &mut super::audit_reporter::WriteAudit<'_, T>,
+) -> (Apdu, AfterReply) {
     let cov_resume = services.cov_table.read().await.timed().clone();
     let mut slot = services.dcc_timer.lock().await;
     let mut restart_accepted = false;
@@ -229,13 +385,16 @@ pub(in crate::server) async fn server_response<T: TransportPort + 'static>(
         services.config.on_reinitialize.as_ref(),
         requester,
         || Ok(()),
-        |state| {
+        |context, db| {
             if matches!(
-                state,
+                context.state,
                 ReinitializedState::WARMSTART | ReinitializedState::COLDSTART
             ) {
                 super::dcc_timer::enable_for_restart(&slot, &services.comm_state, &cov_resume);
                 restart_accepted = true;
+            }
+            if let Some(operation) = audit_operation(context.state) {
+                audit.device_operation(db, operation);
             }
         },
     )
@@ -246,6 +405,25 @@ pub(in crate::server) async fn server_response<T: TransportPort + 'static>(
         super::dcc_timer::cancel(&mut slot).await;
     }
     reply
+}
+
+/// The Audit operation an accepted request in `state` records (Clause 19.6,
+/// Table 19-5, #1564): DEVICE_RESET for the two restarts, DEVICE_BACKUP for
+/// the backup steps and DEVICE_RESTORE for the restore steps.
+/// ACTIVATE_CHANGES has no row in the table, so it records nothing.
+pub(in crate::server) fn audit_operation(state: ReinitializedState) -> Option<AuditOperation> {
+    match state {
+        ReinitializedState::COLDSTART | ReinitializedState::WARMSTART => {
+            Some(AuditOperation::DEVICE_RESET)
+        }
+        ReinitializedState::START_BACKUP | ReinitializedState::END_BACKUP => {
+            Some(AuditOperation::DEVICE_BACKUP)
+        }
+        ReinitializedState::START_RESTORE
+        | ReinitializedState::END_RESTORE
+        | ReinitializedState::ABORT_RESTORE => Some(AuditOperation::DEVICE_RESTORE),
+        _ => None,
+    }
 }
 
 /// Run `handler` under a panic guard. Execution has begun once it is called,
@@ -326,6 +504,37 @@ fn services_error(code: ErrorCode) -> Error {
     }
 }
 
+impl<T: TransportPort + 'static> BACnetServer<T> {
+    /// Report a reset the application carries out for its own reasons, not
+    /// at a peer's ReinitializeDevice request: a DEVICE_RESET Audit record
+    /// from this device, with no invoke ID (Clause 19.6, Table 19-5 covers
+    /// resets for any reason, #1564).
+    ///
+    /// An accepted WARMSTART or COLDSTART is recorded already; don't report
+    /// it again. The record goes through the Reporter that monitors the
+    /// local Device, under that Device's audit policy, as a peer's reset's
+    /// does, and does nothing when no Reporter selects it. It returns once
+    /// the record is admitted, not delivered, so call it before the restart
+    /// begins and give delivery time before the process exits.
+    ///
+    /// # Errors
+    ///
+    /// The stopped-server error once [`stop`](Self::stop) has run.
+    pub async fn report_device_reset_local(&self) -> Result<(), Error> {
+        let network = self.active_network()?;
+        let mut db = self.db.write().await;
+        if let Some(mut audit) = super::audit_reporter::WriteAudit::local(
+            &self.config,
+            network,
+            &self.notification_transactions,
+            &db,
+        ) {
+            audit.device_operation(&mut db, AuditOperation::DEVICE_RESET);
+        }
+        Ok(())
+    }
+}
+
 impl<T: TransportPort + 'static> ServerBuilder<T> {
     /// Set the password required for ReinitializeDevice requests.
     pub fn reinit_password(mut self, password: impl Into<String>) -> Self {
@@ -389,3 +598,7 @@ impl super::ScServerBuilder {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "reinitialize_hook_tests.rs"]
+mod hook_tests;

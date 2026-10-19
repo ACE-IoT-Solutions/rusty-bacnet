@@ -65,7 +65,9 @@ mod source_admission;
 mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
 use connector::{dial_failover_ws, WebSocketConnector};
-pub use errors::{ScConnectError, ScWebSocketErrorKind};
+pub use errors::{
+    ScCertificateRejection, ScConnectError, ScTlsAlert, ScTlsFailure, ScWebSocketErrorKind,
+};
 use failover::PrimaryRestoreContext;
 use handshake::perform_handshake;
 pub use loopback::LoopbackWebSocket;
