@@ -9,6 +9,7 @@ use super::app::devices::Movement;
 use super::app::network::NetworkKey;
 use super::app::picker::PickerKey;
 use super::app::safety::ModalKey;
+use super::app::sc::ScKey;
 use super::app::watch::Screen;
 use super::app::whois::FormKey;
 use super::app::{Action, App, FilterKey, Overlay};
@@ -33,6 +34,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         Overlay::None if app.filter_editing => filter(key),
         Overlay::None if app.screen == Screen::Watch => watch(key),
         Overlay::None if app.screen == Screen::Network => network(key),
+        Overlay::None if app.screen == Screen::Sc => sc(key),
         Overlay::None => main(key),
     }
 }
@@ -94,6 +96,7 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(':') => Action::OpenCommandLine,
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
         KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         _ => return None,
     })
@@ -110,6 +113,7 @@ fn watch(key: KeyEvent) -> Option<Action> {
     Some(match key.code {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
         KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
@@ -129,6 +133,7 @@ fn network(key: KeyEvent) -> Option<Action> {
     Some(match key.code {
         KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
         KeyCode::Char('r') => Action::Network(NetworkKey::Refresh),
         KeyCode::Char('m') => Action::Network(NetworkKey::Survey),
         KeyCode::Tab => Action::Network(NetworkKey::Cycle { back: false }),
@@ -136,6 +141,29 @@ fn network(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('W') => Action::ToggleArm,
         KeyCode::Char('u') => Action::OpenLedger,
         KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('x') => Action::Disconnect,
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('L') => Action::ToggleLog,
+        _ => return None,
+    })
+}
+
+/// The SC screen: switch views, other screens and the global keys.
+fn sc(key: KeyEvent) -> Option<Action> {
+    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+        return None;
+    }
+    Some(match key.code {
+        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Tab | KeyCode::BackTab => Action::Sc(ScKey::Cycle),
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('p') => Action::OpenConnection,
+        KeyCode::Char('c') => Action::Reconnect,
         KeyCode::Char('x') => Action::Disconnect,
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('?') => Action::ToggleHelp,

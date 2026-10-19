@@ -32,6 +32,8 @@ pub(crate) enum Screen {
     Watch,
     /// B/IP infrastructure: foreign-device status, BDT, FDT and the matrix.
     Network,
+    /// BACnet/SC: the hub connector, the connection doctor, certificates.
+    Sc,
 }
 
 /// One watched point as shown.

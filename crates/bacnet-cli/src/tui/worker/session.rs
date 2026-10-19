@@ -27,6 +27,8 @@ use crate::tui::message::{
 };
 use crate::tui::network::Foreign;
 use crate::tui::point::BrowseResult;
+#[cfg(feature = "sc-tls")]
+use crate::tui::sc::{ScFailure, ScIdentity, ScReport};
 
 /// How often the worker checks whether the UI needs a resync.
 const RESYNC_EVERY: Duration = Duration::from_secs(1);
@@ -160,9 +162,21 @@ async fn connect(
         }
         #[cfg(feature = "sc-tls")]
         TransportKind::Sc => {
-            if let Some(client) =
-                finish_build(Box::pin(transport::build_sc_client(&args)), &sink).await
-            {
+            if let Some(identity) = sc_identity(&args) {
+                sink.deliver(WorkerEvent::Sc(ScReport::Dialing(identity)))
+                    .await;
+            }
+            // The doctor reads the typed error before it becomes text.
+            let build = async {
+                let built = transport::build_sc_client(&args).await;
+                if let Err(error) = &built {
+                    let failure = Box::new(ScFailure::from_error(error));
+                    sink.deliver(WorkerEvent::Sc(ScReport::Failed(failure)))
+                        .await;
+                }
+                built
+            };
+            if let Some(client) = finish_build(Box::pin(build), &sink).await {
                 Box::pin(serve(client, style, sink, commands, options)).await;
             }
         }
@@ -175,6 +189,19 @@ async fn connect(
             .await;
         }
     }
+}
+
+/// What an SC session dials, for the SC screen. `build_sc_client` needs the
+/// VMAC and device UUID (a flag or the profile's persisted identity; there
+/// is no random-VMAC path), so `None` only when the build refuses anyway.
+#[cfg(feature = "sc-tls")]
+fn sc_identity(args: &TransportArgs) -> Option<ScIdentity> {
+    Some(ScIdentity {
+        primary: args.sc_url.clone()?,
+        failover: args.sc_failover_url.clone(),
+        vmac: args.sc_vmac?,
+        uuid: args.sc_device_uuid?,
+    })
 }
 
 /// Retain a partially completed builder through cancellation: it may already
@@ -261,6 +288,8 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
         let (watch, watch_rx) = mpsc::channel(WATCH_CHANNEL_CAPACITY);
         let (safety, safety_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (network, network_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        // Dropped with the session loop, which ends the SC worker.
+        let (sc_stop, sc_stop_rx) = mpsc::channel::<()>(1);
         let quiet = options.safety.passive;
         // The browser and the watch list run beside this loop under
         // `join!`, so their jobs keep being polled while an arm here awaits;
@@ -270,6 +299,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
             let watch = watch;
             let safety = safety;
             let network = network;
+            let _sc_stop = sc_stop;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
             let mut resolving: Option<Resolving<'_>> = None;
@@ -399,7 +429,8 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                 &options.safety,
                 &local
             )),
-            Box::pin(super::network::run(&client, &sink, network_rx))
+            Box::pin(super::network::run(&client, &sink, network_rx)),
+            Box::pin(super::sc::run(&client, &sink, sc_stop_rx))
         );
     }
     stop_shared(client).await;

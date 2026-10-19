@@ -13,6 +13,7 @@ pub(crate) mod network;
 pub(crate) mod objects;
 pub(crate) mod picker;
 pub(crate) mod safety;
+pub(crate) mod sc;
 pub(crate) mod watch;
 pub(crate) mod whois;
 
@@ -216,6 +217,8 @@ pub(crate) enum Action {
     Modal(safety::ModalKey),
     /// A key on the Network screen.
     Network(network::NetworkKey),
+    /// A key on the SC screen.
+    Sc(sc::ScKey),
     /// A message from the worker.
     Worker(WorkerEvent),
 }
@@ -260,6 +263,8 @@ pub(crate) struct App {
     pub(crate) safety: safety::SafetyState,
     /// The Network screen: foreign-device status, BDT, FDT and matrix.
     pub(crate) network: network::NetworkState,
+    /// The SC screen: hub connector status, the doctor, certificates.
+    pub(crate) sc: sc::ScState,
     /// The screen in the body.
     pub(crate) screen: Screen,
     next_req: super::point::ReqId,
@@ -316,6 +321,7 @@ impl App {
             watch: WatchList::default(),
             safety: safety::SafetyState::new(config.passive),
             network: network::NetworkState::default(),
+            sc: sc::ScState::default(),
             screen: Screen::Main,
             next_req: 0,
             duplicates: Duplicates::default(),
@@ -382,7 +388,7 @@ impl App {
         // Ages and countdowns change once a second.
         let ticking = !self.devices.is_empty()
             || !self.watch.rows().is_empty()
-            || self.screen == Screen::Network;
+            || matches!(self.screen, Screen::Network | Screen::Sc);
         if second(now) != second(self.now) && (ticking || self.op_running()) {
             self.dirty = true;
         }
@@ -577,6 +583,7 @@ impl App {
         // The worker of the ended session cancelled the subscriptions.
         self.watch = WatchList::default();
         self.network = network::NetworkState::default();
+        self.sc = sc::ScState::default();
         // A new session starts read-only; its worker reports the policy
         // and the ledger again.
         self.safety.armed = None;
@@ -764,6 +771,7 @@ impl App {
             WorkerEvent::Passive => self.link = Link::Passive,
             WorkerEvent::ForeignDevice(foreign) => self.network.foreign_device(foreign),
             WorkerEvent::Network(event) => self.network_event(event),
+            WorkerEvent::Sc(report) => self.sc_report(report),
         }
     }
 }
@@ -856,6 +864,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::OpenWrite { relinquish } => app.open_write(relinquish),
         Action::Modal(key) => app.modal_key(key, &mut out),
         Action::Network(key) => app.network_key(key, &mut out),
+        Action::Sc(key) => app.sc_key(key),
         Action::Worker(event) => app.worker_event(event, &mut out),
     }
     out

@@ -18,6 +18,7 @@
 //! - [`safety`]: write sessions: levels, tiers, the ledger and the audit log.
 //! - [`network`]: the Network screen's messages and its BDT consistency
 //!   matrix (B/IP foreign-device status, BDT and FDT).
+//! - [`sc`]: the SC screen's messages and the connection doctor (#967).
 //!
 //! The TUI is read-only by default: discovery, the device browser's reads,
 //! the watch list's reads and finite COV subscriptions, and finite
@@ -33,6 +34,9 @@ mod network;
 mod point;
 mod profile;
 mod safety;
+// Without `sc-tls` nothing reports to the SC screen; it still draws.
+#[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
+mod sc;
 mod terminal;
 mod view;
 mod watched;

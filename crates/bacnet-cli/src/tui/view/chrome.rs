@@ -49,6 +49,12 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
         Span::styled(endpoint, bar),
         sep(),
         Span::styled(state, bar),
+    ];
+    if let Some(hub) = hub_state(app) {
+        spans.push(sep());
+        spans.push(Span::styled(hub, bar));
+    }
+    spans.extend([
         sep(),
         level,
         sep(),
@@ -60,7 +66,7 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
             ),
             bar,
         ),
-    ];
+    ]);
     if !app.safety.ledger.is_empty() {
         spans.push(sep());
         spans.push(Span::styled(
@@ -80,6 +86,20 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
             .alignment(Alignment::Right),
         right_area,
     );
+}
+
+/// The SC hub connector in a few words, once the SC worker has reported:
+/// `hub primary`, `hub failover`, `hub connecting`, `hub down`.
+fn hub_state(app: &App) -> Option<String> {
+    use bacnet_transport::sc::ScConnectionState;
+    let (link, _) = app.sc.link.as_ref()?;
+    Some(match (link.state, link.hub) {
+        (ScConnectionState::Connected, Some(hub)) => {
+            format!("hub {}", crate::tui::sc::hub_name(hub))
+        }
+        (ScConnectionState::Connecting, _) => "hub connecting".into(),
+        _ => "hub down".into(),
+    })
 }
 
 /// Key hints, the filter line, or a status message.
@@ -110,6 +130,14 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("m", "survey BBMDs"),
                 ("Tab", "BDT/FDT/matrix"),
                 (":", "bbmd ADDRESS"),
+                ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+            _ if app.screen == Screen::Sc => &[
+                ("Tab", "certificates/doctor"),
+                ("p", "profiles"),
+                ("x", "disconnect"),
                 ("Esc", "back"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -187,7 +215,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Screens",
         &[
-            ("3  4  1  x", "Watch list; network; devices; stop watching"),
+            ("3 4 5 1  x", "Watch list; network; SC; devices; unwatch"),
             (":", "watch DEVICE OBJECT [PROPERTY]; csv on|off"),
             ("r  m  Tab", "Network: read BBMD; survey BDTs; next table"),
         ],
