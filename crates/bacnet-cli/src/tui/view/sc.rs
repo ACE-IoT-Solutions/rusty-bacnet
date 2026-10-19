@@ -39,8 +39,8 @@ const IDENTITY_LABEL: usize = 12;
 const PHASE_INDENT: usize = 17;
 /// Where a certificate's details start in the chain.
 const CERT_INDENT: usize = 10;
-/// Where an event's text starts: age and level.
-const EVENT_INDENT: usize = 16;
+/// Where Hint, Detail and Hub sent text starts in the doctor.
+const NOTE_INDENT: usize = 9;
 
 /// The SC screen.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -168,12 +168,19 @@ fn credentials_name(sc: &ScState) -> &'static str {
     }
 }
 
-/// A bordered pane of `rows`, wrapped to its width.
+/// A bordered pane of `rows`, wrapped to its width. Lines past its height
+/// give way to a `+N more` line, so a cut pane says so.
 fn framed(frame: &mut Frame, area: Rect, title: Line, rows: &[Row], theme: &Theme) {
     let block = Block::bordered().title(title).border_style(theme.dim());
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let lines = layout::wrap_all(rows, usize::from(inner.width));
+    let mut lines = layout::wrap_all(rows, usize::from(inner.width));
+    let height = usize::from(inner.height);
+    if lines.len() > height && height > 0 {
+        let hidden = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(Line::styled(format!("+{hidden} more"), theme.warn()));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -246,12 +253,16 @@ fn status_rows<'a>(app: &App, theme: &Theme) -> Vec<Row<'a>> {
             .unwrap_or("")
             .to_string()
     };
-    let hub = match link.hub {
-        Some(hub) => format!("{:<9}{}", hub_name(hub), url(hub)),
-        None => "none dialled yet".into(),
+    // The hub's name goes with the state, so the URL has its line to itself.
+    let (state, hub) = match link.hub {
+        Some(hub) => (
+            format!("{}, {} hub", state_word(link.state), hub_name(hub)),
+            url(hub),
+        ),
+        None => (state_word(link.state).into(), "none dialled yet".into()),
     };
     let standby = match sc.identity.as_ref().and_then(|i| i.failover.as_ref()) {
-        Some(url) => format!("configured: {url}"),
+        Some(url) => url.clone(),
         None => "none configured".into(),
     };
     let attempt = match sc.attempt {
@@ -264,19 +275,16 @@ fn status_rows<'a>(app: &App, theme: &Theme) -> Vec<Row<'a>> {
     };
     let heartbeat = match (sc.heartbeat_age(app.now), link.heartbeat_rtt) {
         (Some(age), Some(rtt)) => format!(
-            "last heard {} s ago, round trip {} ms",
+            "heard {} s ago, round trip {} ms",
             age.as_secs(),
             rtt.as_millis()
         ),
-        (Some(age), None) => format!(
-            "last heard {} s ago, no heartbeat answered yet",
-            age.as_secs()
-        ),
+        (Some(age), None) => format!("heard {} s ago, no heartbeat answered yet", age.as_secs()),
         (None, _) => "not connected".into(),
     };
     let w = STATUS_LABEL;
     vec![
-        field("State", w, state_word(link.state).into(), style, theme),
+        field("State", w, state, style, theme),
         field("Hub", w, hub, theme.accent(), theme),
         field("Reconnect", w, attempt, Style::new(), theme),
         field("Heartbeat", w, heartbeat, Style::new(), theme),
@@ -448,18 +456,18 @@ fn doctor<'a>(sc: &ScState, compact: bool, theme: &Theme) -> Vec<Row<'a>> {
         )));
     }
     rows.push(Row::flow(""));
-    rows.push(Row::flow(vec![
-        Span::styled("Hint    ", theme.warn()),
-        Span::raw(d.hint.clone()),
-    ]));
+    let note = |label: &str, style: Style, text: Span<'a>| {
+        let label = Span::styled(format!("{label:<NOTE_INDENT$}"), style);
+        Row::hang(Line::from(vec![label, text]), NOTE_INDENT)
+    };
+    rows.push(note("Hint", theme.warn(), Span::raw(d.hint.clone())));
     // The error in full: the footer has room for a line only.
-    rows.push(Row::flow(vec![
-        Span::styled("Detail  ", theme.dim()),
-        Span::styled(last.failure.detail.clone(), theme.dim()),
-    ]));
+    let detail = Span::styled(last.failure.detail.clone(), theme.dim());
+    rows.push(note("Detail", theme.dim(), detail));
     if let Some(leaf) = last.failure.presented.first() {
-        rows.push(Row::flow(vec![
-            Span::styled("Hub sent ", theme.dim()),
+        rows.push(note(
+            "Hub sent",
+            theme.dim(),
             Span::raw(format!(
                 "subject {}, issued by {}, expires {}, signed with {}",
                 leaf.subject,
@@ -467,7 +475,7 @@ fn doctor<'a>(sc: &ScState, compact: bool, theme: &Theme) -> Vec<Row<'a>> {
                 leaf.not_after,
                 signature_algorithm(&leaf.signature_algorithm)
             )),
-        ]));
+        ));
     }
     if connected {
         rows.push(Row::flow(Line::styled(
@@ -480,15 +488,7 @@ fn doctor<'a>(sc: &ScState, compact: bool, theme: &Theme) -> Vec<Row<'a>> {
 
 fn timeline(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let sc = &app.sc;
-    let title = if sc.missed > 0 {
-        format!(" Events ({} missed) ", sc.missed)
-    } else {
-        " Events ".into()
-    };
-    let block = Block::bordered()
-        .title(Line::styled(title, theme.accent()))
-        .border_style(theme.dim());
-    let inner = block.inner(area);
+    let inner = Block::bordered().inner(area);
     let width = usize::from(inner.width);
     let rows: Vec<Row> = if sc.timeline.is_empty() {
         vec![Row::flow(Line::styled(
@@ -504,27 +504,51 @@ fn timeline(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     Severity::Warn => Span::styled("warn ", theme.warn()),
                     Severity::Error => Span::styled("error", theme.danger()),
                 };
+                let age = format!("{:>5} ago ", age_label(app.now, entry.at));
+                // The text hangs after the age and the level, however wide.
+                let indent = layout::cols(&age) + level.width() + 1;
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("{:>5} ago ", age_label(app.now, entry.at)),
-                        theme.dim(),
-                    ),
+                    Span::styled(age, theme.dim()),
                     level,
                     Span::raw(format!(" {}", entry.text)),
                 ]);
-                Row::hang(line, EVENT_INDENT)
+                Row::hang(line, indent)
             })
             .collect()
     };
-    // The newest events that fit, each wrapped whole.
+    // The newest events that fit, each wrapped whole; the title counts the
+    // older ones that don't, so a cut timeline costs no line to say so.
+    let (lines, shown) = newest(&rows, width, usize::from(inner.height));
+    let mut title = vec![Span::styled(" Events ", theme.accent())];
+    if sc.missed > 0 {
+        title.push(Span::styled(
+            format!("({} missed) ", sc.missed),
+            theme.accent(),
+        ));
+    }
+    if shown < rows.len() {
+        let earlier = format!("+{} earlier ", rows.len() - shown);
+        title.push(Span::styled(earlier, theme.warn()));
+    }
+    let block = Block::bordered()
+        .title(Line::from(title))
+        .border_style(theme.dim());
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The newest `rows` that fit in `height` lines, each wrapped whole, oldest
+/// first, and how many there are.
+fn newest<'a>(rows: &[Row<'a>], width: usize, height: usize) -> (Vec<Line<'a>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
+    let mut shown = 0;
     for row in rows.iter().rev() {
         let wrapped = layout::wrap(row, width);
-        if !lines.is_empty() && lines.len() + wrapped.len() > usize::from(inner.height) {
+        if !lines.is_empty() && lines.len() + wrapped.len() > height {
             break;
         }
         lines.splice(0..0, wrapped);
+        shown += 1;
     }
-    frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(lines), inner);
+    (lines, shown)
 }

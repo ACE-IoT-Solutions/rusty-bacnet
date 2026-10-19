@@ -33,14 +33,16 @@ An expired or not-yet-valid operational certificate, or a key that doesn't match
 
 ![The SC screen connected: hub connector, VMAC and UUID, and the hub's certificate chain.](../../../assets/tui/sc-hub-certs.webp)
 
-- **Hub connector**, top left: the state, the hub in use (primary or failover) and its VMAC, the latest reconnect attempt and its backoff, and how long ago the hub was last heard, with the latest heartbeat round trip.
+- **Hub connector**, top left: the state and the hub in use (primary or failover), the hub's URL, the latest reconnect attempt and its backoff, and how long ago the hub was last heard, with the latest heartbeat round trip.
 - **VMAC and UUID**, top right: this node's VMAC, the profile's device UUID, the hub's VMAC, and any duplicate-VMAC refusals.
 - **The middle panel**, which Tab and Shift-Tab switch between three views, below.
-- **Events**, at the bottom: connects, losses, reconnect attempts, failover and the primary's return. They also go to the log pane, and the status bar names the hub in use.
+- **Events**, at the bottom: connects, losses, reconnect attempts, failover and the primary's return, starting with the first connect. They also go to the log pane, and the status bar names the hub in use.
+
+Each pane takes the height its content needs, and Events gets what is left. A pane that still runs out of room ends with a `+N more` line. At 80 columns long values such as the device UUID wrap rather than being cut. From 160 columns, My credentials sits beside the hub certificates or the doctor, and Tab still steps through all three.
 
 ### Hub certificates
 
-The certificate chain the connected hub presented, leaf first, with each subject, issuer and expiry. TLS has already verified it; this view is for reading.
+The certificate chain the connected hub presented, leaf first, with each subject, issuer, expiry and signature algorithm, by name where it is a common one (such as `ecdsa-with-SHA256` or `sha256WithRSAEncryption`) and as its OID otherwise. TLS has already verified it; this view is for reading.
 
 ### The connection doctor
 
@@ -56,7 +58,7 @@ In this example the profile's CA file is from another site, so the hub's certifi
 
 ### My credentials
 
-This node's own certificate, its chain and the CA file, as the pre-dial lint read them: subject, issuer, key algorithm, SAN, EKU, and days to expiry, with a warning at 30 days and an alarm at 7. Then the key match, whether a CA in the CA file issued the certificate directly, and every finding. A dial the lint refused opens this view.
+What the pre-dial lint found, first: every finding, the key match, and whether a CA in the CA file issued the certificate directly. Then this node's own certificate, its chain and the CA file as the lint read them: subject, issuer, key algorithm, SAN, EKU, and days to expiry, with a warning at 30 days and an alarm at 7. A dial the lint refused opens this view.
 
 ![My credentials: this node's certificate, the CA bundle, the key match and the issuer check.](../../../assets/tui/sc-credentials.webp)
 

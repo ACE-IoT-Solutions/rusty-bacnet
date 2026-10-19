@@ -58,6 +58,16 @@ fn row_of(text: &str, frame: &str) -> usize {
         .unwrap_or_else(|| panic!("no {text:?} in\n{frame}"))
 }
 
+/// Whether a pane in the frame ends with a `+N more` line.
+fn more_marker(frame: &str) -> bool {
+    frame.lines().any(|line| {
+        let text = line.trim_matches(|c| c == '"' || c == '│' || c == ' ');
+        text.strip_prefix('+')
+            .and_then(|rest| rest.strip_suffix(" more"))
+            .is_some_and(|n| n.parse::<usize>().is_ok())
+    })
+}
+
 const CONNECTED: &str = "connected to the primary hub (hub VMAC 10:10:10:10:10:10)";
 
 #[test]
@@ -107,10 +117,34 @@ fn the_identity_panel_reads_whole_at_80_columns() {
         "{text}"
     );
     assert!(
-        column(0).contains("Heartbeatlastheard6sago,roundtrip12ms"),
+        column(0).contains("Heartbeatheard6sago,roundtrip12ms"),
         "{text}"
     );
+    // The row the hub's URL no longer shares leaves the chain room for the
+    // issuer's details.
+    assert!(text.contains("expires 2041-01-01T00:00:00Z"), "{text}");
+    assert!(!more_marker(&text), "{text}");
     assert_snapshot!("sc_connected_80x24", text);
+}
+
+#[test]
+fn a_cut_timeline_counts_the_events_above() {
+    let mut app = fresh();
+    for _ in 0..5 {
+        sc(&mut app, ScReport::Event(LinkEvent::FailoverEngaged));
+    }
+    let text = screen(&mut app, 80, 24);
+    let shown = text
+        .lines()
+        .filter(|line| line.contains("primary hub unreachable"))
+        .count();
+    // Six events, the newest shown, the title counting the rest.
+    let title = text.lines().nth(row_of("┌ Events", &text)).unwrap();
+    assert!(title.contains(&format!("+{} earlier", 6 - shown)), "{text}");
+    assert!(
+        screen(&mut app, 120, 40).contains("┌ Events ─"),
+        "nothing cut at 120x40"
+    );
 }
 
 #[test]
@@ -131,10 +165,16 @@ fn sc_connected_frames() {
     assert_snapshot!("sc_connected_doctor_80x24", screen(&mut app, 80, 24));
     app.sc.view = View::Credentials;
     let text = screen(&mut app, 80, 24);
-    assert!(text.contains("EKU client-auth"), "{text}");
+    // The verdicts come first, so the short pane keeps the lint's finding
+    // and the checks, and says what it cut.
+    assert!(text.contains("It expires within thirty days"), "{text}");
+    assert!(text.contains("[warn] Issuer"), "{text}");
+    assert!(more_marker(&text), "{text}");
     assert_snapshot!("sc_connected_credentials_80x24", text);
     let text = screen(&mut app, 200, 50);
     assert!(text.contains("[My credentials]"), "{text}");
+    assert!(text.contains("EKU client-auth"), "{text}");
+    assert!(!more_marker(&text), "{text}");
     assert_snapshot!("sc_connected_credentials_200x50", text);
 }
 

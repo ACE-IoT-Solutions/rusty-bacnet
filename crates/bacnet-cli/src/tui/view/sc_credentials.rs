@@ -1,6 +1,6 @@
 //! The SC screen's credentials view (#968): this node's operational
-//! certificate, chain and CA bundle as the pre-dial lint read them, with the
-//! key match, the direct-issuer check and every finding. Each level is a word
+//! certificate, chain and CA bundle as the pre-dial lint read them, after
+//! every finding, the key match and the direct-issuer check. Each level is a word
 //! as well as a colour.
 
 use ratatui::style::Style;
@@ -82,24 +82,14 @@ pub(super) fn rows<'a>(
         }
         Some(Ok(credentials)) => credentials,
     };
+    // The verdicts first, so a short pane keeps them; the details after.
     let mut lines = vec![Row::flow(Line::styled(
         format!(
-            "Checked at {} before the dial. Leaf first, then the CA bundle.",
+            "Checked at {} before the dial. Findings, then each certificate.",
             credentials.inspected_at
         ),
         theme.dim(),
     ))];
-    for c in &credentials.certificates {
-        lines.extend(cert(c, theme));
-    }
-    for (label, (level, text)) in [("Key", &credentials.key), ("Issuer", &credentials.issuer)] {
-        let line = Line::from(vec![
-            mark(*level, theme),
-            Span::styled(format!("{label:<14}"), theme.dim()),
-            Span::styled(text.clone(), style(*level, theme)),
-        ]);
-        lines.push(Row::hang(line, DETAIL));
-    }
     for (level, text) in &credentials.findings {
         let line = Line::from(vec![
             mark(*level, theme),
@@ -116,6 +106,17 @@ pub(super) fn rows<'a>(
             "The dial was refused before connecting: fix the failures above.",
             theme.danger(),
         )));
+    }
+    for (label, (level, text)) in [("Key", &credentials.key), ("Issuer", &credentials.issuer)] {
+        let line = Line::from(vec![
+            mark(*level, theme),
+            Span::styled(format!("{label:<14}"), theme.dim()),
+            Span::styled(text.clone(), style(*level, theme)),
+        ]);
+        lines.push(Row::hang(line, DETAIL));
+    }
+    for c in &credentials.certificates {
+        lines.extend(cert(c, theme));
     }
     lines.push(Row::flow(Line::styled(HUB_NAME_NOTE, theme.dim())));
     lines
