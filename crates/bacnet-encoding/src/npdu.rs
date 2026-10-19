@@ -240,7 +240,7 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
             return Err(NpduDecodeError::Malformed(fault))
         }
     };
-    Ok(Npdu {
+    let mut npdu = Npdu {
         expecting_reply: view.expecting_reply,
         priority: view.priority,
         destination: view.destination.map(NpduAddress::owned),
@@ -248,8 +248,15 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
         hop_count: view.hop_count,
         message_type: view.message_type,
         vendor_id: view.vendor_id,
-        payload: data.slice(view.payload_offset..),
-    })
+        payload: Bytes::new(),
+    };
+    // Advanced, not sliced: a slice is a clone, and the first clone of a
+    // frame received into a plain buffer allocates its shared header (#1713).
+    let offset = view.payload_offset;
+    let mut payload = data;
+    bytes::Buf::advance(&mut payload, offset);
+    npdu.payload = payload;
+    Ok(npdu)
 }
 
 /// Decode the fixed three-octet Reject-Message-To-Network payload.
