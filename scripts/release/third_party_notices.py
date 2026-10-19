@@ -59,6 +59,15 @@ EXTRA_LICENSES = {
          " BSD-3-Clause terms AWS-LC elects"),
     ],
 }
+# Licence texts kept in scripts/release/licenses/ for crates whose published
+# package leaves out the licence file its repository has: {name: (version,
+# file, where the text came from)}. The version is pinned, so a bump has to
+# check the new release's licence again.
+VENDORED_LICENSES = {
+    "tui-tree-widget": ("0.24.1", "tui-tree-widget-0.24.1-LICENSE",
+                        "LICENSE from github.com/EdJoPaTo/tui-rs-tree-widget at tag v0.24.1"),
+}
+VENDORED_DIR = Path(__file__).resolve().parent / "licenses"
 # SPDX identifiers whose terms don't ask for the notice to go with a binary.
 # Any other identifier, unknown ones included, counts as needing its notice.
 # BSL-1.0 asks for it in copies of the software except machine-executable
@@ -146,6 +155,15 @@ def license_files(pkg):
         text = licence_comment(path) if kind == "comment" else normalize(
             path.read_text(encoding="utf-8", errors="replace"))
         found.append((f"{extra}: {covers}" if covers else extra, text))
+    if pkg["name"] in VENDORED_LICENSES:
+        version, name, origin = VENDORED_LICENSES[pkg["name"]]
+        if pkg["version"] != version:
+            raise NoticesError(f"{pkg['name']} is {pkg['version']}, but its vendored licence is for {version};"
+                               " check the new release's licence and update VENDORED_LICENSES")
+        path = VENDORED_DIR / name
+        if not path.is_file():
+            raise NoticesError(f"the vendored licence {name} for {pkg['name']} is missing")
+        found.append((f"{name}: {origin}", normalize(path.read_text(encoding="utf-8"))))
     return found
 
 
