@@ -7,6 +7,7 @@
 //! scenario must run from a host on the foreign network only (the
 //! `foreign-bench` service), so the orchestrator leaves it out unless asked.
 #![allow(clippy::print_stdout, clippy::print_stderr)] // benchmark binaries report progress and results on the console
+#![forbid(unsafe_code)]
 
 #[path = "orchestrator/scenarios.rs"]
 mod scenarios;

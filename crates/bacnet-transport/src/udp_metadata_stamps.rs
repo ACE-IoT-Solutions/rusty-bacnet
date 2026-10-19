@@ -69,7 +69,13 @@ pub(crate) fn request_arrival_stamps(udp_socket: &Socket) -> io::Result<()> {
     }
 }
 
+/// The receive stamp a `SOL_SOCKET` control message carries, if it is one.
+///
+/// # Safety
+///
+/// As [`unix_cmsg_payload`] for `header`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
+#[allow(unsafe_code)] // reads a [timespec; 3] payload
 pub(super) unsafe fn unix_arrival_stamp_cmsg(
     header: &libc::cmsghdr,
 ) -> io::Result<Option<CmsgMetadata>> {
@@ -78,6 +84,10 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
     }
     // The software stamp, then two hardware ones; zero is no stamp. A short
     // one is no stamp either: the datagram still goes up, in read order.
+    // SAFETY: `header` meets unix_cmsg_payload's contract (this fn's), its
+    // caller checked the SOL_SOCKET level and the type is checked above, so
+    // the payload is three timespecs, and those are integers, valid for
+    // every bit pattern.
     let Ok([time, ..]) =
         (unsafe { unix_cmsg_payload::<[libc::timespec; 3]>(header, "short receive timestamp") })
     else {
@@ -92,7 +102,13 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
 #[cfg(target_vendor = "apple")]
 pub(super) const SCM_TIMESTAMP_MONOTONIC: libc::c_int = 0x04;
 
+/// The receive stamp a `SOL_SOCKET` control message carries, if it is one.
+///
+/// # Safety
+///
+/// As [`unix_cmsg_payload`] for `header`.
 #[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)] // reads a u64 payload
 pub(super) unsafe fn unix_arrival_stamp_cmsg(
     header: &libc::cmsghdr,
 ) -> io::Result<Option<CmsgMetadata>> {
@@ -100,6 +116,9 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
         return Ok(None);
     }
     // A short stamp is no stamp: the datagram still goes up, in read order.
+    // SAFETY: `header` meets unix_cmsg_payload's contract (this fn's), its
+    // caller checked the SOL_SOCKET level and the type is checked above, so
+    // the payload is a u64, valid for every bit pattern.
     let ticks = unsafe { unix_cmsg_payload::<u64>(header, "short receive timestamp") }.ok();
     Ok(ticks.map(|ticks| CmsgMetadata::ArrivalStamp(u128::from(ticks))))
 }
@@ -110,6 +129,12 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
+/// The receive stamp a `SOL_SOCKET` control message carries, if it is one.
+///
+/// # Safety
+///
+/// As [`unix_cmsg_payload`] for `header`.
+#[allow(unsafe_code)] // reads a timeval payload
 pub(super) unsafe fn unix_arrival_stamp_cmsg(
     header: &libc::cmsghdr,
 ) -> io::Result<Option<CmsgMetadata>> {
@@ -117,6 +142,10 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
         return Ok(None);
     }
     // A short stamp is no stamp: the datagram still goes up, in read order.
+    // SAFETY: `header` meets unix_cmsg_payload's contract (this fn's), its
+    // caller checked the SOL_SOCKET level and the type is checked above, so
+    // the payload is a timeval, and that is integers, valid for every bit
+    // pattern.
     let Ok(time) =
         (unsafe { unix_cmsg_payload::<libc::timeval>(header, "short receive timestamp") })
     else {
@@ -136,6 +165,13 @@ pub(super) unsafe fn unix_arrival_stamp_cmsg(
     target_os = "openbsd"
 )))]
 supported_unix_item! {
+/// No receive stamps here, so no control message is one.
+///
+/// # Safety
+///
+/// None here; it shares the signature (and so the contract) of the
+/// per-platform parsers above, so callers treat it alike.
+#[allow(unsafe_code)] // unsafe fn, to match the other platforms
 pub(super) unsafe fn unix_arrival_stamp_cmsg(_header: &libc::cmsghdr) -> io::Result<Option<CmsgMetadata>> {
     Ok(None)
 }
