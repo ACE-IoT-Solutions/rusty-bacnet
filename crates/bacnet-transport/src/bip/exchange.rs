@@ -33,7 +33,8 @@ pub enum BvlcExchangeError {
     /// the request, or doesn't carry such requests out, as a node that is no
     /// BBMD answers the table reads. The code is the one it sent.
     Nak(BvlcResultCode),
-    /// No response came within this long after the request went out.
+    /// No response came within this long. The wait starts when the
+    /// exchange is admitted, just before the request is sent.
     NoReply(Duration),
     /// The peer answered with a message this request does not take, such as
     /// a success result to a table read.

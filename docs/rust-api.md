@@ -5766,14 +5766,23 @@ always an error. On any other variant they return
 sending anything:
 
 ```rust
-use bacnet_transport::bip::AsBip;
+use bacnet_transport::bip::{AsBip, BvlcExchangeError};
 
-let client = BACnetClient::generic_builder()
-    .transport(AnyTransport::<NoSerial>::from(BipTransport::new(ip, 0, broadcast)))
-    .build()
-    .await?;
-let bdt = client.read_bdt(&bbmd_mac).await?;
-let counters = client.transport().as_bip()?.bvlc_client_snapshot();
+// `?` takes both `Error` and `BvlcExchangeError` into the boxed error.
+async fn tables(ip: Ipv4Addr, broadcast: Ipv4Addr, bbmd_mac: &[u8])
+    -> Result<(), Box<dyn std::error::Error>> {
+    let client = BACnetClient::generic_builder()
+        .transport(AnyTransport::<NoSerial>::from(BipTransport::new(ip, 0, broadcast)))
+        .build()
+        .await?;
+    match client.read_bdt(bbmd_mac).await {
+        Ok(bdt) => println!("{} entries", bdt.len()),
+        Err(BvlcExchangeError::Nak(code)) => println!("refused: {code}"),
+        Err(other) => return Err(other.into()),
+    }
+    let counters = client.transport().as_bip()?.bvlc_client_snapshot();
+    Ok(())
+}
 ```
 
 ### Routed Confirmed-Request Limits
