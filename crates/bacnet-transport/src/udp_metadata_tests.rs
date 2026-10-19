@@ -163,37 +163,81 @@ fn a_realtime_stamp_counts_seconds_and_parts() {
 
 /// A receive stamp too short to read is no stamp: it doesn't fail the read,
 /// so the datagram still goes up, in read order (#1546). A whole one reads.
-#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+/// nix decodes the Linux and BSD stamps whole; macOS's comes as bytes.
+#[cfg(target_vendor = "apple")]
 #[test]
-#[allow(unsafe_code)] // builds a control message by hand
 fn a_short_receive_stamp_is_no_stamp() {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let (kind, whole) = (
-        libc::SCM_TIMESTAMPING,
-        std::mem::size_of::<[libc::timespec; 3]>(),
-    );
-    #[cfg(target_vendor = "apple")]
-    let (kind, whole) = (stamps::SCM_TIMESTAMP_MONOTONIC, std::mem::size_of::<u64>());
+    use nix::sys::socket::{ControlMessageOwned, UnknownCmsg};
     let stamp = |payload: usize| {
-        let mut control = [0u64; 16];
-        // SAFETY: `control` is u64-aligned, initialized and 128 octets, so
-        // the header and a payload of up to a whole stamp (48 octets, a
-        // Linux `[timespec; 3]`, at most; CMSG_LEN of that is 64) lie
-        // inside it and cmsg_len stays within it, as
-        // unix_arrival_stamp_cmsg asks; the payload bytes stay zero but for
-        // one, a valid stamp of any of the plain-integer types read.
-        unsafe {
-            let header = control.as_mut_ptr().cast::<libc::cmsghdr>();
-            (*header).cmsg_level = libc::SOL_SOCKET;
-            (*header).cmsg_type = kind;
-            (*header).cmsg_len = libc::CMSG_LEN(payload as _) as _;
-            *libc::CMSG_DATA(header) = 7;
-            stamps::unix_arrival_stamp_cmsg(&*header).map(|m| match m {
-                Some(CmsgMetadata::ArrivalStamp(stamp)) => Some(stamp),
-                _ => None,
-            })
-        }
+        let mut data_bytes = vec![0; payload];
+        data_bytes[0] = 7;
+        stamps::arrival_stamp_cmsg(&ControlMessageOwned::Unknown(UnknownCmsg {
+            cmsg_header: libc::cmsghdr {
+                cmsg_len: 0,
+                cmsg_level: libc::SOL_SOCKET,
+                cmsg_type: stamps::SCM_TIMESTAMP_MONOTONIC,
+            },
+            data_bytes,
+        }))
     };
-    assert_eq!(stamp(whole - 1).unwrap(), None);
-    assert!(stamp(whole).unwrap().is_some());
+    assert_eq!(stamp(std::mem::size_of::<u64>() - 1), None);
+    assert_eq!(
+        stamp(std::mem::size_of::<u64>()),
+        Some(u64::from_ne_bytes([7, 0, 0, 0, 0, 0, 0, 0]).into())
+    );
+}
+
+/// A Linux software stamp of zero is no stamp, so the datagram goes up in
+/// read order (#1546); a set one counts nanoseconds.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[test]
+fn a_zero_software_stamp_is_no_stamp() {
+    use nix::sys::socket::{ControlMessageOwned, Timestamps};
+    use nix::sys::time::TimeSpec;
+    let stamp = |system| {
+        stamps::arrival_stamp_cmsg(&ControlMessageOwned::ScmTimestampsns(Timestamps {
+            system,
+            hw_trans: TimeSpec::new(0, 0),
+            hw_raw: TimeSpec::new(0, 0),
+        }))
+    };
+    assert_eq!(stamp(TimeSpec::new(0, 0)), None);
+    assert_eq!(stamp(TimeSpec::new(2, 5)), Some(2_000_000_005));
+}
+
+/// An IPv4 datagram that arrives without its destination metadata, here
+/// because the option was turned off again after configuring, fails the
+/// receive as invalid metadata.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+#[tokio::test]
+async fn an_ipv4_datagram_without_packet_info_is_invalid() {
+    use nix::sys::socket::{setsockopt, sockopt};
+    let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let receiver = DestinationReceiver::configure(&socket, IpVersion::V4).unwrap();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    setsockopt(&socket, sockopt::Ipv4PacketInfo, &false).unwrap();
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    setsockopt(&socket, sockopt::Ipv4RecvDstAddr, &false).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let socket = UdpSocket::from_std(socket.into()).unwrap();
+    let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    sender
+        .send_to(b"v4", socket.local_addr().unwrap())
+        .await
+        .unwrap();
+
+    let mut buf = [0u8; 8];
+    let error = receiver.recv_from(&socket, &mut buf).await.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }

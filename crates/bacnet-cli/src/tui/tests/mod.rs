@@ -26,6 +26,8 @@
 //!   on the scripted ring of `bacnet-transport`'s `test-support`.
 //! - `mstp_screen`: the MS/TP screen and the join confirmation from
 //!   synthetic reports and keys, with their frames, and the sampler.
+//! - `watch_rows`: watch rows' names, routed devices and column fit at
+//!   80, 120 and 200 columns, and the name read against refusing devices.
 //!
 //! Snapshot workflow: CI runs plain `cargo nextest run -p bacnet-cli`, where a
 //! changed frame fails the test. After an intended UI change, run
@@ -69,6 +71,7 @@ mod sc_screen;
 mod site;
 mod values;
 mod watch;
+mod watch_rows;
 mod writes;
 mod writes_app;
 mod writes_ledger;

@@ -19,8 +19,9 @@ use crate::tui::point::Health;
 use crate::tui::watched::{Point, RowId, Source, WatchCommand, WatchEvent, WatchStats};
 use crate::tui::worker::watch::MAX_ROWS;
 
-/// Values a row keeps for its sparkline.
-pub(crate) const HISTORY: usize = 120;
+/// Values a row keeps for its sparkline: enough to fill the trend column
+/// of a terminal some 600 columns wide, and at most 4 KiB a row.
+pub(crate) const HISTORY: usize = 512;
 
 /// The screen in the body.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -47,6 +48,8 @@ pub(crate) struct WatchRow {
     pub(crate) id: RowId,
     /// What it watches.
     pub(crate) point: Point,
+    /// The object's Object_Name, from the row's first read.
+    pub(crate) name: Option<String>,
     /// Where its values come from.
     pub(crate) source: Source,
     /// The latest value, or why it couldn't be read.
@@ -94,6 +97,7 @@ impl WatchList {
         self.rows.push(WatchRow {
             id: self.next_id,
             point,
+            name: None,
             source: Source::Starting,
             value: None,
             units: None,
@@ -135,9 +139,12 @@ impl WatchList {
                     row.source = source;
                 }
             }
-            WatchEvent::Units { row, units } => {
+            WatchEvent::Details { row, name, units } => {
                 if let Some(row) = self.row_mut(row) {
-                    row.units = Some(units);
+                    // A later start (after a failed renewal) that lost
+                    // them keeps what the first one found.
+                    row.name = name.or(row.name.take());
+                    row.units = units.or(row.units.take());
                 }
             }
             WatchEvent::Samples(samples) => {
@@ -178,13 +185,18 @@ impl WatchList {
 
 impl App {
     /// Watch `point`: add its row and ask the worker to start it.
-    pub(super) fn watch_point(&mut self, point: Point, out: &mut Vec<Command>) {
+    /// The device table's network for the device wins over one typed, so
+    /// `2001` and `2:2001` are the same row.
+    pub(super) fn watch_point(&mut self, mut point: Point, out: &mut Vec<Command>) {
         if !self.may_transmit() {
             return;
         }
         if !matches!(self.link, Link::Up { .. }) {
             self.flash("Not connected.", FLASH_FOR);
             return;
+        }
+        if let Some(device) = self.devices.get(point.device) {
+            point.network = device.network;
         }
         match self.watch.add(point) {
             Ok(row) => {
@@ -193,7 +205,7 @@ impl App {
                     format!(
                         "Watching {} on device {}. Press 3 for the watch list.",
                         object_label(point.object),
-                        point.device
+                        point.device_label()
                     ),
                     FLASH_FOR,
                 );
@@ -211,6 +223,7 @@ impl App {
         };
         let point = Point {
             device,
+            network: None,
             object,
             property: PropertyIdentifier::PRESENT_VALUE,
         };
@@ -236,6 +249,7 @@ mod tests {
     fn point(instance: u32) -> Point {
         Point {
             device: 7,
+            network: None,
             object: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap(),
             property: PropertyIdentifier::PRESENT_VALUE,
         }
@@ -264,7 +278,8 @@ mod tests {
         let row = &list.rows()[0];
         assert_eq!(row.history.len(), HISTORY);
         assert_eq!(row.history.front(), Some(&5.0));
-        assert_eq!(row.value.as_ref().unwrap().as_deref(), Ok("124"));
+        let newest = (HISTORY + 4).to_string();
+        assert_eq!(row.value.as_ref().unwrap().as_deref(), Ok(newest.as_str()));
         // A row the worker can't watch goes, with a message.
         let notice = list.apply(WatchEvent::Source {
             row: id,
@@ -272,5 +287,26 @@ mod tests {
         });
         assert!(notice.unwrap().contains("no such device"));
         assert!(list.rows().is_empty());
+    }
+
+    #[test]
+    fn a_later_start_without_a_name_or_units_keeps_the_first_ones() {
+        let mut list = WatchList::default();
+        let id = list.add(point(1)).unwrap();
+        let details = |name: Option<&str>, units: Option<&str>| WatchEvent::Details {
+            row: id,
+            name: name.map(Into::into),
+            units: units.map(Into::into),
+        };
+        list.apply(details(Some("Zone Temp"), Some("degrees-fahrenheit")));
+        list.apply(details(None, None));
+        let row = &list.rows()[0];
+        assert_eq!(row.name.as_deref(), Some("Zone Temp"));
+        assert_eq!(row.units.as_deref(), Some("degrees-fahrenheit"));
+        // A start that found new ones replaces them.
+        list.apply(details(Some("Zone 2"), Some("percent")));
+        let row = &list.rows()[0];
+        assert_eq!(row.name.as_deref(), Some("Zone 2"));
+        assert_eq!(row.units.as_deref(), Some("percent"));
     }
 }

@@ -555,6 +555,7 @@ async fn a_passive_session_puts_nothing_on_the_wire() {
             row: 1,
             point: crate::tui::watched::Point {
                 device: LAB,
+                network: None,
                 object: ao1(),
                 property: PropertyIdentifier::PRESENT_VALUE,
             },

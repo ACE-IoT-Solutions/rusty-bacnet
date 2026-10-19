@@ -1,7 +1,8 @@
 //! A synchronous packet-info syscall attempt inside Tokio writable readiness.
 //!
 //! No native pointer or pending overlapped operation survives a syscall attempt.
-//! The send paths are FFI, so each carries its own `#[allow(unsafe_code)]`.
+//! Most Unix targets send through nix's safe `sendmsg` (#1882); the libc and
+//! Winsock paths are FFI, so each carries its own `#[allow(unsafe_code)]`.
 
 use super::link::SelectedLink;
 use socket2::Socket;
@@ -60,7 +61,51 @@ impl SelectedSender {
         Ok(count)
     }
 
-    #[cfg(unix)]
+    /// One direct `sendmsg` with the selected source in IPv6 packet info,
+    /// through nix (#1882).
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "netbsd",
+    ))]
+    fn try_send(
+        &self,
+        socket: &UdpSocket,
+        bytes: &[u8],
+        peer: SocketAddrV6,
+        link: SelectedLink,
+    ) -> io::Result<usize> {
+        use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags, SockaddrIn6};
+        use std::{io::IoSlice, os::fd::AsRawFd};
+        let info = libc::in6_pktinfo {
+            ipi6_addr: libc::in6_addr {
+                s6_addr: link.address.octets(),
+            },
+            ipi6_ifindex: link.index,
+        };
+        Ok(sendmsg(
+            socket.as_raw_fd(),
+            &[IoSlice::new(bytes)],
+            &[ControlMessage::Ipv6PacketInfo(&info)],
+            MsgFlags::empty(),
+            Some(&SockaddrIn6::from(peer)),
+        )?)
+    }
+
+    /// The same on libc, where nix can't send IPv6 packet info: OpenBSD,
+    /// DragonFly and the other Unix targets.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "netbsd",
+        ))
+    ))]
     #[allow(unsafe_code)] // sendmsg with a hand-built IPV6_PKTINFO cmsg
     fn try_send(
         &self,

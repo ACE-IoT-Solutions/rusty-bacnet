@@ -25,7 +25,9 @@ A routed device is named `DNET:instance`, as in the last line. Objects take the 
 
 ## Read a row
 
-Each row shows the device, object and property, the latest value with its units, the status flags as `ALM`, `FLT`, `OVR` and `OOS`, the source (`COV` or `polled`), how long ago the value arrived, and a sparkline of recent numeric values. The line under the table describes the selected row's subscription. The title shows how many rows there are, how many COV subscriptions the list holds, and its request rate over the last 10 seconds.
+Each row shows the device, object, name and property, the latest value with its unit symbol (`72.5 °F`) or its state text (`active (Running)`), the status flags as `ALM`, `FLT`, `OVR` and `OOS`, the source (`COV` or `polled`), how long ago the value arrived, and a sparkline of recent numeric values. A routed device shows as `NET:INSTANCE`, such as `2:2001`. The name comes with the row's first read; a device that won't give it leaves the row without one.
+
+The columns fit what they hold, and the device and object are never cut. Below 120 columns the property column shows only when a row watches something other than Present_Value, and a long name is shortened; a row too wide for the screen gives up value width first, then the age and source columns. The line under the table starts with the selected row's subscription (COV, or polled and why), then names the row: its object, its property when that isn't Present_Value, and as much of its name as fits. From 120 columns the property always shows, and from 160 the units name too, with longer names and a longer sparkline. The title shows how many rows there are, how many COV subscriptions the list holds, and its request rate over the last 10 seconds.
 
 ## COV and polling
 
@@ -34,7 +36,7 @@ Each row first subscribes for COV with a finite lifetime: SubscribeCOV for Prese
 A row is polled instead when:
 
 - the device refuses the subscription;
-- the device is routed, as row `2001` is above;
+- the device is routed, as row `2:2001` is above;
 - a renewal fails. The row turns to polling and tries to subscribe again later, waiting longer after each failure.
 
 Polling reads up to 16 rows of one device with one ReadPropertyMultiple. A point is polled at most every `--poll-interval` seconds, 10 by default, counted from the end of its last poll, and within the shared `--max-rate`. A device that stops answering is polled again after a wait that doubles up to a minute.
@@ -48,6 +50,8 @@ The watch list keeps at most one of its own requests outstanding per device. The
 ## Log values to CSV
 
 With a profile, `:csv on` writes every value the watch list receives to `watch-TIME.csv` in the profile's workspace, and `:csv off` stops. A flags-only session has no workspace, so it can't log.
+
+The columns are `unix_ms`, `device`, `object`, `property`, `value`, `status_flags`, `source` and `network`. `device` is always the plain instance number; `network` holds a routed device's network number and is empty for a device on the local network. Values are logged exactly, with every digit and without state texts.
 
 ## Sources and release scope
 
