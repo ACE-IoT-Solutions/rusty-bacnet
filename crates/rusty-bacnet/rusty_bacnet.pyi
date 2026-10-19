@@ -1662,6 +1662,109 @@ class CovNotificationIterator:
     def __anext__(self) -> Awaitable[CovNotification]: ...
 
 
+class IHave:
+    """An I-Have this client received (#1850), frozen."""
+
+    @property
+    def device_identifier(self) -> ObjectIdentifier: ...
+    @property
+    def object_identifier(self) -> ObjectIdentifier: ...
+    @property
+    def object_name(self) -> str: ...
+    @property
+    def source_mac(self) -> bytes:
+        """The link-layer peer it came from: the device, or the router that
+        passed it on."""
+        ...
+    @property
+    def source_network(self) -> int | None:
+        """SNET, when a router passed it on from another network."""
+        ...
+    @property
+    def source_address(self) -> bytes | None:
+        """SADR, when a router passed it on from another network."""
+        ...
+
+
+class IHaveIterator:
+    """Async iterator over every I-Have from one ``i_have_events()`` call.
+    The client never waits for it: one more than 256 behind loses the
+    oldest and adds them to ``missed``. Iteration ends when the client
+    stops."""
+
+    def __aiter__(self) -> IHaveIterator: ...
+    def __anext__(self) -> Awaitable[IHave]: ...
+    @property
+    def missed(self) -> int:
+        """I-Haves lost so far because this iterator fell behind."""
+        ...
+
+
+class DiscoveredRouter:
+    """A router heard from during ``discover_routers()`` (#1850), frozen."""
+
+    @property
+    def mac(self) -> bytes:
+        """The router's MAC on the local network: the next hop to ``networks``."""
+        ...
+    @property
+    def networks(self) -> list[int]:
+        """Every network it listed, ascending, each once."""
+        ...
+
+
+class NetworkReport:
+    """A network-layer report this client received (#1850), frozen. Fields
+    that don't apply to its ``kind`` are None."""
+
+    @property
+    def kind(self) -> Literal["i_am_router_to_network", "network_number_is",
+                              "reject_message_to_network", "other"]: ...
+    @property
+    def source_mac(self) -> bytes:
+        """The link-layer peer that sent it: for an I-Am-Router-To-Network,
+        the router to send through."""
+        ...
+    @property
+    def source_network(self) -> int | None:
+        """SNET, when a router passed it on from another network."""
+        ...
+    @property
+    def source_address(self) -> bytes | None:
+        """SADR, when a router passed it on from another network."""
+        ...
+    @property
+    def networks(self) -> list[int] | None:
+        """The networks an I-Am-Router-To-Network lists, in its order."""
+        ...
+    @property
+    def network(self) -> int | None:
+        """A Network-Number-Is's network, or the one a refused message was for."""
+        ...
+    @property
+    def configured(self) -> bool | None:
+        """Whether a Network-Number-Is sender had its number configured."""
+        ...
+    @property
+    def reason(self) -> int | None:
+        """A Reject-Message-To-Network's reason octet."""
+        ...
+
+
+class NetworkReportIterator:
+    """Async iterator over the network reports from one
+    ``network_reports()`` call. The client never waits for it: one more
+    than 64 behind loses the oldest and adds them to ``missed``. Iteration
+    ends when the client stops."""
+
+    def __aiter__(self) -> NetworkReportIterator: ...
+    def __anext__(self) -> Awaitable[NetworkReport]: ...
+    @property
+    def missed(self) -> int:
+        """Reports lost so far because this iterator fell behind."""
+        ...
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -2617,6 +2720,41 @@ class BACnetClient:
         0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
         past 4194303 raises ``ValueError`` before anything is sent.
         """
+        ...
+
+    def who_has_replies(
+        self,
+        object: ObjectIdentifier | str,
+        low_limit: Optional[int] = None,
+        high_limit: Optional[int] = None,
+        timeout_ms: int = 3000,
+    ) -> Awaitable[list[IHave]]:
+        """Broadcast a Who-Has for ``object`` (an identifier, or a name) and
+        collect the I-Haves that answer it for ``timeout_ms``: one per device
+        and object, in arrival order; an empty list when none answer. The
+        limits follow ``who_has_by_id()``'s rule (#1850)."""
+        ...
+
+    def i_have_events(self) -> Awaitable[IHaveIterator]:
+        """Follow every I-Have the client receives from now on, an answer to
+        its own Who-Has or not (#1850). RuntimeError before start and after
+        stop."""
+        ...
+
+    def discover_routers(
+        self, network: Optional[int] = None, timeout_ms: int = 3000,
+    ) -> Awaitable[list[DiscoveredRouter]]:
+        """Broadcast a Who-Is-Router-To-Network for ``network`` (or every
+        network) and collect the routers that answer for ``timeout_ms``, one
+        per router MAC in the order first heard; for a ``network``, only the
+        routers listing it. An empty list when none answer. ``network`` 0 or
+        65535 raises BacnetError (#1850)."""
+        ...
+
+    def network_reports(self) -> Awaitable[NetworkReportIterator]:
+        """Follow the I-Am-Router-To-Network, Network-Number-Is and
+        Reject-Message-To-Network messages the client receives from now on
+        (#1850). RuntimeError before start and after stop."""
         ...
 
     def discovered_devices(self) -> Awaitable[list[DiscoveredDevice]]:

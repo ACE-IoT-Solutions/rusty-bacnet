@@ -1,59 +1,25 @@
 """BBMD management helpers on BACnetClient against loopback BBMDs (#1841).
 
-The raw UDP peers here run in a thread on a blocking socket with a timeout,
-since Windows' default event loop has no add_reader.
+The raw UDP peers (bvll_peer) run in a thread, since Windows' default event
+loop has no add_reader.
 """
 import ast
 import asyncio
 import inspect
-import socket
 import struct
-import threading
 import unittest
 
 from rusty_bacnet import (
     BACnetClient, BACnetServer, BacnetBvlcNakError, BacnetBvlcUnexpectedResponseError,
     BacnetError, BacnetTimeoutError, Bbmd,
 )
+from bvll_peer import RawPeer
 from test_endpoint_stub_parity import (
     installed_stub, runtime_arg_kinds, stub_arg_kinds, stub_classes, stub_method,
 )
 
 METHODS = ("read_bdt", "write_bdt", "read_fdt", "delete_fdt_entry",
            "register_foreign_device_bvlc")
-
-
-class RawPeer:
-    """A UDP peer on 127.0.0.1 that answers each datagram with `reply`, or
-    stays silent when `reply` is None, and keeps what it received."""
-
-    def __init__(self, reply):
-        self.reply = reply
-        self.received = []
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", 0))
-        self.sock.settimeout(0.1)
-        self.address = "127.0.0.1:%d" % self.sock.getsockname()[1]
-        self.done = threading.Event()
-        self.thread = threading.Thread(target=self.serve, daemon=True)
-        self.thread.start()
-
-    def serve(self):
-        while not self.done.is_set():
-            try:
-                data, source = self.sock.recvfrom(1500)
-            except socket.timeout:
-                continue
-            except OSError:
-                return
-            self.received.append(data)
-            if self.reply is not None:
-                self.sock.sendto(self.reply, source)
-
-    def close(self):
-        self.done.set()
-        self.thread.join(5)
-        self.sock.close()
 
 
 class BbmdManagementTests(unittest.IsolatedAsyncioTestCase):
@@ -75,7 +41,7 @@ class BbmdManagementTests(unittest.IsolatedAsyncioTestCase):
         return client
 
     def peer(self, reply):
-        peer = RawPeer(reply)
+        peer = RawPeer(lambda data, source: reply and [reply])
         self.addCleanup(peer.close)
         return peer
 
@@ -123,7 +89,7 @@ class BbmdManagementTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(client.read_bdt(silent.address), 10)
         self.assertNotIsInstance(caught.exception, BacnetBvlcNakError)
         # The request went out as a Read-Broadcast-Distribution-Table.
-        self.assertEqual(silent.received[0], b"\x81\x02\x00\x04")
+        self.assertEqual(silent.received[0][0], b"\x81\x02\x00\x04")
 
     async def test_a_raw_peer_nak_is_a_nak_and_mismatches_have_their_own_class(self):
         # A Read-BDT NAK, as a node that is no BBMD sends.

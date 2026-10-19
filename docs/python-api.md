@@ -1303,6 +1303,48 @@ Find a device hosting a specific object by name.
 await client.who_has_by_name("Zone Temperature")
 ```
 
+#### `who_has_replies(object, low_limit=None, high_limit=None, timeout_ms=3000) -> list[IHave]`
+
+Broadcast a Who-Has for `object`, an `ObjectIdentifier` or a name as `str`,
+and collect the I-Haves that answer it for `timeout_ms`: one per device and
+object, in arrival order, and an empty list when none answer. The limits
+follow `who_has_by_id()`'s rule. Each frozen `IHave` has
+`device_identifier`, `object_identifier`, `object_name`, `source_mac`, and
+`source_network`/`source_address` when a router passed it on.
+
+```python
+for reply in await client.who_has_replies("Zone Temperature", timeout_ms=1000):
+    print(reply.device_identifier, reply.object_identifier)
+```
+
+#### `i_have_events() -> Awaitable[IHaveIterator]`
+
+Follow every I-Have the client receives from now on, an answer to its own
+Who-Has or not, as an async iterator of `IHave`.
+
+#### `discover_routers(network=None, timeout_ms=3000) -> list[DiscoveredRouter]`
+
+Broadcast a Who-Is-Router-To-Network for `network`, or every network, and
+collect the routers that answer for `timeout_ms`: one frozen
+`DiscoveredRouter` per router, with its `mac` (the next hop) and the
+`networks` it listed, ascending. For a `network`, only the routers listing
+it are kept. No answer is an empty list; `network` 0 or 65535 raises
+`BacnetError`.
+
+#### `network_reports() -> Awaitable[NetworkReportIterator]`
+
+Follow the network reports the client receives from now on, as an async
+iterator of frozen `NetworkReport`: `kind` is `i_am_router_to_network` (with
+`networks`), `network_number_is` (with `network` and `configured`) or
+`reject_message_to_network` (with `reason` and `network`), and `source_mac`,
+`source_network` and `source_address` say where it came from.
+
+Like `connection_events()`, both iterators are independent subscriptions
+that the client never waits for. One that falls behind (256 I-Haves, 64
+network reports) loses the oldest, adds their count to its `missed` and
+goes on with the oldest it still has. A cancelled `__anext__` loses
+nothing, and iteration ends once the client stops.
+
 #### `discovered_devices() -> list[DiscoveredDevice]`
 
 Get all discovered devices (populated by WhoIs/IAm).
