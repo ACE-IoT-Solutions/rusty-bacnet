@@ -416,17 +416,13 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         priority: NetworkPriority,
         data_attributes: &[DataAttribute],
     ) -> Result<(), Error> {
-        let npdu = Npdu {
+        // Straight from the borrowed APDU, no copy of it first (#1713).
+        let buf = crate::response_route::encode_checked_response_npdu(
+            apdu,
+            None,
             expecting_reply,
             priority,
-            destination: None,
-            source: None,
-            payload: Bytes::copy_from_slice(apdu),
-            ..Npdu::default()
-        };
-
-        let mut buf = BytesMut::with_capacity(2 + apdu.len());
-        encode_npdu(&mut buf, &npdu)?;
+        )?;
 
         // An Unconfirmed-Request for a group address of this link is this
         // link's local broadcast, so it goes out as one: B/IP refuses a
