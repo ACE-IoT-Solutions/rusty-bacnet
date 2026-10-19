@@ -50,6 +50,7 @@ fn state_with_row<'a>(sink: &'a EventSink, options: &'a WatchOptions) -> State<'
         row: 1,
         point: Point {
             device: DEVICE,
+            network: None,
             object: ai(1),
             property: PropertyIdentifier::PRESENT_VALUE,
         },

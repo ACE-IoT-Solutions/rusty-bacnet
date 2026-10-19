@@ -72,6 +72,8 @@ pub(crate) struct Refusal {
 pub(crate) struct Started {
     /// The first value, with the format the row's later values take.
     pub(crate) first: Option<(Reading, RowFormat)>,
+    /// The object's Object_Name, when the first read returned it.
+    pub(crate) name: Option<String>,
     /// The device's MAC, for a device on this network.
     pub(crate) mac: Option<MacAddr>,
     /// The subscription, or why there is none.
@@ -92,6 +94,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
     let Some(device) = client.get_device(point.device).await else {
         return Started {
             first: None,
+            name: None,
             mac: None,
             outcome: Err(Refusal {
                 reason: format!("device {} is not in the device table", point.device),
@@ -109,12 +112,35 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         cancel: &cancel,
         rpm,
     };
-    let wanted = [
+    // The name comes free with the first read. A device may answer it with
+    // an error of its own, which leaves the row nameless; one that fails
+    // the whole read for it is asked again without it.
+    let unnamed = [
         point.property,
         PropertyIdentifier::STATUS_FLAGS,
         PropertyIdentifier::UNITS,
     ];
-    let read = reader.properties(point.object, Wanted::List(&wanted)).await;
+    let named = point.property != PropertyIdentifier::OBJECT_NAME;
+    let wanted = [unnamed.as_slice(), &[PropertyIdentifier::OBJECT_NAME]].concat();
+    let first_ask = if named { &wanted[..] } else { &unnamed[..] };
+    let mut read = reader
+        .properties(point.object, Wanted::List(first_ask))
+        .await;
+    if let (true, Err(Halt::Device(error))) = (named, &read) {
+        if !unreachable(error) {
+            tracing::debug!(
+                "{}: first read failed ({error}); reading it again without Object_Name",
+                point.object
+            );
+            read = reader
+                .properties(point.object, Wanted::List(&unnamed))
+                .await;
+        }
+    }
+    let name = match &read {
+        Ok((rows, _)) => sample::name(rows),
+        Err(_) => None,
+    };
     let first = match &read {
         Ok((rows, _)) => match sample::from_rows(point.property, rows) {
             Some(reading) => {
@@ -157,6 +183,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         .then_some(device.mac_address);
     Started {
         first,
+        name,
         mac,
         outcome,
         refused_rpm,

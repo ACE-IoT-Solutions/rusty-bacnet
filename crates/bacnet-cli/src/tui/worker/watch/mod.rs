@@ -377,9 +377,11 @@ impl<'s> State<'s> {
         if let Some((reading, format)) = started.first {
             row.format = format;
             push(self.sink, row, reading);
-            if let Some(units) = row.format.units_name() {
-                self.outbox.push_back(WatchEvent::Units { row: id, units });
-            }
+            self.outbox.push_back(WatchEvent::Details {
+                row: id,
+                name: started.name,
+                units: row.format.units_name(),
+            });
         }
         let leaving = row.removing || self.shutting_down;
         let point = row.point;
@@ -700,7 +702,7 @@ fn csv_line(
         .unwrap_or_default();
     format!(
         "{at},{},{},{},{},{},{source}",
-        point.device,
+        point.device_label(),
         field(&object_label(point.object)),
         field(&kebab(point.property)),
         field(&value),

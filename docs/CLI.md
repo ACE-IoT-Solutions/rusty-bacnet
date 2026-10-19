@@ -491,9 +491,10 @@ go through a write session (below).
 
 **Watch list.** `a` on an object in the browser watches its Present_Value;
 `:watch 1234 ai:1 [property]` on the command bar watches any property of a
-device in the table (`dnet:1234` for a routed one). `3` shows the list: device,
-object, property, value, units, status flags, source, the age of the last
-value and a sparkline. `x` stops watching the selected row.
+device in the table (`dnet:1234` for a routed one). `3` shows the list: device
+(`2:1234` when routed), object, the object's name, property, value, units,
+status flags, source, the age of the last value and a sparkline. `x` stops
+watching the selected row.
 
 Each row subscribes for COV with a finite lifetime (`--cov-lifetime`, default
 300 s) that is renewed before it runs out: SubscribeCOV for Present_Value,
