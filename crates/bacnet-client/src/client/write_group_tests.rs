@@ -161,13 +161,13 @@ async fn write_group_refuses_a_bad_request_or_network_before_sending() {
     let result = client
         .write_group(&WriteGroupDestination::LocalBroadcast, &bad)
         .await;
-    assert!(matches!(result, Err(Error::Encoding(_))), "{result:?}");
+    assert!(matches!(result, Err(Error::Encode(_))), "{result:?}");
     bad = request();
     bad.change_list.clear();
     let result = client
         .write_group(&WriteGroupDestination::GlobalBroadcast, &bad)
         .await;
-    assert!(matches!(result, Err(Error::Encoding(_))), "{result:?}");
+    assert!(matches!(result, Err(Error::Encode(_))), "{result:?}");
     assert!(sent.try_recv().is_err(), "a refused request went out");
     client.stop().await.unwrap();
 }

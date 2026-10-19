@@ -1,5 +1,5 @@
 #[cfg(not(feature = "std"))]
-use alloc::{string::ToString, vec::Vec};
+use alloc::vec::Vec;
 
 use super::recipient::{check_encoded_recipient, write_recipient};
 use super::tagged::{
@@ -10,7 +10,7 @@ use super::{decode_recipient, validate_tlv_sequence};
 use crate::{primitives, tags};
 use bacnet_types::constructed::{AuditPropertyReference, BACnetAuditNotification};
 use bacnet_types::enums::{AuditOperation, ErrorClass, ErrorCode};
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, Error, RangeError};
 use bytes::BytesMut;
 
 /// Encode one bare `BACnetAuditNotification` field sequence.
@@ -20,18 +20,19 @@ pub fn encode_audit_notification(
 ) -> Result<(), Error> {
     let operation = notification.operation.to_raw();
     if !valid_operation(operation) {
-        return Err(Error::OutOfRange(format!(
-            "AuditNotification operation {operation} is reserved"
-        )));
+        return Err(RangeError::new("AuditNotification operation {} is reserved")
+            .with_value(operation.into())
+            .into());
     }
-    if notification
+    if let Some(priority) = notification
         .target_priority
-        .is_some_and(|priority| !(1..=16).contains(&priority))
+        .filter(|priority| !(1..=16).contains(priority))
     {
-        return Err(Error::OutOfRange(format!(
-            "AuditNotification target priority {} is outside 1..=16",
-            notification.target_priority.unwrap()
-        )));
+        return Err(
+            RangeError::new("AuditNotification target priority {} is outside 1..=16")
+                .with_value(priority.into())
+                .into(),
+        );
     }
     validate_raw_value(
         notification.target_value.as_deref(),
@@ -121,7 +122,7 @@ fn validate_raw_value(value: Option<&[u8]>, what: &'static str) -> Result<(), Er
     let Some(value) = value else {
         return Ok(());
     };
-    validate_tlv_sequence(value, what).map_err(|error| Error::Encoding(error.to_string()))
+    validate_tlv_sequence(value, what).map_err(Error::into_encode_refusal)
 }
 
 /// Decode one bare `BACnetAuditNotification` starting at `offset`.

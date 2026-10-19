@@ -290,7 +290,11 @@ fn datatype_name(number: u64) -> &'static str {
 
 /// Write `label` with its placeholders filled from `values` in order (see
 /// the module docs). A placeholder past the second is written as it stands.
-fn write_label(f: &mut fmt::Formatter<'_>, label: &str, values: [u64; 2]) -> fmt::Result {
+pub(super) fn write_label(
+    f: &mut fmt::Formatter<'_>,
+    label: &str,
+    values: [u64; 2],
+) -> fmt::Result {
     let mut rest = label;
     let mut next = values.iter();
     while let Some(at) = rest.find('{') {
@@ -402,5 +406,7 @@ mod tests {
         assert!(size_of::<DecodeError>() <= 64);
         assert!(size_of::<super::super::Error>() <= 64);
         assert!(size_of::<RangeError>() <= 32);
+        assert!(size_of::<super::super::EncodeError>() <= 56);
+        assert!(size_of::<super::super::SegmentationError>() <= 24);
     }
 }

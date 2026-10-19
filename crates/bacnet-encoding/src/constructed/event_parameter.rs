@@ -46,10 +46,10 @@
 //! omitted/deprecated/reserved slots 6, 7, 12 and 19 are rejected on decode.
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::ToString, vec::Vec};
+use alloc::vec::Vec;
 
 use bacnet_types::constructed::{BACnetEventParameter, ChangeOfValueCriteria};
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, EncodeError, Error};
 use bytes::BytesMut;
 
 use crate::primitives;
@@ -81,7 +81,7 @@ pub fn encode_event_parameter(
     let mut encoded = BytesMut::new();
     encode_event_parameter_into(&mut encoded, value)?;
     validate_tlv_sequence(&encoded, "BACnetEventParameter")
-        .map_err(|error| Error::Encoding(error.to_string()))?;
+        .map_err(Error::into_encode_refusal)?;
     buf.extend_from_slice(&encoded);
     Ok(())
 }
@@ -178,7 +178,7 @@ fn encode_event_parameter_into(
             parameters,
         } => {
             validate_extended_parameters(parameters, "extended")
-                .map_err(|error| Error::Encoding(error.to_string()))?;
+                .map_err(Error::into_encode_refusal)?;
             tags::encode_opening_tag(buf, 9);
             primitives::encode_ctx_unsigned(buf, 0, *vendor_id as u64);
             primitives::encode_ctx_unsigned(buf, 1, *extended_event_type as u64);
@@ -201,13 +201,16 @@ fn encode_event_parameter_into(
                 || MODELED_EVENT_TAGS.contains(tag)
                 || RESERVED_EVENT_TAGS.contains(tag) =>
         {
-            return Err(Error::Encoding(format!(
-                "BACnetEventParameter: tag [{tag}] cannot use an opaque constructed body"
-            )));
+            return Err(
+                EncodeError::new("tag [{}] cannot use an opaque constructed body")
+                    .within("BACnetEventParameter")
+                    .with_value((*tag).into())
+                    .into(),
+            );
         }
         BACnetEventParameter::Opaque { tag, data } => {
             validate_tlv_sequence(data, "opaque event parameters")
-                .map_err(|error| Error::Encoding(error.to_string()))?;
+                .map_err(Error::into_encode_refusal)?;
             // Preserved alternative: its captured bytes are the complete
             // SEQUENCE body, re-emitted under its own opening/closing pair.
             tags::encode_opening_tag(buf, *tag);

@@ -97,14 +97,10 @@ impl ReadRangeRequest {
             self.property_identifier,
             PropertyIdentifier::ALL | PropertyIdentifier::REQUIRED | PropertyIdentifier::OPTIONAL
         ) {
-            return Err(Error::Encoding(
-                "ReadRange property may not be ALL, REQUIRED, or OPTIONAL".into(),
-            ));
+            return Err(Error::encode("ReadRange property may not be ALL, REQUIRED, or OPTIONAL"));
         }
         if self.property_array_index == Some(0) {
-            return Err(Error::Encoding(
-                "ReadRange array index may not be zero".into(),
-            ));
+            return Err(Error::encode("ReadRange array index may not be zero"));
         }
         if let Some(range) = &self.range {
             let count = match range {
@@ -116,17 +112,13 @@ impl ReadRangeRequest {
                     count,
                 } => {
                     if !specific_datetime(date, time) {
-                        return Err(Error::Encoding(
-                            "ReadRange byTime requires a specific datetime".into(),
-                        ));
+                        return Err(Error::encode("ReadRange byTime requires a specific datetime"));
                     }
                     *count
                 }
             };
             if count == 0 || i16::try_from(count).is_err() {
-                return Err(Error::Encoding(
-                    "ReadRange count must be a nonzero INTEGER16".into(),
-                ));
+                return Err(Error::encode("ReadRange count must be a nonzero INTEGER16"));
             }
         }
         Ok(())

@@ -6,9 +6,6 @@
 //! notification datum (Clause 12.27.13), so the record codec reuses these
 //! functions.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::ToString;
-
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetPropertyStates,
     ChangeOfValueChoice, EventNotificationRequest, NotificationParameters,
@@ -54,7 +51,7 @@ pub fn encode_event_notification(
     let mut encoded = BytesMut::new();
     encode_into(request, &mut encoded)?;
     validate_tlv_sequence(&encoded, "EventNotification")
-        .map_err(|error| Error::Encoding(error.to_string()))?;
+        .map_err(Error::into_encode_refusal)?;
     buf.extend_from_slice(&encoded);
     Ok(())
 }

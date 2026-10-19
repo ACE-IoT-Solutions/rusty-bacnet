@@ -3,7 +3,7 @@ use bacnet_encoding::{primitives, tags};
 use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::enums::{BACnetSuccessFilter, PropertyIdentifier, RejectReason};
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, EncodeError, Error};
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
 
@@ -20,10 +20,9 @@ fn validate_filter(filter: BACnetSuccessFilter) -> Result<(), Error> {
         && filter != BACnetSuccessFilter::SUCCESSES_ONLY
         && filter != BACnetSuccessFilter::FAILURES_ONLY
     {
-        return Err(Error::Encoding(format!(
-            "AuditLogQuery success-filter {} is outside 0..=2",
-            filter.to_raw()
-        )));
+        return Err(EncodeError::new("AuditLogQuery success-filter {} is outside 0..=2")
+            .with_value(filter.to_raw())
+            .into());
     }
     Ok(())
 }
@@ -35,9 +34,7 @@ fn validate(request: &AuditLogQueryRequest) -> Result<(), Error> {
     } = &request.query_parameters
     {
         if !(1..=16).contains(priority) {
-            return Err(Error::Encoding(
-                "AuditLogQuery target-priority must be in 1..=16".into(),
-            ));
+            return Err(Error::encode("AuditLogQuery target-priority must be in 1..=16"));
         }
     }
     let (address, filter) = match &request.query_parameters {
