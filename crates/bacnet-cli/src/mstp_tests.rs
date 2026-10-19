@@ -162,7 +162,7 @@ fn the_monitor_flag_takes_baud_and_refuses_what_it_proposes() {
             "cannot be used with",
         ),
         (
-            vec!["bacnet", "devices", "--mstp-baud", "9600"],
+            vec!["bacnet", "discover", "--mstp-baud", "9600"],
             "--mstp-baud requires --mstp PORT (or tui --mstp-monitor PORT)",
         ),
     ] {
