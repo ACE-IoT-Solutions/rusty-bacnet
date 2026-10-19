@@ -435,8 +435,8 @@ fn last_datum(db: &ObjectDatabase, oid: ObjectIdentifier) -> LogDatum {
 /// A failure datum.
 fn failure(class: ErrorClass, code: ErrorCode) -> LogDatum {
     LogDatum::Failure {
-        error_class: class.to_raw().into(),
-        error_code: code.to_raw().into(),
+        error_class: class,
+        error_code: code,
     }
 }
 

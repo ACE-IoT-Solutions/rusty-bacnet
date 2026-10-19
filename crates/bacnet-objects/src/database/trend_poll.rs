@@ -391,8 +391,8 @@ impl ObjectDatabase {
 
 fn failure(class: ErrorClass, code: ErrorCode) -> LogValue {
     LogValue::Failure {
-        error_class: u32::from(class.to_raw()),
-        error_code: u32::from(code.to_raw()),
+        error_class: class,
+        error_code: code,
     }
 }
 

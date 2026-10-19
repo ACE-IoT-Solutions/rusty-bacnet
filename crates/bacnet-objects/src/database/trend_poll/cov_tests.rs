@@ -224,10 +224,8 @@ fn another_devices_reference_logs_its_failure_once() {
         logged(&db, remote),
         [(
             LogDatum::Failure {
-                error_class: ErrorClass::PROPERTY.to_raw().into(),
-                error_code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
-                    .to_raw()
-                    .into(),
+                error_class: ErrorClass::PROPERTY,
+                error_code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
             },
             None,
         )]

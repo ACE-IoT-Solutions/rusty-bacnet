@@ -130,8 +130,8 @@ fn trend_multiple_serves_each_record_framed() {
         vec![
             LogValue::RealValue(10.0),
             LogValue::Failure {
-                error_class: 2,
-                error_code: 32,
+                error_class: ErrorClass::PROPERTY,
+                error_code: ErrorCode::UNKNOWN_PROPERTY,
             },
         ],
     );
