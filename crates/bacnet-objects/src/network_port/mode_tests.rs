@@ -120,10 +120,7 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
             &[&BBMD_ROWS[..], &FOREIGN_ROWS[..]],
         ),
         (
-            BipPortMode::Foreign {
-                bbmd: host([10, 0, 0, 1], 0xBAC0),
-                subscription_lifetime: 300,
-            },
+            BipPortMode::fixed_foreign(host([10, 0, 0, 1], 0xBAC0), 300),
             1,
             &FOREIGN_ROWS[..],
             &[&BBMD_ROWS[..], &[][..]],
@@ -187,10 +184,7 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
 
 #[test]
 fn foreign_mode_serves_its_bbmd_and_lifetime() {
-    let (db, _lease) = published(BipPortMode::Foreign {
-        bbmd: host([10, 0, 0, 1], 0xBAC0),
-        subscription_lifetime: 300,
-    });
+    let (db, _lease) = published(BipPortMode::fixed_foreign(host([10, 0, 0, 1], 0xBAC0), 300));
     // [0] { ip-address [1] 10.0.0.1 } port [1] 47808
     assert_eq!(
         read(&db, P::FD_BBMD_ADDRESS).unwrap(),
@@ -256,10 +250,7 @@ fn bbmd_mode_reads_the_lent_tables_on_every_read() {
 
 #[test]
 fn a_bbmd_without_tables_is_refused_and_a_new_owner_starts_normal() {
-    let (mut db, lease) = published(BipPortMode::Foreign {
-        bbmd: host([10, 0, 0, 1], 0xBAC0),
-        subscription_lifetime: 300,
-    });
+    let (mut db, lease) = published(BipPortMode::fixed_foreign(host([10, 0, 0, 1], 0xBAC0), 300));
     drop(lease);
     // The next owner reserves the bound port the first one published: the
     // port reads NORMAL until it publishes.

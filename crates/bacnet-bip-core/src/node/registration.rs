@@ -256,6 +256,30 @@ impl Lifecycle {
         }
     }
 
+    /// Register with `foreign`'s settings from `now` on, its first attempt
+    /// due at once; the caller has ended the attempt in flight. A lease
+    /// proven by the same BBMD (`same_bbmd`) still stands, as its entry
+    /// does; another BBMD's proves nothing here, so it goes, with the
+    /// sends that could have earned it. Broadcasts held for the first
+    /// attempt of the start stay held until the next attempt resolves.
+    pub(crate) fn retarget(&mut self, foreign: &Foreign, now: Instant, same_bbmd: bool) {
+        self.ttl = foreign.ttl_duration();
+        self.renewal = foreign.effective_renewal();
+        self.timeout = foreign.effective_response_timeout();
+        self.retry = foreign.retry;
+        self.hold_limit = foreign.hold;
+        if !same_bbmd {
+            self.lease = None;
+            self.lapsed = false;
+            self.unanswered_since = None;
+            self.recent = Recent::new();
+        }
+        self.attempt = None;
+        self.last_start = None;
+        self.failures = 0;
+        self.next = Some(now);
+    }
+
     /// How long after its request a success, or a copy of it, may still
     /// arrive: three response timeouts, but no longer than the renewal
     /// interval. The response timeout is never longer than the renewal, so

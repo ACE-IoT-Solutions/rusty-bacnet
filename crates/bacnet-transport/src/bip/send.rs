@@ -42,8 +42,8 @@ impl NodeHandle {
         npdu: &[u8],
         forwarder: Option<&OwnBroadcastForwarder>,
     ) -> Result<(), Error> {
-        let (outgoing, forward_own) = self
-            .link()
+        let link = self.link();
+        let (outgoing, forward_own) = link
             .broadcast(npdu)
             .map_err(|refusal| self.refuse_send(refusal))?;
 
@@ -54,7 +54,7 @@ impl NodeHandle {
         // while the first registration attempt after a start is outstanding,
         // refuses it when that hold is full (#1622), and queues it behind
         // released broadcasts its driver hasn't sent yet.
-        if matches!(self.link().mode, Mode::Foreign(_)) && !self.admit_broadcast(npdu)? {
+        if matches!(link.mode, Mode::Foreign(_)) && !self.admit_broadcast(npdu)? {
             return Ok(());
         }
 

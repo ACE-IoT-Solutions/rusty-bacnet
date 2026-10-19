@@ -8,7 +8,7 @@ use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
 use bacnet_time::{earliest, Duration, Instant};
 
 use super::actions::{Action, Actions};
-use super::config::{ConfigError, Link, Mode, Retry};
+use super::config::{ConfigError, Foreign, Link, Mode, Retry};
 use super::counters::{add, bump, NodeCounters, RegisterAttempt};
 use super::exchange::{
     Early, ExchangeId, ExchangeRefusal, Exchanges, Key, LocalFailure, Operation, Phase,
@@ -595,6 +595,41 @@ impl<const X: usize> Node<X> {
                 }
             }
         }
+    }
+
+    /// Register a foreign device with `foreign` from `now` on: another
+    /// BBMD, time-to-live or timing. The lifecycle restarts with an attempt
+    /// to the new BBMD due at once, which the next
+    /// [`poll_action`](Node::poll_action) hands out. The automatic attempt
+    /// in flight ends as cancelled, so a late answer to it counts as
+    /// unmatched. A lease proven by the same BBMD stands, since its entry
+    /// does; one from another BBMD is dropped. Manual exchanges carry on.
+    ///
+    /// Refused, changing nothing, outside foreign mode
+    /// ([`ConfigError::NotForeign`]) or with a registration
+    /// [`Link::validate`] refuses.
+    pub fn retarget(&mut self, foreign: Foreign, now: Instant) -> Result<(), ConfigError> {
+        let Mode::Foreign(old) = self.link.mode else {
+            return Err(ConfigError::NotForeign);
+        };
+        let mut link = self.link;
+        link.mode = Mode::Foreign(foreign);
+        link.validate()?;
+        // Timeouts and a lapse due by now happen on the old registration; an
+        // attempt due by now is not started for it.
+        let now = self.catch_up(now, false);
+        if let Some(index) = self.exchanges.automatic() {
+            let exchange = self.exchanges.id(index);
+            self.exchanges.retire(index, now);
+            self.actions.forget_register(exchange);
+            self.record_register(exchange, AttemptOutcome::Cancelled, None);
+        }
+        if let Some(lifecycle) = &mut self.lifecycle {
+            lifecycle.retarget(&foreign, now, old.bbmd == foreign.bbmd);
+        }
+        self.link = link;
+        self.advance(now);
+        Ok(())
     }
 
     /// The next thing to do, or [`Action::Idle`].

@@ -68,7 +68,7 @@ fn bbmd_mode_maps_every_option_onto_its_setter() {
 fn foreign_mode_keeps_its_renewal_interval() {
     let mut transport = transport();
     transport.set_mode(BipMode::Foreign(foreign_to(47808)));
-    let foreign = transport.foreign_device.as_ref().unwrap();
+    let foreign = transport.foreign_device_config().unwrap();
     assert_eq!(foreign.renewal_interval, Some(Duration::from_secs(5)));
     assert_eq!(foreign.ttl, 60);
     assert!(transport.bbmd_config.is_none());

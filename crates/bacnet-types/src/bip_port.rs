@@ -13,7 +13,9 @@
 //! [`BbmdTables`], which the object reads on each property read. Nothing is
 //! copied, so the object cannot drift from the transport. The same view
 //! checks a written BDT and puts written values into effect when they are
-//! activated ([`BbmdChanges`]).
+//! activated ([`BbmdChanges`]). A foreign device's registration is lent
+//! the same way, [`ForeignRegistration`], so a written BBMD address and
+//! time-to-live can be checked and activated ([`ForeignDeviceChanges`]).
 //!
 //! The module exists only with the `std` feature. Both crates it joins are
 //! hosted, and the shared `Arc` needs atomic compare-and-swap, which
@@ -50,10 +52,7 @@ pub trait BbmdTables: Send + Sync {
     /// default refuses every table, as for tables that can't be changed.
     fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
         let _ = table;
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(write_access_denied())
     }
 
     /// Put written values into effect, as a ReinitializeDevice
@@ -61,19 +60,15 @@ pub trait BbmdTables: Send + Sync {
     /// none and an error. The default refuses.
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
         let _ = changes;
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(write_access_denied())
     }
 }
 
 /// Values written to a BBMD's Network Port properties and not yet in effect
 /// (Clause 12.56.34, 12.56.35): `None` leaves that setting as it is.
 ///
-/// It is `#[non_exhaustive]`, so the foreign-device rows can add their
-/// settings: outside this crate, start from [`BbmdChanges::default`] and
-/// set the fields that change.
+/// It is `#[non_exhaustive]`: outside this crate, start from
+/// [`BbmdChanges::default`] and set the fields that change.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BbmdChanges {
@@ -92,6 +87,89 @@ impl BbmdChanges {
     }
 }
 
+/// A live view of a foreign device's registration: the BBMD it registers
+/// with and the time-to-live it asks for.
+///
+/// As with [`BbmdTables`], the Network Port object calls these while a
+/// reader holds the server's object database, so each must answer
+/// promptly, with no I/O.
+pub trait ForeignRegistration: Send + Sync {
+    /// The BBMD it registers with: the value of FD_BBMD_Address.
+    fn bbmd(&self) -> BACnetHostNPort;
+
+    /// The time-to-live, in seconds, it registers for: the value of
+    /// FD_Subscription_Lifetime.
+    fn subscription_lifetime(&self) -> u16;
+
+    /// Check written values, changing nothing: `Ok` when
+    /// [`activate`](Self::activate) would take them. `changes` holds every
+    /// value waiting, so a check sees the pair it would activate. The
+    /// default refuses, as for a registration that can't change.
+    fn check(&self, changes: &ForeignDeviceChanges) -> Result<(), Error> {
+        let _ = changes;
+        Err(write_access_denied())
+    }
+
+    /// Put written values into effect, as a ReinitializeDevice
+    /// ACTIVATE_CHANGES or WARMSTART asks (Clause 12.56.13): register with
+    /// the new BBMD or time-to-live from now on, or change nothing and
+    /// fail. The default refuses.
+    fn activate(&self, changes: &ForeignDeviceChanges) -> Result<(), Error> {
+        let _ = changes;
+        Err(write_access_denied())
+    }
+}
+
+/// A registration that never changes: it reports `bbmd` and
+/// `subscription_lifetime`, and refuses every written value. For a port
+/// that can't register again while it runs, and for tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedForeignRegistration {
+    /// FD_BBMD_Address.
+    pub bbmd: BACnetHostNPort,
+    /// FD_Subscription_Lifetime, in seconds.
+    pub subscription_lifetime: u16,
+}
+
+impl ForeignRegistration for FixedForeignRegistration {
+    fn bbmd(&self) -> BACnetHostNPort {
+        self.bbmd.clone()
+    }
+
+    fn subscription_lifetime(&self) -> u16 {
+        self.subscription_lifetime
+    }
+}
+
+/// Values written to a foreign device's Network Port properties and not
+/// yet in effect (Clause 12.56.37, 12.56.38): `None` leaves that setting
+/// as it is.
+///
+/// It is `#[non_exhaustive]`: outside this crate, start from
+/// [`ForeignDeviceChanges::default`] and set the fields that change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ForeignDeviceChanges {
+    /// A new BBMD to register with: FD_BBMD_Address.
+    pub bbmd: Option<BACnetHostNPort>,
+    /// A new time-to-live, in seconds: FD_Subscription_Lifetime.
+    pub subscription_lifetime: Option<u16>,
+}
+
+impl ForeignDeviceChanges {
+    /// Whether nothing is waiting.
+    pub fn is_empty(&self) -> bool {
+        self.bbmd.is_none() && self.subscription_lifetime.is_none()
+    }
+}
+
+fn write_access_denied() -> Error {
+    Error::Protocol {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::WRITE_ACCESS_DENIED,
+    }
+}
+
 /// A B/IP port's mode, with what that mode's Network Port properties need.
 #[derive(Clone)]
 pub enum BipPortMode {
@@ -99,11 +177,9 @@ pub enum BipPortMode {
     Normal,
     /// The port joins a remote BBMD's network by registering with it.
     Foreign {
-        /// The BBMD it registers with: FD_BBMD_Address.
-        bbmd: BACnetHostNPort,
-        /// The time to live, in seconds, it registers for:
+        /// Its registration, read live: FD_BBMD_Address and
         /// FD_Subscription_Lifetime.
-        subscription_lifetime: u16,
+        registration: Arc<dyn ForeignRegistration>,
     },
     /// The port relays broadcasts for its subnet as a BBMD.
     Bbmd {
@@ -114,6 +190,17 @@ pub enum BipPortMode {
 }
 
 impl BipPortMode {
+    /// FOREIGN mode with a registration that never changes
+    /// ([`FixedForeignRegistration`]).
+    pub fn fixed_foreign(bbmd: BACnetHostNPort, subscription_lifetime: u16) -> Self {
+        Self::Foreign {
+            registration: Arc::new(FixedForeignRegistration {
+                bbmd,
+                subscription_lifetime,
+            }),
+        }
+    }
+
     /// The BACnet_IP_Mode value for this mode.
     pub fn ip_mode(&self) -> IPMode {
         match self {
@@ -128,13 +215,13 @@ impl fmt::Debug for BipPortMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Normal => f.write_str("Normal"),
-            Self::Foreign {
-                bbmd,
-                subscription_lifetime,
-            } => f
+            Self::Foreign { registration } => f
                 .debug_struct("Foreign")
-                .field("bbmd", bbmd)
-                .field("subscription_lifetime", subscription_lifetime)
+                .field("bbmd", &registration.bbmd())
+                .field(
+                    "subscription_lifetime",
+                    &registration.subscription_lifetime(),
+                )
                 .finish(),
             Self::Bbmd { tables } => f
                 .debug_struct("Bbmd")

@@ -1,7 +1,9 @@
 //! The hosted B/IP node: [`bacnet_bip_core::node`] on Tokio (#1622).
 //!
-//! The engine's [`Link`] decides every receive and send without a lock: the
-//! receive loop and the send paths read one copy. Its [`Node`] holds this
+//! The engine's [`Link`] decides every receive and send: the receive loop
+//! and the send paths copy it out from behind a read lock that only a
+//! foreign device's move to another BBMD writes (#1825), so it is never
+//! contended in practice, and decide on the copy. Its [`Node`] holds this
 //! node's own management exchanges and a foreign device's registration,
 //! behind a std mutex that only a response, a foreign device's broadcast, an
 //! exchange and the driver's timer take, and never across an await. After
@@ -19,15 +21,15 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Duration;
 
 use bacnet_bip_codec::{BvlcFunction, Bvll, BvllError};
 use bacnet_bip_core::node::{
-    Action, Admission, ConfigError, ExchangeId, Inbound, Link, LocalFailure, Mode, Node,
+    Action, Admission, ConfigError, ExchangeId, Foreign, Inbound, Link, LocalFailure, Mode, Node,
     NodeCounters, Policy, RegistrationEvent, Response, SendRefusal,
 };
-use bacnet_bip_core::{Duration as CoreDuration, Instant as CoreInstant};
+use bacnet_bip_core::Instant as CoreInstant;
 use bacnet_time::HostClock;
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
@@ -226,14 +228,15 @@ impl NodeState {
 /// The node of one started transport, shared by its receive loop, its send
 /// paths, its driver task and the requests in flight.
 pub(super) struct NodeHandle {
-    link: Link,
+    /// A copy of the node's link, for the receive and send decisions. Only
+    /// [`retarget`](Self::retarget) writes it, under the node lock, after
+    /// the node's own copy changed: lock order is the node lock, then this.
+    link: RwLock<Link>,
     clock: HostClock,
     socket: Arc<BipSocket>,
     record: Arc<ClientRecord>,
     /// Where the sends the link refuses are counted.
     refusals: Arc<SendRefusals>,
-    /// A foreign device's renewal interval.
-    renewal: Option<CoreDuration>,
     state: Mutex<NodeState>,
     /// Tells the driver that the node changed.
     wake: Notify,
@@ -254,17 +257,12 @@ impl NodeHandle {
     ) -> Result<Self, Error> {
         let clock = tokio_clock();
         let node = HostNode::new(link, clock.now()).map_err(config_error)?;
-        let renewal = match link.mode {
-            Mode::Foreign(foreign) => Some(foreign.effective_renewal()),
-            Mode::Normal | Mode::Bbmd => None,
-        };
         let handle = Self {
-            link,
+            link: RwLock::new(link),
             clock,
             socket,
             record,
             refusals,
-            renewal,
             state: Mutex::new(NodeState {
                 node,
                 waiters: HashMap::new(),
@@ -282,9 +280,43 @@ impl NodeHandle {
         Ok(handle)
     }
 
-    /// The node's link: its address, subnet and mode.
-    pub(super) fn link(&self) -> &Link {
-        &self.link
+    /// The node's link as it stands: its address, subnet and mode. A copy,
+    /// so no lock is held while the caller decides on it.
+    pub(super) fn link(&self) -> Link {
+        *self.link.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether this node, a foreign device, would take `foreign` as its
+    /// registration ([`retarget`](Self::retarget)), changing nothing.
+    pub(super) fn check_retarget(&self, foreign: Foreign) -> Result<(), Error> {
+        let mut link = self.link();
+        if !matches!(link.mode, Mode::Foreign(_)) {
+            return Err(config_error(ConfigError::NotForeign));
+        }
+        link.mode = Mode::Foreign(foreign);
+        link.validate().map_err(config_error)
+    }
+
+    /// Register with `foreign`'s BBMD and time-to-live from now on
+    /// ([`Node::retarget`]): the attempt the driver hasn't sent yet is
+    /// dropped, and one to the new BBMD goes at once. Refused, changing
+    /// nothing, as the node refuses it. A stopped node has nothing to move:
+    /// the next start builds a new one.
+    pub(super) fn retarget(&self, foreign: Foreign) -> Result<(), Error> {
+        self.with(|state, now| {
+            if state.stopped {
+                return Ok(());
+            }
+            state.node.retarget(foreign, now).map_err(config_error)?;
+            // The node cancelled the attempt this would have sent; its
+            // replacement comes with the drain after this call.
+            state.register = None;
+            state.attempt_started = None;
+            state.refusal_warned = false;
+            *self.link.write().unwrap_or_else(PoisonError::into_inner) = *state.node.link();
+            info!(bbmd = %foreign.bbmd, ttl = foreign.ttl, "B/IP foreign device moved to a new BBMD registration");
+            Ok(())
+        })
     }
 
     /// The node's clock.
@@ -399,9 +431,13 @@ impl NodeHandle {
         let Some(snapshot) = state.node.registration(now) else {
             return;
         };
+        let renewal = match state.node.link().mode {
+            Mode::Foreign(foreign) => Some(foreign.effective_renewal()),
+            Mode::Normal | Mode::Bbmd => None,
+        };
         let next = snapshot
             .next_attempt
-            .or_else(|| Some(state.attempt_started? + self.renewal?));
+            .or_else(|| Some(state.attempt_started? + renewal?));
         let until =
             |at: CoreInstant| Duration::from_nanos(at.saturating_duration_since(now).as_nanos());
         foreign.next_attempt_in = next.map(until);
@@ -529,7 +565,7 @@ impl NodeHandle {
 
     /// Send a broadcast the node kept.
     async fn send_released(&self, npdu: &[u8]) {
-        let Ok((outgoing, _)) = self.link.broadcast(npdu) else {
+        let Ok((outgoing, _)) = self.link().broadcast(npdu) else {
             return;
         };
         let mut buf = BytesMut::with_capacity(4 + npdu.len());

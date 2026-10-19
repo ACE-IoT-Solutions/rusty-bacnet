@@ -16,7 +16,7 @@ pub(super) const HELD_BROADCASTS: u16 = 16;
 
 /// Configuration for automatic foreign-device registration. Its positive TTL
 /// is sent unchanged; the independent renewal interval controls local attempts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignDeviceConfig {
     /// BBMD IP address to register with.
     pub bbmd_ip: Ipv4Addr,

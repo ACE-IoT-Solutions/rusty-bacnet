@@ -3670,7 +3670,10 @@ time-to-live. With an `on_reinitialize` handler (see
 [ReinitializeDevice](#reinitializedevice)), a BBMD port's
 BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations accept
 writes, set Changes_Pending, and take effect on an accepted ACTIVATE_CHANGES or
-WARMSTART (#1578, #1566). Without one nothing could activate a written value,
+WARMSTART (#1578, #1566). A foreign device's FD_BBMD_Address (an IPv4
+`BACnetHostNPort`, written as `PropertyValue.application_data`) and
+FD_Subscription_Lifetime do the same (#1825): once activated, the next
+registration goes to the new BBMD with the new time-to-live. Without one nothing could activate a written value,
 so those writes raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
 Changes_Pending stays FALSE. Local Network Number behavior
 is described below; complete Network Port conformance and multiport routing
@@ -3812,8 +3815,9 @@ server = BACnetServer(1234, reinit_password="secret",
   token, so stopping the server at once can drop the reply: wait a short
   while (a few token rotations, say half a second) before `server.stop()`.
 - With a handler, a registered BBMD port's BBMD_Broadcast_Distribution_Table
-  and BBMD_Accept_FD_Registrations take writes, and ACTIVATE_CHANGES or
-  WARMSTART puts them into effect (see
+  and BBMD_Accept_FD_Registrations, and a foreign device's FD_BBMD_Address and
+  FD_Subscription_Lifetime, take writes, and ACTIVATE_CHANGES or WARMSTART
+  puts them into effect (see
   [Registered B/IP Network Port](#registered-bip-network-port)).
 - With target Audit Reporters configured, an accepted reset, backup or restore
   step is recorded (DEVICE_RESET, DEVICE_BACKUP or DEVICE_RESTORE; nothing for

@@ -36,8 +36,7 @@ use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Cast, Link, Mode};
 use bacnet_bip_core::LocalSubnet;
 use bacnet_npdu::NpduLimits;
-use bacnet_types::bip_port::{BbmdTables, BipPortMode};
-use bacnet_types::constructed::BACnetHostNPort;
+use bacnet_types::bip_port::{BbmdTables, BipPortMode, ForeignRegistration};
 use bacnet_types::error::Error;
 
 mod access;
@@ -47,6 +46,7 @@ mod client_snapshot;
 mod exchange;
 pub use exchange::BvlcExchangeError;
 mod foreign_device;
+mod foreign_target;
 mod mode;
 mod node;
 mod send;
@@ -123,8 +123,9 @@ pub struct BipTransport {
     bbmd: Option<Arc<std::sync::Mutex<BbmdState>>>,
     /// BBMD FDT expiry purge task.
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
-    /// Foreign device config (when registered as a foreign device).
-    foreign_device: Option<ForeignDeviceConfig>,
+    /// Foreign device registration (when registered as a foreign device),
+    /// shared with the Network Port object that can change it.
+    foreign_device: Option<Arc<foreign_target::ForeignTarget>>,
     /// The node engine of the running transport: its link, its own
     /// management exchanges and a foreign device's registration.
     node: Option<Arc<NodeHandle>>,
@@ -338,8 +339,24 @@ impl BipTransport {
     /// observe outcomes.
     /// `start()` fails on a transport that is also a BBMD
     /// ([`enable_bbmd`](Self::enable_bbmd)).
+    ///
+    /// A registered Network Port object can move it to another BBMD or
+    /// time-to-live while it runs (FD_BBMD_Address and
+    /// FD_Subscription_Lifetime, activated by ReinitializeDevice); a later
+    /// start keeps the values it moved to.
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
-        self.foreign_device = Some(config);
+        self.foreign_device = Some(Arc::new(foreign_target::ForeignTarget::new(
+            config,
+            self.broadcast_address,
+            self.interface,
+        )));
+    }
+
+    /// The foreign-device registration in effect: the one configured, or
+    /// the one a Network Port activation moved it to. `None` outside
+    /// foreign-device mode.
+    pub fn foreign_device_config(&self) -> Option<ForeignDeviceConfig> {
+        self.foreign_device.as_ref().map(|target| target.config())
     }
 
     /// Get the BBMD state (if BBMD mode is enabled). It appears when
@@ -545,11 +562,8 @@ impl TransportPort for BipTransport {
         let mode = match (&self.foreign_device, staged_bbmd || self.bbmd.is_some()) {
             // A BBMD that also registers elsewhere has no single mode.
             (Some(_), true) => return None,
-            (Some(fd), false) => BipPortMode::Foreign {
-                bbmd: BACnetHostNPort::from_socket_addr(
-                    SocketAddrV4::new(fd.bbmd_ip, fd.bbmd_port).into(),
-                ),
-                subscription_lifetime: fd.ttl,
+            (Some(target), false) => BipPortMode::Foreign {
+                registration: Arc::clone(target) as Arc<dyn ForeignRegistration>,
             },
             // Staged configuration replaces any earlier state at the next
             // start, so only started, current state is lent.
@@ -597,12 +611,12 @@ impl TransportPort for BipTransport {
                     .into(),
             ));
         }
-        let renewal_interval = self
-            .foreign_device
+        let foreign_config = self.foreign_device_config();
+        let renewal_interval = foreign_config
             .as_ref()
             .map(ForeignDeviceConfig::interval)
             .transpose()?;
-        if let Some(foreign) = &self.foreign_device {
+        if let Some(foreign) = &foreign_config {
             foreign.check_bbmd(self.broadcast_address, self.interface)?;
         }
 
@@ -683,7 +697,7 @@ impl TransportPort for BipTransport {
 
         // The node engine: its link decides receives and sends, and it runs
         // this transport's own exchanges and a foreign device's registration.
-        let mode = match (&self.foreign_device, &self.bbmd) {
+        let mode = match (&foreign_config, &self.bbmd) {
             (Some(fd), _) => Mode::Foreign(
                 fd.engine(renewal_interval.expect("validated foreign-device interval")),
             ),
@@ -713,6 +727,13 @@ impl TransportPort for BipTransport {
             }
         };
 
+        if let (Some(target), Some(used)) = (&self.foreign_device, &foreign_config) {
+            if let Err(error) = target.attach(&node, used) {
+                node.stop();
+                self.client_record.stop();
+                return Err(error);
+            }
+        }
         self.client_record.attach(&node);
         self.port = local_port;
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
@@ -925,6 +946,8 @@ mod wildcard_ingress_tests;
 mod client_management_tests;
 #[cfg(test)]
 mod foreign_lifecycle_tests;
+#[cfg(test)]
+mod foreign_retarget_tests;
 #[cfg(test)]
 mod registration_schedule_tests;
 #[cfg(test)]

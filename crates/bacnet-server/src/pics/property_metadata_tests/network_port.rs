@@ -174,13 +174,13 @@ fn pics_network_port_lists_the_rows_its_bip_mode_adds() {
         (P::IP_DNS_SERVER, false, false),
         (P::PROPERTY_LIST, false, false),
     ];
-    let foreign = BipPortMode::Foreign {
-        bbmd: BACnetHostNPort {
+    let foreign = BipPortMode::fixed_foreign(
+        BACnetHostNPort {
             host: BACnetHostAddress::Ip([10, 0, 0, 1].into()),
             port: 47808,
         },
-        subscription_lifetime: 300,
-    };
+        300,
+    );
     let bbmd = BipPortMode::Bbmd {
         tables: Some(std::sync::Arc::new(NoTables)),
     };
