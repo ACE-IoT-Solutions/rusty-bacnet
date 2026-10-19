@@ -239,7 +239,7 @@ pub fn character_string_len(value: &str) -> Result<u32, Error> {
 #[cfg(feature = "alloc")]
 #[cold]
 fn character_string_too_long() -> Error {
-    Error::Encoding("CharacterString too long for BACnet encoding".into())
+    Error::encode("CharacterString too long for BACnet encoding")
 }
 
 /// Decode a character string from content bytes.
@@ -361,7 +361,7 @@ pub fn encode_app_octet_string(buf: &mut BytesMut, data: &[u8]) {
 
 /// Encode an application-tagged CharacterString (UTF-8). Delegates to
 /// [`encode_app_character_string_to_sink`]; a string too long for a header's
-/// 32-bit length is [`Error::Encoding`], with nothing written.
+/// 32-bit length is [`Error::Encode`], with nothing written.
 #[cfg(feature = "alloc")]
 pub fn encode_app_character_string(buf: &mut BytesMut, value: &str) -> Result<(), Error> {
     // A BytesMut never refuses a write, so the only refusal is the length.
@@ -396,7 +396,7 @@ pub fn encode_ctx_octet_string(buf: &mut BytesMut, tag: u8, data: &[u8]) {
 
 /// Encode a context-tagged CharacterString (UTF-8). Delegates to
 /// [`encode_ctx_character_string_to_sink`]; a string too long for a header's
-/// 32-bit length is [`Error::Encoding`], with nothing written.
+/// 32-bit length is [`Error::Encode`], with nothing written.
 #[cfg(feature = "alloc")]
 pub fn encode_ctx_character_string(buf: &mut BytesMut, tag: u8, value: &str) -> Result<(), Error> {
     // A BytesMut never refuses a write, so the only refusal is the length.

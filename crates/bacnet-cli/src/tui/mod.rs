@@ -131,7 +131,8 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     }
 
     let (plan, profiles, connection, picker) = if let Some((service, connection)) =
-        profile::startup::open(&cli).map_err(std::io::Error::other)?
+        profile::startup::open(&cli, profile::store::Store::discover)
+            .map_err(std::io::Error::other)?
     {
         (None, Some(service), Some(connection), None)
     } else {

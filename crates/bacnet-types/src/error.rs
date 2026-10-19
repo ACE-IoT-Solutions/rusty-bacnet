@@ -5,9 +5,10 @@
 //! and timeouts.
 //!
 //! Without `alloc` it keeps only the variants that own nothing: a decoder's
-//! [`DecodeError`] and a constructor's [`RangeError`] carry static labels
-//! and build their text when displayed (#1646). The variants holding a
-//! `String` or a `Box` need `alloc`.
+//! [`DecodeError`], an encoder's [`EncodeError`], a constructor's
+//! [`RangeError`] and a segmenter's [`SegmentationError`] carry static
+//! labels or numbers and build their text when displayed (#1646, #1802).
+//! The variants holding a `String` or a `Box` need `alloc`.
 
 #[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::{boxed::Box, string::String, vec::Vec};
@@ -22,7 +23,9 @@ use crate::enums::PropertyIdentifier;
 use crate::enums::{AbortReason, ErrorClass, ErrorCode, RejectReason};
 
 mod decode;
+mod encode;
 pub use decode::{DecodeError, DecodingKind, RangeError};
+pub use encode::{EncodeError, SegmentationError};
 
 /// How a protocol error's class and code read: each name in lower case with
 /// hyphens, or the raw number for a value without one.
@@ -172,10 +175,17 @@ pub enum Error {
         limit: usize,
     },
 
-    /// Error encoding a PDU. Only with `alloc`.
+    /// Error encoding a PDU, with a formatted message. Only with `alloc`;
+    /// [`Error::Encode`] is the static form, which the codec crates return.
     #[cfg(feature = "alloc")]
     #[error("encoding error: {0}")]
     Encoding(String),
+
+    /// A value an encoder or validator refused, with a static label
+    /// (#1802). The encoders and validators of `bacnet-encoding` and
+    /// `bacnet-services` report this form.
+    #[error("{0}")]
+    Encode(EncodeError),
 
     /// Error decoding received data, with a static label and its numbers
     /// (#1646, #1776). Every decoder reports this form.
@@ -192,10 +202,10 @@ pub enum Error {
     #[error("request timed out after {0:?}")]
     Timeout(Duration),
 
-    /// Segmentation assembly error. Only with `alloc`.
-    #[cfg(feature = "alloc")]
+    /// A payload that can't be segmented, segments that can't be
+    /// reassembled, or a segmented request a peer can't take (#1802).
     #[error("segmentation error: {0}")]
-    Segmentation(String),
+    Segmentation(SegmentationError),
 
     /// Buffer too short for the expected data.
     #[error("buffer too short: need {need} bytes, have {have}")]
@@ -249,6 +259,18 @@ pub enum Error {
 impl From<DecodeError> for Error {
     fn from(error: DecodeError) -> Self {
         Self::Decoding(error)
+    }
+}
+
+impl From<EncodeError> for Error {
+    fn from(error: EncodeError) -> Self {
+        Self::Encode(error)
+    }
+}
+
+impl From<SegmentationError> for Error {
+    fn from(error: SegmentationError) -> Self {
+        Self::Segmentation(error)
     }
 }
 
@@ -547,6 +569,33 @@ impl Error {
         match self.reject_reason() {
             Some(reason) => Self::Reject { reason },
             None => self,
+        }
+    }
+
+    /// Create an [`Error::Encode`] described by a static `label`. Build an
+    /// [`EncodeError`] directly for a label that names a context or a
+    /// number.
+    pub fn encode(label: &'static str) -> Self {
+        Self::Encode(EncodeError::new(label))
+    }
+
+    /// Create an [`Error::Range`] described by a static `label`. Build a
+    /// [`RangeError`] directly for a label with numbers.
+    pub fn range(label: &'static str) -> Self {
+        Self::Range(RangeError::new(label))
+    }
+
+    /// This error, met checking octets an encoder was handed to copy onto
+    /// the wire, such as a captured raw value, as the encoder's own
+    /// [`Error::Encode`] (#1802). A decoder's refusal keeps its offset (see
+    /// [`EncodeError::from_decode`]); a short buffer or another refusal keeps
+    /// the label and numbers [`to_decode_error`](Self::to_decode_error) gives
+    /// it, without an offset; an [`Error::Encode`] stays as it is.
+    pub fn into_encode_refusal(self) -> Self {
+        match self {
+            Self::Encode(_) => self,
+            Self::Decoding(refused) => Self::Encode(EncodeError::from_decode(&refused)),
+            other => Self::Encode(EncodeError::restating(&other.to_decode_error(0))),
         }
     }
 

@@ -98,11 +98,11 @@ fn set_bdt(transport: &BipTransport, peers: &[SocketAddrV4]) {
 /// given, for a 60 s time-to-live.
 fn plan(bbmd: Option<SocketAddrV4>) -> ConnectPlan {
     let mut profile = Profile::default();
-    profile.bip.interface = Ipv4Addr::LOCALHOST;
-    profile.bip.port = 0;
-    profile.bip.broadcast = Ipv4Addr::LOCALHOST;
-    profile.bip.bbmd = bbmd;
-    profile.bip.ttl = 60;
+    profile.bip_mut().interface = Ipv4Addr::LOCALHOST;
+    profile.bip_mut().port = 0;
+    profile.bip_mut().broadcast = Ipv4Addr::LOCALHOST;
+    profile.bip_mut().bbmd = bbmd;
+    profile.bip_mut().ttl = 60;
     ConnectPlan {
         kind: TransportKind::Bip,
         args: profile.transport_args().unwrap(),

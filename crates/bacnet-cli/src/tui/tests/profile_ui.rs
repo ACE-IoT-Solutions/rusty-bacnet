@@ -38,6 +38,7 @@ fn create_save_preview_and_attest_are_separate_explicit_actions() {
         WorkerEvent::Profile(Ok(Reply::Loaded {
             name: name.clone(),
             profile: profile.clone(),
+            checks: Default::default(),
         })),
     );
     assert_eq!(app.connection.as_ref().unwrap().screen, Screen::Preview);
@@ -88,8 +89,8 @@ fn invalid_or_failed_save_retains_editable_fields_and_never_connects() {
 fn clearing_bbmd_returns_to_normal_and_network_edits_require_new_attestation() {
     let mut app = profile_app();
     let mut p = Profile::default();
-    p.bip.bbmd = Some("127.0.0.2:47808".parse().unwrap());
-    p.bip.renewal_secs = Some(12);
+    p.bip_mut().bbmd = Some("127.0.0.2:47808".parse().unwrap());
+    p.bip_mut().renewal_secs = Some(12);
     p.authorized_at_unix = Some(1_794_000_000);
     p.authorized_safety = Some(p.safety.clone());
     worker(
@@ -97,6 +98,7 @@ fn clearing_bbmd_returns_to_normal_and_network_edits_require_new_attestation() {
         WorkerEvent::Profile(Ok(Reply::Loaded {
             name: "site".into(),
             profile: p.clone(),
+            checks: Default::default(),
         })),
     );
     press(&mut app, KeyCode::Char('e'));
@@ -117,7 +119,7 @@ fn clearing_bbmd_returns_to_normal_and_network_edits_require_new_attestation() {
         panic!("{commands:?}");
     };
     assert_eq!(previous, &p);
-    assert!(profile.bip.bbmd.is_none() && profile.bip.renewal_secs.is_none());
+    assert!(profile.bip().bbmd.is_none() && profile.bip().renewal_secs.is_none());
     assert!(profile.authorized_at_unix.is_none());
 }
 
@@ -141,6 +143,7 @@ fn list_selection_and_reload_request_disk_state_without_connecting() {
         WorkerEvent::Profile(Ok(Reply::Loaded {
             name: "beta".into(),
             profile: Profile::default(),
+            checks: Default::default(),
         })),
     );
     assert_eq!(
@@ -166,15 +169,16 @@ fn profile_frames_at_minimum_and_full_size() {
         type_text(&mut app, "lab-local");
         assert_snapshot!(format!("profile_editor_{w}x{h}"), screen(&mut app, w, h));
         let mut p = Profile::default();
-        p.bip.interface = "127.0.0.1".parse().unwrap();
-        p.bip.port = 0;
-        p.bip.broadcast = "127.0.0.255".parse().unwrap();
-        p.bip.bbmd = Some("127.0.0.2:47808".parse().unwrap());
+        p.bip_mut().interface = "127.0.0.1".parse().unwrap();
+        p.bip_mut().port = 0;
+        p.bip_mut().broadcast = "127.0.0.255".parse().unwrap();
+        p.bip_mut().bbmd = Some("127.0.0.2:47808".parse().unwrap());
         worker(
             &mut app,
             WorkerEvent::Profile(Ok(Reply::Loaded {
                 name: "lab-local".into(),
                 profile: p,
+                checks: Default::default(),
             })),
         );
         let text = screen(&mut app, w, h);
@@ -218,7 +222,7 @@ fn stale_editor_can_discard_then_reload_the_current_disk_profile() {
     type_text(&mut app, "1");
     assert_eq!(app.connection.as_ref().unwrap().fields[4], "6001");
     let mut external = initial.clone();
-    external.bip.timeout_ms = 7000;
+    external.bip_mut().timeout_ms = 7000;
     store.save("lab", &external, false).unwrap();
     let commands = press(&mut app, KeyCode::Enter);
     let [Command::Profile(Request::Save {

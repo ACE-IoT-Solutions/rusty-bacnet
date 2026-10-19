@@ -93,9 +93,10 @@ pub fn encode_tag_to_sink<S: EncodeSink + ?Sized>(
 /// ```
 /// use bacnet_encoding::tags::encode_opening_tag_to_sink;
 ///
-/// let mut output = Vec::new();
-/// assert_eq!(encode_opening_tag_to_sink(&mut output, 15)?, 2);
-/// assert_eq!(output, [0xFE, 0x0F]);
+/// let mut storage = [0; 2];
+/// let mut tail = &mut storage[..];
+/// assert_eq!(encode_opening_tag_to_sink(&mut tail, 15)?, 2);
+/// assert_eq!(storage, [0xFE, 0x0F]);
 /// # Ok::<(), bacnet_encoding::sink::SinkFull>(())
 /// ```
 pub fn encode_opening_tag_to_sink<S: EncodeSink + ?Sized>(
@@ -113,9 +114,10 @@ pub fn encode_opening_tag_to_sink<S: EncodeSink + ?Sized>(
 /// ```
 /// use bacnet_encoding::tags::encode_closing_tag_to_sink;
 ///
-/// let mut output = bytes::BytesMut::new();
-/// assert_eq!(encode_closing_tag_to_sink(&mut output, 254)?, 2);
-/// assert_eq!(&output[..], &[0xFF, 0xFE]);
+/// let mut storage = [0; 2];
+/// let mut tail = &mut storage[..];
+/// assert_eq!(encode_closing_tag_to_sink(&mut tail, 254)?, 2);
+/// assert_eq!(storage, [0xFF, 0xFE]);
 /// # Ok::<(), bacnet_encoding::sink::SinkFull>(())
 /// ```
 pub fn encode_closing_tag_to_sink<S: EncodeSink + ?Sized>(

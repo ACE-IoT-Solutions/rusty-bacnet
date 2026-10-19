@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{EncodeError, Error};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
@@ -48,9 +48,9 @@ pub struct WritePropertyRequest {
 pub fn validate_priority(priority: Option<u8>) -> Result<(), Error> {
     if let Some(priority) = priority {
         if !(1..=16).contains(&priority) {
-            return Err(Error::Encoding(format!(
-                "WriteProperty priority must be 1-16, got {priority}"
-            )));
+            return Err(EncodeError::new("WriteProperty priority must be 1-16, got {}")
+                .with_value(priority.into())
+                .into());
         }
     }
     Ok(())
@@ -194,7 +194,7 @@ mod tests {
             let mut output = BytesMut::from(&b"prefix"[..]);
             assert!(matches!(
                 request.encode(&mut output),
-                Err(Error::Encoding(_))
+                Err(Error::Encode(_))
             ));
             assert_eq!(
                 &output[..],

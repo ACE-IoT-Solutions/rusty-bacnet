@@ -50,12 +50,13 @@ an allocator (#1614), for firmware with no heap.
 | | `serde` | Deserialization for `enums::ObjectType` and `enums::PropertyIdentifier`; enables `alloc`, without selecting `std`. |
 
 Without `alloc`, `error::Error` keeps only the variants that own nothing. A
-decoder's refusal is `Error::Decoding(DecodeError)` and a checked constructor's
-is `Error::Range(RangeError)`: each carries static labels and up to two numbers,
-and builds its text only when it is displayed (#1646), so firmware that never
-displays one links no formatting for it. Every decoder reports this one form
-(#1776). With `alloc`, `Error::Encoding`, `Error::OutOfRange`,
-`Error::Segmentation` and `Error::Structured` return.
+decoder's refusal is `Error::Decoding(DecodeError)`, an encoder's
+`Error::Encode(EncodeError)`, a checked constructor's `Error::Range(RangeError)`
+and a segmenter's `Error::Segmentation(SegmentationError)`: each carries static
+labels or numbers and builds its text only when it is displayed (#1646, #1802),
+so firmware that never displays one links no formatting for it. Every decoder
+and every codec-crate encoder reports these forms (#1776, #1802). With `alloc`,
+the owned `Error::Encoding`, `Error::OutOfRange` and `Error::Structured` return.
 
 Enum newtypes support `FromStr` for their named constants in common case styles,
 such as `analog-input` and `ANALOG_INPUT`. The normal runtime dependencies are

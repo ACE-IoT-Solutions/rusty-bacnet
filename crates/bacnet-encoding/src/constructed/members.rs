@@ -6,7 +6,7 @@
 //! apart, so a property writer can answer with the matching Clause 15.9.1.3
 //! error: a malformed member fails at once, while a well-formed member whose
 //! value doesn't fit its type is only recorded, and the codec reports it as
-//! [`Error::OutOfRange`] once the rest of the value has been checked. The
+//! [`Error::Range`] once the rest of the value has been checked. The
 //! codecs read each member's contents with [`super::tagged`].
 
 use bacnet_types::error::{DecodeError, DecodingKind, Error};

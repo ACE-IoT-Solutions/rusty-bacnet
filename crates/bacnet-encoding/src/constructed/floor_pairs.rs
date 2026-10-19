@@ -56,7 +56,7 @@ pub(super) fn encode_floor_pairs(buf: &mut BytesMut, pairs: impl IntoIterator<It
 /// member, an empty or truncated member, or more than 10,000 entries) fails
 /// with [`Error::Decoding`] or [`Error::BufferTooShort`]. A value that is
 /// well formed throughout, but where a floor number exceeds an Unsigned8 or
-/// an enumerated member exceeds 32 bits, fails with [`Error::OutOfRange`]
+/// an enumerated member exceeds 32 bits, fails with [`Error::Range`]
 /// naming the first oversized member. A malformed member anywhere in the
 /// value takes precedence over an oversized one.
 pub(super) fn decode_floor_pairs(

@@ -17,6 +17,8 @@ pub struct TransportArgs {
     pub min_interval_ms: u64,
     pub sc: bool,
     pub sc_url: Option<String>,
+    /// The failover hub; set only from a profile (#962). Turns on reconnect.
+    pub sc_failover_url: Option<String>,
     pub sc_ca: Option<PathBuf>,
     pub sc_cert: Option<PathBuf>,
     pub sc_key: Option<PathBuf>,
@@ -58,6 +60,7 @@ impl TransportArgs {
             min_interval_ms: cli.min_interval_ms,
             sc: cli.sc,
             sc_url: cli.sc_url.clone(),
+            sc_failover_url: None,
             sc_ca: cli.sc_ca.clone(),
             sc_cert: cli.sc_cert.clone(),
             sc_key: cli.sc_key.clone(),
@@ -216,15 +219,21 @@ pub async fn build_sc_client(
     let tls_config = ScNodeTlsConfig::from_der(ca_certs, certs, key)
         .map_err(|e| Error::Encoding(format!("TLS config error: {e}")))?;
 
-    BACnetClient::sc_builder()
+    let mut builder = BACnetClient::sc_builder()
         .hub_url(hub_url)
         .tls_config(tls_config)
         .vmac(sc_vmac)
         .device_uuid(sc_device_uuid)
         .apdu_timeout_ms(args.timeout_ms)
-        .min_request_interval_ms(args.min_interval_ms)
-        .build()
-        .await
+        .min_request_interval_ms(args.min_interval_ms);
+    if let Some(failover) = &args.sc_failover_url {
+        // The builder refuses a failover hub without a reconnect policy, so
+        // a profile's failover hub brings the default one.
+        builder = builder
+            .failover_hub_url(failover)
+            .reconnect(bacnet_transport::sc::ScReconnectConfig::default());
+    }
+    builder.build().await
 }
 
 /// Build a BACnet/IPv6 (BIP6) client from CLI transport arguments.
@@ -258,6 +267,7 @@ mod tests {
             min_interval_ms: 0,
             sc: true,
             sc_url: Some("wss://hub.example.com/bacnet".into()),
+            sc_failover_url: None,
             sc_ca: Some(PathBuf::from("site-ca.pem")),
             sc_cert: Some(PathBuf::from("cert.pem")),
             sc_key: Some(PathBuf::from("key.pem")),

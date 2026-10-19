@@ -235,7 +235,7 @@ pub fn decode_ethernet_frame(data: &[u8]) -> Result<EthernetFrame, Error> {
     if dsap != BACNET_LLC_DSAP {
         return Err(llc_refusal(
             14,
-            "invalid DSAP: expected {:#x}, got {:#x}",
+            "invalid DSAP: expected {:#04X}, got {:#04X}",
             BACNET_LLC_DSAP.into(),
             dsap.into(),
         ));
@@ -243,7 +243,7 @@ pub fn decode_ethernet_frame(data: &[u8]) -> Result<EthernetFrame, Error> {
     if ssap != BACNET_LLC_SSAP {
         return Err(llc_refusal(
             15,
-            "invalid SSAP: expected {:#x}, got {:#x}",
+            "invalid SSAP: expected {:#04X}, got {:#04X}",
             BACNET_LLC_SSAP.into(),
             ssap.into(),
         ));
@@ -251,7 +251,7 @@ pub fn decode_ethernet_frame(data: &[u8]) -> Result<EthernetFrame, Error> {
     if control != LLC_CONTROL_UI {
         return Err(llc_refusal(
             16,
-            "invalid LLC control: expected {:#x}, got {:#x}",
+            "invalid LLC control: expected {:#04X}, got {:#04X}",
             LLC_CONTROL_UI.into(),
             control.into(),
         ));

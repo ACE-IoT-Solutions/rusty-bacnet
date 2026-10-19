@@ -5,7 +5,7 @@ use super::store::{validate_name, Store};
 use super::*;
 use clap::{CommandFactory, FromArgMatches};
 
-fn cli(args: &[&str]) -> crate::args::Cli {
+pub(crate) fn cli(args: &[&str]) -> crate::args::Cli {
     let args: Vec<String> = args.iter().map(|v| (*v).to_owned()).collect();
     crate::parse_on_large_stack(move || {
         let mut matches = crate::args::Cli::command()
@@ -20,12 +20,12 @@ fn cli(args: &[&str]) -> crate::args::Cli {
 
 fn foreign() -> Profile {
     let mut p = Profile::default();
-    p.bip.interface = Ipv4Addr::LOCALHOST;
-    p.bip.port = 0;
-    p.bip.broadcast = Ipv4Addr::new(127, 0, 0, 255);
-    p.bip.bbmd = Some("127.0.0.2:47809".parse().unwrap());
-    p.bip.ttl = 120;
-    p.bip.renewal_secs = Some(30);
+    p.bip_mut().interface = Ipv4Addr::LOCALHOST;
+    p.bip_mut().port = 0;
+    p.bip_mut().broadcast = Ipv4Addr::new(127, 0, 0, 255);
+    p.bip_mut().bbmd = Some("127.0.0.2:47809".parse().unwrap());
+    p.bip_mut().ttl = 120;
+    p.bip_mut().renewal_secs = Some(30);
     p.safety.writes = Writes::Session;
     p.safety.dangerous = true;
     p
@@ -173,23 +173,23 @@ fn deterministic_invalid_network_and_safety_settings_fail_before_transport_args(
         "255.255.255.255:47808",
     ] {
         let mut p = foreign();
-        p.bip.bbmd = Some(bbmd.parse().unwrap());
+        p.bip_mut().bbmd = Some(bbmd.parse().unwrap());
         assert!(p.transport_args().is_err(), "{bbmd}");
     }
     let mut broadcast = foreign();
-    broadcast.bip.broadcast = "192.0.2.255".parse().unwrap();
-    broadcast.bip.bbmd = Some("192.0.2.255:47808".parse().unwrap());
+    broadcast.bip_mut().broadcast = "192.0.2.255".parse().unwrap();
+    broadcast.bip_mut().bbmd = Some("192.0.2.255:47808".parse().unwrap());
     assert!(broadcast.transport_args().is_err());
     // The transport permits a loopback broadcast IP, or the interface IP,
     // as a BBMD at another port. Equality with the bound endpoint is later.
     let mut loopback = foreign();
-    loopback.bip.broadcast = Ipv4Addr::LOCALHOST;
-    loopback.bip.bbmd = Some("127.0.0.1:47809".parse().unwrap());
+    loopback.bip_mut().broadcast = Ipv4Addr::LOCALHOST;
+    loopback.bip_mut().bbmd = Some("127.0.0.1:47809".parse().unwrap());
     loopback.transport_args().unwrap();
     for (ttl, renewal) in [(0, None), (2, Some(0)), (2, Some(2)), (2, Some(3))] {
         let mut p = foreign();
-        p.bip.ttl = ttl;
-        p.bip.renewal_secs = renewal;
+        p.bip_mut().ttl = ttl;
+        p.bip_mut().renewal_secs = renewal;
         assert!(p.transport_args().is_err());
     }
     let mut p = Profile::default();
@@ -201,19 +201,19 @@ fn deterministic_invalid_network_and_safety_settings_fail_before_transport_args(
         "dangerous needs write sessions"
     );
     p.safety.dangerous = false;
-    p.bip.min_interval_ms = 3_600_001;
+    p.bip_mut().min_interval_ms = 3_600_001;
     assert!(p.transport_args().is_err());
-    p.bip.min_interval_ms = 0;
-    p.bip.port = 0;
+    p.bip_mut().min_interval_ms = 0;
+    p.bip_mut().port = 0;
     p.transport_args().unwrap();
 }
 
 #[test]
 fn explicit_default_values_override_saved_settings_on_either_side_of_tui() {
     let mut p = foreign();
-    p.bip.port = 47809;
-    p.bip.timeout_ms = 42;
-    p.bip.min_interval_ms = 123;
+    p.bip_mut().port = 47809;
+    p.bip_mut().timeout_ms = 42;
+    p.bip_mut().min_interval_ms = 123;
     let cli = cli(&[
         "bacnet",
         "--port",
@@ -231,13 +231,13 @@ fn explicit_default_values_override_saved_settings_on_either_side_of_tui() {
         "300",
     ]);
     let resolved = Overrides::from_cli(&cli).unwrap().resolve(&p).unwrap();
-    assert_eq!(resolved.bip.port, 47808);
-    assert_eq!(resolved.bip.broadcast, Ipv4Addr::BROADCAST);
-    assert_eq!(resolved.bip.timeout_ms, 6000);
-    assert_eq!(resolved.bip.min_interval_ms, 0);
-    assert_eq!(resolved.bip.ttl, 300);
-    assert_eq!(resolved.bip.bbmd, p.bip.bbmd);
-    assert_eq!(resolved.bip.interface, p.bip.interface);
+    assert_eq!(resolved.bip().port, 47808);
+    assert_eq!(resolved.bip().broadcast, Ipv4Addr::BROADCAST);
+    assert_eq!(resolved.bip().timeout_ms, 6000);
+    assert_eq!(resolved.bip().min_interval_ms, 0);
+    assert_eq!(resolved.bip().ttl, 300);
+    assert_eq!(resolved.bip().bbmd, p.bip().bbmd);
+    assert_eq!(resolved.bip().interface, p.bip().interface);
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn absent_flags_keep_profile_values_and_renewal_can_use_its_bbmd() {
             .unwrap()
             .resolve(&p)
             .unwrap()
-            .bip
+            .bip()
             .renewal_secs,
         Some(12)
     );
@@ -278,10 +278,13 @@ fn first_use_requires_attestation_and_saves_it_before_preparing_a_workspace() {
     let resolved = service.prepare("site", &p, true).unwrap();
     let persisted = store.load("site").unwrap();
     assert!(persisted.authorized_at_unix.is_some());
-    assert_eq!(resolved.authorized_at_unix, persisted.authorized_at_unix);
+    assert_eq!(
+        resolved.resolved.authorized_at_unix,
+        persisted.authorized_at_unix
+    );
     assert!(root.path().join("workspaces/site").is_dir());
     assert_eq!(
-        service.prepare("site", &persisted, false).unwrap(),
+        service.prepare("site", &persisted, false).unwrap().resolved,
         persisted
     );
 }
@@ -297,7 +300,7 @@ fn stale_preview_and_stale_edits_never_overwrite_or_connect() {
         overrides: Overrides::default(),
     };
     let mut changed = original.clone();
-    changed.bip.port = 1234;
+    changed.bip_mut().port = 1234;
     store.save("site", &changed, false).unwrap();
     assert!(service
         .prepare("site", &original, true)
@@ -383,7 +386,10 @@ fn flags_only_entry_skips_profile_discovery_while_named_profiles_accept_override
     ] {
         let cli = cli(&args);
         assert!(!startup::enabled(&cli));
-        assert!(startup::open(&cli).unwrap().is_none());
+        let opened = startup::open(&cli, || {
+            panic!("a flags-only run must not discover a store")
+        });
+        assert!(opened.unwrap().is_none());
     }
     assert!(startup::enabled(&cli(&["bacnet", "tui"])));
     assert!(startup::enabled(&cli(&[
@@ -432,13 +438,16 @@ fn first_attestation_persists_raw_profile_without_transient_cli_overrides() {
         overrides: Overrides::from_cli(&cli).unwrap(),
     };
     let effective = service.prepare("site", &p, true).unwrap();
-    assert_eq!(effective.bip.port, 1234);
-    assert_eq!(effective.bip.renewal_secs, Some(12));
+    assert_eq!(effective.resolved.bip().port, 1234);
+    assert_eq!(effective.resolved.bip().renewal_secs, Some(12));
     let stored = store.load("site").unwrap();
     assert_eq!(stored.bip, p.bip);
     assert_eq!(stored.safety, p.safety);
     assert!(stored.authorized_at_unix.is_some());
-    assert_eq!(stored.authorized_at_unix, effective.authorized_at_unix);
+    assert_eq!(
+        stored.authorized_at_unix,
+        effective.resolved.authorized_at_unix
+    );
 }
 
 #[test]

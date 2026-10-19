@@ -220,7 +220,7 @@ fn value_source_address_mac_holds_to_the_bacnet_address_bound() {
         let mut encoded = BytesMut::from(&[0xaa][..]);
         assert!(matches!(
             encode_value_source(&mut encoded, &address(len)),
-            Err(Error::Encoding(_))
+            Err(Error::Encode(_))
         ));
         assert_eq!(&encoded[..], &[0xaa], "{len}-octet MAC left output behind");
     }

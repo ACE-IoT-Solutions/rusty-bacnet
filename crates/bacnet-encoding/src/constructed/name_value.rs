@@ -6,7 +6,7 @@
 //! pair is not one NameValue. The next array element starts at context tag 0.
 
 use bacnet_types::constructed::BACnetNameValue;
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
+use bacnet_types::error::{DecodeError, DecodingKind, EncodeError, Error};
 use bytes::BytesMut;
 
 use super::tagged::decode_ctx_character_string;
@@ -25,9 +25,9 @@ pub fn encode_name_value(buf: &mut BytesMut, value: &BACnetNameValue) -> Result<
         .as_ref()
         .is_some_and(|value| !value.is_primitive())
     {
-        return Err(Error::Encoding(format!(
-            "{WHAT}: a value must be a primitive datatype"
-        )));
+        return Err(EncodeError::new("a value must be a primitive datatype")
+            .within(WHAT)
+            .into());
     }
     primitives::encode_ctx_character_string(buf, 0, &value.name)?;
     if let Some(primitive) = &value.value {

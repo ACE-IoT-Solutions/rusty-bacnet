@@ -20,7 +20,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::app::watch::Screen;
-use super::app::{App, Overlay};
+use super::app::{App, Link, Overlay};
 
 /// Smallest usable width.
 pub(crate) const MIN_WIDTH: u16 = 80;
@@ -81,7 +81,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         Overlay::None | Overlay::Command(_) => {}
         Overlay::Connection => {
             if let Some(connection) = &app.connection {
-                connection::draw(frame, area, connection, &theme);
+                let live = !matches!(app.link, Link::Down | Link::Failed(_));
+                connection::draw(frame, area, connection, live, &theme);
             }
         }
         Overlay::Help => chrome::help(frame, area, &theme),
