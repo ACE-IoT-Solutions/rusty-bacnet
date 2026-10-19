@@ -308,6 +308,7 @@ dependencies = [
  "if-addrs",
  "insta",
  "libc",
+ "nix 0.31.3",
  "owo-colors",
  "pcap",
  "ratatui",
@@ -413,6 +414,7 @@ dependencies = [
  "bacnet-types",
  "bytes",
  "libc",
+ "nix 0.31.3",
  "serde_json",
  "socket2",
  "tokio",
@@ -552,6 +554,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gpiocdev",
  "libc",
+ "nix 0.31.3",
  "rcgen",
  "rustls",
  "socket2",
@@ -1988,6 +1991,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2074,6 +2086,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

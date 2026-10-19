@@ -1,5 +1,6 @@
 //! Explicit two-link external qualification; never runs against an inferred LAN.
 #![cfg(all(feature = "ipv6", unix))]
+#![forbid(unsafe_code)]
 
 #[path = "ipv6_selected_link/support.rs"]
 mod support;

@@ -4,6 +4,7 @@
 //! internal Docker bridge. These tests must not discover or use a host LAN.
 #![allow(clippy::print_stderr)] // opt-in checks report skipped setups outside a test function
 #![cfg(all(feature = "ipv6", unix))]
+#![forbid(unsafe_code)]
 
 #[path = "ipv6_selected_link/controls.rs"]
 mod controls;

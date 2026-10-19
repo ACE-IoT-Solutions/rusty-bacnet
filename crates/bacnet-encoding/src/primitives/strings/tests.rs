@@ -134,33 +134,42 @@ fn the_sink_encoders_match_the_bytes_mut_encoders() {
     }
 }
 
-/// A CharacterString too long for a header's 32-bit length is still an
-/// error through the delegating `BytesMut` encoders, with nothing written.
-/// The string is `u32::MAX` NUL octets in zeroed memory the test never
-/// reads, so it costs address space rather than RAM; a 64-bit Unix host
-/// maps such memory lazily.
-#[cfg(all(feature = "alloc", target_pointer_width = "64", unix))]
-#[allow(unsafe_code)]
+/// A value too long for a header's 32-bit length is refused, with its
+/// encoded length and the sink's room, and the longest one that fits is
+/// accepted. The check takes the length alone, so no 4 GiB value is built.
 #[test]
-fn an_over_long_character_string_errors_through_the_bytes_mut_encoders() {
-    use bacnet_types::error::Error;
-    use bytes::BytesMut;
-
-    use crate::primitives::{encode_app_character_string, encode_ctx_character_string};
-
-    let zeros = std::vec![0u8; u32::MAX as usize];
-    // SAFETY: every octet is NUL, which is valid UTF-8.
-    let value = unsafe { core::str::from_utf8_unchecked(&zeros) };
-    let mut buf = BytesMut::from(&[0xA5][..]);
-    for refused in [
-        encode_app_character_string(&mut buf, value),
-        encode_ctx_character_string(&mut buf, 3, value),
-    ] {
-        assert!(
-            matches!(&refused, Err(Error::Encode(refused))
-                if refused.label == "CharacterString too long for BACnet encoding"),
-            "{refused:?}"
+fn a_length_past_32_bits_is_refused() {
+    let mut storage = [0xA5; 8];
+    let tail = &mut storage[..];
+    assert_eq!(header_length(&tail, u32::MAX as usize), Ok(u32::MAX));
+    // Only a 64-bit host has lengths past 32 bits.
+    if let Some(over) = (u32::MAX as usize).checked_add(1) {
+        assert_eq!(
+            header_length(&tail, over),
+            Err(SinkFull {
+                needed: over + MAX_HEADER,
+                available: 8
+            })
+        );
+        assert_eq!(
+            header_length(&tail, usize::MAX),
+            Err(SinkFull {
+                needed: usize::MAX,
+                available: 8
+            })
+        );
+        // A growable sink advertises no room.
+        #[cfg(feature = "alloc")]
+        assert_eq!(
+            header_length(&std::vec::Vec::<u8>::new(), over),
+            Err(SinkFull {
+                needed: over + MAX_HEADER,
+                available: u32::MAX as usize
+            })
         );
     }
-    assert_eq!(buf[..], [0xA5]);
+    // The longest header still fits the encoders' staging buffer.
+    let mut header = [0; MAX_HEADER];
+    let mut header_tail = &mut header[..];
+    assert!(encode_tag_to_sink(&mut header_tail, 3, TagClass::Context, u32::MAX).is_ok());
 }

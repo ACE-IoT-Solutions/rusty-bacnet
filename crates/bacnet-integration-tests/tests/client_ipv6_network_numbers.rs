@@ -1,5 +1,6 @@
 //! Standalone-client wire qualification on an explicitly isolated IPv6 link.
 #![cfg(all(feature = "ipv6", unix))]
+#![forbid(unsafe_code)]
 #![allow(clippy::print_stderr)] // the qualification helpers log each observed wire frame
 #[path = "ipv6_network_numbers/observer.rs"]
 mod observer;
