@@ -56,8 +56,9 @@ pub(super) type HostedRouter =
     Router<Box<HostedStorage>, PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups>;
 
 /// The hosted router's options: its policy values and timers, and the
-/// 256-route cap.
-const OPTIONS: Options = Options::HOSTED;
+/// 256-route cap. [`RouterOptions`](super::RouterOptions) turns on the
+/// opt-in policies over these.
+pub(super) const OPTIONS: Options = Options::HOSTED;
 
 // The engine's route cap is the table's size, which the crate publishes as
 // `ROUTE_CAP`: the two can't drift apart.
@@ -83,16 +84,18 @@ pub(super) struct Engine {
 }
 
 impl Engine {
-    /// An engine on `ports`, in port order, started on `clock`: each port's
-    /// network installed as a direct route and the first sweep a period
-    /// away. Refused as the core refuses: no port, more than 255, one on
-    /// network 0 or 0xFFFF, two on one network, or a router MAC longer than
-    /// 18 octets.
+    /// An engine on `ports`, in port order, with `options` (the hosted
+    /// [`OPTIONS`] and what the router's options turn on), started on
+    /// `clock`: each port's network installed as a direct route and the
+    /// first sweep a period away. Refused as the core refuses: no port,
+    /// more than 255, one on network 0 or 0xFFFF, two on one network, or a
+    /// router MAC longer than 18 octets.
     pub(super) fn new(
         ports: &[PortConfig<PortGroups>],
         clock: HostClock,
+        options: Options,
     ) -> Result<Self, ConfigError> {
-        let router = Router::new(boxed_storage(), ports, OPTIONS, clock.now())?;
+        let router = Router::new(boxed_storage(), ports, options, clock.now())?;
         Ok(Self {
             router: Mutex::new(router),
             clock,
@@ -251,6 +254,8 @@ published!(
     egress_too_long,
     refused,
     undrained,
+    busy_announced,
+    available_announced,
 );
 
 // The engine's counts are all `u32`s and the totals all `u64`s, so their
@@ -291,7 +296,7 @@ mod tests {
                 PortGroups::default(),
             )
         };
-        Engine::new(&[port(1, 1), port(2, 2)], tokio_clock()).unwrap()
+        Engine::new(&[port(1, 1), port(2, 2)], tokio_clock(), OPTIONS).unwrap()
     }
 
     /// Each guard takes the engine's `u32` counts as it is dropped and adds

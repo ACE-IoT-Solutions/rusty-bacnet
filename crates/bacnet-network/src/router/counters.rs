@@ -60,4 +60,10 @@ pub struct Counters {
     pub refused: u64,
     /// Actions dropped because a call came before they were polled.
     pub undrained: u64,
+    /// Router-Busy announcements started for a clogged port, repeats
+    /// included ([`RouterOptions::congestion`](super::RouterOptions::congestion), #1697).
+    pub busy_announced: u64,
+    /// Router-Available announcements started for a port that drained
+    /// (#1697).
+    pub available_announced: u64,
 }

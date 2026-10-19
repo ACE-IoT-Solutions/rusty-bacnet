@@ -57,6 +57,12 @@ pub struct Counters {
     pub refused: u32,
     /// Actions dropped because a call came before they were polled.
     pub undrained: u32,
+    /// Router-Busy announcements started for a clogged port, repeats
+    /// included (#1697). One may take several messages.
+    pub busy_announced: u32,
+    /// Router-Available announcements started for a port that drained
+    /// (#1697).
+    pub available_announced: u32,
 }
 
 impl Counters {
@@ -78,6 +84,8 @@ impl Counters {
         egress_too_long: 0,
         refused: 0,
         undrained: 0,
+        busy_announced: 0,
+        available_announced: 0,
     };
 }
 

@@ -187,7 +187,7 @@ impl<
     /// one. `false` when no task is left.
     pub(super) fn write_task(&mut self) -> bool {
         let Some(task) = self.out.front() else {
-            return false;
+            return self.write_announcement();
         };
         let mut next = None;
         // The output's length (`None`: the writer refused it), kind, cause

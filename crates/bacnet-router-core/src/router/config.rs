@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use super::{GroupClassifier, Groups};
+use super::{Congestion, GroupClassifier, Groups};
 
 use crate::npdu::NpduLimits;
 use crate::table::{Convergence, Timing};
@@ -94,6 +94,9 @@ pub struct Options {
     pub discovery_cooldown: Duration,
     /// How long a search is remembered.
     pub discovery_age: Duration,
+    /// The router's own Router-Busy for a clogged egress port (#1697):
+    /// `None`, the default, sends none.
+    pub congestion: Option<Congestion>,
 }
 
 impl Options {
@@ -101,8 +104,8 @@ impl Options {
     /// standard convergence, no route cap of its own, so learning may fill
     /// whatever table the [`Storage`](super::Storage) holds, 300 s learned
     /// age, a 60 s sweep, [`Timing::DEFAULT`], and a 5 s discovery cooldown
-    /// and 30 s age. Firmware sizes its table with the storage's `R` and
-    /// starts here.
+    /// and 30 s age, with every opt-in policy off. Firmware sizes its
+    /// table with the storage's `R` and starts here.
     pub const STANDARD: Self = Self {
         convergence: Convergence::Standard,
         route_cap: None,
@@ -111,6 +114,7 @@ impl Options {
         timing: Timing::DEFAULT,
         discovery_cooldown: Duration::from_secs(5),
         discovery_age: Duration::from_secs(30),
+        congestion: None,
     };
 
     /// The hosted router's values: [`STANDARD`](Self::STANDARD)'s, with

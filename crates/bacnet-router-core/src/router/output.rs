@@ -89,6 +89,9 @@ pub enum Kind {
     Announce(NetworkMessageType),
     /// A Who-Is-Router for a network the router has no route to.
     Solicit,
+    /// The router's own Router-Busy or Router-Available, of this type, for
+    /// a port that clogged or drained (#1697).
+    Congestion(NetworkMessageType),
 }
 
 /// What prompted a send.
@@ -127,6 +130,7 @@ enum Tag {
     Answer,
     Announce,
     Solicit,
+    Congestion,
 }
 
 /// Where a written NPDU goes.
@@ -199,6 +203,7 @@ impl Current {
             Kind::Answer(code) => (Tag::Answer, code.to_raw()),
             Kind::Announce(code) => (Tag::Announce, code.to_raw()),
             Kind::Solicit => (Tag::Solicit, 0),
+            Kind::Congestion(code) => (Tag::Congestion, code.to_raw()),
         };
         let mut current = Self {
             active: true,
@@ -250,6 +255,7 @@ impl Current {
             Tag::Answer => Kind::Answer(NetworkMessageType::from_raw(self.code)),
             Tag::Announce => Kind::Announce(NetworkMessageType::from_raw(self.code)),
             Tag::Solicit => Kind::Solicit,
+            Tag::Congestion => Kind::Congestion(NetworkMessageType::from_raw(self.code)),
         }
     }
 }
@@ -265,6 +271,8 @@ pub(super) struct Outputs {
     len: usize,
     /// The last send polled came from a table answer.
     last_table_ack: bool,
+    /// The port of the last send polled.
+    last_port: PortId,
 }
 
 impl Outputs {
@@ -273,6 +281,7 @@ impl Outputs {
         tasks: [Task::EMPTY; QUEUE],
         len: 0,
         last_table_ack: false,
+        last_port: PortId(0),
     };
 
     /// How many outputs wait on a router of `ports` ports: the current
@@ -325,9 +334,13 @@ impl<
         G: super::GroupClassifier,
     > Storage<P, R, H, D, N, G>
 {
-    /// Drop whatever the caller left unpolled, counting each output.
+    /// Drop whatever the caller left unpolled, counting each output, a
+    /// waiting congestion announcement included.
     pub(super) fn drop_undrained(&mut self) {
-        let pending = self.out.pending(self.port_count);
+        let announcements = self.flows[..self.port_count]
+            .iter_mut()
+            .fold(0, |count, flow| count + usize::from(flow.take_pending()));
+        let pending = self.out.pending(self.port_count) + announcements;
         if pending > 0 {
             let pending = u32::try_from(pending).unwrap_or(u32::MAX);
             self.counters.undrained = self.counters.undrained.saturating_add(pending);
@@ -392,6 +405,7 @@ impl<
         loop {
             if let Some((port, broadcast)) = self.next_target() {
                 self.out.last_table_ack = self.out.current.table_ack;
+                self.out.last_port = port;
                 let current = &self.out.current;
                 return Action::Send(Send {
                     port,
@@ -453,6 +467,21 @@ impl<
         }
         current.active = false;
         None
+    }
+
+    /// The send just polled was refused for a full queue: when its port is
+    /// clogged and it carries an origin, answer that origin with reason 2
+    /// (Clause 6.6.3.6).
+    pub(super) fn refused_while_clogged(&mut self) {
+        let port = usize::from(self.out.last_port.0);
+        let clogged = self.flows[..self.port_count]
+            .get(port)
+            .is_some_and(|flow| flow.clogged());
+        if let Some(origin) = self.out.current.reject_origin.as_option() {
+            if clogged {
+                self.queue_reject(origin, RejectMessageReason::ROUTER_BUSY);
+            }
+        }
     }
 
     /// The caller refused the send just polled: end the table answer it

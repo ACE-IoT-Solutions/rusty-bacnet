@@ -51,6 +51,7 @@
 //! Each port supplies its own group-address rule through [`PortConfig`].
 
 mod config;
+mod congestion;
 mod control;
 mod counters;
 mod forward;
@@ -67,6 +68,7 @@ use core::borrow::BorrowMut;
 use core::fmt;
 
 pub use config::{ConfigError, LimitError, Options, PortConfig, MIN_PORT_LIMIT};
+pub use congestion::{Backlog, Congestion};
 pub use counters::Counters;
 pub use groups::{Group, GroupClassifier, Groups};
 pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
@@ -75,6 +77,7 @@ pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 pub use reject::RejectOrigin;
 pub use reply::{ReplyPlan, ReplyPlanError};
 
+use congestion::Flow;
 use counters::bump;
 use output::Outputs;
 use tasks::Task;
@@ -116,6 +119,8 @@ pub struct Storage<
     G = Groups,
 > {
     ports: [PortConfig<G>; P],
+    /// Each port's congestion state (#1697).
+    flows: [Flow; P],
     port_count: usize,
     table: Table<R, H>,
     discovery: Discovery<D>,
@@ -141,6 +146,7 @@ impl<
         const { assert!(N >= MAX_NPDU, "the scratch holds at least MAX_NPDU") };
         Self {
             ports: [const { PortConfig::ZERO }; P],
+            flows: [Flow::CLEAR; P],
             port_count: 0,
             table: Table::new(),
             discovery: Discovery::new(),
@@ -332,6 +338,7 @@ where
         // Release custom rules from ports a prior router used in this storage.
         store.ports[ports.len()..].fill_with(|| PortConfig::ZERO);
         store.port_count = ports.len();
+        store.flows = [Flow::CLEAR; P];
         for (index, port) in ports.iter().enumerate() {
             if !store.table.add_direct(port.network, PortId(index as u8)) {
                 return Err(ConfigError::TableTooSmall);
@@ -391,9 +398,50 @@ where
     /// Say that the port refused the send just polled. It is counted, and
     /// it ends a table answer (Initialize-Routing-Table-Ack) that still has
     /// Acks to send, as a full queue does in the hosted router.
+    ///
+    /// With [`Options::congestion`] set, a [`SendRefusal::Full`] of a send
+    /// that would have left on a clogged port, routed toward a network for
+    /// someone else, also queues reject reason 2 to that send's origin
+    /// (Clause 6.6.3.6).
     pub fn refused(&mut self, why: SendRefusal) {
         self.refused_later(why, None);
-        self.store().end_refused_answer();
+        let congestion = self.options.congestion.is_some();
+        let store = self.store();
+        store.end_refused_answer();
+        if congestion && why == SendRefusal::Full {
+            store.refused_while_clogged();
+        }
+    }
+
+    /// Report port `port`'s egress backlog at `now`, for the router's own
+    /// Router-Busy and Router-Available (#1697). Without
+    /// [`Options::congestion`] it does nothing.
+    ///
+    /// Report it whenever the backlog may have crossed the policy's lines:
+    /// each time the queue refuses or admits a send, and, while
+    /// [`port_congested`](Self::port_congested) says so, each time it lets
+    /// one go. A backlog at capacity starts the wait; one still at capacity
+    /// [`Congestion::clog_after`] later clogs the port; one under the
+    /// low-water mark clears it. Changing state may queue an announcement
+    /// for the other ports, polled as any output is.
+    ///
+    /// Unlike [`receive`](Self::receive) it drops nothing still waiting,
+    /// so a caller may report between polls.
+    pub fn egress_backlog(&mut self, port: PortId, backlog: Backlog, now: Instant) {
+        let now = self.clock(now);
+        if let Some(policy) = self.options.congestion {
+            self.store().egress_backlog(port, backlog, now, &policy);
+        }
+    }
+
+    /// Whether port `port` is clogged, or at capacity and waiting to be:
+    /// while it is, report its backlog as it drains too.
+    #[must_use]
+    pub fn port_congested(&self, port: PortId) -> bool {
+        let store = self.storage.borrow();
+        store.flows[..store.port_count]
+            .get(usize::from(port.0))
+            .is_some_and(Flow::congested)
     }
 
     /// Report one definite refusal of a previously polled, queued send.

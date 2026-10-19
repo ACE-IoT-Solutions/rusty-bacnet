@@ -175,6 +175,14 @@
 //! | At start each port hears its own number, then which networks lie beyond the others | 6.4.20, 6.6.2, 6.6.3.3 | `tests/traces.rs`: `a_discovery_learning_and_aging`, `a_one_port_router_announces_only_its_number` |
 //! | With no point-to-point links, connection messages change nothing | 6.6.3.10, 6.6.3.11 | `tests/control.rs`: `ptp_messages_change_nothing` |
 //! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |
+//! | One port's sends leave in network-priority order: a frame's own output, then the router's own messages at Normal priority | 6.5.4 | `tests/congestion.rs`: `one_ports_sends_leave_in_priority_order` |
+//!
+//! With the opt-in [`Congestion`](router::Congestion) policy (#1697):
+//!
+//! | Obligation | Clause | Test |
+//! | --- | --- | --- |
+//! | A port that stays clogged has its networks announced busy on every other port, again while it lasts, and available once it drains | 6.6.3.6, 6.6.3.7, 6.6.4 | `tests/congestion.rs`: `busy_after_clog_time_then_available_under_the_low_water_mark`, `a_lasting_clog_repeats_busy_and_drains_once` |
+//! | Traffic a clogged port's full queue refuses draws reason 2 | 6.6.3.6 | `tests/congestion.rs`: `a_full_queue_on_a_clogged_port_draws_reason_2` |
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF

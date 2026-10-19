@@ -85,6 +85,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bacnet_npdu::Mac;
+pub use bacnet_router_core::router::Congestion;
 use bacnet_router_core::{Instant, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
@@ -258,8 +259,14 @@ impl BACnetRouter {
             (None, None)
         };
         let gate = Arc::new(options.control_gate());
-        let (router, rx, counters) =
-            Self::start_dispatch(ports, A::TRACKED, gate, control_tx).await?;
+        let (router, rx, counters) = Self::start_dispatch(
+            ports,
+            A::TRACKED,
+            gate,
+            control_tx,
+            options.engine_options(),
+        )
+        .await?;
         Ok(StartedRouter {
             router,
             apdus: A::from_queue(rx, counters),
@@ -371,6 +378,7 @@ impl BACnetRouter {
         track_depth: bool,
         control: Arc<control_policy::ControlGate>,
         network_control: Option<AdmissionSender<ReceivedNetworkControl>>,
+        engine_options: bacnet_router_core::router::Options,
     ) -> Result<(Self, mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
         if ports.is_empty() || ports.len() > PORTS {
             return Err(Error::Encoding(format!(
@@ -435,7 +443,7 @@ impl BACnetRouter {
             limit_changes.push(port.transport.max_npdu_changes());
             networks.push(port.network_number);
         }
-        let engine = Engine::new(&configs, tokio_clock())
+        let engine = Engine::new(&configs, tokio_clock(), engine_options)
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
@@ -464,9 +472,12 @@ impl BACnetRouter {
         let sender_tasks = ports
             .into_iter()
             .zip(send_rxs)
-            .map(|(port, send_rx)| {
+            .enumerate()
+            .map(|(index, (port, send_rx))| {
                 tokio::spawn(sender::run(
                     port.transport,
+                    // At most 255 ports, checked above.
+                    PortId(index as u8),
                     send_rx,
                     Arc::clone(&shared),
                     Arc::downgrade(&outputs),
@@ -615,6 +626,8 @@ mod bip_group_tests;
 mod busy_scope_tests;
 #[cfg(test)]
 mod claim_tests;
+#[cfg(test)]
+mod congestion_tests;
 #[cfg(test)]
 mod corroboration_tests;
 #[cfg(test)]

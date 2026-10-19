@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::sync::Notify;
 
+use bacnet_router_core::router::Backlog;
+
 use super::SendRequest;
 
 pub(super) const CAPACITY: usize = 256;
@@ -24,6 +26,9 @@ struct State {
     capacity: usize,
     senders: usize,
     receiver: bool,
+    /// The engine counts the port as congested, so it wants to hear the
+    /// backlog as it drains too (#1697).
+    watched: bool,
 }
 
 struct Shared {
@@ -35,6 +40,22 @@ impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn backlog(&self) -> Backlog {
+        let state = self.lock();
+        backlog(&state)
+    }
+
+    fn set_watched(&self, watched: bool) {
+        self.lock().watched = watched;
+    }
+}
+
+/// The queue's backlog as the engine counts it. A queue holds far fewer
+/// than `u32::MAX` sends.
+fn backlog(state: &State) -> Backlog {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Backlog::new(count(state.len), count(state.capacity))
 }
 
 pub(super) struct Sender(Arc<Shared>);
@@ -50,6 +71,7 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
             capacity,
             senders: 1,
             receiver: true,
+            watched: false,
         }),
         ready: Notify::new(),
     });
@@ -78,6 +100,16 @@ impl Sender {
         }
         self.0.ready.notify_one();
         Ok(())
+    }
+
+    /// The backlog now, to report to the engine.
+    pub(super) fn backlog(&self) -> Backlog {
+        self.0.backlog()
+    }
+
+    /// Whether the receiver reports the backlog as it drains.
+    pub(super) fn set_watched(&self, watched: bool) {
+        self.0.set_watched(watched);
     }
 }
 
@@ -115,6 +147,18 @@ impl Receiver {
         } else {
             TryRecvError::Empty
         })
+    }
+
+    /// The backlog now, when the engine wants to hear it as the queue
+    /// drains: after each send taken, the sender reports it (#1697).
+    pub(super) fn watched_backlog(&self) -> Option<Backlog> {
+        let state = self.0.lock();
+        state.watched.then(|| backlog(&state))
+    }
+
+    /// Whether to keep reporting the backlog as it drains.
+    pub(super) fn set_watched(&self, watched: bool) {
+        self.0.set_watched(watched);
     }
 
     /// Cancellation while waiting consumes no send. Only this receiver can

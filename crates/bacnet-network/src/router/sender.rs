@@ -8,10 +8,11 @@
 use std::sync::{Arc, Weak};
 
 use bacnet_router_core::router::{RejectOrigin, SendRefusal};
+use bacnet_router_core::PortId;
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 
-use super::actions::drain;
+use super::actions::{drain, report_backlog};
 use super::dispatch::{Outputs, Shared};
 use super::send_queue;
 use super::send_warning::SendWarnings;
@@ -21,12 +22,16 @@ use super::SendRequest;
 /// lets dispatch closure release the queues and local consumers normally.
 pub(super) async fn run<T: TransportPort>(
     transport: T,
+    port: PortId,
     mut queue: send_queue::Receiver,
     shared: Arc<Shared>,
     outputs: Weak<Outputs>,
 ) {
     let warnings = SendWarnings::default();
     while let Some(request) = queue.recv().await {
+        // The slot is free before the send starts: a congested port
+        // reports its backlog as it drains (#1697).
+        report_backlog(&shared, &outputs, port, &queue);
         match request {
             SendRequest::Unicast {
                 npdu,
@@ -88,7 +93,7 @@ fn refused(
     router.refused_later(SendRefusal::TooLong, origin);
     // The engine lock and a feedback owner live only for this synchronous
     // drain. Replies use the same bounded queues and priority/FIFO rules.
-    drain(&mut router, attributes, queues);
+    drain(&mut router, attributes, queues, shared.engine.now());
 }
 
 #[cfg(test)]
