@@ -11,6 +11,9 @@ mod controls;
 mod foreign;
 #[path = "ipv6_selected_link/lifecycle.rs"]
 mod lifecycle;
+// A closing rebind can lose the freed port to another process (#1419).
+#[path = "../../bacnet-endpoint/tests/support/port_retry.rs"]
+mod port_retry;
 #[path = "ipv6_selected_link/support.rs"]
 mod support;
 use support::*;

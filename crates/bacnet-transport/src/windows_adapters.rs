@@ -2,8 +2,9 @@
 //! OS result buffer so that no pointer into it escapes this module.
 //!
 //! B/IP lists its local IPv4 addresses with this (`local_addresses`), and
-//! B/IPv6 picks its link from the IPv6 ones (`bip6::link`).
-#![allow(unsafe_code)]
+//! B/IPv6 picks its link from the IPv6 ones (`bip6::link`). The calls and
+//! the list walk are FFI, so each item that needs unsafe carries its own
+//! `#[allow(unsafe_code)]`.
 
 use std::io;
 use std::mem::{size_of, MaybeUninit};
@@ -57,6 +58,7 @@ pub(crate) struct UnicastAddress {
 
 /// Every unicast address of `family` (`AF_INET`, `AF_INET6` or `AF_UNSPEC`)
 /// on every adapter, whatever its state. `ERROR_NO_DATA` is an empty list.
+#[allow(unsafe_code)] // GetAdaptersAddresses
 pub(crate) fn unicast_addresses(family: ADDRESS_FAMILY) -> io::Result<Vec<UnicastAddress>> {
     let mut bytes = INITIAL_BUFFER_BYTES;
     for _ in 0..ATTEMPTS {
@@ -111,6 +113,7 @@ pub(crate) fn unicast_addresses(family: ADDRESS_FAMILY) -> io::Result<Vec<Unicas
 /// `head` is null or the first record of a list that a successful
 /// `GetAdaptersAddresses` call wrote, and the buffer holding that list stays
 /// alive and unmodified for the whole call.
+#[allow(unsafe_code)] // walks the OS-written adapter list
 unsafe fn copy_addresses(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<UnicastAddress> {
     let mut addresses = Vec::new();
     let mut adapter_ptr = head;
@@ -154,6 +157,7 @@ unsafe fn copy_addresses(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<UnicastAdd
 ///
 /// A non-null `lpSockaddr` points to at least `iSockaddrLength` readable
 /// bytes.
+#[allow(unsafe_code)] // reads a sockaddr through a raw pointer
 unsafe fn decode_socket_address(address: &SOCKET_ADDRESS) -> Option<IpAddr> {
     let sockaddr = address.lpSockaddr.cast_const();
     let length = usize::try_from(address.iSockaddrLength).ok()?;
@@ -197,13 +201,15 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)] // calls decode_socket_address
     fn decodes_ipv4_and_ipv6_and_rejects_short_or_foreign_addresses() {
         // An IPv4 socket address one byte off alignment.
         let mut v4 = vec![0u8; 1 + size_of::<SOCKADDR_IN>()];
         v4[1..3].copy_from_slice(&AF_INET.to_ne_bytes());
         v4[5..9].copy_from_slice(&[192, 0, 2, 10]);
         let address = socket_address(&mut v4[1..]);
-        // SAFETY: the address points into `v4` with its true length.
+        // SAFETY: the address points into `v4`, and its length is the
+        // octets left there, all readable.
         let ip = unsafe { decode_socket_address(&address) };
         assert_eq!(ip, Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))));
 
@@ -211,30 +217,27 @@ mod tests {
         v6[..2].copy_from_slice(&AF_INET6.to_ne_bytes());
         let documentation: Ipv6Addr = "2001:db8::1".parse().unwrap();
         v6[8..24].copy_from_slice(&documentation.octets());
-        // SAFETY: as above.
+        // SAFETY: the address points to `v6`, with its whole length.
         let ip = unsafe { decode_socket_address(&socket_address(&mut v6)) };
         assert_eq!(ip, Some(IpAddr::V6(documentation)));
 
         // Too short for its family, another family, and a null pointer.
         let short = &mut v6[..size_of::<SOCKADDR_IN6>() - 1];
-        // SAFETY: as above.
-        assert_eq!(
-            unsafe { decode_socket_address(&socket_address(short)) },
-            None
-        );
+        // SAFETY: the address points to `short`, with its whole length.
+        let ip = unsafe { decode_socket_address(&socket_address(short)) };
+        assert_eq!(ip, None);
         let mut unspec = vec![0u8; size_of::<SOCKADDR_IN6>()];
         unspec[..2].copy_from_slice(&AF_UNSPEC.to_ne_bytes());
-        // SAFETY: as above.
-        assert_eq!(
-            unsafe { decode_socket_address(&socket_address(&mut unspec)) },
-            None
-        );
+        // SAFETY: the address points to `unspec`, with its whole length.
+        let ip = unsafe { decode_socket_address(&socket_address(&mut unspec)) };
+        assert_eq!(ip, None);
         let null = SOCKET_ADDRESS {
             lpSockaddr: std::ptr::null_mut(),
             iSockaddrLength: 16,
         };
-        // SAFETY: a null pointer is allowed.
-        assert_eq!(unsafe { decode_socket_address(&null) }, None);
+        // SAFETY: a null pointer is allowed; nothing is read through it.
+        let ip = unsafe { decode_socket_address(&null) };
+        assert_eq!(ip, None);
     }
 
     #[test]

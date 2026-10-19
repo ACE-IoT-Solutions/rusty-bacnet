@@ -8,6 +8,7 @@
 //!
 //! Bind UDP on 0.0.0.0 with a directed broadcast so
 //! subnet Who-Is reaches the socket on Linux; advertise the NIC IP in I-Am.
+#![forbid(unsafe_code)]
 
 use std::env;
 use std::net::{Ipv4Addr, SocketAddrV4};

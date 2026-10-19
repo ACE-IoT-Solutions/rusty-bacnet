@@ -96,9 +96,9 @@ impl BipEndpointBuilder {
     /// Binds the interface address itself, so endpoints on other addresses
     /// of this host can share the port, each getting only its own unicast
     /// (#1538). Off by default. Needs an explicit interface and a nonzero
-    /// port, or starting fails. Broadcasts and unicast are then received in
-    /// no fixed order; see
-    /// [`BipTransport::set_share_port_by_address`](bacnet_transport::bip::BipTransport::set_share_port_by_address).
+    /// port, or starting fails. See
+    /// [`BipTransport::set_share_port_by_address`](bacnet_transport::bip::BipTransport::set_share_port_by_address)
+    /// for what changes.
     pub fn share_port_by_address(mut self, enabled: bool) -> Self {
         self.share_port_by_address = enabled;
         self

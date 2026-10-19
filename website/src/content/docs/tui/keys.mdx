@@ -1,0 +1,233 @@
+---
+title: "Keys, commands and flags"
+description: "Every key, command-bar command and flag of the bacnet terminal UI, screen by screen."
+---
+
+import NextStep from '../../../components/NextStep.astro';
+import { release, repository } from '../../../lib/site.mjs';
+
+Keys are case-sensitive: `w` writes and `W` arms a write session. Text fields (filters, forms, editors and the command bar) take printable characters, so there `q` types a `q`. A test checks this page against the TUI's key map.
+
+## Everywhere
+
+| Key | Action |
+|---|---|
+| `Ctrl-C` | Close a dialog, or cancel the running Who-Is or connection attempt. A second `Ctrl-C` within 2 s quits |
+| `?` | Help overlay |
+| `q` | Quit. With changes still in the ledger, the exit guard asks first |
+| `L` | Show or hide the log pane |
+| `:` | The command bar |
+| `W` | Arm a write session, or disarm the armed one |
+| `u` | The session ledger |
+
+The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP. Each screen below lists the ones it takes.
+
+## Devices and the browser
+
+| Key | Action |
+|---|---|
+| `d` | Who-Is form |
+| `Enter` | Browse the selected device; in the browser, read the selected object |
+| `Esc` | Back: from the browser to the device table |
+| `/` | Filter the devices, or in the browser the objects |
+| `s` | Sort by the next column |
+| `S` | Reverse the sort order |
+| `Tab` | Browser: the next pane |
+| `Shift-Tab` | Browser: the previous pane |
+| `r` | Browser: read the open object again |
+| `a` | Browser: watch the open object's Present_Value |
+| `w` | Browser, in a write session: write a property of the open object |
+| `n` | Browser, in a write session: relinquish a priority slot |
+| `p` | The profile dialog |
+| `c` | Connect, or reconnect |
+| `x` | Disconnect, or cancel a connection attempt |
+| `Up`, `Down`, `k`, `j` | Move |
+| `PgUp`, `PgDn` | Move a page |
+| `Home`, `End`, `g`, `G` | First or last row |
+| `1`, `2`, `3`, `4`, `5`, `6` | Switch screens |
+| `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## Watch list
+
+| Key | Action |
+|---|---|
+| `x`, `Delete` | Stop watching the selected row and cancel its subscription |
+| `Up`, `Down`, `k`, `j`, `PgUp`, `PgDn`, `Home`, `End`, `g`, `G` | Move |
+| `Esc`, `1`, `2` | Back to the devices |
+| `4`, `5`, `6` | Network, BACnet/SC, MS/TP |
+| `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## Network screen
+
+| Key | Action |
+|---|---|
+| `Tab`, `Shift-Tab` | Next or previous tab: BDT, FDT, Matrix, Networks |
+| `r` | Read the BBMD's tables again; on the Networks tab, ask the routers |
+| `m` | Survey every BBMD the tables lead to, for the matrix |
+| `x` | Disconnect |
+| `Esc`, `1`, `2` | Back to the devices |
+| `3`, `5`, `6` | Watch list, BACnet/SC, MS/TP |
+| `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## BACnet/SC screen
+
+| Key | Action |
+|---|---|
+| `Tab`, `Shift-Tab` | Next or previous view: hub certificates, doctor, my credentials |
+| `p` | The profile dialog |
+| `c` | Reconnect |
+| `x` | Disconnect |
+| `Esc`, `1`, `2` | Back to the devices |
+| `3`, `4`, `6` | Watch list, Network, MS/TP |
+| `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## MS/TP screen
+
+| Key | Action |
+|---|---|
+| `Tab`, `Shift-Tab` | Monitor: next or previous view (stations, token ring, findings, errors) |
+| `J` | Monitor: start the safe join |
+| `+`, `=` | Safe join: propose the next free MAC |
+| `-` | Safe join: propose the previous free MAC |
+| `Enter` | Safe join: review the proposal in the join confirmation |
+| `z` | Count from now |
+| `Space` | Pause the screen, or follow again |
+| `p` | The profile dialog |
+| `c` | Reconnect, or confirm a join again |
+| `x` | Disconnect, or stop the monitor |
+| `Esc` | Back |
+| `1`, `2`, `3`, `4`, `5` | Devices, watch list, Network, BACnet/SC |
+| `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## MS/TP join confirmation
+
+| Key | Action |
+|---|---|
+| `y` | Join the trunk |
+| `Up`, `Down`, `k`, `j` | Choose the serial port |
+| `Esc`, `n`, `q` | Cancel |
+
+## Profile dialog
+
+In the list and the preview:
+
+| Key | Action |
+|---|---|
+| `Up`, `Down`, `Tab`, `Shift-Tab` | Choose a profile |
+| `Enter` | Preview the profile; in a preview, connect |
+| `a` | Attest to first use, save the authorization and connect |
+| `y` | Accept the credential warnings shown |
+| `c` | Connect |
+| `e` | Edit the profile |
+| `r` | Reload from disk and check again |
+| `p` | Back to the list |
+| `n`, `s`, `m` | New B/IP, BACnet/SC or MS/TP profile |
+| `x` | Disconnect the live session |
+| `Esc` | Close the dialog |
+| `q` | Quit |
+
+In the editor:
+
+| Key | Action |
+|---|---|
+| `Tab`, `Down` | Next field |
+| `Shift-Tab`, `Up` | Previous field |
+| `Backspace` | Erase |
+| `Enter` | Save without connecting |
+| `Esc` | Discard the draft |
+
+## Interface picker
+
+A flags-only B/IP session without `-i` asks which interface to bind.
+
+| Key | Action |
+|---|---|
+| `Up`, `Down`, `k`, `j` | Choose |
+| `1` to `9` | Choose by number |
+| `Enter` | Bind it |
+| `Esc`, `q` | Quit |
+
+## Who-Is form
+
+| Key | Action |
+|---|---|
+| `Tab`, `Down` | Next field |
+| `Shift-Tab`, `Up` | Previous field |
+| `Left`, `Right`, `Space` | Change the scope |
+| `Backspace` | Erase |
+| `Enter` | Send; past a warning, press it again |
+| `Esc` | Close |
+
+## Filters
+
+| Key | Action |
+|---|---|
+| `Enter` | Keep the filter |
+| `Esc` | Clear it |
+| `Backspace` | Erase |
+| `Up`, `Down` | Move through the matches |
+
+## Write dialogs
+
+The arm dialog, the write and relinquish forms, the previews, the ledger and the exit guard.
+
+| Key | Action |
+|---|---|
+| `Tab`, `Down` | Next field |
+| `Shift-Tab`, `Up` | Previous field |
+| `Backspace` | Erase |
+| `Enter` | Arm, preview, or send a T1 write; send a T3 write after the instance is typed |
+| `y` | Send a T2 write; in the ledger, confirm a revert |
+| `R` | Ledger: revert everything |
+| `r`, `k` | Exit guard: revert and quit, or keep and quit |
+| `Esc` | Cancel or decline; nothing is sent |
+
+## Help overlay
+
+| Key | Action |
+|---|---|
+| `?`, `Esc` | Close the help |
+| `q` | Quit |
+
+## Command bar
+
+`:` opens it on the footer line. `Enter` runs the line, `Esc` closes it and `Backspace` erases. An unknown command shows the list below in the footer.
+
+| Command | What it does |
+|---|---|
+| `watch DEVICE OBJECT [PROPERTY]` | Watch a property; `w` is short for it. DEVICE is an instance from the device table, or `DNET:instance` for a routed one. PROPERTY defaults to Present_Value |
+| `csv on` | Log every watched value to a CSV file in the profile's workspace |
+| `csv off` | Stop logging |
+| `writem DEVICE OBJECT PROPERTY VALUE[@P] ...` | Several writes to one device in one WritePropertyMultiple, previewed and confirmed at T2 or above; needs an armed session |
+| `bbmd ADDRESS` | Show and read that BBMD's tables on the Network screen (`ip` or `ip:port`) |
+| `find NAME` | Broadcast a Who-Has for the object named NAME and list the answers |
+| `find` | Close the Who-Has panel |
+| `mstp rotation MS` | Monitor: flag token rotations longer than this |
+| `mstp hold MS` | Monitor: flag token holds longer than this |
+| `mstp listen SECS` | Monitor: how long the safe join listens before it proposes |
+
+## Flags
+
+`bacnet tui` takes these, as well as the global network flags. Plain `bacnet` uses their defaults; name `tui` to set them.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--profile NAME` | | Preview this B/IP, BACnet/SC or MS/TP profile |
+| `--no-profile` | | Use flags only, with no profile or workspace |
+| `--passive` | | Transmit nothing; no client is built |
+| `--mstp-monitor PORT` | | Listen to an MS/TP trunk on this port without transmitting |
+| `--fps N` | 20 | Redraws a second, 1 to 60. An idle screen isn't redrawn |
+| `--log-file FILE` | | Also append log lines to this file |
+| `--max-rate N` | 20 | Confirmed requests a second across the browser and the watch list; 0 for no cap |
+| `--cov-lifetime SECS` | 300 | Lifetime of the watch list's COV subscriptions, 10 to 28800 |
+| `--poll-interval SECS` | 10 | Least time between two polls of a watched point, 1 to 3600 |
+
+`-v` and `-vv` raise the log level to debug and trace. `--no-tui`, or `BACNET_NO_TUI` set to anything but empty or `0`, stops plain `bacnet` from opening the TUI.
+
+## Sources and release scope
+
+These pages describe the `dev` branch after **v{release}**.
+
+<a href={`${repository}/blob/dev/crates/bacnet-cli/src/tui/keymap.rs`}>Key map</a> · <a href={`${repository}/blob/dev/crates/bacnet-cli/src/tui/app/command_bar.rs`}>Command bar</a> · <a href={`${repository}/blob/dev/docs/CLI.md#terminal-ui`}>Terminal UI reference</a>.
+
+<NextStep href="/rusty-bacnet/tui/troubleshooting/" label="Troubleshoot the terminal UI" description="Terminal size, colour, SSH and tmux, and where the logs are." />
