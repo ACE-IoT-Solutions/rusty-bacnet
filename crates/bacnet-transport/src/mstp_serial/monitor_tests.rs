@@ -50,6 +50,11 @@ async fn monitor_over_a_pseudo_terminal_counts_the_ring_and_writes_nothing() {
     .await
     .expect("the monitor saw every frame")
     .unwrap();
+    // Not one octet came back from the monitor's end of the pair. Asked
+    // while the monitor still holds its end: once that end closes, Linux
+    // hangs the pair up and every ioctl on this end fails with EIO, so the
+    // count can't be read after stop there.
+    assert_eq!(line.bytes_to_read().unwrap(), 0);
     let last = monitor.stop().await.unwrap();
 
     assert_eq!(last.present_stations().collect::<Vec<_>>(), [1, 2, 5]);
@@ -62,6 +67,7 @@ async fn monitor_over_a_pseudo_terminal_counts_the_ring_and_writes_nothing() {
     assert_eq!(last.errors, expected.errors);
     assert_eq!(last.lost_tokens, 0);
     assert_eq!(last.octets, sent);
-    // Not one octet came back from the monitor's end of the pair.
+    // Nor while it stopped, where the platform still answers.
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(line.bytes_to_read().unwrap(), 0);
 }
