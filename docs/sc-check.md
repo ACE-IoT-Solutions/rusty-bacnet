@@ -192,8 +192,8 @@ extension limits, hostile text, deterministic ordering and output failures.
 
 Every BACnet/SC client build runs these checks on its `--sc-cert`, `--sc-ca` and
 `--sc-key` files (or a profile's) after the presence checks and before any DNS
-lookup or TCP connection. One-shot commands, the shell and the TUI all go
-through it.
+lookup or TCP connection. One-shot commands and the TUI both go through
+it.
 
 The lint never refuses what the TLS configuration would accept, so a few of
 this command's errors weigh less before a dial than in its own report, which
@@ -218,7 +218,7 @@ keeps them as errors for auditing.
     warning that was not on the preview (a file changed meanwhile) refuses the
     connection until it is reviewed. The client build reads the files once
     more; a warning that first appears at that point is only logged.
-  - One-shot commands and the shell log each warning on stderr and dial. With
+  - One-shot commands log each warning on stderr and dial. With
     `--format json` or `--json` these are log lines on stderr beside the JSON
     result on stdout, never part of it. A non-interactive script should not
     start failing a month before a renewal, so there is no flag: run

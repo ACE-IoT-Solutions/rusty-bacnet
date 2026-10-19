@@ -73,7 +73,7 @@ The CLI also chooses JSON when output is piped. Explicit `--json` makes intent v
 
 `--port` selects the local BACnet UDP port; a target such as `192.168.1.100:47809` specifies a remote port. They are different settings.
 
-A standalone `bacnet discover` process does not establish a documented persistent discovery cache for a later process. Use explicit IP/port targets for one-shot commands. In the interactive shell, discovery and subsequent commands can share the session cache.
+A standalone `bacnet discover` process does not establish a documented persistent discovery cache for a later process. Use explicit IP/port targets for one-shot commands. In the v0.13.0 interactive shell, discovery and subsequent commands can share the session cache; after v0.13.0 the shell is removed, and the terminal UI (plain `bacnet` on a terminal) keeps its discoveries for its session instead.
 
 ## Continue
 

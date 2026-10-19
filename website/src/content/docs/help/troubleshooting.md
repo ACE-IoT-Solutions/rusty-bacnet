@@ -23,7 +23,7 @@ An empty discovery result does not prove that a building has no devices. A succe
 
 ## A device instance works in the shell but not in a script
 
-The shell can retain discovered devices in its session. A separate process does not inherit that session's cache. Use an explicit target address for a one-shot operation, or keep discovery and device-instance lookup within the same supported session.
+The v0.13.0 shell, and after it the terminal UI, can retain discovered devices in its session. A separate process does not inherit that session's cache. Use an explicit target address for a one-shot operation, or keep discovery and device-instance lookup within the same supported session.
 
 Do not promise a one-shot read to `DNET:instance`; the one-shot commands reject that target form. A routed network requires more than finding a router's IP address.
 

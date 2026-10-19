@@ -45,7 +45,7 @@ Relinquishing removes that slot's command. It does **not** promise a return to t
 
 ## The write guard after v0.13.0
 
-In the development branch after v0.13.0, the CLI refuses a one-shot command that changes a device unless the command line has `--allow-write`. Communication control and reinitialize also need `--yes` when stdin is not a terminal; at a terminal they ask you to type the device instance instead, or the target exactly as you gave it when that was an address. A refused command exits with status 4 and sends nothing, and with `--json` its reason is one line of JSON on stderr. The interactive shell takes the flags when it starts (`bacnet --allow-write shell`). With that build, the commands on this page become:
+In the development branch after v0.13.0, the CLI refuses a one-shot command that changes a device unless the command line has `--allow-write`. Communication control and reinitialize also need `--yes` when stdin is not a terminal; at a terminal they ask you to type the device instance instead, or the target exactly as you gave it when that was an address. A refused command exits with status 4 and sends nothing, and with `--json` its reason is one line of JSON on stderr. The interactive shell is removed there; the terminal UI ignores both flags and arms writes with its own time-boxed write session. With that build, the commands on this page become:
 
 ```sh
 bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --priority 8

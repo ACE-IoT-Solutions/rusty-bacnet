@@ -8,22 +8,7 @@ use bacnet_transport::port::TransportPort;
 use serde::Serialize;
 
 use crate::core::target::AddressStyle;
-use crate::output::{self, device_info, DeviceInfo, OutputFormat};
-
-/// Display all cached discovered devices from the client's device table.
-pub async fn devices_cmd<T: TransportPort + 'static>(
-    client: &BACnetClient<T>,
-    format: OutputFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let devices = client.discovered_devices().await;
-    let style = AddressStyle::of(client.transport());
-    let infos: Vec<DeviceInfo> = devices
-        .iter()
-        .map(|device| device_info(device, style))
-        .collect();
-    output::print_devices(&infos, format);
-    Ok(())
-}
+use crate::output::{self, OutputFormat};
 
 /// A router `whois-router` heard from, as it prints it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

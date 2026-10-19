@@ -1,4 +1,4 @@
-//! The target grammar shared by the one-shot commands, the shell and the TUI,
+//! The target grammar shared by the one-shot commands and the TUI,
 //! and the way each transport's MAC addresses are shown so they read back.
 //!
 //! Resolving a target to something a request can go to is in
