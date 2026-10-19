@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::stress::harness::{make_bip_server_with_db, make_large_db, make_stress_client};
@@ -24,7 +24,8 @@ fn make_mixed_db(device_instance: u32) -> ObjectDatabase {
     let mut db = make_large_db(device_instance, 500);
     // Add 50 more writable AO objects (starting at instance 2 since make_large_db adds AO-1)
     for i in 2..=50 {
-        let ao = AnalogOutputObject::new(i, format!("AO-{}", i), 62).unwrap();
+        let ao = AnalogOutputObject::new(i, format!("AO-{}", i), EngineeringUnits::DEGREES_CELSIUS)
+            .unwrap();
         db.add(Box::new(ao)).unwrap();
     }
     db
@@ -151,26 +152,9 @@ pub async fn run(_transport: &str, clients: u64, duration_secs: u64) -> Vec<Degr
     }
 
     let rec = recorder.lock().await;
-    let elapsed = duration_secs as f64;
-    let throughput = rec.successful() as f64 / elapsed;
-    let stats = rec.stats();
-
-    eprintln!(
-        "  ok={} err={} throughput={:.0}/s p50={}µs p99={}µs",
-        rec.successful(),
-        rec.failed(),
-        throughput,
-        stats.p50,
-        stats.p99,
-    );
-
-    let curve = vec![DegradationPoint {
-        parameter: clients,
-        p50_us: stats.p50,
-        p99_us: stats.p99,
-        throughput,
-        errors: rec.failed(),
-    }];
+    let point = DegradationPoint::from_recorder(clients, &rec, Duration::from_secs(duration_secs));
+    point.log();
+    let curve = vec![point];
 
     drop(rec);
     let _ = server.stop().await;

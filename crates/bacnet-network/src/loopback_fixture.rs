@@ -7,10 +7,8 @@
 //! was sent to (#1243), and [`RouterFixture`]'s links carry data attributes
 //! both ways (#1289).
 
-use bacnet_encoding::npdu::{
-    decode_npdu, decode_reject_message_to_network, Npdu, RejectMessageToNetwork,
-};
-use bacnet_npdu::NetworkMessageType;
+use bacnet_encoding::npdu::{decode_npdu, Npdu};
+use bacnet_npdu::{NetworkMessageType, RejectMessageToNetwork};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort};
 use bacnet_types::MacAddr;
@@ -266,5 +264,5 @@ pub(crate) fn reject_of(npdu: &Npdu) -> RejectMessageToNetwork {
         npdu.message_type,
         Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
-    decode_reject_message_to_network(&npdu.payload).unwrap()
+    RejectMessageToNetwork::decode(&npdu.payload).unwrap()
 }

@@ -21,6 +21,7 @@ pub(super) use bacnet_types::constructed::{
     BACnetRecipientProcess,
 };
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::enums::EngineeringUnits;
 
 const DEVICE_INSTANCE: u32 = 813;
 pub(super) const ACTIVE: PropertyIdentifier = PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS;
@@ -267,11 +268,14 @@ impl Wire {
             ))
             .unwrap();
         }
-        let mut first = AnalogValueObject::new(1, "AV-1", 62).unwrap();
+        let mut first =
+            AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         first.set_relinquish_default(20.0).unwrap();
         db.add(Box::new(first)).unwrap();
-        db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
         Self::start_with_database(config, db).await
     }
 

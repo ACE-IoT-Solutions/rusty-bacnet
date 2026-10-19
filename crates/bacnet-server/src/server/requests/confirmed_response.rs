@@ -235,7 +235,7 @@ pub(in crate::server) fn error_apdu_from_error(
     if let Error::Reject { reason } = error {
         return Apdu::Reject(RejectPdu {
             invoke_id,
-            reject_reason: RejectReason::from_raw(*reason),
+            reject_reason: *reason,
         });
     }
     let (error_class, error_code) = error_fields(error);
@@ -301,10 +301,7 @@ pub(in crate::server) fn error_apdu_from_error(
 
 pub(in crate::server) fn error_fields(error: &Error) -> (ErrorClass, ErrorCode) {
     match error {
-        Error::Protocol { class, code } | Error::Structured { class, code, .. } => (
-            ErrorClass::from_raw(*class as u16),
-            ErrorCode::from_raw(*code as u16),
-        ),
+        Error::Protocol { class, code } | Error::Structured { class, code, .. } => (*class, *code),
         _ => (ErrorClass::SERVICES, ErrorCode::OTHER),
     }
 }
@@ -539,6 +536,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 mod alarm_summary_tests;
 
 #[cfg(test)]
+#[path = "typed_error_reply_tests.rs"]
+mod typed_error_reply_tests;
+
+#[cfg(test)]
 mod encoded_apdu_tests {
     use super::*;
 
@@ -563,8 +564,8 @@ mod encoded_apdu_tests {
                 7,
                 ConfirmedServiceChoice::READ_PROPERTY,
                 &Error::Protocol {
-                    class: ErrorClass::OBJECT.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
+                    class: ErrorClass::OBJECT,
+                    code: ErrorCode::UNKNOWN_OBJECT,
                 },
             ),
             Apdu::Reject(RejectPdu {

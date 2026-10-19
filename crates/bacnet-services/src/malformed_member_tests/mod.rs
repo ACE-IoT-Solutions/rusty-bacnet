@@ -8,7 +8,7 @@
 //! wrong length and a member cut short inside a constructed frame (found
 //! while the frame is extracted) are [`Error::Decoding`].
 
-use bacnet_types::enums::RejectReason;
+use bacnet_types::enums::{ErrorClass, ErrorCode, RejectReason};
 use bacnet_types::error::Error;
 
 mod device;
@@ -29,7 +29,7 @@ enum Kind {
     /// [`Error::Reject`] with this reason.
     Reject(RejectReason),
     /// [`Error::Protocol`] with this class and code.
-    Protocol(u32, u32),
+    Protocol(ErrorClass, ErrorCode),
     /// Any other error.
     Other,
 }
@@ -42,7 +42,7 @@ impl Kind {
             Ok(()) => Decodes,
             Err(Error::Decoding(_)) => Malformed,
             Err(Error::BufferTooShort { .. }) => Short,
-            Err(Error::Reject { reason }) => Kind::Reject(RejectReason::from_raw(*reason)),
+            Err(Error::Reject { reason }) => Kind::Reject(*reason),
             Err(Error::Protocol { class, code }) => Kind::Protocol(*class, *code),
             Err(_) => Kind::Other,
         }

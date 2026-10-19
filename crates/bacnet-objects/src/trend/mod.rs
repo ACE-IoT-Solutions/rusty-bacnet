@@ -386,8 +386,8 @@ impl BACnetObject for TrendLogObject {
                 read_property_list_property(&self.property_list(), array_index)
             }
             _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             }),
         }
     }
@@ -404,8 +404,8 @@ impl BACnetObject for TrendLogObject {
                 return self.lifecycle().write_enable(v);
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         if let Some(result) = self.acquisition.write(property, &value) {
@@ -422,8 +422,8 @@ impl BACnetObject for TrendLogObject {
                 return self.lifecycle().write_stop_when_full(v);
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         if property == PropertyIdentifier::RECORD_COUNT {
@@ -431,8 +431,8 @@ impl BACnetObject for TrendLogObject {
                 return self.lifecycle().purge();
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         // Clause 12.25 Table 12-29 lists Reliability as plain O with no
@@ -445,8 +445,8 @@ impl BACnetObject for TrendLogObject {
         // fault indication), so every write is refused.
         if property == PropertyIdentifier::RELIABILITY {
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::WRITE_ACCESS_DENIED,
             });
         }
         if property == PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY {

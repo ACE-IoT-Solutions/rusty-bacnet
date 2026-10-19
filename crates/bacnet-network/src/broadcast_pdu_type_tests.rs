@@ -22,7 +22,7 @@ use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{
     next_from_router, recv, reject_of, wire, RouterFixture, APDU, REMOTE,
 };
-use bacnet_encoding::npdu::RejectMessageToNetwork;
+use bacnet_npdu::RejectMessageToNetwork;
 
 /// A ReadProperty Confirmed-Request for Device 1's Object_Name.
 const CONFIRMED_REQUEST: &[u8] = &[
@@ -94,7 +94,7 @@ async fn router_neither_forwards_nor_delivers_a_broadcast_that_isnt_an_unconfirm
         reject_of(&reject),
         RejectMessageToNetwork {
             reason: RejectMessageReason::NOT_DIRECTLY_CONNECTED,
-            dnet: 5000,
+            network: 5000,
         }
     );
     // Locally: the global Unconfirmed-Request is the first delivery.

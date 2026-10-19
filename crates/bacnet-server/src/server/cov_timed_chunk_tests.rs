@@ -14,6 +14,7 @@ use super::cov_wire_test_support::*;
 use super::*;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::Time;
 use tokio::time::Instant as TokioInstant;
 
@@ -180,8 +181,10 @@ fn av2() -> ObjectIdentifier {
 #[tokio::test(start_paused = true)]
 async fn untimestamped_values_go_in_the_last_notification() {
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
-        db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
     })
     .await;
     h.request_max_apdu = SMALL_APDU;
@@ -510,8 +513,10 @@ async fn hold_interleaved(h: &Harness) -> (Vec<Row>, Vec<Row>) {
 
 async fn two_object_harness(confirmed: bool) -> Harness {
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
-        db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
     })
     .await;
     h.request_max_apdu = SMALL_APDU;

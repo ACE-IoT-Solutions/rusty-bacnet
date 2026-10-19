@@ -26,7 +26,8 @@ use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+    UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
@@ -133,7 +134,7 @@ async fn spawn_test_server(
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
-    let ai = AnalogInputObject::new(1, "Zone Temp", 62).unwrap();
+    let ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ai)).unwrap();
 
     let server = BACnetServer::generic_builder()

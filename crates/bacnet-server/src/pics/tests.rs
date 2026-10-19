@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 
 use bacnet_objects::traits::BACnetObject;
-use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
@@ -36,8 +38,8 @@ impl BACnetObject for TestAnalogInput {
         _priority: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -123,8 +125,8 @@ impl BACnetObject for TestDevice {
         _priority: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -499,15 +501,17 @@ use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
 
+const NO_UNITS: EngineeringUnits = EngineeringUnits::NO_UNITS;
+
 /// Build a database with one of each of the 9 core I/O/V object types.
 fn make_real_objects_db() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(1, "ai-1", 95).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "ao-1", 95).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "av-1", 95).unwrap()))
-        .unwrap();
+    let ai = AnalogInputObject::new(1, "ai-1", NO_UNITS).unwrap();
+    db.add(Box::new(ai)).unwrap();
+    let ao = AnalogOutputObject::new(1, "ao-1", NO_UNITS).unwrap();
+    db.add(Box::new(ao)).unwrap();
+    let av = AnalogValueObject::new(1, "av-1", NO_UNITS).unwrap();
+    db.add(Box::new(av)).unwrap();
     db.add(Box::new(BinaryInputObject::new(1, "bi-1").unwrap()))
         .unwrap();
     db.add(Box::new(BinaryOutputObject::new(1, "bo-1").unwrap()))
@@ -747,7 +751,7 @@ fn pics_writability_matches_runtime_write_property() {
     use bacnet_objects::traits::BACnetObject;
     use bacnet_types::bitstring::LimitEnable;
 
-    let mut ai = AnalogInputObject::new(1, "ai-1", 95).unwrap();
+    let mut ai = AnalogInputObject::new(1, "ai-1", NO_UNITS).unwrap();
     // PICS (via the trait method) must report it writable.
     assert!(
         ai.is_writable_property(PropertyIdentifier::LIMIT_ENABLE),

@@ -18,7 +18,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 use std::net::Ipv4Addr;
@@ -38,11 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     db.add(Box::new(device))?;
 
-    let mut ai = AnalogInputObject::new(1, "Zone Temp", 62)?;
+    let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS)?;
     ai.set_present_value(72.5);
     db.add(Box::new(ai))?;
 
-    let ao = AnalogOutputObject::new(1, "Damper Position", 98)?;
+    let ao = AnalogOutputObject::new(1, "Damper Position", EngineeringUnits::PERCENT)?;
     db.add(Box::new(ao))?;
 
     let bv = BinaryValueObject::new(1, "Override Mode")?;

@@ -14,7 +14,9 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
@@ -109,7 +111,7 @@ async fn a_confirmed_request_from_a_group_source_is_ignored_and_counted() {
     })
     .unwrap();
     db.add(Box::new(device)).unwrap();
-    let input = AnalogInputObject::new(1, "Input", 62).unwrap();
+    let input = AnalogInputObject::new(1, "Input", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(input)).unwrap();
     let (tx, rx) = mpsc::channel(8);
     let transport = TestTransport::builder()

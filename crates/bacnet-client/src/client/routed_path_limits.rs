@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use std::time::{Duration, Instant as StdInstant};
 
-use bacnet_encoding::npdu::decode_reject_message_to_network;
 use bacnet_network::layer::ReceivedNetworkControl;
-use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::Instant as TokioInstant;
 
@@ -322,23 +321,25 @@ impl RoutedPathLimits {
         if control.npdu.message_type != Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK) {
             return;
         }
-        let Ok(reject) = decode_reject_message_to_network(&control.npdu.payload) else {
+        let Ok(reject) = RejectMessageToNetwork::decode(&control.npdu.payload) else {
             return;
         };
         if reject.reason != RejectMessageReason::MESSAGE_TOO_LONG {
             return;
         }
 
-        let Some(active) =
-            self.claim_active(&control.source_mac, reject.dnet, control.ingress_sequence)
-        else {
+        let Some(active) = self.claim_active(
+            &control.source_mac,
+            reject.network,
+            control.ingress_sequence,
+        ) else {
             return;
         };
         let outcome = tsm.lock().await.complete_network_path_too_long_for_owner(
             &active.tsm_mac,
             active.invoke_id,
             &active.owner,
-            reject.dnet,
+            reject.network,
         );
         if outcome == CompletionOutcome::Delivered {
             self.commit_learned_limit(active);

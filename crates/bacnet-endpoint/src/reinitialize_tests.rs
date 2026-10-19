@@ -88,7 +88,7 @@ fn assert_protocol_error(result: Result<(), Error>, class: ErrorClass, code: Err
     let error = result.unwrap_err();
     assert!(
         matches!(error, Error::Protocol { class: c, code: e }
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            if c == class && e == code),
         "got {error:?}"
     );
 }

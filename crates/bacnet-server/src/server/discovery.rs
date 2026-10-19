@@ -786,8 +786,8 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
     drop(guard);
     if comm_state.initiation_restricted() {
         return Err(Error::Protocol {
-            class: ErrorClass::SERVICES.to_raw() as u32,
-            code: ErrorCode::COMMUNICATION_DISABLED.to_raw() as u32,
+            class: ErrorClass::SERVICES,
+            code: ErrorCode::COMMUNICATION_DISABLED,
         });
     }
     if let Some(limiter) = limiter {

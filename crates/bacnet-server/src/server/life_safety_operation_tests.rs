@@ -8,7 +8,7 @@ use bacnet_encoding::npdu::decode_npdu;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::life_safety::{LifeSafetyPointObject, LifeSafetyPointResetCommit};
 use bacnet_services::life_safety::LifeSafetyOperationRequest;
-use bacnet_types::enums::{LifeSafetyOperation, LifeSafetyState, SilencedState};
+use bacnet_types::enums::{EngineeringUnits, LifeSafetyOperation, LifeSafetyState, SilencedState};
 
 fn point_oid(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::LIFE_SAFETY_POINT, instance).unwrap()
@@ -414,7 +414,9 @@ async fn life_safety_operation_dispatch_preserves_all_targeted_error_rows() {
     let analog_oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
     let mut objects = ObjectDatabase::new();
     objects
-        .add(Box::new(AnalogInputObject::new(1, "analog", 62).unwrap()))
+        .add(Box::new(
+            AnalogInputObject::new(1, "analog", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
         .unwrap();
     let apdu = dispatch_life_safety_operation(
         Arc::new(RwLock::new(objects)),

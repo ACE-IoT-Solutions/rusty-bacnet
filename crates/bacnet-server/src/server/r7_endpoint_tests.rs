@@ -2,11 +2,14 @@
 use super::*;
 use crate::server::requests::endpoint_responder::EndpointResponder;
 use bacnet_endpoint_core::endpoint_ingress::EndpointIngress;
+use bacnet_types::enums::EngineeringUnits;
 
 fn database() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(7, "input", 0).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(7, "input", EngineeringUnits::SQUARE_METERS).unwrap(),
+    ))
+    .unwrap();
     db
 }
 #[tokio::test]

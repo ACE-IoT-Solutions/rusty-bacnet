@@ -318,7 +318,8 @@ pub async fn run(
                 Err(_) => recorder.record_failure(),
             }
         }
-        let elapsed = started.elapsed().as_secs_f64();
+        let measured = started.elapsed();
+        let elapsed = measured.as_secs_f64();
         let carried = counters.totals() - before;
         let _ = client.stop().await;
         let _ = server.stop().await;
@@ -349,13 +350,11 @@ pub async fn run(
             "efficiency_pct": 100.0 * throughput / limit,
             "line_busy_pct": 100.0 * busy,
         }));
-        curve.push(DegradationPoint {
-            parameter: u64::from(baud),
-            p50_us: stats.p50,
-            p99_us: stats.p99,
-            throughput,
-            errors: recorder.failed(),
-        });
+        curve.push(DegradationPoint::from_recorder(
+            u64::from(baud),
+            &recorder,
+            measured,
+        ));
     }
     (curve, wire)
 }

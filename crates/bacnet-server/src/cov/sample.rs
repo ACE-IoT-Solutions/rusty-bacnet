@@ -80,8 +80,8 @@ fn float_delta(delta: f64, increment: Option<f64>) -> bool {
 }
 fn capacity_error() -> Error {
     Error::Protocol {
-        class: ErrorClass::RESOURCES.to_raw() as u32,
-        code: ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT.to_raw() as u32,
+        class: ErrorClass::RESOURCES,
+        code: ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
     }
 }
 fn validate(

@@ -636,8 +636,8 @@ impl BACnetObject for DeviceObject {
                         Ok(PropertyValue::ObjectIdentifier(self.object_list[i]))
                     } else {
                         Err(Error::Protocol {
-                            class: ErrorClass::PROPERTY.to_raw() as u32,
-                            code: ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32,
+                            class: ErrorClass::PROPERTY,
+                            code: ErrorCode::INVALID_ARRAY_INDEX,
                         })
                     }
                 }
@@ -662,8 +662,8 @@ impl BACnetObject for DeviceObject {
                 | PropertyIdentifier::DAYLIGHT_SAVINGS_STATUS
         ) {
             let frame = self.clock_frame().ok_or(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             })?;
             return Ok(match property {
                 PropertyIdentifier::LOCAL_DATE => PropertyValue::Date(frame.local_date),
@@ -720,8 +720,8 @@ impl BACnetObject for DeviceObject {
                 Ok(PropertyValue::ApplicationData(Vec::new()))
             } else {
                 Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                    class: ErrorClass::PROPERTY,
+                    code: ErrorCode::UNKNOWN_PROPERTY,
                 })
             };
         }
@@ -733,8 +733,8 @@ impl BACnetObject for DeviceObject {
             .get(&property)
             .cloned()
             .ok_or(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             })
     }
 
@@ -754,8 +754,8 @@ impl BACnetObject for DeviceObject {
         if property == PropertyIdentifier::DESCRIPTION {
             if array_index.is_some() {
                 return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
+                    class: ErrorClass::PROPERTY,
+                    code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
                 });
             }
             // Clause 15.9: relinquishing a non-commandable writable property
@@ -768,8 +768,8 @@ impl BACnetObject for DeviceObject {
                 return Ok(());
             }
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::INVALID_DATA_TYPE,
             });
         }
         if property == PropertyIdentifier::BACKUP_FAILURE_TIMEOUT

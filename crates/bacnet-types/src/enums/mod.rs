@@ -46,6 +46,14 @@ macro_rules! bacnet_enum {
                 self.0
             }
 
+            /// The constant's name, or `None` for a value without one.
+            pub const fn name(self) -> Option<&'static str> {
+                match self.0 {
+                    $( $val => Some(stringify!($VARIANT)), )*
+                    _ => None,
+                }
+            }
+
             /// All named constants as (name, value) pairs.
             pub const ALL_NAMED: &[(&str, Self)] = &[
                 $( (stringify!($VARIANT), Self($val)), )*

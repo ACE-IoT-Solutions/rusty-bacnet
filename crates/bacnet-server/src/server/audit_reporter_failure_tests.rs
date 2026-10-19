@@ -482,8 +482,8 @@ async fn audit_reporter_execution_error_mapping_matches_response_but_unknown_out
     for (error, expected) in [
         (
             Error::Protocol {
-                class: 128,
-                code: 512,
+                class: ErrorClass::from_raw(128),
+                code: ErrorCode::from_raw(512),
             },
             Some((ErrorClass::from_raw(128), ErrorCode::from_raw(512))),
         ),
@@ -494,13 +494,13 @@ async fn audit_reporter_execution_error_mapping_matches_response_but_unknown_out
         (Error::Timeout(Duration::from_secs(1)), None),
         (
             Error::Reject {
-                reason: RejectReason::OTHER.to_raw(),
+                reason: RejectReason::OTHER,
             },
             None,
         ),
         (
             Error::Abort {
-                reason: AbortReason::OTHER.to_raw(),
+                reason: AbortReason::OTHER,
             },
             None,
         ),

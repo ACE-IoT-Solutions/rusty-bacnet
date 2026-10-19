@@ -10,6 +10,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 
 /// Create a populated ObjectDatabase for benchmarking.
@@ -28,12 +29,14 @@ pub fn make_benchmark_db(device_instance: u32) -> ObjectDatabase {
     db.add(Box::new(device)).unwrap();
 
     for i in 1..=10 {
-        let mut ai = AnalogInputObject::new(i, format!("AI-{}", i), 62).unwrap();
+        let mut ai =
+            AnalogInputObject::new(i, format!("AI-{}", i), EngineeringUnits::DEGREES_CELSIUS)
+                .unwrap();
         ai.set_present_value(20.0 + i as f32);
         db.add(Box::new(ai)).unwrap();
     }
 
-    let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ao)).unwrap();
 
     let bv = BinaryValueObject::new(1, "BV-1").unwrap();

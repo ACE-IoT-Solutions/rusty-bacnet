@@ -30,8 +30,8 @@ fn assert_property_error(result: Result<impl std::fmt::Debug, Error>, code: Erro
             class,
             code: actual,
         }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(actual, code.to_raw() as u32, "expected {code:?}");
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(actual, code, "expected {code:?}");
         }
         other => panic!("expected PROPERTY / {code:?}, got {other:?}"),
     }

@@ -4,9 +4,9 @@ use super::config::PortConfig;
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
 use super::Storage;
-use crate::message::{NetworkNumberIs, Networks, Reject, RoutingEntries};
+use crate::message::{NetworkNumberIs, Networks, RoutingEntries};
 use crate::npdu::{Address, NetworkPriority, Npdu};
-use crate::npdu::{NetworkMessageType, RejectMessageReason};
+use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use crate::table::{Reachability, Table};
 use crate::{Mac, PortId};
 
@@ -207,7 +207,7 @@ impl<
                 ))
             }
             TaskKind::Reject => {
-                let data = Reject {
+                let data = RejectMessageToNetwork {
                     reason: task.reason,
                     network: task.network,
                 }

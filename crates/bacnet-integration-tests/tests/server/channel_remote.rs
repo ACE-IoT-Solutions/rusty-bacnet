@@ -4,7 +4,7 @@ use bacnet_objects::binary::BinaryOutputObject;
 use bacnet_objects::channel::ChannelObject;
 use bacnet_server::server::DeviceBinding;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
-use bacnet_types::enums::{Reliability, WriteStatus};
+use bacnet_types::enums::{EngineeringUnits, Reliability, WriteStatus};
 use bacnet_types::primitives::PropertyValue;
 use tokio::sync::RwLock;
 
@@ -128,10 +128,14 @@ async fn channel_writes_members_in_another_device_over_bip() {
     let mut target_db = ObjectDatabase::new();
     target_db.add(Box::new(device(20))).unwrap();
     target_db
-        .add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
+        .add(Box::new(
+            AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
         .unwrap();
     target_db
-        .add(Box::new(AnalogInputObject::new(1, "AI-1", 62).unwrap()))
+        .add(Box::new(
+            AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
         .unwrap();
     target_db.add(Box::new(channel(5, Vec::new()))).unwrap();
     let mut target = start(target_db, None).await;

@@ -537,8 +537,8 @@ impl BACnetObject for EventEnrollmentObject {
     ) -> Result<(), bacnet_types::error::Error> {
         if !self.event_detection_enable {
             return Err(bacnet_types::error::Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::OBJECT.to_raw() as u32,
-                code: bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
+                class: bacnet_types::enums::ErrorClass::OBJECT,
+                code: bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED,
             });
         }
         self.acked_transitions |= transition_bit & EventTransitionBits::all();
@@ -552,8 +552,8 @@ impl BACnetObject for EventEnrollmentObject {
     ) -> Result<(), Error> {
         if !self.event_detection_enable || self.enrollment_summary_capability_internal().is_none() {
             return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::NO_ALARM_CONFIGURED,
             });
         }
         self.event_history.acknowledge_correlated(
@@ -570,8 +570,8 @@ impl BACnetObject for EventEnrollmentObject {
     ) -> Result<Option<crate::event::EventStateChange>, Error> {
         if !self.event_detection_enable || self.enrollment_summary_capability_internal().is_none() {
             return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::NO_ALARM_CONFIGURED,
             });
         }
         self.event_history.acknowledge_correlated_detailed(

@@ -95,9 +95,7 @@ pub fn handle_write_property_multiple(
             crate::command_lists::end_unmade(db, &committed_oids);
             Err(error)
         }
-        WritePropertyMultipleOutcome::Reject { reason } => Err(Error::Reject {
-            reason: reason.to_raw(),
-        }),
+        WritePropertyMultipleOutcome::Reject { reason } => Err(Error::Reject { reason }),
     }
 }
 
@@ -349,10 +347,7 @@ fn semantic_failure(
 }
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::Protocol { class, code }
 }
 
 /// At the existing indexed-write gate, effective absence takes precedence over

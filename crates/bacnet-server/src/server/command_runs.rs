@@ -228,8 +228,8 @@ impl<T: TransportPort + 'static> RunHost for CommandRunner<T> {
         let value = {
             let db = self.db.read().await;
             let object = db.get(&command.object_identifier).ok_or(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::UNKNOWN_OBJECT,
             })?;
             handlers::gate_and_decode_write(
                 object,

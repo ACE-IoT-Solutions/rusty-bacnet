@@ -18,7 +18,7 @@ use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::life_safety::LifeSafetyOperationRequest;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
-use bacnet_types::enums::LifeSafetyOperation;
+use bacnet_types::enums::{EngineeringUnits, LifeSafetyOperation};
 use bacnet_types::primitives::Time;
 
 type Row = (PropertyIdentifier, Vec<u8>, Option<Time>);
@@ -215,7 +215,7 @@ fn faulted_staging(db: &mut ObjectDatabase) {
             StagingConfig {
                 present_value: 5.0,
                 min_present_value: 0.0,
-                units: 62,
+                units: EngineeringUnits::DEGREES_CELSIUS,
                 priority_for_writing: 8,
                 stages: vec![stage(vec![false], 10.0), stage(vec![true], 20.0)],
                 target_references: vec![BACnetDeviceObjectReference {
@@ -435,8 +435,8 @@ impl bacnet_objects::traits::BACnetObject for WritablePoint {
             PropertyIdentifier::OUT_OF_SERVICE => PropertyValue::Boolean(self.out_of_service),
             _ => {
                 return Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                    class: bacnet_types::enums::ErrorClass::PROPERTY,
+                    code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
                 })
             }
         })
@@ -458,8 +458,8 @@ impl bacnet_objects::traits::BACnetObject for WritablePoint {
             }
             _ => {
                 return Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                    class: bacnet_types::enums::ErrorClass::PROPERTY,
+                    code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
                 })
             }
         }

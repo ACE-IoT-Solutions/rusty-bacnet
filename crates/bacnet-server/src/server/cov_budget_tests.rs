@@ -11,7 +11,7 @@ use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
 };
 use bacnet_types::constructed::PropertyReference;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 
 fn test_db_with_ao() -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1234).unwrap();
@@ -26,8 +26,10 @@ fn test_db_with_ao() -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     (Arc::new(RwLock::new(db)), ao_oid)
 }
 
@@ -216,8 +218,10 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let policy = CovPolicy {
         max_subscriptions_per_peer: 1,
@@ -289,8 +293,10 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let policy = CovPolicy {
         max_subscriptions_per_peer: 1,

@@ -32,8 +32,8 @@ use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bvll::{decode_bvll, encode_bvll, Bvll};
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier, RejectReason,
-    Segmentation, ServiceSupported,
+    AbortReason, ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+    RejectReason, Segmentation, ServiceSupported,
 };
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
@@ -59,7 +59,12 @@ fn db_with_analog(
     instance: u32,
     value: f32,
 ) -> bacnet_objects::database::ObjectDatabase {
-    let mut o = AnalogInputObject::new(instance, format!("bip-ai-{instance}"), 0).unwrap();
+    let mut o = AnalogInputObject::new(
+        instance,
+        format!("bip-ai-{instance}"),
+        EngineeringUnits::SQUARE_METERS,
+    )
+    .unwrap();
     o.set_present_value(value);
     build_database_with_extra(id, vec![Box::new(o)]).unwrap()
 }

@@ -218,8 +218,8 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
         .unwrap_err();
     assert!(
         matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
         "{error:?}"
     );
     // Released, it goes back to the list NF-1 serves: none written yet.

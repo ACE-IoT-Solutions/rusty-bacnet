@@ -456,8 +456,8 @@ async fn audit_reporter_atomic_write_file_backend_mapping_and_unknown_outcome_si
         for (error, report) in [
             (
                 Error::Protocol {
-                    class: 128,
-                    code: 512,
+                    class: ErrorClass::from_raw(128),
+                    code: ErrorCode::from_raw(512),
                 },
                 true,
             ),
@@ -467,13 +467,13 @@ async fn audit_reporter_atomic_write_file_backend_mapping_and_unknown_outcome_si
             (Error::Timeout(Duration::from_secs(1)), false),
             (
                 Error::Reject {
-                    reason: RejectReason::OTHER.to_raw(),
+                    reason: RejectReason::OTHER,
                 },
                 false,
             ),
             (
                 Error::Abort {
-                    reason: AbortReason::OUT_OF_RESOURCES.to_raw(),
+                    reason: AbortReason::OUT_OF_RESOURCES,
                 },
                 false,
             ),
