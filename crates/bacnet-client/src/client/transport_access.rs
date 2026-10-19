@@ -29,6 +29,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// - MS/TP: the
     ///   [`diagnostics()`](bacnet_transport::mstp::MstpTransport::diagnostics)
     ///   handle.
+    /// - B/IP, B/IPv6, BACnet/SC and MS/TP: `frame_tap()`, to subscribe to
+    ///   every link-layer frame the transport sends and receives (#957).
     /// - Any transport: `local_mac()` and the APDU size limits.
     ///
     /// The watch receiver, the diagnostics handle and the BBMD state `Arc` are

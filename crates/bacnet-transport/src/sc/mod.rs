@@ -62,6 +62,8 @@ mod recovery;
 mod rejection;
 mod send;
 mod source_admission;
+mod tap;
+use tap::{tapped_connector, TappedSocket};
 mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
 use connector::{dial_failover_ws, WebSocketConnector};
@@ -103,7 +105,7 @@ pub use websocket::WebSocketPort;
 /// publication) may retain the socket; retirement is not immediate OS closure.
 pub struct ScTransport<W: WebSocketPort> {
     ws: Option<W>,
-    ws_shared: Option<Arc<Mutex<Arc<W>>>>, // current active WebSocket for send methods
+    ws_shared: Option<Arc<Mutex<Arc<TappedSocket<W>>>>>, // current active WebSocket for send methods
     local_vmac: Vmac,
     /// Device UUID (16 bytes, RFC 4122).
     device_uuid: [u8; 16],
@@ -131,6 +133,8 @@ pub struct ScTransport<W: WebSocketPort> {
     observer: Arc<ScObserver>,
     direct_membership: Arc<direct_membership::DirectMembership>,
     pub(super) direct: Option<Arc<direct_discovery::DirectShared<W>>>,
+    /// See [`Self::frame_tap`].
+    frame_tap: crate::tap::FrameTap,
     #[cfg(test)]
     allow_test_heartbeat_timing: bool,
 }
@@ -172,6 +176,7 @@ impl<W: WebSocketPort> ScTransport<W> {
             observer: Arc::new(ScObserver::new()),
             direct_membership: Arc::new(direct_membership::DirectMembership::default()),
             direct: None,
+            frame_tap: crate::tap::FrameTap::new(),
             #[cfg(test)]
             allow_test_heartbeat_timing: false,
         }
@@ -223,10 +228,15 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             .take()
             .ok_or_else(|| Error::Encoding("BACnet/SC transport already started".into()))?;
 
-        let primary_ws = Arc::new(primary_ws);
-        let mut failover_ws = self.failover_ws.take().map(Arc::new);
-        let primary_connector = self.primary_connector.clone();
-        let failover_connector = self.failover_connector.clone();
+        // Every hub socket goes through the frame tap (tap.rs).
+        let tap = &self.frame_tap;
+        let primary_ws = Arc::new(TappedSocket::new(primary_ws, tap, self.initial_hub));
+        let mut failover_ws = (self.failover_ws.take())
+            .map(|ws| Arc::new(TappedSocket::new(ws, tap, ScActiveHub::Failover)));
+        let primary_connector = (self.primary_connector.as_ref())
+            .map(|dial| tapped_connector(dial, tap, ScActiveHub::Primary));
+        let failover_connector = (self.failover_connector.as_ref())
+            .map(|dial| tapped_connector(dial, tap, ScActiveHub::Failover));
         let state_tx = self.state_tx.clone();
         let observer = self.observer.clone();
 
@@ -330,7 +340,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 let mut current_reusable = true;
                 // One candidate per active-connection epoch. Dropping this
                 // future cancels dial/handshake without a detached task.
-                let mut primary_attempt: Option<failover::PrimaryAttempt<W>> = None;
+                let mut primary_attempt: Option<failover::PrimaryAttempt<TappedSocket<W>>> = None;
                 let mut connection_states = state_tx.subscribe();
                 // Idle time is on tokio's clock, like `hb_interval`, so the two
                 // agree under a paused test clock too.

@@ -78,6 +78,8 @@ pub struct Bip6Transport {
     forwarded_group_origin_drops: Arc<std::sync::atomic::AtomicU64>,
     /// See [`Self::receive_counters`].
     receive_drops: Arc<ReceiveDrops>,
+    /// See [`Self::frame_tap`].
+    frame_tap: crate::tap::FrameTap,
 }
 
 /// Configuration for BIPv6 foreign device registration.
@@ -143,6 +145,7 @@ impl Bip6Transport {
             registration_task: None,
             forwarded_group_origin_drops: Arc::default(),
             receive_drops: Arc::default(),
+            frame_tap: crate::tap::FrameTap::new(),
         }
     }
 
@@ -171,6 +174,13 @@ impl Bip6Transport {
     pub fn forwarded_group_origin_drops(&self) -> u64 {
         self.forwarded_group_origin_drops
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// This transport's frame tap: every BVLL message it sends and
+    /// receives, address resolution and registrations included, for
+    /// whoever subscribes. See [`crate::tap`].
+    pub fn frame_tap(&self) -> &crate::tap::FrameTap {
+        &self.frame_tap
     }
 
     /// The datagrams the receive path dropped since this transport was
@@ -239,7 +249,8 @@ impl TransportPort for Bip6Transport {
         let socket = Arc::new(
             Bip6Socket::bind(self.interface, self.port, foreign)
                 .await
-                .map_err(Error::Transport)?,
+                .map_err(Error::Transport)?
+                .tapped(self.frame_tap.clone()),
         );
         let bound = socket.local_address().map_err(Error::Transport)?;
         let local_port = bound.port();

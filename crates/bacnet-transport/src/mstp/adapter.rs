@@ -100,7 +100,9 @@ use super::queues::{CoreQueues, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
+use crate::tap::FrameTap;
 
+mod tap;
 mod transmit;
 
 /// Octets asked for in one serial read.
@@ -127,6 +129,8 @@ pub(super) struct Task<S> {
     pub(super) counts: Arc<Counters>,
     /// [`MstpConfig::transmit_latency_pad`](super::MstpConfig::transmit_latency_pad).
     pub(super) transmit_pad: Duration,
+    /// The transport's frame tap (the `tap` module).
+    pub(super) tap: FrameTap,
 }
 
 impl<S: SerialPort> Task<S> {
@@ -140,6 +144,7 @@ impl<S: SerialPort> Task<S> {
             npdus,
             counts,
             transmit_pad,
+            tap,
         } = self;
         let _closed = CloseOnExit(queues.clone());
         let mut storage = Box::new(CoreStorage::with_queues(queues.for_core()));
@@ -151,6 +156,9 @@ impl<S: SerialPort> Task<S> {
             }
         };
         let max_age = Duration::from(config.queue_max_age);
+        // Allocated at every start, subscribed or not: the tap's decoder
+        // borrows it for the task's life, as the core borrows `storage`.
+        let mut tap_storage = vec![0; MAX_EXTENDED_FRAME_LENGTH];
         let mut mac = Mac {
             echo: serial.echo(),
             serial,
@@ -165,6 +173,8 @@ impl<S: SerialPort> Task<S> {
             replies: Replies::new(max_age),
             filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
             empty_reads: 0,
+            tap,
+            tap_decoder: tap::TapDecoder::new(&mut tap_storage),
         };
         mac.run(&mut core).await;
     }
@@ -235,7 +245,7 @@ enum Polled {
 }
 
 /// The adapter's state besides the core.
-struct Mac<S> {
+struct Mac<'t, S> {
     /// First, so that it drops first: fields drop in declaration order, and
     /// when the task ends or is aborted, an application holding a reply
     /// sender must find its channel closed by the time it can see the NPDU
@@ -256,9 +266,12 @@ struct Mac<S> {
     filter: EchoFilter,
     /// Reads in a row that returned no octets.
     empty_reads: u32,
+    tap: FrameTap,
+    /// Finds the frames in what the core is fed, for the tap.
+    tap_decoder: tap::TapDecoder<'t>,
 }
 
-impl<S: SerialPort> Mac<S> {
+impl<S: SerialPort> Mac<'_, S> {
     async fn run(&mut self, core: &mut Core<'_>) {
         loop {
             self.settle(core);
@@ -544,6 +557,7 @@ impl<S: SerialPort> Mac<S> {
 
     /// Feed one octet to the core and carry out the actions.
     fn feed(&mut self, core: &mut Core<'_>, octet: u8, now: bacnet_mstp_core::Instant) {
+        self.tap_decoder.push(octet, &self.tap);
         core.on_octet(octet, now);
         self.drain_actions(core);
     }
