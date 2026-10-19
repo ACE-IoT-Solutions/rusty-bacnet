@@ -68,7 +68,7 @@ the concrete hosted adapters below are optional.
 | --- | --- |
 | `ipv6` | `bip6::Bip6Transport` for BACnet/IPv6 over UDP. |
 | `sc-tls` | `sc_tls::TlsWebSocket` and `sc_hub::ScHub`, using rustls and AWS-LC for TLS. |
-| `serial` | `mstp_serial::TokioSerialPort`; Linux also exposes kernel RS-485 direction control. |
+| `serial` | `mstp_serial::TokioSerialPort`, and `mstp_serial::ReceiveOnlyPort` for the receive-only `mstp::monitor::MstpMonitor`; Linux also exposes kernel RS-485 direction control. |
 | `serial-gpio` | Linux GPIO character-device direction control through `mstp_serial::GpioDirectionPort`; also enables `serial`. |
 | `ethernet` | Ethernet frame codecs; `ethernet::EthernetTransport` additionally requires Linux and uses raw packet sockets. |
 

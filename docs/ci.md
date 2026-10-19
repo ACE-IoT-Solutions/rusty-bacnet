@@ -1016,10 +1016,10 @@ manual dispatch. Tag pushes don't run it.
 
 **Steps.** `NATIVE_FEATURES` is the `features=` list in
 [`scripts/ci/local-macos.sh`](../scripts/ci/local-macos.sh), which the
-workflow reads: every optional feature except the Linux-only `serial` and
-`ethernet`, including per-crate ones such as `bacnet-endpoint/sc-tls`. Windows
-also leaves out `bacnet-cli/pcap`, which needs the Npcap SDK. The Tests jobs
-run:
+workflow reads: every optional feature except the Linux-only `serial-gpio`
+and `ethernet`, including per-crate ones such as `bacnet-endpoint/sc-tls`, and
+`serial` (#958) among them. Windows also leaves out `bacnet-cli/pcap`, which
+needs the Npcap SDK. The Tests jobs run:
 
 ```bash
 cargo nextest run --workspace --exclude rusty-bacnet --locked --features "$NATIVE_FEATURES" --profile ci
@@ -1446,12 +1446,13 @@ bash scripts/ci/local-macos.sh          # lint, clippy, rustdoc, macOS tests
 bash scripts/ci/local-macos.sh --quick  # lint, clippy and rustdoc only
 ```
 
-`serial` and `ethernet` are Linux-only features, so macOS uses every other
-optional feature. The native-tests workflow reads the same list from the
-script. That includes per-crate features such as
-`bacnet-endpoint/sc-tls` and `bacnet-cli/{sc-tls,pcap}`, which nothing else in
+`serial-gpio` and `ethernet` are Linux-only features, so macOS uses every
+other optional feature, `serial` included (#958): the serial port crates build
+on all three systems, and its pseudo-terminal tests run on macOS too. The
+native-tests workflow reads the same list from the script. That includes
+per-crate features such as `bacnet-endpoint/sc-tls` and `bacnet-cli/{sc-tls,pcap}`, which nothing else in
 the workspace turns on, so a transport-only list never built them (#906). CI's
-`LINUX_FEATURES` is the same list plus `bacnet-transport/{serial,serial-gpio,ethernet}`
+`LINUX_FEATURES` is the same list plus `bacnet-transport/{serial-gpio,ethernet}`
 and `bacnet-integration-tests/ethernet`.
 
 The script also runs the PyO3 crate's Rust tests. pyo3 links the libpython of
@@ -1517,7 +1518,7 @@ that exist only in one feature configuration are covered; the run takes about
 2 s longer on the host.
 
 The individual gates are also runnable anywhere. `FEATURES` is
-`LINUX_FEATURES` from `ci.yml`, without the serial and ethernet entries on macOS:
+`LINUX_FEATURES` from `ci.yml`, without the serial-gpio and ethernet entries on macOS:
 
 ```bash
 FEATURES=$(sed -n 's/^  LINUX_FEATURES: //p' .github/workflows/ci.yml)

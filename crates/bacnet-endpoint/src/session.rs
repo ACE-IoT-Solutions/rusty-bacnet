@@ -298,6 +298,8 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
     /// The B/IP transport's own exchanges, when the B/IP builder built it.
     pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
+    /// The MS/TP transport's counters, when the MS/TP builder built it.
+    pub(crate) mstp_diagnostics: Option<bacnet_transport::mstp::MstpDiagnostics>,
 }
 
 /// Terminal state of the session dispatch task.
@@ -407,6 +409,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             reinit_password: None,
             egress: None,
             bip_status: None,
+            mstp_diagnostics: None,
         })
     }
 
@@ -770,6 +773,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ) -> Option<bacnet_transport::bip::ForeignRegistrationSnapshot> {
         let status = self.bip_status.as_ref()?;
         Some(status.snapshot().foreign_registration)
+    }
+
+    /// The MS/TP transport's counters (#958): a handle to the same
+    /// [`MstpDiagnostics`](bacnet_transport::mstp::MstpDiagnostics) the
+    /// transport updates, readable in any state, after stop included. It is
+    /// there for a session [`MstpEndpointBuilder`](crate::mstp::MstpEndpointBuilder)
+    /// built, and `None` for any other: take
+    /// [`MstpTransport::diagnostics`](bacnet_transport::mstp::MstpTransport::diagnostics)
+    /// before handing a transport to [`Self::new`].
+    pub fn mstp_diagnostics(&self) -> Option<bacnet_transport::mstp::MstpDiagnostics> {
+        self.mstp_diagnostics.clone()
     }
 
     /// Returns the composed session role (narrow admin).

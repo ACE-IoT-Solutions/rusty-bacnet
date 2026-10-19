@@ -307,6 +307,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
 
     /// Builds an unstarted session (caller drives `start()`/`stop()` once).
     ///
+    /// The transport's counters stay reachable through
+    /// [`EndpointSession::mstp_diagnostics`].
+    ///
     /// One-link proof: this builds exactly one [`MstpTransport`] (one serial
     /// owner after `start()`); no second serial owner or duplicated MAC state
     /// machine is created here or in [`EndpointSession`]. At start, a composed
@@ -320,7 +323,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         let database = self.database.take();
         let identity = self.identity.take();
         let transport = self.build_transport()?;
+        let diagnostics = transport.diagnostics();
         let mut endpoint = EndpointSession::new(transport, role, session)?;
+        endpoint.mstp_diagnostics = Some(diagnostics);
         if let Some(db) = database {
             endpoint = endpoint.with_database(db);
         }
