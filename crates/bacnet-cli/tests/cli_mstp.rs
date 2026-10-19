@@ -106,6 +106,12 @@ async fn invalid_mstp_flags_are_refused_with_the_allowed_values() {
             vec!["--mstp", "", "--mstp-mac", "1", "devices"],
             "--mstp needs a serial port name",
         ),
+        // The monitor (#970) proposes the MAC: it takes no --mstp-mac,
+        // before or after the subcommand.
+        (
+            vec!["--mstp-mac", "3", "tui", "--mstp-monitor", "/dev/x"],
+            "--mstp-mac cannot be used with --mstp-monitor",
+        ),
     ] {
         let output = support::run(&args).await;
         support::failure(&output, diagnostic);

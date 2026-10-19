@@ -20,6 +20,8 @@
 //!   matrix (B/IP foreign-device status, BDT and FDT).
 //! - [`sc`]: the SC screen's messages and the connection doctor (#967).
 //! - [`mstp`]: the MS/TP screen's messages and diagnostics sampling (#969).
+//! - [`monitor`]: the MS/TP passive monitor, its analysis and the safe-join
+//!   hand-off (#970).
 //!
 //! The TUI is read-only by default: discovery, the device browser's reads,
 //! the watch list's reads and finite COV subscriptions, and finite
@@ -31,6 +33,9 @@ mod event_loop;
 mod keymap;
 mod log_layer;
 mod message;
+// Without `serial` no port opens; the MS/TP screen still draws.
+#[cfg_attr(not(feature = "serial"), allow(dead_code))]
+mod monitor;
 // Without `serial` no session joins a trunk; the MS/TP screen still draws.
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]
 mod mstp;
@@ -83,7 +88,10 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("{hint}");
         std::process::exit(1);
     }
-    let kind = if cli.mstp.is_some() {
+    let monitor = monitor::plan_from(&cli);
+    let kind = if monitor.is_some() {
+        TransportKind::MstpMonitor
+    } else if cli.mstp.is_some() {
         TransportKind::Mstp
     } else if cli.sc {
         TransportKind::Sc
@@ -116,6 +124,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
                     passive: *passive,
                     ..SafetyOptions::default()
                 },
+                mstp: Default::default(),
             },
         ),
         _ => (
@@ -125,6 +134,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
                 max_rate: worker::browse::DEFAULT_MAX_RATE,
                 watch: WatchOptions::default(),
                 safety: SafetyOptions::default(),
+                mstp: Default::default(),
             },
         ),
     };
@@ -133,7 +143,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         eprintln!("Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls");
         std::process::exit(1);
     }
-    if kind == TransportKind::Mstp && !cfg!(feature = "serial") {
+    options.mstp.monitor.clone_from(&monitor);
+    let serial = matches!(kind, TransportKind::Mstp | TransportKind::MstpMonitor);
+    if serial && !cfg!(feature = "serial") {
         eprintln!("Error: {}", crate::mstp::NO_SERIAL);
         std::process::exit(1);
     }
@@ -150,8 +162,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     {
         (None, Some(service), Some(connection), None, None)
     } else {
-        // A passive session binds nothing, so there is no interface to pick.
-        let (interface, broadcast, picker) = if options.safety.passive {
+        // A passive session or a monitor binds nothing, so there is no
+        // interface to pick.
+        let (interface, broadcast, picker) = if options.safety.passive || monitor.is_some() {
             let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);
             (interface, cli.broadcast, None)
         } else {
@@ -196,6 +209,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         app.connection = Some(connection);
         app.link = Link::Down;
         app.overlay = Overlay::Connection;
+    }
+    if let Some(plan) = &monitor {
+        app.start_monitor(plan, !options.safety.passive);
     }
 
     let signals = Signals::install()?;

@@ -24,6 +24,16 @@ fn settings() -> MstpArgs {
     }
 }
 
+/// The command that joins with [`settings`] on `port`.
+fn join_on(port: &str) -> Command {
+    Command::JoinTrunk {
+        settings: MstpArgs {
+            port: port.into(),
+            ..settings()
+        },
+    }
+}
+
 /// A flags-only MS/TP app, `join` its confirmation.
 fn mstp_app(join: Option<JoinDialog>) -> App {
     App::new(
@@ -181,9 +191,7 @@ fn joining_from_flags_needs_y_and_takes_the_port_chosen() {
     assert!(matches!(app.overlay, Overlay::Join(_)));
     assert_eq!(
         press(&mut app, KeyCode::Char('y')),
-        [Command::JoinTrunk {
-            port: "/dev/ttyUSB1".into()
-        }],
+        [join_on("/dev/ttyUSB1")],
         "the port moved to: the configured one first, then the listed ones without repeats"
     );
     assert_eq!(app.overlay, Overlay::None);
@@ -202,9 +210,7 @@ fn joining_from_flags_needs_y_and_takes_the_port_chosen() {
 #[test]
 fn joining_again_is_confirmed_again() {
     let mut app = mstp_app(Some(JoinDialog::for_flags(settings(), vec![])));
-    let join = [Command::JoinTrunk {
-        port: "/dev/ttyUSB0".into(),
-    }];
+    let join = [join_on("/dev/ttyUSB0")];
     assert_eq!(press(&mut app, KeyCode::Char('y')), join);
     for link in [Link::Failed("Serial open failed".into()), Link::Down] {
         app.link = link;
@@ -344,12 +350,7 @@ async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
     commands.send(connect()).await.unwrap();
     rejected(&mut events).await;
     let chosen = missing("chosen");
-    commands
-        .send(Command::JoinTrunk {
-            port: chosen.clone(),
-        })
-        .await
-        .unwrap();
+    commands.send(join_on(&chosen)).await.unwrap();
     assert_eq!(
         event(&mut events).await,
         WorkerEvent::SessionStarted { generation: 1 }
@@ -367,10 +368,7 @@ async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
         commands.send(command).await.unwrap();
         rejected(&mut events).await;
     }
-    commands
-        .send(Command::JoinTrunk { port: chosen })
-        .await
-        .unwrap();
+    commands.send(join_on(&chosen)).await.unwrap();
     assert_eq!(
         event(&mut events).await,
         WorkerEvent::SessionStarted { generation: 2 }

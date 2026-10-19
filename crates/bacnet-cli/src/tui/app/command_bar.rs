@@ -15,10 +15,15 @@
 //! - `find NAME`: broadcast a Who-Has for the object named NAME, the rest
 //!   of the line as typed, and list the answers below the device table;
 //!   `find` alone closes the list.
+//! - `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`: the MS/TP
+//!   monitor's thresholds, and how long its join wizard listens.
+
+use std::time::Duration;
 
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 
+use super::monitor::Setting;
 use super::{App, FilterKey, Overlay, FLASH_FOR};
 use crate::core::target::{parse_target, Target};
 use crate::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
@@ -28,7 +33,7 @@ use crate::tui::watched::{Point, WatchCommand};
 
 /// The usage line shown for an unknown command.
 pub(crate) const USAGE: &str =
-    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS | find NAME";
+    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS | find NAME | mstp rotation|hold MS | mstp listen SECS";
 
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +48,26 @@ pub(crate) enum Line {
     Bbmd(std::net::SocketAddrV4),
     /// Search for an object by name; empty closes the search.
     Find(String),
+    /// An MS/TP monitor setting.
+    Mstp(Setting),
+}
+
+/// `mstp rotation|hold MS` or `mstp listen SECS`, each at least 1.
+fn mstp_setting(which: &str, value: &str) -> Result<Setting, String> {
+    let number = value
+        .parse::<u64>()
+        .ok()
+        .filter(|n| (1..=3_600_000).contains(n))
+        .ok_or_else(|| format!("'{value}': a whole number from 1"))?;
+    match which {
+        "rotation" => Ok(Setting::Rotation(Duration::from_millis(number))),
+        "hold" => Ok(Setting::Hold(Duration::from_millis(number))),
+        "listen" if number <= 3_600 => Ok(Setting::Listen(Duration::from_secs(number))),
+        "listen" => Err("mstp listen takes 1 to 3600 seconds".into()),
+        _ => Err(format!(
+            "'{which}': mstp rotation|hold MS, or mstp listen SECS"
+        )),
+    }
 }
 
 fn device(word: &str, command: &str) -> Result<u32, String> {
@@ -110,6 +135,7 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
         ["csv", "on"] => Ok(Line::Csv(true)),
         ["csv", "off"] => Ok(Line::Csv(false)),
         ["bbmd", address] => Ok(Line::Bbmd(crate::foreign::parse_bbmd_arg(address)?)),
+        ["mstp", which, value] => Ok(Line::Mstp(mstp_setting(which, value)?)),
         ["find", ..] => {
             // A name may hold several spaces in a row: keep it as typed.
             let rest = text.trim_start().strip_prefix("find").unwrap_or_default();
@@ -146,6 +172,7 @@ impl App {
                     Ok(Line::Writem(specs)) => self.prepare(specs, true, out),
                     Ok(Line::Bbmd(bbmd)) => self.set_bbmd(bbmd, out),
                     Ok(Line::Find(name)) => self.find(name, out),
+                    Ok(Line::Mstp(setting)) => self.mstp_setting(setting),
                     Err(error) => self.flash(error, FLASH_FOR),
                 }
             }
@@ -194,6 +221,22 @@ mod tests {
             Ok(Line::Find("Supply  Air Temp".into()))
         );
         assert_eq!(parse("find"), Ok(Line::Find(String::new())));
+        let ms = Duration::from_millis;
+        assert_eq!(
+            parse("mstp rotation 1500"),
+            Ok(Line::Mstp(Setting::Rotation(ms(1500))))
+        );
+        assert_eq!(
+            parse("mstp hold 250"),
+            Ok(Line::Mstp(Setting::Hold(ms(250))))
+        );
+        assert_eq!(
+            parse("mstp listen 30"),
+            Ok(Line::Mstp(Setting::Listen(Duration::from_secs(30))))
+        );
+        assert!(parse("mstp hold 0").is_err());
+        assert!(parse("mstp listen 4000").is_err());
+        assert!(parse("mstp poll 5").is_err());
         assert!(parse("finder x").unwrap_err().contains("unknown command"));
         assert!(parse("read 100 ai:1")
             .unwrap_err()

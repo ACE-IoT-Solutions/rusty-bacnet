@@ -96,6 +96,13 @@ const ABOVE_MAX_MASTER: &str = "no station would ever pass this one the token";
 /// and the other MS/TP flags need `--mstp`.
 pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Error> {
     use clap::error::ErrorKind;
+    let given = |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
+    let monitor = matches
+        .subcommand_matches("tui")
+        .and_then(|tui| tui.get_one::<String>("mstp_monitor"));
+    if let Some(port) = monitor {
+        return check_monitor(port, given);
+    }
     if matches.get_one::<String>("mstp").is_none() {
         // Clap's `requires` misses a global flag given after the subcommand.
         let given = [
@@ -105,16 +112,23 @@ pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Erro
             "mstp_max_info_frames",
         ]
         .into_iter()
-        .find(|id| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine));
+        .find(|id| given(id));
         return match given {
             Some(id) => Err(clap::Error::raw(
                 ErrorKind::MissingRequiredArgument,
-                format!("--{} requires --mstp PORT\n", id.replace('_', "-")),
+                format!(
+                    "--{} requires --mstp PORT{}\n",
+                    id.replace('_', "-"),
+                    if MONITOR_FLAGS.contains(&id) {
+                        " (or tui --mstp-monitor PORT)"
+                    } else {
+                        ""
+                    }
+                ),
             )),
             None => Ok(()),
         };
     }
-    let given = |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
     // Clap's `conflicts_with` misses these too when they sit on the other
     // side of the subcommand, and MS/TP would ignore them without a word.
     if let Some(id) = OTHER_TRANSPORT_FLAGS.iter().find(|id| given(id)) {
@@ -151,6 +165,47 @@ pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Erro
             format!(
                 "--mstp-mac {mac} is above --mstp-max-master {max_master}: {ABOVE_MAX_MASTER}\n"
             ),
+        ));
+    }
+    Ok(())
+}
+
+/// The MS/TP flags the monitor (`tui --mstp-monitor`) takes: the line's
+/// baud rate, and the Max_Info_Frames to join with.
+const MONITOR_FLAGS: [&str; 2] = ["mstp_baud", "mstp_max_info_frames"];
+
+/// `tui --mstp-monitor PORT`'s checks, on either side of the subcommand: a
+/// port name, and no flag of another transport, of `--mstp`, or for the
+/// station address and Max_Master, which the join wizard proposes.
+fn check_monitor(port: &str, given: impl Fn(&str) -> bool) -> Result<(), clap::Error> {
+    use clap::error::ErrorKind;
+    if port.trim().is_empty() {
+        return Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "--mstp-monitor needs a serial port name (see `bacnet mstp-ports`)\n",
+        ));
+    }
+    let conflict = |text: String| Err(clap::Error::raw(ErrorKind::ArgumentConflict, text));
+    if given("mstp") {
+        return conflict(
+            "--mstp cannot be used with --mstp-monitor: monitor first, then join from \
+             the MS/TP screen (J)\n"
+                .into(),
+        );
+    }
+    if let Some(id) = ["mstp_mac", "mstp_max_master"]
+        .into_iter()
+        .find(|id| given(id))
+    {
+        return conflict(format!(
+            "--{} cannot be used with --mstp-monitor: the join wizard (J) proposes it\n",
+            id.replace('_', "-")
+        ));
+    }
+    if let Some(id) = OTHER_TRANSPORT_FLAGS.iter().find(|id| given(id)) {
+        return conflict(format!(
+            "--{} cannot be used with --mstp-monitor: it belongs to another transport\n",
+            id.replace('_', "-")
         ));
     }
     Ok(())
@@ -232,23 +287,25 @@ impl MstpArgs {
     }
 }
 
-#[cfg_attr(not(feature = "serial"), allow(dead_code))]
-/// Build a client that joins the trunk on `serial` as station `args.mac`.
+#[cfg_attr(not(any(feature = "serial", feature = "tui")), allow(dead_code))]
+/// Build a client that joins the trunk on `serial` as station `args.mac`,
+/// its MAC loop placed by `mode`.
 ///
-/// The MAC loop runs on a dedicated thread, so a busy application runtime
-/// doesn't delay token handling. The diagnostics handle is taken before
-/// the client owns the transport; it also carries the node's state.
+/// The CLI runs the loop on a dedicated thread, so a busy application
+/// runtime doesn't delay token handling; tests on paused time keep it on
+/// theirs. The diagnostics handle is taken before the client owns the
+/// transport; it also carries the node's state.
 pub(crate) async fn build_client_on<S: SerialPort>(
     serial: S,
     args: &MstpArgs,
     timeout_ms: u64,
     min_interval_ms: u64,
+    mode: MstpExecutionMode,
 ) -> Result<(BACnetClient<MstpTransport<S>>, MstpDiagnostics), Error> {
     let config = args.config();
     config.validate()?;
     let max_apdu = config.max_apdu_length();
-    let transport =
-        MstpTransport::new(serial, config).with_execution_mode(MstpExecutionMode::DedicatedThread);
+    let transport = MstpTransport::new(serial, config).with_execution_mode(mode);
     let diagnostics = transport.diagnostics();
     let client = BACnetClient::generic_builder()
         .transport(transport)
@@ -264,28 +321,35 @@ pub(crate) async fn build_client_on<S: SerialPort>(
 #[cfg(feature = "serial")]
 pub(crate) type Serial = bacnet_transport::mstp_serial::TokioSerialPort;
 
-/// Open `args.mstp`'s serial port, after checking its settings, and join
-/// the trunk there.
+/// Check `mstp`'s settings, then open its serial port.
 #[cfg(feature = "serial")]
-pub(crate) async fn build_client(
-    args: &crate::transport::TransportArgs,
-) -> Result<(BACnetClient<MstpTransport<Serial>>, MstpDiagnostics), Error> {
+pub(crate) fn open_serial(mstp: &MstpArgs) -> Result<Serial, Error> {
     use bacnet_transport::mstp_serial::SerialConfig;
-    let mstp = args
-        .mstp
-        .as_ref()
-        .ok_or_else(|| Error::Encoding("--mstp is required for MS/TP".into()))?;
     mstp.validate().map_err(Error::Encoding)?;
     mstp.config().validate()?;
-    let serial = Serial::open(&SerialConfig {
+    Serial::open(&SerialConfig {
         port_name: mstp.port.clone(),
         baud_rate: mstp.baud,
     })
     .map_err(|error| match error {
         Error::Encoding(message) => Error::Encoding(format!("{}: {message}", mstp.port)),
         other => other,
-    })?;
-    build_client_on(serial, mstp, args.timeout_ms, args.min_interval_ms).await
+    })
+}
+
+/// Open `args.mstp`'s serial port, after checking its settings, and join
+/// the trunk there.
+#[cfg(feature = "serial")]
+pub(crate) async fn build_client(
+    args: &crate::transport::TransportArgs,
+) -> Result<(BACnetClient<MstpTransport<Serial>>, MstpDiagnostics), Error> {
+    let mstp = args
+        .mstp
+        .as_ref()
+        .ok_or_else(|| Error::Encoding("--mstp is required for MS/TP".into()))?;
+    let serial = open_serial(mstp)?;
+    let mode = MstpExecutionMode::DedicatedThread;
+    build_client_on(serial, mstp, args.timeout_ms, args.min_interval_ms, mode).await
 }
 
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]

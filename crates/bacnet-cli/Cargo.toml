@@ -68,6 +68,8 @@ bacnet-server.workspace = true
 rcgen.workspace = true
 futures-util.workspace = true
 insta = "1.48"
+# The scripted MS/TP ring the monitor screen's tests play (#970).
+bacnet-transport = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 
 # The MS/TP one-shot test's pseudo-terminal pair (#969).

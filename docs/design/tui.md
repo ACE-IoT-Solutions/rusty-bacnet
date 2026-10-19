@@ -122,7 +122,7 @@ What M0 draws (80x24):
 | Watch (#965) | Watched points with value, units, flags, COV or polled, last-update age and a bar sparkline. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, refusal banner); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
 | SC (#967) | Hub connector status (state, primary or failover hub, hub VMAC, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory and pre-dial lint (#968) are a third view on the same screen |
-| MS/TP (planned) | Participant panel or passive monitor (station grid, token timing, Max_Master analysis, error counters, join wizard) |
+| MS/TP (#969, #970) | Participant panel (`--mstp`), or the passive monitor (`tui --mstp-monitor PORT`): a station grid, the token ring with rotation and hold times, Max_Master findings, error counters, and the safe-join wizard (`J`) that hands the port to a participant through the T2 join dialog |
 | Capture (planned) | Frame list, decode tree, hex view, filters, pcap export |
 | Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; arm dialog (`W`), write and relinquish forms (`w`, `n`), the preview and its confirmation, the session ledger (`u`) and the exit guard (#964) |
 
@@ -184,8 +184,12 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 1. **Passive** (`--passive`, #964): never transmits. No client is built at
    all, so not even an automatic answer to an incoming request goes out; as a
    second line, a session loop running with the passive option refuses every
-   command that would transmit. Today that leaves the ledger view; capture, the
-   MS/TP monitor and offline files come later.
+   command that would transmit. Today that leaves the ledger view and the
+   MS/TP monitor (`tui --mstp-monitor`, #970), which opens its port
+   listen-only and runs at this level with or without `--passive`; capture
+   and offline files come later. A monitor's join wizard leaves this level
+   for read-only once its T2 join is confirmed; with `--passive` it never
+   joins.
 2. **Read-only** (the default): discovery, reads, ReadRange, BDT and FDT reads.
    FD registrations create remote state with a finite TTL. Disconnect stops
    local renewal and releases the client; the remote FDT entry expires under
@@ -491,9 +495,12 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   BBMD state `Arc`) and poll the counter snapshots (SC `npdu_drop_counts()`,
   B/IP management, FDT and fanout counters) through the borrow. They never
   send through the transport or hold the BBMD state lock across an await.
-- **Monitor and capture.** The MS/TP passive monitor has no client: a worker
-  owns the serial port (#958). Live capture of our own traffic needs a
-  link-level tap (#957).
+- **Monitor and capture.** The MS/TP passive monitor has no client: its
+  session owns the receive-only port and the `MstpMonitor` (#958, #970), and
+  stops the monitor before it returns, so the coordinator opens a joining
+  participant only after the port is closed. The capture screen (#971) can
+  take its own lossy subscription to the monitor's frame stream. Live capture
+  of our own traffic needs a link-level tap (#957).
 
 ### 6.6 Profiles and workspaces (#962)
 
@@ -599,7 +606,7 @@ history lives in the platform data directory.
 | e. Load | 1,000 device events per second against a stalled UI: the channel stays bounded and every event is delivered or counted; render time of a 4,096-row table | all OSes (the 5 ms budget is asserted in release builds) |
 | f. Contract | the existing one-shot integration tests, unchanged; `bacnet tui > out.txt` fails with a hint and an empty file | all OSes |
 | g. Docker topology | `examples/docker/docker-compose.yml` (bbmd-a/b, router, sc-hub, foreign-client) | manual and release checks |
-| h. MS/TP (planned) | `LoopbackSerial::pair()`, PTY `SerialStream::pair()`, the ring simulator from #958; real USB-RS485 adapters for hardware checks | Unix for PTY; loopback everywhere |
+| h. MS/TP | `LoopbackSerial::pair()`, PTY `SerialStream::pair()`, the scripted ring of #958 (`bacnet-transport`'s `test-support`, played into the monitor on paused time); real USB-RS485 adapters for hardware checks | Linux for PTY; loopback and the scripted ring everywhere |
 | i. PTY end-to-end (planned) | start, quit, terminal restored, with portable-pty and vt100 | Unix first |
 
 Rules: fixed terminal sizes; times as fixed offsets so ages render the same on
@@ -631,7 +638,7 @@ cargo nextest run -p bacnet-cli --release -E 'test(drawing_a_full_device_table)'
 | B/IP | yes | yes | yes; wildcard local-address discovery is missing (#952) |
 | BACnet/SC | yes | yes | yes |
 | MS/TP participant (#969) | yes, in the release binary: USB auto-direction (kernel RS-485 and `serial-gpio` stay library-only) | experimental, source builds with `serial`: USB auto-direction, `/dev/cu.*` | experimental, source builds with `serial`: USB auto-direction, `COMn` |
-| MS/TP passive monitor (planned) | yes | experimental | experimental (host timer resolution limits timing accuracy) |
+| MS/TP passive monitor (#970) | yes, wherever the participant is | experimental | experimental (host timer resolution limits timing accuracy) |
 | Own-traffic capture (planned) | yes | yes | yes |
 | Wire capture (libpcap) | yes (root or CAP_NET_RAW) | builds | needs the Npcap SDK |
 

@@ -139,6 +139,7 @@ impl App {
             WorkerEvent::Discovery(event) => self.discovery_event(event),
             WorkerEvent::Sc(report) => self.sc_report(report),
             WorkerEvent::Mstp(report) => self.mstp.report(report),
+            WorkerEvent::Monitor(report) => self.monitor_report(report),
         }
     }
 }

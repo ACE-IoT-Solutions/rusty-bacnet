@@ -20,6 +20,22 @@ pub(crate) enum MstpKey {
     Clear,
     /// Stop or resume following new readings.
     ToggleWatch,
+    /// Tab: the monitor's next view (BackTab: the one before).
+    Cycle {
+        /// Backwards.
+        back: bool,
+    },
+    /// `J`: start the monitor's join wizard.
+    Join,
+    /// `+` or `-`: the next or previous free MAC the wizard found.
+    Pick {
+        /// The previous one.
+        back: bool,
+    },
+    /// Enter: take the wizard's proposal to the join confirmation.
+    Accept,
+    /// Esc: close the wizard, or leave the screen.
+    Back,
 }
 
 /// The MS/TP screen: the station joined as, the latest reading, and the
@@ -67,6 +83,8 @@ impl MstpState {
                     self.shown = self.latest;
                 }
             }
+            // The monitor's keys; `App::mstp_key` handles Back.
+            _ => {}
         }
     }
 
@@ -119,6 +137,22 @@ pub(crate) enum JoinKey {
     Confirm,
 }
 
+/// Where a join confirmation came from, which decides what `y` sends and
+/// what Esc goes back to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JoinOrigin {
+    /// `--mstp` flags: `y` sends [`Command::JoinTrunk`].
+    Flags,
+    /// A profile: `y` sends its connection request.
+    Profile(Box<Command>),
+    /// The monitor's join wizard (#970): `y` sends [`Command::JoinTrunk`],
+    /// which ends the monitor before joining.
+    Monitor {
+        /// Why these settings, for the dialog.
+        note: String,
+    },
+}
+
 /// The join confirmation: what joining means, the port to join on, and
 /// `y` to go ahead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,12 +160,12 @@ pub(crate) struct JoinDialog {
     /// The settings to join with; `port` is the one first offered.
     pub(crate) settings: MstpArgs,
     /// The ports to choose from, the configured one first. A profile's
-    /// port is the only one: the editor changes it.
+    /// port, and the monitor's, is the only one.
     pub(crate) ports: Vec<String>,
     /// The port chosen.
     pub(crate) selected: usize,
-    /// For a profile, the connection request to send once confirmed.
-    pub(crate) then: Option<Command>,
+    /// Where it came from.
+    pub(crate) origin: JoinOrigin,
 }
 
 impl JoinDialog {
@@ -145,7 +179,7 @@ impl JoinDialog {
             settings,
             ports,
             selected: 0,
-            then: None,
+            origin: JoinOrigin::Flags,
         }
     }
 
@@ -155,7 +189,17 @@ impl JoinDialog {
             ports: vec![settings.port.clone()],
             settings,
             selected: 0,
-            then: Some(then),
+            origin: JoinOrigin::Profile(Box::new(then)),
+        }
+    }
+
+    /// The monitor wizard's proposal, on the monitor's port.
+    pub(crate) fn for_monitor(settings: MstpArgs, note: String) -> Self {
+        Self {
+            ports: vec![settings.port.clone()],
+            settings,
+            selected: 0,
+            origin: JoinOrigin::Monitor { note },
         }
     }
 
@@ -171,9 +215,15 @@ impl JoinDialog {
             JoinKey::Up => self.selected = self.selected.saturating_sub(1),
             JoinKey::Down => self.selected = (self.selected + 1).min(last),
             JoinKey::Confirm => {
-                return Some(self.then.clone().unwrap_or_else(|| Command::JoinTrunk {
-                    port: self.port().to_string(),
-                }));
+                return Some(match &self.origin {
+                    JoinOrigin::Profile(then) => (**then).clone(),
+                    JoinOrigin::Flags | JoinOrigin::Monitor { .. } => Command::JoinTrunk {
+                        settings: MstpArgs {
+                            port: self.port().to_string(),
+                            ..self.settings.clone()
+                        },
+                    },
+                });
             }
         }
         None
@@ -216,6 +266,15 @@ impl App {
             dialog.settings.mac
         );
         tracing::info!("{text}");
+        if let (JoinOrigin::Monitor { .. }, Command::JoinTrunk { settings }) =
+            (&dialog.origin, &command)
+        {
+            // The monitor ends and the session joins: it transmits from
+            // now on, and a later join is confirmed again like `--mstp`'s.
+            self.join_again = Some(Box::new(JoinDialog::for_flags(settings.clone(), vec![])));
+            self.monitor = None;
+            self.safety.passive = false;
+        }
         self.overlay = Overlay::None;
         if let Command::Profile(Request::Connect { profile, .. }) = &command {
             let kind = profile.transport.kind();
@@ -233,11 +292,14 @@ impl App {
         let Overlay::Join(dialog) = &self.overlay else {
             return;
         };
-        if dialog.then.is_some() {
+        if let JoinOrigin::Profile(_) = dialog.origin {
             if let Some(connection) = &mut self.connection {
                 connection.pending = false;
             }
             self.overlay = Overlay::Connection;
+        } else if let JoinOrigin::Monitor { .. } = dialog.origin {
+            // Back to the monitor, its proposal kept.
+            self.overlay = Overlay::None;
         } else if self.link == Link::Picking {
             self.quit = true;
         } else {
