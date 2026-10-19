@@ -36,6 +36,8 @@ pub struct MstpTransport<S: SerialPort> {
     execution_mode: MstpExecutionMode,
     dedicated_runtime: Option<DedicatedRuntime>,
     diagnostics: MstpDiagnostics,
+    /// See [`Self::frame_tap`].
+    frame_tap: crate::tap::FrameTap,
 }
 
 /// What a send needs from a started transport.
@@ -58,6 +60,7 @@ impl<S: SerialPort> MstpTransport<S> {
             execution_mode: MstpExecutionMode::default(),
             dedicated_runtime: None,
             diagnostics: MstpDiagnostics::new(),
+            frame_tap: crate::tap::FrameTap::new(),
         }
     }
 
@@ -94,6 +97,17 @@ impl<S: SerialPort> MstpTransport<S> {
     /// ```
     pub fn diagnostics(&self) -> MstpDiagnostics {
         self.diagnostics.clone()
+    }
+
+    /// This transport's frame tap: every frame this station sends and
+    /// every frame it hears on the line, preamble to CRC, for whoever
+    /// subscribes: data frames and the control frames the master node
+    /// handles itself (the token, polls, postponed replies) alike. Like
+    /// [`Self::diagnostics`], the tap outlives a move of the transport:
+    /// clone it, or subscribe, before handing the transport over. See
+    /// [`crate::tap`].
+    pub fn frame_tap(&self) -> &crate::tap::FrameTap {
+        &self.frame_tap
     }
 
     /// The configuration the next `start` uses: what [`Self::new`] was
@@ -199,6 +213,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             npdus: npdu_tx,
             counts: self.diagnostics.counters.clone(),
             transmit_pad: self.config.transmit_latency_pad,
+            tap: self.frame_tap.clone(),
         };
         let task = match &dedicated_runtime {
             Some(runtime) => runtime.handle.spawn(task.run()),

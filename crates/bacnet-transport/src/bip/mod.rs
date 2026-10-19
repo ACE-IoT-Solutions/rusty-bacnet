@@ -150,6 +150,8 @@ pub struct BipTransport {
     group_drops: groups::GroupDrops,
     /// See [`Self::receive_counters`].
     receive_drops: Arc<ReceiveDrops>,
+    /// See [`Self::frame_tap`].
+    frame_tap: crate::tap::FrameTap,
     /// See [`Self::send_counters`].
     send_refusals: Arc<SendRefusals>,
     /// Rate limiter for broadcast forwarding fanout.
@@ -213,6 +215,7 @@ impl BipTransport {
             fanout_counters,
             group_drops: groups::GroupDrops::default(),
             receive_drops: Arc::default(),
+            frame_tap: crate::tap::FrameTap::new(),
             send_refusals: Arc::default(),
             fanout_limiter,
             own_broadcast: None,
@@ -625,8 +628,8 @@ impl TransportPort for BipTransport {
         let plan = self.bind_plan_for_start().await;
         let listener_interface = plan.local.and_then(|local| local.index);
         let bound = socket::bind(plan).map_err(Error::Transport)?;
-        let listeners =
-            Listeners::open(bound, self.network_port_lease.clone()).map_err(Error::Transport)?;
+        let lease = self.network_port_lease.clone();
+        let listeners = Listeners::open(bound, lease, &self.frame_tap).map_err(Error::Transport)?;
         let socket = Arc::clone(listeners.primary());
 
         let wildcard_bind = self.interface.is_unspecified();

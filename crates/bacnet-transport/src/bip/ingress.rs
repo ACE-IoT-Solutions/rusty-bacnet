@@ -10,6 +10,7 @@ use std::sync::Arc;
 use bacnet_bip_core::node::{Addressed, Datagram, Discard, LocalAddresses, Path};
 use tracing::{debug, warn};
 
+use crate::tap::FrameTap;
 use crate::udp_metadata::{DestinationReceiver, IpVersion, ReceivedDatagram};
 
 use super::io::{receive, RecvContext};
@@ -36,18 +37,22 @@ pub(super) struct Listener {
 impl Listener {
     /// Hand a bound socket to tokio, reading the destination of each
     /// datagram. Must run inside a tokio runtime.
-    fn open(socket: socket2::Socket, lease: Option<Arc<()>>) -> io::Result<Self> {
+    fn open(socket: socket2::Socket, lease: Option<Arc<()>>, tap: &FrameTap) -> io::Result<Self> {
         let receiver = DestinationReceiver::configure(&socket, IpVersion::V4)?;
         let socket = tokio::net::UdpSocket::from_std(socket.into())?;
         Ok(Self {
-            socket: Arc::new(BipSocket::new(socket, lease)),
+            socket: Arc::new(BipSocket::new(socket, lease).tapped(tap.clone())),
             receiver,
             buf: vec![0; 2048],
         })
     }
 
+    /// The next datagram, which the tap sees as it is read.
     async fn recv(&mut self) -> io::Result<ReceivedDatagram> {
-        self.receiver.recv_from(&self.socket, &mut self.buf).await
+        let received = self.receiver.recv_from(&self.socket, &mut self.buf).await?;
+        let datagram = self.buf.get(..received.len).unwrap_or_default();
+        self.socket.tap_inbound(datagram, received.peer);
+        Ok(received)
     }
 }
 
@@ -72,13 +77,17 @@ pub(super) type Source = Option<usize>;
 
 impl Listeners {
     /// Hand the sockets one start bound to tokio. Each keeps `lease` until
-    /// it closes.
-    pub(super) fn open(bound: BoundSockets, lease: Option<Arc<()>>) -> io::Result<Self> {
+    /// it closes, and reports its datagrams to `tap`.
+    pub(super) fn open(
+        bound: BoundSockets,
+        lease: Option<Arc<()>>,
+        tap: &FrameTap,
+    ) -> io::Result<Self> {
         let mut broadcast = [None, None];
         for (slot, socket) in broadcast.iter_mut().zip(bound.listeners) {
-            *slot = Some(Listener::open(socket, lease.clone())?);
+            *slot = Some(Listener::open(socket, lease.clone(), tap)?);
         }
-        let primary = Listener::open(bound.primary, lease)?;
+        let primary = Listener::open(bound.primary, lease, tap)?;
         Ok(Self { primary, broadcast })
     }
 

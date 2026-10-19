@@ -416,6 +416,23 @@ impl<S: SerialPort + 'static> AnyTransport<S> {
             Self::Loopback(_) => DataLink::Loopback,
         }
     }
+
+    /// The variant's frame tap (see [`crate::tap`]): B/IP, B/IPv6,
+    /// BACnet/SC and MS/TP have one; Ethernet and loopback do not yet, and
+    /// give `None`.
+    pub fn frame_tap(&self) -> Option<&crate::tap::FrameTap> {
+        match self {
+            Self::Bip(t) => Some(t.frame_tap()),
+            Self::Mstp(t) => Some(t.frame_tap()),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => Some(t.frame_tap()),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(_) => None,
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => Some(t.frame_tap()),
+            Self::Loopback(_) => None,
+        }
+    }
 }
 
 impl<S: SerialPort + 'static> AsBip for AnyTransport<S> {

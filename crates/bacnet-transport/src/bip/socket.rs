@@ -50,13 +50,15 @@
 //!   on.
 
 use std::io;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{ops::Deref, sync::Arc};
 
+use bacnet_types::data_link::DataLink;
 use bacnet_types::error::Error;
 use tokio::net::UdpSocket;
 
 use crate::local_addresses::LocalInterface;
+use crate::tap::{FrameTap, TapDirection, TapPeer};
 
 /// What a socket is for, which decides how it shares its port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +137,13 @@ pub(super) struct BoundSockets {
 }
 
 impl super::BipTransport {
+    /// This transport's frame tap: every BVLL message it sends and
+    /// receives, BVLC results, registrations and forwarded NPDUs included,
+    /// for whoever subscribes. See [`crate::tap`].
+    pub fn frame_tap(&self) -> &FrameTap {
+        &self.frame_tap
+    }
+
     /// Check that this transport could start now: bind the sockets
     /// [`start`](crate::port::TransportPort::start) would, with the same
     /// options, and release them. Another socket can still take the port
@@ -302,6 +311,8 @@ fn listener_addresses(interface: Ipv4Addr, broadcast: Ipv4Addr) -> Vec<Ipv4Addr>
 pub(super) struct BipSocket {
     socket: UdpSocket,
     _network_port_lease: Option<Arc<()>>,
+    /// The transport's tap, for every datagram this socket sends or reads.
+    tap: FrameTap,
     /// Where a test's sends go instead of the network.
     #[cfg(test)]
     sink: Option<super::send_sink::SendSink>,
@@ -312,9 +323,22 @@ impl BipSocket {
         Self {
             socket,
             _network_port_lease: lease,
+            tap: FrameTap::default(),
             #[cfg(test)]
             sink: None,
         }
+    }
+
+    /// This socket, reporting its datagrams to `tap`.
+    pub(super) fn tapped(self, tap: FrameTap) -> Self {
+        Self { tap, ..self }
+    }
+
+    /// Report a datagram this socket read from `peer`.
+    pub(super) fn tap_inbound(&self, datagram: &[u8], peer: SocketAddr) {
+        let peer = || TapPeer::Udp(peer);
+        self.tap
+            .record(TapDirection::Inbound, DataLink::Bip, peer, datagram);
     }
 
     /// A socket whose sends go to `sink`, for tests.
@@ -326,8 +350,19 @@ impl BipSocket {
         }
     }
 
-    /// Send one datagram. Every send of the transport goes through here.
+    /// Send one datagram. Every send of the transport goes through here,
+    /// and the tap sees each one sent.
     pub(super) async fn send_to(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
+        let sent = self.send_unrecorded(buf, target).await;
+        if sent.is_ok() {
+            let peer = || TapPeer::Udp(target.into());
+            self.tap
+                .record(TapDirection::Outbound, DataLink::Bip, peer, buf);
+        }
+        sent
+    }
+
+    async fn send_unrecorded(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
         #[cfg(test)]
         if let Some(sink) = &self.sink {
             if sink.yields() {

@@ -31,6 +31,7 @@ mod sc_limits;
 #[cfg(feature = "sc-tls")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
 pub mod sc_tls;
+pub mod tap;
 #[cfg(feature = "sc-tls")]
 mod tcp_connect;
 #[cfg(feature = "sc-tls")]

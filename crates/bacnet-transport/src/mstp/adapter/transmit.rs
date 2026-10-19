@@ -57,7 +57,7 @@ use super::{increment, poll_once, Core, Echo, Mac, Outgoing, ReadFailed, SentKin
 /// never falls quiet cannot hold the task there.
 const DRAIN_READS: usize = 8;
 
-impl<S: SerialPort> Mac<S> {
+impl<S: SerialPort> Mac<'_, S> {
     /// Send the frame the core handed over.
     pub(super) async fn transmit(&mut self, core: &mut Core<'_>) -> Result<(), ReadFailed> {
         self.drain_input(core).await?;
@@ -89,12 +89,18 @@ impl<S: SerialPort> Mac<S> {
         // drain to say when the adapter finished, the transmit-latency pad
         // on top, since its first octet left after the write began.
         let sent = match self.serial.write(frame).await {
-            Ok(()) => match self.serial.drain().await {
-                Err(Error::Transport(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
-                    Ok(wire_end + self.transmit_pad)
+            Ok(()) => {
+                // Written: the tap sees it now, whatever the drain says.
+                super::tap::record_sent(&self.tap, frame);
+                match self.serial.drain().await {
+                    Err(Error::Transport(error))
+                        if error.kind() == std::io::ErrorKind::Unsupported =>
+                    {
+                        Ok(wire_end + self.transmit_pad)
+                    }
+                    drained => drained.map(|()| wire_end),
                 }
-                drained => drained.map(|()| wire_end),
-            },
+            }
             Err(error) => {
                 // The failed write may have queued part of the frame.
                 let _ = self.serial.drain().await;

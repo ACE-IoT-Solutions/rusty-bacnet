@@ -5636,6 +5636,9 @@ let bbmd = bip_client.transport().bbmd_state().cloned(); // Option<Arc<std::sync
 
 // MS/TP: the same counts-only handle you can take before handing the transport over.
 let diagnostics = mstp_client.transport().diagnostics();
+
+// B/IP, B/IPv6, BACnet/SC and MS/TP: every link-layer frame, in and out.
+let mut frames = bip_client.transport().frame_tap().subscribe();
 ```
 
 Reading state and diagnostics is what the borrow supports. Two things go around
@@ -5647,6 +5650,36 @@ a synchronous `std::sync::Mutex` the receive loop and the client's broadcasts
 take for short critical sections, so holding it stalls the transport or
 deadlocks. Lock, copy and release. The live MS/TP master node and SC
 connection are not public.
+
+### Frame tap
+
+`frame_tap()` on `BipTransport`, `Bip6Transport`, `ScTransport` and
+`MstpTransport` (and `AnyTransport::frame_tap()`, `None` for Ethernet and
+loopback) returns the transport's `FrameTap` (#957). `subscribe()` gives a
+`FrameTapReceiver` of `TappedFrame { timestamp, direction, link, peer, bytes }`
+for every frame the link carries for this node, control traffic included:
+
+- B/IP and B/IPv6: each BVLL message as the datagram carried it, BVLC-Results,
+  registrations, address resolution and forwarded NPDUs too. `peer` is the
+  UDP source or destination, broadcast and multicast included.
+- BACnet/SC: each BVLC-SC message on the hub connection, the handshake,
+  heartbeats, address resolution and Disconnect too. `peer` names the hub,
+  primary or failover. Direct connections are not tapped yet.
+- MS/TP: each whole frame, preamble to CRC, Token and Poll For Master too,
+  found in what the line delivered. `peer` is the source station of a received
+  frame and the destination of a sent one.
+
+The tap is in-process. A BACnet/SC message is taken in plaintext, before TLS
+encrypts it and after TLS decrypts it, so the tap shows only this node's own
+traffic and does not replace a wire capture.
+
+Each receiver has a bounded queue (`DEFAULT_TAP_CAPACITY`, 1024 frames, or
+`subscribe_with_capacity(n)`). The transport never waits for one: a frame that
+finds a queue full is dropped for that receiver and counted in
+`FrameTapReceiver::dropped()` and in `FrameTap::counters()`. With nobody
+subscribed a frame costs one atomic load and nothing is copied. Subscribe
+before `start()` (on the transport, before handing it to a builder) to see a
+BACnet/SC handshake; a client's builders start the transport.
 
 The management, FDT and fanout counters count what this transport does as a
 BBMD (ACKs sent, registrations admitted, broadcasts forwarded). They stay at

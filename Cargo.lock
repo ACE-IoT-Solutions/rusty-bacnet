@@ -400,8 +400,10 @@ dependencies = [
 name = "bacnet-integration-tests"
 version = "0.13.0"
 dependencies = [
+ "bacnet-bip-codec",
  "bacnet-client",
  "bacnet-encoding",
+ "bacnet-mstp-codec",
  "bacnet-network",
  "bacnet-npdu",
  "bacnet-objects",
