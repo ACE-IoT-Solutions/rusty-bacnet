@@ -12,6 +12,7 @@ pub mod color;
 pub mod command;
 pub mod command_source;
 pub(crate) mod common;
+pub mod cov_change;
 pub mod database;
 pub mod device;
 pub mod device_identity;

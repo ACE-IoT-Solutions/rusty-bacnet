@@ -674,6 +674,10 @@ impl BACnetObject for Probe {
         self.called("refresh_log_window_internal", ());
         true
     }
+    fn log_collecting_internal(&self) -> bool {
+        self.called("log_collecting_internal", ());
+        false
+    }
     fn logs_received_event_notifications_internal(&self) -> bool {
         self.called("logs_received_event_notifications_internal", ());
         true
