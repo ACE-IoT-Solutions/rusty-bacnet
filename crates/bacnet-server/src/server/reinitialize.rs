@@ -43,12 +43,19 @@ use super::*;
 ///   Device properties may, belongs in `write_local`, called after the
 ///   reply from a task the handler schedules (for example by sending the
 ///   change to the code that holds the server).
-/// - **Network Port changes activate after it.** Once the handler accepts
-///   ACTIVATE_CHANGES or WARMSTART, the server puts the values written to
-///   Network Port objects into effect, under the same lock, and clears
-///   Changes_Pending (Clause 12.56.13), the transport's BDT for one
-///   ([`ObjectDatabase::activate_network_port_changes`]). If the transport
-///   refuses them, its error is the reply and they stay pending.
+/// - **Network Port changes activate around it.** For ACTIVATE_CHANGES or
+///   WARMSTART the server first checks that the values written to Network
+///   Port objects would still be taken
+///   ([`ObjectDatabase::check_network_port_changes`]), and refuses with
+///   PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the
+///   handler runs if not. Once the handler accepts, the server puts them
+///   into effect under the same lock and clears Changes_Pending (Clause
+///   12.56.13), the transport's BDT for one
+///   ([`ObjectDatabase::activate_network_port_changes`]): all or none per
+///   port, not across ports. A refusal then is answered the same way and
+///   leaves them pending. With no handler set, a registered port's
+///   pending-activation rows refuse writes, since nothing could activate
+///   them.
 /// - **Gate the requester.** Without `reinit_password` any peer reaches the
 ///   handler. [`MutationPolicy`](crate::mutation::MutationPolicy) and the
 ///   mutation authorizer don't cover ReinitializeDevice, so check the
@@ -184,6 +191,7 @@ pub(in crate::server) async fn response(
                 );
                 let mut db = db.write().await;
                 still_open()
+                    .and_then(|()| check_network_ports(state, &mut db))
                     .and_then(|()| invoke(handler, &context, &mut db))
                     .and_then(|()| activate_network_ports(state, &mut db))
                     .map(|()| state)
@@ -266,25 +274,49 @@ fn invoke(
     }
 }
 
-/// Once the handler has accepted ACTIVATE_CHANGES or WARMSTART, put the
-/// values written to Network Port objects into effect (Clause 12.56.13):
-/// the transport's BDT, for one. A refusal is the reply: its class and code
-/// when it has them, SERVICES / OTHER otherwise.
-fn activate_network_ports(state: ReinitializedState, db: &mut ObjectDatabase) -> Result<(), Error> {
-    if !matches!(
+/// Whether `state` activates the values written to Network Port objects
+/// (Clause 12.56.13).
+fn activates(state: ReinitializedState) -> bool {
+    matches!(
         state,
         ReinitializedState::ACTIVATE_CHANGES | ReinitializedState::WARMSTART
-    ) {
+    )
+}
+
+/// The reply when Network Port values fail validation on activation:
+/// PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1).
+fn invalid_configuration(error: &Error) -> Error {
+    debug!(%error, "Network Port activation refused");
+    Error::Protocol {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::INVALID_CONFIGURATION_DATA,
+    }
+}
+
+/// Before the handler runs, check that the pending Network Port values
+/// would still be taken, so a handler never schedules a restart for a
+/// request that then fails.
+fn check_network_ports(state: ReinitializedState, db: &mut ObjectDatabase) -> Result<(), Error> {
+    if !activates(state) {
         return Ok(());
     }
-    match db.activate_network_port_changes() {
-        Ok(_) => Ok(()),
-        Err(error @ (Error::Protocol { .. } | Error::Structured { .. })) => Err(error),
-        Err(error) => {
-            debug!(%error, "Network Port activation error answered SERVICES / OTHER");
-            Err(services_error(ErrorCode::OTHER))
-        }
+    db.check_network_port_changes()
+        .map_err(|error| invalid_configuration(&error))
+}
+
+/// Once the handler has accepted ACTIVATE_CHANGES or WARMSTART, put the
+/// values written to Network Port objects into effect (Clause 12.56.13):
+/// the transport's BDT, for one. The check before the handler makes a
+/// refusal here a race with a change to the transport; it is answered the
+/// same way, as an Error, since the request may no longer be rejected
+/// (Clause 20.1.8).
+fn activate_network_ports(state: ReinitializedState, db: &mut ObjectDatabase) -> Result<(), Error> {
+    if !activates(state) {
+        return Ok(());
     }
+    db.activate_network_port_changes()
+        .map(drop)
+        .map_err(|error| invalid_configuration(&error))
 }
 
 fn services_error(code: ErrorCode) -> Error {

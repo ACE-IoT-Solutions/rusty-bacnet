@@ -40,15 +40,21 @@ const BIP: &[PropertyMetadata] = &[
 // able to only while configured as a BBMD, since its mode is fixed while
 // registered. Clauses 12.56.34 and 12.56.35 make the first two writable in
 // BBMD mode: a write waits, with Changes_Pending set, until a
-// ReinitializeDevice activates it (#1578).
+// ReinitializeDevice activates it (#1578). They are listed read-only here
+// and become writable only for an owner that activates changes.
 const BBMD: &[PropertyMetadata] = &[
     PropertyMetadata::new(
         P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
         RequiredRead,
         None,
-        Always,
+        ReadOnly,
     ),
-    PropertyMetadata::new(P::BBMD_ACCEPT_FD_REGISTRATIONS, RequiredRead, None, Always),
+    PropertyMetadata::new(
+        P::BBMD_ACCEPT_FD_REGISTRATIONS,
+        RequiredRead,
+        None,
+        ReadOnly,
+    ),
     PropertyMetadata::new(P::BBMD_FOREIGN_DEVICE_TABLE, RequiredRead, None, ReadOnly),
 ];
 // Table 12-71 footnote 13 and Table 12-72: FOREIGN mode has these. Clauses
@@ -75,6 +81,11 @@ pub(super) fn for_object(object: &NetworkPortObject) -> Cow<'_, [PropertyMetadat
                 .map(|mut row| {
                     if row.property_identifier == P::OUT_OF_SERVICE && object.is_bound() {
                         row.write_capability = ReadOnly;
+                    }
+                    if object.activates_changes()
+                        && super::pending::writable_pending_row(row.property_identifier)
+                    {
+                        row.write_capability = Always;
                     }
                     row
                 })

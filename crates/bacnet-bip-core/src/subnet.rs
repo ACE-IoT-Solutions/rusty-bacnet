@@ -29,10 +29,11 @@ pub struct LocalSubnet {
     pub mask: Option<Ipv4Addr>,
     /// Whether the node is the only device of its B/IP network on the
     /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). A BBMD
-    /// then skips the local broadcast of a peer's Forwarded-NPDU and of a
-    /// foreign device's Distribute-Broadcast-To-Network, which nothing there
-    /// would receive (Annex J.4.5 leaves how the BBMD knows to the
-    /// installation). `false` unless the caller sets it; set it only when
+    /// then skips the local broadcast of a peer's Forwarded-NPDU, as Annex
+    /// J.4.5 permits (leaving how the BBMD knows to the installation), and,
+    /// extending that permission, of a foreign device's
+    /// Distribute-Broadcast-To-Network: nothing there would receive either,
+    /// and the BBMD's own application still gets the message. `false` unless the caller sets it; set it only when
     /// no other device of the network shares the subnet, or they stop
     /// receiving remote broadcasts.
     pub alone: bool,

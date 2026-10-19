@@ -3628,11 +3628,11 @@ A registered port follows its owner's B/IP mode (#939): `BACnet_IP_Mode` reads
 0 for a normal node, 1 for a foreign device and 2 for a BBMD (`bbmd=` and
 `foreign_device=`, see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)),
 and a BBMD's port serves its live BDT and FDT, a foreign device's its BBMD and
-time-to-live. A BBMD port's BBMD_Broadcast_Distribution_Table and
-BBMD_Accept_FD_Registrations accept writes (#1578): the value waits, with
-Changes_Pending TRUE, until a ReinitializeDevice ACTIVATE_CHANGES or WARMSTART
-activates it. Python servers take no ReinitializeDevice handler, so they refuse
-that request and a written value stays pending. Local Network Number behavior
+time-to-live. In Rust, a BBMD port's BBMD_Broadcast_Distribution_Table and
+BBMD_Accept_FD_Registrations accept writes that ReinitializeDevice then
+activates (#1578). Python servers take no ReinitializeDevice handler, so nothing
+could activate a written value: those writes raise `BacnetProtocolError`
+(WRITE_ACCESS_DENIED), and Changes_Pending stays FALSE. Local Network Number behavior
 is described below; complete Network Port conformance and multiport routing
 remain outside this registration contract.
 

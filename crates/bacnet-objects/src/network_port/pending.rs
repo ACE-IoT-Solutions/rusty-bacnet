@@ -9,7 +9,10 @@
 //! through the transport ([`NetworkPortObject::activate_changes`]).
 //!
 //! A BDT is checked against the transport's BDT policy when it is written,
-//! so one the BBMD would refuse is refused then and changes nothing.
+//! so one the BBMD would refuse is refused then and changes nothing. The
+//! rows take writes only when the port's owner answers ReinitializeDevice
+//! (`set_activation_internal`); otherwise a written value could never take
+//! effect, and the write is WRITE_ACCESS_DENIED.
 
 use bacnet_types::bip_port::BbmdChanges;
 use bacnet_types::enums::PropertyIdentifier as P;
@@ -48,6 +51,12 @@ impl NetworkPortObject {
         let LiveMode::Bbmd(tables) = &self.mode else {
             return None;
         };
+        // A value nothing could activate would wait for ever: without an
+        // owner that answers ReinitializeDevice the rows stay read-only
+        // (Clause 16.4 ties pending changes to ACTIVATE_CHANGES).
+        if !self.activation && writable_pending_row(property) {
+            return Some(Err(common::write_access_denied_error()));
+        }
         match property {
             P::BBMD_BROADCAST_DISTRIBUTION_TABLE => Some((|| {
                 if array_index.is_some() {
@@ -74,9 +83,31 @@ impl NetworkPortObject {
         }
     }
 
+    /// Whether the pending values would still be taken, changing nothing:
+    /// the check a ReinitializeDevice makes before its handler runs.
+    pub fn check_pending_changes(&self) -> Result<(), Error> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let LiveMode::Bbmd(tables) = &self.mode else {
+            return Err(common::write_access_denied_error());
+        };
+        match &self.pending.broadcast_distribution_table {
+            Some(table) => tables.check_broadcast_distribution_table(table),
+            // Any Boolean is a valid registration setting.
+            None => Ok(()),
+        }
+    }
+
     /// Whether written values wait for activation: Changes_Pending.
     pub(super) fn changes_pending(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// Whether a ReinitializeDevice owner activates written values, so the
+    /// pending-activation rows take writes.
+    pub(super) fn activates_changes(&self) -> bool {
+        self.activation
     }
 
     /// Put the values written to this port into effect, as a
@@ -97,4 +128,12 @@ impl NetworkPortObject {
         self.pending = BbmdChanges::default();
         Ok(true)
     }
+}
+
+/// The rows a write leaves pending for activation.
+pub(super) fn writable_pending_row(property: P) -> bool {
+    matches!(
+        property,
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE | P::BBMD_ACCEPT_FD_REGISTRATIONS
+    )
 }

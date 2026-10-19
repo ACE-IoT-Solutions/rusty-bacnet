@@ -315,7 +315,8 @@ impl BipTransport {
     /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). It then
     /// sends a peer's Forwarded-NPDU and a foreign device's
     /// Distribute-Broadcast-To-Network only to its peers and foreign
-    /// devices, skipping the local rebroadcast (Annex J.4.5). Off by default;
+    /// devices, skipping the local rebroadcast (Annex J.4.5 permits it for
+    /// the Forwarded-NPDU; this extends it to the other). Off by default;
     /// turn it on only when no other device of the network shares the
     /// subnet, since such a device would stop receiving remote broadcasts.
     /// Must be called after `enable_bbmd()` and before `start()`.

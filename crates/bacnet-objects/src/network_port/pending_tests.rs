@@ -21,6 +21,7 @@ struct Tables {
     bdt: Mutex<Vec<BACnetBDTEntry>>,
     accepts: Mutex<bool>,
     fail: Mutex<bool>,
+    fail_check: Mutex<bool>,
 }
 
 fn refusal() -> Error {
@@ -48,7 +49,9 @@ impl BbmdTables for Tables {
     }
     fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
         let refused = BACnetHostAddress::Ip(IpAddr::V4(REFUSED.into()));
-        if table.iter().any(|row| row.bbmd_address.host == refused) {
+        if *self.fail_check.lock().unwrap()
+            || table.iter().any(|row| row.bbmd_address.host == refused)
+        {
             return Err(refusal());
         }
         Ok(())
@@ -100,6 +103,8 @@ fn bbmd_port(tables: &Arc<Tables>) -> (ObjectDatabase, Arc<()>) {
         tables: Some(tables),
     };
     db.publish_bip_port_internal(oid(), [127, 0, 0, 1], 47808, 1476, mode)
+        .unwrap();
+    db.set_network_port_activation_internal(oid(), true)
         .unwrap();
     (db, lease)
 }
@@ -276,4 +281,68 @@ fn publishing_again_drops_pending_values() {
         .reserve_bip_port_internal(oid(), [127, 0, 0, 1], 47808)
         .unwrap();
     assert!(!changes_pending(&db));
+}
+
+/// Without an owner that activates changes, the rows refuse writes and are
+/// listed read-only: a written value could never take effect.
+#[test]
+fn without_activation_the_rows_refuse_writes() {
+    use crate::property_metadata::PropertyWriteCapability;
+    let tables = Arc::new(Tables::default());
+    let (mut db, _lease) = bbmd_port(&tables);
+    let capability = |db: &ObjectDatabase, property: P| {
+        db.get(&oid())
+            .unwrap()
+            .property_metadata()
+            .iter()
+            .find(|row| row.property_identifier == property)
+            .unwrap()
+            .write_capability
+    };
+    for property in [
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        P::BBMD_ACCEPT_FD_REGISTRATIONS,
+    ] {
+        assert_eq!(capability(&db, property), PropertyWriteCapability::Always);
+    }
+    db.set_network_port_activation_internal(oid(), false)
+        .unwrap();
+    for (property, value) in [
+        (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, written_bdt(&[])),
+        (
+            P::BBMD_ACCEPT_FD_REGISTRATIONS,
+            PropertyValue::Boolean(true),
+        ),
+    ] {
+        let error = write(&mut db, property, value).unwrap_err();
+        assert!(
+            matches!(error, Error::Protocol { class, code }
+                if class == ErrorClass::PROPERTY && code == ErrorCode::WRITE_ACCESS_DENIED),
+            "{error:?}"
+        );
+        assert_eq!(capability(&db, property), PropertyWriteCapability::ReadOnly);
+    }
+    assert!(!changes_pending(&db));
+}
+
+/// The dry run before a ReinitializeDevice asks the transport again, and
+/// changes nothing.
+#[test]
+fn the_dry_run_rechecks_a_pending_bdt() {
+    let tables = Arc::new(Tables::default());
+    let (mut db, _lease) = bbmd_port(&tables);
+    db.check_network_port_changes().unwrap();
+    write(
+        &mut db,
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        written_bdt(&[row([10, 0, 0, 2])]),
+    )
+    .unwrap();
+    db.check_network_port_changes().unwrap();
+    // The transport's policy changed since the write.
+    *tables.fail_check.lock().unwrap() = true;
+    let error = db.check_network_port_changes().unwrap_err();
+    assert!(is_refusal(&error), "{error:?}");
+    assert!(changes_pending(&db));
+    assert!(tables.bdt.lock().unwrap().is_empty());
 }

@@ -70,7 +70,12 @@ pub trait BbmdTables: Send + Sync {
 
 /// Values written to a BBMD's Network Port properties and not yet in effect
 /// (Clause 12.56.34, 12.56.35): `None` leaves that setting as it is.
+///
+/// It is `#[non_exhaustive]`, so the foreign-device rows can add their
+/// settings: outside this crate, start from [`BbmdChanges::default`] and
+/// set the fields that change.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BbmdChanges {
     /// A new BDT: BBMD_Broadcast_Distribution_Table.
     pub broadcast_distribution_table: Option<Vec<BACnetBDTEntry>>,

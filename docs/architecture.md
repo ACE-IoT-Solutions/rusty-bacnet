@@ -248,9 +248,12 @@ report one, a forward from the BBMD's own subnet is rebroadcast.
 A BBMD that is the only device of its B/IP network on its subnet, as a BBMD
 behind a NAT router usually is (Annex J.7.5), can say so
 (`BbmdOptions::alone_on_subnet`, `LocalSubnet::alone` in the core). It then
-skips the local rebroadcast of a peer's Forwarded-NPDU and of a foreign
-device's Distribute-Broadcast-To-Network, which nothing on the subnet would
-receive (Annex J.4.5); peers and foreign devices get them as before. It is
+skips the local rebroadcast of a peer's Forwarded-NPDU, as Annex J.4.5
+permits, and also of a foreign device's Distribute-Broadcast-To-Network. The
+clause grants the skip for the Forwarded-NPDU only; extending it is harmless,
+since nothing else on the subnet would receive the broadcast and the BBMD's
+own application still gets the message. Peers and foreign devices get both
+as before. It is
 off by default: any other device of the network on that subnet would stop
 hearing remote broadcasts. Running a BBMD under its public NAT address is
 #940's work, not this setting's.

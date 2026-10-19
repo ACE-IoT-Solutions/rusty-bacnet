@@ -18,6 +18,12 @@ const FALSE: [u8; 1] = [0x10];
 /// A BBMD server on loopback, its port registered, that accepts every
 /// ReinitializeDevice.
 async fn bbmd_server() -> BACnetServer<BipTransport> {
+    bbmd_server_with(true).await
+}
+
+/// A BBMD server on loopback, its port registered, with a ReinitializeDevice
+/// handler that accepts everything or none at all.
+async fn bbmd_server_with(handler: bool) -> BACnetServer<BipTransport> {
     let mut db = ObjectDatabase::new();
     let config = BipPortConfig {
         ip_address: [127, 0, 0, 1],
@@ -33,7 +39,8 @@ async fn bbmd_server() -> BACnetServer<BipTransport> {
     transport.enable_bbmd(Vec::new());
     let config = ServerConfig {
         registered_network_port: Some(port_oid()),
-        on_reinitialize: Some(Arc::new(|_, _| Ok(()))),
+        on_reinitialize: handler
+            .then(|| Arc::new(|_: &_, _: &mut _| Ok(())) as ReinitializeHandler),
         ..Default::default()
     };
     BACnetServer::start(config, db, transport).await.unwrap()
@@ -232,5 +239,24 @@ async fn warmstart_activates_and_coldstart_does_not() {
         rp(&server, P::BBMD_ACCEPT_FD_REGISTRATIONS).await.unwrap(),
         TRUE
     );
+    server.stop().await.unwrap();
+}
+
+/// With no ReinitializeDevice handler nothing could activate a written
+/// value, so the rows refuse writes (#1578).
+#[tokio::test]
+async fn without_a_reinitialize_handler_the_rows_refuse_writes() {
+    let mut server = bbmd_server_with(false).await;
+    for (property, octets) in [
+        (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, Vec::new()),
+        (P::BBMD_ACCEPT_FD_REGISTRATIONS, TRUE.to_vec()),
+    ] {
+        assert_eq!(
+            wp(&server, property, octets).await,
+            Err((ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED)),
+            "{property}"
+        );
+    }
+    assert_eq!(rp(&server, P::CHANGES_PENDING).await.unwrap(), FALSE);
     server.stop().await.unwrap();
 }

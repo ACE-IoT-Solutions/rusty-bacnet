@@ -526,7 +526,8 @@ impl BbmdState {
     /// is, a peer's Forwarded-NPDU and a foreign device's
     /// Distribute-Broadcast-To-Network go only to the peers and foreign
     /// devices, not to the subnet's broadcast address, where nothing would
-    /// receive them (Annex J.4.5). Off by default: with another device of
+    /// receive them. Annex J.4.5 permits this for the Forwarded-NPDU; the
+    /// Distribute-Broadcast-To-Network case extends it. Off by default: with another device of
     /// the network on the subnet, that device stops receiving remote
     /// broadcasts.
     pub fn set_alone_on_subnet(&mut self, alone: bool) {

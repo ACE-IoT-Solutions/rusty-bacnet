@@ -40,10 +40,9 @@ fn a_bdt_the_bbmd_cannot_take_is_refused() {
         ],
     ] {
         assert!(state.check_written_bdt(&table).is_err(), "{table:?}");
-        let changes = BbmdChanges {
-            broadcast_distribution_table: Some(table),
-            accept_foreign_device_registrations: Some(true),
-        };
+        let mut changes = BbmdChanges::default();
+        changes.broadcast_distribution_table = Some(table);
+        changes.accept_foreign_device_registrations = Some(true);
         assert!(state.activate(&changes).is_err());
         assert_eq!(state.bdt(), before);
         assert!(!state.accepts_foreign_device_registrations(), "all or none");
@@ -56,10 +55,8 @@ fn an_activated_bdt_replaces_the_table_and_keeps_the_own_row() {
     let table = vec![entry(ipv4([10, 0, 0, 2]), Some([0xFF; 4]))];
     state.check_written_bdt(&table).unwrap();
     assert!(state.bdt().is_empty(), "a check changes nothing");
-    let changes = BbmdChanges {
-        broadcast_distribution_table: Some(table),
-        ..BbmdChanges::default()
-    };
+    let mut changes = BbmdChanges::default();
+    changes.broadcast_distribution_table = Some(table);
     state.activate(&changes).unwrap();
     let rows: Vec<_> = state.bdt().iter().map(|row| row.ip).collect();
     assert_eq!(rows, [[10, 0, 0, 2], [192, 168, 1, 1]]);

@@ -40,6 +40,7 @@ impl NetworkPortObject {
                 .expect("validated Network Number");
         self.mode = bip_mode::LiveMode::Normal;
         self.pending = Default::default();
+        self.activation = false;
         self.binding = Arc::downgrade(lease);
         Ok(())
     }
@@ -85,6 +86,12 @@ impl NetworkPortObject {
 }
 
 impl NetworkPortObject {
+    /// Say whether this port's owner activates written values: it answers
+    /// ReinitializeDevice ACTIVATE_CHANGES and WARMSTART.
+    pub(crate) fn set_activation_internal(&mut self, activation: bool) {
+        self.activation = activation;
+    }
+
     pub(super) fn is_bound(&self) -> bool {
         self.binding.strong_count() != 0
     }

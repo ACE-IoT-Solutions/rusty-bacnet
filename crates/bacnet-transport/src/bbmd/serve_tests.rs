@@ -178,3 +178,25 @@ fn read_bdt_lists_every_row() {
     assert_eq!(reply, Reply::BdtAck(state.bdt_wire_entries()));
     assert_eq!(state.bdt_wire_entries().len(), 2);
 }
+
+/// Without a policy every registration is refused, and the core's purge
+/// before it is counted.
+#[test]
+fn a_refused_no_policy_registration_counts_the_purge_before_it() {
+    let mut state = BbmdState::new([192, 168, 1, 1], PORT);
+    let now = Instant::now();
+    state.insert_fdt_entry_for_test(FdtEntry {
+        ip: DEVICE,
+        port: PORT,
+        ttl: 10,
+        registered_at: now - Duration::from_secs(41),
+    });
+    assert_eq!(
+        state.register_foreign_device_at([10, 0, 0, 6], PORT, 60, now),
+        BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK
+    );
+    let counters = state.fdt_counters();
+    assert_eq!(counters.registrations_rejected, 1);
+    assert_eq!(counters.registrations_expired, 1);
+    assert_eq!(state.fdt_len_for_test(), 0);
+}

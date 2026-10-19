@@ -47,6 +47,9 @@ pub struct NetworkPortObject {
     mode: bip_mode::LiveMode,
     /// Values written to the mode's properties, waiting for activation.
     pending: bacnet_types::bip_port::BbmdChanges,
+    /// Whether the owner activates written values on ReinitializeDevice;
+    /// without it the pending-activation rows refuse writes.
+    activation: bool,
     binding: std::sync::Weak<()>,
 }
 
@@ -77,6 +80,7 @@ impl NetworkPortObject {
             bip: Some(config),
             mode: Default::default(),
             pending: Default::default(),
+            activation: false,
             binding: std::sync::Weak::new(),
         })
     }
@@ -113,6 +117,7 @@ impl NetworkPortObject {
             bip: None,
             mode: Default::default(),
             pending: Default::default(),
+            activation: false,
             binding: std::sync::Weak::new(),
         })
     }

@@ -203,14 +203,12 @@ impl PyBbmd {
     }
 
     fn __repr__(&self) -> String {
+        let python = |flag: bool| if flag { "True" } else { "False" };
         format!(
-            "Bbmd(bdt={} rows, accept_foreign_devices={})",
+            "Bbmd(bdt={} rows, accept_foreign_devices={}, alone_on_subnet={})",
             self.options.bdt.len(),
-            if self.accept_foreign_devices() {
-                "True"
-            } else {
-                "False"
-            }
+            python(self.accept_foreign_devices()),
+            python(self.options.alone_on_subnet),
         )
     }
 }

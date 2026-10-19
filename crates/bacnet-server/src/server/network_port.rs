@@ -64,6 +64,7 @@ pub(super) fn publish<T: TransportPort + 'static>(
     db: &mut ObjectDatabase,
     network: &NetworkLayer<T>,
     oid: Option<ObjectIdentifier>,
+    activation: bool,
 ) -> Result<(), Error> {
     let Some(oid) = oid else {
         return Ok(());
@@ -79,6 +80,8 @@ pub(super) fn publish<T: TransportPort + 'static>(
         network.transport().local_receive_apdu_capacity() as u32,
         port.mode,
     )?;
+    // Written values activate only through a ReinitializeDevice handler.
+    db.set_network_port_activation_internal(oid, activation)?;
     // The port's configured number is the local network number from the
     // start; the control worker copies every later change from the port.
     if let Some(state) = db.network_number_internal(oid, None) {
@@ -160,7 +163,12 @@ pub(super) async fn start<T: TransportPort + 'static>(
             None
         };
         let apdu_rx = starting.network().start().await?;
-        publish(db, starting.network(), config.registered_network_port)?;
+        publish(
+            db,
+            starting.network(),
+            config.registered_network_port,
+            config.on_reinitialize.is_some(),
+        )?;
         let routes = audit_routes.finish(db, config, starting.network()).await?;
         let controls = starting
             .network()
