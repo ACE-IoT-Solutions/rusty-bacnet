@@ -3,7 +3,7 @@
 //! A read or a notification first becomes a [`Reading`], the value still
 //! encoded. The row's [`RowFormat`], made from its first read, then writes
 //! it out twice: for the screen (floats rounded, the state texts, a unit
-//! symbol) and exactly, for the CSV log.
+//! symbol) and exactly, for the CSV log (every digit, no state texts).
 
 use bacnet_client::client::ReceivedCOVNotification;
 use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
@@ -60,7 +60,9 @@ impl RowFormat {
     }
 
     /// `reading` of `point` as a sample for the screen, and its value in
-    /// full for the CSV log.
+    /// full for the CSV log. The log names a state by its standard name or
+    /// number only (`active`, `2`): the object's own texts are for the
+    /// screen.
     pub(crate) fn sample(
         &self,
         point: &Point,
@@ -68,7 +70,8 @@ impl RowFormat {
     ) -> (Sample, Result<String, String>) {
         let object_type = point.object.object_type();
         let shown = ValueFormat::new(object_type, &self.texts, Floats::Display);
-        let exact = ValueFormat::new(object_type, &self.texts, Floats::Exact);
+        let no_texts = StateTexts::default();
+        let exact = ValueFormat::new(object_type, &no_texts, Floats::Exact);
         let property = point.property;
         let value = reading.value.as_deref().map(|data| {
             if property == PropertyIdentifier::PRESENT_VALUE {
@@ -263,7 +266,7 @@ mod tests {
         };
         let (sample, logged) = format.sample(&bo, later);
         assert_eq!(sample.value.as_deref(), Ok("inactive (Stopped)"));
-        assert_eq!(logged.as_deref(), Ok("inactive (Stopped)"));
+        assert_eq!(logged.as_deref(), Ok("inactive"));
         assert_eq!(sample.number, Some(0.0));
     }
 }

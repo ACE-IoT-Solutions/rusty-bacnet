@@ -22,7 +22,7 @@ use ratatui::crossterm::event::KeyCode;
 
 use super::browser::{open_device, open_object};
 use super::lab::lab_identity;
-use super::site::{ClientLimits, Server, Site};
+use super::site::{ClientLimits, Quirks, Server, Site};
 use super::*;
 use crate::tui::app::watch::Screen;
 use crate::tui::watched::Source;
@@ -186,19 +186,74 @@ async fn plant_site() -> Site {
     site
 }
 
-/// `text` with each line holding `needle` replaced by a marker: for a
-/// value the server stamps with its wall clock.
-pub(super) fn mask_lines(text: &str, needle: &str) -> String {
-    text.lines()
+/// What a wall-clock date and time becomes in a snapshot.
+const DATE_TIME_TOKEN: &str = "<date-time>";
+
+/// The length of the date and time at the start of `text`, written as the
+/// formatter writes one: `2026-10-19`, an optional ` Mon`, then ` 07:30`
+/// with optional `:ss` and `.hh`. `None` when `text` doesn't start with one.
+fn date_time_len(text: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    let digits =
+        |at: usize, n: usize| (at..at + n).all(|i| b.get(i).is_some_and(u8::is_ascii_digit));
+    let byte = |at: usize, c: u8| b.get(at) == Some(&c);
+    if !(digits(0, 4) && byte(4, b'-') && digits(5, 2) && byte(7, b'-') && digits(8, 2)) {
+        return None;
+    }
+    let mut at = 10;
+    if byte(at, b' ')
+        && b.get(at + 1..at + 4)
+            .is_some_and(|d| d.iter().all(u8::is_ascii_alphabetic))
+    {
+        at += 4;
+    }
+    if !(byte(at, b' ') && digits(at + 1, 2) && byte(at + 3, b':') && digits(at + 4, 2)) {
+        return None;
+    }
+    at += 6;
+    if byte(at, b':') && digits(at + 1, 2) {
+        at += 3;
+        if byte(at, b'.') && digits(at + 1, 2) {
+            at += 3;
+        }
+    }
+    Some(at)
+}
+
+/// `text` with each date and time replaced by [`DATE_TIME_TOKEN`], for a
+/// value the server stamps with its wall clock, and how many were replaced.
+/// The rest of each line stays as drawn: the length the token saves goes
+/// back as spaces just before the line's next border, so the line keeps
+/// its width whatever the time was.
+pub(super) fn mask_date_times(text: &str) -> (String, usize) {
+    let mut count = 0;
+    let lines: Vec<String> = text
+        .lines()
         .map(|line| {
-            if line.contains(needle) {
-                format!("<the {needle} line, masked>")
-            } else {
-                line.to_string()
+            let mut out = String::new();
+            let mut rest = line;
+            let mut owed = 0;
+            while !rest.is_empty() {
+                if let Some(len) = date_time_len(rest) {
+                    out.push_str(DATE_TIME_TOKEN);
+                    owed += len.saturating_sub(DATE_TIME_TOKEN.len());
+                    rest = &rest[len..];
+                    count += 1;
+                    continue;
+                }
+                let c = rest.chars().next().expect("not empty");
+                if c == '│' && owed > 0 {
+                    out.push_str(&" ".repeat(owed));
+                    owed = 0;
+                }
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
             }
+            out.push_str(&" ".repeat(owed));
+            out
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    (lines.join("\n"), count)
 }
 
 /// No property of any of these objects shows as raw octets.
@@ -219,12 +274,10 @@ async fn the_browser_shows_constructed_and_state_values_decoded() {
         ("trend-log 1", "trendlog"),
     ] {
         let view = open_object(&mut site, filter).await;
-        // AI:3's to-offnormal stamp is the server's wall clock, so its line
-        // is masked; the stamp itself is checked below.
-        let mut text = screen(&mut site.app, 120, 40);
-        if name == "ai3" {
-            text = mask_lines(&text, "event-time-stamps");
-        }
+        // AI:3's to-offnormal stamp is the server's wall clock, so it is
+        // masked once found to be a date and time.
+        let (text, masked) = mask_date_times(&screen(&mut site.app, 120, 40));
+        assert_eq!(masked, usize::from(name == "ai3"), "{text}");
         assert_snapshot!(format!("values_{name}_120x40"), text);
         assert_decoded(&text);
         let value = |property| view.value(property).map(str::to_string);
@@ -302,5 +355,43 @@ async fn the_watch_list_shows_values_as_the_browser_does() {
     site.app.screen = Screen::Watch;
     let text = screen(&mut site.app, 120, 40);
     assert_snapshot!("values_watch_120x40", text);
+    site.stop().await;
+}
+
+/// A device that refuses State_Text still gets its row: the texts are read
+/// in a request of their own after the first read, and losing them only
+/// leaves the value a plain number.
+#[tokio::test(start_paused = true)]
+async fn a_row_starts_when_the_device_refuses_its_state_text() {
+    let server = Server {
+        database: Some(plant()),
+        quirks: Quirks {
+            refuse_state_text: true,
+            ..Quirks::default()
+        },
+        ..Server::bare(100, PLANT)
+    };
+    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
+    site.who_is("", 1).await;
+    command(&mut site, &format!("watch {PLANT} mso:1")).await;
+    site.pump_until(|app| {
+        app.watch
+            .rows()
+            .iter()
+            .any(|row| !matches!(row.source, Source::Starting) && row.value.is_some())
+    })
+    .await;
+    let row = &site.app.watch.rows()[0];
+    assert!(matches!(row.source, Source::Cov { .. }), "{:?}", row.source);
+    assert_eq!(row.value.clone().unwrap().as_deref(), Ok("2"));
+    // The first read, then the refused texts: two reads before the
+    // subscription.
+    let reads = site
+        .hub
+        .services_to(&[10, 0, 0, 100, 0xBA, 0xC0])
+        .into_iter()
+        .filter(|service| *service == 14)
+        .count();
+    assert_eq!(reads, 2);
     site.stop().await;
 }

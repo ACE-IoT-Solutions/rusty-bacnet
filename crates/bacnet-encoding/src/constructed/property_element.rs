@@ -23,6 +23,7 @@ use bacnet_types::error::Error;
 
 /// A constructed production a property's value is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ConstructedElement {
     /// A Tags element, a `BACnetNameValue`
     /// (`decode_name_value`).

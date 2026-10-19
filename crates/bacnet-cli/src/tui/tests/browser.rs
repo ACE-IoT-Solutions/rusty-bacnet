@@ -138,8 +138,10 @@ async fn ai1_out_of_service_and_in_fault_shows_both_badges() {
     for (w, h) in [(120, 40), (80, 24)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains("Status: [ALM] [FLT] [OOS]"), "{text}");
-        // The to-fault stamp is the server's wall clock.
-        let text = super::values::mask_lines(&text, "event-time-stamps");
+        // The to-fault stamp is the server's wall clock: masked once found
+        // to be a date and time (at 80 columns it is cut off).
+        let (text, masked) = super::values::mask_date_times(&text);
+        assert_eq!(masked, usize::from(w == 120), "{text}");
         assert_snapshot!(format!("browser_ai1_{w}x{h}"), text);
     }
     // Colour adds nothing the text lacks.

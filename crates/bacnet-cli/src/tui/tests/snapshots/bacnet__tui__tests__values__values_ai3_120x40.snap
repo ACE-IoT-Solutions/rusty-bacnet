@@ -28,7 +28,7 @@ expression: text
 "│ multi-state-output (1)                     ││ reliability                 no-fault-detected                          │"
 "│   multi-state-output 1                     ││ reliability-evaluation-inhibitfalse                                    │"
 "│ notification-class (1)                     ││ acked-transitions           to-offnormal | to-fault | to-normal        │"
-<the event-time-stamps line, masked>
+"│   notification-class 1                     ││ event-time-stamps           [<date-time>, seq 0, seq 0]                │"
 "│ schedule (1)                               ││ event-message-texts         ["ANALOG_INPUT,3: NORMAL -> HIGH_LIMIT", ""│"
 "│   schedule 1                               ││ event-message-texts-config  ["", "", ""]                               │"
 "│ trend-log (1)                              ││ event-algorithm-inhibit-ref none                                       │"

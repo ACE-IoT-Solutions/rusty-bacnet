@@ -109,22 +109,24 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         cancel: &cancel,
         rpm,
     };
-    // The value, its flags and Units, and a binary or multi-state object's
-    // state texts, which name its later values too.
-    let mut wanted = vec![
+    let wanted = [
         point.property,
         PropertyIdentifier::STATUS_FLAGS,
         PropertyIdentifier::UNITS,
     ];
-    wanted.extend_from_slice(StateTexts::properties(point.object.object_type()));
     let read = reader.properties(point.object, Wanted::List(&wanted)).await;
-    let refused_rpm = rpm && !reader.rpm;
     let first = match &read {
-        Ok((rows, _)) => {
-            sample::from_rows(point.property, rows).map(|r| (r, RowFormat::from_rows(rows)))
-        }
+        Ok((rows, _)) => match sample::from_rows(point.property, rows) {
+            Some(reading) => {
+                let mut rows = rows.clone();
+                rows.extend(state_texts(&mut reader, point).await);
+                Some((reading, RowFormat::from_rows(&rows)))
+            }
+            None => None,
+        },
         Err(_) => None,
     };
+    let refused_rpm = rpm && !reader.rpm;
     let outcome = match read {
         // Subscribing would only time out too.
         Err(Halt::Device(error)) if unreachable(&error) => Err(Refusal {
@@ -158,6 +160,35 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         mac,
         outcome,
         refused_rpm,
+    }
+}
+
+/// A binary or multi-state object's state texts, which name the row's
+/// values: a request of its own after the first read, through the same
+/// gate. It is only a nicety, so any failure (a refusal, an unknown
+/// property, an answer too large) leaves the texts out and the row starts
+/// all the same. A watched property that is itself a text was read already.
+async fn state_texts<T: TransportPort + 'static>(
+    reader: &mut Reader<'_, T>,
+    point: Point,
+) -> Vec<RawRow> {
+    let texts: Vec<PropertyIdentifier> = StateTexts::properties(point.object.object_type())
+        .iter()
+        .copied()
+        .filter(|property| *property != point.property)
+        .collect();
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    match reader.properties(point.object, Wanted::List(&texts)).await {
+        Ok((rows, _)) => rows,
+        Err(error) => {
+            tracing::debug!(
+                "{}: state texts not read ({error:?}); values show without them",
+                point.object
+            );
+            Vec::new()
+        }
     }
 }
 

@@ -11,7 +11,7 @@ expression: text
 "│ Firmware          0.1.0                    ││ object-type                 schedule                                   │"
 "│ Software          0.1.0                    ││ present-value               0                                          │"
 "│ Protocol version  1                        ││ schedule-default            0                                          │"
-"│ Protocol revision 22                       ││ weekly-schedule             [Mon 07:00 = 1, 18:00 = 0, Tue 07:00 = 1, 1│"
+"│ Protocol revision 22                       ││ weekly-schedule             [Mon 07:00 = 1, 18:00 = 0; Tue 07:00 = 1, 1│"
 "│ Services          33 supported             ││ exception-schedule          (empty)                                    │"
 "│ Object types      64 supported             ││ effective-period            any date                                   │"
 "│ Max APDU          1476                     ││ list-of-object-property-references(empty)                              │"

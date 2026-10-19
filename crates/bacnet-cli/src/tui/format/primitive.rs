@@ -146,25 +146,42 @@ pub(super) fn weekday(day: u8) -> Option<&'static str> {
     DAYS.get(usize::from(day).checked_sub(1)?).copied()
 }
 
-/// A date as `2026-10-19`, `*` for an unspecified field and a weekday when
-/// one is given; `any date` when nothing is specified.
+/// A month field: its number, or the name of a special value (13 and 14
+/// stand for the odd and the even months).
+pub(super) fn month_text(month: u8) -> String {
+    match month {
+        Date::UNSPECIFIED => "*".into(),
+        13 => "odd-months".into(),
+        14 => "even-months".into(),
+        month => format!("{month:02}"),
+    }
+}
+
+/// A day-of-month field: its number, or the name of a special value (32 is
+/// the month's final day, 33 and 34 its odd and even days).
+fn day_text(day: u8) -> String {
+    match day {
+        Date::UNSPECIFIED => "*".into(),
+        32 => "last-day".into(),
+        33 => "odd-days".into(),
+        34 => "even-days".into(),
+        day => format!("{day:02}"),
+    }
+}
+
+/// A date as `2026-10-19`, `*` for an unspecified field, special values by
+/// name (`*-even-months-last-day`), and a weekday when one is given; `any
+/// date` when nothing is specified.
 pub(super) fn date_text(date: &Date) -> String {
     if any_date(date) {
         return "any date".into();
     }
-    let field = |value: u8, width: usize| {
-        if value == Date::UNSPECIFIED {
-            "*".to_string()
-        } else {
-            format!("{value:0width$}")
-        }
-    };
     let year = if date.year == Date::UNSPECIFIED {
         "*".to_string()
     } else {
         (u16::from(date.year) + 1900).to_string()
     };
-    let mut text = format!("{year}-{}-{}", field(date.month, 2), field(date.day, 2));
+    let mut text = format!("{year}-{}-{}", month_text(date.month), day_text(date.day));
     if let Some(day) = weekday(date.day_of_week) {
         text.push(' ');
         text.push_str(day);

@@ -20,7 +20,7 @@ mod constructed;
 mod primitive;
 mod units;
 
-use bacnet_encoding::constructed::{property_element, ElementShape};
+use bacnet_encoding::constructed::{property_element, ConstructedElement, ElementShape};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::PropertyValue;
@@ -162,9 +162,15 @@ impl<'a> ValueFormat<'a> {
     pub(crate) fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
         if let Some((element, shape)) = property_element(self.object_type, property) {
             if let Some(texts) = constructed::elements(self, element, data) {
+                // Schedule days hold lists of their own, so `; ` parts them.
+                let separator = if element == ConstructedElement::DailySchedule {
+                    "; "
+                } else {
+                    ", "
+                };
                 return match (shape, texts.as_slice()) {
                     (ElementShape::Single, [one]) => one.clone(),
-                    _ => list(texts),
+                    _ => list(texts, separator),
                 };
             }
         }
@@ -184,6 +190,7 @@ impl<'a> ValueFormat<'a> {
                 many.iter()
                     .map(|value| self.element(property, value))
                     .collect(),
+                ", ",
             ),
         }
     }
@@ -258,12 +265,15 @@ impl<'a> ValueFormat<'a> {
 }
 
 /// Element texts as a list, the first [`MAX_LIST_SHOWN`] in full.
-fn list(texts: Vec<String>) -> String {
+fn list(texts: Vec<String>, separator: &str) -> String {
     let count = texts.len();
     let shown: Vec<String> = texts.into_iter().take(MAX_LIST_SHOWN).collect();
     match count.saturating_sub(MAX_LIST_SHOWN) {
-        0 => format!("[{}]", shown.join(", ")),
-        more => format!("[{}, +{more} more] ({count} items)", shown.join(", ")),
+        0 => format!("[{}]", shown.join(separator)),
+        more => format!(
+            "[{}{separator}+{more} more] ({count} items)",
+            shown.join(separator)
+        ),
     }
 }
 

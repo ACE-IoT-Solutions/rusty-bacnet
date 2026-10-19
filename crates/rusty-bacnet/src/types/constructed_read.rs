@@ -82,6 +82,9 @@ pub(crate) fn decode(
     }
 }
 
+/// The tag of a value the generic decoder read.
+const GENERIC_TAG: &str = "application_data";
+
 /// The binding's view of each element: its `PropertyValue.tag`, its Python
 /// form, and the codec that splits a read into elements.
 pub(super) trait TypedElement: Sized {
@@ -103,7 +106,9 @@ pub(super) trait TypedElement: Sized {
 impl TypedElement for Element {
     /// The element whose [`Self::tag`] is `tag`.
     fn from_tag(tag: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|element| element.tag() == tag)
+        Self::ALL
+            .into_iter()
+            .find(|element| tag != GENERIC_TAG && element.tag() == tag)
     }
 
     /// Whether `octets` are exactly one element of this production.
@@ -142,6 +147,9 @@ impl TypedElement for Element {
             Self::ShedLevel => "shed_level",
             Self::AuthenticationFactor => "authentication_factor",
             Self::EventParameter => "event_parameter",
+            // An element newer than the binding has no typed form here
+            // (`decode_at` refuses it), so no read is ever tagged with it.
+            _ => GENERIC_TAG,
         }
     }
 
@@ -243,6 +251,10 @@ impl TypedElement for Element {
                 Decoded::AuthenticationFactor,
             ),
             Self::EventParameter => with(event_parameter(octets, offset), Decoded::EventParameter),
+            _ => Err(Error::decoding(
+                offset,
+                "the binding has no typed form for this element",
+            )),
         }
     }
 }

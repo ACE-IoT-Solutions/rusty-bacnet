@@ -277,7 +277,7 @@ fn constructed_values_are_decoded_with_the_element_table() {
     encode_daily_schedule(&mut week, &[]).unwrap();
     assert_eq!(
         text(ObjectType::SCHEDULE, P::WEEKLY_SCHEDULE, &week),
-        "[Mon 07:00 = 21, 18:00 = null, Tue none]"
+        "[Mon 07:00 = 21, 18:00 = null; Tue none]"
     );
     // Value_Source: an object on another device, and none.
     let mut source = BytesMut::new();
@@ -296,4 +296,50 @@ fn constructed_values_are_decoded_with_the_element_table() {
     assert_eq!(text(ao, P::VALUE_SOURCE, &nobody), "none");
     // Octets that aren't the element fall back to the generic view.
     assert_eq!(text(AI, P::EVENT_TIME_STAMPS, &[0x0e]), "[raw 0e]");
+}
+
+#[test]
+fn special_date_values_are_named() {
+    use bacnet_encoding::constructed::encode_calendar_entry;
+    use bacnet_types::constructed::{BACnetCalendarEntry, BACnetWeekNDay};
+    let special = |month, day| Date {
+        year: Date::UNSPECIFIED,
+        month,
+        day,
+        day_of_week: Date::UNSPECIFIED,
+    };
+    let date = |d| encoded(&[PropertyValue::Date(d)]);
+    assert_eq!(
+        text(AI, P::DESCRIPTION, &date(special(14, 32))),
+        "*-even-months-last-day"
+    );
+    assert_eq!(
+        text(AI, P::DESCRIPTION, &date(special(13, 33))),
+        "*-odd-months-odd-days"
+    );
+    assert_eq!(
+        text(AI, P::DESCRIPTION, &date(special(5, 34))),
+        "*-05-even-days"
+    );
+    let week = |month, week_of_month, day_of_week| BACnetWeekNDay {
+        month,
+        week_of_month,
+        day_of_week,
+    };
+    for (entry, shown) in [
+        (week(11, 4, 4), "Thu, days 22-28, month 11"),
+        (week(13, 6, 5), "Fri, the final 7 days, month odd-months"),
+        (
+            week(0xFF, 7, 1),
+            "Mon, the 7 days before the final 7, any month",
+        ),
+        (week(2, 5, 0xFF), "any day, days 29-31, month 02"),
+    ] {
+        let mut buf = BytesMut::new();
+        encode_calendar_entry(&mut buf, &BACnetCalendarEntry::WeekNDay(entry));
+        assert_eq!(
+            text(ObjectType::CALENDAR, P::DATE_LIST, &buf),
+            format!("[{shown}]")
+        );
+    }
 }

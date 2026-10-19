@@ -20,7 +20,7 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
-use super::primitive::{date_range, date_text, date_time, time_text, weekday};
+use super::primitive::{date_range, date_text, date_time, month_text, time_text, weekday};
 use super::ValueFormat;
 use crate::tui::app::objects::{kebab, object_label};
 
@@ -180,20 +180,32 @@ fn calendar_text(entry: &BACnetCalendarEntry) -> String {
         BACnetCalendarEntry::Date(date) => date_text(date),
         BACnetCalendarEntry::DateRange(range) => date_range(&range.start_date, &range.end_date),
         BACnetCalendarEntry::WeekNDay(week) => {
-            let field = |value: u8| {
-                if value == 0xFF {
-                    "*".to_string()
-                } else {
-                    value.to_string()
-                }
+            let month = match week.month {
+                0xFF => "any month".to_string(),
+                month => format!("month {}", month_text(month)),
             };
             format!(
-                "month {} week {} {}",
-                field(week.month),
-                field(week.week_of_month),
-                weekday(week.day_of_week).unwrap_or("any day")
+                "{}, {}, {month}",
+                weekday(week.day_of_week).unwrap_or("any day"),
+                week_text(week.week_of_month)
             )
         }
+    }
+}
+
+/// A week-of-month field in words: weeks 1 to 5 by their days, and 6 to 9
+/// counted back from the month's end in blocks of seven days.
+fn week_text(week: u8) -> String {
+    match week {
+        0xFF => "any week".into(),
+        1..=5 => {
+            let first = (week - 1) * 7 + 1;
+            let last = if week == 5 { 31 } else { first + 6 };
+            format!("days {first}-{last}")
+        }
+        6 => "the final 7 days".into(),
+        7..=9 => format!("the 7 days before the final {}", (week - 6) * 7),
+        week => format!("week {week}"),
     }
 }
 
