@@ -155,6 +155,15 @@ pub async fn build_sc_client(
     BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
     Error,
 > {
+    sc_client_builder(args)?.build().await
+}
+
+/// The BACnet/SC client builder for CLI transport arguments, before it
+/// dials: the TLS files loaded and linted, the hubs and identity set.
+#[cfg(feature = "sc-tls")]
+pub fn sc_client_builder(
+    args: &TransportArgs,
+) -> Result<bacnet_client::client::ScClientBuilder, Error> {
     use bacnet_transport::sc_tls::pem;
     use bacnet_transport::sc_tls::ScNodeTlsConfig;
     use rustls::RootCertStore;
@@ -251,7 +260,7 @@ pub async fn build_sc_client(
             .failover_hub_url(failover)
             .reconnect(bacnet_transport::sc::ScReconnectConfig::default());
     }
-    builder.build().await
+    Ok(builder)
 }
 
 /// Build a BACnet/IPv6 (BIP6) client from CLI transport arguments.

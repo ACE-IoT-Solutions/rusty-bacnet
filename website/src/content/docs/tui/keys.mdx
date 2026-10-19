@@ -20,7 +20,7 @@ Keys are case-sensitive: `w` writes and `W` arms a write session. Text fields (f
 | `W` | Arm a write session, or disarm the armed one |
 | `u` | The session ledger |
 
-The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP. Each screen below lists the ones it takes.
+The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP, `7` Capture. Each screen below lists the ones it takes.
 
 ## Devices and the browser
 
@@ -44,7 +44,7 @@ The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` 
 | `Up`, `Down`, `k`, `j` | Move |
 | `PgUp`, `PgDn` | Move a page |
 | `Home`, `End`, `g`, `G` | First or last row |
-| `1`, `2`, `3`, `4`, `5`, `6` | Switch screens |
+| `1`, `2`, `3`, `4`, `5`, `6`, `7` | Switch screens |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
 
 ## Watch list
@@ -54,7 +54,7 @@ The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` 
 | `x`, `Delete` | Stop watching the selected row and cancel its subscription |
 | `Up`, `Down`, `k`, `j`, `PgUp`, `PgDn`, `Home`, `End`, `g`, `G` | Move |
 | `Esc`, `1`, `2` | Back to the devices |
-| `4`, `5`, `6` | Network, BACnet/SC, MS/TP |
+| `4`, `5`, `6`, `7` | Network, BACnet/SC, MS/TP, Capture |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
 
 ## Network screen
@@ -66,7 +66,7 @@ The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` 
 | `m` | Survey every BBMD the tables lead to, for the matrix |
 | `x` | Disconnect |
 | `Esc`, `1`, `2` | Back to the devices |
-| `3`, `5`, `6` | Watch list, BACnet/SC, MS/TP |
+| `3`, `5`, `6`, `7` | Watch list, BACnet/SC, MS/TP, Capture |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
 
 ## BACnet/SC screen
@@ -78,7 +78,7 @@ The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` 
 | `c` | Reconnect |
 | `x` | Disconnect |
 | `Esc`, `1`, `2` | Back to the devices |
-| `3`, `4`, `6` | Watch list, Network, MS/TP |
+| `3`, `4`, `6`, `7` | Watch list, Network, MS/TP, Capture |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
 
 ## MS/TP screen
@@ -96,7 +96,25 @@ The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` 
 | `c` | Reconnect, or confirm a join again |
 | `x` | Disconnect, or stop the monitor |
 | `Esc` | Back |
-| `1`, `2`, `3`, `4`, `5` | Devices, watch list, Network, BACnet/SC |
+| `1`, `2`, `3`, `4`, `5`, `7` | Devices, watch list, Network, BACnet/SC, Capture |
+| `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## Capture screen
+
+| Key | Action |
+|---|---|
+| `Space` | Pause the list, or follow the newest frame again |
+| `Tab`, `Shift-Tab` | Next or previous pane: list, decode tree, hex view |
+| `Enter` | In the list, open the frame's decode tree; in the tree, open or close the node |
+| `Left`, `Right` | In the tree or hex view: close or open the node |
+| `/` | Filter the frames; Enter applies it |
+| `e`, `E` | Export the frames the filter keeps to pcap: B/IP as Ethernet, or as raw IPv4 |
+| `z` | Forget every frame |
+| `p` | The profile dialog |
+| `c` | Reconnect |
+| `x` | Disconnect |
+| `Esc` | Clear the filter, then back to the devices |
+| `1`, `2`, `3`, `4`, `5`, `6` | Devices, watch list, Network, BACnet/SC, MS/TP |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
 
 ## MS/TP join confirmation

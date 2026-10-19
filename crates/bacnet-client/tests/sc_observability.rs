@@ -325,6 +325,35 @@ async fn a_stalled_primary_times_out_and_builds_on_the_failover_hub() {
     holder.abort();
 }
 
+/// `build_with_events` subscribes before the client starts, so its receiver
+/// holds the first connect, which `connection_events()` after `build` misses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn build_with_events_sees_the_first_connect() {
+    let pki = Pki::new();
+    let mut primary = pki.hub(0, "127.0.0.1:0", PRIMARY_VMAC).await.unwrap();
+    let (mut client, mut events) = BACnetClient::sc_builder()
+        .hub_url(&url(&primary))
+        .tls_config(pki.node.clone())
+        .vmac([0x02, 0, 0, 0, 0, 0x25])
+        .device_uuid([0x25; 16])
+        .build_with_events()
+        .await
+        .unwrap();
+    let late = client.transport().connection_events();
+    let first = tokio::time::timeout(WAIT, events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        is_connected(&first, ScActiveHub::Primary, PRIMARY_VMAC),
+        "{first:?}"
+    );
+    // A receiver subscribed after the build holds nothing yet.
+    assert!(late.is_empty());
+    client.stop().await.unwrap();
+    primary.stop().await;
+}
+
 #[tokio::test]
 async fn failover_settings_are_checked_before_any_dial() {
     let pki = Pki::new();
