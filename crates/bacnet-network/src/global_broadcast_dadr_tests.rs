@@ -17,7 +17,8 @@ use bacnet_transport::port::TransportPort;
 
 use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{next_from_router, recv, reject_of, wire, RouterFixture, APDU};
-use bacnet_encoding::npdu::{decode_npdu, RejectMessageToNetwork};
+use bacnet_encoding::npdu::decode_npdu;
+use bacnet_npdu::RejectMessageToNetwork;
 
 /// DADR lengths beside DNET 0xFFFF: an MS/TP station, a B/IP or BACnet/SC
 /// address, and the longest an NPDU address may be.
@@ -108,7 +109,7 @@ async fn router_neither_forwards_nor_delivers_nor_answers_a_global_broadcast_tha
         reject_of(&decode_npdu(frame.npdu).unwrap()),
         RejectMessageToNetwork {
             reason: RejectMessageReason::NOT_DIRECTLY_CONNECTED,
-            dnet: 5000,
+            network: 5000,
         }
     );
     let (solicit, _) = next_from_router(&mut fixture.from_router_b).await;

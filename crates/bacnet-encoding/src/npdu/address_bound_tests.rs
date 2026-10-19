@@ -5,6 +5,7 @@
 use super::*;
 use bacnet_npdu::AddressField;
 use bacnet_types::constructed::BACnetAddress;
+use bacnet_types::error::DecodingKind;
 
 const FIELDS: [AddressField; 2] = [AddressField::Destination, AddressField::Source];
 const DNET: u16 = 2000;

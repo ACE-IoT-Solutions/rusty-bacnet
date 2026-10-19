@@ -11,6 +11,7 @@ use bacnet_types::enums::PropertyIdentifier;
 
 use super::browser::ViewState;
 use super::{App, Link, Overlay, FLASH_FOR};
+use crate::core::class::Class;
 use crate::parse::{parse_property, parse_value};
 use crate::tui::message::Command;
 use crate::tui::point::BrowseRead;
@@ -265,7 +266,7 @@ impl App {
         if !self.may_transmit() {
             return;
         }
-        if self.safety.armed.is_none() {
+        if !self.level().permits(Class::Write) {
             self.flash(ARM_HINT, FLASH_FOR);
             return;
         }
@@ -332,7 +333,7 @@ impl App {
         if !self.may_transmit() {
             return;
         }
-        if self.safety.armed.is_none() {
+        if !self.level().permits(Class::Write) {
             self.flash(ARM_HINT, FLASH_FOR);
             return;
         }

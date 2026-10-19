@@ -14,13 +14,16 @@
 //!   anything the decoder would refuse before writing an octet.
 //! - [`NetworkMessageType`] and [`RejectMessageReason`]: the open sets of
 //!   wire codes for network-layer messages and their reject reasons.
+//! - [`RejectMessageToNetwork`]: a reject's data, its reason and network,
+//!   read and written in place, refused with [`RejectLengthError`] when it
+//!   isn't three octets.
 //! - [`NetworkPriority`]: the closed, two-bit network priority.
 //! - [`NpduLimits`]: the longest NPDU a link carries each way, and
 //!   [`MAX_NPDU`], the longest any data link here carries.
 //! - [`Mac`]: a link-layer address of up to [`MAX_MAC_LEN`] octets, stored
 //!   inline.
 //!
-//! The payloads of the network-layer messages, the routing table and the
+//! The other network-layer messages' payloads, the routing table and the
 //! router itself are `bacnet-router-core`'s.
 //!
 //! # Example
@@ -57,6 +60,7 @@ mod encode;
 mod limits;
 mod mac;
 mod priority;
+mod reject;
 mod view;
 
 pub use codes::{NetworkMessageType, RejectMessageReason};
@@ -64,6 +68,7 @@ pub use encode::EncodeError;
 pub use limits::NpduLimits;
 pub use mac::{Mac, MacTooLong};
 pub use priority::{NetworkPriority, PriorityError};
+pub use reject::{RejectLengthError, RejectMessageToNetwork};
 pub use view::{Address, AddressField, DecodeError, Malformed, Npdu};
 
 /// The protocol version every NPDU starts with.

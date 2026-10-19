@@ -54,6 +54,8 @@ and its headers (`libpcap-dev` on Debian and Ubuntu).
 | `--format <FMT>` | auto | Output format: `table` or `json` |
 | `--json` | | JSON output shorthand |
 | `-v` | | Verbosity (`-v`, `-vv`, `-vvv`) |
+| `--allow-write` | | Let a command that changes a device run; see [Write guard](#write-guard) |
+| `--yes` | | Confirm communication control and reinitialize without typing the target; needed when stdin is not a terminal |
 
 Output auto-detects: tables in TTY, JSON when piped.
 
@@ -101,6 +103,75 @@ link whether another node already has it, by multicast. A link with no
 multicast, such as Linux loopback (`--ipv6-interface ::1`), can't carry that
 question, so pass `--device-instance` there.
 
+## Write Guard
+
+A one-shot command that changes a device is refused unless the command line
+has `--allow-write`. Communication control and reinitialize also need `--yes`
+when stdin is not a terminal; at a terminal without `--yes` they ask you to
+type the device instance (or, for an address target, the target as you gave
+it) and send nothing unless it matches. Both flags are global, so they go on
+either side of the subcommand. A refused command sends nothing: it stops
+before the CLI binds a socket.
+
+| Class | Commands (aliases) | Needs |
+|---|---|---|
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `devices`, `capture`, `sc-check`, `shell`, `tui`; shell-only `target`, `status`, `help`, `exit`, `quit` | nothing |
+| write | `write` (`wp`), shell-only `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
+| device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
+
+`subscribe` and `register` stay read commands: each leaves an entry on the
+remote device only so that it can deliver what the CLI watches (a COV
+subscription, a foreign-device registration), the entry lapses on its own, and
+the TUI makes both from its read-only level. `subscribe` asks for a 300-second
+subscription unless told otherwise, renews it while it watches and cancels it
+when it stops (see [COV Subscriptions](#cov-subscriptions)). `subscribe
+--lifetime 0` asks for one that never expires and stays after the CLI exits, so
+it is a write. `unregister` is a write: the BBMD drops whichever foreign-device
+entry has the address the request names (the CLI gives its own, but the BBMD
+can't tell). The TUI's session levels use the same classes: a read-only
+session runs reads, an armed write session runs writes, and device management
+will need a session the profile marks `dangerous`.
+
+A refused one-shot exits with status 4 and prints nothing on stdout. With
+table output the reason goes to stderr as `ERROR: ...`. With JSON output
+(`--json`, `--format json`, or stdout not a terminal) stderr gets one line of
+JSON in this shape, which scripts can rely on:
+
+```json
+{"error":"refused","reason":"allow-write-required","command":"reinit","class":"device-management","missing":["--allow-write","--yes"],"message":"reinit is a device-management command and needs --allow-write and --yes (stdin is not a terminal, so it can't be confirmed by typing); nothing was sent"}
+```
+
+| Field | Values |
+|---|---|
+| `error` | always `refused` |
+| `reason` | `allow-write-required`, `yes-required`, `not-confirmed` (the typed text didn't match, or input ended), `unclassified` |
+| `command` | the subcommand's full name, also when an alias was typed (`wp` is `write`) |
+| `class` | `write` or `device-management` (`null` for `unclassified`) |
+| `missing` | the flags that would have let it run, possibly empty |
+| `message` | the same reason as a sentence, for people; its wording may change |
+
+**The shell** takes the flags it was started with for the whole session:
+`bacnet --allow-write shell` (add `--yes` to skip the typed confirmation for
+`control` and `reinit`). A shell started with `--yes` applies it to every
+`control` and `reinit` for the rest of the session, so none of them asks.
+Without them a write in the shell prints the refusal,
+names the flags to start the shell with, and sends nothing; the shell keeps
+running. There is no toggle inside the shell.
+
+**The TUI** ignores both flags: its writes need an armed write session (see
+[Write sessions](#write-sessions)). Profiles apply only to the TUI, so there
+is no profile setting for one-shot commands.
+
+### Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | The command completed |
+| 1 | It failed while running: a timeout, an error or reject from the device, a bad value, a transport that wouldn't start |
+| 2 | Usage error from the argument parser (an unknown flag, a missing argument); nothing is sent |
+| 3 | `sc-check` could not complete (see [the SC check guide](sc-check.md)) |
+| 4 | The write guard refused the command; nothing is sent |
+
 ## Commands
 
 ### Offline SC credential inspection (development)
@@ -134,6 +205,7 @@ The shell provides:
 - **BBMD auto-renewal** at 80% of TTL when registered via `register`
 - **Colored output** (green for success/values, red for errors, cyan for addresses, dimmed for labels)
 - **Quoted string support** in arguments (e.g., `write 10.0.1.5 av:1 on "Zone Temp"`)
+- **The write guard** from the launch flags: start it with `bacnet --allow-write shell` to run writes (see [Write guard](#write-guard))
 
 Shell-only commands:
 
@@ -570,20 +642,22 @@ values under `items`, where anything that doesn't decode ends the list as
 ### Writing Properties
 
 ```bash
-bacnet write 192.168.1.100 av:1 pv 72.5              # write a float value
-bacnet write 192.168.1.100 av:1 pv 72.5 --priority 8 # with priority (1-16)
-bacnet write 192.168.1.100 bv:1 pv true               # boolean
-bacnet write 192.168.1.100 bv:1 pv active              # enumerated (active=1)
-bacnet write 192.168.1.100 av:1 pv null --priority 8   # relinquish
-bacnet write 192.168.1.100 av:1 on "\"Zone Temp\""    # character string
-bacnet write 192.168.1.100 av:1 pv 72.5@8             # inline priority syntax
-bacnet write 192.168.1.100 av:1 pv enumerated:3       # explicit enumerated
-bacnet write 192.168.1.100 sc:1 pv date:2024-03-15    # date value
-bacnet write 192.168.1.100 sc:1 pv time:14:30:00      # time value
-bacnet write 192.168.1.100 nc:1 pv object:ai:1        # object identifier value
+bacnet --allow-write write 192.168.1.100 av:1 pv 72.5              # write a float value
+bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --priority 8 # with priority (1-16)
+bacnet --allow-write write 192.168.1.100 bv:1 pv true               # boolean
+bacnet --allow-write write 192.168.1.100 bv:1 pv active              # enumerated (active=1)
+bacnet --allow-write write 192.168.1.100 av:1 pv null --priority 8   # relinquish
+bacnet --allow-write write 192.168.1.100 av:1 on "\"Zone Temp\""    # character string
+bacnet --allow-write write 192.168.1.100 av:1 pv 72.5@8             # inline priority syntax
+bacnet --allow-write write 192.168.1.100 av:1 pv enumerated:3       # explicit enumerated
+bacnet --allow-write write 192.168.1.100 sc:1 pv date:2024-03-15    # date value
+bacnet --allow-write write 192.168.1.100 sc:1 pv time:14:30:00      # time value
+bacnet --allow-write write 192.168.1.100 nc:1 pv object:ai:1        # object identifier value
 ```
 
-**Write multiple properties (shell only):**
+Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
+
+**Write multiple properties (shell only, started with `--allow-write`):**
 
 ```bash
 writem 192.168.1.100 av:1 pv=72.5,desc="Zone Temp" av:2 pv=68.0
@@ -611,12 +685,22 @@ Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
 ### COV Subscriptions
 
 ```bash
-bacnet subscribe 192.168.1.100 ai:1                     # unconfirmed COV
+bacnet subscribe 192.168.1.100 ai:1                     # unconfirmed COV, 300 s, renewed
 bacnet subscribe 192.168.1.100 ai:1 --confirmed          # confirmed COV
-bacnet subscribe 192.168.1.100 ai:1 --lifetime 300       # 5-minute subscription
+bacnet subscribe 192.168.1.100 ai:1 --lifetime 60        # 60 s, renewed
+bacnet --allow-write subscribe 192.168.1.100 ai:1 --lifetime 0   # never expires
 ```
 
-Subscribes and then watches for COV notifications in real time. Press Ctrl+C to stop watching.
+Subscribes and then watches for COV notifications in real time. Press Ctrl+C
+(or send SIGTERM, on Unix) to stop watching. The subscription asks for a
+lifetime of 300 seconds unless `--lifetime` says otherwise; the CLI renews it 30
+seconds before it would run out (for a short lifetime, halfway through) and
+cancels it when the watch stops, so nothing is left on the device. A renewal
+that fails ends the watch with an error, after the cancel. `--lifetime 0` asks
+for a subscription that never expires (Clause 13.14.1.1.4): it is not renewed
+or cancelled, it stays after the CLI exits, and it needs `--allow-write`. A
+process killed outright (SIGKILL) can't cancel; its subscription runs out with
+its lifetime. The shell's `subscribe` behaves the same way.
 
 **Alias:** `cov` = subscribe
 
@@ -625,9 +709,9 @@ Subscribes and then watches for COV notifications in real time. Press Ctrl+C to 
 ```bash
 bacnet alarms 192.168.1.100                              # get event/alarm summary
 
-bacnet ack-alarm 192.168.1.100 ai:1 --state 1 \
+bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 \
   --timestamp sequence:417 --ack-time time:14,30,00,00
-bacnet ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" \
+bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" \
   --timestamp time:14,29,58,25 \
   --ack-time "datetime:2026,9,2,3;14,30,00,00"
 ```
@@ -663,17 +747,22 @@ raw `alarms` response is not a guided source for these values.
 
 ```bash
 # Communication control
-bacnet control 192.168.1.100 disable-initiation --duration 5
-bacnet control 192.168.1.100 disable-initiation
-bacnet control 192.168.1.100 enable
-bacnet control 192.168.1.100 disable-initiation --password secret
+bacnet --allow-write control 192.168.1.100 disable-initiation --duration 5
+bacnet --allow-write control 192.168.1.100 disable-initiation
+bacnet --allow-write control 192.168.1.100 enable
+bacnet --allow-write control 192.168.1.100 disable-initiation --password secret
 
 # Reinitialize
-bacnet reinit 192.168.1.100 coldstart
-bacnet reinit 192.168.1.100 warmstart --password secret
-bacnet reinit 192.168.1.100 start-backup
-bacnet reinit 192.168.1.100 activate-changes
+bacnet --allow-write reinit 192.168.1.100 coldstart
+bacnet --allow-write reinit 192.168.1.100 warmstart --password secret
+bacnet --allow-write reinit 192.168.1.100 start-backup
+bacnet --allow-write --yes reinit 1234 activate-changes   # in a script
 ```
+
+Communication control and reinitialize need `--allow-write`. At a terminal they
+then ask you to type the device instance (or the address target as given)
+before anything is sent; add `--yes` to skip that, which a script must do
+because its stdin is not a terminal. See [Write guard](#write-guard).
 
 **Control actions:** `enable`, `disable`, `disable-initiation`. `disable` is
 deprecated, and a rusty-bacnet server refuses it under every DCC policy.
@@ -697,12 +786,12 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 
 ```bash
 # Time synchronization
-bacnet time-sync 192.168.1.100
-bacnet time-sync 192.168.1.100 --utc
+bacnet --allow-write time-sync 192.168.1.100
+bacnet --allow-write time-sync 192.168.1.100 --utc
 
 # Create/delete objects
-bacnet create-object 192.168.1.100 av:100
-bacnet delete-object 192.168.1.100 av:100
+bacnet --allow-write create-object 192.168.1.100 av:100
+bacnet --allow-write delete-object 192.168.1.100 av:100
 ```
 
 **Alias:** `ts` = time-sync
@@ -713,8 +802,8 @@ bacnet delete-object 192.168.1.100 av:100
 bacnet file-read 192.168.1.100 1                             # stream payload as hex
 bacnet file-read 192.168.1.100 1 --count 4096 --output data.bin
 bacnet file-read 192.168.1.100 1 --access record --output records
-bacnet file-write 192.168.1.100 1 firmware.bin               # write file
-bacnet file-write 192.168.1.100 1 firmware.bin --start 0     # with offset
+bacnet --allow-write file-write 192.168.1.100 1 firmware.bin           # write file
+bacnet --allow-write file-write 192.168.1.100 1 firmware.bin --start 0 # with offset
 ```
 
 `file-read` decodes each AtomicReadFile ACK and keeps requesting windows until
@@ -768,7 +857,7 @@ These commands are BACnet/IP only.
 bacnet bdt 192.168.1.1              # read broadcast distribution table
 bacnet fdt 192.168.1.1              # read foreign device table
 bacnet register 192.168.1.1 --ttl 300   # register as foreign device
-bacnet unregister 192.168.1.1       # unregister from BBMD
+bacnet --allow-write unregister 192.168.1.1   # unregister from BBMD (a write)
 ```
 
 In the interactive shell, `register` also starts a background auto-renewal task that re-registers at 80% of the TTL (e.g., every 240 seconds for a 300-second TTL). The renewal runs silently in the background and prints a dimmed confirmation on each renewal. Use `unregister` or `status` to check registration state.

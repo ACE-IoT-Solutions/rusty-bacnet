@@ -9,7 +9,8 @@
 //! right after the refused ones is the first frame out of port B, which
 //! shows the refused ones went nowhere.
 
-use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress, RejectMessageToNetwork};
+use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+use bacnet_npdu::RejectMessageToNetwork;
 use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
@@ -84,7 +85,7 @@ async fn router_delivers_only_an_unconfirmed_request_to_a_group_dadr() {
         reject_of(&reject),
         RejectMessageToNetwork {
             reason: RejectMessageReason::NOT_DIRECTLY_CONNECTED,
-            dnet: 5000,
+            network: 5000,
         }
     );
 

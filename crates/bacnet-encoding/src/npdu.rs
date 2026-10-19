@@ -11,10 +11,8 @@
 //! DADR and SADR to [`MAX_MAC_LEN`] octets (#1141), so everything above the
 //! network layer only ever sees an address that some data link could carry.
 
-use bacnet_npdu::{
-    Address, EncodeError, NetworkMessageType, NetworkPriority, RejectMessageReason, MAX_MAC_LEN,
-};
-use bacnet_types::error::{DecodeError, DecodingKind, Error, RangeError};
+use bacnet_npdu::{Address, EncodeError, NetworkMessageType, NetworkPriority, MAX_MAC_LEN};
+use bacnet_types::error::{Error, RangeError};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 
@@ -113,18 +111,6 @@ impl Npdu {
             payload_offset: 0,
         }
     }
-}
-
-/// Decoded payload of a Reject-Message-To-Network control message.
-///
-/// The enclosing NPDU identifies the network-message type; this type models
-/// only the fixed reason/DNET payload used by that message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RejectMessageToNetwork {
-    /// Why the router rejected the message.
-    pub reason: RejectMessageReason,
-    /// Destination network named by the rejection.
-    pub dnet: u16,
 }
 
 impl Default for Npdu {
@@ -249,27 +235,6 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
         message_type: view.message_type,
         vendor_id: view.vendor_id,
         payload: data.slice(view.payload_offset..),
-    })
-}
-
-/// Decode the fixed three-octet Reject-Message-To-Network payload.
-///
-/// The payload is rejected unless it contains exactly one reason octet and
-/// one two-octet destination network. Callers remain responsible for checking
-/// that the enclosing NPDU is the standard Reject-Message-To-Network type.
-pub fn decode_reject_message_to_network(payload: &[u8]) -> Result<RejectMessageToNetwork, Error> {
-    if payload.len() != 3 {
-        return Err(DecodeError::new(
-            DecodingKind::InvalidEncoding,
-            0,
-            "Reject-Message-To-Network payload must be exactly 3 octets, got {}",
-        )
-        .with_value(payload.len() as u64)
-        .into());
-    }
-    Ok(RejectMessageToNetwork {
-        reason: RejectMessageReason::from_raw(payload[0]),
-        dnet: u16::from_be_bytes([payload[1], payload[2]]),
     })
 }
 
@@ -434,25 +399,6 @@ mod tests {
         assert_eq!(encoded[1] & 0x80, 0x80);
         let decoded = decode_npdu(Bytes::from(encoded)).unwrap();
         assert_eq!(decoded, npdu);
-    }
-
-    #[test]
-    fn reject_message_to_network_payload_decodes_typed_reason_and_dnet() {
-        let decoded = decode_reject_message_to_network(&[
-            RejectMessageReason::MESSAGE_TOO_LONG.to_raw(),
-            0x12,
-            0x34,
-        ])
-        .unwrap();
-        assert_eq!(decoded.reason, RejectMessageReason::MESSAGE_TOO_LONG);
-        assert_eq!(decoded.dnet, 0x1234);
-    }
-
-    #[test]
-    fn reject_message_to_network_payload_requires_exact_length() {
-        for payload in [&[][..], &[4, 0][..], &[4, 0, 1, 2][..]] {
-            assert!(decode_reject_message_to_network(payload).is_err());
-        }
     }
 
     #[test]
