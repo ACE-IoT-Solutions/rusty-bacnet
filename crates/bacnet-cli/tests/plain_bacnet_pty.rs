@@ -26,14 +26,15 @@ fn openpty() -> (OwnedFd, OwnedFd) {
         ws_ypixel: 0,
     };
     // SAFETY: the out-pointers are valid for the call, a null name and
-    // termios are allowed, and `size` outlives the call.
+    // termios are allowed, and `size` outlives the call. `size` goes as a
+    // raw pointer: macOS takes it as `*mut`, Linux as `*const`.
     let status = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            &raw mut size,
         )
     };
     assert_eq!(status, 0, "openpty: {}", std::io::Error::last_os_error());
