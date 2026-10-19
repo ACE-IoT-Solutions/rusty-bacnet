@@ -73,6 +73,7 @@ pub struct EndpointResponder {
     open: AtomicBool,
     device_writes: Option<(ObjectIdentifier, MutationAuthorizer)>,
     reinitialize: Option<(ReinitializeHandler, Option<String>)>,
+    reinitialize_audit: Option<reinitialize::EndpointReinitializeAudit>,
     registered_port: Option<(ObjectIdentifier, std::sync::Weak<()>)>,
     read_work_limit: usize,
     identity: Option<bacnet_objects::DeviceIdentity>,
@@ -100,6 +101,7 @@ impl EndpointResponder {
             device_writes: None,
             identity: None,
             reinitialize: None,
+            reinitialize_audit: None,
             registered_port: None,
             read_work_limit: crate::server::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
@@ -158,6 +160,18 @@ impl EndpointResponder {
         password: Option<String>,
     ) -> Self {
         self.reinitialize = Some((handler, password));
+        self
+    }
+
+    /// Record each accepted ReinitializeDevice request through `audit`
+    /// (Clause 19.6, Table 19-5, #1564): a reset, backup or restore step,
+    /// never ACTIVATE_CHANGES, and never a request answered with an Error.
+    #[doc(hidden)]
+    pub fn with_reinitialize_audit(
+        mut self,
+        audit: reinitialize::EndpointReinitializeAudit,
+    ) -> Self {
+        self.reinitialize_audit = Some(audit);
         self
     }
 
@@ -326,7 +340,14 @@ impl EndpointResponder {
                 Some(handler),
                 requester,
                 still_open,
-                |_| {}, // Endpoint sessions have no server DCC state.
+                // Endpoint sessions have no server DCC state; only the
+                // Audit record follows acceptance.
+                |context, db| {
+                    let operation = reinitialize::audit_operation(context.state);
+                    if let (Some(audit), Some(operation)) = (&self.reinitialize_audit, operation) {
+                        audit(db, operation, &context.audit_source());
+                    }
+                },
             )
             .await;
             after_reply = hooks;

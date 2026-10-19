@@ -7536,6 +7536,22 @@ let server = BACnetServer::bip_builder()
     .await?;
 ```
 
+With target Audit configured, an accepted request is audited (Clause 19.6,
+Table 19-5, #1564). Accepted means the handler accepted it and any Network
+Port activation succeeded, so a refusal, a password failure, a handler panic
+or a refused activation records nothing. WARMSTART and COLDSTART record
+DEVICE_RESET, START_BACKUP and END_BACKUP record DEVICE_BACKUP, and the three
+restore steps record DEVICE_RESTORE, each naming the requester as source with
+its invoke ID and this Device as the target, with no object, property, value
+or Result. ACTIVATE_CHANGES records nothing, since Table 19-5 gives it no
+operation. A restart that also ends DISABLE_INITIATION records the reset alone,
+not a DEVICE_ENABLE_COMM beside it. The record goes through the Reporter that
+monitors the local Device, as a DCC record does, and needs that operation's
+bit. A reset the application performs for its own reasons is reported with
+`BACnetServer::report_device_reset_local()`: a DEVICE_RESET record from this
+device with no invoke ID. Call it before restarting, and don't call it for a
+peer's accepted restart, which is recorded already.
+
 Endpoint sessions take the same handler; see
 [Endpoint ReinitializeDevice](#endpoint-reinitializedevice).
 
@@ -8326,7 +8342,10 @@ The handler rules are the server's, with one addition: the session answers
 inbound requests on a single dispatch task, so a slow or blocking handler, or
 after-reply hook, stalls every request behind it. The hooks registered with
 `ReinitializeContext::after_reply` run once the egress reports the reply sent,
-or the reply channel has taken it. A panic or a returned Reject is answered
+or the reply channel has taken it. With a source Audit Reporter configured,
+the session's Reporter records an accepted reset, backup or restore step as
+the server does (#1564), filtered by its Audit_Level and
+Auditable_Operations and sent to the Device's recipient. A panic or a returned Reject is answered
 `SERVICES / OTHER` and the session keeps serving. A close that wins while the
 request waits for the database refuses it before the handler runs.
 

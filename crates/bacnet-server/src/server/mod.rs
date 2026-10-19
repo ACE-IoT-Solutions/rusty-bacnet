@@ -517,6 +517,8 @@ mod clock;
 mod command_runs;
 mod reinitialize;
 mod time_sync_policy;
+#[doc(hidden)]
+pub use reinitialize::EndpointReinitializeAudit as __endpoint_ReinitializeAudit;
 pub use reinitialize::{ReinitializeContext, ReinitializeHandler};
 mod write_group;
 #[cfg(test)]

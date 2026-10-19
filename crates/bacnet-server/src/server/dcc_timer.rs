@@ -176,7 +176,7 @@ pub(super) async fn replace<T: TransportPort + 'static>(
         }));
     }
     if let Some(db) = audit_db.as_deref_mut() {
-        audit.device_communication(
+        audit.device_operation(
             db,
             if proposed == DccState::Enable {
                 AuditOperation::DEVICE_ENABLE_COMM
@@ -228,7 +228,7 @@ impl<T: TransportPort + 'static> DccAudit<T> {
             &self.transactions,
             db,
         ) {
-            audit.device_communication(db, AuditOperation::DEVICE_ENABLE_COMM);
+            audit.device_operation(db, AuditOperation::DEVICE_ENABLE_COMM);
         }
     }
 }

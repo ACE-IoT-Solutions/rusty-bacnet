@@ -281,7 +281,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             s if s == ConfirmedServiceChoice::REINITIALIZE_DEVICE => {
                 let requester =
                     reinitialize::Requester::new(source_mac, source_network.as_ref(), provenance);
-                let (reply, hooks) = reinitialize::server_response(services, &req, requester).await;
+                let (reply, hooks) =
+                    reinitialize::server_response(services, &req, requester, &mut audit).await;
                 after_reply = hooks;
                 reply
             }

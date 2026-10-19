@@ -405,7 +405,8 @@ setting, #1578); a refusal from the transport becomes the reply. The SimpleACK l
 after the handler returns, so a handler registers any restart with
 `ReinitializeContext::after_reply`, which runs once the SimpleACK has been
 handed to the transport and never for a request answered with an Error
-(#1565), and hands slow work to a task. The mutation policy doesn't cover this
+(#1565), and hands slow work to a task. An accepted reset, backup or restore
+step is audited as Table 19-5 maps it (#1564). The mutation policy doesn't cover this
 service; the handler restricts sources through its context. A handler panic
 or a returned Reject is answered `SERVICES / OTHER`, since by then the request
 can no longer be rejected (Clause 20.1.8). Endpoint sessions run the same

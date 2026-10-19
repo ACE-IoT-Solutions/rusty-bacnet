@@ -112,16 +112,21 @@ async fn reinitialize(
         service_request: data.freeze(),
     };
     let requester = Requester::new(&[10, 0, 0, 7], None, TransportProvenance::unverified());
-    response(
+    let mut accepted = false;
+    let (reply, hooks) = response(
         db,
         &request,
         &None,
         Some(handler),
         requester,
         || Ok(()),
-        |_| {},
+        |_, _| accepted = true,
     )
-    .await
+    .await;
+    // The Audit record and the DCC transition follow acceptance, which a
+    // refused activation never reaches (#1564).
+    assert_eq!(accepted, matches!(reply, Apdu::SimpleAck(_)), "{reply:?}");
+    (reply, hooks)
 }
 
 fn assert_invalid_configuration(reply: &Apdu) {
