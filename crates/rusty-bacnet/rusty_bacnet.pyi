@@ -1764,6 +1764,30 @@ class BacnetReadRangeViolationError(BacnetError):
     """
     rule: str
 
+class BacnetBvlcNakError(BacnetError):
+    """Raised when a BBMD answers a management request (``read_bdt`` and
+    its siblings, #1841) with a BVLC-Result NAK. No reply raises
+    ``BacnetTimeoutError`` instead, so a refusal and silence never share a
+    class.
+
+    Attributes:
+        result_code: The BVLC result code it sent, such as 0x0010 (Write-BDT
+            refused), 0x0030 (registration refused) or 0x0050 (delete refused).
+    """
+    result_code: int
+
+class BacnetBvlcUnexpectedResponseError(BacnetError):
+    """Raised when a management request (``read_bdt`` and its siblings,
+    #1841) is answered by a BVLC message it doesn't take, such as a success
+    result to a table read.
+
+    Attributes:
+        expected: The BVLC function code the request takes as its answer.
+        got: The BVLC function code that came.
+    """
+    expected: int
+    got: int
+
 class BacnetTransportError(BacnetError, OSError):
     """Raised when a transport socket or I/O operation fails.
 
@@ -1922,6 +1946,15 @@ class ForeignRegistrationStatus(TypedDict):
     refused: int
     lapses: int
     renewal_hints: int
+
+
+class FdtEntry(TypedDict):
+    """A Foreign Device Table entry, as ``read_fdt()`` returns it.
+    ``seconds_remaining`` is what the BBMD reports, its grace period
+    included."""
+    address: str
+    ttl: int
+    seconds_remaining: int
 
 
 # ---------------------------------------------------------------------------
@@ -3277,6 +3310,37 @@ class BACnetClient:
         RuntimeError for non-SC, stopped or closing clients. Historical results
         own data only. Observation time is not certificate validation time.
         """
+        ...
+
+    # --- BBMD management (Annex J, #1841) ---
+    # Each sends one BVLC request to the B/IP ``address`` (``"ip"`` or
+    # ``"ip:port"``) and waits up to three seconds. A NAK raises
+    # BacnetBvlcNakError (with ``result_code``), no reply BacnetTimeoutError,
+    # a reply of the wrong kind BacnetBvlcUnexpectedResponseError. A non-B/IP
+    # client raises BacnetError; a bad address ValueError, before any I/O.
+
+    def read_bdt(self, address: str) -> Awaitable[list[tuple[str, str]]]:
+        """Read a BBMD's Broadcast Distribution Table as ``("ip:port", "mask")`` rows."""
+        ...
+
+    def write_bdt(self, address: str, entries: Sequence[str | tuple[str, str]]) -> Awaitable[None]:
+        """Ask a BBMD to take ``entries`` (rows as ``Bbmd(bdt=)`` takes them)
+        as its BDT. A BBMD that follows the 2020 standard refuses with 0x0010."""
+        ...
+
+    def read_fdt(self, address: str) -> Awaitable[list[FdtEntry]]:
+        """Read a BBMD's Foreign Device Table."""
+        ...
+
+    def delete_fdt_entry(self, address: str, entry: str) -> Awaitable[None]:
+        """Ask a BBMD to delete the foreign device at ``entry``
+        (``"ip:port"``) from its FDT; a refusal is 0x0050."""
+        ...
+
+    def register_foreign_device_bvlc(self, address: str, ttl: int) -> Awaitable[None]:
+        """Register once as a foreign device for ``ttl`` seconds (0 to
+        65535); a refusal is 0x0030. Nothing is renewed and broadcasts don't
+        go through the BBMD: ``foreign_device=`` does that."""
         ...
 
     def connection_events(self) -> Awaitable[ScEventIterator]:

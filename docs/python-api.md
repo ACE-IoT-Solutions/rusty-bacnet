@@ -662,6 +662,43 @@ and `last_result` when the response to that attempt matters. A positive
 to the requested TTL, because the lease begins at a send rather than at the
 status read.
 
+### BBMD management
+
+Five `BACnetClient` methods manage a BBMD by hand (#1841). Each sends one
+BVLC request to `address`, a B/IP `"ip"` or `"ip:port"`, and waits up to
+three seconds for the answer:
+
+- `read_bdt(address)` returns the Broadcast Distribution Table as
+  `("ip:port", "mask")` rows, the shape `Bbmd(bdt=)` takes.
+- `write_bdt(address, entries)` asks the BBMD to take `entries` as its BDT. A
+  BBMD that follows the 2020 standard refuses (result code 0x0010).
+- `read_fdt(address)` returns the Foreign Device Table, a dict per entry with
+  `address`, `ttl` and `seconds_remaining` (the grace period included).
+- `delete_fdt_entry(address, entry)` asks it to delete the foreign device at
+  `entry`, an `"ip:port"`; a refusal is 0x0050.
+- `register_foreign_device_bvlc(address, ttl)` registers once for `ttl`
+  seconds; a refusal is 0x0030. It renews nothing and doesn't route
+  broadcasts through the BBMD: `foreign_device=` does that.
+
+A refusal and silence never share an exception class. A BVLC-Result NAK
+raises `BacnetBvlcNakError` with the code in `result_code`; no answer raises
+`BacnetTimeoutError`; an answer of the wrong kind raises
+`BacnetBvlcUnexpectedResponseError` with the `expected` and `got` BVLC
+function codes. A second request to the same peer while one is in flight is
+refused locally with `BacnetError`, as is any request on a non-B/IP client.
+A bad address raises `ValueError` before anything is sent.
+
+```python
+from rusty_bacnet import BacnetBvlcNakError, BacnetTimeoutError
+
+try:
+    rows = await client.read_bdt("192.168.1.10:47808")
+except BacnetBvlcNakError as refusal:
+    print(f"not a BBMD, or refused: {refusal.result_code:#06x}")
+except BacnetTimeoutError:
+    print("no answer")
+```
+
 ### MS/TP serial ports
 
 `transport="mstp"` takes the keyword-only `serial_port` (required),
@@ -4218,6 +4255,8 @@ All BACnet errors are raised as Python exceptions:
 | `BacnetAbortError` | Remote device aborted the request |
 | `BacnetReadRangeViolationError` | A strict `read_range` refused an answer that breaks a ReadRange rule; `rule` names it (for example `"zero_first_sequence_number"`) |
 | `BacnetLogNotAdvancingError` | A paged log read can't advance: the device answered from before the record asked for, or with none its counts say it holds. `requested` and `returned` (`None` when it sent none) name the sequence numbers |
+| `BacnetBvlcNakError` | A BBMD refused a management request (`read_bdt` and its siblings) with a BVLC-Result NAK; `result_code` holds its code |
+| `BacnetBvlcUnexpectedResponseError` | A management request was answered by a BVLC message it doesn't take; `expected` and `got` hold the function codes |
 | `BacnetTransportError` | A socket or I/O failure: a bind or listen that fails (B/IP, B/IPv6, `ScHub.start`), a failed SC dial. Also an `OSError` |
 
 ```python

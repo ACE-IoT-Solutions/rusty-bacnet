@@ -1,5 +1,6 @@
 //! Python exception types mapping Rust BACnet errors.
 
+use bacnet_transport::bip::BvlcExchangeError;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::{Error, ErrorDetail};
@@ -18,6 +19,8 @@ create_exception!(rusty_bacnet, BacnetRejectError, BacnetError);
 create_exception!(rusty_bacnet, BacnetAbortError, BacnetError);
 create_exception!(rusty_bacnet, BacnetLogNotAdvancingError, BacnetError);
 create_exception!(rusty_bacnet, BacnetReadRangeViolationError, BacnetError);
+create_exception!(rusty_bacnet, BacnetBvlcNakError, BacnetError);
+create_exception!(rusty_bacnet, BacnetBvlcUnexpectedResponseError, BacnetError);
 
 /// `BacnetTransportError`, built at first use: pyo3's `create_exception!`
 /// takes one base, and this class derives from both `BacnetError` and
@@ -147,6 +150,38 @@ pub fn to_py_err(err: Error) -> PyErr {
             py_err
         }
         _ => BacnetError::new_err(err.to_string()),
+    }
+}
+
+/// Convert a failed BVLC management exchange (`read_bdt` and its siblings,
+/// #1841). A NAK raises `BacnetBvlcNakError` with the BBMD's `result_code`;
+/// no reply raises `BacnetTimeoutError`, so the two never share a class. A
+/// reply of the wrong kind raises `BacnetBvlcUnexpectedResponseError` with
+/// the `expected` and `got` BVLC function codes, and a local failure raises
+/// what [`to_py_err`] makes of it.
+pub(crate) fn bvlc_exchange_err(err: BvlcExchangeError) -> PyErr {
+    match err {
+        BvlcExchangeError::Nak(code) => {
+            let py_err = BacnetBvlcNakError::new_err(err.to_string());
+            let _ = crate::py_async::attach(|py| {
+                let _ = py_err.value(py).setattr("result_code", code.to_raw());
+                Ok(())
+            });
+            py_err
+        }
+        BvlcExchangeError::NoReply(_) => BacnetTimeoutError::new_err(err.to_string()),
+        BvlcExchangeError::UnexpectedResponse { expected, got } => {
+            let py_err = BacnetBvlcUnexpectedResponseError::new_err(err.to_string());
+            let _ = crate::py_async::attach(|py| {
+                let value = py_err.value(py);
+                let _ = value.setattr("expected", expected.to_raw());
+                let _ = value.setattr("got", got.to_raw());
+                Ok(())
+            });
+            py_err
+        }
+        BvlcExchangeError::Transport(error) => to_py_err(error),
+        other => BacnetError::new_err(other.to_string()),
     }
 }
 
@@ -307,6 +342,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "BacnetTransportError",
         transport_error_type(m.py())?.bind(m.py()),
     )?;
+    let nak = m.py().get_type::<BacnetBvlcNakError>();
+    nak.setattr("result_code", m.py().None())?;
+    m.add("BacnetBvlcNakError", nak)?;
+    let unexpected = m.py().get_type::<BacnetBvlcUnexpectedResponseError>();
+    unexpected.setattr("expected", m.py().None())?;
+    unexpected.setattr("got", m.py().None())?;
+    m.add("BacnetBvlcUnexpectedResponseError", unexpected)?;
     Ok(())
 }
 
@@ -408,6 +450,45 @@ mod tests {
                 .extract()
                 .unwrap();
             assert_eq!(sessions, [1, 4]);
+        });
+    }
+
+    #[test]
+    fn bvlc_exchange_errors_keep_their_classes_apart() {
+        use bacnet_transport::bvll::{BvlcFunction, BvlcResultCode};
+        Python::initialize();
+        Python::attach(|py| {
+            let attr = |error: &PyErr, name: &str| -> u16 {
+                error.value(py).getattr(name).unwrap().extract().unwrap()
+            };
+            let nak = bvlc_exchange_err(BvlcExchangeError::Nak(
+                BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK,
+            ));
+            assert!(nak.is_instance_of::<BacnetBvlcNakError>(py));
+            assert!(!nak.is_instance_of::<BacnetTimeoutError>(py));
+            assert_eq!(attr(&nak, "result_code"), 0x0030);
+
+            let silent = bvlc_exchange_err(BvlcExchangeError::NoReply(
+                std::time::Duration::from_secs(3),
+            ));
+            assert!(silent.is_instance_of::<BacnetTimeoutError>(py));
+            assert!(!silent.is_instance_of::<BacnetBvlcNakError>(py));
+
+            let mismatch = bvlc_exchange_err(BvlcExchangeError::UnexpectedResponse {
+                expected: BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
+                got: BvlcFunction::BVLC_RESULT,
+            });
+            assert!(mismatch.is_instance_of::<BacnetBvlcUnexpectedResponseError>(py));
+            assert!(!mismatch.is_instance_of::<BacnetBvlcNakError>(py));
+            assert_eq!(
+                (attr(&mismatch, "expected"), attr(&mismatch, "got")),
+                (0x03, 0x00)
+            );
+
+            let local = bvlc_exchange_err(BvlcExchangeError::Transport(Error::Encoding(
+                "refused".into(),
+            )));
+            assert!(local.value(py).get_type().is(py.get_type::<BacnetError>()));
         });
     }
 
