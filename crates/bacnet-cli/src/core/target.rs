@@ -338,6 +338,37 @@ impl AddressStyle {
             _ => hex(mac),
         }
     }
+
+    /// Where a device or a reply is, as the TUI's tables show it. For one
+    /// a router passed on, from `routed` (its network and its MAC there):
+    /// the routed station as [`routed_station`] writes it, and the router,
+    /// the link peer `mac`, in this style. Otherwise `mac` in this style
+    /// and no router.
+    #[cfg(feature = "tui")]
+    pub(crate) fn locate(
+        self,
+        mac: &[u8],
+        routed: Option<(u16, &[u8])>,
+    ) -> (String, Option<String>) {
+        match routed {
+            Some((network, station)) => (routed_station(network, station), Some(self.format(mac))),
+            None => (self.format(mac), None),
+        }
+    }
+}
+
+/// A routed station in the target syntax, `NET:0xMAC` with the MAC in
+/// upper-case hex (`2:0x7F000001C335`, an MS/TP station `2:0x05`), which
+/// [`parse_target`] reads back; `NET:*` for a broadcast on that network.
+pub(crate) fn routed_station(network: u16, mac: &[u8]) -> String {
+    if mac.is_empty() {
+        return format!("{network}:*");
+    }
+    let mut out = format!("{network}:0x");
+    for b in mac {
+        out.push_str(&format!("{b:02X}"));
+    }
+    out
 }
 
 /// Colon-separated lowercase hex.

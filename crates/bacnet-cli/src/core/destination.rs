@@ -161,7 +161,7 @@ async fn find_routed<T: TransportPort + 'static>(
             Err(_) => {
                 let name = match station {
                     Station::Instance(instance) => format!("{dnet}:{instance}"),
-                    Station::Mac(mac) => format!("{dnet}:0x{}", hex_digits(mac)),
+                    Station::Mac(mac) => super::target::routed_station(dnet, mac),
                 };
                 return Err(format!(
                     "device {name} did not answer a Who-Is on network {dnet} within {} ms",
@@ -184,10 +184,6 @@ async fn find_routed<T: TransportPort + 'static>(
             Ok(Err(RecvError::Closed)) => return Err("the client stopped".into()),
         }
     }
-}
-
-fn hex_digits(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 impl Destination {

@@ -16,7 +16,7 @@ use bacnet_transport::sc_frame::{
 use bytes::Bytes;
 
 use super::decode_npdu_layer;
-use crate::core::target::hex;
+use crate::core::target::{hex, routed_station as routed};
 
 /// The link a frame was captured on, which decides how its octets are read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -96,16 +96,6 @@ pub fn kebab(name: impl std::fmt::Display) -> String {
         });
     }
     out
-}
-
-/// A routed station in the CLI's target syntax: `NET:0xMAC`, or `NET:*`
-/// for a broadcast on that network.
-pub fn routed(network: u16, mac: &[u8]) -> String {
-    if mac.is_empty() {
-        return format!("{network}:*");
-    }
-    let hex: String = mac.iter().map(|b| format!("{b:02X}")).collect();
-    format!("{network}:0x{hex}")
 }
 
 /// What the link layer says about a frame, and where its NPDU is.

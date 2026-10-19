@@ -38,8 +38,7 @@ fn dev_follows_the_device_table_and_finds_routed_devices() {
     );
     filter(&mut app, "dev:4321");
     assert!(shown(&app).is_empty(), "nothing known of 4321 yet");
-    let mut routed = row(4321, &format!("05 via {PEER}"), 260, 0);
-    routed.network = Some(2);
+    let routed = routed_row(4321, (2, &[5]), PEER, 260, 0);
     worker(&mut app, WorkerEvent::Discovered(routed));
     assert_eq!(shown(&app), [2], "its routed station, 2:0x05");
 }

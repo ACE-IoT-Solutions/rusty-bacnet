@@ -171,9 +171,11 @@ pub(crate) enum Command {
 pub(crate) struct DeviceRow {
     /// Device instance.
     pub(crate) instance: u32,
-    /// Where it answered from: its own address, or for a routed device its
-    /// remote MAC and the router.
+    /// Where it is, as a target the CLI reads back: its own address, or
+    /// for a routed device its routed station, `2:0x05`.
     pub(crate) address: String,
+    /// The router a routed device answered through, on the local network.
+    pub(crate) via: Option<String>,
     /// Remote network number for a routed device.
     pub(crate) network: Option<u16>,
     /// Vendor identifier.
@@ -184,6 +186,17 @@ pub(crate) struct DeviceRow {
     pub(crate) segmentation: Segmentation,
     /// When the last I-Am arrived.
     pub(crate) last_seen: Instant,
+}
+
+impl DeviceRow {
+    /// The address with the router a routed device answered through,
+    /// `2:0x05 via 10.0.1.1:47808`, for the log and the duplicate banner.
+    pub(crate) fn located(&self) -> String {
+        match &self.via {
+            Some(router) => format!("{} via {router}", self.address),
+            None => self.address.clone(),
+        }
+    }
 }
 
 /// How an operation ended.

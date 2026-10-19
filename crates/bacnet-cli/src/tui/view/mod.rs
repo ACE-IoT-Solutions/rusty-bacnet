@@ -7,6 +7,7 @@
 mod browser;
 mod capture;
 mod chrome;
+mod columns;
 mod connection;
 mod devices;
 mod dialogs;
@@ -191,6 +192,42 @@ impl Theme {
     fn selected(&self) -> Style {
         Style::new().add_modifier(Modifier::REVERSED)
     }
+}
+
+/// `text` with each control character (a newline, a tab, an escape) as a
+/// space, as the log pane shows them: a device-supplied string must not
+/// move the cursor or break a row.
+pub(super) fn sanitize(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
+/// Display width of `text`.
+pub(super) fn text_width(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// `text` cut to at most `width` columns, ending in `…` when it was cut.
+pub(super) fn ellipsize(text: &str, width: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    if text_width(text) <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for grapheme in text.graphemes(true) {
+        let w = text_width(grapheme);
+        if used + w + 1 > width {
+            break;
+        }
+        used += w;
+        out.push_str(grapheme);
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
 }
 
 /// A `width` x `height` rectangle centred in `area`, clipped to it.

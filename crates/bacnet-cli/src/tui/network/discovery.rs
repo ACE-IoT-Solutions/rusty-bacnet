@@ -25,8 +25,12 @@ pub(crate) struct FoundRow {
     pub(crate) object: ObjectIdentifier,
     /// Its name.
     pub(crate) name: String,
-    /// Where the I-Have came from, in the transport's address style.
+    /// Where the I-Have came from, as a target the CLI reads back: the
+    /// device's address, or for one a router passed it on from, its routed
+    /// station (`2:0x05`), as the device table writes them.
     pub(crate) address: String,
+    /// The router that passed the I-Have on, on the local network.
+    pub(crate) via: Option<String>,
     /// The device's network, when a router passed the I-Have on.
     pub(crate) network: Option<u16>,
 }

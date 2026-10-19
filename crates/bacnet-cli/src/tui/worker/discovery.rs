@@ -22,11 +22,17 @@ use crate::tui::network::discovery::{DiscoveryCommand, DiscoveryEvent, FoundRow}
 
 /// What an I-Have reports, as the UI shows it.
 fn found(reply: &ReceivedIHave, style: AddressStyle) -> FoundRow {
+    let routed = reply
+        .source_network
+        .as_ref()
+        .map(|source| (source.network, source.mac_address.as_slice()));
+    let (address, via) = style.locate(&reply.source_mac, routed);
     FoundRow {
         device: reply.i_have.device_identifier.instance_number(),
         object: reply.i_have.object_identifier,
         name: reply.i_have.object_name.clone(),
-        address: style.format(&reply.source_mac),
+        address,
+        via,
         network: reply.source_network.as_ref().map(|source| source.network),
     }
 }
@@ -49,7 +55,7 @@ fn report(received: ReceivedNetworkReport, style: AddressStyle) -> Option<Discov
         NetworkReport::RejectMessageToNetwork(reject) => DiscoveryEvent::Rejected {
             router: from,
             network: reject.network,
-            reason: reject.reason.to_string(),
+            reason: crate::decode::frame::kebab(reject.reason),
         },
         _ => return None,
     })
@@ -99,5 +105,65 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                 Err(RecvError::Closed) => break,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_encoding::npdu::NpduAddress;
+    use bacnet_npdu::{RejectMessageReason, RejectMessageToNetwork};
+    use bacnet_services::who_has::IHaveRequest;
+    use bacnet_types::enums::ObjectType;
+    use bacnet_types::primitives::ObjectIdentifier;
+    use bacnet_types::MacAddr;
+
+    use super::*;
+
+    const ROUTER: [u8; 6] = [10, 0, 1, 1, 0xBA, 0xC0];
+
+    fn i_have(source_network: Option<NpduAddress>) -> ReceivedIHave {
+        let id = |kind, instance| ObjectIdentifier::new(kind, instance).unwrap();
+        ReceivedIHave {
+            i_have: IHaveRequest {
+                device_identifier: id(ObjectType::DEVICE, 3005),
+                object_identifier: id(ObjectType::ANALOG_INPUT, 1),
+                object_name: "Supply Air Temp".into(),
+            },
+            source_mac: MacAddr::from_slice(&ROUTER),
+            source_network,
+        }
+    }
+
+    /// A routed I-Have names the station the way the device table does,
+    /// with the router beside it; a local one only its sender.
+    #[test]
+    fn found_objects_are_located_like_the_device_table() {
+        let routed = NpduAddress {
+            network: 3,
+            mac_address: MacAddr::from_slice(&[5]),
+        };
+        let row = found(&i_have(Some(routed)), AddressStyle::Bip);
+        assert_eq!(row.address, "3:0x05");
+        assert_eq!(row.via.as_deref(), Some("10.0.1.1:47808"));
+        assert_eq!(row.network, Some(3));
+        let row = found(&i_have(None), AddressStyle::Bip);
+        assert_eq!((row.address.as_str(), row.via), ("10.0.1.1:47808", None));
+    }
+
+    #[test]
+    fn a_reject_reason_is_kebab_case() {
+        let received = ReceivedNetworkReport {
+            source_mac: MacAddr::from_slice(&ROUTER),
+            source_network: None,
+            report: NetworkReport::RejectMessageToNetwork(RejectMessageToNetwork {
+                reason: RejectMessageReason::NOT_DIRECTLY_CONNECTED,
+                network: 9,
+            }),
+        };
+        let Some(DiscoveryEvent::Rejected { reason, .. }) = report(received, AddressStyle::Bip)
+        else {
+            panic!("expected a reject");
+        };
+        assert_eq!(reason, "not-directly-connected");
     }
 }

@@ -31,6 +31,7 @@ fn found(device: u32, instance: u32, name: &str) -> FoundRow {
         object: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap(),
         name: name.into(),
         address: format!("10.0.0.{}:47808", device % 250),
+        via: None,
         network: None,
     }
 }
@@ -95,11 +96,11 @@ fn a_refused_who_has_is_shown_and_a_reject_is_flashed() {
     let reject = DiscoveryEvent::Rejected {
         router: "10.0.0.1:47808".into(),
         network: 99,
-        reason: "NOT_DIRECTLY_CONNECTED".into(),
+        reason: "not-directly-connected".into(),
     };
     discovery(&mut app, reject);
     let flash = &app.flash.as_ref().unwrap().text;
-    assert!(flash.contains("network 99") && flash.contains("NOT_DIRECTLY_CONNECTED"));
+    assert!(flash.contains("network 99") && flash.contains("not-directly-connected"));
 }
 
 #[test]

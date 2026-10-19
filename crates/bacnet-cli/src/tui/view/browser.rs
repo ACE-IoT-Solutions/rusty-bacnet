@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{Theme, FULL_WIDTH, WIDE_WIDTH};
+use super::{sanitize, text_width, Theme, FULL_WIDTH, WIDE_WIDTH};
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
 use crate::tui::app::objects::{kebab, object_label, ListRow};
 use crate::tui::point::{priority_label, ObjectView, PriorityView, ReadVia, PRIORITIES};
@@ -261,11 +261,6 @@ fn title(view: &ObjectView) -> String {
     format!(" {}{via} ", object_label(view.object))
 }
 
-/// Display width of `text`.
-fn text_width(text: &str) -> usize {
-    Span::raw(text).width()
-}
-
 /// Width of the name column for names `widths` wide in a pane `inner`
 /// columns wide: the longest name, capped so the value column keeps its
 /// room. A longer name puts its value on the next line.
@@ -274,15 +269,6 @@ fn name_width(widths: impl Iterator<Item = usize>, inner: usize) -> usize {
     // A space each side of the row.
     let cap = inner.saturating_sub(2 + NAME_GAP + value_room);
     widths.max().unwrap_or(0).min(cap)
-}
-
-/// `text` with each control character (a newline, a tab, an escape) as a
-/// space, as the log pane shows them: a device-supplied value must not
-/// move the cursor or break a row.
-fn sanitize(text: &str) -> String {
-    text.chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect()
 }
 
 /// How good a break at the space at `at` is: after `; ` best, then after
