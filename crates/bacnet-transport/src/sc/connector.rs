@@ -8,8 +8,7 @@ use std::time::Duration;
 use bacnet_types::error::Error;
 use tracing::warn;
 
-use super::failover::ActiveHub;
-use super::{ScTransport, WebSocketPort};
+use super::{ScActiveHub, ScTransport, WebSocketPort};
 
 type WebSocketConnectFuture<W> = Pin<Box<dyn Future<Output = Result<W, Error>> + Send>>;
 pub(super) type WebSocketConnector<W> = Arc<dyn Fn() -> WebSocketConnectFuture<W> + Send + Sync>;
@@ -47,14 +46,14 @@ impl<W: WebSocketPort> ScTransport<W> {
 }
 
 pub(super) async fn dial_reconnect_ws<W: WebSocketPort>(
-    active_hub: ActiveHub,
+    active_hub: ScActiveHub,
     primary_connector: &Option<WebSocketConnector<W>>,
     failover_connector: &Option<WebSocketConnector<W>>,
     timeout_ms: u64,
 ) -> Result<Option<Arc<W>>, Error> {
     let connector = match active_hub {
-        ActiveHub::Primary => primary_connector.as_ref(),
-        ActiveHub::Failover => failover_connector.as_ref(),
+        ScActiveHub::Primary => primary_connector.as_ref(),
+        ScActiveHub::Failover => failover_connector.as_ref(),
     };
 
     match connector {
