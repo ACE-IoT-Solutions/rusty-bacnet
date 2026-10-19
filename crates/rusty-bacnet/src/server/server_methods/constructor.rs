@@ -68,7 +68,9 @@ impl BACnetServer {
         apdu_segment_timeout_ms=5000,
         bbmd=None,
         foreign_device=None,
-        sc_npdu_per_origin_limit=None
+        sc_npdu_per_origin_limit=None,
+        on_reinitialize=None,
+        after_reinitialize=None
     ))]
     fn new(
         device_instance: u32,
@@ -135,7 +137,10 @@ impl BACnetServer {
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
         sc_npdu_per_origin_limit: Option<usize>,
+        on_reinitialize: Option<&Bound<'_, PyAny>>,
+        after_reinitialize: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let reinitialize = crate::reinitialize::parse(on_reinitialize, after_reinitialize)?;
         let sc_npdu_admission_policy = crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit)?;
         let segmentation_supported = super::constructor_budgets::segmentation(
             segmentation_supported,
@@ -244,6 +249,7 @@ impl BACnetServer {
             dcc_source_restriction,
             dcc_disable_rate_limit,
             reinit_password,
+            reinitialize,
             request_admission_policy,
             read_property_multiple_budget,
             get_alarm_summary_budget,

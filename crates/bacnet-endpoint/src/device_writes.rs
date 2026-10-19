@@ -39,8 +39,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// [`with_device_writes`](Self::with_device_writes). The handler follows
     /// the rules on
     /// [`ReinitializeHandler`](bacnet_server::server::ReinitializeHandler).
-    /// The SimpleACK goes out only after it returns, so schedule any restart
-    /// for after the reply instead of restarting inline. It runs synchronously
+    /// The SimpleACK goes out only after it returns, so register any restart
+    /// with [`ReinitializeContext::after_reply`] instead of restarting
+    /// inline: the hook runs once the egress has sent the SimpleACK, on the
+    /// same dispatch task, and never for a refusal. It runs synchronously
     /// on the session's single dispatch task, so a slow or blocking handler
     /// stalls the whole session: hand slow work such as backup files to a
     /// task. Without a password set by

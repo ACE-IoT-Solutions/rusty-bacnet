@@ -586,3 +586,6 @@ mod delay_rejection;
 
 #[path = "source_write_tests.rs"]
 mod write;
+
+#[path = "source_reinitialize_tests.rs"]
+mod reinitialize;

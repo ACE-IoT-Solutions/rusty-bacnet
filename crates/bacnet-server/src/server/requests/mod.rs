@@ -145,6 +145,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let mut initial_cov_notifications: Vec<InitialCovNotification> = Vec::new();
         let mut accepted_acknowledgment = None;
         let mut received_event = None;
+        let mut after_reply = reinitialize::AfterReply::default();
 
         let complex_ack = |ack_buf: BytesMut| -> Apdu {
             Apdu::ComplexAck(ComplexAck {
@@ -280,7 +281,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             s if s == ConfirmedServiceChoice::REINITIALIZE_DEVICE => {
                 let requester =
                     reinitialize::Requester::new(source_mac, source_network.as_ref(), provenance);
-                reinitialize::server_response(services, &req, requester).await
+                let (reply, hooks) =
+                    reinitialize::server_response(services, &req, requester, &mut audit).await;
+                after_reply = hooks;
+                reply
             }
             s if s == ConfirmedServiceChoice::GET_EVENT_INFORMATION => {
                 event_information::response(
@@ -608,6 +612,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let issued =
             Self::issue_confirmed_response(plan, &response, &audit, read_audits, reply_tx, pending)
                 .await;
+        // A ReinitializeDevice restart waits for its SimpleACK's handoff
+        // (Clause 16.4.2, #1565); no lock is held here.
+        match issued {
+            issue::Issued::Unsegmented { handed_off: true } => after_reply.run(),
+            _ => drop(after_reply),
+        }
         if issued == issue::Issued::Segmented {
             Self::fire_written_event_notifications(
                 &services.event_delivery(),

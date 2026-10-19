@@ -49,6 +49,7 @@ struct BipEndpointConfig {
     min_request_interval_ms: u64,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     mode: BipMode,
+    reinitialize: crate::reinitialize::EndpointReinitialize,
 }
 
 type BipSession = EndpointSession<BipTransport>;
@@ -98,7 +99,7 @@ impl BipEndpointConfig {
             builder = builder.registered_network_port(oid);
         }
         let session = builder.build_session().map_err(to_py_err)?;
-        Ok(session)
+        Ok(config.reinitialize.install(session))
     }
 }
 
@@ -182,6 +183,9 @@ impl PyBipEndpoint {
     ///     bbmd / foreign_device: Keyword-only, at most one: a `Bbmd` makes
     ///         the endpoint a BBMD, a `ForeignDevice` registers it with one
     ///         (#938). A ValueError if both are given.
+    ///     on_reinitialize / after_reinitialize / reinit_password:
+    ///         Keyword-only. Execute ReinitializeDevice, as `BACnetServer`'s
+    ///         keywords of the same names do (#1566).
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -205,7 +209,10 @@ impl PyBipEndpoint {
         share_port_by_address=false,
         min_request_interval_ms=0,
         bbmd=None,
-        foreign_device=None
+        foreign_device=None,
+        on_reinitialize=None,
+        after_reinitialize=None,
+        reinit_password=None
     ))]
     fn new(
         device_instance: u32,
@@ -229,7 +236,15 @@ impl PyBipEndpoint {
         min_request_interval_ms: u64,
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
+        on_reinitialize: Option<&Bound<'_, PyAny>>,
+        after_reinitialize: Option<&Bound<'_, PyAny>>,
+        reinit_password: Option<String>,
     ) -> PyResult<Self> {
+        let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
+            on_reinitialize,
+            after_reinitialize,
+            reinit_password,
+        )?;
         let mode = crate::bip_options::bip_mode("bip", bbmd, foreign_device)?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
@@ -288,6 +303,7 @@ impl PyBipEndpoint {
                 registered_network_port,
                 min_request_interval_ms,
                 mode,
+                reinitialize,
             },
         })
     }
@@ -397,6 +413,7 @@ impl PyBipEndpoint {
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
@@ -422,6 +439,7 @@ impl PyBipEndpoint {
             let borrowed = slf.borrow();
             (borrowed.lifecycle.clone(), borrowed.config.clone())
         };
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
@@ -467,6 +485,7 @@ impl PyBipEndpoint {
     /// Clone the server role (fails with RuntimeError before start/after close).
     fn server<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.lifecycle.session.clone();
+        let reinitialize = self.config.reinitialize.enabled();
         crate::py_async::future_into_py(py, async move {
             let handle = {
                 let guard = inner.lock().await;
@@ -481,7 +500,7 @@ impl PyBipEndpoint {
                     )
                 })?
             };
-            Ok(PyEndpointServer::new(handle))
+            Ok(PyEndpointServer::new(handle, reinitialize))
         })
     }
 

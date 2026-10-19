@@ -2220,6 +2220,8 @@ server = BACnetServer(
     dcc_source_restriction=None, # optional list[(network_or_None, bytes)]; [] denies all; requires require_password
     dcc_disable_rate_limit=None, # optional (capacity, refill_interval_ms); (3, 20000) enables default rate
     reinit_password=None,        # password for ReinitializeDevice
+    on_reinitialize=None,        # keyword-only; see "ReinitializeDevice"
+    after_reinitialize=None,     # keyword-only; runs after the SimpleACK
     cov_policy=None,             # keyword-only dict of COV limits; see COV policy below
     time_sync_policy=None,       # keyword-only dict of clock limits; see Time synchronization policy below
 )
@@ -3664,11 +3666,13 @@ A registered port follows its owner's B/IP mode (#939): `BACnet_IP_Mode` reads
 0 for a normal node, 1 for a foreign device and 2 for a BBMD (`bbmd=` and
 `foreign_device=`, see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)),
 and a BBMD's port serves its live BDT and FDT, a foreign device's its BBMD and
-time-to-live. In Rust, a BBMD port's BBMD_Broadcast_Distribution_Table and
-BBMD_Accept_FD_Registrations accept writes that ReinitializeDevice then
-activates (#1578). Python servers take no ReinitializeDevice handler, so nothing
-could activate a written value: those writes raise `BacnetProtocolError`
-(WRITE_ACCESS_DENIED), and Changes_Pending stays FALSE. Local Network Number behavior
+time-to-live. With an `on_reinitialize` handler (see
+[ReinitializeDevice](#reinitializedevice)), a BBMD port's
+BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations accept
+writes, set Changes_Pending, and take effect on an accepted ACTIVATE_CHANGES or
+WARMSTART (#1578, #1566). Without one nothing could activate a written value,
+so those writes raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
+Changes_Pending stays FALSE. Local Network Number behavior
 is described below; complete Network Port conformance and multiport routing
 remain outside this registration contract.
 
@@ -3749,6 +3753,79 @@ await server.start()
 address = await server.local_address()  # e.g., "0.0.0.0:47808"
 await server.stop()
 ```
+
+### ReinitializeDevice
+
+Without a handler every ReinitializeDevice request is refused. Two
+keyword-only constructor arguments carry it out (#1566):
+
+```python
+from rusty_bacnet import BACnetServer, ErrorClass, ErrorCode, ReinitializedState
+
+def on_reinitialize(request):
+    # Runs while the server holds its objects: decide and return at once.
+    if request.state not in (ReinitializedState.WARMSTART, ReinitializedState.COLDSTART):
+        return False                      # SERVICES / SERVICE_REQUEST_DENIED
+    if busy_configuring():
+        return (ErrorClass.DEVICE, ErrorCode.CONFIGURATION_IN_PROGRESS)
+    return None                           # accept
+
+async def after_reinitialize(request):
+    # Runs on the event loop once the SimpleACK has been handed off.
+    await restart_the_application(request.state)
+
+server = BACnetServer(1234, reinit_password="secret",
+                      on_reinitialize=on_reinitialize,
+                      after_reinitialize=after_reinitialize)
+```
+
+- `on_reinitialize(request)` is called once a request has passed its password
+  and state checks. It receives a `ReinitializeRequest` with `state`,
+  `source_mac`, `source_network`, `source_address` (the last two set for a
+  routed request) and `invoke_id`; the addresses are claims, not an
+  authenticated identity. None or True accepts, False refuses with SERVICES /
+  SERVICE_REQUEST_DENIED, and an `(ErrorClass, ErrorCode)` tuple refuses with
+  those. An exception, or any other value, is reported through
+  `sys.unraisablehook` and answered SERVICES / OTHER, as a panicking Rust
+  handler is (Clause 20.1.8 rules out a Reject by then).
+- It runs synchronously while the server holds its object database, on a
+  native thread, so it must not await, block or wait for I/O: every other
+  request waits for it. It may not call back into `rusty_bacnet` either; a
+  binding method called there raises `RuntimeError`, since it would wait for
+  the lock the handler holds. That check covers only calls on the handler's
+  own thread. The handler must also never wait on the event loop or another
+  thread: `asyncio.run_coroutine_threadsafe(...).result()`, `Thread.join` on
+  a thread that makes binding calls, or any future's `.result()` deadlocks
+  the server while it holds the lock.
+- It must be a plain function. An `async def` handler is answered SERVICES /
+  OTHER (its coroutine is closed, never run); put async work in
+  `after_reinitialize`.
+- `after_reinitialize(request)` (it needs `on_reinitialize`) runs on the event
+  loop that called `start()`, once the accepted request's SimpleACK has been
+  handed to the transport (Clause 16.4.2: reply first, then restart). It never
+  runs for a refusal, a password failure, a failed callable or a Network Port
+  activation the transport refused, and a `stop()` that begins before the
+  hand-off drops it too. A coroutine it returns runs as a task, held until it
+  finishes, across restarts too. Restart from here, never from
+  `on_reinitialize`. On B/IP, B/IPv6 and SC the reply has been sent by then.
+  On MS/TP, hand-off means the frame is queued and still waits for the
+  token, so stopping the server at once can drop the reply: wait a short
+  while (a few token rotations, say half a second) before `server.stop()`.
+- With a handler, a registered BBMD port's BBMD_Broadcast_Distribution_Table
+  and BBMD_Accept_FD_Registrations take writes, and ACTIVATE_CHANGES or
+  WARMSTART puts them into effect (see
+  [Registered B/IP Network Port](#registered-bip-network-port)).
+- With target Audit Reporters configured, an accepted reset, backup or restore
+  step is recorded (DEVICE_RESET, DEVICE_BACKUP or DEVICE_RESTORE; nothing for
+  ACTIVATE_CHANGES). `await server.report_device_reset_local()` records a reset
+  the application makes on its own, as this device's DEVICE_RESET.
+
+`BipEndpoint`, `ScEndpoint` and `MstpEndpoint` take the same two keywords plus
+`reinit_password`; see [Endpoint](#endpoint-one-transport-both-roles). An
+endpoint's only Audit Reporter is its source Reporter, which Clause 19.6.2
+casts as the operation source's; writing the DEVICE_RESET, DEVICE_BACKUP and
+DEVICE_RESTORE records of requests it carries out through that Reporter is
+this library's local choice.
 
 ### Runtime Object Access
 
@@ -4230,13 +4307,18 @@ async with endpoint:
 (BIP), VMAC hex (SC), or station string (MS/TP). Roles expose no callbacks;
 the client initiates `read_property`, `read_range` and `read_property_multiple`; concurrent use is
 `asyncio.gather` over these reads plus
-`is_session_alive()` polling — never Rust-calls-Python. Interpreter
+`is_session_alive()` polling. The one Rust-calls-Python path is the owner's
+optional `on_reinitialize` / `after_reinitialize` pair. Interpreter
 finalization only seals forcefully; always await `close()` or context exit.
 BIPv6/Ethernet have no endpoint owner; use the standalone path there.
 
-Python endpoint server roles execute and advertise ReadProperty only (the Rust
-Device-write and ReinitializeDevice opt-ins have no Python binding) and expose
-neither Device COV list property. A supplied `services` list must include RP and
+Python endpoint server roles execute and advertise ReadProperty, plus
+ReinitializeDevice when built with `on_reinitialize` (the keywords and rules of
+[ReinitializeDevice](#reinitializedevice), with `reinit_password` needing a
+handler; `EndpointServer.service_scope()` then lists `reinitialize_device`).
+The endpoint answers requests on one dispatch task, so a slow callable stalls
+every request. The Rust Device-write opt-in has no Python binding, and the
+roles expose neither Device COV list property. A supplied `services` list must include RP and
 cannot claim unsupported execution; incompatible server-role profiles fail
 startup before ingress.
 ClientOnly has no responder and keeps its service list as a local declaration.

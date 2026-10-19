@@ -11,7 +11,10 @@ pub(super) enum Issued {
     /// are not admitted.
     Segmented,
     /// Sent in one APDU, after the read audits were admitted.
-    Unsegmented,
+    Unsegmented {
+        /// Whether the reply channel or the transport took the response.
+        handed_off: bool,
+    },
 }
 
 /// Where a confirmed response goes and the limits it is sent under.
@@ -134,8 +137,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // deferred until the complete response exists and that guard is gone.
         // Segmentation/post-execution transport divergence does not add records.
         audit.admit_reads(db, read_audits).await;
-        confirmed_response::send_unsegmented_response(network, encoded, target, reply_tx, pending)
-            .await;
-        Issued::Unsegmented
+        let handed_off = confirmed_response::send_unsegmented_response(
+            network, encoded, target, reply_tx, pending,
+        )
+        .await;
+        Issued::Unsegmented { handed_off }
     }
 }

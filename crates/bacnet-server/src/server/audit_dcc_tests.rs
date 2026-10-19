@@ -515,3 +515,6 @@ async fn a_resource_drop_under_disable_initiation_is_summarized() {
 
 #[path = "audit_dcc_record_tests.rs"]
 mod records;
+
+#[path = "audit_reinitialize_tests.rs"]
+mod reinitialize;
