@@ -227,7 +227,8 @@ a live table of I-Am answers, with a Who-Is form. The status bar shows the
 session level: `READ-ONLY` by default (discovery, reads, finite COV
 subscriptions and foreign-device registrations), a red `WRITE mm:ss` while a
 write session is armed (see [Write sessions](#write-sessions)), or `PASSIVE`.
-The design and planned screens (SC, MS/TP, capture) are in
+Screens: `1` devices, `3` watch list, `4` network, `5` SC, `6` MS/TP and `7`
+[capture](#capture-screen). The design is in
 [docs/design/tui.md](design/tui.md).
 
 Explicit global network flags without `--profile`, or `--no-profile`, start
@@ -249,6 +250,7 @@ flag for the other transport (say `--port` on an SC profile) is an error.
 | `--max-rate <N>` | `20` | Confirmed requests a second across the browser and the watch list; 0 for no cap |
 | `--cov-lifetime <SECS>` | `300` | Lifetime of the watch list's COV subscriptions, 10 to 28800 |
 | `--poll-interval <SECS>` | `10` | Least time between two polls of a watched point, 1 to 3600 |
+| `--capture-ring <N>` | `50000` | Frames the Capture screen keeps, 1 to 1000000, at about 0.5 to 1 KB each; the oldest go first |
 
 `-v` and `-vv` raise the log level from info to debug and trace.
 
@@ -631,6 +633,66 @@ port (the port can't be opened, say), `c` confirms a join again; to listen
 again, quit and restart with `--mstp-monitor`. With `--passive` the wizard proposes but never joins. The
 monitor is the place to start on an unfamiliar trunk; like the participant, it
 has hardware evidence only on Linux, and macOS and Windows are experimental.
+
+#### Capture screen
+
+`7` opens a live list of frames and starts capturing on first use. The
+sources:
+
+- **This node's own traffic**, from the transport's frame tap: every B/IP or
+  B/IPv6 BVLL message, every BACnet/SC message (in plaintext, since the tap
+  sits inside TLS: something no wire capture can show), and on MS/TP every
+  frame the station sends or hears, tokens and polls included. Each new
+  session subscribes again; the tap starts when the screen is first opened,
+  so an SC session's Connect-Request has gone by then.
+- **Every frame on an MS/TP trunk**, from the monitor (`--mstp-monitor`),
+  line errors included.
+
+The list shows, from 120 columns, the frame number, the time (UTC), the
+link, the direction (`in`, `out`, or `--` for the monitor's frames), source
+and destination as the device table writes them, the link message, the APDU
+type, the invoke ID, the service, and any error, reject, abort or NAK. Below
+120 columns a one-character mark (`→` out, `←` in, `-` heard on the wire)
+replaces the link and direction, and the rest folds into one `Info` column
+that starts with the invoke ID (`#7 conf-req read-property`), so a cut keeps
+it. A routed NPDU names its routed ends in the CLI's target syntax
+(`2:0x05`, or `2:*` for a broadcast on network 2); from 150 columns a `Via`
+column shows the link peer it went through. Names are kebab-case
+(`read-property`, `original-unicast-npdu`, `bvlc-result`). Errors are
+highlighted. Below the list, the selected frame decodes into a tree, layer by
+layer down to the service's tags, beside a hex view that marks the octets of
+the field selected in the tree (below 120 columns the pane shows the tree,
+or the hex view once Tab reaches it). Only the selected frame is decoded.
+
+The ring keeps the newest 50,000 frames (`--capture-ring`); each takes
+about 0.5 to 1 KB, its octets and summary, so the default ring holds up to
+about 50 MB. Frames captured before a session ended stay. The title counts
+frames, the dropped ones (lost before the ring: a full tap queue, a lagging
+monitor stream or a busy screen; exact while a source runs) and `LIVE`, or
+`PAUSED +N` with the frames the filter would show that arrived since. Keys:
+
+| Key | Action |
+|---|---|
+| Space | pause the list, or follow the newest frame again; moving the selection pauses too |
+| Tab, Shift-Tab | list, tree, hex view; going to the tree or hex view pauses |
+| arrows, `j`/`k`, PgUp/PgDn, Home/End | move in the focused pane |
+| Enter | in the list, go to the tree (and pause); in the tree, open or close the node |
+| Left, Right | in the tree or hex view: close the node (or go to its parent), open it |
+| `/` | filter; Enter applies it, Esc on the screen clears it |
+| `z` | forget every frame |
+| Esc | clear the filter, then back to the devices |
+
+Filter terms, space-separated, must all match: `dev:N` (from or to device
+N's address in the device table, a routed device's as its `NET:0xMAC`
+station, or its I-Am; looked up again as the table learns devices),
+`mac:TEXT` (in the source or destination), `net:N` (SNET or DNET),
+`svc:NAME` (a service's requests, ACKs and errors; `svc:ReadProperty`,
+`svc:read-property` and `svc:READ_PROPERTY` are the same), `pdu:TYPE` (the
+start or end of the APDU type: `pdu:confirmed`, `pdu:ack`, `pdu:error`;
+`pdu:network`, `pdu:link`), `errors` (an Error, Reject or Abort PDU, a BVLC
+or SC NAK, a frame that doesn't decode, and the monitor's line errors),
+`bcast`, and any other word as text in the row. So `svc:ReadProperty
+errors` keeps only Error responses to ReadProperty.
 
 #### Write sessions
 

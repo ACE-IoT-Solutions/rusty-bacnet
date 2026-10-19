@@ -3,6 +3,7 @@
 use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::write::{keep_offline, SafetyOptions};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
+use crate::tui::capture::CaptureEvent;
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
@@ -141,6 +142,10 @@ async fn run(
                         let command_copy = request.clone();
                         let refused = |reason| DiscoveryEvent::Refused { command: command_copy, reason };
                         let refused = move |reason| WorkerEvent::Discovery(refused(reason));
+                        forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
+                    }
+                    Command::Capture(_) => {
+                        let refused = |reason| WorkerEvent::Capture(CaptureEvent::Ended(reason));
                         forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
                     }
                     Command::StopBrowse { .. } => {

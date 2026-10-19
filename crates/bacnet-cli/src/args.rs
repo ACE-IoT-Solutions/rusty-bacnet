@@ -251,6 +251,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS", default_value_t = 10,
               value_parser = clap::value_parser!(u64).range(1..=3_600))]
         poll_interval: u64,
+        /// Frames the Capture screen keeps; past that the oldest go.
+        #[arg(long, value_name = "N", default_value_t = 50_000,
+              value_parser = clap::value_parser!(u32).range(1..=1_000_000))]
+        capture_ring: u32,
     },
 
     /// Discover BACnet devices (WhoIs).

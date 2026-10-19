@@ -122,15 +122,22 @@ impl EventSink {
 
     /// Queue a high-rate event without waiting; drop and count it when full.
     pub(crate) fn offer(&self, event: WorkerEvent) -> Offer {
+        let offered = self.offer_uncounted(event);
+        if offered == Offer::Dropped {
+            self.add_dropped(1);
+        }
+        offered
+    }
+
+    /// [`offer`](Self::offer) for a stream that counts its own losses (the
+    /// capture): a refusal leaves the status bar's counter alone.
+    pub(crate) fn offer_uncounted(&self, event: WorkerEvent) -> Offer {
         if self.is_cancelled() {
             return Offer::Closed;
         }
         match self.tx.try_send(self.scoped(event)) {
             Ok(()) => Offer::Sent,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                self.add_dropped(1);
-                Offer::Dropped
-            }
+            Err(mpsc::error::TrySendError::Full(_)) => Offer::Dropped,
             Err(mpsc::error::TrySendError::Closed(_)) => Offer::Closed,
         }
     }
