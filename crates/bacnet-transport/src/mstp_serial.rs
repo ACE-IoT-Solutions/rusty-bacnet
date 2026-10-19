@@ -15,6 +15,11 @@
 //!   DE/RE control via the Linux GPIO character device (`/dev/gpiochipN`).
 //!   Use this for RS-485 hats (like the Seeed Studio RS-485 Shield) where
 //!   DE/RE is wired to a GPIO pin rather than the UART's RTS.
+//!
+//! [`ReceiveOnlyPort`] opens a port for the receive-only MS/TP monitor
+//! ([`crate::mstp::monitor`]): it can't transmit, and it uses none of the
+//! direction controls above. [`available_ports`] lists the ports to choose
+//! from.
 
 use std::sync::Arc;
 
@@ -28,6 +33,8 @@ use crate::mstp::{Echo, SerialPort};
 
 #[cfg(any(target_os = "linux", test))]
 mod kernel_rs485;
+mod receive_only;
+pub use receive_only::ReceiveOnlyPort;
 
 /// Configuration for a serial port connection.
 pub struct SerialConfig {
@@ -464,5 +471,7 @@ impl<S: SerialPort> SerialPort for GpioDirectionPort<S> {
     }
 }
 
+#[cfg(all(test, unix))]
+mod monitor_tests;
 #[cfg(test)]
 mod tests;

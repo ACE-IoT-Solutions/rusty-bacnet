@@ -121,7 +121,7 @@ jobs:
         with:
           persist-credentials: false
       # The macOS feature list from scripts/ci/local-macos.sh: every optional
-      # feature except the Linux-only serial and ethernet. Windows also leaves
+      # feature except the Linux-only serial-gpio and ethernet. Windows also leaves
       # out bacnet-cli/pcap, which needs the Npcap SDK.
       - &feature-set
         name: Feature set

@@ -8,8 +8,8 @@
 #   bash scripts/ci/local-macos.sh          # lint + clippy + macOS tests
 #   bash scripts/ci/local-macos.sh --quick  # skip the test suite
 #
-# serial and ethernet are Linux-only features, so macOS uses every other
-# optional feature, including those crates gate on their own features (#906).
+# ethernet, serial-gpio and bacnet-integration-tests/ethernet are Linux-only,
+# so macOS uses every other optional feature, serial included (#958), including those crates gate on their own features (#906).
 # Clippy and rustdoc deny warnings, as CI does. The no_std clippy step and the
 # firmware link test need their bare-metal targets once: `rustup target add
 # thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
@@ -40,7 +40,7 @@ step "MSRV script regressions"; python3 scripts/ci/test-check-msrv.py
 step "firmware size script regressions"; python3 scripts/ci/test-firmware-size.py
 step "named_codes! copies match"; python3 scripts/ci/check-named-codes.py
 step "changelog fragments"; python3 -m unittest discover -s scripts -p 'test_changelog.py' && python3 scripts/changelog.py check
-features=bacnet-types/serde,bacnet-encoding/heapless,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-router-core/bip,bacnet-router-core/mstp,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
+features=bacnet-types/serde,bacnet-encoding/heapless,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-router-core/bip,bacnet-router-core/mstp,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 step "clippy (every macOS feature)"
 cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --features "$features" -- -D warnings
 step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings

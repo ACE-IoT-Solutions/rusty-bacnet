@@ -2138,6 +2138,44 @@ it does at a read error: counted in `serial_read_errors`, logged, its NPDU
 channel closed and later sends refused. The loopback backend completes writes
 in memory and drains immediately, and its reads always return octets.
 
+#### Passive monitor
+
+`bacnet_transport::mstp::monitor::MstpMonitor` listens to a trunk without
+joining it (#958). It takes any `tokio::io::AsyncRead` and nothing that can
+write; with the `serial` feature, `mstp_serial::ReceiveOnlyPort::open` opens a
+port that way, keeping only its read half, with no kernel RS-485 transmit setup
+and no GPIO. The monitor decodes the stream with the codec's `StreamDecoder`
+and publishes `MonitorStats` through a `watch` channel: frames per station and
+type, header and data CRC errors, other rejected frames, token passes, rotation
+times and retries, lost tokens (silences of at least T_no_token after a
+Token or Poll For Master), each master's Max_Master (`MaxMaster::AtLeast` the
+highest station it polls, which for most masters stays below it, or
+`MaxMaster::Exact` once its polls wrap to 0), and a silence histogram. `frames()` subscribes to a bounded, lossy stream of the same
+events; a subscriber that falls behind loses the oldest and counts them.
+COBS-encoded frames are decoded and checked only.
+
+Times come from the host clock at each read, worked back to each frame at the
+baud rate, so a USB adapter's latency makes them coarse:
+`MonitorConfig::timestamp_resolution` (16 ms by default) says how coarse, and
+`MonitorStats::timing` carries it for a user interface to show.
+
+```rust
+use bacnet_transport::mstp::monitor::{MonitorConfig, MstpMonitor};
+use bacnet_transport::mstp_serial::{ReceiveOnlyPort, SerialConfig};
+
+let config = SerialConfig { port_name: "/dev/ttyUSB1".into(), baud_rate: 38_400 };
+let monitor = MstpMonitor::start(
+    ReceiveOnlyPort::open(&config, None)?,
+    MonitorConfig::new(config.baud_rate),
+)?;
+let stats = monitor.statistics();
+// ...
+let present: Vec<u8> = stats.borrow().present_stations().collect();
+```
+
+`MonitorStats::record` is the engine on its own: feed it `(time, LineEvent)`
+pairs from a capture to get the same statistics offline.
+
 ### bacnet-mstp-core (firmware)
 
 The MS/TP transport above runs on `bacnet-mstp-core`, which firmware can use

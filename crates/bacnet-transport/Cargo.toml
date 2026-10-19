@@ -28,7 +28,7 @@ bacnet-mstp-core = { workspace = true, features = ["alloc"] }
 bacnet-time = { workspace = true, features = ["std"] }
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
-tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
+tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time", "io-util"] }
 socket2 = { workspace = true, features = ["all"] }
 tokio-tungstenite = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
@@ -61,7 +61,7 @@ sc-tls = [
     "dep:aws-lc-rs",
     "dep:x509-parser",
 ]
-serial = ["dep:tokio-serial", "tokio/io-util"]
+serial = ["dep:tokio-serial"]
 serial-gpio = ["serial", "dep:gpiocdev"]
 ethernet = []
 
