@@ -11,8 +11,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use bacnet_transport::bbmd::{BdtEntry, FdtEntryWire};
-use bacnet_transport::bip::ForeignRegistrationSnapshot;
-use bacnet_types::error::Error;
+use bacnet_transport::bip::{BvlcExchangeError, ForeignRegistrationSnapshot};
 
 use self::matrix::Probe;
 
@@ -139,34 +138,30 @@ pub(crate) fn address_of(mac: &[u8]) -> Option<SocketAddrV4> {
     ))
 }
 
-/// The prefix [`probe_error`] gives a BVLC-Result that is not a NAK.
-const UNEXPECTED: &str = "unexpected reply";
-
-/// Sort a failed table read into a refusal or no answer. The transport
-/// reports a BVLC-Result answering the read as an encoding error naming the
-/// result: a NAK is a refusal, while a success answers no read and is an
-/// unexpected reply. Anything else (a timeout, a send failure, a malformed
-/// reply) means the BBMD could not be read.
-pub(crate) fn probe_error(error: &Error) -> Probe {
+/// Why a BBMD gave no table, as text: no answer in time, or what failed.
+fn unreachable_reason(error: &BvlcExchangeError) -> String {
     match error {
-        Error::Encoding(text)
-            if text.starts_with("BVLC-Result") && text.contains("SUCCESSFUL_COMPLETION") =>
-        {
-            Probe::Unreachable(format!("{UNEXPECTED}: {text}"))
-        }
-        Error::Encoding(text) if text.starts_with("BVLC-Result") => Probe::Nak(text.clone()),
-        Error::Timeout(_) => Probe::Unreachable("no answer".into()),
-        other => Probe::Unreachable(other.to_string()),
+        BvlcExchangeError::NoReply(_) => "no answer".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Sort a failed table read into a refusal or no answer (#1822): a NAK is a
+/// refusal, while anything else (no answer, a reply the read does not take,
+/// a send failure, a malformed reply) means the BBMD could not be read.
+pub(crate) fn probe_error(error: &BvlcExchangeError) -> Probe {
+    match error {
+        BvlcExchangeError::Nak(code) => Probe::Nak(*code),
+        other => Probe::Unreachable(unreachable_reason(other)),
     }
 }
 
 /// A table read's outcome as text for the UI.
-pub(crate) fn read_error(error: &Error) -> String {
-    match probe_error(error) {
-        Probe::Nak(text) => format!("refused: {text}"),
-        Probe::Unreachable(text) if text.starts_with(UNEXPECTED) => text,
-        Probe::Unreachable(text) => format!("unreachable: {text}"),
-        Probe::Table(_) | Probe::Skipped => unreachable!("probe_error makes no table"),
+pub(crate) fn read_error(error: &BvlcExchangeError) -> String {
+    match error {
+        BvlcExchangeError::Nak(_) => format!("refused: {error}"),
+        BvlcExchangeError::UnexpectedResponse { .. } => format!("unexpected reply: {error}"),
+        other => format!("unreachable: {}", unreachable_reason(other)),
     }
 }
 
@@ -241,18 +236,32 @@ mod tests {
 
     #[test]
     fn a_nak_and_a_timeout_sort_apart() {
-        let nak = Error::Encoding("BVLC-Result: READ_BROADCAST_DISTRIBUTION_TABLE_NAK".into());
-        assert!(matches!(probe_error(&nak), Probe::Nak(_)));
-        assert!(read_error(&nak).starts_with("refused"));
-        let silent = Error::Timeout(Duration::from_secs(3));
+        use bacnet_transport::bvll::{BvlcFunction, BvlcResultCode};
+        let code = BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK;
+        let nak = BvlcExchangeError::Nak(code);
+        assert_eq!(probe_error(&nak), Probe::Nak(code));
+        assert_eq!(
+            read_error(&nak),
+            "refused: BVLC-Result NAK READ_BROADCAST_DISTRIBUTION_TABLE_NAK (0x0020)"
+        );
+        let silent = BvlcExchangeError::NoReply(Duration::from_secs(3));
         assert_eq!(probe_error(&silent), Probe::Unreachable("no answer".into()));
+        assert_eq!(read_error(&silent), "unreachable: no answer");
         // A success answers no read: not a refusal.
-        let success = Error::Encoding(format!(
-            "BVLC-Result: {:?}",
-            bacnet_transport::bvll::BvlcResultCode::SUCCESSFUL_COMPLETION
-        ));
+        let success = BvlcExchangeError::UnexpectedResponse {
+            expected: BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
+            got: BvlcFunction::BVLC_RESULT,
+        };
         assert!(matches!(probe_error(&success), Probe::Unreachable(_)));
-        assert!(read_error(&success).starts_with("unexpected reply: BVLC-Result"));
+        assert!(read_error(&success).starts_with("unexpected reply: "));
+        let local = BvlcExchangeError::Transport(bacnet_types::error::Error::Encoding(
+            "B/IP management client is stopped".into(),
+        ));
+        assert_eq!(
+            probe_error(&local),
+            Probe::Unreachable("encoding error: B/IP management client is stopped".into())
+        );
+        assert!(read_error(&local).starts_with("unreachable: "));
         let mac = mac("10.0.0.1:47809".parse().unwrap());
         assert_eq!(address_of(&mac), Some("10.0.0.1:47809".parse().unwrap()));
         assert_eq!(address_of(&mac[..5]), None);

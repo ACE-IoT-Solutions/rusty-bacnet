@@ -45,6 +45,7 @@ mod bbmd_receive;
 mod bbmd_start;
 mod client_snapshot;
 mod exchange;
+pub use exchange::BvlcExchangeError;
 mod foreign_device;
 mod mode;
 mod node;
@@ -867,6 +868,8 @@ mod bbmd_start_tests;
 mod bdt_persistence_tests;
 #[cfg(test)]
 mod dbtn_tests;
+#[cfg(test)]
+mod exchange_error_tests;
 #[cfg(test)]
 mod exchange_tests;
 #[cfg(test)]
