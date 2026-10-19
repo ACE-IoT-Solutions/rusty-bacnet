@@ -203,11 +203,19 @@ def metric(parsed):
     if not parsed:
         return None
     results = parsed.get("results", {})
-    latency = results.get("latency_us", {})
+    # Latency is per step: compare the slowest step's. Output from before
+    # #1714 has a last-step `latency_us` instead.
+    curve = results.get("degradation_curve") or []
+    if curve and "successful" in curve[0]:
+        p50 = max(pt.get("p50_us", 0) for pt in curve)
+        p99 = max(pt.get("p99_us", 0) for pt in curve)
+    else:
+        latency = results.get("latency_us", {})
+        p50, p99 = latency.get("p50"), latency.get("p99")
     return {
         "throughput": results.get("throughput_ops_sec"),
-        "p50": latency.get("p50"),
-        "p99": latency.get("p99"),
+        "p50": p50,
+        "p99": p99,
         "errors": results.get("failed"),
     }
 

@@ -364,13 +364,34 @@ rotation, and each client's latency grows with the queue.
 
 The `stress-test` binary runs these. All are on B/IP over loopback, in one
 process, with clients doing requests one after another as fast as answers
-come back. Resident memory is the whole process's, read from the operating
-system, so it includes the clients.
+come back; `stress-test clients` can also run over B/IPv6 or BACnet/SC.
+Resident memory is the whole process's, read from the operating system, so
+it includes the clients.
+
+Each scenario prints one line per step, then a table of every step and a
+summary of all of them: the requests that succeeded and failed in all, the
+rate over all the steps' measured time, and the fastest step. Its JSON
+output holds the same, with each step's counts and measured time in the
+degradation curve. Before
+[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714) the
+summary came from the last step alone, and its count of successful
+requests was that step's rate times 10 seconds, whatever the duration; the
+per-step figures below were not affected.
 
 ### 6.1 Concurrent clients
 
 `stress-test clients`: N clients reading one Analog Input's Present_Value
-from a server with 100 Analog Inputs, 10 seconds per step.
+from a server with 100 Analog Inputs, 10 seconds per step. The table is
+B/IP. `--transport bip6` runs the same over B/IPv6 on the IPv6 loopback
+address, and `--transport sc` over BACnet/SC with mutual TLS, every client
+and the server connected to a hub in the same process; this report has no
+figures for those two yet.
+
+Since this run, every client connects before a step's clock starts and
+records its latencies in its own histogram. Before, each client connected
+inside the 10 seconds and all of them shared one locked histogram, which
+may have held the rates with many clients a little low; re-run this table
+at the next refresh.
 
 | Concurrent clients | Requests per second | Median latency (microseconds) | 99th percentile latency (microseconds) | Failed requests |
 | --- | --- | --- | --- | --- |
@@ -408,9 +429,21 @@ objects is the server's default object limit.
 
 ### 6.3 COV subscriptions
 
-`stress-test cov`: one subscriber client subscribes to N Analog Outputs
-(unconfirmed notifications, 600-second lifetime); a second client writes
-their Present_Values in turn at 10 writes per second for 10 seconds.
+The table below is from the scenario's earlier form, in which one
+subscriber client subscribed to N Analog Outputs (unconfirmed
+notifications, 600-second lifetime) and a second client wrote their
+Present_Values in turn at 10 writes per second for 10 seconds.
+
+`stress-test cov` now spreads each step's N subscriptions over as many
+subscriber clients as the per-subscriber limit of 64 needs, each taking
+Analog Outputs 1 to 64 (or fewer), so 1,024 subscriptions come from 16
+subscribers and each write notifies all 16. `--confirmed` asks for
+confirmed notifications, which each subscriber acknowledges. Its default
+steps are 1, 10, 64, 256 and 1,024 subscriptions; re-run this section with
+them, with and without `--confirmed`, at the next refresh. A short trial
+run (2 seconds a step, on a loaded machine) had the server accept all
+1,024 subscriptions and deliver every expected notification, confirmed or
+not, and refuse the 64 subscriptions over 1,024 in a step of 1,088.
 
 | Subscriptions requested | Subscriptions accepted | Writes | Notifications received | Notifications expected |
 | --- | --- | --- | --- | --- |
@@ -428,10 +461,9 @@ notification arrived.
 From 100 subscriptions up, the server accepted 64 and refused the rest with
 the error `RESOURCES` / `NO_SPACE_TO_ADD_LIST_ELEMENT`: by default the server
 admits at most 64 subscriptions from one subscriber
-(`CovPolicy::max_subscriptions_per_peer`), and 1,024 in all. The scenario
-uses one subscriber, so it measures the per-subscriber limit; the total
-limit needs several subscribers (see
-[section 10](#10-guidance-for-future-work)).
+(`CovPolicy::max_subscriptions_per_peer`), and 1,024 in all. With one
+subscriber the table measures the per-subscriber limit; the scenario's
+several subscribers now reach the total.
 
 ### 6.4 Segmentation
 
@@ -469,11 +501,12 @@ ReadProperty of the Device. The server holds 550 objects.
 
 ### 6.6 BBMD foreign devices
 
-`stress-test bbmd`: a BBMD, which relays broadcasts for B/IP devices, with
-N foreign devices registered in its Foreign Device Table (FDT), all on
-loopback. The foreign devices take turns sending a broadcast Who-Is through
-the BBMD for 10 seconds, with a 100-microsecond pause between sends, and
-the next device waits up to 10 milliseconds for the forwarded copy.
+The table below is from the scenario's earlier form: a BBMD, which relays
+broadcasts for B/IP devices, with N foreign devices registered in its
+Foreign Device Table (FDT), all on loopback. The foreign devices took
+turns sending a broadcast Who-Is through the BBMD for 10 seconds, with a
+100-microsecond pause between sends, and the next device waited up to 10
+milliseconds for the forwarded copy.
 
 | Foreign devices requested | Registered in the FDT | Broadcasts sent per second | Median send time (microseconds) | Packets forwarded | Packets held back by the fan-out limit | Failed sends |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -494,13 +527,32 @@ floods, and all 25 devices share the address 127.0.0.1 and register within
 the same second. On a real network each foreign device has its own
 address.
 
+`stress-test bbmd` now measures capacity. Every foreign device sends
+broadcasts through the BBMD as fast as its socket takes them, with no
+pause and no waiting, for the step's duration, and the BBMD's fan-out
+limits are set far above what loopback carries. The step's rate is the
+packets the BBMD forwarded per second; it also reports the broadcasts
+offered, the copies delivered to the foreign devices, and the forwarding
+jobs dropped when the BBMD's queue was full, which is where its capacity
+runs out. On Linux each foreign device binds its own loopback address
+(127.1.0.1, 127.1.0.2 and so on), so the registration guard no longer caps
+the count; on macOS they still share 127.0.0.1. Run it in the Docker
+orchestrator container ([section 7.3](#73-reproducing-the-docker-run)) for
+the published figure, and replace this table at the next refresh. A short
+trial run on macOS (2 seconds a step, on a loaded machine) forwarded about
+30,000 packets per second with 5 foreign devices; in the Linux container
+all 100 of 100 foreign devices registered.
+
 ### 6.7 Device scan
 
-`stress-test whois`: N servers on loopback, each its own device; one client
-reads every Device's Object_Name in turn, as a supervisory tool does after
-discovery. Despite its name, the scenario does not broadcast a Who-Is: on
-loopback each server has its own UDP port, so a broadcast would reach only
-one of them.
+`stress-test device-scan` (named `whois` before
+[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714)): N
+servers on loopback, each its own device; one client reads every Device's
+Object_Name in turn, as a supervisory tool does once it knows the devices.
+It does not broadcast a Who-Is: on loopback each server has its own UDP
+port, so a broadcast would reach only one of them. The Docker
+orchestrator's discovery scenario
+([section 7.1](#71-cross-network-orchestrator)) measures Who-Is discovery.
 
 | Devices | Devices read | Time to read all (milliseconds) | Median read time (microseconds) | 99th percentile read time (microseconds) |
 | --- | --- | --- | --- | --- |
@@ -511,9 +563,11 @@ one of them.
 
 Every device answered. The first request to each new server is slower than
 the steady-state requests of [section 6.1](#61-concurrent-clients), and the
-99th percentile is the slowest one or two of them. The scenario's summary
-table prints a "throughput" that divides by the elapsed time in whole
-milliseconds; ignore it.
+99th percentile is the slowest one or two of them. The scenario's rate,
+devices read per second, now divides by the scan's measured time at full
+resolution; it used to divide by whole milliseconds, which meant nothing
+for a scan of under a millisecond. It has no duration option: each step
+is one pass over the devices.
 
 ## 7. Docker cross-network results
 
@@ -528,13 +582,26 @@ with the files kept outside the checkout and deleted afterwards.
 The topology: B/IP network 1 (172.20.0.0/24) with `server-a` (1,000
 objects) and `bbmd-a`; B/IP network 2 (172.20.1.0/24) with `server-b`
 (1,000 objects) and `bbmd-b`; the `router` service (`BACnetRouter`) joining
-networks 1 and 2; a BACnet/SC hub and device; and a foreign-device network.
-The orchestrator container sits on every network and drives the tests.
+networks 1 and 2; a BACnet/SC hub and device; a foreign-device network
+(172.20.4.0/24), which the `ip-router` service joins to network 1 as a
+site's IP router would; and a discovery network (172.20.5.0/24) holding
+the `fleet` service, 20 copies of one device by default, each with its own
+address and Device instance. The orchestrator container sits on networks
+1 and 2, the BACnet/SC network and the discovery network, and drives the
+tests; the `foreign-bench` container sits on the foreign network alone and
+runs the foreign-device scenario. Docker does not route IP between its
+bridge networks, so the hosts on the foreign device's path add routes
+through `ip-router` when they start, which needs the `NET_ADMIN`
+capability.
 
 ### 7.1 Cross-network orchestrator
 
 `stress-orchestrator --duration 10`: one client doing ReadProperty requests
-one after another for 10 seconds.
+one after another for 10 seconds. Its scenarios are `same-subnet`,
+`router`, `discovery` and `foreign`; `--only` and `--skip` pick them, and
+without `--only` every one but `foreign` runs. The summary covers every
+scenario it ran; it used to report the requests as each path's rate times
+the duration, and none as failed.
 
 | Path | Requests per second | Median latency (microseconds) | 99th percentile latency (microseconds) | Failed requests |
 | --- | --- | --- | --- | --- |
@@ -561,10 +628,32 @@ stack:
   apart. It now binds each port to its own address
   (`BipTransport::set_share_port_by_address`).
 
-The orchestrator's foreign-device scenario still fails: it never registers
-with a BBMD and, like the old router hop, depends on IP routing between
-bridge networks. It needs a rewrite, so this report has no foreign-device
-figure.
+This run had no foreign-device or discovery figure. The foreign-device
+scenario then never registered with a BBMD and, like the old router hop,
+depended on IP routing between bridge networks, so every request timed
+out. Since [#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714)
+two scenarios cover them; measure both at the next refresh:
+
+- **`foreign`**, run by the `foreign-bench` service from the foreign
+  network: a client registers as a foreign device with `bbmd-a`, finds
+  `server-a` with a Who-Is that `bbmd-a` distributes on network 1 (the
+  I-Am comes back through the BBMD), then reads from `server-a` for the
+  duration. The reads are unicast, as a foreign device's are, over
+  `ip-router`. It reports the time to register and to discover, and the
+  reads' rate and latency.
+- **`discovery`**: the orchestrator broadcasts a Who-Is on the discovery
+  network and times how long until every device of the fleet has
+  answered with an I-Am, round after round for the duration. A round in
+  which some device does not answer within 2 seconds counts as failed.
+  `--fleet` tells it how many devices to expect (the fleet's replicas).
+  Rounds start 250 milliseconds apart, off the clock: by default a server
+  ignores a repeat of the same Who-Is from one source within 200
+  milliseconds (`DiscoveryPolicy::coalesce_window`).
+
+A short trial of both (2 seconds each, on a heavily loaded machine) found
+`server-a` through the BBMD 5 milliseconds after registering, and read
+from it with no failures; and all 20 devices of the fleet answered in
+every one of 9 discovery rounds.
 
 ### 7.2 Stress scenarios inside a container
 
@@ -607,14 +696,26 @@ describes, then, from `examples/docker`:
 export SC_CERT_DIR=/absolute/path/outside/the/checkout
 export COMPOSE_PROJECT_NAME=rusty-bench
 docker compose build
-# Everything but the orchestrator, whose own command would run alongside yours.
-docker compose up -d server-a bbmd-a server-b bbmd-b router sc-hub sc-server foreign-client
+# Everything but the two runners, whose own commands would run alongside yours.
+docker compose up -d server-a bbmd-a server-b bbmd-b router sc-hub sc-server \
+  ip-router fleet
 docker compose run --rm -T --no-deps orchestrator \
-  stress-orchestrator --wait-for-ready=20 --duration 10 --skip foreign
+  stress-orchestrator --wait-for-ready=20 --duration 10 --fleet 20
+docker compose run --rm -T --no-deps foreign-bench \
+  stress-orchestrator --wait-for-ready=5 --duration 10 --only foreign
 docker compose run --rm -T --no-deps orchestrator \
   stress-test clients --steps 1,5,10,25,50 --duration 10
+# BBMD capacity, one loopback address per foreign device.
+docker compose run --rm -T --no-deps orchestrator \
+  stress-test bbmd --steps 1,5,10,25,50,100 --duration 10
 docker compose down -v --rmi local
 ```
+
+For a larger fleet, start it with `--scale fleet=50` and pass the
+orchestrator `--fleet 50`. `stress-test clients --transport bip6` needs an
+IPv6 loopback address, which Docker containers lack unless IPv6 is enabled
+for them, so run it on the host. Without BACnet/SC credentials, leave `sc-hub`
+and `sc-server` out of the list.
 
 ## 8. Embedded footprint
 
@@ -703,10 +804,18 @@ requests, one after another, after a warm-up; the concurrency tests run
 50 requests per concurrent task, with that many in flight at once from one
 client. These are single runs of small samples.
 
-The suites' file names come from an older layout. Today all four start
-both the client and the server through the Python package, in one
-process, so the three B/IP suites measure the same path three times; they
-agree within 10%, which shows the run-to-run spread.
+The tables below come from the suites' earlier layout, whose file names
+dated from before all four started both the client and the server
+through the Python package, in one process; the three B/IP suites
+measured the same path three times, and agreed within 10%, which shows
+the run-to-run spread. Since
+[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714) one suite,
+`bench_bip.py`, replaces those three, and `bench_sc.py` stays. Their
+concurrency tests keep each client at or under the server's limit of 16
+confirmed requests in flight from one peer: `bench_bip.py` runs 1, 5, 10,
+16, 32 and 64 requests in flight, spread over up to 4 clients for the
+last two, and `bench_sc.py` runs 1, 5, 10 and 16 from one client. Re-run
+both tables with them at the next refresh.
 
 | Suite | ReadProperty median (microseconds) | WriteProperty median (microseconds) | ReadPropertyMultiple of 3 objects and 2 properties, median (microseconds) | COV subscribe and cancel, median (microseconds) |
 | --- | --- | --- | --- | --- |
@@ -749,7 +858,8 @@ What it shows:
   the server now refuses the requests over its limit of 16 per peer
   (aborted, out of resources), as on B/IP; the 25 row predates the fix.
 - The suites' Who-Is test waits a fixed 300 milliseconds for answers, so
-  its 302-millisecond time measures the wait, not the stack.
+  its 302-millisecond time measures the wait, not the stack; the test is
+  now named `test_bip_whois_fixed_wait` to say so.
 
 To run them:
 
@@ -758,10 +868,8 @@ uv venv .venv --python 3.13 && source .venv/bin/activate
 uv pip install pytest pytest-benchmark pytest-asyncio psutil maturin
 maturin develop --release -m crates/rusty-bacnet/Cargo.toml
 cd benchmarks/python
-python -m pytest bench_py_client_rust_server.py -s -v   # Python client, Rust server
-python -m pytest bench_rust_client_py_server.py -s -v   # Python client, server started from Python
-python -m pytest bench_py_py.py -s -v                   # both from Python
-python -m pytest bench_sc.py -s -v                      # BACnet/SC through a hub
+python -m pytest bench_bip.py -s -v   # B/IP, client and server from Python
+python -m pytest bench_sc.py -s -v    # BACnet/SC through a hub
 ```
 
 ## 10. Guidance for future work
@@ -816,32 +924,27 @@ Where the time goes, and what to measure next.
 
 - The MS/TP scenario on real RS-485 hardware with a USB adapter, to compare
   with the simulated line.
-- COV with several subscribers, to reach the server's 1,024-subscription
-  total, and with confirmed notifications.
-- The BBMD scenario with foreign devices on separate addresses (Docker), so
-  it is not limited by the per-address registration guard, and without its
-  fixed pacing, so it measures capacity.
-- B/IPv6 and BACnet/SC with concurrent clients, as `stress-test clients`
-  does for B/IP.
 - Stack peaks re-measured under emulation after the next toolchain bump.
 
-**Harness notes.** These and the measurements above are tracked in
-[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714).
+**Harness changes awaiting a re-run.** The harness follow-ups of
+[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714) changed
+what these measure, so the next refresh should re-run them and replace
+their figures:
 
-- `stress-test whois` reads known devices rather than discovering them,
-  and prints a throughput computed from whole milliseconds, which is
-  meaningless for a scan that takes 0 to 6 milliseconds. A discovery
-  scenario (Who-Is to many devices on one broadcast domain, in Docker)
-  would measure what its name promises.
-- `stress-test` builds a summary from only the last step of a scenario; the
-  per-step lines and the degradation curve in its JSON output are the ones
-  to read.
-- The Docker orchestrator's foreign-device scenario never registers with a
-  BBMD and depends on IP routing that Docker blocks; it needs a rewrite
-  ([section 7.1](#71-cross-network-orchestrator)).
-- The Python suites' file names no longer match what they run (all start
-  both ends from Python), and one client with 25 requests in flight runs
-  into the server's per-client limit of 16.
+- [Section 6.1](#61-concurrent-clients): every client now connects before
+  the clock starts; add rows for `--transport bip6` and `--transport sc`.
+- [Section 6.3](#63-cov-subscriptions): several subscribers up to the
+  server's total of 1,024, with and without `--confirmed`.
+- [Section 6.6](#66-bbmd-foreign-devices): capacity without pacing, run in
+  the Docker orchestrator container for one address per foreign device.
+- [Section 6.7](#67-device-scan): the device scan's rate at full
+  resolution (the per-device latencies are unchanged).
+- [Section 7.1](#71-cross-network-orchestrator): the new `foreign` and
+  `discovery` scenarios.
+- [Section 9](#9-python-bindings): `bench_bip.py` in place of the three
+  B/IP suites, and both suites' concurrency within 16 requests per client.
+- Any figure taken from a scenario's summary rather than its steps: the
+  summary now covers every step.
 
 ## 11. How to reproduce
 
@@ -864,8 +967,11 @@ cargo bench -p bacnet-benchmarks --bench sc_mtls_throughput
 cargo build --release -p bacnet-benchmarks --bins
 ST=./target/release/stress-test
 $ST clients --steps 1,5,10,25,50,100 --duration 10
+$ST clients --transport bip6 --steps 1,5,10,25,50,100 --duration 10
+$ST clients --transport sc --steps 1,5,10,25,50,100 --duration 10
 $ST objects --steps 100,500,1000,2500,5000,10000 --duration 5
-$ST cov --steps 1,10,50,100,200,255 --duration 10
+$ST cov --steps 1,10,64,256,1024 --duration 10
+$ST cov --steps 1,10,64,256,1024 --duration 10 --confirmed
 $ST segmentation --steps 10,50,100,250
 $ST mixed --clients 10 --duration 30
 $ST router --path direct --steps 1,5,10,25,50 --duration 10
@@ -874,8 +980,8 @@ $ST router --path mstp --baud 115200 --steps 1,5 --duration 10
 $ST mstp --reply small --duration 10
 $ST mstp --reply standard --duration 10
 $ST mstp --reply extended --duration 20
-$ST bbmd --steps 1,5,10,25 --duration 10
-$ST whois --steps 5,10,25,50 --duration 10
+$ST bbmd --steps 1,5,10,25,50,100 --duration 10   # on Linux; see section 7.3
+$ST device-scan --steps 5,10,25,50
 
 # Embedded image sizes (needs the four targets: rustup target add ...)
 bash scripts/ci/check-firmware-link.sh

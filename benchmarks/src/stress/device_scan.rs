@@ -1,10 +1,11 @@
-//! WhoIs / device discovery stress scenario.
+//! Device scan stress scenario.
 //!
-//! Starts N BIP servers and measures how fast a client can scan all
-//! devices via direct ReadProperty of OBJECT_NAME.
-//!
-//! Note: True broadcast WhoIs/IAm requires real network interfaces (Docker).
-//! This local variant measures device scan throughput at scale.
+//! Starts N B/IP servers on loopback, each its own device, and times one
+//! client reading every Device's Object_Name in turn, as a supervisory tool
+//! does once it knows the devices. It sends no Who-Is: on loopback each
+//! server has its own UDP port, so a broadcast would reach only one of them.
+//! The Docker orchestrator's discovery scenario broadcasts a Who-Is to many
+//! devices on one network instead.
 
 use std::time::Instant;
 
@@ -14,7 +15,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use crate::stress::harness::{make_bip_server_with_db, make_large_db, make_stress_client};
 use crate::stress::output::{DegradationPoint, LatencyRecorder};
 
-pub async fn run(_duration_secs: u64, steps: &[u64]) -> Vec<DegradationPoint> {
+pub async fn run(steps: &[u64]) -> Vec<DegradationPoint> {
     let mut curve = Vec::new();
 
     for &count in steps {
@@ -22,15 +23,13 @@ pub async fn run(_duration_secs: u64, steps: &[u64]) -> Vec<DegradationPoint> {
 
         // Start N servers with unique device instances
         let mut servers = Vec::new();
-        let mut server_macs = Vec::new();
-        let mut device_instances = Vec::new();
+        let mut targets = Vec::new();
         for i in 0..count {
             let instance = 1000 + i as u32;
             let db = make_large_db(instance, 1);
             match make_bip_server_with_db(db).await {
                 Ok(s) => {
-                    server_macs.push(s.local_mac().to_vec());
-                    device_instances.push(instance);
+                    targets.push((s.local_mac().to_vec(), instance));
                     servers.push(s);
                 }
                 Err(e) => {
@@ -38,16 +37,13 @@ pub async fn run(_duration_secs: u64, steps: &[u64]) -> Vec<DegradationPoint> {
                 }
             }
         }
-        let actual_servers = servers.len() as u64;
 
-        // Create client
         let mut client = make_stress_client().await.unwrap();
 
         // Scan all devices: read OBJECT_NAME from each Device object
-        let start = Instant::now();
         let mut recorder = LatencyRecorder::new();
-
-        for (mac, instance) in server_macs.iter().zip(device_instances.iter()) {
+        let start = Instant::now();
+        for (mac, instance) in &targets {
             let oid = ObjectIdentifier::new(ObjectType::DEVICE, *instance).unwrap();
             let req_start = Instant::now();
             match client
@@ -61,31 +57,17 @@ pub async fn run(_duration_secs: u64, steps: &[u64]) -> Vec<DegradationPoint> {
                 }
             }
         }
-
-        let total_ms = start.elapsed().as_millis() as u64;
-        let stats = recorder.stats();
-
+        // Devices per second over the scan's own time, which is often under
+        // a millisecond: the rate keeps its full resolution.
+        let point = DegradationPoint::from_recorder(count, &recorder, start.elapsed());
         eprintln!(
-            "  scanned={}/{} total={}ms p50={}µs p99={}µs errors={}",
-            recorder.successful(),
-            actual_servers,
-            total_ms,
-            stats.p50,
-            stats.p99,
-            recorder.failed(),
+            "  scanned {}/{} devices in {:.3} ms",
+            point.successful,
+            targets.len(),
+            point.elapsed_secs * 1000.0,
         );
-
-        curve.push(DegradationPoint {
-            parameter: count,
-            p50_us: stats.p50,
-            p99_us: stats.p99,
-            throughput: if total_ms > 0 {
-                recorder.successful() as f64 / (total_ms as f64 / 1000.0)
-            } else {
-                recorder.successful() as f64
-            },
-            errors: recorder.failed(),
-        });
+        point.log();
+        curve.push(point);
 
         // Cleanup
         let _ = client.stop().await;
