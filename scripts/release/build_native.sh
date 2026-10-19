@@ -70,6 +70,7 @@ echo "::endgroup::"
 # No `serial` (MS/TP) here yet: it ships in the Linux CLI only until a USB
 # RS-485 adapter has been tested on macOS and on Windows (#969). On macOS it
 # would link IOKit and CoreFoundation for the port listing, as the wheels do.
+# The default features add the terminal UI (`tui`, #974).
 echo "::group::CLI"
 RUSTFLAGS=$cli_flags cargo build --release --locked -p bacnet-cli --features sc-tls --target "$target"
 mkdir -p out

@@ -81,11 +81,10 @@ CI uses the `ci` profile, and nextest does not run doctests, so a separate
 file says how to refresh that list. The Linux test commands are below, with
 `$LINUX_FEATURES` as set in `ci.yml`: every optional feature that builds on
 Linux, including per-crate ones such as `bacnet-endpoint/sc-tls` and
-`bacnet-cli/pcap` and `bacnet-cli/tui`. Then come the `bacnet-cli`
-tests with default features, because a few exist only when `sc-tls`, `pcap` or
-`tui` is off, and with no default features. `tui` is opt-in until the terminal
-UI ships in 0.14.0 (#975), so the two runs match until then; the second keeps
-the feature-off case covered once `tui` is on by default again. The last steps
+`bacnet-cli/pcap`. Then come the `bacnet-cli` tests with default features,
+because a few exist only when `sc-tls` or `pcap` is off, and with no default
+features, the lean CLI without the TUI (`tui` is a default feature since
+#974), whose own tests cover plain `bacnet` and `bacnet tui` without it. The last steps
 run the tests and doctests of `bacnet-types`, `bacnet-encoding` and
 `bacnet-services` with `alloc` and without `std`, the code their bare-metal
 builds compile, which the runs before leave out (see

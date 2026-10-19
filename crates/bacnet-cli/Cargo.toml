@@ -74,10 +74,15 @@ tokio = { workspace = true, features = ["test-util"] }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tokio-serial = "5"
 
+# The pseudo-terminal that plain `bacnet` opens the TUI on (#974).
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 [features]
-default = []
-# The full-screen terminal UI (`bacnet tui`). Opt-in until the TUI epic ships in
-# 0.14.0 (#975): release builds and a plain `cargo install` leave it out.
+default = ["tui"]
+# The full-screen terminal UI: `bacnet tui`, and plain `bacnet` on a terminal
+# (#974). On by default since 0.14.0; `--no-default-features` builds the
+# one-shot commands without it (and without ratatui and crossterm).
 tui = ["dep:ratatui", "dep:crossterm", "dep:futures-util", "dep:toml", "dep:getrandom"]
 sc-tls = [
     "bacnet-client/sc-tls",

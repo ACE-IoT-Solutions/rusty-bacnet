@@ -31,8 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Each release target with the CLI's features there: packet capture (pcap) and
-# MS/TP (serial, #969)
+# Each release target with the CLI's features there, on top of its default
+# ones (the terminal UI, #974): packet capture (pcap) and MS/TP (serial, #969)
 # only on Linux, as in scripts/release/build_linux.sh. The Python extension has
 # the same features everywhere.
 TARGETS = {

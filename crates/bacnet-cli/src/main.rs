@@ -17,6 +17,7 @@ mod commands;
 mod core;
 #[allow(dead_code)] // Public API consumed by capture command handler (Task 4).
 mod decode;
+mod entry;
 mod foreign;
 mod mstp;
 mod output;
@@ -465,6 +466,11 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         let mut cli = Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit());
         cli.explicit_args = explicit_args;
         cli.command_name = command_name;
+        // Plain `bacnet` opens the TUI, or exits 2 with the usage (#974).
+        if cli.command.is_none() {
+            let allowed = entry::tui_allowed_here(cli.no_tui);
+            entry::resolve(&mut cli, allowed).unwrap_or_else(|error| error.exit());
+        }
         cli
     });
     dispatch(cli, &mut guard::Stdin, |cli| {

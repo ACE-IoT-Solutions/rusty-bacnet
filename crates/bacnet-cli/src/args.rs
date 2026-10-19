@@ -174,6 +174,11 @@ pub(crate) struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub(crate) verbose: u8,
 
+    /// With no command, print the usage instead of opening the terminal UI
+    /// (as does BACNET_NO_TUI set to anything but "" or "0").
+    #[arg(long)]
+    pub(crate) no_tui: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
