@@ -577,6 +577,9 @@ impl App {
         self.safety.armed = None;
         self.safety.policy = None;
         self.safety.workspace = false;
+        // An answer to a request the ended session had out is dropped by the
+        // generation filter, so nothing would clear this later.
+        self.safety.pending = None;
         self.duplicates = Duplicates::default();
         self.op = None;
         self.last_spec = None;

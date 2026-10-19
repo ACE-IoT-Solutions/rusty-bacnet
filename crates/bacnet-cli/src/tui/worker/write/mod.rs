@@ -555,6 +555,10 @@ impl<'a> Runner<'a> {
                 .map(|item| (item.label(), Outcome::NotSent(STALE.into())))
                 .collect();
         }
+        if let Some(why) = self.refusal() {
+            // The session expired or was disarmed during the re-read.
+            return self.not_sent(preview, &why).await;
+        }
         let Some(ledger) = &mut self.ledger else {
             return Vec::new();
         };
