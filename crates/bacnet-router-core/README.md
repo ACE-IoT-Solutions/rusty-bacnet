@@ -20,8 +20,9 @@ and is meant to join their ports in firmware, and to run under the hosted
 firmware link test builds a router with it, between a BBMD's B/IP port
 and an MS/TP port with extended frames, into a bare-metal image with no
 allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
-5.6 KB of stack
-([#1679](https://github.com/jscott3201/rusty-bacnet/issues/1679)).
+4.5 KB of stack
+([#1679](https://github.com/jscott3201/rusty-bacnet/issues/1679),
+[#1774](https://github.com/jscott3201/rusty-bacnet/issues/1774)).
 
 ## What it has
 

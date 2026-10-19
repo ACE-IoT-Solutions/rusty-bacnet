@@ -660,14 +660,16 @@ Sizes in bytes.
 The deepest stack each image reached, measured under QEMU emulation by the
 manual check `scripts/emu/emulate-firmware.sh` (Rust 1.99.0, QEMU 10.0.13;
 not re-run for this report; see `docs/ci.md`, "Emulation (manual)", and
-`firmware/link/stack-budget.toml`). Sizes in bytes.
+`firmware/link/stack-budget.toml`). The `node`, `bbmd` and `router`
+columns were measured again after their ports changed (#1774). Sizes in
+bytes.
 
 | Board (target) | `mstp` | `mstp-extended` | `bip` | `node` | `bbmd` | `router` | `apdu` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| micro:bit (`thumbv6m-none-eabi`) | 2,040 | 3,020 | 2,220 | 4,716 | 2,300 | does not fit | 2,768 |
-| LM3S6965 (`thumbv7m-none-eabi`) | 1,824 | 2,868 | 2,100 | 4,188 | 2,228 | 5,648 | 2,536 |
-| Netduino Plus 2 (`thumbv7em-none-eabihf`) | 1,832 | 2,868 | 2,100 | 4,188 | 2,228 | 5,640 | 2,536 |
-| SiFive E (`riscv32imc-unknown-none-elf`) | 1,712 | 2,732 | 2,020 | 4,008 | 2,132 | does not fit | 2,464 |
+| micro:bit (`thumbv6m-none-eabi`) | 2,040 | 3,020 | 2,220 | 5,444 | 2,380 | does not fit | 2,768 |
+| LM3S6965 (`thumbv7m-none-eabi`) | 1,824 | 2,868 | 2,100 | 4,972 | 2,260 | 4,456 | 2,536 |
+| Netduino Plus 2 (`thumbv7em-none-eabihf`) | 1,832 | 2,868 | 2,100 | 4,972 | 2,260 | 4,456 | 2,536 |
+| SiFive E (`riscv32imc-unknown-none-elf`) | 1,712 | 2,732 | 2,020 | 4,808 | 2,132 | does not fit | 2,464 |
 
 The `device` image, measured when it joined (#1771) with the same
 toolchain and QEMU: 29,876 bytes of flash on Cortex-M0+, 28,776 on
@@ -686,7 +688,7 @@ What an embedded project can expect:
   RAM (3.5 static, 2.7 of stack). Without the heap, the application layer
   links no formatting code, and the device is smaller in flash than the
   `apdu` image alone.
-- The router needs about 21 kilobytes of RAM (15.5 static, 5.6 of stack),
+- The router needs about 20 kilobytes of RAM (15.5 static, 4.5 of stack),
   so it does not fit the 16-kilobyte boards; most of its static RAM is the
   extended-frame buffers an MS/TP router port requires.
 - Each image links its own test scenario as well as the stack, so compare
