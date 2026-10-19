@@ -85,7 +85,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bacnet_npdu::Mac;
-pub use bacnet_router_core::router::Congestion;
+pub use bacnet_router_core::router::{Congestion, Duplicates};
 use bacnet_router_core::{Instant, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
@@ -642,6 +642,8 @@ mod envelope_discovery_tests;
 mod envelope_harness;
 #[cfg(test)]
 mod fixes_tests;
+#[cfg(test)]
+mod hardening_tests;
 #[cfg(test)]
 mod ingress_harness;
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use super::{Congestion, GroupClassifier, Groups};
+use super::{Congestion, Duplicates, GroupClassifier, Groups};
 
 use crate::npdu::NpduLimits;
 use crate::table::{Convergence, Timing};
@@ -97,6 +97,18 @@ pub struct Options {
     /// The router's own Router-Busy for a clogged egress port (#1697):
     /// `None`, the default, sends none.
     pub congestion: Option<Congestion>,
+    /// Apply a received reject to a learned route only when it came from
+    /// that route's next router (#1698). Off, the default, any sender's
+    /// reject updates the route, as Clause 6.6.3.5 reads: it names no
+    /// sender. Router-Busy and Router-Available are always scoped to the
+    /// routes through their sender (Clauses 6.6.3.6, 6.6.3.7; RB-04). Either
+    /// way, what a check leaves alone is counted in
+    /// [`Counters::not_next_hop`](super::Counters::not_next_hop), and the
+    /// message is passed on as before.
+    pub next_hop_rejects: bool,
+    /// Duplicate global-broadcast suppression (#1698): `None`, the
+    /// default, suppresses nothing.
+    pub duplicates: Option<Duplicates>,
 }
 
 impl Options {
@@ -115,6 +127,8 @@ impl Options {
         discovery_cooldown: Duration::from_secs(5),
         discovery_age: Duration::from_secs(30),
         congestion: None,
+        next_hop_rejects: false,
+        duplicates: None,
     };
 
     /// The hosted router's values: [`STANDARD`](Self::STANDARD)'s, with

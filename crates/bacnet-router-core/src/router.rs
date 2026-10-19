@@ -54,6 +54,7 @@ mod config;
 mod congestion;
 mod control;
 mod counters;
+mod duplicates;
 mod forward;
 mod groups;
 mod host;
@@ -70,6 +71,7 @@ use core::fmt;
 pub use config::{ConfigError, LimitError, Options, PortConfig, MIN_PORT_LIMIT};
 pub use congestion::{Backlog, Congestion};
 pub use counters::Counters;
+pub use duplicates::Duplicates;
 pub use groups::{Group, GroupClassifier, Groups};
 pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
@@ -79,6 +81,7 @@ pub use reply::{ReplyPlan, ReplyPlanError};
 
 use congestion::Flow;
 use counters::bump;
+use duplicates::Recent;
 use output::Outputs;
 use tasks::Task;
 
@@ -88,8 +91,10 @@ use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
 
 /// Everything large a [`Router`] keeps: up to `P` ports, a table of `R`
-/// routes and `H` hold-down records, `D` searches, and an output scratch of
-/// `N` octets.
+/// routes and `H` hold-down records, `D` searches, an output scratch of
+/// `N` octets, and a record of the last `B` global broadcasts for
+/// [`Options::duplicates`] (#1698), 24 octets each, kept whether or not
+/// that is on (`B` of 0 keeps none, and so suppresses nothing).
 ///
 /// With the default [`Groups`], [`new`](Self::new) is a `const fn` whose
 /// result is all zero bits. Firmware keeps it in a zero-initialized static
@@ -117,6 +122,7 @@ pub struct Storage<
     const D: usize = 16,
     const N: usize = MAX_NPDU,
     G = Groups,
+    const B: usize = 32,
 > {
     ports: [PortConfig<G>; P],
     /// Each port's congestion state (#1697).
@@ -127,6 +133,8 @@ pub struct Storage<
     scratch: [u8; N],
     out: Outputs,
     counters: Counters,
+    /// The last global broadcasts seen (#1698).
+    recent: Recent<B>,
 }
 
 impl<
@@ -136,7 +144,8 @@ impl<
         const D: usize,
         const N: usize,
         G: GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// Empty storage: all zero bits with the default [`Groups`] rule.
     /// Custom rules supply their own unused-slot value through [`GroupClassifier::NONE`].
@@ -153,6 +162,7 @@ impl<
             scratch: [0; N],
             out: Outputs::NEW,
             counters: Counters::ZERO,
+            recent: Recent::NEW,
         }
     }
 }
@@ -164,7 +174,8 @@ impl<
         const D: usize,
         const N: usize,
         G: GroupClassifier,
-    > Default for Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Default for Storage<P, R, H, D, N, G, B>
 {
     fn default() -> Self {
         Self::new()
@@ -179,7 +190,8 @@ impl<
         const D: usize,
         const N: usize,
         G: GroupClassifier + fmt::Debug,
-    > fmt::Debug for Storage<P, R, H, D, N, G>
+        const B: usize,
+    > fmt::Debug for Storage<P, R, H, D, N, G, B>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Storage")
@@ -195,7 +207,8 @@ impl<
 /// A sans-IO BACnet router over the [`Storage`] it borrows or owns (`S` is
 /// `&mut Storage<..>` in firmware, a `Box<Storage<..>>` on a host). `D` and
 /// `N` default as [`Storage`]'s do. `G` is the ports' owned group rule,
-/// [`Groups`] unless a custom link supplies another [`GroupClassifier`].
+/// [`Groups`] unless a custom link supplies another [`GroupClassifier`],
+/// and `B`, the broadcasts remembered, defaults as [`Storage`]'s does.
 pub struct Router<
     S,
     const P: usize,
@@ -204,6 +217,7 @@ pub struct Router<
     const D: usize = 16,
     const N: usize = MAX_NPDU,
     G = Groups,
+    const B: usize = 32,
 > {
     storage: S,
     groups: core::marker::PhantomData<G>,
@@ -250,9 +264,10 @@ impl<
         const D: usize,
         const N: usize,
         G: GroupClassifier + fmt::Debug,
-    > fmt::Debug for Router<S, P, R, H, D, N, G>
+        const B: usize,
+    > fmt::Debug for Router<S, P, R, H, D, N, G, B>
 where
-    S: BorrowMut<Storage<P, R, H, D, N, G>>,
+    S: BorrowMut<Storage<P, R, H, D, N, G, B>>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Router")
@@ -272,9 +287,10 @@ impl<
         const D: usize,
         const N: usize,
         G: GroupClassifier,
-    > Router<S, P, R, H, D, N, G>
+        const B: usize,
+    > Router<S, P, R, H, D, N, G, B>
 where
-    S: BorrowMut<Storage<P, R, H, D, N, G>>,
+    S: BorrowMut<Storage<P, R, H, D, N, G, B>>,
 {
     /// A router on `ports`, in that order (port `n` is [`PortId`]`(n)`),
     /// with each port's network installed as a direct route, the table's
@@ -334,6 +350,7 @@ where
         store.discovery.clear();
         store.out = Outputs::NEW;
         store.counters = Counters::ZERO;
+        store.recent = Recent::NEW;
         store.ports[..ports.len()].clone_from_slice(ports);
         // Release custom rules from ports a prior router used in this storage.
         store.ports[ports.len()..].fill_with(|| PortConfig::ZERO);
@@ -353,7 +370,7 @@ where
         })
     }
 
-    fn store(&mut self) -> &mut Storage<P, R, H, D, N, G> {
+    fn store(&mut self) -> &mut Storage<P, R, H, D, N, G, B> {
         self.storage.borrow_mut()
     }
 

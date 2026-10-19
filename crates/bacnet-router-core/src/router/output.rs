@@ -332,7 +332,8 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// Drop whatever the caller left unpolled, counting each output, a
     /// waiting congestion announcement included.

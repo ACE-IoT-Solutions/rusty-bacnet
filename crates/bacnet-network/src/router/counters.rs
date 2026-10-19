@@ -66,4 +66,11 @@ pub struct Counters {
     /// Router-Available announcements started for a port that drained
     /// (#1697).
     pub available_announced: u64,
+    /// Global broadcasts dropped as repeats
+    /// ([`RouterOptions::duplicates`](super::RouterOptions::duplicates), #1698).
+    pub duplicate_drops: u64,
+    /// Networks a received reject or flow-control message named whose
+    /// learned route goes through another router, left unchanged
+    /// ([`RouterOptions::next_hop_rejects`](super::RouterOptions::next_hop_rejects), #1698).
+    pub not_next_hop: u64,
 }

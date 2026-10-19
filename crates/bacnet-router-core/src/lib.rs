@@ -184,6 +184,15 @@
 //! | A port that stays clogged has its networks announced busy on every other port, again while it lasts, and available once it drains | 6.6.3.6, 6.6.3.7, 6.6.4 | `tests/congestion.rs`: `busy_after_clog_time_then_available_under_the_low_water_mark`, `a_lasting_clog_repeats_busy_and_drains_once` |
 //! | Traffic a clogged port's full queue refuses draws reason 2 | 6.6.3.6 | `tests/congestion.rs`: `a_full_queue_on_a_clogged_port_draws_reason_2` |
 //!
+//! The other opt-in hardening of #1698, beyond the clause: with
+//! `next_hop_rejects`, a reject changes a learned route only when its
+//! next router sent it (`tests/hardening.rs`:
+//! `next_hop_rejects_apply_only_from_the_routes_next_router`); flow control
+//! from any other router is counted, as it always was ignored
+//! (`flow_control_from_another_router_is_counted_and_changes_nothing`); and
+//! with `duplicates`, a global broadcast seen again within its time to live
+//! is dropped (`a_looped_copy_within_the_ttl_is_dropped`).
+//!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF
 //! (#1379); group DADRs, where only an Unconfirmed-Request for a group of

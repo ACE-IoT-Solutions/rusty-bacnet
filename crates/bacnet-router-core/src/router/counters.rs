@@ -63,6 +63,14 @@ pub struct Counters {
     /// Router-Available announcements started for a port that drained
     /// (#1697).
     pub available_announced: u32,
+    /// Global broadcasts dropped as repeats of one seen within the
+    /// [`Duplicates`](super::Duplicates) time to live (#1698).
+    pub duplicate_drops: u32,
+    /// Networks a received reject or flow-control message named whose
+    /// learned route goes through another router, left unchanged (#1698):
+    /// rejects under [`Options::next_hop_rejects`](super::Options::next_hop_rejects),
+    /// Router-Busy and Router-Available always.
+    pub not_next_hop: u32,
 }
 
 impl Counters {
@@ -86,6 +94,8 @@ impl Counters {
         undrained: 0,
         busy_announced: 0,
         available_announced: 0,
+        duplicate_drops: 0,
+        not_next_hop: 0,
     };
 }
 

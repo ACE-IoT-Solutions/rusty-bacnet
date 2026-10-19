@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 
 use tokio::sync::mpsc;
 
-use bacnet_router_core::router::{Congestion, Options};
+use bacnet_router_core::router::{Congestion, Duplicates, Options};
 
 use super::control_policy::{ControlAuthorizer, ControlGate, ControlPolicy};
 use super::engine::OPTIONS;
@@ -204,6 +204,38 @@ impl<A, C> RouterOptions<A, C> {
     /// The counts are in [`Counters`](super::Counters).
     pub fn congestion(mut self, policy: Congestion) -> Self {
         self.engine.congestion = Some(policy);
+        self
+    }
+
+    /// Apply a received Reject-Message-To-Network to a learned route only
+    /// when it came from that route's next router (#1698).
+    ///
+    /// Off by default: Clause 6.6.3.5 has a router update the route a
+    /// reject names whoever sent it, so a reject relayed by any router
+    /// changes it. On, one from another router is still passed on toward
+    /// its destination, but leaves the route as it was, and is counted in
+    /// [`Counters::not_next_hop`](super::Counters::not_next_hop).
+    /// Router-Busy and Router-Available are always scoped to the routes
+    /// through their sender.
+    pub fn next_hop_rejects(mut self) -> Self {
+        self.engine.next_hop_rejects = true;
+        self
+    }
+
+    /// Drop a global broadcast that repeats one seen within
+    /// [`Duplicates::ttl`] (#1698): off unless this sets it.
+    ///
+    /// In a topology with a loop, routers can pass one global broadcast
+    /// around it until its hop count runs out. With this on, the router
+    /// remembers the last 32 global broadcasts by origin (SNET and SADR,
+    /// or the arrival network and link source) and a hash of the APDU,
+    /// and drops a repeat seen within the time to live, 2 s for
+    /// [`Duplicates::DEFAULT`]: not relayed, not delivered, counted in
+    /// [`Counters::duplicate_drops`](super::Counters::duplicate_drops).
+    /// The standard defines no such suppression, and a sender's own
+    /// identical retry within the time to live is dropped too.
+    pub fn duplicates(mut self, policy: Duplicates) -> Self {
+        self.engine.duplicates = Some(policy);
         self
     }
 

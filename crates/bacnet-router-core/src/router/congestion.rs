@@ -195,7 +195,8 @@ impl<
         const D: usize,
         const N: usize,
         G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+        const B: usize,
+    > Storage<P, R, H, D, N, G, B>
 {
     /// [`Router::egress_backlog`](super::Router::egress_backlog).
     pub(super) fn egress_backlog(

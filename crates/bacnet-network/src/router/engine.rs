@@ -256,6 +256,8 @@ published!(
     undrained,
     busy_announced,
     available_announced,
+    duplicate_drops,
+    not_next_hop,
 );
 
 // The engine's counts are all `u32`s and the totals all `u64`s, so their
