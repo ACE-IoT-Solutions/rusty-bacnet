@@ -5,7 +5,7 @@ expression: text
 " bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 1 FD 0 | drop 0                                              ? help "
 "┌ Watch (1) | COV 1 | requests 0.4/s ──────────────────────────────────────────────────────────────────────────────────┐"
 "│Device  Object           Property       Value        Units              Flags           Source Age  Trend             │"
-"│100     analog-input 1   present-value  74           degrees-fahrenheit ALM FLT OOS     COV    0s   ▄▅▆▇█▁▂▃▄▅▆▇█▁▂▃▄▅│"
+"│100     analog-input 1   present-value  74 °F        degrees-fahrenheit ALM FLT OOS     COV    0s   ▄▅▆▇█▁▂▃▄▅▆▇█▁▂▃▄▅│"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"

@@ -39,9 +39,11 @@ alloc_only! {
 
 // The tagged-field readers and the property-value boundary need no
 // allocator; every codec below decodes to or encodes from owned types.
+pub mod property_element;
 mod property_value;
 pub mod tagged;
 
+pub use property_element::{property_element, ConstructedElement, ElementShape};
 pub use property_value::{extract_property_value, PropertyValueBoundary};
 
 alloc_only! {
@@ -172,6 +174,7 @@ alloc_only! {
         encode_device_object_reference_to_sink, encode_stage_limit_value,
     };
 
+    pub use property_element::split_elements;
     pub use value_source::{decode_value_source, encode_value_source};
     pub use property_value::{
         decode_bacnet_property_value, decode_bacnet_property_value_in_list,
