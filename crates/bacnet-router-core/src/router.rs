@@ -28,7 +28,9 @@
 //!    [`MAX_MAC_LEN`](crate::MAX_MAC_LEN); an over-long DLEN or SLEN with a
 //!    DNET draws reject reason 6.
 //! 2. A DADR beside DNET 0xFFFF, and a broadcast carrying anything but an
-//!    Unconfirmed-Request, are dropped.
+//!    Unconfirmed-Request, are dropped. Steps 1 and 2 are the checks a
+//!    [`Node`](crate::node::Node) makes too, written once in
+//!    [`node`](crate::node).
 //! 3. A network message is routed first when it names another network,
 //!    except the three that are always handled here (What-Is, Number-Is
 //!    and Reject); otherwise its type's handler takes it.
@@ -82,7 +84,7 @@ pub use reject::RejectOrigin;
 pub use reply::{ReplyPlan, ReplyPlanError};
 
 use congestion::Flow;
-use counters::bump;
+pub(crate) use counters::bump;
 use duplicates::Recent;
 use output::Outputs;
 use tasks::Task;

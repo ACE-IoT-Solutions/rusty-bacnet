@@ -951,14 +951,13 @@ their figures:
   `discovery` scenarios.
 - [Section 9](#9-python-bindings): `bench_bip.py` in place of the three
   B/IP suites, and both suites' concurrency within 16 requests per client.
+- The mixed workload (`stress-test mixed`) and the router scenario
+  (`stress-test router`), in every section that quotes them: like the
+  concurrent-clients scenario, each now connects every client before the
+  clock starts, records each client's latencies in its own histogram and
+  divides by the measured step time rather than the nominal duration.
 - Any figure taken from a scenario's summary rather than its steps: the
   summary now covers every step.
-
-**Still to fix in the harness.** `stress-test mixed` and `stress-test
-router` still create their clients inside the timed window, record into
-one histogram behind a shared lock, and divide by the nominal duration
-rather than the measured one. `stress-test clients` no longer does any of
-these; the other two should follow it in a later change.
 
 ## 11. How to reproduce
 
