@@ -232,3 +232,27 @@ fn an_older_save_never_overwrites_a_newer_one() {
     assert_eq!(rows, [entry(2)]);
     assert_eq!(file.finished(), 2);
 }
+
+/// A save that never runs, or panics on its thread, counts as failed, so a
+/// lost activated table is never silent.
+#[test]
+fn a_save_that_never_runs_or_panics_is_counted() {
+    let dir = TempDir::new("bdt-lost-save");
+    let file = Arc::new(bbmd::BdtFile::new(dir.file("bdt.bin")));
+    drop(file.pending_save());
+    assert_eq!((file.failures(), file.finished()), (1, 1));
+
+    let pending = file.pending_save();
+    let panicked = std::thread::spawn(move || {
+        let _pending = pending;
+        panic!("a save that dies on its thread");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!((file.failures(), file.finished()), (2, 2));
+
+    // One that runs to the end counts only as finished.
+    file.pending_save().run(file.next_generation(), &[]);
+    assert_eq!((file.failures(), file.finished()), (2, 3));
+    assert!(file.path().exists());
+}

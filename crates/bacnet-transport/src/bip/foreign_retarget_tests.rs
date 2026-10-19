@@ -231,6 +231,13 @@ async fn a_lifetime_shorter_than_the_configured_renewal_cuts_the_renewal() {
         (cut.ttl, cut.renewal_interval),
         (20, Some(Duration::from_secs(10)))
     );
+    // A longer lifetime again restores the configured interval.
+    view.activate(&changes(None, Some(100))).unwrap();
+    let restored = transport.foreign_device_config().unwrap();
+    assert_eq!(
+        (restored.ttl, restored.renewal_interval),
+        (100, Some(Duration::from_secs(20)))
+    );
     transport.stop().await.unwrap();
 }
 

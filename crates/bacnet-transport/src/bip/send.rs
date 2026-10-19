@@ -58,17 +58,22 @@ impl NodeHandle {
         // under: a move since the copy above sends it to the new BBMD.
         if matches!(link.mode, Mode::Foreign(_)) {
             #[cfg(test)]
-            if let Some(hook) = self
-                .before_admit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
             {
-                hook();
+                // Taken first, so no guard is held while the hook runs.
+                let hook = self
+                    .before_admit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(hook) = hook {
+                    hook();
+                }
             }
             match self.admit_broadcast(npdu)? {
                 None => return Ok(()),
                 Some(decided) if decided != link => {
+                    // A move is foreign to foreign, so the mode, and with it
+                    // `forward_own` (false for a foreign device), stays.
                     outgoing = decided
                         .broadcast(npdu)
                         .map_err(|refusal| self.refuse_send(refusal))?

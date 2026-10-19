@@ -94,8 +94,8 @@ impl BbmdTables for LiveTables {
 
     /// A new BDT is saved to the persisted-BDT file once it is in effect.
     /// Only the activation and taking the rows happen under the locks the
-    /// caller and this view hold; the file is written on a blocking thread
-    /// afterwards. A failed save is logged and counted and doesn't undo the
+    /// caller and this view hold; the file is written on a thread of its
+    /// own afterwards (`BdtFile::save_later`). A failed save is logged and counted and doesn't undo the
     /// activation.
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
         let file = self

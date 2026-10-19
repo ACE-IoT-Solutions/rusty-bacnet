@@ -10,7 +10,8 @@
 //! directory is synced too, so the rename itself survives a crash.
 //!
 //! An activation runs under the server's database lock and the BBMD lock,
-//! so the file I/O happens after both are released, on a blocking thread:
+//! so the file I/O happens after both are released, on a thread of its own
+//! (a plain thread, which a Tokio runtime's shutdown doesn't cancel):
 //! the activation takes a generation for its table under the BBMD lock
 //! ([`BdtFile::next_generation`]), and a save older than one already
 //! written is skipped, so a slow save of an older table never overwrites a
@@ -76,44 +77,64 @@ impl BdtFile {
         self.generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    /// Save `rows`, of `generation`, off the caller's thread: on a blocking
-    /// thread of the current Tokio runtime, or here with none running.
+    /// Save `rows`, of `generation`, off the caller's thread. Inside a
+    /// Tokio context that is a plain thread of its own, which the runtime's
+    /// shutdown can't cancel, so a WARMSTART followed at once by a stop
+    /// still saves. Outside one (a caller with no runtime) the save runs
+    /// here, under whatever locks the caller holds. A save that never runs
+    /// or panics is counted as failed ([`PendingSave`]).
     pub(crate) fn save_later(self: &Arc<Self>, generation: u64, rows: Vec<BdtEntry>) {
-        let file = Arc::clone(self);
-        let save = move || file.save(generation, &rows);
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn_blocking(save)),
-            Err(_) => save(),
+        let pending = self.pending_save();
+        let save = move || pending.run(generation, &rows);
+        if tokio::runtime::Handle::try_current().is_err() {
+            return save();
+        }
+        // A thread that can't be spawned drops `save` unrun, which counts.
+        let _ = std::thread::Builder::new()
+            .name("bacnet-bdt-save".into())
+            .spawn(save);
+    }
+
+    /// A save about to be handed off: it counts as failed unless it runs to
+    /// the end.
+    pub(crate) fn pending_save(self: &Arc<Self>) -> PendingSave {
+        PendingSave {
+            file: Some(Arc::clone(self)),
         }
     }
 
     /// Write `rows`, of `generation`, to the file, replacing it whole,
-    /// unless a newer generation was already saved; a failure is logged and
-    /// counted.
+    /// unless a newer generation was already written; a failure is logged
+    /// and counted, and doesn't count as written, so an older save may
+    /// still land.
     pub(crate) fn save(&self, generation: u64, rows: &[BdtEntry]) {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         if generation <= *written {
             debug!(generation, newest = *written, "Skipped saving an older BDT");
         } else {
-            *written = generation;
             match self.write(rows) {
-                Ok(()) => debug!(
-                    path = %self.path.display(),
-                    entries = rows.len(),
-                    "Saved the activated BDT"
-                ),
-                Err(error) => {
-                    self.failures.fetch_add(1, Ordering::Relaxed);
-                    warn!(
+                Ok(()) => {
+                    *written = generation;
+                    debug!(
                         path = %self.path.display(),
-                        %error,
-                        "Failed to save the activated BDT; the BBMD uses it, but a restart will not"
+                        entries = rows.len(),
+                        "Saved the activated BDT"
                     );
                 }
+                Err(error) => self.failed(&error),
             }
         }
         drop(written);
         self.finished.fetch_add(1, Ordering::Release);
+    }
+
+    fn failed(&self, why: &dyn std::fmt::Display) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            path = %self.path.display(),
+            error = %why,
+            "Failed to save the activated BDT; the BBMD uses it, but a restart will not"
+        );
     }
 
     fn write(&self, rows: &[BdtEntry]) -> std::io::Result<()> {
@@ -144,6 +165,32 @@ impl BdtFile {
         written?;
         sync_directory(&self.path);
         Ok(())
+    }
+}
+
+/// A save handed to another thread. Dropped without having run, because
+/// the thread never started or the save panicked, it counts as a failed
+/// save, so no activated table is lost silently.
+pub(crate) struct PendingSave {
+    file: Option<Arc<BdtFile>>,
+}
+
+impl PendingSave {
+    /// Run the save; it then no longer counts as lost.
+    pub(crate) fn run(mut self, generation: u64, rows: &[BdtEntry]) {
+        if let Some(file) = &self.file {
+            file.save(generation, rows);
+        }
+        self.file = None;
+    }
+}
+
+impl Drop for PendingSave {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take() {
+            file.failed(&"the save never ran to completion");
+            file.finished.fetch_add(1, Ordering::Release);
+        }
     }
 }
 

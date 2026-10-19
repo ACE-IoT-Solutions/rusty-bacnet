@@ -3677,7 +3677,10 @@ FD_Subscription_Lifetime do the same (#1825): once activated, the next
 registration goes to the new BBMD with the new time-to-live. Without an
 `on_reinitialize` handler nothing could activate a written value, so writes
 to these rows raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
-Changes_Pending stays FALSE. Local Network Number behavior
+Changes_Pending stays FALSE. A stopped transport refuses FD_BBMD_Address and
+FD_Subscription_Lifetime writes the same way, and values accepted while it
+ran, then left pending across a stop, fail the check ACTIVATE_CHANGES makes
+before the handler runs (INVALID_CONFIGURATION_DATA). Local Network Number behavior
 is described below; complete Network Port conformance and multiport routing
 remain outside this registration contract.
 

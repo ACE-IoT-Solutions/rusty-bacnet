@@ -29,6 +29,10 @@ use super::node::NodeHandle;
 struct TargetState {
     /// The registration in effect, and the one the next start uses.
     config: ForeignDeviceConfig,
+    /// The renewal interval the owner configured, from which each new
+    /// lifetime's effective interval is worked out, so a short lifetime
+    /// doesn't shorten it for good.
+    configured_renewal: Option<Duration>,
     /// The running node, while one runs.
     node: Weak<NodeHandle>,
 }
@@ -69,6 +73,7 @@ impl ForeignTarget {
     ) -> Self {
         Self {
             state: Mutex::new(TargetState {
+                configured_renewal: config.renewal_interval,
                 config,
                 node: Weak::new(),
             }),
@@ -139,11 +144,9 @@ impl ForeignTarget {
             config.ttl = ttl;
             // A client can't see the configured renewal interval, so a new
             // lifetime cuts it to half the lifetime rather than being
-            // refused for it.
+            // refused for it, working from the configured value each time.
             let half = Duration::from_secs(ttl.into()) / 2;
-            if let Some(renewal) = &mut config.renewal_interval {
-                *renewal = (*renewal).min(half);
-            }
+            config.renewal_interval = state.configured_renewal.map(|renewal| renewal.min(half));
         }
         // A zero time-to-live is refused, as at start.
         let interval = config.interval().map_err(|_| out_of_range())?;

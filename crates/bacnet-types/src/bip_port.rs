@@ -67,7 +67,9 @@ pub trait BbmdTables: Send + Sync {
     /// writable: `true` for a view that implements
     /// [`check_broadcast_distribution_table`](Self::check_broadcast_distribution_table)
     /// and [`activate`](Self::activate). The default, `false`, lists the
-    /// rows read-only and refuses writes to them.
+    /// rows read-only and refuses writes to them. Override it together
+    /// with those methods; a view that overrides them alone still reads as
+    /// one that can't change.
     fn can_change(&self) -> bool {
         false
     }
@@ -131,7 +133,9 @@ pub trait ForeignRegistration: Send + Sync {
     /// Whether written values can take effect at all, so the rows are
     /// writable: `true` for a view that implements [`check`](Self::check)
     /// and [`activate`](Self::activate). The default, `false`, lists the
-    /// rows read-only and refuses writes to them.
+    /// rows read-only and refuses writes to them. Override it together
+    /// with those methods; a view that overrides them alone still reads as
+    /// one that can't change.
     fn can_change(&self) -> bool {
         false
     }
