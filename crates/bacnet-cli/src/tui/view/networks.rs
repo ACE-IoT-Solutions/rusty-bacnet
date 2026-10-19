@@ -4,12 +4,19 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
-use ratatui::widgets::{Paragraph, Row, Table};
+use ratatui::widgets::{Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 use super::Theme;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::App;
+
+/// Widths of the Network, Heard and flag columns.
+const NETWORK: u16 = 7;
+const HEARD: u16 = 9;
+const FLAG: u16 = 9;
+/// The narrowest the Router column gets when long router lists don't fit.
+const ROUTER_MIN: u16 = 21;
 
 /// The Networks tab's subtitle: routers heard, the local network's number,
 /// and when the routers were last asked.
@@ -40,14 +47,28 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), area);
         return;
     }
-    let rows: Vec<Row> = map
-        .rows()
+    let rows = map.rows();
+    // The Router column is as wide as its longest entry, so Heard sits
+    // beside it rather than at the far edge.
+    let routers: Vec<String> = rows.iter().map(|row| row.routers.join(", ")).collect();
+    let longest = routers
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("Router".len());
+    let fixed = NETWORK + HEARD + FLAG + 3;
+    let router_width = u16::try_from(longest)
+        .unwrap_or(u16::MAX)
+        .min(area.width.saturating_sub(fixed).max(ROUTER_MIN));
+    let rows: Vec<Row> = rows
         .into_iter()
-        .map(|row| {
+        .zip(routers)
+        .map(|(row, routers)| {
             let flag = if row.duplicate() { "DUPLICATE" } else { "" };
             let line = Row::new([
                 row.network.to_string(),
-                row.routers.join(", "),
+                routers,
                 age_label(app.now, row.heard),
                 flag.to_string(),
             ]);
@@ -59,20 +80,30 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         })
         .collect();
     let widths = [
-        Constraint::Length(7),
-        Constraint::Min(21),
-        Constraint::Length(9),
-        Constraint::Length(9),
+        Constraint::Length(NETWORK),
+        Constraint::Length(router_width),
+        Constraint::Length(HEARD),
+        Constraint::Length(FLAG),
     ];
-    let [table, note] = Layout::vertical([Constraint::Min(2), Constraint::Length(1)]).areas(area);
+    let text = "DUPLICATE: several routers claim one network number: a shared \
+                number, a loop, or a moved route (r asks again).";
+    let note_height = if map.duplicates().is_empty() {
+        0
+    } else if text.len() <= usize::from(area.width) {
+        1
+    } else {
+        // Wrapped: two lines hold it from 80 columns.
+        2
+    };
+    let [table, note] =
+        Layout::vertical([Constraint::Min(2), Constraint::Length(note_height)]).areas(area);
     let header = Row::new(["Network", "Router", "Heard", ""]).style(theme.accent());
     frame.render_widget(
         Table::new(rows, widths).header(header).column_spacing(1),
         table,
     );
-    if !map.duplicates().is_empty() {
-        let text = "DUPLICATE: several routers claim one network number: a shared \
-                    number, a loop, or a moved route (r asks again).";
-        frame.render_widget(Paragraph::new(Line::styled(text, theme.warn())), note);
+    if note_height > 0 {
+        let note_text = Paragraph::new(Line::styled(text, theme.warn())).wrap(Wrap { trim: true });
+        frame.render_widget(note_text, note);
     }
 }

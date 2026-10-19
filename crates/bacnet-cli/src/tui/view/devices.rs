@@ -2,7 +2,7 @@
 
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use super::{Theme, FULL_WIDTH};
@@ -10,7 +10,9 @@ use crate::tui::app::devices::{age_label, segmentation_label, SortKey};
 use crate::tui::app::{App, Link, OpState};
 use crate::tui::message::DeviceRow;
 
-/// The duplicate-instance banner; the model keeps its text up to date.
+/// The banners (duplicate instances, the foreign-device registration), as
+/// lines [`wrap_banner`] has already wrapped; the model keeps their text up
+/// to date.
 pub(super) fn banner(frame: &mut Frame, area: Rect, lines: &[String], theme: &Theme) {
     if lines.is_empty() {
         return;
@@ -19,12 +21,41 @@ pub(super) fn banner(frame: &mut Frame, area: Rect, lines: &[String], theme: &Th
         .iter()
         .map(|l| Line::styled(l.as_str(), theme.danger()))
         .collect();
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(theme.danger())
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    frame.render_widget(Paragraph::new(text).style(theme.danger()), area);
+}
+
+/// One banner as lines at most `width` columns wide, broken between words
+/// (a word longer than a line is split) and each continuation indented one
+/// space, so the banner's height is exactly the number of lines.
+pub(super) fn wrap_banner(text: &str, width: usize) -> Vec<String> {
+    const INDENT: &str = " ";
+    let width = width.max(INDENT.len() + 1);
+    let lead = &text[..text.len() - text.trim_start().len()];
+    let mut lines = Vec::new();
+    let mut line = lead.to_string();
+    let mut fresh = true;
+    for word in text.split_whitespace() {
+        let len = |s: &str| s.chars().count();
+        let sep = usize::from(!fresh);
+        if len(&line) + sep + len(word) > width && !fresh {
+            lines.push(std::mem::replace(&mut line, INDENT.to_string()));
+            fresh = true;
+        }
+        if !fresh {
+            line.push(' ');
+        }
+        let mut rest: Vec<char> = word.chars().collect();
+        // A word too long for any line fills lines whole.
+        while len(&line) + rest.len() > width {
+            let take = width - len(&line);
+            line.extend(rest.drain(..take));
+            lines.push(std::mem::replace(&mut line, INDENT.to_string()));
+        }
+        line.extend(rest);
+        fresh = false;
+    }
+    lines.push(line);
+    lines
 }
 
 /// Text for the running or last Who-Is, for the table's bottom border.
