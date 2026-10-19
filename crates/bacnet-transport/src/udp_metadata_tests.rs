@@ -177,8 +177,9 @@ fn a_short_receive_stamp_is_no_stamp() {
     let stamp = |payload: usize| {
         let mut control = [0u64; 16];
         // SAFETY: `control` is u64-aligned, initialized and 128 octets, so
-        // the header and a payload of up to a whole stamp (24 octets at
-        // most) lie inside it and cmsg_len stays within it, as
+        // the header and a payload of up to a whole stamp (48 octets, a
+        // Linux `[timespec; 3]`, at most; CMSG_LEN of that is 64) lie
+        // inside it and cmsg_len stays within it, as
         // unix_arrival_stamp_cmsg asks; the payload bytes stay zero but for
         // one, a valid stamp of any of the plain-integer types read.
         unsafe {

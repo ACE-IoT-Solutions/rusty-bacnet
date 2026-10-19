@@ -208,7 +208,8 @@ mod tests {
         v4[1..3].copy_from_slice(&AF_INET.to_ne_bytes());
         v4[5..9].copy_from_slice(&[192, 0, 2, 10]);
         let address = socket_address(&mut v4[1..]);
-        // SAFETY: the address points into `v4` with its true length.
+        // SAFETY: the address points into `v4`, and its length is the
+        // octets left there, all readable.
         let ip = unsafe { decode_socket_address(&address) };
         assert_eq!(ip, Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))));
 
@@ -216,30 +217,27 @@ mod tests {
         v6[..2].copy_from_slice(&AF_INET6.to_ne_bytes());
         let documentation: Ipv6Addr = "2001:db8::1".parse().unwrap();
         v6[8..24].copy_from_slice(&documentation.octets());
-        // SAFETY: as above.
+        // SAFETY: the address points to `v6`, with its whole length.
         let ip = unsafe { decode_socket_address(&socket_address(&mut v6)) };
         assert_eq!(ip, Some(IpAddr::V6(documentation)));
 
         // Too short for its family, another family, and a null pointer.
         let short = &mut v6[..size_of::<SOCKADDR_IN6>() - 1];
-        // SAFETY: as above.
-        assert_eq!(
-            unsafe { decode_socket_address(&socket_address(short)) },
-            None
-        );
+        // SAFETY: the address points to `short`, with its whole length.
+        let ip = unsafe { decode_socket_address(&socket_address(short)) };
+        assert_eq!(ip, None);
         let mut unspec = vec![0u8; size_of::<SOCKADDR_IN6>()];
         unspec[..2].copy_from_slice(&AF_UNSPEC.to_ne_bytes());
-        // SAFETY: as above.
-        assert_eq!(
-            unsafe { decode_socket_address(&socket_address(&mut unspec)) },
-            None
-        );
+        // SAFETY: the address points to `unspec`, with its whole length.
+        let ip = unsafe { decode_socket_address(&socket_address(&mut unspec)) };
+        assert_eq!(ip, None);
         let null = SOCKET_ADDRESS {
             lpSockaddr: std::ptr::null_mut(),
             iSockaddrLength: 16,
         };
-        // SAFETY: a null pointer is allowed.
-        assert_eq!(unsafe { decode_socket_address(&null) }, None);
+        // SAFETY: a null pointer is allowed; nothing is read through it.
+        let ip = unsafe { decode_socket_address(&null) };
+        assert_eq!(ip, None);
     }
 
     #[test]

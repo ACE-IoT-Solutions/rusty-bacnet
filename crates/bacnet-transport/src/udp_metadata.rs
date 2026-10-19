@@ -262,9 +262,8 @@ impl DestinationReceiver {
             .ok_or_else(|| invalid_metadata("missing or invalid UDP peer address"))?;
         // SAFETY: the check above keeps Control.len within `control`, whose
         // bytes are all initialized (it starts zeroed), so the slice is in
-        // bounds; u8 has no alignment needs. Winsock wrote those bytes as
-        // whole control messages (MSG_CTRUNC was rejected), which is what
-        // windows_destination asks.
+        // bounds; u8 has no alignment needs. windows_destination asks for
+        // nothing more: it bounds-checks every read against the slice.
         let (destination, arrival_index) = unsafe {
             windows_destination(
                 std::slice::from_raw_parts(
@@ -829,10 +828,9 @@ unsafe fn windows_socket_addr(
 ///
 /// # Safety
 ///
-/// `control` must hold what WSARecvMsg wrote: whole control messages, each
-/// `cmsg_len` at most the buffer's length. The bounds checks below compare
-/// sums of an offset and `cmsg_len`; a `cmsg_len` near `usize::MAX`, which
-/// Winsock never writes, could wrap them in a release build.
+/// None beyond a valid slice: every read is bounds-checked against
+/// `control`, whatever its bytes, and none of the checks can overflow. It
+/// stays `unsafe` for its unaligned reads alone.
 #[cfg(windows)]
 #[allow(unsafe_code)] // reads CMSGHDR and packet-info payloads from bytes
 unsafe fn windows_destination(
@@ -852,12 +850,15 @@ unsafe fn windows_destination(
         // integers, valid for any bytes.
         let header: CMSGHDR =
             unsafe { std::ptr::read_unaligned(control.as_ptr().add(offset).cast()) };
-        if header.cmsg_len < data_offset || offset + header.cmsg_len > control.len() {
+        // The loop condition keeps `offset` within the buffer, so the
+        // subtraction can't underflow, and comparing `cmsg_len` with the
+        // octets left can't overflow, whatever `cmsg_len` holds.
+        if header.cmsg_len < data_offset || header.cmsg_len > control.len() - offset {
             return Err(invalid_metadata("invalid Windows UDP control message"));
         }
-        // SAFETY: data_offset <= cmsg_len and offset + cmsg_len <= len
-        // (checked above, without wrapping under this fn's contract), so
-        // the pointer is within `control` or one past its end.
+        // SAFETY: data_offset <= cmsg_len <= len - offset (checked above,
+        // with no arithmetic that can wrap), so offset + data_offset is at
+        // most len: the pointer is within `control` or one past its end.
         let data = unsafe { control.as_ptr().add(offset + data_offset) };
         let candidate = match version {
             IpVersion::V4
