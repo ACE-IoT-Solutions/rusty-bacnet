@@ -119,6 +119,22 @@ impl DegradationPoint {
         }
     }
 
+    /// A step from every client's own recorder and the instant its loop
+    /// ended, timed from `started` to the last of those instants.
+    pub fn from_clients(
+        parameter: u64,
+        started: Instant,
+        clients: impl IntoIterator<Item = (LatencyRecorder, Instant)>,
+    ) -> Self {
+        let mut recorder = LatencyRecorder::new();
+        let mut ended = started;
+        for (client, end) in clients {
+            recorder.merge(&client);
+            ended = ended.max(end);
+        }
+        Self::from_recorder(parameter, &recorder, ended - started)
+    }
+
     /// Print the step's line: its counts, time, rate and percentiles.
     pub fn log(&self) {
         eprintln!(

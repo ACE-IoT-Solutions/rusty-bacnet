@@ -215,15 +215,13 @@ async fn drive<T: TransportPort + 'static>(
             (recorder, ended)
         }));
     }
-    let mut recorder = LatencyRecorder::new();
-    let mut ended = started;
+    let mut results = Vec::new();
     for h in handles {
-        if let Ok((rec, end)) = h.await {
-            recorder.merge(&rec);
-            ended = ended.max(end);
+        if let Ok(result) = h.await {
+            results.push(result);
         }
     }
-    DegradationPoint::from_recorder(parameter, &recorder, ended - started)
+    DegradationPoint::from_clients(parameter, started, results)
 }
 
 #[cfg(test)]
