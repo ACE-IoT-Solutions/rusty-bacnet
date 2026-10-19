@@ -13,10 +13,7 @@
 //! takes the router's real forwarding path both ways.
 
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use tokio::sync::Mutex;
 
 use bacnet_client::client::BACnetClient;
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
@@ -238,40 +235,45 @@ pub async fn run(
     for &count in steps {
         eprintln!("--- {count} clients ({path:?} path) ---");
 
-        let recorder = Arc::new(Mutex::new(LatencyRecorder::new()));
-        let deadline = Instant::now() + Duration::from_secs(duration_secs);
+        // Every client connects before the clock starts, and each records
+        // into its own histogram, so neither setup nor a shared lock is
+        // measured.
+        let mut pool = Vec::new();
+        for _ in 0..count {
+            match make_stress_client().await {
+                Ok(c) => pool.push(c),
+                Err(e) => eprintln!("  client error: {e}"),
+            }
+        }
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(duration_secs);
 
         let mut handles = Vec::new();
-        for _ in 0..count {
+        for mut client in pool {
             let target = target.clone();
-            let rec = recorder.clone();
             handles.push(tokio::spawn(async move {
-                let mut client = match make_stress_client().await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("  client error: {e}");
-                        return;
-                    }
-                };
-
+                let mut recorder = LatencyRecorder::new();
                 while Instant::now() < deadline {
                     let start = Instant::now();
                     match read(&client, &target, oid).await {
-                        Ok(_) => rec.lock().await.record_success(start),
-                        Err(_) => rec.lock().await.record_failure(),
+                        Ok(_) => recorder.record_success(start),
+                        Err(_) => recorder.record_failure(),
                     }
                 }
+                let ended = Instant::now();
                 let _ = client.stop().await;
+                (recorder, ended)
             }));
         }
 
+        let mut results = Vec::new();
         for h in handles {
-            let _ = h.await;
+            if let Ok(result) = h.await {
+                results.push(result);
+            }
         }
-
-        let rec = recorder.lock().await;
-        let point =
-            DegradationPoint::from_recorder(count, &rec, Duration::from_secs(duration_secs));
+        let point = DegradationPoint::from_clients(count, started, results);
         point.log();
         curve.push(point);
     }

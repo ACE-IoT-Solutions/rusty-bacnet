@@ -50,9 +50,11 @@ impl NpduAddress {
             mac: &self.mac_address,
         }
     }
+}
 
-    /// An owned copy of a borrowed address.
-    fn owned(address: Address<'_>) -> Self {
+/// An owned copy of a borrowed address.
+impl From<Address<'_>> for NpduAddress {
+    fn from(address: Address<'_>) -> Self {
         Self {
             network: address.network,
             mac_address: MacAddr::from_slice(address.mac),
@@ -95,6 +97,23 @@ impl Npdu {
     /// Whether it carries a network-layer message rather than an APDU.
     pub fn is_network_message(&self) -> bool {
         self.message_type.is_some()
+    }
+
+    /// An owned copy of `view`'s control information, with an empty
+    /// payload. The payload is the caller's to attach: the frame the view
+    /// was read from, advanced by [`payload_offset`](view::Npdu::payload_offset),
+    /// shares the frame's buffer instead of copying it.
+    pub fn header_from(view: &view::Npdu<'_>) -> Self {
+        Self {
+            expecting_reply: view.expecting_reply,
+            priority: view.priority,
+            destination: view.destination.map(NpduAddress::from),
+            source: view.source.map(NpduAddress::from),
+            hop_count: view.hop_count,
+            message_type: view.message_type,
+            vendor_id: view.vendor_id,
+            payload: Bytes::new(),
+        }
     }
 
     /// The borrowed form `bacnet-npdu`'s encoder writes.
@@ -219,23 +238,14 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
                 field,
                 length,
                 dnet,
-                source: source.map(NpduAddress::owned),
+                source: source.map(NpduAddress::from),
             })
         }
         Err(bacnet_npdu::DecodeError::Malformed(fault)) => {
             return Err(NpduDecodeError::Malformed(fault))
         }
     };
-    let mut npdu = Npdu {
-        expecting_reply: view.expecting_reply,
-        priority: view.priority,
-        destination: view.destination.map(NpduAddress::owned),
-        source: view.source.map(NpduAddress::owned),
-        hop_count: view.hop_count,
-        message_type: view.message_type,
-        vendor_id: view.vendor_id,
-        payload: Bytes::new(),
-    };
+    let mut npdu = Npdu::header_from(&view);
     // Advanced, not sliced: a slice is a clone, and the first clone of a
     // frame received into a plain buffer allocates its shared header (#1713).
     let offset = view.payload_offset;
