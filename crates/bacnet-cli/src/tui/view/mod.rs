@@ -12,6 +12,7 @@ mod dialogs;
 mod network;
 mod safety;
 mod sc;
+mod sc_credentials;
 mod watch;
 
 use ratatui::layout::{Constraint, Layout, Rect};

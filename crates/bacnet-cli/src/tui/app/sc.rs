@@ -5,8 +5,9 @@
 //!   heartbeat's age and round trip (Annex AB.6.3).
 //! - The identity panel: the local VMAC, the profile's device UUID, the hub
 //!   VMAC, and every duplicate-VMAC NAK seen (Annex AB.6.2.2).
-//! - The hub's certificate chain, and the connection doctor's phase timeline
-//!   for the latest failure (Tab switches between them).
+//! - The hub's certificate chain, the connection doctor's phase timeline for
+//!   the latest failure, and this node's own credentials as the pre-dial
+//!   lint read them (#968). Tab switches between the three.
 //! - A timeline of the connector's events: connects, losses, reconnect
 //!   attempts, failover and the primary's return.
 //!
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 use bacnet_transport::sc::{ScActiveHub, ScConnectionState};
 
 use super::App;
+use crate::tui::sc::credentials::{Credentials, Level};
 use crate::tui::sc::doctor::{self, Diagnosis};
 use crate::tui::sc::{
     hub_name, vmac_text, CertSummary, Fault, LinkEvent, LinkSnapshot, ScFailure, ScIdentity,
@@ -39,13 +41,18 @@ pub(crate) enum View {
     Status,
     /// The connection doctor.
     Doctor,
+    /// This node's own credentials.
+    Credentials,
 }
 
 /// A key on the SC screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScKey {
-    /// Tab: the other view.
-    Cycle,
+    /// Tab: the next view; Shift-Tab (`back`): the previous one.
+    Cycle {
+        /// Backwards.
+        back: bool,
+    },
 }
 
 /// How serious a timeline entry is.
@@ -128,6 +135,9 @@ pub(crate) struct ScState {
     pub(crate) missed: u64,
     /// The lower view.
     pub(crate) view: View,
+    /// This node's credentials from the latest dial's lint, or why the lint
+    /// could not read them.
+    pub(crate) credentials: Option<Result<Credentials, String>>,
 }
 
 /// A timeline line for an event.
@@ -341,9 +351,15 @@ impl ScState {
                 );
                 self.enter(at, ScConnectionState::Disconnected, None);
                 self.failed(at, None, *failure);
-                // A failed build is what the doctor is for.
-                self.view = View::Doctor;
+                // A failed build is what the doctor is for, unless the
+                // credential lint refused it: that view says why.
+                self.view = if self.lint_refused() {
+                    View::Credentials
+                } else {
+                    View::Doctor
+                };
             }
+            ScReport::Credentials(credentials) => self.credentials = Some(*credentials),
             ScReport::Status(snapshot) => {
                 self.enter(at, snapshot.state, snapshot.hub);
                 self.link = Some((snapshot, at));
@@ -358,6 +374,15 @@ impl ScState {
                 );
             }
             ScReport::Chain(chain) => self.chain = chain,
+        }
+    }
+
+    /// The latest lint found a hard failure or could not read the files.
+    pub(crate) fn lint_refused(&self) -> bool {
+        match &self.credentials {
+            Some(Ok(c)) => c.findings.iter().any(|(level, _)| *level == Level::Failed),
+            Some(Err(_)) => true,
+            None => false,
         }
     }
 
@@ -378,11 +403,11 @@ impl App {
     /// A key on the SC screen.
     pub(super) fn sc_key(&mut self, key: ScKey) {
         match key {
-            ScKey::Cycle => {
-                self.sc.view = match self.sc.view {
-                    View::Status => View::Doctor,
-                    View::Doctor => View::Status,
-                }
+            ScKey::Cycle { back } => {
+                const ORDER: [View; 3] = [View::Status, View::Doctor, View::Credentials];
+                let at = ORDER.iter().position(|v| *v == self.sc.view).unwrap_or(0);
+                let step = if back { ORDER.len() - 1 } else { 1 };
+                self.sc.view = ORDER[(at + step) % ORDER.len()];
             }
         }
     }

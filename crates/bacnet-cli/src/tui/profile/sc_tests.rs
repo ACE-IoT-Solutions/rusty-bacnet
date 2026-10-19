@@ -189,7 +189,7 @@ fn sc_device_uuid_is_generated_once_and_identical_across_three_restarts() {
             panic!("load replies with the profile");
         };
         assert_eq!(uuid_of(&profile), uuid, "restart {restart}");
-        let prepared = service.prepare("site", &profile, true).unwrap();
+        let prepared = service.prepare("site", &profile, true, &[]).unwrap();
         assert_eq!(uuid_of(&prepared.resolved), uuid);
         assert_eq!(prepared.resolved.sc.as_ref().unwrap().vmac, Some(vmac));
         let args = prepared.resolved.transport_args().unwrap();
@@ -219,12 +219,12 @@ fn a_hand_written_sc_profile_gets_its_identity_on_first_connect_only() {
     service.load("site").unwrap();
     assert_eq!(store.load("site").unwrap(), p);
     // Refused for lack of authorization: no identity is stored either.
-    assert!(service.prepare("site", &p, false).is_err());
+    assert!(service.prepare("site", &p, false, &[]).is_err());
     assert_eq!(store.load("site").unwrap().sc.unwrap().device_uuid, None);
-    let first = service.prepare("site", &p, true).unwrap();
+    let first = service.prepare("site", &p, true, &[]).unwrap();
     assert_eq!(first.stored, store.load("site").unwrap());
     let uuid = uuid_of(&first.stored);
-    let again = service.prepare("site", &first.stored, false).unwrap();
+    let again = service.prepare("site", &first.stored, false, &[]).unwrap();
     assert_eq!(uuid_of(&again.resolved), uuid);
 }
 

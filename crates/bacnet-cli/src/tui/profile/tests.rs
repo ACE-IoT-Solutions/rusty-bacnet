@@ -272,10 +272,10 @@ fn first_use_requires_attestation_and_saves_it_before_preparing_a_workspace() {
         store: Ok(store.clone()),
         overrides: Overrides::default(),
     };
-    assert!(service.prepare("site", &p, false).is_err());
+    assert!(service.prepare("site", &p, false, &[]).is_err());
     assert!(store.load("site").unwrap().authorized_at_unix.is_none());
     assert!(!root.path().join("workspaces").exists());
-    let resolved = service.prepare("site", &p, true).unwrap();
+    let resolved = service.prepare("site", &p, true, &[]).unwrap();
     let persisted = store.load("site").unwrap();
     assert!(persisted.authorized_at_unix.is_some());
     assert_eq!(
@@ -284,7 +284,10 @@ fn first_use_requires_attestation_and_saves_it_before_preparing_a_workspace() {
     );
     assert!(root.path().join("workspaces/site").is_dir());
     assert_eq!(
-        service.prepare("site", &persisted, false).unwrap().resolved,
+        service
+            .prepare("site", &persisted, false, &[])
+            .unwrap()
+            .resolved,
         persisted
     );
 }
@@ -303,7 +306,7 @@ fn stale_preview_and_stale_edits_never_overwrite_or_connect() {
     changed.bip_mut().port = 1234;
     store.save("site", &changed, false).unwrap();
     assert!(service
-        .prepare("site", &original, true)
+        .prepare("site", &original, true, &[])
         .unwrap_err()
         .contains("changed on disk"));
     assert!(service
@@ -324,7 +327,7 @@ fn workspace_failure_does_not_produce_a_prepared_connection() {
         overrides: Overrides::default(),
     };
     assert!(service
-        .prepare("site", &p, true)
+        .prepare("site", &p, true, &[])
         .unwrap_err()
         .contains("workspace"));
 }
@@ -343,7 +346,7 @@ fn failed_authorization_save_preserves_the_document_and_prevents_preparation() {
         store: Ok(store.clone()),
         overrides: Overrides::default(),
     };
-    let result = service.prepare("site", &p, true);
+    let result = service.prepare("site", &p, true, &[]);
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(
         result.is_err(),
@@ -437,7 +440,7 @@ fn first_attestation_persists_raw_profile_without_transient_cli_overrides() {
         store: Ok(store.clone()),
         overrides: Overrides::from_cli(&cli).unwrap(),
     };
-    let effective = service.prepare("site", &p, true).unwrap();
+    let effective = service.prepare("site", &p, true, &[]).unwrap();
     assert_eq!(effective.resolved.bip().port, 1234);
     assert_eq!(effective.resolved.bip().renewal_secs, Some(12));
     let stored = store.load("site").unwrap();

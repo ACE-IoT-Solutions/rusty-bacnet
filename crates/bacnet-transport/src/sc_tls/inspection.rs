@@ -1,8 +1,10 @@
 //! Synchronous, advisory inspection of explicitly supplied local PEM materials.
 //!
-//! No chain construction, signature verification, local-issuer authorization,
-//! hostname checking, network I/O, credential reload or TLS-policy mutation occurs.
-//! Dates and usage displays cannot establish remote acceptance or SC admission.
+//! No chain construction, hostname checking, revocation, network I/O, credential
+//! reload or TLS-policy mutation occurs. The one signature check asks whether a
+//! peer-trust certificate signed the identity leaf directly (see
+//! [`ScDirectIssuer`]); it does not build a path. Dates, usage displays and that
+//! check cannot establish remote acceptance or SC admission.
 //!
 //! Offline-only bounds: 1 MiB total input, 64 certificates, 128 KiB per DER,
 //! 64 extensions and 16 KiB interpreted extension content per certificate.
@@ -64,9 +66,13 @@ pub fn inspect_sc_pem(
     };
     let mut entries = Vec::new();
     let identity = decode_certificates(identity, ScInputRole::Identity, &mut entries, now)?;
-    if let Some(bytes) = peer_trust {
-        decode_certificates(bytes, ScInputRole::PeerTrust, &mut entries, now)?;
-    }
+    let (direct_issuer, direct_issuer_index) = match peer_trust {
+        Some(bytes) => {
+            let trust = decode_certificates(bytes, ScInputRole::PeerTrust, &mut entries, now)?;
+            direct_issuer(&identity[0], &trust)
+        }
+        None => (ScDirectIssuer::NotAssessed, None),
+    };
     let key_consistency = match private_key {
         None => ScKeyConsistency::NotAssessed,
         Some(bytes) => {
@@ -87,6 +93,8 @@ pub fn inspect_sc_pem(
         certificates: entries,
         key_consistency,
         key_file_permissions: None,
+        direct_issuer,
+        direct_issuer_index,
     })
 }
 
@@ -264,6 +272,46 @@ fn assess_time(before: i64, after: i64, now: i64) -> (ScValidity, ScExpiry) {
         }
     };
     (validity, expiry)
+}
+/// Did one of `trust` sign `leaf`, with nothing in between? A candidate is a
+/// trust certificate whose subject is byte-for-byte the leaf's issuer name; the
+/// leaf's signature must then verify with that certificate's public key. Annex
+/// AB.7.4 makes this the default peer check, so a leaf that only chains through
+/// an intermediate can be refused by a peer that holds the same CA bundle.
+fn direct_issuer(
+    leaf: &[u8],
+    trust: &[CertificateDer<'static>],
+) -> (ScDirectIssuer, Option<usize>) {
+    let parse = |der| {
+        X509CertificateParser::new()
+            .with_deep_parse_extensions(false)
+            .parse(der)
+            .ok()
+            .and_then(|(rest, cert)| rest.is_empty().then_some(cert))
+    };
+    let Some(leaf) = parse(leaf) else {
+        return (ScDirectIssuer::Unknown, None);
+    };
+    let mut undecided = false;
+    for (index, der) in trust.iter().enumerate() {
+        // A malformed trust entry is already a finding on its own entry.
+        let Some(ca) = parse(der) else { continue };
+        if ca.subject().as_raw() != leaf.issuer().as_raw() {
+            continue;
+        }
+        match leaf.verify_signature(Some(ca.public_key())) {
+            Ok(()) => return (ScDirectIssuer::Direct, Some(index)),
+            Err(X509Error::SignatureUnsupportedAlgorithm) => undecided = true,
+            // Same name, other key: a re-keyed CA or a namesake.
+            Err(_) => {}
+        }
+    }
+    let verdict = if undecided {
+        ScDirectIssuer::Unknown
+    } else {
+        ScDirectIssuer::NotDirect
+    };
+    (verdict, None)
 }
 fn compare_key(
     certs: Vec<CertificateDer<'static>>,
