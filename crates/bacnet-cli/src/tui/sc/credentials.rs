@@ -88,7 +88,7 @@ fn key_algorithm(oid: &str) -> String {
 #[cfg(feature = "sc-tls")]
 mod build {
     use super::*;
-    use crate::sc_check::lint::{Lint, Weight};
+    use crate::sc_check::lint::{Lint, Weight, SKEW_ALLOWANCE};
     use bacnet_transport::sc_tls::inspection::{
         ScDirectIssuer, ScExpiry, ScExtensionInspection, ScInputRole, ScInspectedCertificate,
         ScKeyConsistency, ScValidity,
@@ -109,6 +109,7 @@ mod build {
             (ScInputRole::Identity, i) => format!("chain {i}"),
             (_, i) => format!("CA {i}"),
         };
+        let leaf = entry.role == ScInputRole::Identity && entry.index == 0;
         let Some(meta) = &entry.metadata else {
             return Cert {
                 label,
@@ -119,18 +120,21 @@ mod build {
                 eku: String::new(),
                 not_after: String::new(),
                 window: "unreadable".into(),
-                level: Level::Failed,
+                // Only an unreadable leaf blocks a dial.
+                level: if leaf { Level::Failed } else { Level::Warning },
             };
         };
-        let leaf = entry.role == ScInputRole::Identity && entry.index == 0;
         let left = i128::from(meta.not_after_unix()) - i128::from(now);
+        let ahead = i128::from(meta.not_before_unix()) - i128::from(now);
         let (window, level) = match entry.validity {
             ScValidity::Expired => (format!("expired {} days ago", days(-left)), Level::Failed),
+            // Within the skew allowance: more likely this computer's clock.
+            ScValidity::NotYetValid if ahead <= i128::from(SKEW_ALLOWANCE) => (
+                format!("valid in {ahead} s; check this computer's clock"),
+                Level::Warning,
+            ),
             ScValidity::NotYetValid => (
-                format!(
-                    "not valid for {} more days",
-                    days(i128::from(meta.not_before_unix()) - i128::from(now))
-                ),
+                format!("not valid for {} more days", days(ahead)),
                 Level::Failed,
             ),
             ScValidity::InvalidInterval => ("ends before it starts".into(), Level::Failed),
@@ -165,7 +169,25 @@ mod build {
     impl Credentials {
         /// The view of a lint.
         pub(crate) fn from_lint(lint: &Lint) -> Self {
-            let report = &lint.report;
+            let findings = lint
+                .findings
+                .iter()
+                .filter_map(|f| match f.weight {
+                    Weight::Hard => Some((Level::Failed, f.text.clone())),
+                    Weight::Warning => Some((Level::Warning, f.text.clone())),
+                    Weight::Notice => None,
+                })
+                .collect();
+            let Some(report) = &lint.report else {
+                // Past the inspection limits: only the warning saying so.
+                return Self {
+                    inspected_at: "not inspected".into(),
+                    certificates: Vec::new(),
+                    key: (Level::Notice, "not checked".into()),
+                    issuer: (Level::Notice, "not checked".into()),
+                    findings,
+                };
+            };
             let now = report.inspected_at_unix;
             let key = match report.key_consistency {
                 ScKeyConsistency::Match => (Level::Ok, "matches the operational certificate"),
@@ -190,15 +212,6 @@ mod build {
                     "direct issuance could not be checked".into(),
                 ),
             };
-            let findings = lint
-                .findings
-                .iter()
-                .filter_map(|f| match f.weight {
-                    Weight::Hard => Some((Level::Failed, f.text.clone())),
-                    Weight::Warning => Some((Level::Warning, f.text.clone())),
-                    Weight::Notice => None,
-                })
-                .collect();
             Self {
                 inspected_at: crate::sc_check::date(now),
                 certificates: report.certificates.iter().map(|c| cert(c, now)).collect(),

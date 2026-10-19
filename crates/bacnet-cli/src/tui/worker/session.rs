@@ -211,6 +211,13 @@ fn sc_identity(args: &TransportArgs) -> Option<ScIdentity> {
 /// This node's credentials for the SC screen (#968), read by the same lint
 /// that `build_sc_client` applies next; `None` without a certificate path,
 /// which the build refuses anyway.
+///
+/// For a profile, the coordinator's `prepare` checked the files a moment
+/// earlier and the operator confirmed its warnings. This reads them again
+/// (as the build does), so a warning that appears in between is shown here
+/// and logged by the build but never confirmed. That window is accepted by
+/// design: hard failures are refused again by the build, and flags-only
+/// sessions have no `prepare` result to reuse.
 #[cfg(feature = "sc-tls")]
 fn sc_credentials(args: &TransportArgs) -> Option<Result<Credentials, String>> {
     let lint = crate::sc_check::lint::Lint::run(

@@ -1,18 +1,30 @@
 //! The pre-dial lint (#968): `bacnet sc-check`'s inspection and severities,
-//! applied to this node's own SC credentials before a hub dial.
+//! applied to this node's own SC credentials before a hub dial. It must never
+//! refuse a dial that TLS would allow, so it weighs a few findings lower than
+//! sc-check's audit severities.
 //!
-//! - Hard failures are sc-check's errors: an identity leaf that is expired,
-//!   not yet valid or has an invalid interval, an unreadable certificate, and
-//!   a key that does not match the leaf or cannot be used. Each one blocks the
-//!   dial, in the TUI and in one-shot commands alike, before any socket.
+//! - Hard failures block the dial, in the TUI and in one-shot commands alike,
+//!   before any socket: an identity leaf that is expired, has an invalid
+//!   interval, cannot be read, or starts more than [`SKEW_ALLOWANCE`] seconds
+//!   after the inspection time; a key that does not match the leaf or cannot be
+//!   used; and an input that cannot be read or decoded.
 //! - Warnings (expiry within 30 days, a leaf no bundle CA issued directly, a
-//!   key file others can read, interpretation limits) can be overridden: the
-//!   TUI asks for an explicit confirmation, one-shots log them and go on.
+//!   key file others can read, an unreadable CA or chain entry, a leaf that
+//!   starts within the skew allowance, inputs past the inspection limits, and
+//!   interpretation limits) can be overridden: the TUI asks for an explicit
+//!   confirmation, one-shots log them and go on.
 //! - Notices only record what was not assessed.
 
 use super::{projection, Diagnostic};
-use bacnet_transport::sc_tls::inspection::{inspect_sc_pem_files, ScPemInspection};
+use bacnet_transport::sc_tls::inspection::{
+    inspect_sc_pem_files, ScInputErrorKind, ScInspectionError, ScPemInspection,
+};
 use std::path::Path;
+
+/// How far in the future (seconds) the leaf's not-before may lie and still
+/// only warn: a few minutes is more likely this computer's clock than the
+/// certificate.
+pub(crate) const SKEW_ALLOWANCE: i64 = 300;
 
 /// How much a finding weighs before a dial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +51,11 @@ pub(crate) struct Finding {
 /// The inspection and its findings.
 #[derive(Debug, Clone)]
 pub(crate) struct Lint {
-    /// The transport's offline report, for the TUI's credentials view.
+    /// The transport's offline report, for the TUI's credentials view;
+    /// `None` when the inputs exceed the inspection limits.
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
-    pub(crate) report: ScPemInspection,
-    /// sc-check's diagnostics, in its order.
+    pub(crate) report: Option<ScPemInspection>,
+    /// sc-check's diagnostics, in its order, weighed for a dial.
     pub(crate) findings: Vec<Finding>,
 }
 
@@ -58,40 +71,96 @@ fn subject(diagnostic: &Diagnostic) -> String {
     }
 }
 
+/// Seconds until the leaf's not-before, when it is still ahead.
+fn starts_in(report: &ScPemInspection) -> Option<i64> {
+    let leaf = report.certificates.first()?.metadata.as_ref()?;
+    let ahead = i128::from(leaf.not_before_unix()) - i128::from(report.inspected_at_unix);
+    i64::try_from(ahead).ok().filter(|s| *s > 0)
+}
+
+/// A finding with sc-check's severity, reweighed for a dial.
+fn weigh(report: &ScPemInspection, diagnostic: Diagnostic) -> Finding {
+    let leaf = diagnostic.role == Some("identity") && diagnostic.index == Some(0);
+    let mut text = format!("{}: {}", subject(&diagnostic), diagnostic.message);
+    let weight = match (diagnostic.severity, diagnostic.code.as_str()) {
+        // The hub checks only the leaf; the TLS configuration decides about
+        // the rest of the chain and the CA file when it loads them.
+        ("error", "certificate.malformed") if !leaf => Weight::Warning,
+        ("error", "validity.not_yet_valid") if leaf => match starts_in(report) {
+            Some(secs) if secs <= SKEW_ALLOWANCE => {
+                text = format!(
+                    "{}: valid in {secs} s; check this computer's clock.",
+                    subject(&diagnostic)
+                );
+                Weight::Warning
+            }
+            _ => Weight::Hard,
+        },
+        ("error", _) => Weight::Hard,
+        ("warning", _) => Weight::Warning,
+        _ => Weight::Notice,
+    };
+    Finding {
+        weight,
+        text,
+        code: diagnostic.code,
+    }
+}
+
 impl Lint {
     /// Inspect the files at `at_unix`, or at the clock's time when `None`.
     /// An input that can't be read or decoded is an `Err`, which callers
-    /// treat as a hard failure.
+    /// treat as a hard failure. Inputs past the inspection limits (which TLS
+    /// may still accept) give a lint with one warning and no report.
     pub(crate) fn run(
         cert: &Path,
         ca: Option<&Path>,
         key: Option<&Path>,
         at_unix: Option<i64>,
     ) -> Result<Self, String> {
-        let report = inspect_sc_pem_files(cert, ca, key, at_unix).map_err(|error| {
-            let error = projection::input_error(error);
-            let mut text = format!("SC credential check could not complete: {}", error.category);
-            if let Some(role) = error.role {
-                text.push_str(&format!(" {role}"));
+        let report = match inspect_sc_pem_files(cert, ca, key, at_unix) {
+            Ok(report) => report,
+            Err(ScInspectionError::Input {
+                kind:
+                    kind @ (ScInputErrorKind::InputTooLarge
+                    | ScInputErrorKind::TooManyCertificates
+                    | ScInputErrorKind::CertificateTooLarge),
+                ..
+            }) => {
+                return Ok(Self {
+                    report: None,
+                    findings: vec![Finding {
+                        weight: Weight::Warning,
+                        code: format!("credentials.{}", kind.as_str()),
+                        text: format!(
+                            "Credentials: not assessed; the files exceed the inspection \
+                             limits ({}). TLS still checks them.",
+                            kind.as_str()
+                        ),
+                    }],
+                });
             }
-            if let Some(kind) = error.kind {
-                text.push_str(&format!(" ({kind})"));
+            Err(error) => {
+                let error = projection::input_error(error);
+                let mut text =
+                    format!("SC credential check could not complete: {}", error.category);
+                if let Some(role) = error.role {
+                    text.push_str(&format!(" {role}"));
+                }
+                if let Some(kind) = error.kind {
+                    text.push_str(&format!(" ({kind})"));
+                }
+                return Err(format!("{text}: {}", error.message));
             }
-            format!("{text}: {}", error.message)
-        })?;
+        };
         let findings = projection::diagnostics(&report)
             .into_iter()
-            .map(|diagnostic| Finding {
-                weight: match diagnostic.severity {
-                    "error" => Weight::Hard,
-                    "warning" => Weight::Warning,
-                    _ => Weight::Notice,
-                },
-                text: format!("{}: {}", subject(&diagnostic), diagnostic.message),
-                code: diagnostic.code,
-            })
+            .map(|diagnostic| weigh(&report, diagnostic))
             .collect();
-        Ok(Self { report, findings })
+        Ok(Self {
+            report: Some(report),
+            findings,
+        })
     }
 
     /// The findings of `weight`.
@@ -154,7 +223,7 @@ mod tests {
         }
         let (cert, key) = files(dir.path(), 400);
         for (at, code) in [
-            (NOW - 1, "validity.not_yet_valid"),
+            (NOW - SKEW_ALLOWANCE - 1, "validity.not_yet_valid"),
             (NOW + 401 * 86_400, "validity.expired"),
         ] {
             let lint = Lint::run(&cert, Some(&cert), Some(&key), Some(at)).unwrap();
@@ -179,5 +248,70 @@ mod tests {
         std::fs::write(&empty, "").unwrap();
         let error = Lint::run(&empty, None, None, Some(NOW)).unwrap_err();
         assert!(error.contains("empty_certificates"), "{error}");
+    }
+
+    #[test]
+    fn a_leaf_starting_within_the_skew_allowance_only_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = files(dir.path(), 400);
+        for ahead in [1, 120, SKEW_ALLOWANCE] {
+            let lint = Lint::run(&cert, Some(&cert), Some(&key), Some(NOW - ahead)).unwrap();
+            assert!(lint.refusal().is_none(), "{ahead}: {:?}", lint.findings);
+            let skew = lint
+                .of(Weight::Warning)
+                .find(|f| f.code == "validity.not_yet_valid")
+                .expect("a skew warning");
+            assert!(
+                skew.text.contains(&format!("valid in {ahead} s")),
+                "{skew:?}"
+            );
+        }
+    }
+
+    /// A self-signed CA certificate, as PEM.
+    fn ca_pem(name: &str) -> String {
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        let key = rcgen::KeyPair::generate().unwrap();
+        params.self_signed(&key).unwrap().pem()
+    }
+
+    #[test]
+    fn an_unreadable_ca_entry_beside_a_good_one_only_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = files(dir.path(), 400);
+        let bundle = dir.path().join("bundle.pem");
+        let malformed = "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n";
+        let good = std::fs::read_to_string(&cert).unwrap();
+        std::fs::write(&bundle, format!("{good}{malformed}")).unwrap();
+        let lint = Lint::run(&cert, Some(&bundle), Some(&key), Some(NOW)).unwrap();
+        assert!(lint.refusal().is_none(), "{:?}", lint.findings);
+        assert!(codes(&lint, Weight::Warning).contains(&"certificate.malformed"));
+        // The leaf itself unreadable stays hard.
+        let lint = Lint::run(&bundle, Some(&cert), None, Some(NOW)).unwrap();
+        assert!(lint.refusal().is_none(), "the chain entry only warns");
+        let leaf_bad = dir.path().join("leaf-bad.pem");
+        std::fs::write(&leaf_bad, format!("{malformed}{good}")).unwrap();
+        let lint = Lint::run(&leaf_bad, Some(&cert), None, Some(NOW)).unwrap();
+        assert_eq!(codes(&lint, Weight::Hard), ["certificate.malformed"]);
+    }
+
+    #[test]
+    fn inputs_past_the_inspection_limits_warn_instead_of_refusing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = files(dir.path(), 400);
+        let bundle = dir.path().join("big-bundle.pem");
+        let cas: String = (0..64).map(|i| ca_pem(&format!("CA {i}"))).collect();
+        std::fs::write(&bundle, cas).unwrap();
+        let lint = Lint::run(&cert, Some(&bundle), Some(&key), Some(NOW)).unwrap();
+        assert!(lint.report.is_none());
+        assert!(lint.refusal().is_none());
+        assert_eq!(
+            codes(&lint, Weight::Warning),
+            ["credentials.too_many_certificates"]
+        );
     }
 }

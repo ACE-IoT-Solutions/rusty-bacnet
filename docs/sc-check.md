@@ -195,24 +195,41 @@ Every BACnet/SC client build runs these checks on its `--sc-cert`, `--sc-ca` and
 lookup or TCP connection. One-shot commands, the shell and the TUI all go
 through it.
 
+The lint never refuses what the TLS configuration would accept, so a few of
+this command's errors weigh less before a dial than in its own report, which
+keeps them as errors for auditing.
+
 - **Hard failures block the dial**, with the reason on stderr (or on the TUI's
-  connection preview and SC screen). They are this command's errors: an identity
-  leaf that is expired, not yet valid or has its dates reversed; a certificate
-  that cannot be read; a key that does not match the leaf or cannot be used; and
+  connection preview and SC screen): an identity leaf that is expired, has its
+  dates reversed, cannot be read, or starts more than five minutes after this
+  computer's clock; a key that does not match the leaf or cannot be used; and
   an input that cannot be read or decoded. There is no override: a hub would
   refuse those credentials anyway, later and with a vaguer error.
-- **Warnings** are this command's warnings: expiry within 30 days (`expiry.warning`)
-  or 7 days (`expiry.alarm`), a leaf no trust-file CA issued directly
-  (`issuer.not_direct`), a key file others can read, and interpretation limits.
+- **Warnings** are this command's warnings, plus those reweighed errors:
+  expiry within 30 days (`expiry.warning`) or 7 days (`expiry.alarm`), a leaf
+  no trust-file CA issued directly (`issuer.not_direct`), a key file others can
+  read, interpretation limits, a leaf that starts at most five minutes ahead
+  (likely clock skew), an unreadable CA-file or chain entry (the TLS
+  configuration decides about those when it loads them), and files past the
+  inspection limits above (`credentials.too_many_certificates` and the like:
+  not assessed, still checked by TLS).
   - In the TUI, a profile with warnings connects only after `y` on the preview
     accepts the warnings shown. The check runs again just before the dial; a
     warning that was not on the preview (a file changed meanwhile) refuses the
-    connection until it is reviewed.
-  - One-shot commands and the shell log each warning on stderr and dial. A
-    non-interactive script should not start failing a month before a renewal,
-    so there is no flag: run `bacnet sc-check` in monitoring when the warnings
-    themselves matter, and act on its exit status or JSON.
+    connection until it is reviewed. The client build reads the files once
+    more; a warning that first appears at that point is only logged.
+  - One-shot commands and the shell log each warning on stderr and dial. With
+    `--format json` or `--json` these are log lines on stderr beside the JSON
+    result on stdout, never part of it. A non-interactive script should not
+    start failing a month before a renewal, so there is no flag: run
+    `bacnet sc-check` in monitoring when the warnings themselves matter, and
+    act on its exit status or JSON.
 - Notices (what was not assessed) are not shown before a dial.
+
+The direct-issuer check verifies the leaf's signature with any algorithm the
+signature library knows, SHA-1 included. A SHA-1-signed leaf can therefore
+report `direct` here although a WebPKI-based peer, this stack's hub among
+them, refuses SHA-1 signatures.
 
 The TUI's SC screen (`5`, then Tab) has a **My credentials** view with the
 inventory the last dial used: each certificate's subject, issuer, key

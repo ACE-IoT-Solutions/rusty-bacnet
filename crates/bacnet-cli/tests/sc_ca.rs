@@ -163,6 +163,36 @@ async fn expired_and_future_leaves_are_refused_before_any_dial() {
     }
 }
 
+/// A CA file past the lint's inspection limits (here 65 CAs) is one the
+/// TLS configuration accepts: the lint warns that it did not assess it and
+/// the command still dials (#968).
+#[tokio::test]
+async fn a_ca_file_past_the_lint_limits_still_dials() {
+    let site = Site::new();
+    let leaf = site.leaf("cli", ExtendedKeyUsagePurpose::ClientAuth, None);
+    let files = Files::new();
+    let mut bundle = site.ca.pem();
+    for _ in 0..64 {
+        bundle.push_str(&Site::new().ca.pem());
+    }
+    let ca = files.write("big bundle.pem", bundle);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("wss://{}", listener.local_addr().unwrap());
+    let mut cmd = cli(&files, &url, &leaf);
+    cmd.arg("--sc-ca").arg(ca);
+    let (output, ()) = tokio::join!(
+        Process::spawn(read(&mut cmd)).output(),
+        bounded(async {
+            drop(listener.accept().await.unwrap());
+        })
+    );
+    failure(&output, "TLS handshake");
+    failure(
+        &output,
+        "not assessed; the files exceed the inspection limits",
+    );
+}
+
 #[tokio::test]
 async fn missing_operational_credentials_and_identities_still_fail_locally() {
     // Every file is absent: identity/presence validation must win over file I/O.

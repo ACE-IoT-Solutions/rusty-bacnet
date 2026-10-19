@@ -262,8 +262,12 @@ mod tests {
                 .refusal()
                 .unwrap_err()
                 .contains("Operational certificate"));
-            let early = inspect_at(&p, Some(NOW - 60));
+            let early = inspect_at(&p, Some(NOW - 3_600));
             assert_eq!(early.errors.len(), 1, "{early:?}");
+            // A minute early is likely clock skew: a warning to confirm.
+            let skewed = inspect_at(&p, Some(NOW - 60));
+            assert!(skewed.errors.is_empty(), "{skewed:?}");
+            assert!(skewed.warnings[0].contains("valid in 60 s"), "{skewed:?}");
             let other = rcgen::KeyPair::generate().unwrap();
             let mismatched = inspect_at(&profile(dir.path(), &cert, &other, &[&site]), Some(NOW));
             assert_eq!(mismatched.errors.len(), 1, "{mismatched:?}");
