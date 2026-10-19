@@ -240,6 +240,10 @@ pub(super) struct NodeHandle {
     state: Mutex<NodeState>,
     /// Tells the driver that the node changed.
     wake: Notify,
+    /// Runs once in a broadcast send, between the link's decision and the
+    /// node's admission: where a test moves the node.
+    #[cfg(test)]
+    pub(super) before_admit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl NodeHandle {
@@ -276,6 +280,8 @@ impl NodeHandle {
                 stopped: false,
             }),
             wake: Notify::new(),
+            #[cfg(test)]
+            before_admit: Mutex::new(None),
         };
         Ok(handle)
     }
@@ -284,6 +290,11 @@ impl NodeHandle {
     /// so no lock is held while the caller decides on it.
     pub(super) fn link(&self) -> Link {
         *self.link.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether [`stop`](Self::stop) has run.
+    pub(super) fn is_stopped(&self) -> bool {
+        self.lock().stopped
     }
 
     /// Whether this node, a foreign device, would take `foreign` as its
@@ -385,11 +396,14 @@ impl NodeHandle {
     }
 
     /// Whether a foreign device's broadcast of `npdu` goes now, from the
-    /// caller. Otherwise the node keeps it: held until it releases or drops
-    /// it, or queued behind released broadcasts the driver hasn't sent yet,
-    /// so that broadcasts go in the order they were made. That queue takes
-    /// as many as the hold; one more is refused and counted as a full hold.
-    pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<bool, Error> {
+    /// caller, and on which link: the one the node decided under, which a
+    /// move to another BBMD may have changed since the caller read it
+    /// (#1825). Otherwise (`None`) the node keeps it: held until it
+    /// releases or drops it, or queued behind released broadcasts the
+    /// driver hasn't sent yet, so that broadcasts go in the order they were
+    /// made. That queue takes as many as the hold; one more is refused and
+    /// counted as a full hold.
+    pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<Option<Link>, Error> {
         self.with(|state, now| {
             let admission = state
                 .node
@@ -410,9 +424,9 @@ impl NodeHandle {
                     }
                     state.queued.push(copy());
                 }
-                Admission::Send => return Ok(true),
+                Admission::Send => return Ok(Some(*state.node.link())),
             }
-            Ok(false)
+            Ok(None)
         })
     }
 

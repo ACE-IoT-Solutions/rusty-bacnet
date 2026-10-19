@@ -68,6 +68,9 @@ impl BbmdTables for Tables {
         }
         Ok(())
     }
+    fn can_change(&self) -> bool {
+        true
+    }
 }
 
 fn oid() -> ObjectIdentifier {

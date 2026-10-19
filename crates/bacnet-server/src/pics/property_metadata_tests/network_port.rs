@@ -237,3 +237,99 @@ fn pics_network_port_lists_the_rows_its_bip_mode_adds() {
         }
     }
 }
+
+/// A BBMD's tables and a foreign device's registration that take written
+/// values, or don't.
+struct Views(bool);
+impl bacnet_types::bip_port::BbmdTables for Views {
+    fn broadcast_distribution_table(&self) -> Vec<bacnet_types::constructed::BACnetBDTEntry> {
+        Vec::new()
+    }
+    fn accepts_foreign_device_registrations(&self) -> bool {
+        false
+    }
+    fn foreign_device_table(&self) -> Vec<bacnet_types::constructed::BACnetFDTEntry> {
+        Vec::new()
+    }
+    fn can_change(&self) -> bool {
+        self.0
+    }
+}
+impl bacnet_types::bip_port::ForeignRegistration for Views {
+    fn bbmd(&self) -> bacnet_types::constructed::BACnetHostNPort {
+        bacnet_types::constructed::BACnetHostNPort::from_socket_addr(
+            "10.0.0.1:47808".parse().unwrap(),
+        )
+    }
+    fn subscription_lifetime(&self) -> u16 {
+        300
+    }
+    fn can_change(&self) -> bool {
+        self.0
+    }
+}
+
+/// The pending-activation rows are writable in the PICS only when the
+/// server activates changes and the transport's view takes them (#1825):
+/// a view that can't change, behind a reinitialize handler, stays read-only.
+#[test]
+fn pics_lists_the_pending_rows_writable_only_when_their_view_can_change() {
+    use bacnet_types::bip_port::BipPortMode;
+    use std::sync::Arc;
+    for can_change in [false, true] {
+        for activation in [false, true] {
+            let writable = can_change && activation;
+            for (mode, rows) in [
+                (
+                    BipPortMode::Bbmd {
+                        tables: Some(Arc::new(Views(can_change))),
+                    },
+                    [
+                        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+                        P::BBMD_ACCEPT_FD_REGISTRATIONS,
+                    ],
+                ),
+                (
+                    BipPortMode::Foreign {
+                        registration: Arc::new(Views(can_change)),
+                    },
+                    [P::FD_BBMD_ADDRESS, P::FD_SUBSCRIPTION_LIFETIME],
+                ),
+            ] {
+                let oid = ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1).unwrap();
+                let mut db = ObjectDatabase::new();
+                db.add(Box::new(
+                    NetworkPortObject::new_bip(
+                        1,
+                        "NP-1",
+                        bacnet_objects::network_port::BipPortConfig {
+                            ip_address: [127, 0, 0, 1],
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+                let (_, _lease) = db
+                    .reserve_bip_port_internal(oid, [127, 0, 0, 1], 47808)
+                    .unwrap();
+                db.publish_bip_port_internal(oid, [127, 0, 0, 1], 47808, 1476, mode)
+                    .unwrap();
+                db.set_network_port_activation_internal(oid, activation)
+                    .unwrap();
+                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+                let listed = &pics.supported_object_types[0].supported_properties;
+                for property in rows {
+                    let row = listed
+                        .iter()
+                        .find(|row| row.property_id == property)
+                        .unwrap();
+                    assert_eq!(
+                        row.access.writable, writable,
+                        "{property}, can_change {can_change}, activation {activation}"
+                    );
+                }
+            }
+        }
+    }
+}

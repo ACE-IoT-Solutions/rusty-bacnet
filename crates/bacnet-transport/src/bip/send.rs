@@ -43,7 +43,7 @@ impl NodeHandle {
         forwarder: Option<&OwnBroadcastForwarder>,
     ) -> Result<(), Error> {
         let link = self.link();
-        let (outgoing, forward_own) = link
+        let (mut outgoing, forward_own) = link
             .broadcast(npdu)
             .map_err(|refusal| self.refuse_send(refusal))?;
 
@@ -51,11 +51,33 @@ impl NodeHandle {
         encode_bvll(&mut buf, &outgoing.message)?;
 
         // A foreign device asks its node first, which holds the broadcast
-        // while the first registration attempt after a start is outstanding,
-        // refuses it when that hold is full (#1622), and queues it behind
-        // released broadcasts its driver hasn't sent yet.
-        if matches!(link.mode, Mode::Foreign(_)) && !self.admit_broadcast(npdu)? {
-            return Ok(());
+        // while the first registration attempt after a start or a move to
+        // another BBMD is outstanding, refuses it when that hold is full
+        // (#1622), and queues it behind released broadcasts its driver
+        // hasn't sent yet. A broadcast it sends goes on the link it decided
+        // under: a move since the copy above sends it to the new BBMD.
+        if matches!(link.mode, Mode::Foreign(_)) {
+            #[cfg(test)]
+            if let Some(hook) = self
+                .before_admit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                hook();
+            }
+            match self.admit_broadcast(npdu)? {
+                None => return Ok(()),
+                Some(decided) if decided != link => {
+                    outgoing = decided
+                        .broadcast(npdu)
+                        .map_err(|refusal| self.refuse_send(refusal))?
+                        .0;
+                    buf.clear();
+                    encode_bvll(&mut buf, &outgoing.message)?;
+                }
+                Some(_) => {}
+            }
         }
 
         // The fanout is queued first, so its targets are fixed before the

@@ -92,9 +92,11 @@ impl BbmdTables for LiveTables {
         lock(&self.state).check_written_bdt(table)
     }
 
-    /// A new BDT is saved to the persisted-BDT file once it is in effect,
-    /// outside the BBMD lock; a failed save is logged and counted and
-    /// doesn't undo the activation.
+    /// A new BDT is saved to the persisted-BDT file once it is in effect.
+    /// Only the activation and taking the rows happen under the locks the
+    /// caller and this view hold; the file is written on a blocking thread
+    /// afterwards. A failed save is logged and counted and doesn't undo the
+    /// activation.
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
         let file = self
             .file
@@ -103,13 +105,16 @@ impl BbmdTables for LiveTables {
         let Some(file) = file else {
             return lock(&self.state).activate(changes);
         };
-        let _order = file.order();
-        let rows = {
+        let (generation, rows) = {
             let mut state = lock(&self.state);
             state.activate(changes)?;
-            state.configured_bdt()
+            (file.next_generation(), state.configured_bdt())
         };
-        file.save(&rows);
+        file.save_later(generation, rows);
         Ok(())
+    }
+
+    fn can_change(&self) -> bool {
+        true
     }
 }

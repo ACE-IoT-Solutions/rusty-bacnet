@@ -53,6 +53,16 @@ impl LiveMode {
         })
     }
 
+    /// Whether the transport behind this mode takes written values, so its
+    /// pending-activation rows are writable at all.
+    pub(super) fn can_change(&self) -> bool {
+        match self {
+            Self::Normal => false,
+            Self::Foreign(registration) => registration.can_change(),
+            Self::Bbmd(tables) => tables.can_change(),
+        }
+    }
+
     pub(super) fn ip_mode(&self) -> IPMode {
         match self {
             Self::Normal => IPMode::NORMAL,

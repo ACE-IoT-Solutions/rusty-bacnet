@@ -7,12 +7,15 @@
 //! written and again before a ReinitializeDevice handler runs; once
 //! activated, the running node registers with the new BBMD from then on
 //! ([`NodeHandle::retarget`]), and a later start uses the new values too.
+//! Only a running transport takes a change: its node knows its own bound
+//! address, which a new BBMD must not be, and a stopped one doesn't.
 //!
 //! Lock order: the object database (held by the caller), then this
 //! target's lock, then the node's. No lock here is held across an await.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 use bacnet_types::bip_port::{ForeignDeviceChanges, ForeignRegistration};
 use bacnet_types::constructed::{BACnetHostAddress, BACnetHostNPort};
@@ -38,6 +41,15 @@ pub(crate) struct ForeignTarget {
     /// BBMD is checked as at start ([`ForeignDeviceConfig::check_bbmd`]).
     broadcast: Ipv4Addr,
     interface: Ipv4Addr,
+}
+
+/// The refusal of a change while no node runs: nothing could check it
+/// against the device's own address, or put it into effect.
+fn not_running() -> Error {
+    Error::Protocol {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::WRITE_ACCESS_DENIED,
+    }
 }
 
 /// The WriteProperty refusal of a value the foreign device can't register
@@ -98,13 +110,20 @@ impl ForeignTarget {
         Ok(())
     }
 
-    /// The registration `changes` would make, checked as a start checks
-    /// one, and against the running node's own address. Changes nothing.
+    /// The running node: attached, and not stopped.
+    fn running(state: &TargetState) -> Option<Arc<NodeHandle>> {
+        state.node.upgrade().filter(|node| !node.is_stopped())
+    }
+
+    /// The registration `changes` would make on the running node, checked
+    /// as a start checks one, and against the node's own address. Changes
+    /// nothing.
     fn changed(
         &self,
         state: &TargetState,
         changes: &ForeignDeviceChanges,
-    ) -> Result<ForeignDeviceConfig, Error> {
+    ) -> Result<(Arc<NodeHandle>, ForeignDeviceConfig), Error> {
+        let node = Self::running(state).ok_or_else(not_running)?;
         let mut config = state.config.clone();
         if let Some(bbmd) = &changes.bbmd {
             // A B/IP address: an IPv4 host and a port. This device resolves
@@ -118,18 +137,22 @@ impl ForeignTarget {
         }
         if let Some(ttl) = changes.subscription_lifetime {
             config.ttl = ttl;
+            // A client can't see the configured renewal interval, so a new
+            // lifetime cuts it to half the lifetime rather than being
+            // refused for it.
+            let half = Duration::from_secs(ttl.into()) / 2;
+            if let Some(renewal) = &mut config.renewal_interval {
+                *renewal = (*renewal).min(half);
+            }
         }
-        // A zero time-to-live, or one the configured renewal interval
-        // doesn't fit under, is refused as at start.
+        // A zero time-to-live is refused, as at start.
         let interval = config.interval().map_err(|_| out_of_range())?;
         config
             .check_bbmd(self.broadcast, self.interface)
             .map_err(|_| out_of_range())?;
-        if let Some(node) = state.node.upgrade() {
-            node.check_retarget(config.engine(interval))
-                .map_err(|_| out_of_range())?;
-        }
-        Ok(config)
+        node.check_retarget(config.engine(interval))
+            .map_err(|_| out_of_range())?;
+        Ok((node, config))
     }
 }
 
@@ -153,15 +176,16 @@ impl ForeignRegistration for ForeignTarget {
 
     fn activate(&self, changes: &ForeignDeviceChanges) -> Result<(), Error> {
         let mut state = self.lock();
-        let config = self.changed(&state, changes)?;
-        // With no node running, the next start takes the new values.
-        if let Some(node) = state.node.upgrade() {
-            let interval = config.interval().map_err(|_| out_of_range())?;
-            node.retarget(config.engine(interval))
-                .map_err(|_| out_of_range())?;
-        }
+        let (node, config) = self.changed(&state, changes)?;
+        let interval = config.interval().map_err(|_| out_of_range())?;
+        node.retarget(config.engine(interval))
+            .map_err(|_| out_of_range())?;
         state.config = config;
         Ok(())
+    }
+
+    fn can_change(&self) -> bool {
+        true
     }
 }
 

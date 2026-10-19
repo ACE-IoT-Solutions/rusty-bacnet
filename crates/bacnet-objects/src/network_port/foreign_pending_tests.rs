@@ -80,6 +80,9 @@ impl ForeignRegistration for Registration {
         }
         Ok(())
     }
+    fn can_change(&self) -> bool {
+        true
+    }
 }
 
 fn oid() -> ObjectIdentifier {

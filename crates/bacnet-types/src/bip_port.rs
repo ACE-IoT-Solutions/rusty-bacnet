@@ -62,6 +62,15 @@ pub trait BbmdTables: Send + Sync {
         let _ = changes;
         Err(write_access_denied())
     }
+
+    /// Whether written values can take effect at all, so the rows are
+    /// writable: `true` for a view that implements
+    /// [`check_broadcast_distribution_table`](Self::check_broadcast_distribution_table)
+    /// and [`activate`](Self::activate). The default, `false`, lists the
+    /// rows read-only and refuses writes to them.
+    fn can_change(&self) -> bool {
+        false
+    }
 }
 
 /// Values written to a BBMD's Network Port properties and not yet in effect
@@ -117,6 +126,14 @@ pub trait ForeignRegistration: Send + Sync {
     fn activate(&self, changes: &ForeignDeviceChanges) -> Result<(), Error> {
         let _ = changes;
         Err(write_access_denied())
+    }
+
+    /// Whether written values can take effect at all, so the rows are
+    /// writable: `true` for a view that implements [`check`](Self::check)
+    /// and [`activate`](Self::activate). The default, `false`, lists the
+    /// rows read-only and refuses writes to them.
+    fn can_change(&self) -> bool {
+        false
     }
 }
 

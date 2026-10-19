@@ -3674,8 +3674,9 @@ writes, set Changes_Pending, and take effect on an accepted ACTIVATE_CHANGES or
 WARMSTART (#1578, #1566). A foreign device's FD_BBMD_Address (an IPv4
 `BACnetHostNPort`, written as `PropertyValue.application_data`) and
 FD_Subscription_Lifetime do the same (#1825): once activated, the next
-registration goes to the new BBMD with the new time-to-live. Without one nothing could activate a written value,
-so those writes raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
+registration goes to the new BBMD with the new time-to-live. Without an
+`on_reinitialize` handler nothing could activate a written value, so writes
+to these rows raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
 Changes_Pending stays FALSE. Local Network Number behavior
 is described below; complete Network Port conformance and multiport routing
 remain outside this registration contract.

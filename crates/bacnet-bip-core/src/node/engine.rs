@@ -603,7 +603,10 @@ impl<const X: usize> Node<X> {
     /// [`poll_action`](Node::poll_action) hands out. The automatic attempt
     /// in flight ends as cancelled, so a late answer to it counts as
     /// unmatched. A lease proven by the same BBMD stands, since its entry
-    /// does; one from another BBMD is dropped. Manual exchanges carry on.
+    /// does; one from another BBMD is dropped, and broadcasts are held
+    /// again, as at start, until that BBMD's first answer
+    /// ([`admit_broadcast`](Node::admit_broadcast)). Manual exchanges carry
+    /// on.
     ///
     /// Refused, changing nothing, outside foreign mode
     /// ([`ConfigError::NotForeign`]) or with a registration

@@ -5,6 +5,7 @@ use super::*;
 use bacnet_types::bip_port::ForeignDeviceChanges;
 use bacnet_types::constructed::{BACnetHostAddress, BACnetHostNPort};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use std::net::SocketAddrV4;
 
 /// Real loopback: generous, since nothing in these tests waits on a timer
 /// (the 60 s time-to-live renews at 30 s).
@@ -122,12 +123,19 @@ async fn activation_sends_the_next_registration_to_the_new_bbmd_with_the_new_ttl
     assert_eq!(registered.accepted, 2);
     // Broadcasts follow: the link the send path reads moved too.
     transport.send_broadcast(&[0x01, 0x00]).await.unwrap();
-    let mut packet = [0; 64];
-    let (len, _) = tokio::time::timeout(WAIT, second.recv_from(&mut packet))
-        .await
-        .expect("a distributed broadcast")
-        .unwrap();
-    assert_eq!(&packet[..len], &[0x81, 0x09, 0, 6, 0x01, 0x00]);
+    // A retried registration on a slow runner may come first; skip it.
+    tokio::time::timeout(WAIT, async {
+        let mut packet = [0; 64];
+        loop {
+            let (len, _) = second.recv_from(&mut packet).await.unwrap();
+            if packet[1] == 0x09 {
+                assert_eq!(&packet[..len], &[0x81, 0x09, 0, 6, 0x01, 0x00]);
+                return;
+            }
+        }
+    })
+    .await
+    .expect("a distributed broadcast");
 
     // A restart keeps the values it moved to.
     transport.stop().await.unwrap();
@@ -203,40 +211,115 @@ async fn a_refused_value_leaves_the_registration_untouched() {
     transport.stop().await.unwrap();
 }
 
-/// A renewal interval set for the old time-to-live stays, and a lifetime it
-/// doesn't fit under is refused rather than quietly changing it.
+/// A client can't see the configured renewal interval, so a lifetime it
+/// doesn't fit under cuts it to half the lifetime instead of being refused.
 #[tokio::test]
-async fn a_lifetime_shorter_than_the_configured_renewal_is_refused() {
+async fn a_lifetime_shorter_than_the_configured_renewal_cuts_the_renewal() {
     let first = bbmd().await;
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let mut config = foreign_to(&first, 60);
     config.renewal_interval = Some(Duration::from_secs(20));
     transport.register_as_foreign_device(config);
+    let _rx = transport.start().await.unwrap();
     let view = lent(&transport);
-    assert!(is_out_of_range(
-        &view.check(&changes(None, Some(20))).unwrap_err()
-    ));
-    view.check(&changes(None, Some(21))).unwrap();
+    view.activate(&changes(None, Some(100))).unwrap();
+    let kept = transport.foreign_device_config().unwrap();
+    assert_eq!(kept.renewal_interval, Some(Duration::from_secs(20)));
+    view.activate(&changes(None, Some(20))).unwrap();
+    let cut = transport.foreign_device_config().unwrap();
+    assert_eq!(
+        (cut.ttl, cut.renewal_interval),
+        (20, Some(Duration::from_secs(10)))
+    );
+    transport.stop().await.unwrap();
 }
 
-/// Moved before it starts, the device registers at the new BBMD from its
-/// first attempt.
+/// Only a running transport takes a change: a stopped one couldn't check a
+/// new BBMD against its own address, so the change is refused and nothing
+/// moves.
 #[tokio::test]
-async fn a_move_before_start_is_the_first_registration() {
+async fn a_change_needs_a_running_transport() {
     let (first, second) = (bbmd().await, bbmd().await);
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     transport.register_as_foreign_device(foreign_to(&first, 60));
-    lent(&transport)
-        .activate(&changes(Some(address_of(&second)), Some(90)))
-        .unwrap();
+    let moved = changes(Some(address_of(&second)), Some(90));
+    let refused = |error: Error| {
+        assert!(
+            matches!(error, Error::Protocol { class, code }
+                if class == ErrorClass::PROPERTY && code == ErrorCode::WRITE_ACCESS_DENIED),
+            "{error:?}"
+        );
+    };
+    refused(lent(&transport).check(&moved).unwrap_err());
+    refused(lent(&transport).activate(&moved).unwrap_err());
     let _rx = transport.start().await.unwrap();
-    assert_eq!(registration(&second).await.0, 90);
-    // That was the only attempt: none went to the old BBMD.
-    let status = transport.bvlc_client_snapshot().foreign_registration;
-    assert_eq!(status.attempts, 1);
-    assert_eq!(
-        status.last_bbmd.map(std::net::SocketAddr::V4),
-        Some(second.local_addr().unwrap())
-    );
+    assert_eq!(registration(&first).await.0, 60);
     transport.stop().await.unwrap();
+    refused(lent(&transport).activate(&moved).unwrap_err());
+    assert_eq!(
+        transport.foreign_device_config(),
+        Some(foreign_to(&first, 60))
+    );
+}
+
+/// A registration changed between a start's read of it and the node's
+/// attachment goes to the node at once.
+#[tokio::test]
+async fn a_change_racing_a_start_reaches_the_new_node() {
+    let (first, second) = (bbmd().await, bbmd().await);
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    transport.register_as_foreign_device(foreign_to(&first, 60));
+    let _rx = transport.start().await.unwrap();
+    registration(&first).await;
+    let target = Arc::clone(transport.foreign_device.as_ref().unwrap());
+    let node = Arc::clone(transport.node.as_ref().unwrap());
+    // As if the node had been built from the first BBMD's configuration
+    // while an activation moved it to the second.
+    target.edit(|config| *config = foreign_to(&second, 90));
+    target.attach(&node, &foreign_to(&first, 60)).unwrap();
+    assert_eq!(registration(&second).await.0, 90);
+    transport.stop().await.unwrap();
+}
+
+/// A broadcast whose link was read before a move goes to the BBMD the node
+/// decided under, not the one it was encoded for.
+#[tokio::test]
+async fn a_broadcast_racing_a_move_goes_to_the_new_bbmd() {
+    let sink = send_sink::SendSink::default();
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let own = match socket.local_addr().unwrap() {
+        std::net::SocketAddr::V4(own) => own,
+        other => panic!("{other}"),
+    };
+    let socket = Arc::new(BipSocket::recording(socket, sink.clone()));
+    // No hold, so the broadcast is sent at once after the move too.
+    let foreign = |port| {
+        let config = ForeignDeviceConfig {
+            bbmd_ip: Ipv4Addr::LOCALHOST,
+            bbmd_port: port,
+            ttl: 60,
+            renewal_interval: None,
+        };
+        let mut engine = config.engine(config.interval().unwrap());
+        engine.hold = 0;
+        engine
+    };
+    let link = test_support::test_link(
+        own,
+        own,
+        bacnet_bip_core::node::Mode::Foreign(foreign(47901)),
+    );
+    let node =
+        Arc::new(node::NodeHandle::new(link, socket, Arc::default(), Arc::default()).unwrap());
+    let mover = Arc::clone(&node);
+    *node.before_admit.lock().unwrap() = Some(Box::new(move || {
+        mover.retarget(foreign(47902)).unwrap();
+    }));
+    node.send_broadcast(&[0x01, 0x00], None).await.unwrap();
+    let sent = sink.take();
+    let broadcast = sent
+        .iter()
+        .find(|sent| sent.bytes.get(1) == Some(&0x09))
+        .expect("the broadcast");
+    assert_eq!(broadcast.to, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47902));
 }

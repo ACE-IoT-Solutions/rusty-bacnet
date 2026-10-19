@@ -248,3 +248,51 @@ fn a_port_sends_the_moved_registration_and_refuses_what_its_slots_cant_hold() {
         [(NEW_BBMD, wire(Bvll::DistributeBroadcastToNetwork(NPDU)))]
     );
 }
+
+/// A move to another BBMD holds broadcasts again until it answers, since it
+/// has no registration for the device yet and would refuse to distribute
+/// them (Annex J.4.5); a new lifetime at the same BBMD doesn't.
+#[test]
+fn a_move_to_another_bbmd_holds_broadcasts_until_it_answers() {
+    let holding = |bbmd| with(Foreign::new(bbmd, 60), |f| f.hold = 2);
+    let mut node = start(holding(BBMD));
+    sent_attempt(&mut node, at(0)).unwrap();
+    let success = result(SUCCESS);
+    says(&mut node, &success, BBMD, at(10));
+    drain(&mut node);
+    assert_eq!(node.admit_broadcast(at(20)), Ok(Admission::Send));
+
+    node.retarget(with(holding(BBMD), |f| f.ttl = 120), at(30))
+        .unwrap();
+    sent_attempt(&mut node, at(30)).unwrap();
+    assert_eq!(node.admit_broadcast(at(31)), Ok(Admission::Send));
+
+    node.retarget(holding(NEW_BBMD), at(40)).unwrap();
+    sent_attempt(&mut node, at(40)).unwrap();
+    assert_eq!(node.admit_broadcast(at(41)), Ok(Admission::Hold));
+    says(&mut node, &success, NEW_BBMD, at(50));
+    assert!(drain(&mut node).contains(&Action::ReleaseHeld));
+    assert_eq!(node.admit_broadcast(at(51)), Ok(Admission::Send));
+}
+
+/// A smaller hold than the broadcasts already held keeps them all.
+#[test]
+fn a_smaller_hold_keeps_the_broadcasts_already_held() {
+    let mut node = start(with(foreign(), |f| f.hold = 2));
+    sent_attempt(&mut node, at(0)).unwrap();
+    for millis in [1, 2] {
+        assert_eq!(node.admit_broadcast(at(millis)), Ok(Admission::Hold));
+    }
+    node.retarget(with(Foreign::new(NEW_BBMD, 60), |f| f.hold = 1), at(3))
+        .unwrap();
+    sent_attempt(&mut node, at(3)).unwrap();
+    assert_eq!(node.registration(at(3)).unwrap().held, 2);
+    assert_eq!(
+        node.admit_broadcast(at(4)),
+        Err(bacnet_bip_core::node::SendRefusal::HoldFull)
+    );
+    let success = result(SUCCESS);
+    says(&mut node, &success, NEW_BBMD, at(13));
+    assert!(drain(&mut node).contains(&Action::ReleaseHeld));
+    assert_eq!(node.take_counters().broadcasts_released, 2);
+}

@@ -63,6 +63,28 @@ fn tables(transport: &BipTransport) -> Arc<dyn BbmdTables> {
     }
 }
 
+/// Wait until `count` saves of `transport`'s file have finished: they run
+/// on blocking threads once the activation returns.
+async fn saved(transport: &BipTransport, count: u64) {
+    let file = Arc::clone(transport.bdt_file.as_ref().unwrap());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while file.finished() < count {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the save finished");
+}
+
+/// The temporary files left in `dir`.
+fn temporaries(dir: &TempDir) -> Vec<PathBuf> {
+    fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+        .collect()
+}
+
 fn bdt_changes(table: Vec<BACnetBDTEntry>) -> BbmdChanges {
     let mut changes = BbmdChanges::default();
     changes.broadcast_distribution_table = Some(table);
@@ -94,6 +116,7 @@ async fn an_activated_bdt_is_saved_and_a_restart_loads_it() {
         .activate(&bdt_changes(table.clone()))
         .unwrap();
     assert_eq!(tables(&transport).broadcast_distribution_table(), table);
+    saved(&transport, 1).await;
     let mut expected = BytesMut::new();
     let rows = [
         bbmd::BdtEntry {
@@ -110,7 +133,7 @@ async fn an_activated_bdt_is_saved_and_a_restart_loads_it() {
     bbmd::encode_bdt_entries(&rows, &mut expected);
     assert_eq!(fs::read(&path).unwrap(), expected.to_vec());
     assert!(
-        !dir.file("bdt.bin.tmp").exists(),
+        temporaries(&dir).is_empty(),
         "the temporary file is renamed"
     );
     assert_eq!(transport.bdt_persist_failures(), 0);
@@ -135,6 +158,7 @@ async fn a_failed_save_is_counted_and_keeps_the_activation() {
     let mut transport = bbmd_at(&path).await;
     let table = vec![row([10, 0, 0, 3], 0xBAC0)];
     tables(&transport).activate(&bdt_changes(table)).unwrap();
+    saved(&transport, 1).await;
     assert_eq!(transport.bdt_persist_failures(), 1);
     assert!(!path.exists());
     let in_use = tables(&transport).broadcast_distribution_table();
@@ -155,13 +179,56 @@ async fn a_shorter_bdt_replaces_the_file_whole() {
         row([10, 0, 0, 3], 0xBAC0),
     ]))
     .unwrap();
+    saved(&transport, 1).await;
     let long = fs::read(&path).unwrap().len();
     view.activate(&bdt_changes(vec![row([10, 0, 0, 4], 0xBAC0)]))
         .unwrap();
+    saved(&transport, 2).await;
     let short = fs::read(&path).unwrap();
     assert!(short.len() < long);
     let saved = BbmdState::decode_bdt(&short).unwrap();
     assert!(saved.iter().any(|entry| entry.ip == [10, 0, 0, 4]));
     assert!(!saved.iter().any(|entry| entry.ip == [10, 0, 0, 2]));
     transport.stop().await.unwrap();
+}
+
+/// Activations whose saves race: whichever thread runs last, the file ends
+/// up with the newest table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn racing_saves_leave_the_newest_table() {
+    let dir = TempDir::new("bdt-activation-race");
+    let path = dir.file("bdt.bin");
+    let mut transport = bbmd_at(&path).await;
+    let view = tables(&transport);
+    for last in 1..=20u8 {
+        view.activate(&bdt_changes(vec![row([10, 0, 1, last], 0xBAC0)]))
+            .unwrap();
+    }
+    saved(&transport, 20).await;
+    let rows = BbmdState::decode_bdt(&fs::read(&path).unwrap()).unwrap();
+    assert!(
+        rows.iter().any(|entry| entry.ip == [10, 0, 1, 20]),
+        "{rows:?}"
+    );
+    assert!(temporaries(&dir).is_empty());
+    assert_eq!(transport.bdt_persist_failures(), 0);
+    transport.stop().await.unwrap();
+}
+
+/// A save of an older generation than one already written is skipped.
+#[test]
+fn an_older_save_never_overwrites_a_newer_one() {
+    let dir = TempDir::new("bdt-generation");
+    let file = bbmd::BdtFile::new(dir.file("bdt.bin"));
+    let (older, newer) = (file.next_generation(), file.next_generation());
+    let entry = |last| bbmd::BdtEntry {
+        ip: [10, 0, 2, last],
+        port: 0xBAC0,
+        broadcast_mask: [0xFF; 4],
+    };
+    file.save(newer, &[entry(2)]);
+    file.save(older, &[entry(1)]);
+    let rows = BbmdState::decode_bdt(&fs::read(file.path()).unwrap()).unwrap();
+    assert_eq!(rows, [entry(2)]);
+    assert_eq!(file.finished(), 2);
 }

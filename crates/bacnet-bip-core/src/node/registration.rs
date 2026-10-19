@@ -121,8 +121,8 @@ pub struct RegistrationSnapshot {
     pub last_outcome: Option<AttemptOutcome>,
     /// Automatic attempts in a row that ended unanswered or couldn't start.
     pub consecutive_failures: u32,
-    /// Whether the first automatic attempt has ended, which ends the hold
-    /// on broadcasts.
+    /// Whether the first automatic attempt, of the start or since a move
+    /// to another BBMD, has ended, which ends the hold on broadcasts.
     pub first_resolved: bool,
     /// Broadcasts held for the first attempt.
     pub held: u16,
@@ -262,6 +262,13 @@ impl Lifecycle {
     /// does; another BBMD's proves nothing here, so it goes, with the
     /// sends that could have earned it. Broadcasts held for the first
     /// attempt of the start stay held until the next attempt resolves.
+    ///
+    /// A move to another BBMD holds broadcasts again until that BBMD's
+    /// first answer, as at start: it has no registration for this device
+    /// yet, and would refuse to distribute them (Annex J.4.5). A hold
+    /// smaller than the broadcasts already held drops none of them: they
+    /// stay held and go out together when the next attempt resolves, and
+    /// further broadcasts are refused as a full hold until then.
     pub(crate) fn retarget(&mut self, foreign: &Foreign, now: Instant, same_bbmd: bool) {
         self.ttl = foreign.ttl_duration();
         self.renewal = foreign.effective_renewal();
@@ -273,6 +280,8 @@ impl Lifecycle {
             self.lapsed = false;
             self.unanswered_since = None;
             self.recent = Recent::new();
+            // Once resolved, nothing is held, so `held` is already 0.
+            self.first_resolved = false;
         }
         self.attempt = None;
         self.last_start = None;

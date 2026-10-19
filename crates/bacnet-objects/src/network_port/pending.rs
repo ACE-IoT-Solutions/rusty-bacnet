@@ -90,9 +90,10 @@ impl NetworkPortObject {
             return None;
         }
         // A value nothing could activate would wait for ever: without an
-        // owner that answers ReinitializeDevice the rows stay read-only
-        // (Clause 16.4 ties pending changes to ACTIVATE_CHANGES).
-        if !self.activation {
+        // owner that answers ReinitializeDevice, or a transport that takes
+        // changes, the rows stay read-only (Clause 16.4 ties pending changes
+        // to ACTIVATE_CHANGES).
+        if !self.activates_changes() {
             return Some(Err(common::write_access_denied_error()));
         }
         if array_index.is_some() {
@@ -162,10 +163,11 @@ impl NetworkPortObject {
         !self.pending.is_empty()
     }
 
-    /// Whether a ReinitializeDevice owner activates written values, so the
-    /// pending-activation rows take writes.
+    /// Whether written values can be activated, so the pending-activation
+    /// rows take writes: a ReinitializeDevice owner activates them, and the
+    /// transport takes them.
     pub(super) fn activates_changes(&self) -> bool {
-        self.activation
+        self.activation && self.mode.can_change()
     }
 
     /// Put the values written to this port into effect, as a
