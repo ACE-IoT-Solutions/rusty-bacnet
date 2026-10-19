@@ -13,18 +13,19 @@
 //! elements, to the last octet, is left to the generic decoder.
 
 use bacnet_encoding::constructed::{
-    decode_access_rule, decode_action_list, decode_authentication_factor_format,
-    decode_authentication_policy, decode_calendar_entry, decode_cov_subscription,
-    decode_daily_schedule, decode_date_range, decode_destination,
-    decode_device_object_property_reference, decode_device_object_reference, decode_name_value,
-    decode_port_permission, decode_prescale, decode_property_access_result,
-    decode_read_access_specification, decode_recipient, decode_scale, decode_special_event,
-    decode_stage_limit_value, decode_value_source,
+    decode_access_rule, decode_action_list, decode_authentication_factor,
+    decode_authentication_factor_format, decode_authentication_policy, decode_calendar_entry,
+    decode_cov_subscription, decode_daily_schedule, decode_date_range, decode_destination,
+    decode_device_object_property_reference, decode_device_object_reference,
+    decode_event_parameter, decode_name_value, decode_port_permission, decode_prescale,
+    decode_property_access_result, decode_read_access_specification, decode_recipient,
+    decode_scale, decode_shed_level, decode_special_event, decode_stage_limit_value,
+    decode_value_source,
 };
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_encoding::tags;
 use bacnet_services::rpm::{ReadAccessResult, ReadPropertyMultipleACK};
-use bacnet_types::constructed::BACnetAccessRule;
+use bacnet_types::constructed::{BACnetAccessRule, BACnetEventParameter};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -92,6 +93,15 @@ pub(crate) enum Element {
     /// A Device_Address_Binding element (#1369), as a mapping of
     /// `device_identifier`, `network_number` and `mac_address`.
     AddressBinding,
+    /// A Load Control shed level, as a mapping whose `kind` is `percent`,
+    /// `level` or `amount` and whose `value` is that alternative's number.
+    ShedLevel,
+    /// An authentication factor, as the `(format_type, format_class, value)`
+    /// triple `report_credential_read_local` takes.
+    AuthenticationFactor,
+    /// An Event Enrollment's Event_Parameters, as a mapping whose `kind`
+    /// names the algorithm (see `event_parameter_py`).
+    EventParameter,
 }
 
 /// How a property holds its elements.
@@ -128,9 +138,18 @@ pub(crate) fn element(
         | (O::ACCESS_USER, P::CREDENTIALS | P::MEMBERS | P::MEMBER_OF)
         | (O::LIFE_SAFETY_POINT | O::LIFE_SAFETY_ZONE, P::MEMBER_OF)
         | (O::LIFE_SAFETY_ZONE, P::ZONE_MEMBERS) => (Element::DeviceObjectReference, Collection),
+        (O::STRUCTURED_VIEW, P::SUBORDINATE_LIST) => (Element::DeviceObjectReference, Collection),
         (O::ACCESS_RIGHTS, P::ACCOMPANIMENT)
         | (O::ACCESS_POINT, P::ACCESS_EVENT_CREDENTIAL)
         | (O::LIFT | O::ESCALATOR, P::ENERGY_METER_REF) => (Element::DeviceObjectReference, Single),
+        (O::ACCESS_POINT, P::ACCESS_EVENT_AUTHENTICATION_FACTOR)
+        | (O::CREDENTIAL_DATA_INPUT, P::PRESENT_VALUE) => (Element::AuthenticationFactor, Single),
+        (O::ACCESS_POINT, P::ACCESS_EVENT_TIME) => (Element::TimeStamp, Single),
+        (
+            O::LOAD_CONTROL,
+            P::REQUESTED_SHED_LEVEL | P::EXPECTED_SHED_LEVEL | P::ACTUAL_SHED_LEVEL,
+        ) => (Element::ShedLevel, Single),
+        (O::EVENT_ENROLLMENT, P::EVENT_PARAMETERS) => (Element::EventParameter, Single),
         (O::CREDENTIAL_DATA_INPUT, P::SUPPORTED_FORMATS) => {
             (Element::AuthenticationFactorFormat, Collection)
         }
@@ -163,7 +182,7 @@ pub(crate) fn element(
         // Every object type that has these properties gives them one datatype.
         (_, P::TAGS) => (Element::NameValue, Collection),
         (_, P::EVENT_TIME_STAMPS | P::COMMAND_TIME_ARRAY) => (Element::TimeStamp, Collection),
-        (_, P::LAST_COMMAND_TIME) => (Element::TimeStamp, Single),
+        (_, P::LAST_COMMAND_TIME | P::LAST_RESTORE_TIME) => (Element::TimeStamp, Single),
         (_, P::VALUE_SOURCE_ARRAY) => (Element::ValueSource, Collection),
         (_, P::VALUE_SOURCE) => (Element::ValueSource, Single),
         _ => return None,
@@ -217,7 +236,7 @@ pub(crate) fn decode(
 impl Element {
     /// Every element production, each once; a new one goes here too, so
     /// that [`Self::from_tag`] knows it.
-    const ALL: [Self; 24] = [
+    const ALL: [Self; 27] = [
         Self::NameValue,
         Self::Destination,
         Self::PortPermission,
@@ -242,6 +261,9 @@ impl Element {
         Self::Scale,
         Self::Prescale,
         Self::AddressBinding,
+        Self::ShedLevel,
+        Self::AuthenticationFactor,
+        Self::EventParameter,
     ];
 
     /// The element whose [`Self::tag`] is `tag`.
@@ -281,6 +303,9 @@ impl Element {
             Self::Scale => "scale",
             Self::Prescale => "prescale",
             Self::AddressBinding => "address_binding",
+            Self::ShedLevel => "shed_level",
+            Self::AuthenticationFactor => "authentication_factor",
+            Self::EventParameter => "event_parameter",
         }
     }
 
@@ -380,6 +405,12 @@ impl Element {
             Self::Scale => with(decode_scale(octets, offset), Decoded::Scale),
             Self::Prescale => with(decode_prescale(octets, offset), Decoded::Prescale),
             Self::AddressBinding => with(address_binding(octets, offset), Decoded::AddressBinding),
+            Self::ShedLevel => with(decode_shed_level(octets, offset), Decoded::ShedLevel),
+            Self::AuthenticationFactor => with(
+                decode_authentication_factor(octets, offset),
+                Decoded::AuthenticationFactor,
+            ),
+            Self::EventParameter => with(event_parameter(octets, offset), Decoded::EventParameter),
         }
     }
 }
@@ -400,6 +431,18 @@ fn access_rule(octets: &[u8], offset: usize) -> Result<(BACnetAccessRule, usize)
         ));
     }
     Ok((rule, end))
+}
+
+/// Decode one Event_Parameters value at `offset`. The decoder also takes two
+/// forms that aren't the wire CHOICE (an application octet string, and the
+/// legacy wrapper the enrollment once stored); both come back as an opaque
+/// value with tag 255, which leaves the value to the generic decoder.
+fn event_parameter(octets: &[u8], offset: usize) -> Result<(BACnetEventParameter, usize), Error> {
+    let (parameter, end) = decode_event_parameter(octets, offset)?;
+    if let BACnetEventParameter::Opaque { tag: u8::MAX, .. } = parameter {
+        return Err(Error::decoding(offset, "not a BACnetEventParameter CHOICE"));
+    }
+    Ok((parameter, end))
 }
 
 /// One BACnetAddressBinding: the Device, its network number and its MAC.
@@ -476,3 +519,7 @@ mod tags_tests;
 #[cfg(test)]
 #[path = "constructed_read_reference_tests.rs"]
 mod reference_tests;
+
+#[cfg(test)]
+#[path = "constructed_read_single_tests.rs"]
+mod single_tests;
