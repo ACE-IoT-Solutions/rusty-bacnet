@@ -2,6 +2,7 @@
 // Tests always build with std, so feature-off test runs need no imports of
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+#![forbid(unsafe_code)]
 
 // `format!` and `vec!` without std's prelude. Without `alloc` the crate
 // links no allocator at all (#1614).

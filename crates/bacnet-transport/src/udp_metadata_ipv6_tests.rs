@@ -1,10 +1,14 @@
 use super::*;
 use std::mem::{size_of, zeroed};
 
+#[allow(unsafe_code)] // builds control messages by hand
 fn decode_control(index: u32, short: bool, duplicate: bool) -> io::Result<(IpAddr, Option<u32>)> {
     let mut control = [0usize; 32];
-    // SAFETY: message points into aligned, initialized test storage; all cmsg
-    // lengths except the deliberate short payload remain within that storage.
+    // SAFETY: `control` is usize-aligned (cmsghdr's alignment) and
+    // initialized, and the assert keeps every header and in6_pktinfo
+    // written (at CMSG_SPACE strides, so each aligned) inside it. Each
+    // cmsg_len, the short one included, stays within msg_controllen, so the
+    // message meets unix_destination's contract.
     unsafe {
         let space = libc::CMSG_SPACE(size_of::<libc::in6_pktinfo>() as _) as usize;
         let copies = if duplicate { 2 } else { 1 };
@@ -50,6 +54,7 @@ fn packet_info_keeps_destination_and_arrival_index_together() {
 }
 
 #[test]
+#[allow(unsafe_code)] // decodes an all-zero msghdr
 fn short_duplicate_or_missing_ipv6_packet_info_is_invalid() {
     assert_eq!(
         decode_control(7, true, false).unwrap_err().kind(),
@@ -59,7 +64,8 @@ fn short_duplicate_or_missing_ipv6_packet_info_is_invalid() {
         decode_control(7, false, true).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
-    // SAFETY: the all-zero message has no control buffer, as intended here.
+    // SAFETY: the all-zero message has a null control buffer of length
+    // zero, so CMSG_FIRSTHDR returns null and nothing is read through it.
     let missing = unsafe { unix_destination(&zeroed(), IpVersion::V6) }.unwrap_err();
     assert_eq!(missing.kind(), io::ErrorKind::InvalidData);
 }

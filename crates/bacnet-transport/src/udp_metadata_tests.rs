@@ -4,7 +4,9 @@ supported_unix_item! {
 /// Both control messages a BSD hands an IPv4 datagram fit the buffer, and
 /// Linux's packet info for either family, each with a receive timestamp.
 #[test]
+#[allow(unsafe_code)] // CMSG_SPACE is an unsafe fn in libc
 fn the_control_buffer_holds_every_message_a_datagram_carries() {
+    // SAFETY: CMSG_SPACE is arithmetic on its argument; it touches no memory.
     let space = |length: usize| unsafe { libc::CMSG_SPACE(length as _) } as usize;
     // The BSDs' link-layer socket address is 20 to 56 octets long.
     let bsd = space(std::mem::size_of::<libc::in_addr>())
@@ -163,6 +165,7 @@ fn a_realtime_stamp_counts_seconds_and_parts() {
 /// so the datagram still goes up, in read order (#1546). A whole one reads.
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
+#[allow(unsafe_code)] // builds a control message by hand
 fn a_short_receive_stamp_is_no_stamp() {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let (kind, whole) = (
@@ -173,8 +176,12 @@ fn a_short_receive_stamp_is_no_stamp() {
     let (kind, whole) = (stamps::SCM_TIMESTAMP_MONOTONIC, std::mem::size_of::<u64>());
     let stamp = |payload: usize| {
         let mut control = [0u64; 16];
-        // SAFETY: the header and its payload lie inside the aligned,
-        // initialized buffer; the payload bytes stay zero but for one.
+        // SAFETY: `control` is u64-aligned, initialized and 128 octets, so
+        // the header and a payload of up to a whole stamp (48 octets, a
+        // Linux `[timespec; 3]`, at most; CMSG_LEN of that is 64) lie
+        // inside it and cmsg_len stays within it, as
+        // unix_arrival_stamp_cmsg asks; the payload bytes stay zero but for
+        // one, a valid stamp of any of the plain-integer types read.
         unsafe {
             let header = control.as_mut_ptr().cast::<libc::cmsghdr>();
             (*header).cmsg_level = libc::SOL_SOCKET;
