@@ -95,7 +95,7 @@ async fn start(mode: BipPortMode) -> BACnetServer<TestTransport> {
 }
 
 /// Answer one confirmed request from the server's request path.
-async fn confirmed<T: TransportPort + 'static>(
+pub(super) async fn confirmed<T: TransportPort + 'static>(
     server: &BACnetServer<T>,
     service: ConfirmedServiceChoice,
     request: BytesMut,

@@ -42,6 +42,7 @@ pub(super) struct BbmdConfig {
     pub(super) initial_bdt: Vec<BdtEntry>,
     pub(super) management_acl: Vec<[u8; 4]>,
     pub(super) foreign_device_policy: Option<ForeignDevicePolicy>,
+    pub(super) alone_on_subnet: bool,
 }
 
 /// The BDT a wildcard-bound BBMD reads its own address from, for messages.
@@ -255,6 +256,7 @@ pub(super) fn initial_bbmd_state(
     };
     state.set_management_acl(config.management_acl.clone());
     state.set_foreign_device_policy(config.foreign_device_policy.clone());
+    state.set_alone_on_subnet(config.alone_on_subnet);
     Ok(state)
 }
 

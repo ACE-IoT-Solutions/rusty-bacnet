@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
-use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, Reservation};
+use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, Request};
 use bacnet_bip_core::Arrival;
 use bacnet_time::HostClock;
 use bacnet_types::error::{DecodeError, DecodingKind, Error};
@@ -23,12 +23,15 @@ use bytes::BytesMut;
 
 use crate::bvll::bvll_error;
 
+mod activation;
 mod forward;
 mod policy;
+mod serve;
 mod tables;
 pub(crate) use forward::Forward;
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
+pub(crate) use serve::Reply;
 pub(crate) use tables::{lock, LiveTables};
 
 /// Rows the BDT holds, this BBMD's own row included.
@@ -263,12 +266,19 @@ pub struct BbmdState {
     /// reports it: a peer's Forwarded-NPDU sent from that subnet at this
     /// BBMD's own port isn't broadcast on it again (Annex J.4.5).
     subnet_mask: Option<Ipv4Addr>,
+    /// Whether this BBMD is the only device of its B/IP network on its
+    /// subnet: it then skips the local rebroadcast of forwarded and
+    /// distributed broadcasts (Annex J.4.5, J.7.5).
+    alone_on_subnet: bool,
     /// Allowed source IPs for Delete-Foreign-Device-Table-Entry.
     /// Empty means deny all (fail closed).
     management_acl: Vec<[u8; 4]>,
     /// Explicit policy for foreign device registrations.
     /// None means fail closed (deny all registrations).
     foreign_device_policy: Option<ForeignDevicePolicy>,
+    /// The policy kept while BBMD_Accept_FD_Registrations is FALSE, for
+    /// when it is TRUE again.
+    parked_policy: Option<ForeignDevicePolicy>,
     rate_tracker: ForeignDeviceRateTracker,
     counters: FdtCounters,
 }
@@ -280,8 +290,10 @@ impl BbmdState {
             clock: HostClock::centred(Instant::now()),
             tables: Tables::new(address(local_ip, local_port)),
             subnet_mask: None,
+            alone_on_subnet: false,
             management_acl: Vec::new(),
             foreign_device_policy: None,
+            parked_policy: None,
             rate_tracker: ForeignDeviceRateTracker::new(),
             counters: FdtCounters::default(),
         }
@@ -386,7 +398,8 @@ impl BbmdState {
         self.register_foreign_device_at(ip, port, ttl, Instant::now())
     }
 
-    /// Register or re-register a foreign device at the given `now` instant.
+    /// Register or re-register a foreign device at the given `now` instant,
+    /// as a Register-Foreign-Device from `ip:port` is answered.
     ///
     /// Without a policy every registration is refused. With one, the core
     /// purges lapsed entries and checks the time-to-live; then this
@@ -399,60 +412,15 @@ impl BbmdState {
         ttl: u16,
         now: Instant,
     ) -> BvlcResultCode {
-        let Some(policy) = &self.foreign_device_policy else {
-            self.counters.registrations_rejected += 1;
-            return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-        };
-        let mut limits = core_bbmd::RegistrationLimits::DEFAULT;
-        limits.min_ttl = policy.min_ttl;
-        limits.max_ttl = policy.max_ttl;
-        limits.max_entries_per_source = policy.max_entries_per_source;
-        limits.reserved_capacity = policy.reserved_capacity;
-        let reservation = if policy.reserved_sources.contains(&ip) {
-            Reservation::Reserved
-        } else {
-            Reservation::Ordinary
-        };
-        let rate_tracker = &mut self.rate_tracker;
-        let admit = || {
-            policy
-                .allowed_sources
-                .as_ref()
-                .is_none_or(|allowed| allowed.contains(&ip))
-                && !rate_tracker.is_rate_exceeded(
-                    ip,
-                    now,
-                    policy.rate_window,
-                    policy.registration_rate_per_source,
-                    policy.registration_rate_global,
-                )
-        };
-        let outcome = self.tables.fdt.register(
-            address(ip, port),
-            ttl,
-            self.clock.instant(now),
-            &limits,
-            reservation,
-            admit,
-        );
-        self.counters.registrations_expired += outcome.purged as u64;
-        match outcome.result {
-            Ok(_) => {
-                self.rate_tracker.record(ip);
-                self.counters.registrations_accepted += 1;
-                BvlcResultCode::SUCCESSFUL_COMPLETION
-            }
-            Err(refusal) => {
-                if refusal == RegistrationRefusal::TableFull {
-                    self.counters.capacity_exhausted += 1;
-                }
-                self.counters.registrations_rejected += 1;
-                refusal.result_code()
-            }
+        let sender = address(ip, port);
+        match self.serve(Request::Register { sender, ttl }, now) {
+            Reply::Result(code) => code,
+            other => unreachable!("a registration is answered with a result, not {other:?}"),
         }
     }
 
-    /// Delete a foreign device entry.
+    /// Delete a foreign device entry, lapsed or not, on the host's own
+    /// authority: no access list applies.
     pub fn delete_foreign_device(&mut self, ip: [u8; 4], port: u16) -> BvlcResultCode {
         if self.tables.fdt.delete(address(ip, port)) {
             BvlcResultCode::SUCCESSFUL_COMPLETION
@@ -547,6 +515,25 @@ impl BbmdState {
         self.subnet_mask = mask;
     }
 
+    /// Whether this BBMD is set up as the only device of its B/IP network on
+    /// its subnet ([`Self::set_alone_on_subnet`]).
+    pub fn alone_on_subnet(&self) -> bool {
+        self.alone_on_subnet
+    }
+
+    /// Say whether this BBMD is the only device of its B/IP network on its
+    /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). When it
+    /// is, a peer's Forwarded-NPDU and a foreign device's
+    /// Distribute-Broadcast-To-Network go only to the peers and foreign
+    /// devices, not to the subnet's broadcast address, where nothing would
+    /// receive them. Annex J.4.5 permits this for the Forwarded-NPDU; the
+    /// Distribute-Broadcast-To-Network case extends it. Off by default: with another device of
+    /// the network on the subnet, that device stops receiving remote
+    /// broadcasts.
+    pub fn set_alone_on_subnet(&mut self, alone: bool) {
+        self.alone_on_subnet = alone;
+    }
+
     /// Check if a sender is a registered (non-expired) foreign device, for
     /// tests (#1669).
     #[cfg(test)]
@@ -618,10 +605,16 @@ fn rows_of(rows: &[codec::BdtEntry]) -> Vec<BdtEntry> {
 }
 
 #[cfg(test)]
+mod activation_tests;
+
+#[cfg(test)]
 mod foreign_device_tests;
 
 #[cfg(test)]
 mod run_tests;
+
+#[cfg(test)]
+mod serve_tests;
 
 #[cfg(test)]
 mod tests;
