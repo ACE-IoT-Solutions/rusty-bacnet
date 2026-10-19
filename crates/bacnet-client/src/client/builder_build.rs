@@ -262,6 +262,54 @@ impl ScClientBuilder {
         .await
     }
 
+    /// Connect to the hub and start the client, as [`build`](Self::build)
+    /// does, and also return a hub-connector event receiver subscribed
+    /// before the client started.
+    ///
+    /// The first [`ScEvent::Connected`](bacnet_transport::sc::ScEvent::Connected)
+    /// goes out while `build` runs, before a caller of
+    /// `transport().connection_events()` can subscribe. This receiver is
+    /// already subscribed then, so it holds that event, followed by every
+    /// later one, with the same lag rules as `connection_events()`.
+    ///
+    /// ```no_run
+    /// use bacnet_client::client::BACnetClient;
+    /// use bacnet_transport::sc::ScEvent;
+    /// use bacnet_transport::sc_tls::ScNodeTlsConfig;
+    ///
+    /// async fn first_event(tls: ScNodeTlsConfig) -> Result<(), bacnet_types::error::Error> {
+    ///     let (client, mut events) = BACnetClient::sc_builder()
+    ///         .hub_url("wss://hub.example.com/bacnet")
+    ///         .tls_config(tls)
+    ///         .vmac([0x02, 0, 0, 0, 0, 0x01])
+    ///         .device_uuid([0x42; 16])
+    ///         .build_with_events()
+    ///         .await?;
+    ///     let first = events.recv().await;
+    ///     assert!(matches!(first, Ok(ScEvent::Connected { .. })));
+    ///     drop(client);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn build_with_events(
+        self,
+    ) -> Result<
+        (
+            BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
+            tokio::sync::broadcast::Receiver<bacnet_transport::sc::ScEvent>,
+        ),
+        Error,
+    > {
+        Box::pin(async move {
+            let (config, transport, options) = Box::pin(self.prepare()).await?;
+            let events = transport.connection_events();
+            let client =
+                Box::pin(BACnetClient::start_with_options(config, transport, options)).await?;
+            Ok((client, events))
+        })
+        .await
+    }
+
     /// Connect to the hub and start a transport-erased BACnet/SC client.
     ///
     /// Shares [`Self::build`]'s validation, TLS policy, identity, heartbeat and

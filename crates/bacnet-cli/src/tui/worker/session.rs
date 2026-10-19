@@ -9,10 +9,11 @@ use std::time::Duration;
 use bacnet_client::client::BACnetClient;
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_transport::port::TransportPort;
+use bacnet_transport::sc::ScEvent;
 use bacnet_types::enums::UnconfirmedServiceChoice;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -191,18 +192,31 @@ async fn connect(
                 let report = ScReport::Credentials(Box::new(credentials));
                 sink.deliver(WorkerEvent::Sc(report)).await;
             }
-            // The doctor reads the typed error before it becomes text.
+            // The doctor reads the typed error before it becomes text. The
+            // events are subscribed before the first connect, for the
+            // timeline's first entry.
+            let mut events = None;
             let build = async {
-                let built = transport::build_sc_client(&args).await;
-                if let Err(error) = &built {
-                    let failure = Box::new(ScFailure::from_error(error));
-                    sink.deliver(WorkerEvent::Sc(ScReport::Failed(failure)))
-                        .await;
+                let built = match transport::sc_client_builder(&args) {
+                    Ok(builder) => builder.build_with_events().await,
+                    Err(error) => Err(error),
+                };
+                match built {
+                    Ok((client, subscribed)) => {
+                        events = Some(subscribed);
+                        Ok(client)
+                    }
+                    Err(error) => {
+                        let failure = Box::new(ScFailure::from_error(&error));
+                        sink.deliver(WorkerEvent::Sc(ScReport::Failed(failure)))
+                            .await;
+                        Err(error)
+                    }
                 }
-                built
             };
             if let Some(client) = finish_build(Box::pin(build), &sink).await {
-                Box::pin(serve(client, style, sink, commands, options)).await;
+                let serving = serve_with(client, style, sink, commands, options, events);
+                Box::pin(serving).await;
             }
         }
         #[cfg(not(feature = "sc-tls"))]
@@ -340,8 +354,21 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
     client: BACnetClient<T>,
     style: AddressStyle,
     sink: EventSink,
+    commands: mpsc::Receiver<Command>,
+    options: SessionOptions,
+) {
+    Box::pin(serve_with(client, style, sink, commands, options, None)).await;
+}
+
+/// [`serve`], with the SC hub-connector events when they were subscribed
+/// before the client started, so the SC worker sees the first connect.
+async fn serve_with<T: TransportPort + 'static>(
+    client: BACnetClient<T>,
+    style: AddressStyle,
+    sink: EventSink,
     mut commands: mpsc::Receiver<Command>,
     options: SessionOptions,
+    sc_events: Option<broadcast::Receiver<ScEvent>>,
 ) {
     let client = Arc::new(client);
     let rate = RateCap::new(options.max_rate);
@@ -524,7 +551,7 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
             )),
             Box::pin(super::network::run(&client, &sink, network_rx)),
             Box::pin(super::discovery::run(&client, &sink, discovery_rx, style)),
-            Box::pin(super::sc::run(&client, &sink, sc_stop_rx)),
+            Box::pin(super::sc::run(&client, &sink, sc_stop_rx, sc_events)),
             Box::pin(crate::tui::capture::worker::run(
                 &*client, &sink, capture_rx, style
             ))

@@ -60,6 +60,7 @@ mod network_frames;
 mod profile_ui;
 #[cfg(feature = "sc-tls")]
 mod sc_hub;
+mod sc_layout;
 mod sc_lint;
 mod sc_profiles;
 mod sc_screen;

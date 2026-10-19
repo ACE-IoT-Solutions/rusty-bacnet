@@ -48,8 +48,7 @@ fn preview(checks: Checks) -> App {
     app
 }
 
-const THIRTY: &str = "Operational certificate [0]: At most thirty days remain in the stated \
-                      interval. Plan renewal.";
+const THIRTY: &str = "Operational certificate [0]: It expires within thirty days. Plan renewal.";
 
 #[test]
 fn warnings_hold_the_connection_until_y_accepts_them() {
@@ -113,14 +112,14 @@ fn sc_preview_with_lint_findings_at_120x40() {
     assert_snapshot!("sc_profile_lint_warnings_120x40", screen(&mut app, 120, 40));
 }
 
-fn credentials(findings: Vec<(Level, String)>) -> Credentials {
+pub(super) fn credentials(findings: Vec<(Level, String)>) -> Credentials {
     let cert = |label: &str, subject: &str, window: &str, level| Cert {
         label: label.into(),
         subject: subject.into(),
         issuer: "CN=site issuing CA".into(),
         san: "DNS:node-17.site.example".into(),
         key_algorithm: "EC".into(),
-        eku: "client_auth, server_auth".into(),
+        eku: "client-auth, server-auth".into(),
         not_after: "2024-01-26T00:00:00Z (Unix 1706227200)".into(),
         window: window.into(),
         level,

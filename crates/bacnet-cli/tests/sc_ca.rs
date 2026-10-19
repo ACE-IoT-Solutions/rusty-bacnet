@@ -153,7 +153,7 @@ async fn expired_and_future_leaves_are_refused_before_any_dial() {
         failure(
             &output,
             "SC credential check refused the dial before connecting: Operational certificate [0]: \
-             The identity leaf is outside its stated interval",
+             The identity leaf has expired, is not valid yet",
         );
         assert_eq!(
             listener.accept().unwrap_err().kind(),

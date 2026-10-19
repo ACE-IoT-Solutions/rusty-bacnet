@@ -2,7 +2,9 @@
 //! transport handle (#956) and the observability API (#959).
 //!
 //! It runs beside the session loop under `join!` and ends when the loop
-//! drops its stop sender. Each event becomes a report and a log line. The
+//! drops its stop sender. Each event becomes a report and a log line. A
+//! session that subscribed before the dial hands its receiver over, so the
+//! first connect reaches the timeline too. The
 //! link status is polled once a second. The transport's broadcast never
 //! waits for this worker: when the worker falls behind and the stream
 //! reports `Lagged`, it reports a gap and resyncs from `connection_status()`.
@@ -29,10 +31,14 @@ use crate::tui::sc::{CertSummary, LinkEvent, LinkSnapshot, ScReport};
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 
 /// Follow the hub connector until `stop` closes, when the client is SC.
+///
+/// `early` is a receiver subscribed before the client started: it holds the
+/// first connect, which a subscription made here would miss (#1890).
 pub(crate) async fn run<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     sink: &EventSink,
     stop: mpsc::Receiver<()>,
+    early: Option<broadcast::Receiver<ScEvent>>,
 ) {
     #[cfg(feature = "sc-tls")]
     {
@@ -41,8 +47,9 @@ pub(crate) async fn run<T: TransportPort + 'static>(
         if let Some(sc) = (client.transport() as &dyn Any).downcast_ref::<Sc>() {
             /// The longest the worker waits to read the hub's certificates.
             const CHAIN_WAIT: Duration = Duration::from_secs(2);
-            // Subscribe before the first snapshot, so nothing falls between.
-            let events = sc.connection_events();
+            // Without an early receiver, subscribe before the first
+            // snapshot, so nothing falls between.
+            let events = early.unwrap_or_else(|| sc.connection_events());
             let status = || sc.connection_status().into();
             let chain = || async {
                 // A timeout drops the lock wait with the future.
@@ -55,7 +62,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
         }
     }
     #[cfg(not(feature = "sc-tls"))]
-    let _ = (client, sink, stop);
+    let _ = (client, sink, stop, early);
 }
 
 fn log(event: &LinkEvent) {

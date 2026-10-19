@@ -1,0 +1,28 @@
+---
+source: crates/bacnet-cli/src/tui/tests/sc_layout.rs
+expression: text
+---
+" bacnet | SC 22:10:20:30:40:50 | up | hub primary | READ-ONLY | COV 0 F  ? help "
+"┌ Hub connector ────────────────────────────────┐┌ VMAC and UUID ──────────────┐"
+"│State      connected                           ││Local VMAC  22:10:20:30:40:50│"
+"│Hub        primary                             ││Device UUID 6f1c2a9e-4407-   │"
+"│           wss://hub.site.example:443/bacnet   ││            4b3d-9a51-       │"
+"│Reconnect  none since the last connect         ││            0e7c8821d40b     │"
+"│Heartbeat  last heard 6 s ago, round trip 12 ms││Hub VMAC    10:10:10:10:10:10│"
+"│Failover   configured:                         ││Dup. VMAC   no NAK seen      │"
+"│           wss://hub2.site.example:443/bacnet  ││                             │"
+"└───────────────────────────────────────────────┘└─────────────────────────────┘"
+"┌ [Hub certificates] Doctor My credentials | no failure recorded ──────────────┐"
+"│As the connected hub presented them, leaf first. Display only: TLS verified   │"
+"│the chain.                                                                    │"
+"│0 leaf    subject CN=primary hub                                              │"
+"│          issued by CN=site CA                                                │"
+"│          expires 2031-01-01T00:00:00Z (Unix 1924992000)                      │"
+"│          signed with ecdsa-with-SHA256                                       │"
+"│1 issuer  subject CN=site CA                                                  │"
+"│          issued by CN=site CA                                                │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+"┌ Events ──────────────────────────────────────────────────────────────────────┐"
+"│   3s ago info  connected to the primary hub (hub VMAC 10:10:10:10:10:10)     │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+" Tab certificates/doctor/credentials  p profiles  x disconnect  Esc back  ? help"
