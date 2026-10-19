@@ -73,10 +73,13 @@ pub(super) fn admit(
     let Some(mut encoded) = encode(&notification, confirmed, source.max_apdu, 0) else {
         return;
     };
+    // A source record carries the source timestamp; a record of an
+    // operation on this device, the target timestamp.
     let timestamp = notification
         .source_timestamp
         .clone()
-        .expect("source record timestamp");
+        .or_else(|| notification.target_timestamp.clone())
+        .expect("record timestamp");
     let permit = match owner.try_admit_audit() {
         Ok(permit) => permit,
         Err(tokio::sync::TryAcquireError::NoPermits) => {

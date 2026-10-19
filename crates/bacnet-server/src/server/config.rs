@@ -63,10 +63,10 @@ pub struct ServerConfig {
     /// SERVICES / SERVICE_REQUEST_DENIED.
     ///
     /// The rules are on [`ReinitializeHandler`]. In short: the SimpleACK goes
-    /// out only after the handler returns, so schedule any restart for after
-    /// the reply rather than restarting inline. Nothing yet signals when the
-    /// reply has left (#1565), so a delay is best effort, and stopping the
-    /// server before then drops the reply. It runs synchronously with the
+    /// out only after the handler returns, so register any restart with
+    /// [`ReinitializeContext::after_reply`] rather than restarting inline; it
+    /// runs once the reply has been handed to the transport (#1565), and
+    /// never for a refusal. The handler runs synchronously with the
     /// object database write-locked, so keep it quick and hand slow work to a
     /// task; its database edits skip the COV, event and Audit work of
     /// [`BACnetServer::write_local`], so apply changes that need it there

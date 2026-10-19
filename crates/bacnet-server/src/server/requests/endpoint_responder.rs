@@ -73,6 +73,7 @@ pub struct EndpointResponder {
     open: AtomicBool,
     device_writes: Option<(ObjectIdentifier, MutationAuthorizer)>,
     reinitialize: Option<(ReinitializeHandler, Option<String>)>,
+    reinitialize_audit: Option<reinitialize::EndpointReinitializeAudit>,
     registered_port: Option<(ObjectIdentifier, std::sync::Weak<()>)>,
     read_work_limit: usize,
     identity: Option<bacnet_objects::DeviceIdentity>,
@@ -100,6 +101,7 @@ impl EndpointResponder {
             device_writes: None,
             identity: None,
             reinitialize: None,
+            reinitialize_audit: None,
             registered_port: None,
             read_work_limit: crate::server::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
@@ -158,6 +160,18 @@ impl EndpointResponder {
         password: Option<String>,
     ) -> Self {
         self.reinitialize = Some((handler, password));
+        self
+    }
+
+    /// Record each accepted ReinitializeDevice request through `audit`
+    /// (Clause 19.6, Table 19-5, #1564): a reset, backup or restore step,
+    /// never ACTIVATE_CHANGES, and never a request answered with an Error.
+    #[doc(hidden)]
+    pub fn with_reinitialize_audit(
+        mut self,
+        audit: reinitialize::EndpointReinitializeAudit,
+    ) -> Self {
+        self.reinitialize_audit = Some(audit);
         self
     }
 
@@ -292,6 +306,7 @@ impl EndpointResponder {
             .reinitialize
             .as_ref()
             .filter(|_| request.service_choice == ConfirmedServiceChoice::REINITIALIZE_DEVICE);
+        let mut after_reply = reinitialize::AfterReply::default();
         let mut response = if request.segmented {
             Apdu::Abort(AbortPdu {
                 sent_by_server: true,
@@ -318,16 +333,25 @@ impl EndpointResponder {
             // Close may win while the request waits for the database owner;
             // it is refused then, before the handler runs.
             let still_open = || self.ensure_open();
-            reinitialize::response(
+            let (reply, hooks) = reinitialize::response(
                 self.db(),
                 &request,
                 password,
                 Some(handler),
                 requester,
                 still_open,
-                |_| {}, // Endpoint sessions have no server DCC state.
+                // Endpoint sessions have no server DCC state; only the
+                // Audit record follows acceptance.
+                |context, db| {
+                    let operation = reinitialize::audit_operation(context.state);
+                    if let (Some(audit), Some(operation)) = (&self.reinitialize_audit, operation) {
+                        audit(db, operation, &context.audit_source());
+                    }
+                },
             )
-            .await
+            .await;
+            after_reply = hooks;
+            reply
         } else if request.service_choice == ConfirmedServiceChoice::WRITE_PROPERTY
             && self.device_writes.is_some()
         {
@@ -383,11 +407,16 @@ impl EndpointResponder {
                     false,
                     NetworkPriority::Normal,
                 )?;
-                let _ = reply_tx.send(wrapped.freeze());
+                // A ReinitializeDevice restart waits for the handoff (#1565).
+                if reply_tx.send(wrapped.freeze()).is_ok() {
+                    after_reply.run();
+                }
                 return Ok(true);
             }
         }
 
+        // Each send below completes when the transport has taken the reply;
+        // a failed one returns early, dropping the after-reply hooks unrun.
         if checked_response {
             drop(received.reply_tx.take());
             self.egress
@@ -400,10 +429,7 @@ impl EndpointResponder {
                 .complete()
                 .await
                 .result?;
-            return Ok(true);
-        }
-
-        if let Some(source_network) = received.source_network {
+        } else if let Some(source_network) = received.source_network {
             self.egress
                 .send_apdu(
                     encoded.to_vec(),
@@ -417,19 +443,20 @@ impl EndpointResponder {
                     preserved_attributes,
                 )
                 .await?;
-            return Ok(true);
+        } else {
+            self.egress
+                .send_apdu(
+                    encoded.to_vec(),
+                    EndpointApduDestination::Direct {
+                        destination_mac: received.source_mac,
+                    },
+                    false,
+                    NetworkPriority::Normal,
+                    preserved_attributes,
+                )
+                .await?;
         }
-        self.egress
-            .send_apdu(
-                encoded.to_vec(),
-                EndpointApduDestination::Direct {
-                    destination_mac: received.source_mac,
-                },
-                false,
-                NetworkPriority::Normal,
-                preserved_attributes,
-            )
-            .await?;
+        after_reply.run();
         Ok(true)
     }
 

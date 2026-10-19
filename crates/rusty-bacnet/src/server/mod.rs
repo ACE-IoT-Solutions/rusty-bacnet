@@ -123,6 +123,8 @@ pub struct BACnetServer {
     dcc_source_restriction: Option<server::DccSourceRestriction>,
     dcc_disable_rate_limit: Option<server::DccDisableRateLimit>,
     reinit_password: Option<String>,
+    /// The `on_reinitialize` and `after_reinitialize` callables (#1566).
+    reinitialize: Option<Arc<crate::reinitialize::PyReinitialize>>,
     request_admission_policy: server::RequestAdmissionPolicy,
     read_property_multiple_budget: server::ReadPropertyMultipleBudget,
     get_alarm_summary_budget: server::GetAlarmSummaryBudget,

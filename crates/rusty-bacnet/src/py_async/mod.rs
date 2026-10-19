@@ -72,6 +72,27 @@ fn exiting() -> PyErr {
     PyRuntimeError::new_err("the Python interpreter is exiting")
 }
 
+thread_local! {
+    /// Set while this thread runs a Python callback that a native lock waits
+    /// on, such as a ReinitializeDevice handler (#1566).
+    static UNDER_NATIVE_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f`, a synchronous Python callback called while a native lock is
+/// held, with [`future_into_py`] refused on this thread. A binding
+/// operation the callback started would wait for that same lock, and one it
+/// then blocked on (with `asyncio.run`, say) would never finish.
+pub(crate) fn under_native_lock<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNDER_NATIVE_LOCK.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(UNDER_NATIVE_LOCK.with(|flag| flag.replace(true)));
+    f()
+}
+
 /// The Tokio runtime binding futures run on. It is never shut down: the exit
 /// gate, not the runtime, keeps its threads out of a finalizing interpreter.
 fn runtime() -> &'static Runtime {
@@ -98,6 +119,11 @@ where
 {
     if GATE.is_closed() {
         return Err(exiting());
+    }
+    if UNDER_NATIVE_LOCK.with(std::cell::Cell::get) {
+        return Err(PyRuntimeError::new_err(
+            "a callback that runs under a server lock cannot start a binding operation",
+        ));
     }
     let event_loop = py
         .import(intern!(py, "asyncio"))?

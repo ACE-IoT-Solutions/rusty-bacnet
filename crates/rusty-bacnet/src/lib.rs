@@ -19,6 +19,7 @@ mod mstp_py;
 mod object_audit_policy;
 mod py_async;
 mod read_range;
+mod reinitialize;
 mod sc_identity;
 mod sc_inspection;
 mod sc_npdu;
@@ -61,6 +62,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sc_peer::register(m)?;
     sc_inspection::register(m)?;
     endpoint::register(m)?;
+    reinitialize::register(m)?;
     m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
     m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;
 

@@ -79,6 +79,18 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 }
                 if let Some(handler) = self.reinitialize.clone() {
                     responder = responder.with_reinitialize(handler, self.reinit_password.clone());
+                    // The session's Reporter records an accepted reset,
+                    // backup or restore step (#1564). Weak, so the
+                    // responder never keeps the source owner alive.
+                    if let Some(source) = source_audit.as_ref().map(Arc::downgrade) {
+                        responder = responder.with_reinitialize_audit(Arc::new(
+                            move |db, operation, requester| {
+                                if let Some(source) = source.upgrade() {
+                                    source.device_operation(db, operation, requester);
+                                }
+                            },
+                        ));
+                    }
                 }
                 let responder = Arc::new(responder);
                 let handle = ServerRoleHandle::new(

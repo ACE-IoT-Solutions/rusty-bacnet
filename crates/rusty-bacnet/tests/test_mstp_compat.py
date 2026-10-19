@@ -89,6 +89,7 @@ SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction"
     "sc_device_uuid", "registered_network_port", "cov_policy", "time_sync_policy",
     "share_port_by_address", "segmentation_supported", "apdu_segment_timeout_ms",
     "bbmd", "foreign_device", "sc_npdu_per_origin_limit",
+    "on_reinitialize", "after_reinitialize",
 ]
 SUPPORTED_BAUD_RATES = (9_600, 19_200, 38_400, 57_600, 76_800, 115_200)
 SUPPORTED_BAUD_ERROR = (
