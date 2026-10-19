@@ -10,6 +10,10 @@ use bytes::{Bytes, BytesMut};
 #[path = "response_encode_tests.rs"]
 mod encode_tests;
 
+#[cfg(test)]
+#[path = "response_budget_tests.rs"]
+mod budget_tests;
+
 /// Saved transport authority and addressing for a response.
 ///
 /// Verified direct ingress requires a matching original-socket capability.

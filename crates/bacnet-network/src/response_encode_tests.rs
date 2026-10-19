@@ -75,6 +75,8 @@ fn refused_reply_npdu_reports_the_owned_encoder_error() {
     assert_eq!(fast, slow);
 }
 
+/// The header length of a route with no router; `budget_tests` checks a
+/// router route's budget against its port's NPDU cap.
 #[test]
 fn apdu_budget_header_is_the_header_the_reply_carries() {
     let route = ResponseRoute::unverified();
@@ -83,10 +85,6 @@ fn apdu_budget_header_is_the_header_the_reply_carries() {
             .unwrap()
             .len();
         assert_eq!(route.header_len(destination.as_ref()).unwrap(), header);
-        assert_eq!(
-            route.max_apdu_length(480, destination.as_ref()).unwrap(),
-            480
-        );
     }
     let long = address(9, &[0xaa; 19]);
     assert!(route.header_len(Some(&long)).is_err());

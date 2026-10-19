@@ -219,8 +219,9 @@ pub(super) struct Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        // Remove registration before Rust drops _permit and releases global
-        // capacity. This lock never acquires the task owner's lock.
+        // Remove the peer registration and the active counts first; the
+        // `held.fetch_sub` at the end then releases the pool slot. This lock
+        // never acquires the task owner's lock.
         if let Some(peer) = &self.peer {
             let mut peers = self.pool.peers.lock().unwrap_or_else(|e| e.into_inner());
             let count = peers.get_mut(peer).expect("live peer registration");
