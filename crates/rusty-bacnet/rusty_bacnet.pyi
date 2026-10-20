@@ -2162,6 +2162,41 @@ class Bbmd:
     @property
     def nat_private_ranges(self) -> list[str]: ...
 
+class Multicast:
+    """A B/IP multicast group (Annex J.8), for the ``multicast=`` keyword of
+    ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
+
+    ``group`` is a class D IPv4 address. The owner's broadcasts go to the
+    group, and it takes broadcasts only from the group, never a subnet
+    broadcast; unicast is unchanged. ``ttl``, 1 to 255 (default 1), is the
+    multicast TTL: 1 keeps the group on the local network, so raise it for a
+    group that spans IP routers, which must forward multicast. ``port`` is
+    the group's UDP port, by default the owner's own; several owners on one
+    host at one address need their own ports and a shared group port.
+
+    ``group`` can't be in 224.0.0.0/24, the block reserved for local
+    network control.
+
+    Multicast needs an explicit ``interface`` (not ``"0.0.0.0"``), a port
+    for the group (``port=0`` needs ``Multicast(port=...)``), and can't be
+    combined with ``share_port_by_address=True``, ``bbmd=`` or
+    ``foreign_device=``: the owner's constructor raises ValueError. A
+    registered Network Port serves the group as BACnet_IP_Multicast_Address
+    (0.0.0.0 when off), writable when the server answers ReinitializeDevice;
+    a group changed that way lasts until the process exits, and isn't
+    saved. Two ``Multicast`` values with the same settings compare and hash
+    equal. Invalid values raise ValueError, or OverflowError for an integer
+    out of range. Windows multicast is untested.
+    """
+
+    def __init__(self, group: str, *, ttl: int = 1, port: Optional[int] = None) -> None: ...
+    @property
+    def group(self) -> str: ...
+    @property
+    def ttl(self) -> int: ...
+    @property
+    def port(self) -> Optional[int]: ...
+
 class ForeignRegistrationStatus(TypedDict):
     """A foreign device's registration, as ``foreign_registration()``
     reports it. ``registered`` is whether a lease is live; the lease starts
@@ -2598,6 +2633,7 @@ class BACnetClient:
         ipv6_device_instance: Optional[int] = None,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        multicast: Optional[Multicast] = None,
         reconnect: Optional[ScReconnect] = None,
         sc_npdu_per_origin_limit: int | None = None,
         sc_failover_hub: str | None = None,
@@ -3930,6 +3966,7 @@ class BACnetServer:
         apdu_segment_timeout_ms: int = 5000,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        multicast: Optional[Multicast] = None,
         sc_npdu_per_origin_limit: int | None = None,
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
@@ -5906,6 +5943,7 @@ class BipEndpoint:
         min_request_interval_ms: int = 0,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        multicast: Optional[Multicast] = None,
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,

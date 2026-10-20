@@ -7,6 +7,8 @@ use core::net::SocketAddrV4;
 use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
 use bacnet_time::{earliest, Duration, Instant};
 
+use crate::LocalSubnet;
+
 use super::actions::{Action, Actions};
 use super::config::{ConfigError, Foreign, Link, Mode, Retry};
 use super::counters::{add, bump, NodeCounters, RegisterAttempt};
@@ -632,6 +634,21 @@ impl<const X: usize> Node<X> {
         }
         self.link = link;
         self.advance(now);
+        Ok(())
+    }
+
+    /// Move the node to another [`LocalSubnet`]: where its broadcasts go
+    /// and which destination counts as one. A B/IP-M node that joins,
+    /// changes or leaves its multicast group (Annex J.8) does this, and so
+    /// must every copy of the link the host decides on. Nothing else
+    /// changes: exchanges and a foreign device's registration carry on.
+    ///
+    /// Refused, changing nothing, with a link [`Link::validate`] refuses.
+    pub fn set_subnet(&mut self, subnet: LocalSubnet) -> Result<(), ConfigError> {
+        let mut link = self.link;
+        link.subnet = subnet;
+        link.validate()?;
+        self.link = link;
         Ok(())
     }
 

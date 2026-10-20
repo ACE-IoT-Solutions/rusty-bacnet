@@ -101,6 +101,8 @@ pub struct BACnetServer {
     share_port_by_address: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IP multicast group `multicast=` asked for (#941).
+    multicast: Option<bacnet_transport::bip::BipMulticast>,
     registered_network_port: Option<u32>,
     // SC config
     sc_hub: Option<String>,

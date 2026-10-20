@@ -41,7 +41,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
-use bacnet_transport::bip::{BipMode, BipTransport};
+use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, NotifyType,
@@ -280,27 +280,10 @@ pub struct BipServerBuilder {
     db: Option<ObjectDatabase>,
     configured_device_bindings: Vec<DeviceBinding>,
     mode: BipMode,
+    multicast: Option<BipMulticast>,
 }
 
 impl BipServerBuilder {
-    /// Set the local interface IP.
-    pub fn interface(mut self, ip: Ipv4Addr) -> Self {
-        self.config.interface = ip;
-        self
-    }
-
-    /// Set the UDP port.
-    pub fn port(mut self, port: u16) -> Self {
-        self.config.port = port;
-        self
-    }
-
-    /// Set the directed broadcast address.
-    pub fn broadcast_address(mut self, addr: Ipv4Addr) -> Self {
-        self.config.broadcast_address = addr;
-        self
-    }
-
     /// Set the one Device identity. With no supplied database, startup creates
     /// a stock Device after resolving the owned transport's receive capacity.
     pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
@@ -398,6 +381,7 @@ impl BipServerBuilder {
             BipTransport::new(config.interface, config.port, config.broadcast_address);
         transport.set_share_port_by_address(config.share_port_by_address);
         transport.set_mode(self.mode);
+        transport.set_multicast(self.multicast)?;
         let db = crate::local_device::prepare_database(
             &mut self.config,
             self.db,
@@ -509,6 +493,7 @@ impl BACnetServer<BipTransport> {
             db: None,
             configured_device_bindings: Vec::new(),
             mode: BipMode::Normal,
+            multicast: None,
         }
     }
 }

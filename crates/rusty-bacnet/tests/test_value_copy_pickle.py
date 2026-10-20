@@ -24,6 +24,7 @@ from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
     BACnetTimeStamp,
+    Multicast,
     ObjectIdentifier,
     ObjectType,
     PropertyIdentifier,
@@ -90,6 +91,10 @@ def samples() -> dict[type, list[Any]]:
             # Equal as Python values, unequal as BACnet ones: the copy keeps
             # each item's tag.
             PropertyValue.list([*one, PropertyValue.list(one)]),
+        ],
+        Multicast: [
+            Multicast("239.255.66.1"),
+            Multicast("224.0.1.0", ttl=255, port=47809),
         ],
         BACnetTimeStamp: [
             BACnetTimeStamp.sequence_number(0),

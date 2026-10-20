@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal, PrivateRange};
 use bacnet_transport::bip::{
-    BbmdOptions, BipMode, ForeignDeviceConfig, ForeignRegistrationOutcome,
+    BbmdOptions, BipMode, BipMulticast, ForeignDeviceConfig, ForeignRegistrationOutcome,
     ForeignRegistrationSnapshot, DEFAULT_BACNET_PORT,
 };
 use pyo3::exceptions::PyValueError;
@@ -237,6 +237,134 @@ impl PyBbmd {
             python(self.options.alone_on_subnet),
         )
     }
+}
+
+/// A B/IP multicast group, for the `multicast=` keyword (Annex J.8, #941).
+///
+/// `group` is a class D IPv4 address (224.0.0.0 to 239.255.255.255). The
+/// node's broadcasts then go to the group, and it takes broadcasts only
+/// from the group, never a subnet broadcast. `ttl`, 1 to 255 (default 1),
+/// is the multicast TTL: 1 keeps the group's traffic on the local network,
+/// so raise it for a group that spans IP routers. `port` is the group's UDP
+/// port, by default the node's own; members on one host at one address
+/// need their own ports and so a shared group port. Multicast needs an
+/// explicit `interface` (not "0.0.0.0") and can't be combined with `bbmd=`
+/// or `foreign_device=`. A bad value raises ValueError, or OverflowError for
+/// an integer out of range.
+#[pyclass(
+    name = "Multicast",
+    module = "rusty_bacnet",
+    frozen,
+    eq,
+    hash,
+    skip_from_py_object
+)]
+#[derive(PartialEq, Eq, Hash)]
+pub(crate) struct PyMulticast {
+    multicast: BipMulticast,
+}
+
+#[pymethods]
+impl PyMulticast {
+    /// Check and keep the group.
+    #[new]
+    #[pyo3(signature = (group, *, ttl=1, port=None))]
+    fn new(group: &str, ttl: u8, port: Option<u16>) -> PyResult<Self> {
+        let ip = parse_ip(group, "group")?;
+        let invalid = |e: bacnet_types::error::Error| PyValueError::new_err(e.to_string());
+        let mut multicast = BipMulticast::new(ip).map_err(invalid)?;
+        multicast = multicast.with_ttl(ttl).map_err(invalid)?;
+        if let Some(port) = port {
+            multicast = multicast.with_port(port).map_err(invalid)?;
+        }
+        Ok(Self { multicast })
+    }
+
+    /// The group address.
+    #[getter]
+    fn group(&self) -> String {
+        self.multicast.group().to_string()
+    }
+
+    /// The multicast TTL.
+    #[getter]
+    fn ttl(&self) -> u8 {
+        self.multicast.ttl()
+    }
+
+    /// The group's UDP port, or None for the node's own.
+    #[getter]
+    fn port(&self) -> Option<u16> {
+        self.multicast.port()
+    }
+
+    fn __repr__(&self) -> String {
+        let port = self
+            .port()
+            .map_or_else(|| "None".to_string(), |p| p.to_string());
+        format!(
+            "Multicast(group='{}', ttl={}, port={port})",
+            self.group(),
+            self.ttl()
+        )
+    }
+
+    /// Copy and pickle as a call to the constructor with the same settings,
+    /// keywords included, so a copy is equal and checked again.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, ())> {
+        let py = slf.py();
+        let this = slf.get();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("ttl", this.ttl())?;
+        kwargs.set_item("port", this.port())?;
+        let rebuild = py
+            .import("functools")?
+            .getattr("partial")?
+            .call((slf.get_type(), this.group()), Some(&kwargs))?;
+        Ok((rebuild, ()))
+    }
+}
+
+/// The group the `multicast=` keyword asks for: only on B/IP, with an
+/// explicit interface, and in normal mode.
+pub(crate) fn bip_multicast(
+    transport: &str,
+    interface: &str,
+    port: u16,
+    share_port_by_address: bool,
+    mode: &BipMode,
+    multicast: Option<PyRef<'_, PyMulticast>>,
+) -> PyResult<Option<BipMulticast>> {
+    let Some(multicast) = multicast else {
+        return Ok(None);
+    };
+    if transport != "bip" {
+        return Err(PyValueError::new_err(
+            "multicast applies only to transport='bip'",
+        ));
+    }
+    if !matches!(mode, BipMode::Normal) {
+        return Err(PyValueError::new_err(
+            "multicast can't be combined with bbmd or foreign_device",
+        ));
+    }
+    if parse_ip(interface, "interface")?.is_unspecified() {
+        return Err(PyValueError::new_err(
+            "multicast needs an explicit interface address, not 0.0.0.0",
+        ));
+    }
+    if share_port_by_address {
+        return Err(PyValueError::new_err(
+            "multicast can't be combined with share_port_by_address; give each owner on \
+             the host its own port and the group a shared one (Multicast(port=...))",
+        ));
+    }
+    if port == 0 && multicast.multicast.port().is_none() {
+        return Err(PyValueError::new_err(
+            "multicast with port=0 needs the group's own port: Multicast(group, port=...)",
+        ));
+    }
+    Ok(Some(multicast.multicast))
 }
 
 /// The B/IP mode the `bbmd=` and `foreign_device=` keywords ask for: one of

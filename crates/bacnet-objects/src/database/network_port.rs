@@ -243,6 +243,24 @@ impl ObjectDatabase {
         Ok(())
     }
 
+    /// Lend the registered B/IP port the multicast group of its owner, as
+    /// the owner reports it after start ([`IpMulticast`]), or none for an
+    /// owner that can't use multicast. The port then serves
+    /// BACnet_IP_Multicast_Address (#941).
+    ///
+    /// [`IpMulticast`]: bacnet_types::bip_port::IpMulticast
+    #[doc(hidden)]
+    pub fn set_network_port_multicast_internal(
+        &mut self,
+        oid: ObjectIdentifier,
+        multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+    ) -> Result<(), Error> {
+        self.builtin_network_port_mut(&oid)
+            .ok_or_else(|| invalid("selected Network Port authority disappeared"))?
+            .set_multicast_internal(multicast);
+        Ok(())
+    }
+
     /// The Network Port objects, built-in ones only.
     fn network_port_oids(&self) -> Vec<ObjectIdentifier> {
         self.objects

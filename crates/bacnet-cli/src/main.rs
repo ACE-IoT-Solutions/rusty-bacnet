@@ -22,6 +22,7 @@ mod decode;
 mod entry;
 mod foreign;
 mod mstp;
+mod multicast;
 mod output;
 mod parse;
 #[cfg(feature = "tui")]

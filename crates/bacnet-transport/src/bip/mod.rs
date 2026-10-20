@@ -34,7 +34,6 @@ use bacnet_bip_codec as codec;
 #[cfg(test)]
 use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Cast, Link, Mode};
-use bacnet_bip_core::LocalSubnet;
 use bacnet_npdu::NpduLimits;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode, ForeignRegistration};
 use bacnet_types::error::Error;
@@ -63,6 +62,8 @@ pub use foreign_device::ForeignDeviceConfig;
 pub use mode::{BbmdOptions, BipMode};
 mod fanout;
 mod groups;
+mod multicast;
+pub use multicast::BipMulticast;
 mod socket;
 use bbmd_start::{
     initial_bbmd_state, refresh_own_address, subnet_mask_of,
@@ -159,6 +160,9 @@ pub struct BipTransport {
     /// Forwards this BBMD's own broadcasts to BDT peers and foreign devices
     /// (BBMD mode only, created in `start()`).
     own_broadcast: Option<OwnBroadcastForwarder>,
+    /// The B/IP-M group, if any (#941), shared with the Network Port object
+    /// that can change it.
+    multicast: Arc<multicast::MulticastControl>,
     /// Replaces the result of listing the host's local IPv4 addresses (and
     /// its default-route address) that a wildcard bind reads in `start()`.
     #[cfg(test)]
@@ -219,6 +223,7 @@ impl BipTransport {
             send_refusals: Arc::default(),
             fanout_limiter,
             own_broadcast: None,
+            multicast: Arc::new(multicast::MulticastControl::new(interface, port)),
             #[cfg(test)]
             local_ipv4_for_test: None,
             #[cfg(test)]
@@ -434,54 +439,6 @@ impl BipTransport {
         })
     }
 
-    /// The host's local IPv4 addresses and its local address toward the
-    /// default route, as a wildcard bind reads them. A wildcard bind accepts
-    /// unicast only to a listed address, so this fails when the addresses
-    /// cannot be listed or none is usable. A listing error keeps its kind.
-    async fn wildcard_local_ipv4(&self) -> Result<(Vec<Ipv4Addr>, Option<Ipv4Addr>), Error> {
-        const ADVICE: &str = "bind an explicit interface address instead";
-        let (ips, route_ip) = self.host_ipv4().await.map_err(|e| {
-            Error::Transport(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "a B/IP transport bound to 0.0.0.0 could not list the host's IPv4 \
-                     addresses ({e}); {ADVICE}"
-                ),
-            ))
-        })?;
-        if ips.is_empty() {
-            return Err(Error::Transport(std::io::Error::new(
-                std::io::ErrorKind::AddrNotAvailable,
-                format!(
-                    "a B/IP transport bound to 0.0.0.0 found no usable IPv4 address on this \
-                     host; {ADVICE}"
-                ),
-            )));
-        }
-        Ok((ips, route_ip))
-    }
-
-    /// The listed IPv4 addresses and the default-route address, or what a
-    /// test injected. Listing adapters can be slow on a host with many
-    /// virtual adapters, so it runs on a blocking thread.
-    async fn host_ipv4(&self) -> std::io::Result<(Vec<Ipv4Addr>, Option<Ipv4Addr>)> {
-        #[cfg(test)]
-        if let Some(injected) = &self.local_ipv4_for_test {
-            return match injected {
-                Ok(local) => Ok(local.clone()),
-                Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
-            };
-        }
-        tokio::task::spawn_blocking(|| {
-            Ok((
-                crate::local_addresses::ipv4()?,
-                crate::local_addresses::route_ipv4(),
-            ))
-        })
-        .await
-        .map_err(std::io::Error::other)?
-    }
-
     fn spawn_bbmd_fdt_purge_task(bbmd: Arc<std::sync::Mutex<BbmdState>>) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Self::BBMD_FDT_PURGE_INTERVAL);
@@ -526,6 +483,7 @@ impl BipTransport {
         }
         self.own_broadcast = None;
         self.socket = None;
+        self.multicast.detach();
         tasks
     }
 
@@ -592,10 +550,15 @@ impl TransportPort for BipTransport {
         Some(BipPort {
             endpoint: SocketAddrV4::new(ip, self.port),
             mode,
+            multicast: self.supports_multicast().then(|| {
+                Arc::clone(&self.multicast) as Arc<dyn bacnet_types::bip_port::IpMulticast>
+            }),
         })
     }
+    /// The configured broadcast address at the link's port, or a B/IP-M
+    /// node's group and its port (#941).
     fn bip_broadcast_endpoint(&self) -> Option<SocketAddrV4> {
-        Some(SocketAddrV4::new(self.broadcast_address, self.port))
+        Some(self.broadcast_endpoint())
     }
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         self.registration_closed = true;
@@ -623,6 +586,10 @@ impl TransportPort for BipTransport {
             .transpose()?;
         if let Some(foreign) = &foreign_config {
             foreign.check_bbmd(self.broadcast_address, self.interface)?;
+        }
+        let multicast = self.multicast.config();
+        if let Some(group) = &multicast {
+            self.check_multicast_start(group, foreign_config.is_some())?;
         }
 
         socket::probe_interface(self.interface)?;
@@ -692,7 +659,9 @@ impl TransportPort for BipTransport {
             None if wildcard_bind => route_ip.unwrap_or(Ipv4Addr::LOCALHOST),
             None => self.interface,
         };
-        if broadcast_is_own_address(self.broadcast_address, local_ip, &local_unicast_ips) {
+        if multicast.is_none()
+            && broadcast_is_own_address(self.broadcast_address, local_ip, &local_unicast_ips)
+        {
             warn!(
                 broadcast = %self.broadcast_address,
                 "B/IP broadcast address is one of this host's own addresses; \
@@ -709,7 +678,9 @@ impl TransportPort for BipTransport {
             (None, Some(_)) => Mode::Bbmd,
             (None, None) => Mode::Normal,
         };
-        let subnet = LocalSubnet::new(SocketAddrV4::new(self.broadcast_address, local_port));
+        // A B/IP-M node's group stands in for its subnet (Annex J.8.1).
+        let subnet_broadcast = SocketAddrV4::new(self.broadcast_address, local_port);
+        let subnet = multicast::subnet(multicast, subnet_broadcast);
         let link =
             Link::new(SocketAddrV4::new(local_ip, local_port), subnet, mode).map(|mut link| {
                 // NPDUs up to the 1497 octets B/IP carries (Table 6-1, #1622).
@@ -744,6 +715,7 @@ impl TransportPort for BipTransport {
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
         self.socket = Some(Arc::clone(&socket));
         self.node = Some(Arc::clone(&node));
+        let group_swap = self.attach_multicast(&node, subnet_broadcast);
 
         /// NPDU receive channel capacity for high-throughput UDP transports.
         const NPDU_CHANNEL_CAPACITY: usize = 256;
@@ -787,7 +759,9 @@ impl TransportPort for BipTransport {
             listener_interface,
             interface_mismatch_seen: Default::default(),
         };
-        self.recv_task = Some(tokio::spawn(receive_loop(listeners, ingress, recv_ctx)));
+        self.recv_task = Some(tokio::spawn(receive_loop(
+            listeners, ingress, recv_ctx, group_swap,
+        )));
 
         if let Some(bbmd) = self.bbmd.clone() {
             self.bbmd_fdt_purge_task = Some(Self::spawn_bbmd_fdt_purge_task(bbmd));
@@ -853,8 +827,9 @@ impl TransportPort for BipTransport {
         // IP (every host bit set) together with this port's UDP
         // port — a broadcast IP at a different port belongs to a different
         // B/IP network and must not be folded into this link's broadcast.
+        // A B/IP-M node's is its group and the group's port (J.8.1).
         matches!(codec::address_from_slice(mac), Ok(address)
-            if *address.ip() == self.broadcast_address && address.port() == self.port)
+            if address == self.broadcast_endpoint())
     }
 
     fn is_group_destination(&self, mac: &[u8]) -> bool {
@@ -924,6 +899,8 @@ mod malformed_bvll_tests;
 mod management_ack_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod multicast_tests;
 #[cfg(test)]
 mod nat_persist_tests;
 #[cfg(test)]

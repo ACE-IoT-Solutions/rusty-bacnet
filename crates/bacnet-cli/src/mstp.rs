@@ -63,11 +63,14 @@ pub(crate) fn parse_max_info_frames(text: &str) -> Result<u8, String> {
 /// The global flags of the other transports, which MS/TP has no use for:
 /// B/IP's interface, port, broadcast and foreign-device settings, B/IPv6's
 /// and BACnet/SC's.
-const OTHER_TRANSPORT_FLAGS: [&str; 19] = [
+const OTHER_TRANSPORT_FLAGS: [&str; 22] = [
     "interface",
     "port",
     "broadcast",
     "foreign_bbmd",
+    "bip_multicast",
+    "bip_multicast_ttl",
+    "bip_multicast_port",
     "ttl",
     "renewal",
     "ipv6",

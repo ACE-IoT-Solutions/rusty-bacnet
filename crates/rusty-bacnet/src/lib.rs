@@ -69,6 +69,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<hub_bindings::PyScHubCertificateBinding>()?;
     m.add_class::<bip_options::PyForeignDevice>()?;
     m.add_class::<bip_options::PyBbmd>()?;
+    m.add_class::<bip_options::PyMulticast>()?;
     m.add_class::<sc_reconnect::PyScReconnect>()?;
     sc_peer::register(m)?;
     sc_events::register(m)?;

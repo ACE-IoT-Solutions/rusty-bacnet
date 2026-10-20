@@ -17,6 +17,7 @@ use crate::udp_metadata::{
 };
 
 use super::io::{receive, RecvContext};
+use super::multicast::GroupSwap;
 use super::receive_counters::{DropReason, ReceiveDrops};
 use super::socket::{BipSocket, BoundSockets};
 
@@ -87,6 +88,19 @@ impl Listener {
             tap_at_read,
             held: None,
         })
+    }
+
+    /// A B/IP-M group listener an activation opened (multicast.rs): set up
+    /// as a listener that reads in arrival order, keeping `lease` and
+    /// reporting what the node keeps to `tap`. Must run inside a tokio
+    /// runtime. Not used on Windows, whose primary socket joins the group.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(super) fn open_group(
+        socket: socket2::Socket,
+        lease: Option<Arc<()>>,
+        tap: &FrameTap,
+    ) -> io::Result<Self> {
+        Self::open(socket, lease, tap, false, true)
     }
 
     /// The next datagram, which the primary's tap sees as it is read.
@@ -161,6 +175,22 @@ impl Listeners {
             ordered,
             reads: 0,
         })
+    }
+
+    /// Read a B/IP-M node's new group listener in place of the old one, or,
+    /// with `None`, no listener: an activation moved the group or ended it
+    /// (multicast.rs), and opened the listener already, so nothing here can
+    /// fail. A member binds no other listener, so the group's is the first.
+    /// A datagram the old listener read ahead and still held is dropped
+    /// with it: it was sent to the group being left. From here on the
+    /// sockets are read in arrival order, as with any listener; the primary
+    /// reports no receive stamps unless it started with a listener, and
+    /// read order then decides.
+    pub(super) fn replace_group(&mut self, listener: Option<Listener>) {
+        if listener.is_some() {
+            self.ordered = true;
+        }
+        self.broadcast[0] = listener;
     }
 
     /// The socket every send leaves from.
@@ -281,14 +311,31 @@ fn next(reads: &mut u64) -> u64 {
 }
 
 /// Read every datagram the transport's sockets receive, until the primary
-/// fails. A failed broadcast listener is closed, and unicast goes on.
+/// fails. A failed broadcast listener is closed, and unicast goes on. A
+/// B/IP-M group listener that `swap` hands over replaces the one read
+/// before (multicast.rs).
 pub(super) async fn receive_loop(
     mut listeners: Listeners,
     local: IngressAddresses,
     ctx: RecvContext,
+    swap: Option<Arc<GroupSwap>>,
 ) {
     loop {
-        let (source, received) = listeners.recv().await;
+        // Only a transport that can change its group waits on the
+        // hand-off, so the others pay nothing for it. Both arms are
+        // cancel-safe and take no lock across an await: the receive holds
+        // a datagram it read ahead in its listener.
+        let (source, received) = match swap.as_deref() {
+            Some(swap) => tokio::select! {
+                biased;
+                listener = swap.next() => {
+                    listeners.replace_group(listener);
+                    continue;
+                }
+                received = listeners.recv() => received,
+            },
+            None => listeners.recv().await,
+        };
         let arrival = match source {
             None => Arrival::Primary,
             Some(_) => Arrival::BroadcastListener,

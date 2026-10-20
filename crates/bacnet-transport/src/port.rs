@@ -326,13 +326,57 @@ impl std::fmt::Debug for ReceivedNpdu {
 
 /// What a B/IP transport reports for registration as a Network Port
 /// ([`TransportPort::bip_port`]).
-#[derive(Debug, Clone)]
+///
+/// It is `#[non_exhaustive]`: outside this crate, build it with
+/// [`BipPort::new`] and add what the port lends with the `with_` methods.
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct BipPort {
     /// The IPv4 address and UDP port: configured before start, announced
     /// after.
     pub endpoint: std::net::SocketAddrV4,
     /// The B/IP mode, with what its Network Port properties need.
     pub mode: bacnet_types::bip_port::BipPortMode,
+    /// The port's B/IP multicast group (Annex J.8), lent when the transport
+    /// can use multicast at all, on or off: the Network Port then serves
+    /// BACnet_IP_Multicast_Address. `None` for a port that can't.
+    pub multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+}
+
+impl BipPort {
+    /// A port at `endpoint` in `mode`, lending no multicast group.
+    pub fn new(
+        endpoint: std::net::SocketAddrV4,
+        mode: bacnet_types::bip_port::BipPortMode,
+    ) -> Self {
+        Self {
+            endpoint,
+            mode,
+            multicast: None,
+        }
+    }
+
+    /// This port, lending `multicast` as its B/IP multicast group.
+    pub fn with_multicast(
+        self,
+        multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+    ) -> Self {
+        Self { multicast, ..self }
+    }
+}
+
+impl std::fmt::Debug for BipPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let group = self
+            .multicast
+            .as_ref()
+            .map(|multicast| std::net::Ipv4Addr::from(multicast.group()));
+        f.debug_struct("BipPort")
+            .field("endpoint", &self.endpoint)
+            .field("mode", &self.mode)
+            .field("multicast", &group)
+            .finish()
+    }
 }
 
 /// What a B/IPv6 transport reports for registration as a Network Port

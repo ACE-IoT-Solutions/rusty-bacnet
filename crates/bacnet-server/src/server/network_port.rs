@@ -118,6 +118,8 @@ pub(super) fn publish<T: TransportPort + 'static>(
             capacity,
             port.mode,
         )?;
+        // A port that can use B/IP multicast serves its group (#941).
+        db.set_network_port_multicast_internal(oid, port.multicast)?;
     } else {
         let port = transport
             .bip6_port()

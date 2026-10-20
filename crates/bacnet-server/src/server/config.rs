@@ -320,6 +320,24 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
 }
 
 impl BipServerBuilder {
+    /// Set the local interface IP.
+    pub fn interface(mut self, ip: Ipv4Addr) -> Self {
+        self.config.interface = ip;
+        self
+    }
+
+    /// Set the UDP port.
+    pub fn port(mut self, port: u16) -> Self {
+        self.config.port = port;
+        self
+    }
+
+    /// Set the directed broadcast address.
+    pub fn broadcast_address(mut self, addr: Ipv4Addr) -> Self {
+        self.config.broadcast_address = addr;
+        self
+    }
+
     /// Set the B/IP mode: a normal node (the default), a foreign device or
     /// a BBMD (#938). A foreign device's `build()` doesn't wait for its BBMD
     /// to accept the registration; poll
@@ -337,6 +355,20 @@ impl BipServerBuilder {
     /// ```
     pub fn mode(mut self, mode: bacnet_transport::bip::BipMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Make the server a B/IP-M node in `multicast`'s group (Annex J.8), or,
+    /// with `None` (the default), not: its broadcasts go to the group, and
+    /// it takes broadcasts only from the group. Needs an explicit
+    /// [`interface`](Self::interface), and a nonzero [`port`](Self::port)
+    /// unless the group has its own; `build()` fails on what
+    /// [`BipTransport::set_multicast`](bacnet_transport::bip::BipTransport::set_multicast)
+    /// refuses. A registered Network Port serves the group as
+    /// `BACnet_IP_Multicast_Address`, writable when the server answers
+    /// ReinitializeDevice (#941).
+    pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
+        self.multicast = multicast;
         self
     }
 

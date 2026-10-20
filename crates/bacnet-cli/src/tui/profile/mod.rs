@@ -5,6 +5,8 @@ pub(crate) mod checks;
 pub(crate) mod mstp;
 #[cfg(test)]
 mod mstp_tests;
+#[cfg(test)]
+mod multicast_tests;
 pub(crate) mod overrides;
 pub(crate) mod sc;
 #[cfg(test)]
@@ -90,6 +92,19 @@ pub(crate) struct Bip {
     pub(crate) bbmd: Option<SocketAddrV4>,
     pub(crate) ttl: u16,
     pub(crate) renewal_secs: Option<u64>,
+    /// A B/IP-M group to join (Annex J.8, #941); needs an explicit
+    /// interface and no BBMD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) multicast: Option<Ipv4Addr>,
+    /// The multicast TTL, 1 to 255; raise it for a group across routers.
+    /// Left out of the file at its default, so older profiles save
+    /// unchanged.
+    #[serde(skip_serializing_if = "is_default_multicast_ttl")]
+    pub(crate) multicast_ttl: u8,
+    /// The group's own UDP port, when it isn't `port`: several stacks on
+    /// one host at one address each take their own `port` and share this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) multicast_port: Option<u16>,
 }
 
 impl Default for Bip {
@@ -103,8 +118,15 @@ impl Default for Bip {
             bbmd: None,
             ttl: 300,
             renewal_secs: None,
+            multicast: None,
+            multicast_ttl: 1,
+            multicast_port: None,
         }
     }
+}
+
+fn is_default_multicast_ttl(ttl: &u8) -> bool {
+    *ttl == bacnet_transport::bip::BipMulticast::DEFAULT_TTL
 }
 
 /// Whether a profile may arm a write session (`W`).
@@ -234,6 +256,7 @@ impl Profile {
             timeout_ms: 0,
             min_interval_ms: 0,
             foreign_device: None,
+            multicast: None,
             mstp: None,
             sc: false,
             sc_url: None,
@@ -256,6 +279,7 @@ impl Profile {
             args.timeout_ms = b.timeout_ms;
             args.min_interval_ms = b.min_interval_ms;
             args.foreign_device = crate::foreign::config(b.bbmd, b.ttl, b.renewal_secs);
+            args.multicast = b.multicast()?;
         }
         if let Some(sc) = &self.sc {
             let (Some(vmac), Some(uuid)) = (sc.vmac, sc.device_uuid) else {
@@ -312,7 +336,28 @@ impl Bip {
         } else if b.renewal_secs.is_some() {
             return Err("renewal requires a BBMD (clear renewal for Normal mode)".into());
         }
-        Ok(())
+        self.multicast().map(drop)
+    }
+
+    /// The B/IP-M group, checked: class D, TTL 1 to 255, an explicit
+    /// interface and no BBMD.
+    fn multicast(&self) -> Result<Option<bacnet_transport::bip::BipMulticast>, String> {
+        let Some(group) = self.multicast else {
+            if self.multicast_port.is_some() {
+                return Err("multicast_port needs a multicast group".into());
+            }
+            return Ok(None);
+        };
+        if self.bbmd.is_some() {
+            return Err("a multicast group can't be combined with a BBMD".into());
+        }
+        if self.interface.is_unspecified() {
+            return Err("a multicast group needs an explicit interface, not 0.0.0.0".into());
+        }
+        if self.port == 0 && self.multicast_port.is_none() {
+            return Err("a multicast group with port 0 needs a multicast_port".into());
+        }
+        crate::multicast::group(group, self.multicast_ttl, self.multicast_port).map(Some)
     }
 }
 

@@ -49,6 +49,8 @@ struct BipEndpointConfig {
     min_request_interval_ms: u64,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     mode: BipMode,
+    /// The B/IP multicast group `multicast=` asked for (#941).
+    multicast: Option<bacnet_transport::bip::BipMulticast>,
     reinitialize: crate::reinitialize::EndpointReinitialize,
 }
 
@@ -88,6 +90,7 @@ impl BipEndpointConfig {
             .client_timers(config.apdu_timeout_ms, config.apdu_retries)
             .min_request_interval_ms(config.min_request_interval_ms)
             .mode(config.mode.clone())
+            .multicast(config.multicast)
             .database(db)
             .device(config.identity.clone());
         if let Some(instance) = config.registered_network_port {
@@ -210,6 +213,7 @@ impl PyBipEndpoint {
         min_request_interval_ms=0,
         bbmd=None,
         foreign_device=None,
+        multicast=None,
         on_reinitialize=None,
         after_reinitialize=None,
         reinit_password=None
@@ -236,6 +240,7 @@ impl PyBipEndpoint {
         min_request_interval_ms: u64,
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
+        multicast: Option<PyRef<'_, crate::bip_options::PyMulticast>>,
         on_reinitialize: Option<&Bound<'_, PyAny>>,
         after_reinitialize: Option<&Bound<'_, PyAny>>,
         reinit_password: Option<String>,
@@ -246,6 +251,14 @@ impl PyBipEndpoint {
             reinit_password,
         )?;
         let mode = crate::bip_options::bip_mode("bip", bbmd, foreign_device)?;
+        let multicast = crate::bip_options::bip_multicast(
+            "bip",
+            interface,
+            port,
+            share_port_by_address,
+            &mode,
+            multicast,
+        )?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
@@ -303,6 +316,7 @@ impl PyBipEndpoint {
                 registered_network_port,
                 min_request_interval_ms,
                 mode,
+                multicast,
                 reinitialize,
             },
         })

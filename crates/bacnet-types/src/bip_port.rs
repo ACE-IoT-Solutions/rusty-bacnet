@@ -18,6 +18,8 @@
 //! activated ([`BbmdChanges`]). A foreign device's registration is lent
 //! the same way, [`ForeignRegistration`], so a written BBMD address and
 //! time-to-live can be checked and activated ([`ForeignDeviceChanges`]).
+//! A port that can use B/IP multicast lends its group as [`IpMulticast`],
+//! in any mode.
 //!
 //! The module exists only with the `std` feature. Both crates it joins are
 //! hosted, and the shared `Arc` needs atomic compare-and-swap, which
@@ -229,6 +231,45 @@ impl ForeignDeviceChanges {
     /// Whether nothing is waiting.
     pub fn is_empty(&self) -> bool {
         self.bbmd.is_none() && self.subscription_lifetime.is_none()
+    }
+}
+
+/// A live view of a B/IP port's multicast group (Annex J.8): the value of
+/// BACnet_IP_Multicast_Address (Clause 12.56.26).
+///
+/// A transport lends it for a port that can use B/IP multicast, whatever
+/// its mode, and the Network Port object then serves the row (Table 12-71,
+/// footnote 7). As with [`BbmdTables`], the object calls these while a
+/// reader holds the server's object database, so each must answer
+/// promptly, with no I/O beyond a short, non-blocking socket option.
+pub trait IpMulticast: Send + Sync {
+    /// The group the port's broadcasts go to, most significant octet first,
+    /// or 0.0.0.0 while the port doesn't use multicast.
+    fn group(&self) -> [u8; 4];
+
+    /// Check a written group, changing nothing: `Ok` when
+    /// [`activate`](Self::activate) would take it. 0.0.0.0 turns multicast
+    /// off. The default refuses, as for a group that can't change.
+    fn check(&self, group: [u8; 4]) -> Result<(), Error> {
+        let _ = group;
+        Err(write_access_denied())
+    }
+
+    /// Put a written group into effect, as a ReinitializeDevice
+    /// ACTIVATE_CHANGES or WARMSTART asks (Clause 12.56.13): join it and
+    /// send broadcasts to it from now on, or leave multicast with 0.0.0.0.
+    /// It changes nothing and fails when it can't. The default refuses.
+    fn activate(&self, group: [u8; 4]) -> Result<(), Error> {
+        let _ = group;
+        Err(write_access_denied())
+    }
+
+    /// Whether a written group can take effect at all, so the row is
+    /// writable: `true` for a view that implements [`check`](Self::check)
+    /// and [`activate`](Self::activate). The default, `false`, lists the
+    /// row read-only and refuses writes to it.
+    fn can_change(&self) -> bool {
+        false
     }
 }
 

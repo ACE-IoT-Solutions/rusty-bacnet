@@ -52,6 +52,9 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--foreign-bbmd <ADDR>` | | Run as a foreign device registered with this BBMD (`ip` or `ip:port`), so broadcasts reach its network; BACnet/IP only. See [Foreign-device mode](#foreign-device-mode) |
 | `--ttl <N>` | `300` | Time-to-live in seconds of a foreign-device registration, for `--foreign-bbmd`, `register` and `discover --bbmd` |
 | `--renewal <SECS>` | half the TTL | Seconds between `--foreign-bbmd` registrations, less than `--ttl` |
+| `--bip-multicast <GROUP>` | | Join this IPv4 multicast group (class D) as a B/IP-M node: broadcasts go to the group and only the group's are taken. Needs `--interface`; BACnet/IP only, not with `--foreign-bbmd`. See [Multicast mode](#multicast-mode) |
+| `--bip-multicast-ttl <TTL>` | `1` | Multicast TTL for `--bip-multicast`, 1 to 255; raise it for a group that spans IP routers |
+| `--bip-multicast-port <PORT>` | `--port` | UDP port of the `--bip-multicast` group; needed with `--port 0`, and for several stacks on one host at one address |
 | `--ipv6` | | Use BACnet/IPv6 transport |
 | `--ipv6-interface <IP>` | | IPv6 interface address |
 | `--device-instance <N>` | | Device instance whose VMAC the CLI uses on `--ipv6`; needed where the link has no multicast, such as Linux loopback |
@@ -1263,6 +1266,29 @@ on stays open; the TTL can stay long. While the transport manages the
 registration, `register` and `unregister` to that BBMD are refused; use
 another BBMD or a normal-mode CLI. With `--foreign-bbmd`, log lines go to
 stderr so they can't corrupt JSON output.
+
+#### Multicast mode
+
+With `--bip-multicast GROUP`, the CLI's transport joins that IPv4 multicast
+group on `--interface` as a B/IP-M node (Annex J.8, #941): `discover` sends
+its Who-Is to the group, and only broadcasts sent to the group are taken,
+not the subnet's. The interface must be explicit. The multicast TTL is 1 by
+default, which keeps the group on the local network; raise it with
+`--bip-multicast-ttl` when routers forward the group between subnets. The
+group's UDP port is `--port` unless `--bip-multicast-port` names another.
+Several stacks on one host at one address can't share a port, so each takes
+its own `--port` (0 picks one) and they share `--bip-multicast-port`. The
+group can't be in 224.0.0.0/24, and `--bip-multicast` can't be combined
+with `--foreign-bbmd`. A named TUI profile keeps the same settings as
+`multicast`, `multicast_ttl` and `multicast_port` in its `[bip]` table, and
+the profile editor has Group and Group TTL fields (an empty Group clears
+multicast).
+
+```bash
+bacnet --interface 192.0.2.20 --bip-multicast 239.255.66.1 discover
+# Two stacks on one host at one address: their own ports, one group port.
+bacnet --interface 127.0.0.1 --port 0 --bip-multicast 239.255.66.1 --bip-multicast-port 47809 discover
+```
 
 ### Packet Capture
 

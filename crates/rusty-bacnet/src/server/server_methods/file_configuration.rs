@@ -192,6 +192,7 @@ mod tests {
             broadcast_address: "255.255.255.255".into(),
             share_port_by_address: false,
             bip_mode: Default::default(),
+            multicast: None,
             sc_hub: None,
             sc_vmac: None,
             sc_device_uuid: [0; 16],
