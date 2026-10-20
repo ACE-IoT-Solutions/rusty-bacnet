@@ -878,9 +878,12 @@ bacnet --foreign-bbmd 10.0.0.1 discover  # discover through the BBMD as a foreig
 | `--bbmd <ADDR>` | | Register once as a foreign device with this BBMD, for the global `--ttl`, before discovering (BIP only). The Who-Is still goes out as a local broadcast; `--foreign-bbmd` sends it through the BBMD |
 
 ```bash
-bacnet find --name "Zone Temp"           # find objects by name (WhoHas)
-bacnet find --name "Zone Temp" --wait 5  # wait 5 seconds for responses
+bacnet find "Zone Temp"           # find objects by name (WhoHas)
+bacnet find "Zone Temp" --wait 5  # wait 5 seconds for responses
 ```
+
+The name is one word: quote one with spaces. `--name "Zone Temp"` says the
+same; giving both, or neither, is a usage error (exit 2).
 
 `find` sends its Who-Has as a global broadcast, so routers pass it to every
 network, and prints every I-Have that answers within the wait, one row per device

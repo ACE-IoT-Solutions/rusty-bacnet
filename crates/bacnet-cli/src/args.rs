@@ -288,9 +288,17 @@ pub(crate) enum Command {
     /// Find objects by name (WhoHas).
     #[command(alias = "whohas")]
     Find {
-        /// Object name to find.
-        #[arg(long)]
+        /// Object name to find (quote a name with spaces). `--name NAME`
+        /// says the same; give one or the other.
+        #[arg(
+            value_name = "NAME",
+            required_unless_present = "name_flag",
+            conflicts_with = "name_flag"
+        )]
         name: Option<String>,
+        /// Object name to find, as a flag: the same as the positional NAME.
+        #[arg(long = "name", id = "name_flag", value_name = "NAME")]
+        name_flag: Option<String>,
         /// Seconds to wait for responses.
         #[arg(long, default_value_t = 3)]
         wait: u64,
@@ -646,6 +654,36 @@ mod tests {
         assert!(args.foreign_device.is_none());
         let cli = parse(["bacnet", "register", "192.0.2.10", "--ttl", "45"]).unwrap();
         assert_eq!(cli.ttl, 45);
+    }
+
+    /// `find` takes the name as a word or with `--name`, never both and
+    /// never neither, each a usage error (#1872).
+    #[test]
+    fn find_takes_its_name_as_a_word_or_a_flag() {
+        let name = |cli: Cli| match cli.command {
+            Some(Command::Find {
+                name, name_flag, ..
+            }) => name.or(name_flag),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            name(parse(["bacnet", "find", "AHU-1"]).unwrap()).as_deref(),
+            Some("AHU-1")
+        );
+        assert_eq!(
+            name(parse(["bacnet", "find", "--name", "AHU-1"]).unwrap()).as_deref(),
+            Some("AHU-1")
+        );
+        assert_eq!(
+            name(parse(["bacnet", "whohas", "Zone Temp", "--wait", "5"]).unwrap()).as_deref(),
+            Some("Zone Temp")
+        );
+        let both = parse(["bacnet", "find", "AHU-1", "--name", "AHU-2"]).unwrap_err();
+        assert_eq!(both.kind(), ErrorKind::ArgumentConflict);
+        assert_eq!(both.exit_code(), 2);
+        let neither = parse(["bacnet", "find"]).unwrap_err();
+        assert_eq!(neither.kind(), ErrorKind::MissingRequiredArgument);
+        assert_eq!(neither.exit_code(), 2);
     }
 
     /// The guard classifies by canonical name, so an alias resolves to it;
