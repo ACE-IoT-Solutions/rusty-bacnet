@@ -198,9 +198,10 @@ async fn a_temperature_fade_is_sampled_on_the_grid_and_ended_on_time() {
 
 #[tokio::test(start_paused = true)]
 async fn a_colour_fade_reports_each_xy_sample() {
+    // The start drives the output to its default (#1526).
     let mut object = ColorObject::new(1, "CLR-1").unwrap();
     object
-        .set_present_value(BACnetXyColor::new(0.25, 0.5))
+        .set_default_color(BACnetXyColor::new(0.25, 0.5))
         .unwrap();
     let (mut server, oid, sent) = start(Box::new(object)).await;
     advance(1_200).await;

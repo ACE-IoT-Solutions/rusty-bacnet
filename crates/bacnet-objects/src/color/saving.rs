@@ -2,10 +2,12 @@
 //! [`persistence`](super::persistence) for what is kept and why a change
 //! doesn't wait for its save.
 //!
-//! The saves go through the object's own [`SaveWriter`], the writer the
-//! durable objects share ([`crate::durable`]): queued under the database
-//! guard, run on the writer's thread, coalesced while one waits to start.
-//! Nothing is staged. The server's `stop()` asks the object to settle
+//! The saves go through a [`SaveWriter`], the writer type the durable
+//! objects share ([`crate::durable`]); each object with storage owns one,
+//! with its own thread for as long as the object lives. A save is queued
+//! under the database guard, runs on that thread, and is coalesced while one
+//! waits to start. Nothing is staged. A failed save isn't retried at once:
+//! the next change, the server's stop or the object's drop tries again. The server's `stop()` asks the object to settle
 //! (`settle_forgotten_writes`): it queues the value again if the last save
 //! failed and hands back the wait for its saves, joined to the Tags
 //! storage's wait when the object has one. Dropping the object does the
@@ -112,7 +114,12 @@ impl OutputStorage {
             writer,
             counters,
             queued: loaded,
-            current,
+            // The object takes a loaded value as Present_Value (a Color
+            // Temperature clamps it, and its next `note` saves the clamped
+            // one). `current` is only saved again after a failed save, and
+            // every save follows a `note` that sets it, so this is a
+            // starting point, not a value storage can receive unnoted.
+            current: loaded.unwrap_or(current),
             last_failed,
         });
         Ok(loaded)

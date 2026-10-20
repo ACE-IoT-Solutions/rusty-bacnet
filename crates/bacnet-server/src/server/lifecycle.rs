@@ -61,7 +61,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
         let (clock, monotonic) = period::install_database_clocks(&mut db, clock_config);
         // The device is starting: colour outputs go to their defaults
-        // (#1526). The database isn't shared yet, so no lock is taken.
+        // (#1526). The database isn't shared yet, so no lock is taken. This
+        // runs before `network_port::start`, which can still fail; that's
+        // harmless, since the drive is what any start does, and a later
+        // start over the same objects drives them the same way again.
         db.for_each_object_mut(|_, object| object.start_output_internal());
         let membership = crate::membership::install_waker(&mut db);
 

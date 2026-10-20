@@ -100,6 +100,37 @@ class ColorStartTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await server.stop()
 
+    async def test_a_non_zero_default_wins_over_present_value_on_every_boot(self):
+        path = str(self.directory / "warm-2")
+        for boot in ("first", "later"):
+            with self.subTest(boot=boot):
+                server = new_server()
+                server.add_color_temperature(1, "Warm", present_value=5000,
+                                             default_color_temperature=3000,
+                                             storage_path=path)
+                await server.start()
+                try:
+                    self.assertEqual(await self.read(server, WARM, P.PRESENT_VALUE), 3000)
+                    await server.write_property_local(WARM, P.PRESENT_VALUE,
+                                                      PropertyValue.unsigned(6000),
+                                                      source_object=None)
+                finally:
+                    await server.stop()
+
+    async def test_lighting_color_is_none_while_the_colour_object_is_undriven(self):
+        server = new_server()
+        server.add_color_temperature(1, "Warm", default_color_temperature=0)
+        server.add_lighting_output(1, "Light", color_reference=WARM)
+        light = ObjectIdentifier(ObjectType.LIGHTING_OUTPUT, 1)
+        await server.start()
+        try:
+            self.assertIsNone(await server.lighting_color(light))
+            await server.write_property_local(WARM, P.PRESENT_VALUE, PropertyValue.unsigned(2700),
+                                              source_object=None)
+            self.assertEqual(await server.lighting_color(light), (WARM, 2700))
+        finally:
+            await server.stop()
+
     def test_bad_defaults_and_files_are_refused(self):
         server = new_server()
         with self.assertRaises(BacnetProtocolError) as raised:

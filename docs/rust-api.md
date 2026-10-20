@@ -5070,7 +5070,9 @@ while Color_Override is TRUE) as an `OutputColor::Xy` or `OutputColor::Kelvin`,
 with the object it came from. It returns `None` for a reference to an object
 the database doesn't hold: such a reference is stored and served but not
 followed, since the clauses put the companion in the same device and an
-object identifier can't name another one.
+object identifier can't name another one. It also returns `None` while that
+colour object's In_Progress reads NOT_CONTROLLED (#1526): nothing has driven
+it, so its Tracking_Value is no colour to send to hardware.
 
 Fades, ramps and egress timers run on the server's monotonic task, which a
 write that starts one wakes. Tracking_Value is worked out from the clock when
@@ -5189,20 +5191,24 @@ range. In_Progress never reads OTHER.
 Both objects model the device's start (#1526). A new object's In_Progress
 reads NOT_CONTROLLED: nothing has driven its output yet. As the server
 starts, before it shares the database, it calls `start_output` on each colour
-object (an application running one without a server calls it itself):
+object in it. An application running one without a server, or adding one to
+a server already running, calls `start_output` itself; until then the object
+reads NOT_CONTROLLED. An in-process WARMSTART or COLDSTART should call it
+again (see the `ReinitializeHandler` notes); it is safe to repeat.
 
-- An output a Present_Value write, or a Color_Command that set
-  Present_Value, has already driven is left alone, so a value the
-  application sets before the start stands.
 - A non-zero `Default_Color` or `Default_Color_Temperature` (clamped to the
-  limits) becomes Present_Value at once and In_Progress reads IDLE. The
+  limits) becomes Present_Value at once and In_Progress reads IDLE, whatever
+  was set before the start: values set then are configuration, since no
+  peer can write before it, so a first boot and later ones agree. The
   addendum gives the start no fade, so neither `Transition` nor
-  `Default_Fade_Time` applies.
+  `Default_Fade_Time` applies. A start that moves Present_Value clears
+  Value_Source, as `set_min_max` does.
 - A zero default, `Default_Color` (0, 0) or a `Default_Color_Temperature` of
-  0, keeps the value from before the restart (Clauses 12.X.8 and 12.Y.4):
-  the output takes the Present_Value the object brought back from its
-  storage and reads IDLE. With nothing brought back it stays NOT_CONTROLLED
-  until a write drives it; a STOP with nothing moving doesn't.
+  0, keeps the value from before the restart (Clauses 12.X.8 and 12.Y.4).
+  In order, the output takes the Present_Value the object brought back from
+  its storage, else a value set before the start, and reads IDLE. With
+  neither it stays NOT_CONTROLLED until a write drives it; a STOP with
+  nothing moving doesn't. A repeated start keeps the value served then.
 
 `set_default_color` and `set_default_color_temperature` set the defaults as a
 write would. `with_output_persistence(persistence)`, called on a newly built
@@ -5210,18 +5216,19 @@ object, keeps Present_Value in an `Arc<dyn ColorOutputPersistence>`
 (`bacnet_objects::color`) and takes the value saved there for the object as
 Present_Value; `output_restored` says whether it did. The object saves each new
 Present_Value, whether a write, a command, a STOP or the start set it, on its
-own writer thread, the one the durable objects share (see
-`bacnet_objects::durable`), so nothing touches storage under the database
-guard. Unlike a Notification Class's Recipient_List, a change doesn't wait
+own writer thread (see `bacnet_objects::durable`), so nothing touches storage
+under the database guard. As with the other durable objects, each colour
+object with storage keeps that thread, parked while idle, for as long as it
+lives: one thread per object, which matters for a device with many of them. Unlike a Notification Class's Recipient_List, a change doesn't wait
 for its save and isn't refused when the save fails: the value is a live
 output, and it keeps working while storage doesn't. The cost is that the
 stored value can lag the served one after a failed save, so a restart in
 that window brings back an older value. Saves coalesce; a failed one is
 logged, counted (`output_save_counters` returns a `ColorOutputSaveCounters`
 whose `failed_saves` reads the total, as a Notification Forwarder's
-`save_counters` does; take it before the object joins a database), and
-tried again with the next change, at `stop()` (which waits for the saves)
-and as the object drops. `wait_for_output_saves` blocks until the queued
+`save_counters` does; take it before the object joins a database), and not
+retried at once: the next change, `stop()` (which waits for the saves) or
+the object's drop tries again. `wait_for_output_saves` blocks until the queued
 ones have run. Tags storage
 (`with_tags_persistence`) and Present_Value storage combine.
 `FileColorOutputPersistence::new(path)` is the bundled backend: a tagged

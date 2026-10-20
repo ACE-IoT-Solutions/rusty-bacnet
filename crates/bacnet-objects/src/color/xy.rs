@@ -81,6 +81,8 @@ pub struct ColorObject {
     output: OutputStorage,
     /// Whether Present_Value came back from that storage.
     restored: bool,
+    /// The colour storage brought back, until a start takes it.
+    to_restore: Option<BACnetXyColor>,
     engine: Engine<BACnetXyColor>,
 }
 
@@ -106,6 +108,7 @@ impl ColorObject {
             profile: ProfileState::default(),
             output: OutputStorage::default(),
             restored: false,
+            to_restore: None,
             engine: Engine::new(XY_SAMPLE_STEP),
         })
     }
@@ -132,6 +135,7 @@ impl ColorObject {
             Some(ColorOutputValue::Xy(color)) if command::xy_in_range(color) => {
                 self.present_value = color;
                 self.restored = true;
+                self.to_restore = Some(color);
             }
             Some(_) => {
                 return Err(Error::Encoding(
@@ -180,26 +184,38 @@ impl ColorObject {
     }
 
     /// Drive the output as the device's start does (#1526); the server
-    /// calls this for every Color object as it starts. An application
-    /// running the object without a server calls it itself.
+    /// calls this for every Color object in the database as it starts. An
+    /// application running the object without a server, or adding it to a
+    /// server already running, calls it itself.
     ///
-    /// An output a write or command has already driven is left alone.
-    /// Otherwise a non-zero Default_Color becomes Present_Value at once,
-    /// with no fade, since the addendum gives the start no transition. With
-    /// Default_Color (0, 0) the output takes the colour restored from
-    /// storage, and with none restored it stays undriven: In_Progress reads
-    /// NOT_CONTROLLED until a Present_Value or Color_Command write drives it
-    /// (Clauses 12.X.4 and 12.X.8).
+    /// A non-zero Default_Color becomes Present_Value at once, whatever was
+    /// set before the start, with no fade, since the addendum gives the
+    /// start no transition. With Default_Color (0, 0) the output keeps, in
+    /// order: the colour restored from storage; else a colour set before the
+    /// start; else nothing, and In_Progress reads NOT_CONTROLLED until a
+    /// Present_Value or Color_Command write drives it (Clauses 12.X.4 and
+    /// 12.X.8). Values set before the start are configuration, since no
+    /// peer can write until then, so a first boot and later ones agree.
+    ///
+    /// It is safe to call again, as an in-process restart would: the second
+    /// call keeps the current colour for a zero default, since the restored
+    /// one was taken by the first.
     pub fn start_output(&mut self) {
-        if self.engine.is_controlled() {
-            return;
-        }
-        if self.default_color != BACnetXyColor::new(0.0, 0.0) {
-            self.present_value = self.default_color;
+        let restored = self.to_restore.take();
+        let target = if self.default_color != BACnetXyColor::new(0.0, 0.0) {
+            Some(self.default_color)
+        } else {
+            restored
+        };
+        // Without a target, a colour set before the start stays, and with
+        // none the output stays undriven.
+        if let Some(color) = target {
+            if color != self.present_value {
+                self.value_source.forget();
+            }
+            self.present_value = color;
             self.engine.start(None);
             self.output_changed();
-        } else if self.restored {
-            self.engine.take_control();
         }
     }
 

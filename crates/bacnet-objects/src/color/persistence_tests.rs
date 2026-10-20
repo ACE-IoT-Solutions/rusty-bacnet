@@ -244,6 +244,8 @@ fn a_failed_save_is_tried_again_at_settle() {
         .block();
     assert_eq!(storage.held(), Some(ColorOutputValue::Kelvin(5000)));
     assert_eq!(storage.saves.load(Ordering::SeqCst), 2);
+    // The retry landed: the count keeps the one failure and adds nothing.
+    assert_eq!(counters.failed_saves(), 1);
     // Nothing changed and nothing failed: settling saves nothing more.
     ct.durable_writes_internal()
         .unwrap()

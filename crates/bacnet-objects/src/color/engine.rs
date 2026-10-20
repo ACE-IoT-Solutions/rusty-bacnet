@@ -122,17 +122,6 @@ impl<V: TransitionLevel> Engine<V> {
         }
     }
 
-    /// Whether anything has driven the output yet.
-    pub(super) fn is_controlled(&self) -> bool {
-        self.controlled
-    }
-
-    /// The output now shows Present_Value with nothing moving it: a start
-    /// that keeps the value the object came back with.
-    pub(super) fn take_control(&mut self) {
-        self.controlled = true;
-    }
-
     /// Advance the logical clock an object with no monotonic clock keeps.
     pub(super) fn advance_by(&mut self, elapsed: Duration) -> bool {
         self.logical_now = self.logical_now.saturating_add(elapsed);

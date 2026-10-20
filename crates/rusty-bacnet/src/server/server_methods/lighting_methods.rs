@@ -113,12 +113,11 @@ impl BACnetServer {
     /// Present_Value or Color_Command that set it (#1552).
     ///
     /// At start the server drives the output to `default_color` (D65 unless
-    /// given), at once (#1526). `(0.0, 0.0)` instead keeps the colour from
-    /// before the restart, which needs `storage_path` (a `str`): the file the
-    /// object keeps Present_Value in. With nothing stored, In_Progress reads
-    /// NOT_CONTROLLED until a write drives the output. A `present_value`
-    /// drives the output itself, so the start leaves it; a colour storage
-    /// holds wins over it.
+    /// given), at once (#1526), over any `present_value`. `(0.0, 0.0)`
+    /// instead keeps the colour from before the restart, kept in
+    /// `storage_path` (a `str`, the file the object keeps Present_Value in);
+    /// with nothing stored it keeps `present_value`, and with neither,
+    /// In_Progress reads NOT_CONTROLLED until a write drives the output.
     #[pyo3(signature = (
         instance, name, *, present_value=None, default_color=None, storage_path=None,
         value_source_tracking=false, tags=None, profile_location=None, profile_name=None
@@ -208,8 +207,9 @@ impl BACnetServer {
     /// Returns `(source, colour)`: the colour object's identifier and an
     /// `(x, y)` pair for a Color object or an int in kelvin for a Color
     /// Temperature object. `None` when the output has no Color_Reference,
-    /// the reference in use names no object (instance 4194303), or the
-    /// server holds no colour object by that identifier.
+    /// the reference in use names no object (instance 4194303), the server
+    /// holds no colour object by that identifier, or that object reads
+    /// In_Progress NOT_CONTROLLED (#1526).
     fn lighting_color<'py>(
         &self,
         py: Python<'py>,

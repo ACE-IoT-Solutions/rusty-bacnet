@@ -7,12 +7,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::*;
+use crate::command_source::{CommandDeviceBinding, CommandOrigin};
 use crate::traits::BACnetObject;
+use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::constructed::BACnetColorCommand;
+use bacnet_types::enums::ObjectType;
 use bacnet_types::enums::{
     ColorOperation as Op, ColorOperationInProgress as InProgress, PropertyIdentifier as P,
 };
 use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::MacAddr;
 
 /// Storage holding one value in memory.
 #[derive(Default)]
@@ -132,9 +136,51 @@ fn color_start_with_a_non_zero_default_replaces_the_restored_colour_and_saves_it
 }
 
 #[test]
-fn color_start_leaves_an_output_a_write_already_drove() {
+fn color_start_drives_a_non_zero_default_over_a_value_set_before_it() {
     let mut color = ColorObject::new(1, "c").unwrap();
+    color.set_value_source_tracking(true);
     color.set_default_color(red()).unwrap();
+    color
+        .write_property_from(
+            P::PRESENT_VALUE,
+            None,
+            xy_value(green()),
+            None,
+            &CommandOrigin::Remote {
+                actual_address: BACnetAddress {
+                    network_number: 0,
+                    mac_address: MacAddr::from_slice(&[7]),
+                },
+                binding: CommandDeviceBinding::Unique(
+                    ObjectIdentifier::new(ObjectType::DEVICE, 7).unwrap(),
+                ),
+            },
+        )
+        .unwrap();
+    // NONE, as Value_Source reads with no writer to name.
+    let none_source = PropertyValue::ApplicationData(vec![0x08]);
+    assert_ne!(
+        color.read_property(P::VALUE_SOURCE, None).unwrap(),
+        none_source
+    );
+    color.start_output();
+    assert_eq!(
+        color.read_property(P::PRESENT_VALUE, None).unwrap(),
+        xy_value(red())
+    );
+    assert_eq!(in_progress(&color), InProgress::IDLE);
+    // The start moved Present_Value, so no writer's source stands.
+    assert_eq!(
+        color.read_property(P::VALUE_SOURCE, None).unwrap(),
+        none_source
+    );
+}
+
+/// For a zero default: storage's value, else one set before the start.
+#[test]
+fn color_start_with_a_zero_default_keeps_restored_then_configured() {
+    let mut color = ColorObject::new(1, "c").unwrap();
+    color.set_default_color(ZERO).unwrap();
     color.set_present_value(green()).unwrap();
     color.start_output();
     assert_eq!(
@@ -142,6 +188,49 @@ fn color_start_leaves_an_output_a_write_already_drove() {
         xy_value(green())
     );
     assert_eq!(in_progress(&color), InProgress::IDLE);
+
+    let storage = Memory::holding(ColorOutputValue::Xy(red()));
+    let mut color = ColorObject::new(1, "c")
+        .unwrap()
+        .with_output_persistence(storage.clone())
+        .unwrap();
+    color.set_default_color(ZERO).unwrap();
+    color.set_present_value(green()).unwrap();
+    color.start_output();
+    assert_eq!(
+        color.read_property(P::PRESENT_VALUE, None).unwrap(),
+        xy_value(red())
+    );
+    // A second start, as an in-process restart makes, keeps what it serves.
+    color.set_present_value(green()).unwrap();
+    color.start_output();
+    assert_eq!(
+        color.read_property(P::PRESENT_VALUE, None).unwrap(),
+        xy_value(green())
+    );
+    color.wait_for_output_saves();
+    assert_eq!(storage.held(), Some(ColorOutputValue::Xy(green())));
+}
+
+/// A first boot and a later one give the same Present_Value for the same
+/// configuration, whatever storage held.
+#[test]
+fn first_and_later_boots_agree_for_a_non_zero_default() {
+    let boot = |storage: Arc<Memory>| {
+        let mut ct = ColorTemperatureObject::new(1, "ct")
+            .unwrap()
+            .with_output_persistence(storage)
+            .unwrap();
+        ct.set_default_color_temperature(3000).unwrap();
+        ct.set_present_value(5000).unwrap();
+        ct.start_output();
+        ct.read_property(P::PRESENT_VALUE, None).unwrap()
+    };
+    let storage = Arc::new(Memory::default());
+    let first = boot(storage.clone());
+    let later = boot(storage);
+    assert_eq!(first, PropertyValue::Unsigned(3000));
+    assert_eq!(later, first);
 }
 
 #[test]

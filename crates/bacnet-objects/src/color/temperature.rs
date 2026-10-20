@@ -91,6 +91,8 @@ pub struct ColorTemperatureObject {
     output: OutputStorage,
     /// Whether Present_Value came back from that storage.
     restored: bool,
+    /// The temperature storage brought back, until a start takes it.
+    to_restore: Option<u32>,
     engine: Engine<u32>,
 }
 
@@ -122,6 +124,7 @@ impl ColorTemperatureObject {
             profile: ProfileState::default(),
             output: OutputStorage::default(),
             restored: false,
+            to_restore: None,
             engine: Engine::new(KELVIN_SAMPLE_STEP),
         })
     }
@@ -147,6 +150,7 @@ impl ColorTemperatureObject {
             Some(ColorOutputValue::Kelvin(kelvin)) if command::KELVIN.contains(&kelvin) => {
                 self.present_value = self.clamped(kelvin);
                 self.restored = true;
+                self.to_restore = Some(kelvin);
             }
             Some(_) => {
                 return Err(Error::Encoding(
@@ -198,22 +202,28 @@ impl ColorTemperatureObject {
     /// Drive the output as the device's start does (#1526), as a Color
     /// object's [`start_output`](super::ColorObject::start_output) does.
     ///
-    /// An output a write or command has already driven is left alone.
-    /// Otherwise a non-zero Default_Color_Temperature becomes Present_Value
-    /// at once. With a default of 0 the output takes the temperature
-    /// restored from storage, and with none restored it stays undriven:
-    /// In_Progress reads NOT_CONTROLLED until a Present_Value or
-    /// Color_Command write drives it (Clause 12.Y.4).
+    /// A non-zero Default_Color_Temperature becomes Present_Value at once,
+    /// whatever was set before the start. With a default of 0 the output
+    /// keeps, in order: the temperature restored from storage; else one set
+    /// before the start; else nothing, and In_Progress reads NOT_CONTROLLED
+    /// until a Present_Value or Color_Command write drives it (Clause
+    /// 12.Y.4). Either value is clamped to Min_Pres_Value and
+    /// Max_Pres_Value as they stand at the start.
     pub fn start_output(&mut self) {
-        if self.engine.is_controlled() {
-            return;
-        }
-        if self.default_color_temperature != 0 {
-            self.present_value = self.clamped(self.default_color_temperature);
+        let restored = self.to_restore.take();
+        let target = match self.default_color_temperature {
+            0 => restored,
+            default => Some(default),
+        };
+        // Without a target, a temperature set before the start stays, and
+        // with none the output stays undriven.
+        if let Some(kelvin) = target.map(|kelvin| self.clamped(kelvin)) {
+            if kelvin != self.present_value {
+                self.value_source.forget();
+            }
+            self.present_value = kelvin;
             self.engine.start(None);
             self.output_changed();
-        } else if self.restored {
-            self.engine.take_control();
         }
     }
 
