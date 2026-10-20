@@ -544,7 +544,10 @@ async for notification in notifications:
         print(f"  {v['property_id']}: {v['value']}")
 ```
 
-Automatically retries on lagged messages. Raises `StopAsyncIteration` when the client is stopped.
+One that falls behind the client's COV channel loses the oldest
+notifications and adds their count to `missed`. A cancelled `__anext__`
+loses nothing: a notification it was about to deliver comes back first on
+the next call (#1858). Raises `StopAsyncIteration` when the client is stopped.
 
 ---
 
@@ -875,8 +878,9 @@ settings when the primary can't be reached; it needs `reconnect`, since
 without reconnection the client would never turn to it or come back
 (`ValueError` otherwise). While on the failover hub the client keeps trying
 the primary and returns to it once it answers. `sc_connect_timeout_ms`
-(default 10,000, at least 1) bounds each hub dial and Connect-Request. Both are
-keyword-only and SC only.
+(default 10,000, at least 1) bounds each hub dial and Connect-Request; a dial
+that runs out of time raises `BacnetTimeoutError`. Both are keyword-only and
+SC only.
 
 ```python
 client = BACnetClient(
@@ -894,25 +898,42 @@ async with client:
             status = await client.connection_status()  # resync after a gap
 ```
 
-`await client.connection_events()` subscribes to the hub connector's events
-from that point on (the first connection, made during `async with`, is
-already behind it) and returns an `ScEventIterator` of frozen `ScEvent`
-values. `kind` is `connected`, `disconnected`, `connect_failed`,
-`reconnect_attempt`, `failover_engaged`, `primary_restored` or
-`reconnect_gave_up`; `hub` (`primary` or `failover`), `hub_vmac`, `cause`
-(with `cause_detail`, and `error_class`/`error_code` for a NAK), `attempt` and
-`backoff` (seconds) are set where they apply and None elsewhere. Losing the
-primary reads `disconnected`, a `reconnect_attempt` and `connect_failed` per
-failed primary attempt, then `failover_engaged` and `connected` on the
-failover hub.
+`await client.connection_events()` returns an `ScEventIterator` of frozen
+`ScEvent` values. The first call after the client starts gets every event
+since the client was built, beginning with the `connected` of the first
+connection, made during `async with` (#1908). Each later call is a late
+subscriber: it gets the events from that call on, so the first `connected` is
+already behind it. `kind` is `connected`, `disconnected`, `connect_failed`,
+`reconnect_attempt`, `failover_engaged`, `primary_restored`,
+`primary_restore_failed` or `reconnect_gave_up`; `hub` (`primary` or
+`failover`), `hub_vmac`, `cause`, `attempt` and `backoff` (seconds) are set
+where they apply and None elsewhere. Losing the primary reads
+`disconnected`, a `reconnect_attempt` and `connect_failed` per failed primary
+attempt, then `failover_engaged` and `connected` on the failover hub. While on
+the failover hub, each restore probe of the primary that fails reads one
+`primary_restore_failed` (`hub` is `primary`), at most one per restore
+interval (#1828).
+
+`cause` is `local_close`, `peer_close`, `heartbeat_timeout`, `websocket`,
+`tls`, `nak` (with `error_class` and `error_code`), `dial_timeout`,
+`connect_accept_timeout`, `upgrade_refused`, `malformed_result`,
+`unexpected_connect_reply`, `rejection_expired` or `other`; `cause_detail`
+adds text for `websocket`, `tls` and `other`. A `dial_timeout` is a dial
+(TCP, TLS or WebSocket upgrade) that ran out of time, with `dial_stage`
+(`host_lookup`, `tcp_connect`, `tls` or `websocket_upgrade`) saying where; a
+`connect_accept_timeout` is a hub that opened the WebSocket but never answered
+the Connect-Request. An `upgrade_refused` is a server, often a proxy, that
+answered the WebSocket upgrade with the HTTP status in `http_status` (#1839).
 
 The connector never waits for Python. An iterator more than 64 events behind
 loses the oldest and adds their count to its `missed`, then goes on with the
 oldest event it still has; after a gap, `connection_status()` says where the
 link stands. Each `connection_events()` call is an independent subscription.
-A cancel before an event arrives loses nothing, but one that lands while an
-event is being delivered can drop it without counting it in `missed`: prefer
-`async for` over polling `__anext__` with short timeouts. Iteration ends
+A cancel before an event arrives loses nothing, and one that lands while an
+event is being delivered, as a timed-out `asyncio.wait_for` does, puts the
+event back in a one-event slot that the next `__anext__` returns first
+(#1858). A second such event while the slot is full is counted in `missed`.
+Iteration ends
 (`StopAsyncIteration`) once the client stops; the iterator holds no reference
 to the client.
 
@@ -1372,9 +1393,8 @@ Like `connection_events()`, both iterators are independent subscriptions
 that the client never waits for. One that falls behind (256 I-Haves, 64
 network reports) loses the oldest, adds their count to its `missed` and
 goes on with the oldest it still has. As with `connection_events()`, a
-cancel before an item arrives loses nothing, while one that lands as an item
-is being delivered can drop it uncounted, so prefer `async for` over polling
-with short timeouts. Iteration ends once the client stops.
+cancelled `__anext__` loses nothing: an item it was delivering comes back
+first on the next call. Iteration ends once the client stops.
 
 `who_has_replies()` and `discover_routers()` hold the started client for
 their whole `timeout_ms`, so `stop()`, or leaving `async with`, waits for them

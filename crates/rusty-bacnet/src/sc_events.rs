@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use bacnet_transport::sc::{
-    ScActiveHub, ScConnectionState, ScDisconnectCause, ScEvent, ScLinkStatus,
+    ScActiveHub, ScConnectionState, ScDialStage, ScDisconnectCause, ScEvent, ScLinkStatus,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -34,9 +34,9 @@ pub(crate) struct PyScEvent(ScEvent);
 impl PyScEvent {
     fn cause_of(&self) -> Option<&ScDisconnectCause> {
         match &self.0 {
-            ScEvent::Disconnected { cause, .. } | ScEvent::ConnectFailed { cause, .. } => {
-                Some(cause)
-            }
+            ScEvent::Disconnected { cause, .. }
+            | ScEvent::ConnectFailed { cause, .. }
+            | ScEvent::PrimaryRestoreFailed { cause, .. } => Some(cause),
             _ => None,
         }
     }
@@ -45,9 +45,9 @@ impl PyScEvent {
 #[pymethods]
 impl PyScEvent {
     /// `"connected"`, `"disconnected"`, `"connect_failed"`,
-    /// `"reconnect_attempt"`, `"failover_engaged"`, `"primary_restored"`
-    /// or `"reconnect_gave_up"`; `"other"` for an event this binding
-    /// doesn't name yet.
+    /// `"reconnect_attempt"`, `"failover_engaged"`, `"primary_restored"`,
+    /// `"primary_restore_failed"` or `"reconnect_gave_up"`; `"other"` for
+    /// an event this binding doesn't name yet.
     #[getter]
     fn kind(&self) -> &'static str {
         match &self.0 {
@@ -57,13 +57,15 @@ impl PyScEvent {
             ScEvent::ReconnectAttempt { .. } => "reconnect_attempt",
             ScEvent::FailoverEngaged => "failover_engaged",
             ScEvent::PrimaryRestored => "primary_restored",
+            ScEvent::PrimaryRestoreFailed { .. } => "primary_restore_failed",
             ScEvent::ReconnectGaveUp { .. } => "reconnect_gave_up",
             _ => "other",
         }
     }
 
     /// `"primary"` or `"failover"`: the hub connected to, lost, failed or
-    /// being dialled. `None` for the events that name no hub.
+    /// being dialled; `"primary"` for a `"primary_restore_failed"` probe.
+    /// `None` for the events that name no hub.
     #[getter]
     fn hub(&self) -> Option<&'static str> {
         match &self.0 {
@@ -71,6 +73,7 @@ impl PyScEvent {
             | ScEvent::Disconnected { hub, .. }
             | ScEvent::ConnectFailed { hub, .. }
             | ScEvent::ReconnectAttempt { hub, .. } => Some(hub_name(*hub)),
+            ScEvent::PrimaryRestoreFailed { .. } => Some(hub_name(ScActiveHub::Primary)),
             _ => None,
         }
     }
@@ -84,10 +87,11 @@ impl PyScEvent {
         }
     }
 
-    /// Why a `"disconnected"` connection ended or a `"connect_failed"`
-    /// attempt failed: `"local_close"`, `"peer_close"`,
-    /// `"heartbeat_timeout"`, `"websocket"`, `"tls"`, `"nak"`,
-    /// `"connect_timeout"`, `"malformed_result"`,
+    /// Why a `"disconnected"` connection ended, or a `"connect_failed"`
+    /// attempt or `"primary_restore_failed"` probe failed: `"local_close"`,
+    /// `"peer_close"`, `"heartbeat_timeout"`, `"websocket"`, `"tls"`,
+    /// `"nak"`, `"dial_timeout"`, `"connect_accept_timeout"`,
+    /// `"upgrade_refused"`, `"malformed_result"`,
     /// `"unexpected_connect_reply"`, `"rejection_expired"` or `"other"`.
     #[getter]
     fn cause(&self) -> Option<&'static str> {
@@ -98,7 +102,9 @@ impl PyScEvent {
             ScDisconnectCause::WebSocket(_) => "websocket",
             ScDisconnectCause::Tls(_) => "tls",
             ScDisconnectCause::Nak { .. } => "nak",
-            ScDisconnectCause::ConnectTimeout => "connect_timeout",
+            ScDisconnectCause::DialTimeout { .. } => "dial_timeout",
+            ScDisconnectCause::ConnectAcceptTimeout => "connect_accept_timeout",
+            ScDisconnectCause::UpgradeRefused { .. } => "upgrade_refused",
             ScDisconnectCause::MalformedResult => "malformed_result",
             ScDisconnectCause::UnexpectedConnectReply => "unexpected_connect_reply",
             ScDisconnectCause::RejectionExpired => "rejection_expired",
@@ -114,6 +120,35 @@ impl PyScEvent {
             ScDisconnectCause::WebSocket(kind) => Some(kind.to_string()),
             ScDisconnectCause::Tls(failure) => Some(format!("{failure:?}")),
             ScDisconnectCause::Other(text) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    /// For a `"dial_timeout"` cause, the step the dial was in:
+    /// `"host_lookup"`, `"tcp_connect"`, `"tls"` or `"websocket_upgrade"`;
+    /// `None` when the dial did not say.
+    #[getter]
+    fn dial_stage(&self) -> Option<&'static str> {
+        match self.cause_of()? {
+            ScDisconnectCause::DialTimeout {
+                stage: Some(stage), ..
+            } => Some(match stage {
+                ScDialStage::HostLookup => "host_lookup",
+                ScDialStage::TcpConnect => "tcp_connect",
+                ScDialStage::Tls => "tls",
+                ScDialStage::WebSocketUpgrade => "websocket_upgrade",
+                _ => "other",
+            }),
+            _ => None,
+        }
+    }
+
+    /// For an `"upgrade_refused"` cause, the HTTP status the server
+    /// answered the WebSocket upgrade with, such as a proxy's 502.
+    #[getter]
+    fn http_status(&self) -> Option<u16> {
+        match self.cause_of()? {
+            ScDisconnectCause::UpgradeRefused { http_status, .. } => Some(*http_status),
             _ => None,
         }
     }
@@ -255,15 +290,20 @@ impl PyScEventIterator {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let next = self.0.next();
-        crate::py_async::future_into_py(py, async move {
-            next.await
-                .map(PyScEvent)
-                .ok_or_else(|| crate::event_stream::ended("SC connection events"))
-        })
+        crate::py_async::future_into_py_or_put_back(
+            py,
+            async move {
+                next.await
+                    .map(|next| next.map(PyScEvent))
+                    .ok_or_else(|| crate::event_stream::ended("SC connection events"))
+            },
+            self.0.put_back(),
+        )
     }
 
-    /// Events this iterator lost because it fell more than 64 behind. The
-    /// connector never waits for a reader; after a gap, read
+    /// Events this iterator lost: because it fell more than 64 behind, or,
+    /// rarely, because a second cancelled `__anext__` found the redelivery
+    /// slot full. The connector never waits for a reader; after a gap, read
     /// `connection_status()` for where the link stands.
     #[getter]
     fn missed(&self) -> u64 {

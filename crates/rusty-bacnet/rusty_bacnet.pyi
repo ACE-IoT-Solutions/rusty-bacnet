@@ -1730,10 +1730,20 @@ class CovNotification:
 
 
 class CovNotificationIterator:
-    """Async iterator yielding ``CovNotification`` objects."""
+    """Async iterator yielding ``CovNotification`` objects. One that falls
+    behind the client's COV channel loses the oldest and adds them to
+    ``missed``. A cancel that lands while an event is being
+    delivered, as a timed-out ``asyncio.wait_for`` does, puts the event back:
+    the next ``__anext__`` returns it first.
+    Iteration ends when the client stops."""
 
     def __aiter__(self) -> CovNotificationIterator: ...
     def __anext__(self) -> Awaitable[CovNotification]: ...
+    @property
+    def missed(self) -> int:
+        """Notifications lost so far: behind the channel, or, rarely, a
+        second cancelled delivery while one already waits to come back."""
+        ...
 
 
 class IHave:
@@ -1764,8 +1774,8 @@ class IHaveIterator:
     """Async iterator over every I-Have from one ``i_have_events()`` call.
     The client never waits for it: one more than 256 behind loses the
     oldest and adds them to ``missed``. A cancel that lands while an item
-    is being delivered can drop it uncounted; prefer ``async for``.
-    Iteration ends when the client stops."""
+    is being delivered puts it back: the next ``__anext__`` returns it
+    first. Iteration ends when the client stops."""
 
     def __aiter__(self) -> IHaveIterator: ...
     def __anext__(self) -> Awaitable[IHave]: ...
@@ -1830,8 +1840,8 @@ class NetworkReportIterator:
     """Async iterator over the network reports from one
     ``network_reports()`` call. The client never waits for it: one more
     than 64 behind loses the oldest and adds them to ``missed``. A cancel
-    that lands while an item is being delivered can drop it uncounted;
-    prefer ``async for``. Iteration ends when the client stops."""
+    that lands while an item is being delivered puts it back: the next
+    ``__anext__`` returns it first. Iteration ends when the client stops."""
 
     def __aiter__(self) -> NetworkReportIterator: ...
     def __anext__(self) -> Awaitable[NetworkReport]: ...
@@ -2342,15 +2352,19 @@ class ScEvent:
     A failover reads ``disconnected``, then ``reconnect_attempt`` and
     ``connect_failed`` for each failed primary attempt, then
     ``failover_engaged`` and ``connected`` on the failover hub. A primary
-    restore reads ``primary_restored``, then ``connected`` on the primary.
+    restore reads ``primary_restored``, then ``connected`` on the primary;
+    each failed restore probe, at most one per restore interval, reads
+    ``primary_restore_failed`` (#1828).
     """
     @property
     def kind(self) -> Literal["connected", "disconnected", "connect_failed",
                               "reconnect_attempt", "failover_engaged",
-                              "primary_restored", "reconnect_gave_up", "other"]: ...
+                              "primary_restored", "primary_restore_failed",
+                              "reconnect_gave_up", "other"]: ...
     @property
     def hub(self) -> Literal["primary", "failover"] | None:
-        """The hub connected to, lost, failed or being dialled."""
+        """The hub connected to, lost, failed or being dialled; ``primary``
+        for ``primary_restore_failed``."""
         ...
     @property
     def hub_vmac(self) -> bytes | None:
@@ -2358,10 +2372,25 @@ class ScEvent:
         ...
     @property
     def cause(self) -> Literal["local_close", "peer_close", "heartbeat_timeout",
-                               "websocket", "tls", "nak", "connect_timeout",
+                               "websocket", "tls", "nak", "dial_timeout",
+                               "connect_accept_timeout", "upgrade_refused",
                                "malformed_result", "unexpected_connect_reply",
                                "rejection_expired", "other"] | None:
-        """Why a ``disconnected`` link ended or a ``connect_failed`` attempt failed."""
+        """Why a ``disconnected`` link ended, or a ``connect_failed`` attempt
+        or ``primary_restore_failed`` probe failed. ``dial_timeout``: the
+        dial (TCP, TLS, WebSocket upgrade) ran out of time;
+        ``connect_accept_timeout``: the hub never answered the
+        Connect-Request; ``upgrade_refused``: the server answered the
+        upgrade with ``http_status`` (#1839)."""
+        ...
+    @property
+    def dial_stage(self) -> Literal["host_lookup", "tcp_connect", "tls",
+                                    "websocket_upgrade", "other"] | None:
+        """Where a ``dial_timeout`` dial stalled; None when it did not say."""
+        ...
+    @property
+    def http_status(self) -> int | None:
+        """The HTTP status of an ``upgrade_refused``, such as a proxy's 502."""
         ...
     @property
     def cause_detail(self) -> str | None:
@@ -2412,16 +2441,17 @@ class ScEventIterator:
     """Async iterator over ``ScEvent`` from one ``connection_events()`` call.
 
     The connector never waits for it: an iterator more than 64 events behind
-    loses the oldest and adds them to ``missed``. A cancel that lands while
-    an event is being delivered can drop it uncounted: prefer ``async for``
-    over polling ``__anext__`` with short timeouts. Iteration ends when the
-    client stops.
+    loses the oldest and adds them to ``missed``. A cancel that lands while an event is being
+    delivered, as a timed-out ``asyncio.wait_for`` does, puts the event back:
+    the next ``__anext__`` returns it first.
+    Iteration ends when the client stops.
     """
     def __aiter__(self) -> ScEventIterator: ...
     def __anext__(self) -> Awaitable[ScEvent]: ...
     @property
     def missed(self) -> int:
-        """Events lost so far because this iterator fell behind."""
+        """Events lost so far: behind the connector, or, rarely, a second
+        cancelled delivery while one already waits to come back."""
         ...
 
 class BACnetClient:
@@ -3564,11 +3594,12 @@ class BACnetClient:
         ...
 
     def connection_events(self) -> Awaitable[ScEventIterator]:
-        """Subscribe to the SC hub-connector events from now on (#1829); the
-        first connection, made during ``async with``, is already behind it.
-        A slow reader never holds up the connector: see
-        ``ScEventIterator.missed``. RuntimeError for a stopped or non-SC
-        client."""
+        """Subscribe to the SC hub-connector events (#1829). The first call
+        after a start gets the events since the client was built, starting
+        with the first ``connected`` (#1908); a later call is a late
+        subscriber and gets the events from that call on. A slow reader
+        never holds up the connector: see ``ScEventIterator.missed``.
+        RuntimeError for a stopped or non-SC client."""
         ...
 
     def connection_status(self) -> Awaitable[ScLinkStatus]:

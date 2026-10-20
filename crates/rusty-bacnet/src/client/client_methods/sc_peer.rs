@@ -45,18 +45,22 @@ impl BACnetClient {
     }
 
     /// Subscribe to this SC client's hub-connector events (#1829): an
-    /// async iterator of `ScEvent` from now on (the first connection, made
-    /// during `async with`, is already behind it). The connector never
-    /// waits for the iterator; one more than 64 events behind loses the
-    /// oldest and counts them in its `missed`. Iteration ends when the
-    /// client stops. Raises RuntimeError for a stopped or non-SC client.
+    /// async iterator of `ScEvent`. The first call after a start gets the
+    /// events since the client was built, beginning with the first
+    /// `connected` (#1908); each later call gets the events from that call
+    /// on. The connector never waits for the iterator; one more than 64
+    /// events behind loses the oldest and counts them in its `missed`.
+    /// Iteration ends when the client stops. Raises RuntimeError for a
+    /// stopped or non-SC client.
     fn connection_events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         crate::py_async::future_into_py(py, async move {
             let client = started(&inner).await?;
             match client.transport() {
                 AnyTransport::Sc(transport) => Ok(crate::sc_events::PyScEventIterator::new(
-                    transport.connection_events(),
+                    inner
+                        .take_first_sc_events()
+                        .unwrap_or_else(|| transport.connection_events()),
                 )),
                 _ => Err(PyRuntimeError::new_err(
                     "connection_events requires an SC client",

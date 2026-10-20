@@ -122,6 +122,15 @@ pub fn to_py_err(err: Error) -> PyErr {
             });
             py_err
         }
+        // A hub dial that ran out of time is still a timeout (#1839).
+        Error::Transport(io)
+            if matches!(
+                bacnet_transport::sc::ScConnectError::from_io_error(&io),
+                Some(bacnet_transport::sc::ScConnectError::DialTimeout { .. })
+            ) =>
+        {
+            BacnetTimeoutError::new_err(io.to_string())
+        }
         Error::Transport(io) => transport_error(io),
         Error::ReadRangeViolation(rule) => {
             // A strict ReadRange refused an answer that broke a rule (#1531):

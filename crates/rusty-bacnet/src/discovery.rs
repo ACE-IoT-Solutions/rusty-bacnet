@@ -221,11 +221,15 @@ impl PyIHaveIterator {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let next = self.0.next();
-        crate::py_async::future_into_py(py, async move {
-            next.await
-                .map(PyIHave)
-                .ok_or_else(|| ended("I-Have events"))
-        })
+        crate::py_async::future_into_py_or_put_back(
+            py,
+            async move {
+                next.await
+                    .map(|next| next.map(PyIHave))
+                    .ok_or_else(|| ended("I-Have events"))
+            },
+            self.0.put_back(),
+        )
     }
 
     /// I-Haves this iterator lost because it fell more than 256 behind.
@@ -259,11 +263,15 @@ impl PyNetworkReportIterator {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let next = self.0.next();
-        crate::py_async::future_into_py(py, async move {
-            next.await
-                .map(PyNetworkReport)
-                .ok_or_else(|| ended("network reports"))
-        })
+        crate::py_async::future_into_py_or_put_back(
+            py,
+            async move {
+                next.await
+                    .map(|next| next.map(PyNetworkReport))
+                    .ok_or_else(|| ended("network reports"))
+            },
+            self.0.put_back(),
+        )
     }
 
     /// Reports this iterator lost because it fell more than 64 behind.

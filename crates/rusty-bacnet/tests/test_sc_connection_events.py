@@ -3,6 +3,7 @@ import ast
 import asyncio
 import inspect
 import pickle
+import time
 import unittest
 
 import rusty_bacnet
@@ -49,8 +50,8 @@ class ScHubOptionTests(unittest.TestCase):
             self.assertEqual(runtime_arg_kinds(getattr(BACnetClient, name)),
                              stub_arg_kinds(node))
         for cls, names in (
-            ("ScEvent", {"kind", "hub", "hub_vmac", "cause", "cause_detail", "error_class",
-                         "error_code", "attempt", "backoff"}),
+            ("ScEvent", {"kind", "hub", "hub_vmac", "cause", "cause_detail", "dial_stage",
+                         "http_status", "error_class", "error_code", "attempt", "backoff"}),
             ("ScLinkStatus", {"state", "active_hub", "hub_vmac", "heartbeat_age",
                               "heartbeat_rtt"}),
             ("ScEventIterator", {"missed"}),
@@ -100,7 +101,10 @@ class ScConnectionEventTests(ClientScFixture):
         with self.assertRaises(TypeError):
             pickle.dumps(status)
 
+        # The first subscriber starts at the first connect (#1908).
         events = await client.connection_events()
+        first = await asyncio.wait_for(events.__anext__(), 10)
+        self.assertEqual((first.kind, first.hub), ("connected", "primary"))
         # Never read until the end: a subscriber that doesn't keep up must
         # not hold up the connector.
         idle = await client.connection_events()
@@ -151,6 +155,44 @@ class ScConnectionEventTests(ClientScFixture):
         self.assertEqual(idle.missed, 0)
         with self.assertRaises(RuntimeError):
             await client.connection_events()
+
+    async def test_the_first_subscriber_sees_the_first_connected(self):
+        """The first connection_events() call gets the events since the
+        build, from the first connected (#1908); a later call is a late
+        subscriber, with nothing yet."""
+        primary, _server = await self.serving_hub()
+        client = self.client(await primary.url())
+        await asyncio.wait_for(client.__aenter__(), 10)
+        events = await client.connection_events()
+        late = await client.connection_events()
+        first = await asyncio.wait_for(events.__anext__(), 10)
+        self.assertEqual((first.kind, first.hub, first.hub_vmac),
+                         ("connected", "primary", mtls.HUB_VMAC))
+        self.assertEqual(events.missed, 0)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(late.__anext__(), 0.2)
+        # A restart subscribes anew: its first caller sees its own connect.
+        await asyncio.wait_for(client.stop(), 10)
+        await asyncio.wait_for(client.__aenter__(), 10)
+        again = await client.connection_events()
+        first = await asyncio.wait_for(again.__anext__(), 10)
+        self.assertEqual((first.kind, first.hub), ("connected", "primary"))
+
+    async def test_a_cancelled_read_puts_the_event_back(self):
+        """An event whose __anext__ is cancelled while it is delivered, as a
+        timed-out wait_for does, comes back first (#1858)."""
+        primary, _server = await self.serving_hub()
+        client = self.client(await primary.url())
+        await asyncio.wait_for(client.__aenter__(), 10)
+        events = await client.connection_events()
+        pending = events.__anext__()
+        # Blocks the loop: the held connected event is taken and its
+        # delivery queued, then the read is given up.
+        time.sleep(0.3)
+        pending.cancel()
+        first = await asyncio.wait_for(events.__anext__(), 10)
+        self.assertEqual((first.kind, first.hub), ("connected", "primary"))
+        self.assertEqual(events.missed, 0)
 
     async def test_non_sc_and_stopped_clients_refuse(self):
         client = BACnetClient("127.0.0.1", 0)
