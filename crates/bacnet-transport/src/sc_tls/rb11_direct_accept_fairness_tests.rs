@@ -71,6 +71,16 @@ async fn start_listener(
     DirectListener,
     tokio::sync::mpsc::Receiver<crate::port::ReceivedNpdu>,
 ) {
+    start_listener_with(ca, |config| config).await
+}
+
+async fn start_listener_with(
+    ca: &TestCa,
+    configure: impl FnOnce(DirectAcceptConfig) -> DirectAcceptConfig,
+) -> (
+    DirectListener,
+    tokio::sync::mpsc::Receiver<crate::port::ReceivedNpdu>,
+) {
     let (chain, key) = {
         let issuer = rcgen::Issuer::from_params(&ca.params, &ca.key);
         let params =
@@ -90,7 +100,7 @@ async fn start_listener(
     )
     .unwrap();
     let config = DirectAcceptConfig::new(loopback_addr(), LISTENER_VMAC, LISTENER_UUID, tls);
-    DirectListener::start(config).await.unwrap()
+    DirectListener::start(configure(config)).await.unwrap()
 }
 
 async fn dialed_peer(
@@ -187,6 +197,38 @@ async fn bursty_peer_capped_while_other_peer_progresses() {
     listener.stop().await;
     // Counters survive stop.
     assert_eq!(listener.npdu_drop_counts().fairness_drops, 16);
+}
+
+#[tokio::test]
+async fn the_listener_control_rate_limit_drops_a_peers_excess_control_messages() {
+    let ca = TestCa::generate();
+    let (mut listener, mut rx) = start_listener_with(&ca, |config| {
+        config.with_control_rate_limit(crate::sc::ScControlRateLimit::new(2, 1))
+    })
+    .await;
+    let addr = listener.local_addr();
+    let (ws, mut conn) = dialed_peer(&addr, &ca, PEER_A_VMAC).await;
+    // Five route announcements, then one APDU.
+    for _ in 0..5 {
+        send_direct_npdu(&ws, &mut conn, &[0x01, 0x80, 0x01, 0x03, 0xe8]).await;
+    }
+    send_direct_npdu(&ws, &mut conn, &[0x01, 0x00, 0x10, 0x08]).await;
+    let mut received = Vec::new();
+    while received.len() < 3 {
+        let npdu = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("listener made no progress")
+            .unwrap();
+        received.push(npdu.npdu[1] & 0x80 != 0);
+    }
+    assert_eq!(
+        received,
+        [true, true, false],
+        "two control messages, then the APDU"
+    );
+    assert_eq!(listener.npdu_drop_counts().control_rate_drops, 3);
+    drop(ws);
+    listener.stop().await;
 }
 
 #[tokio::test]

@@ -1,6 +1,9 @@
-//! A hardened router admits route changes only from configured router
-//! principals (#518). Every SC envelope comes from a real direct TLS
-//! connection; the router's ports are queue-fed test transports.
+//! The unicast path (#518): a control that reaches the router over a direct
+//! BACnet/SC connection carries its sender's principal, so a hardened router
+//! can take it only from configured router certificates. Every SC envelope
+//! comes from a real direct TLS connection; the router's ports are queue-fed
+//! test transports. Broadcast announcements, which SC relays through a hub
+//! and so carry no principal, are in `sc_router_hub_tests`.
 use super::*;
 use bacnet_network::router::control_policy::{ControlAuthorizer, ControlPolicy};
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort};
@@ -38,7 +41,7 @@ fn port(network_number: u16, inbound: mpsc::Receiver<ReceivedNpdu>) -> RouterPor
 }
 
 #[tokio::test]
-async fn a_hardened_router_learns_routes_only_from_configured_router_principals() {
+async fn a_direct_unicast_control_is_taken_only_from_configured_router_principals() {
     let ca = TestCa::new();
     let mut f = Fixture::new(
         &ca,
@@ -50,9 +53,12 @@ async fn a_hardened_router_learns_routes_only_from_configured_router_principals(
     let seen = Arc::new(StdMutex::new(Vec::new()));
     let (allowed, record) = (routers.clone(), seen.clone());
     let authorizer: ControlAuthorizer = Arc::new(move |context| {
-        record.lock().unwrap().push(context.principal());
+        record
+            .lock()
+            .unwrap()
+            .push(context.sending_peer_principal());
         context
-            .principal()
+            .sending_peer_principal()
             .is_some_and(|peer| allowed.lock().unwrap().contains(&peer))
     });
     let (sc_tx, sc_rx) = mpsc::channel(32);

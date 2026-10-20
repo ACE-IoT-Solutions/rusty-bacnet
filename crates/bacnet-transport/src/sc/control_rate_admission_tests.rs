@@ -21,10 +21,7 @@ fn envelope(source: &MacAddr, npdu: &'static [u8]) -> ReceivedNpdu {
 
 fn admission(burst: u32) -> ScNpduAdmission {
     ScNpduAdmission::new(ScNpduAdmissionPolicy {
-        control_rate: ScControlRateLimit {
-            burst,
-            per_second: 1,
-        },
+        control_rate: ScControlRateLimit::new(burst, 1),
         ..Default::default()
     })
 }
@@ -80,12 +77,43 @@ async fn a_control_flood_is_capped_per_source_without_starving_apdus() {
 #[test]
 fn policy_validation_covers_the_control_rate() {
     let bad = ScNpduAdmissionPolicy {
-        control_rate: ScControlRateLimit {
-            burst: 0,
-            per_second: 1,
-        },
+        control_rate: ScControlRateLimit::new(0, 1),
         ..Default::default()
     };
     assert!(bad.validate().is_err());
     assert!(ScNpduAdmissionPolicy::default().validate().is_ok());
+}
+
+#[test]
+fn a_direct_certificate_keeps_one_budget_across_vmacs() {
+    let admission = admission(4);
+    let (tx, mut rx) = mpsc::channel(SC_NPDU_QUEUE_CAPACITY);
+    let identity = |incarnation| {
+        TransportProvenance::verified_direct_peer(crate::port::DirectScIdentity::verified(
+            [7; 32],
+            incarnation,
+        ))
+    };
+    let mut admit = |vmac: u8, incarnation| {
+        let source = MacAddr::from_slice(&[vmac; 6]);
+        let mut item = envelope(&source, I_AM_ROUTER);
+        item.provenance = identity(incarnation);
+        let outcome = admission.admit(&tx, ScIngressPath::Direct, &source, item, true);
+        while rx.try_recv().is_ok() {}
+        matches!(outcome, AdmissionOutcome::Admitted)
+    };
+    // Two of the burst on one VMAC, then a reconnect on another VMAC: the
+    // same certificate has only the other two left.
+    assert_eq!((0..2).filter(|_| admit(0x10, 1)).count(), 2);
+    assert_eq!((0..5).filter(|_| admit(0x11, 2)).count(), 2);
+    // An unverified source on that same VMAC has its own budget.
+    let source = MacAddr::from_slice(&[0x11; 6]);
+    let outcome = admission.admit(
+        &tx,
+        ScIngressPath::Direct,
+        &source,
+        envelope(&source, I_AM_ROUTER),
+        true,
+    );
+    assert!(matches!(outcome, AdmissionOutcome::Admitted));
 }

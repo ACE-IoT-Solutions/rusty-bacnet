@@ -7,27 +7,34 @@
 //! this bounds how many network-layer messages one source may hand in over
 //! time.
 //!
-//! Each source (ingress path and source VMAC) has a token bucket: `burst`
-//! messages at once, refilling at `per_second`. A message over budget is
-//! dropped before it takes a queue slot. Only network-layer messages are
-//! charged; APDUs, unicast or broadcast, never touch a bucket, so a control
-//! flood can't starve application traffic from that source or any other.
+//! Each source has a token bucket: `burst` messages at once, refilling at
+//! `per_second`. A message over budget is dropped before it takes a queue
+//! slot. Only network-layer messages are charged; APDUs, unicast or
+//! broadcast, never touch a bucket, so a control flood can't starve
+//! application traffic from that source or any other.
 //!
-//! The source VMAC is a scheduling key, not an identity: a hub-relayed VMAC
-//! is the hub's registration of its client, and a direct peer's is the VMAC
-//! it claimed on its own connection.
+//! A direct peer's source is its verified certificate principal, so one
+//! certificate has one budget across VMACs and reconnects. A hub-relayed
+//! message's source is its originating VMAC, the hub's registration of its
+//! client: a hub client that registers under several VMACs, one after
+//! another or through several hubs, gets a budget for each.
 //!
 //! Bounds: at most [`CONTROL_RATE_SOURCES`] buckets. When the table is full,
 //! buckets that have refilled completely are dropped first (losing nothing,
 //! as a new bucket starts full). If none has, a new source shares one
 //! overflow bucket, so sources already tracked keep their own budgets
-//! however many new VMACs appear.
+//! however many new VMACs appear. The price: a sender holding all 256
+//! buckets drained (256 VMACs or certificates, each flooding) leaves every
+//! new source only the shared overflow budget for its control messages until
+//! some bucket refills.
 
 use std::collections::HashMap;
 
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use tokio::time::Instant;
+
+use crate::port::ScPrincipal;
 
 use super::npdu_admission::ScIngressPath;
 
@@ -36,10 +43,15 @@ pub(crate) const CONTROL_RATE_SOURCES: usize = 256;
 
 /// Per-source limit on inbound network-layer messages for one SC NPDU queue.
 ///
-/// The default allows a burst of 32 and 8 a second after it, well above what
-/// a router's start-up announcements and discovery need, and far below a
-/// flood. Both values must be at least 1, and the burst at most 4,096.
+/// The default allows a burst of 256 and 32 a second after it: room for a
+/// router's start-up announcements, discovery and the replies of many
+/// routers on one link, and still about a quarter of the hub's own
+/// per-sender broadcast budget (#644). A site where one peer legitimately
+/// sends more, such as a router fronting many networks that each announce
+/// separately, raises it. Both values must be at least 1, and the burst at
+/// most 4,096.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ScControlRateLimit {
     /// Messages one source may send back to back.
     pub burst: u32,
@@ -49,14 +61,17 @@ pub struct ScControlRateLimit {
 
 impl Default for ScControlRateLimit {
     fn default() -> Self {
-        Self {
-            burst: 32,
-            per_second: 8,
-        }
+        Self::new(256, 32)
     }
 }
 
 impl ScControlRateLimit {
+    /// A limit of `burst` messages at once and `per_second` after it;
+    /// [`validate`](Self::validate) checks it.
+    pub const fn new(burst: u32, per_second: u32) -> Self {
+        Self { burst, per_second }
+    }
+
     /// Check the limit before any transport I/O or state change.
     pub fn validate(&self) -> Result<(), Error> {
         if self.burst == 0 || self.burst > 4096 || self.per_second == 0 {
@@ -108,11 +123,20 @@ impl Bucket {
     }
 }
 
+/// Whose budget a network-layer message spends.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ControlSource {
+    /// A verified direct peer, whatever VMAC it claims.
+    Principal(ScPrincipal),
+    /// Anything else: the ingress path and source VMAC.
+    Vmac(ScIngressPath, MacAddr),
+}
+
 /// The buckets of one SC NPDU queue. Guarded by the admission lock.
 #[derive(Debug)]
 pub(crate) struct ControlRate {
     limit: ScControlRateLimit,
-    sources: HashMap<(ScIngressPath, MacAddr), Bucket>,
+    sources: HashMap<ControlSource, Bucket>,
     overflow: Option<Bucket>,
 }
 
@@ -125,11 +149,10 @@ impl ControlRate {
         }
     }
 
-    /// Whether `source` may hand in one more network-layer message now,
+    /// Whether `key` may hand in one more network-layer message now,
     /// charging its bucket if so.
-    pub(crate) fn admit(&mut self, path: ScIngressPath, source: &MacAddr, now: Instant) -> bool {
+    pub(crate) fn admit(&mut self, key: ControlSource, now: Instant) -> bool {
         let limit = self.limit;
-        let key = (path, source.clone());
         if let Some(bucket) = self.sources.get_mut(&key) {
             return bucket.take(limit, now);
         }

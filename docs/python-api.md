@@ -1037,7 +1037,7 @@ return an owned dictionary with required integer fields:
 
 | Field | Counted NPDU admission failure |
 | --- | --- |
-| `control_rate_drops` | Network-layer message over its source's rate limit (#518) |
+| `control_rate_drops` | Network-layer message over its source's rate limit (#518): a burst of 256, then 32 a second, fixed for now; Python can't change it yet |
 | `fairness_drops` | Per-origin quota reached |
 | `full_drops` | Quota passed but aggregate queue full |
 | `closed_drops` | Receive queue closed |

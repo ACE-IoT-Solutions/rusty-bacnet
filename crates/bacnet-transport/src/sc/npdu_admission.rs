@@ -83,7 +83,7 @@ use tracing::{debug, warn};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 
-use super::control_rate::{is_network_message, ControlRate, ScControlRateLimit};
+use super::control_rate::{is_network_message, ControlRate, ControlSource, ScControlRateLimit};
 use super::{data_attributes, ScTransport, WebSocketPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
 use crate::sc_frame::{ScMessage, Vmac, BROADCAST_VMAC};
@@ -108,6 +108,7 @@ pub(crate) const DEFAULT_NPDU_PER_ORIGIN_LIMIT: usize = 32;
 /// many requests or replies queued as a server would admit from it, while
 /// one origin holds at most 12.5% of the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ScNpduAdmissionPolicy {
     /// Maximum queued, unconsumed NPDUs per `(ingress path, source)` key.
     pub per_origin_limit: usize,
@@ -149,6 +150,7 @@ impl ScNpduAdmissionPolicy {
 /// saturate at `u64::MAX`, and no field is ever an input to an admission
 /// decision. Readable after stop; clones observe the same queue.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ScNpduDropCounts {
     /// Network-layer messages dropped by the per-source control-message rate
     /// limit, before taking a queue slot (#518). Queue-wide total.
@@ -322,11 +324,18 @@ impl ScNpduAdmission {
         debug_assert_eq!(tx.max_capacity(), SC_NPDU_QUEUE_CAPACITY);
         state.reconcile(tx);
         state.debug_check(self.policy.per_origin_limit);
+        // A verified direct peer spends its certificate's budget, so a
+        // VMAC change or reconnect doesn't reset it; anything else spends
+        // its ingress path and VMAC's.
+        let control_source = || match item.provenance.principal() {
+            Some(principal) => ControlSource::Principal(principal),
+            None => ControlSource::Vmac(path, source.clone()),
+        };
         if charge_control
             && is_network_message(&item.npdu)
             && !state
                 .control
-                .admit(path, source, tokio::time::Instant::now())
+                .admit(control_source(), tokio::time::Instant::now())
         {
             saturating_inc(&mut state.drops.control_rate_drops);
             return AdmissionOutcome::ControlRateDrop(item);
@@ -504,8 +513,8 @@ impl<W: WebSocketPort> ScTransport<W> {
     /// Set the per-source limit on inbound network-layer messages
     /// (builder-style; default [`ScControlRateLimit::default`], #518).
     ///
-    /// Each originating VMAC on the hub path, and each direct peer, gets its
-    /// own bucket; a message over budget is dropped silently and counted in
+    /// Each originating VMAC on the hub path, and each direct peer's verified
+    /// certificate whatever VMAC it uses, gets its own bucket; a message over budget is dropped silently and counted in
     /// [`ScNpduDropCounts::control_rate_drops`]. APDUs are never charged.
     /// [`TransportPort::start`](crate::port::TransportPort::start) validates
     /// it before any I/O.

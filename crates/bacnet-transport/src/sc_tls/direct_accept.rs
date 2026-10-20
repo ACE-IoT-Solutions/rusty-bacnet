@@ -168,7 +168,8 @@ impl DirectAcceptConfig {
 
     /// Set the per-peer limit on inbound network-layer messages
     /// (builder-style; default [`ScControlRateLimit::default`](crate::sc::ScControlRateLimit::default), #518).
-    /// A message over budget is dropped silently and counted in
+    /// Each verified peer certificate has one budget, whatever VMAC it uses
+    /// and however often it reconnects. A message over budget is dropped silently and counted in
     /// `control_rate_drops`; APDUs are never charged. [`DirectListener::start`]
     /// validates it before binding.
     pub fn with_control_rate_limit(mut self, limit: crate::sc::ScControlRateLimit) -> Self {

@@ -16,32 +16,71 @@
 //!
 //! ## Who may change routes (#518)
 //!
-//! [`ControlAuthContext::principal`] is the verified leaf certificate of the
-//! direct BACnet/SC peer that sent the control message, the router
-//! advertising or withdrawing routes. A `Hardened` gate with an authorizer
-//! that allows only configured router principals keeps every other node, and
-//! every non-SC or hub-relayed sender, from changing the table:
+//! [`ControlAuthContext::sending_peer_principal`] is the verified leaf
+//! certificate of the direct BACnet/SC peer that handed the message to this
+//! router: the last hop, even when the message carries an SNET. Trusting a
+//! principal trusts everything that peer forwards, and allowing it binds the
+//! routes it announces to the VMAC it sent them from, not to the certificate.
+//!
+//! It is only there for **unicast** controls: Initialize-Routing-Table and its
+//! Ack, Reject-Message-To-Network, and a directed I-Could-Be-Router-To-Network.
+//! The route announcements are broadcasts (Clauses 6.6.3.2, 6.6.3.3):
+//! I-Am-Router-To-Network, and the ones marking a route busy or available
+//! again,
+//! and on BACnet/SC a broadcast always goes through the hub, which relays it
+//! with its own registration of the sender's VMAC and never the sender's
+//! certificate. So a conforming SC router's announcements carry no principal:
+//! a limit of BACnet/SC, not of this router. B/IP, B/IPv6, MS/TP and Ethernet
+//! senders have none either.
+//!
+//! A `Hardened` gate can still require configured router certificates for
+//! the unicast controls on SC ports, and give announcements and other ports
+//! their own rule. On this router ports 0 and 1 are BACnet/SC and port 2 is
+//! B/IP:
 //!
 //! ```
 //! use std::sync::Arc;
-//! use bacnet_network::router::control_policy::{ControlAuthorizer, ControlPolicy};
+//! use bacnet_network::router::control_policy::{
+//!     ControlAuthContext, ControlAuthorizer, ControlPolicy,
+//! };
+//! use bacnet_npdu::NetworkMessageType as Message;
 //! use bacnet_transport::port::ScPrincipal;
+//! use bacnet_types::MacAddr;
 //!
-//! fn routers_only(routers: Vec<ScPrincipal>) -> (ControlPolicy, ControlAuthorizer) {
-//!     let authorizer: ControlAuthorizer = Arc::new(move |context| {
-//!         context.principal().is_some_and(|peer| routers.contains(&peer))
+//! fn site(routers: Vec<ScPrincipal>, announcers: Vec<MacAddr>) -> (ControlPolicy, ControlAuthorizer) {
+//!     const SC_PORTS: [usize; 2] = [0, 1];
+//!     let authorizer: ControlAuthorizer = Arc::new(move |context: &ControlAuthContext| {
+//!         if !SC_PORTS.contains(&context.port_idx) {
+//!             // B/IP has no certificates: keep the standard behaviour.
+//!             return true;
+//!         }
+//!         let unicast = [
+//!             Message::INITIALIZE_ROUTING_TABLE,
+//!             Message::INITIALIZE_ROUTING_TABLE_ACK,
+//!             Message::REJECT_MESSAGE_TO_NETWORK,
+//!             Message::I_COULD_BE_ROUTER_TO_NETWORK,
+//!         ]
+//!         .contains(&context.message_type);
+//!         if unicast {
+//!             context
+//!                 .sending_peer_principal()
+//!                 .is_some_and(|peer| routers.contains(&peer))
+//!         } else {
+//!             // Announcements arrive hub-relayed, with no principal: gate
+//!             // them on the hub-registered VMAC, a claim the hub vouches for.
+//!             announcers.contains(&context.source_mac)
+//!         }
 //!     });
 //!     (ControlPolicy::Hardened, authorizer)
 //! }
+//! # let _ = site(Vec::new(), Vec::new());
 //! ```
 //!
-//! What can't be attributed: a message a BACnet/SC hub relays carries the
-//! hub's registration of its sender's VMAC, never the sender's certificate,
-//! so it has no principal and such a policy refuses it. B/IP, B/IPv6, MS/TP
-//! and Ethernet senders have none either. SC mutual TLS authenticates a
-//! connection; it doesn't authorize route changes. The router stays
-//! `Permissive` unless a policy is configured, for interoperability with
-//! routers that announce themselves as the standard expects.
+//! A VMAC is only as good as the hub's registration: hub certificate bindings
+//! (#800) tie a VMAC to the certificates allowed to register it. SC mutual TLS
+//! authenticates a connection; it doesn't authorize route changes. The router
+//! stays `Permissive` unless a policy is configured, for interoperability
+//! with routers that announce themselves as the standard expects.
 //!
 //! Repeated advertisements circulating in a looped topology are a separate
 //! problem, tracked as #1810 in `bacnet-router-core`. Each SC node also
@@ -122,11 +161,12 @@ pub struct ControlAuthContext {
 }
 
 impl ControlAuthContext {
-    /// The verified leaf certificate of the direct BACnet/SC peer that sent
-    /// this message: the router announcing the change. `None` for a
-    /// hub-relayed message and for any other data link (see the
-    /// [module documentation](self)).
-    pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+    /// The verified leaf certificate of the direct BACnet/SC peer that
+    /// handed this message to the router: the last hop, even when the message
+    /// carries an SNET. `None` for a hub-relayed message, which every SC
+    /// broadcast is, and for any other data link; see the
+    /// [module documentation](self) for which controls can carry one.
+    pub fn sending_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
         self.provenance.principal()
     }
 }
@@ -138,7 +178,10 @@ impl std::fmt::Debug for ControlAuthContext {
             .field("port_network", &self.port_network)
             .field("source_mac_len", &self.source_mac.len())
             .field("provenance", &self.provenance)
-            .field("principal", &self.principal().is_some())
+            .field(
+                "sending_peer_principal",
+                &self.sending_peer_principal().is_some(),
+            )
             .field("trust", &self.trust)
             .field("message_type", &self.message_type)
             .field("vendor_id", &self.vendor_id)
