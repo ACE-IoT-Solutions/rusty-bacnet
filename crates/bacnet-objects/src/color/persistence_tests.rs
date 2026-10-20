@@ -229,10 +229,12 @@ fn a_failed_save_is_tried_again_at_settle() {
         .unwrap()
         .with_output_persistence(storage.clone())
         .unwrap();
-    // The write isn't refused, though its save is.
+    let counters = ct.output_save_counters().expect("storage counts its saves");
+    // The write isn't refused, though its save is; the counter shows it.
     ct.set_present_value(5000).unwrap();
     ct.wait_for_output_saves();
     assert_eq!(storage.held(), None);
+    assert_eq!(counters.failed_saves(), 1);
     // The same value again is not saved again, as long as the last save
     // landed; here it failed, so it is.
     ct.durable_writes_internal()
@@ -251,6 +253,11 @@ fn a_failed_save_is_tried_again_at_settle() {
     ct.set_present_value(5000).unwrap();
     ct.wait_for_output_saves();
     assert_eq!(storage.saves.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.failed_saves(), 1);
+    assert!(ColorObject::new(1, "c")
+        .unwrap()
+        .output_save_counters()
+        .is_none());
 }
 
 #[test]

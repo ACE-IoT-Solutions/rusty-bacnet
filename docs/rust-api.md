@@ -5214,9 +5214,15 @@ own writer thread, the one the durable objects share (see
 `bacnet_objects::durable`), so nothing touches storage under the database
 guard. Unlike a Notification Class's Recipient_List, a change doesn't wait
 for its save and isn't refused when the save fails: the value is a live
-output. Saves coalesce, a failed one is logged and tried again with the next
-change, at `stop()` (which waits for the saves) and as the object drops, and
-`wait_for_output_saves` blocks until the queued ones have run. Tags storage
+output, and it keeps working while storage doesn't. The cost is that the
+stored value can lag the served one after a failed save, so a restart in
+that window brings back an older value. Saves coalesce; a failed one is
+logged, counted (`output_save_counters` returns a `ColorOutputSaveCounters`
+whose `failed_saves` reads the total, as a Notification Forwarder's
+`save_counters` does; take it before the object joins a database), and
+tried again with the next change, at `stop()` (which waits for the saves)
+and as the object drops. `wait_for_output_saves` blocks until the queued
+ones have run. Tags storage
 (`with_tags_persistence`) and Present_Value storage combine.
 `FileColorOutputPersistence::new(path)` is the bundled backend: a tagged
 header with the object identifier, a kind octet and the value (two

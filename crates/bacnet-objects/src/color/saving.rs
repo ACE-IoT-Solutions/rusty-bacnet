@@ -11,7 +11,7 @@
 //! storage's wait when the object has one. Dropping the object does the
 //! same, and the writer's drop waits for those saves.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bacnet_types::error::Error;
@@ -33,8 +33,38 @@ impl Clone for OutputStorage {
     }
 }
 
+/// Lifetime totals of one colour object's Present_Value saves, shared with
+/// the object: take it with `output_save_counters` (on
+/// [`ColorObject`](super::ColorObject) or
+/// [`ColorTemperatureObject`](super::ColorTemperatureObject)) before the
+/// object joins a database, and read it at any time after. A failed save
+/// refuses nothing, so this is where one shows besides the log: until a
+/// retry lands, storage holds an older value than the object serves.
+#[derive(Clone, Debug, Default)]
+pub struct ColorOutputSaveCounters {
+    failed_saves: Arc<AtomicU64>,
+}
+
+impl ColorOutputSaveCounters {
+    /// Saves the persistence refused, each retry that failed included.
+    /// Saturates at `u64::MAX`.
+    pub fn failed_saves(&self) -> u64 {
+        self.failed_saves.load(Ordering::Relaxed)
+    }
+
+    fn record_failure(&self) {
+        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
+        let _ = self
+            .failed_saves
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_add(1))
+            });
+    }
+}
+
 struct OutputStore {
     writer: SaveWriter<ColorOutputSnapshot>,
+    counters: ColorOutputSaveCounters,
     /// The value of the last save queued, or the one loaded.
     queued: Option<ColorOutputValue>,
     /// The value the object holds now, as it last reported it.
@@ -57,6 +87,8 @@ impl OutputStorage {
         let loaded = persistence.load(oid)?.map(|saved| saved.present_value);
         let last_failed = Arc::new(AtomicBool::new(false));
         let failed = Arc::clone(&last_failed);
+        let counters = ColorOutputSaveCounters::default();
+        let counted = counters.clone();
         let writer = SaveWriter::new(
             format!(
                 "bacnet-color-{}-{}-save",
@@ -67,6 +99,7 @@ impl OutputStorage {
             move |_, result| {
                 failed.store(result.is_err(), Ordering::Release);
                 if let Err(error) = result {
+                    counted.record_failure();
                     tracing::warn!(
                         object = %oid,
                         %error,
@@ -77,11 +110,17 @@ impl OutputStorage {
         );
         self.0 = Some(OutputStore {
             writer,
+            counters,
             queued: loaded,
             current,
             last_failed,
         });
         Ok(loaded)
+    }
+
+    /// The save counters, once the object has storage.
+    pub(super) fn counters(&self) -> Option<ColorOutputSaveCounters> {
+        self.0.as_ref().map(|store| store.counters.clone())
     }
 
     /// Whether the object has storage.

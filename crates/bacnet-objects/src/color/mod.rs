@@ -43,6 +43,7 @@ mod xy;
 pub use persistence::{
     ColorOutputPersistence, ColorOutputSnapshot, ColorOutputValue, FileColorOutputPersistence,
 };
+pub use saving::ColorOutputSaveCounters;
 pub use temperature::ColorTemperatureObject;
 pub use xy::ColorObject;
 

@@ -12,7 +12,7 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::engine::Engine;
 use super::persistence::{ColorOutputPersistence, ColorOutputValue};
-use super::saving::{impl_color_durable, OutputStorage};
+use super::saving::{impl_color_durable, ColorOutputSaveCounters, OutputStorage};
 use super::{
     command, metadata, milliseconds, noncommandable_audit_policy, written_transition,
     written_unsigned,
@@ -163,6 +163,12 @@ impl ColorTemperatureObject {
     /// ([`with_output_persistence`](Self::with_output_persistence)).
     pub fn output_restored(&self) -> bool {
         self.restored
+    }
+
+    /// The Present_Value save counters, shared with the object, or `None`
+    /// without storage. Take them before the object joins a database.
+    pub fn output_save_counters(&self) -> Option<ColorOutputSaveCounters> {
+        self.output.counters()
     }
 
     /// Block until the Present_Value saves queued so far have run. Dropping
