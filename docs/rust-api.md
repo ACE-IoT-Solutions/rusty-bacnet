@@ -3474,13 +3474,16 @@ framing, through the shared `bacnet-encoding` codecs.
   opaque bytes, and omitted, deprecated and reserved choices, or trailing bytes
   after a framed element, are rejected. Event_Parameters never set reads as
   the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
-  enrollment evaluates reliability only (Clause 12.12.7): with a monitored
-  reference its TO_FAULT is listed by GetEnrollmentSummary and
-  GetEventInformation and takes an AcknowledgeAlarm. Event_Type follows
+  enrollment evaluates reliability only (Clause 12.12.7), and one left
+  offnormal by earlier parameters returns to NORMAL with a TO_NORMAL. Any
+  enrollment with a monitored reference can fault, whatever its parameters,
+  so GetEnrollmentSummary lists it and its TO_FAULT takes an
+  AcknowledgeAlarm. Event_Type follows
   Event_Parameters (Clause 12.12.5): NONE while they are `none`, the written
   algorithm's type after. The `EventEnrollmentObject::new` type argument
   applies only to the legacy octet-string parameters, which name no
-  algorithm. Fault_Parameters
+  algorithm, and to an opaque alternative at tag 64 or above, which names no
+  standard event type. Fault_Parameters
   without a fault algorithm reads as the context-tagged `none` choice (`08`),
   and writing that clears it. The CHOICE has no application NULL, so a NULL written to it
   succeeds and changes nothing (#1417).

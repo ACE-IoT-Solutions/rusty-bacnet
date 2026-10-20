@@ -449,3 +449,42 @@ fn foreign_high_limit_with_matching_alarm_indicates_offnormal() {
         "the SPECIFIC indicated state is stored (13.2.2.1.4), not left at the ghost"
     );
 }
+
+/// HIGH_LIMIT left by OUT_OF_RANGE under rewritten `none` parameters: the
+/// NONE algorithm has no offnormal states, so the enrollment returns to
+/// NORMAL at once with a distributed TO_NORMAL (#1868).
+#[test]
+fn offnormal_returns_to_normal_under_none_params() {
+    let (mut db, ee_oid) = setup_on_notification_class(
+        EventType::OUT_OF_RANGE,
+        BACnetEventParameter::OutOfRange {
+            time_delay: 0,
+            low_limit: 20.0,
+            high_limit: 80.0,
+            deadband: 2.0,
+        },
+        90,
+    );
+    assert_eq!(
+        evaluate_event_enrollments(&mut db, 1)[0].change.to,
+        EventState::HIGH_LIMIT
+    );
+    db.get_mut(&ee_oid)
+        .unwrap()
+        .write_property(
+            PropertyIdentifier::EVENT_PARAMETERS,
+            None,
+            PropertyValue::ApplicationData(vec![0xF8, 0x14]),
+            None,
+        )
+        .unwrap();
+    let transitions = evaluate_event_enrollments(&mut db, 1);
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0].change.from, EventState::HIGH_LIMIT);
+    assert_eq!(transitions[0].change.to, EventState::NORMAL);
+    assert_eq!(transitions[0].event_type, EventType::NONE);
+    assert!(transitions[0].distribute, "TO_NORMAL is enabled");
+    assert_eq!(event_state(&db, &ee_oid), EventState::NORMAL);
+    // NORMAL stays put under `none`.
+    assert!(evaluate_event_enrollments(&mut db, 1).is_empty());
+}

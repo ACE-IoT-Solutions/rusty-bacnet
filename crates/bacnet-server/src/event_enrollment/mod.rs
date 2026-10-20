@@ -78,8 +78,8 @@ pub use commit::{
 
 use algorithms::{
     eval_change_of_bitstring_struct, eval_change_of_state_struct, eval_change_of_value_struct,
-    eval_floating_limit_struct, eval_legacy_le_arm, eval_out_of_range_struct, extract_bitstring,
-    extract_property_state_value, extract_real, inhibited_arm, ArmEvaluation,
+    eval_floating_limit_struct, eval_legacy_le_arm, eval_none_arm, eval_out_of_range_struct,
+    extract_bitstring, extract_property_state_value, extract_real, inhibited_arm, ArmEvaluation,
 };
 #[cfg(test)]
 use commit::apply_updates;
@@ -719,6 +719,10 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
                 0,
                 eval_legacy_le_arm(data, &monitored_value, current_state, event_type),
             ),
+            // `none` [20] has no offnormal states (#1868).
+            BACnetEventParameter::Opaque { tag: 20, data } if data.is_empty() => {
+                (0, eval_none_arm(current_state))
+            }
             BACnetEventParameter::Opaque { .. } => continue,
             // Extended [9] and any other modeled-but-unmodeled-for-evaluation
             // alternatives produce no transition here.

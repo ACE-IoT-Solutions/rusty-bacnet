@@ -2,7 +2,8 @@
 //! reliability only (Clause 12.12.7, #1868): when its monitored object
 //! faults it goes TO_FAULT, and that transition is listed by
 //! GetEnrollmentSummary (Table 13-2) and GetEventInformation and takes an
-//! AcknowledgeAlarm (Table 13-10). One that can't fault stays out.
+//! AcknowledgeAlarm (Table 13-10). So does one whose parameters the stack
+//! doesn't model, such as access-event. One that can't fault stays out.
 
 use super::enrollment_summary_support::{request, response};
 use super::*;
@@ -13,13 +14,21 @@ use bacnet_services::alarm_event::{
     AcknowledgeAlarmRequest, GetEventInformationAck, GetEventInformationRequest,
 };
 use bacnet_types::bitstring::EventTransitionBits;
-use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
+use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
 use bacnet_types::enums::{EngineeringUnits, EventType, Reliability};
 use bacnet_types::primitives::BACnetTimeStamp;
 
 /// AI-1 out of service, monitored by EE-5 with unset (`none`) parameters,
 /// on Notification Class 5, which wants TO_FAULT acknowledged.
 fn make_db(with_reference: bool) -> (ObjectDatabase, ObjectIdentifier, ObjectIdentifier) {
+    make_db_with(with_reference, None)
+}
+
+/// [`make_db`], with `parameters` set when given.
+fn make_db_with(
+    with_reference: bool,
+    parameters: Option<BACnetEventParameter>,
+) -> (ObjectDatabase, ObjectIdentifier, ObjectIdentifier) {
     let mut db = ObjectDatabase::new();
     let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.write_property(
@@ -40,6 +49,9 @@ fn make_db(with_reference: bool) -> (ObjectDatabase, ObjectIdentifier, ObjectIde
             PropertyIdentifier::PRESENT_VALUE.to_raw(),
         )))
         .unwrap();
+    }
+    if let Some(parameters) = parameters {
+        ee.set_event_parameters(parameters);
     }
     ee.set_event_enable(EventTransitionBits::all());
     ee.set_notification_class(5);
@@ -94,7 +106,22 @@ fn to_fault_stamp(db: &ObjectDatabase, ee_oid: ObjectIdentifier) -> BACnetTimeSt
 
 #[test]
 fn a_none_enrollment_that_faults_is_listed_and_acknowledged() {
-    let (mut db, ee_oid, ai_oid) = make_db(true);
+    fault_listed_and_acknowledged(None, EventType::NONE);
+}
+
+/// access-event [13] is kept as opaque octets and runs no algorithm, but
+/// the enrollment still faults on its monitored object.
+#[test]
+fn an_unmodeled_enrollment_that_faults_is_listed_and_acknowledged() {
+    let access_event = BACnetEventParameter::Opaque {
+        tag: 13,
+        data: vec![0x09, 0x00],
+    };
+    fault_listed_and_acknowledged(Some(access_event), EventType::from_raw(13));
+}
+
+fn fault_listed_and_acknowledged(parameters: Option<BACnetEventParameter>, listed: EventType) {
+    let (mut db, ee_oid, ai_oid) = make_db_with(true, parameters);
     fault(&mut db, ai_oid);
     let report = crate::event_enrollment::evaluate_event_enrollments_report(&mut db, 1);
     assert_eq!(
@@ -114,8 +141,8 @@ fn a_none_enrollment_that_faults_is_listed_and_acknowledged() {
         .entries
         .iter()
         .find(|entry| entry.object_identifier == ee_oid)
-        .expect("a fault-capable `none` enrollment is listed");
-    assert_eq!(entry.event_type, EventType::NONE);
+        .expect("a fault-capable enrollment is listed");
+    assert_eq!(entry.event_type, listed);
     assert_eq!(entry.event_state, EventState::FAULT);
 
     // GetEventInformation shows it with TO_FAULT owed.

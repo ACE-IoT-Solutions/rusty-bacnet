@@ -250,11 +250,13 @@ impl EventEnrollmentObject {
     }
 
     /// Event_Type as Event_Parameters gives it (Clause 12.12.5): each
-    /// framed alternative's tag is its event type (`none`, tag 20, is NONE),
-    /// and the legacy octet layout uses the constructor's type.
+    /// framed alternative's tag is its event type (`none`, tag 20, is NONE).
+    /// The legacy octet layout uses the constructor's type, and so does an
+    /// opaque alternative at tag 64 or above: such a tag names no event type
+    /// the standard reserves (0 to 63), so nothing is derived from it.
     fn event_type(&self) -> EventType {
         match &self.event_parameters {
-            BACnetEventParameter::Opaque { tag: 0xFF, .. } => self.legacy_event_type,
+            BACnetEventParameter::Opaque { tag, .. } if *tag >= 64 => self.legacy_event_type,
             parameters => EventType::from_raw(u32::from(parameters.tag())),
         }
     }
@@ -276,24 +278,18 @@ impl BACnetObject for EventEnrollmentObject {
     }
 
     fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
-        let supported_parameters = match &self.event_parameters {
-            BACnetEventParameter::Extended { .. } => false,
-            // The legacy octet layout evaluates, and `none` configures an
-            // enrollment that evaluates reliability only (Clause 12.12.7):
-            // its TO_FAULT transitions are listed and acknowledged like any
-            // other (#1868). The unmodeled alternatives run nothing.
-            BACnetEventParameter::Opaque { tag, .. } => *tag == 0xFF || *tag == 20,
-            _ => true,
-        } || matches!(
-            self.effective_fault_parameters(),
-            FaultParameters::FaultStatusFlags { .. } | FaultParameters::FaultOutOfRange { .. }
-        );
-        (self.object_property_reference.is_some() && supported_parameters).then_some(
-            EnrollmentSummaryCapability {
+        // Any enrollment with a monitored reference can fault: the monitored
+        // object's fault and the configuration checks run before the
+        // parameters are looked at, so whatever Event_Parameters hold (`none`,
+        // an unmodeled alternative, Extended) its TO_FAULT is listed and
+        // acknowledged (#1868). Event_Detection_Enable FALSE is left to the
+        // summary and acknowledgment paths.
+        self.object_property_reference
+            .is_some()
+            .then(|| EnrollmentSummaryCapability {
                 event_type: self.event_type(),
                 last_transition: self.event_history.last_transition(),
-            },
-        )
+            })
     }
 
     fn read_property(

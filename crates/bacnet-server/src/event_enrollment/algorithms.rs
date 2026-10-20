@@ -756,6 +756,15 @@ fn eval_legacy_le(
     }
 }
 
+/// The `none` alternative: its algorithm has no offnormal states, so an
+/// enrollment left offnormal by earlier parameters returns to NORMAL, with
+/// the usual TO_NORMAL transition. NORMAL and FAULT stay as they are; fault
+/// detection runs before this (#1868).
+pub(crate) fn eval_none_arm(current: EventState) -> ArmEvaluation {
+    let offnormal = current != EventState::NORMAL && current != EventState::FAULT;
+    ArmEvaluation::simple(offnormal.then(|| Indication::plain(EventState::NORMAL, 0)))
+}
+
 /// Route the legacy `Opaque` path through the indication model: the byte
 /// evaluators return a bare state, so "result differs from current" is the
 /// only indication signal available — identical to the pre-#166 transition

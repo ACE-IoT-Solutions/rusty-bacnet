@@ -52,8 +52,11 @@ fn configured_event_enrollment_reports_stored_type_and_shared_commit_coordinate(
     );
 }
 
+/// An enrollment can fault once it monitors something, whatever its
+/// parameters (#1868): an unmodeled Extended one opts in with a reference
+/// and stays out without one. Alert Enrollment never opts in.
 #[test]
-fn unsupported_or_unreferenced_event_enrollment_and_alert_enrollment_opt_out() {
+fn unreferenced_event_enrollment_and_alert_enrollment_opt_out() {
     let mut enrollment = EventEnrollmentObject::new(1, "EE-1", EventType::EXTENDED).unwrap();
     enrollment.set_event_parameters(BACnetEventParameter::Extended {
         vendor_id: 1,
@@ -65,7 +68,13 @@ fn unsupported_or_unreferenced_event_enrollment_and_alert_enrollment_opt_out() {
     enrollment
         .set_object_property_reference(Some(monitored_reference()))
         .unwrap();
-    assert_eq!(enrollment.enrollment_summary_capability_internal(), None);
+    assert_eq!(
+        enrollment
+            .enrollment_summary_capability_internal()
+            .unwrap()
+            .event_type,
+        EventType::EXTENDED
+    );
 
     let alert = AlertEnrollmentObject::new(
         1,

@@ -45,3 +45,22 @@ fn legacy_octet_parameters_serve_the_constructor_event_type() {
         PropertyValue::Enumerated(600)
     );
 }
+
+/// An opaque alternative at tag 64 or above names no standard event type,
+/// so Event_Type isn't derived from it; tag 13 (access-event) is.
+#[test]
+fn opaque_tags_from_64_up_serve_the_constructor_event_type() {
+    let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::OUT_OF_RANGE).unwrap();
+    for (tag, expected) in [(13, 13), (63, 63), (64, 5), (200, 5)] {
+        ee.set_event_parameters(BACnetEventParameter::Opaque {
+            tag,
+            data: vec![0x09, 0x00],
+        });
+        assert_eq!(
+            ee.read_property(PropertyIdentifier::EVENT_TYPE, None)
+                .unwrap(),
+            PropertyValue::Enumerated(expected),
+            "tag {tag}"
+        );
+    }
+}
