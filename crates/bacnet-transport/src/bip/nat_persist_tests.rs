@@ -141,3 +141,118 @@ async fn a_persisted_set_that_breaks_the_nat_rules_falls_back_to_the_config() {
     assert_eq!(rows, [two_hop(own)], "the configured, empty BDT");
     transport.stop().await.unwrap();
 }
+
+/// A BDT-only activation on a BBMD whose NAT setting was never activated
+/// over the network writes the rows alone, so NAT turned on later in the
+/// configuration applies at the next start.
+#[tokio::test]
+async fn a_bdt_only_activation_leaves_the_nat_setting_to_the_config() {
+    let dir = TempDir::new("nat-bdt-only");
+    let path = dir.file("bdt.bin");
+    let mut transport = bbmd(&path, false, Vec::new()).await;
+    let mut changes = BbmdChanges::default();
+    changes.broadcast_distribution_table = Some(vec![
+        row(GLOBAL.ip().octets(), GLOBAL.port()),
+        row(PEER.ip().octets(), PEER.port()),
+    ]);
+    tables(&transport).activate(&changes).unwrap();
+    saved(&transport, 1).await;
+    transport.stop().await.unwrap();
+    assert_eq!(fs::read(&path).unwrap().len(), 20, "rows only");
+
+    let mut restarted = bbmd(&path, true, Vec::new()).await;
+    assert_eq!(
+        running(&restarted),
+        (
+            true,
+            Some(GLOBAL),
+            GLOBAL,
+            vec![two_hop(GLOBAL), two_hop(PEER)]
+        )
+    );
+    restarted.stop().await.unwrap();
+}
+
+/// Once a file carries the NAT setting, a later BDT-only activation keeps
+/// carrying it.
+#[tokio::test]
+async fn a_loaded_nat_setting_is_carried_by_later_saves() {
+    let dir = TempDir::new("nat-carried");
+    let path = dir.file("bdt.bin");
+    let mut transport = bbmd(&path, false, Vec::new()).await;
+    let mut on = BbmdChanges::default();
+    on.nat_traversal = Some(true);
+    on.global_address = Some(BACnetHostNPort::from_socket_addr(GLOBAL.into()));
+    on.broadcast_distribution_table = Some(vec![row(GLOBAL.ip().octets(), GLOBAL.port())]);
+    tables(&transport).activate(&on).unwrap();
+    saved(&transport, 1).await;
+    transport.stop().await.unwrap();
+
+    let mut restarted = bbmd(&path, false, Vec::new()).await;
+    let mut bdt = BbmdChanges::default();
+    bdt.broadcast_distribution_table = Some(vec![
+        row(GLOBAL.ip().octets(), GLOBAL.port()),
+        row(PEER.ip().octets(), PEER.port()),
+    ]);
+    tables(&restarted).activate(&bdt).unwrap();
+    saved(&restarted, 1).await;
+    restarted.stop().await.unwrap();
+    let (_, nat) = bbmd::decode_file(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        nat,
+        Some(bbmd::PersistedNat {
+            enabled: true,
+            global: Some(GLOBAL)
+        })
+    );
+}
+
+fn file_with(rows: &[BdtEntry], trailer: &[u8]) -> Vec<u8> {
+    let mut octets = BytesMut::new();
+    bbmd::encode_bdt_entries(rows, &mut octets);
+    octets.extend_from_slice(trailer);
+    octets.to_vec()
+}
+
+fn trailer(tag: &[u8; 4], enabled: u8) -> Vec<u8> {
+    let mut out = tag.to_vec();
+    out.push(enabled);
+    out.extend_from_slice(&GLOBAL.ip().octets());
+    out.extend_from_slice(&GLOBAL.port().to_be_bytes());
+    out
+}
+
+#[test]
+fn decode_file_reads_rows_and_the_trailer() {
+    let rows = [two_hop(GLOBAL), two_hop(PEER)];
+    let (decoded, nat) = bbmd::decode_file(&file_with(&rows, &trailer(b"NAT1", 1))).unwrap();
+    assert_eq!(decoded, rows);
+    assert_eq!(
+        nat,
+        Some(bbmd::PersistedNat {
+            enabled: true,
+            global: Some(GLOBAL)
+        })
+    );
+    let (decoded, nat) = bbmd::decode_file(&file_with(&rows, &[])).unwrap();
+    assert_eq!((decoded.as_slice(), nat), (rows.as_slice(), None));
+    // An unset global address reads as none.
+    let unset = file_with(&rows, b"NAT1\x00\x00\x00\x00\x00\x00\x00");
+    assert_eq!(
+        bbmd::decode_file(&unset).unwrap().1,
+        Some(bbmd::PersistedNat::default())
+    );
+}
+
+#[test]
+fn decode_file_refuses_a_damaged_file() {
+    let rows = [two_hop(PEER)];
+    // A trailer with another tag.
+    assert!(bbmd::decode_file(&file_with(&rows, &trailer(b"NAT2", 1))).is_err());
+    // An enabled octet that is neither 0 nor 1.
+    assert!(bbmd::decode_file(&file_with(&rows, &trailer(b"NAT1", 2))).is_err());
+    // A trailer cut short.
+    assert!(bbmd::decode_file(&file_with(&rows, &trailer(b"NAT1", 1)[..7])).is_err());
+    // One octet.
+    assert!(bbmd::decode_file(&[0x01]).is_err());
+}

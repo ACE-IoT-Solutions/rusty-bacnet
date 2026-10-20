@@ -131,8 +131,7 @@ async fn an_activated_bdt_is_saved_and_a_restart_loads_it() {
         },
     ];
     bbmd::encode_bdt_entries(&rows, &mut expected);
-    // Then the NAT trailer (#940): off, no global address.
-    expected.extend_from_slice(b"NAT1\x00\x00\x00\x00\x00\x00\x00");
+    // Rows only: no activation has set the NAT rows (#940).
     assert_eq!(fs::read(&path).unwrap(), expected.to_vec());
     assert!(
         temporaries(&dir).is_empty(),

@@ -33,7 +33,7 @@ use std::fmt;
 use std::net::Ipv4Addr;
 use std::path::Path;
 
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::bbmd::{self, BbmdState, BdtEntry, ForeignDevicePolicy, NatTraversal, PersistedNat};
 use bacnet_types::error::Error;
@@ -258,19 +258,6 @@ fn persisted_state(
     ip: Ipv4Addr,
     port: u16,
 ) -> Result<BbmdState, Error> {
-    let configured = PersistedNat {
-        enabled: config.nat.is_some(),
-        global: config.nat.as_ref().map(|nat| nat.global_address),
-    };
-    if nat != configured {
-        info!(
-            persisted_nat = nat.enabled,
-            persisted_global = ?nat.global,
-            configured_nat = configured.enabled,
-            configured_global = ?configured.global,
-            "Using the persisted NAT setting, not the configured one"
-        );
-    }
     let ranges = config
         .nat
         .as_ref()
@@ -279,6 +266,25 @@ fn persisted_state(
     let mut state = BbmdState::new(ip.octets(), port);
     state.set_persisted_nat(nat, ranges)?;
     Ok(state)
+}
+
+/// Warn when the persisted NAT setting now in effect isn't the configured
+/// one, so a changed builder setting that a saved one overrides is visible.
+fn warn_if_overridden(config: &BbmdConfig, nat: PersistedNat) {
+    let configured = PersistedNat {
+        enabled: config.nat.is_some(),
+        global: config.nat.as_ref().map(|nat| nat.global_address),
+    };
+    if nat != configured {
+        warn!(
+            persisted_nat = nat.enabled,
+            persisted_global = ?nat.global,
+            configured_nat = configured.enabled,
+            configured_global = ?configured.global,
+            "Using the persisted NAT setting, not the configured one; \
+             delete the persisted-BDT file to apply the configuration"
+        );
+    }
 }
 
 /// The BBMD state for a first start: the persisted BDT when it loads, else the
@@ -304,6 +310,9 @@ pub(super) fn initial_bbmd_state(
         // or, behind NAT, the NAT rules refuse them.
         match state.and_then(|mut state| state.set_bdt(rows).map(|()| state)) {
             Ok(state) => {
+                if let Some(nat) = nat {
+                    warn_if_overridden(config, nat);
+                }
                 debug!(
                     path = %path.display(),
                     entries = state.bdt().len(),

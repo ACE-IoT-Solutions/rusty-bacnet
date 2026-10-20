@@ -307,7 +307,7 @@ fn nat_options(
     let address = parse_address(&global, "nat_global_address")?;
     if address.ip().is_loopback() {
         return Err(PyValueError::new_err(format!(
-            "nat_global_address must be a public address, got '{global}'"
+            "nat_global_address must be a non-loopback address, got '{global}'"
         )));
     }
     let mut nat = NatTraversal::new(address);

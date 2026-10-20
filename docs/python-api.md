@@ -670,7 +670,7 @@ out of range (a `ttl` outside 1 to 65535, say).
 
 A BBMD behind a NAT router that port-forwards a public address to it (Annex
 J.7.5, #940) takes that address as `nat_global_address`, `"ip"` or
-`"ip:port"`, a public address (loopback is refused). A BDT with rows must
+`"ip:port"`, a non-loopback address (loopback is refused). A BDT with rows must
 then list it as the BBMD's own row, and every row must be two-hop (the plain
 `"ip:port"` form), or `Bbmd` raises `ValueError`; an empty BDT, a BBMD that
 serves foreign devices only, is fine. The Forwarded-NPDUs the BBMD builds name the global address as

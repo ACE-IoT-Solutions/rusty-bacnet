@@ -123,7 +123,11 @@ impl BbmdTables for LiveTables {
     }
 
     /// A new BDT or NAT setting is saved to the persisted-BDT file once it
-    /// is in effect, the two together (#940).
+    /// is in effect (#940). The NAT setting goes with the rows only once it
+    /// is the network's to keep: after an activation that changed
+    /// NAT_Traversal or Global_Address, or when the file loaded at start
+    /// held one. A BDT-only activation otherwise writes the rows alone, so
+    /// a later change to the configured NAT setting still applies.
     /// Only the activation and taking the rows happen under the locks the
     /// caller and this view hold; the file is written on a thread of its
     /// own afterwards (`BdtFile::save_later`). A failed save is logged and counted and doesn't undo the
@@ -137,16 +141,17 @@ impl BbmdTables for LiveTables {
         let Some(file) = file else {
             return lock(&self.state).activate(changes);
         };
+        let nat_changed = changes.nat_traversal.is_some() || changes.global_address.is_some();
         let (generation, rows, nat) = {
             let mut state = lock(&self.state);
             state.activate(changes)?;
             (
                 file.next_generation(),
                 state.configured_bdt(),
-                state.persisted_nat(),
+                state.nat_to_persist(nat_changed),
             )
         };
-        file.save_later(generation, rows, Some(nat));
+        file.save_later(generation, rows, nat);
         Ok(())
     }
 

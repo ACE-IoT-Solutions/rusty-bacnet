@@ -96,6 +96,12 @@ pub(super) struct NatSetting {
     pub(super) enabled: bool,
     pub(super) global: Option<SocketAddrV4>,
     pub(super) private_ranges: Vec<PrivateRange>,
+    /// Whether the persisted-BDT file carries this setting: set when a
+    /// file loaded at start held one, or an activation changed
+    /// BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address. Until then a
+    /// save writes the rows only, so the configured setting still applies
+    /// at the next start.
+    pub(super) saved: bool,
 }
 
 impl NatSetting {
@@ -148,8 +154,12 @@ impl BbmdState {
                 enabled: true,
                 global: Some(nat.global_address),
                 private_ranges: nat.private_ranges,
+                saved: self.nat.saved,
             },
-            None => NatSetting::default(),
+            None => NatSetting {
+                saved: self.nat.saved,
+                ..NatSetting::default()
+            },
         };
         let core = setting.core(setting.enabled, setting.global)?;
         self.tables.set_nat(core, self.local).map_err(nat_error)?;
@@ -169,6 +179,7 @@ impl BbmdState {
             enabled: nat.enabled,
             global: nat.global,
             private_ranges,
+            saved: true,
         };
         if let Some(global) = setting.global {
             check_global(global, true)?;
@@ -179,12 +190,16 @@ impl BbmdState {
         Ok(())
     }
 
-    /// The NAT setting a persisted-BDT file saves.
-    pub(crate) fn persisted_nat(&self) -> super::PersistedNat {
-        super::PersistedNat {
+    /// The NAT setting a persisted-BDT file saves, or `None` for a
+    /// rows-only file: see [`NatSetting::saved`]. `activated` says the
+    /// activation just made changed the NAT setting or the global address,
+    /// which from then on is always saved.
+    pub(crate) fn nat_to_persist(&mut self, activated: bool) -> Option<super::PersistedNat> {
+        self.nat.saved |= activated;
+        self.nat.saved.then_some(super::PersistedNat {
             enabled: self.nat.enabled,
             global: self.nat.global,
-        }
+        })
     }
 
     /// Whether this BBMD runs behind a NAT router.
