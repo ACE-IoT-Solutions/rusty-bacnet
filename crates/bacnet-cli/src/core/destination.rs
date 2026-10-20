@@ -161,7 +161,10 @@ async fn find_routed<T: TransportPort + 'static>(
             Err(_) => {
                 let name = match station {
                     Station::Instance(instance) => format!("{dnet}:{instance}"),
-                    Station::Mac(mac) => super::target::routed_station(dnet, mac),
+                    // The target parser takes no empty MAC, so this is
+                    // always a station; the fallback is never printed.
+                    Station::Mac(mac) => super::target::routed_station(dnet, mac)
+                        .unwrap_or_else(|| format!("{dnet}:*")),
                 };
                 return Err(format!(
                     "device {name} did not answer a Who-Is on network {dnet} within {} ms",

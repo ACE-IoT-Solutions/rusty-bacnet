@@ -17,6 +17,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::destination::Destination;
+use crate::core::target::routed_station;
 use crate::output::{self, OutputFormat};
 
 /// The lifetime a subscription asks for when `--lifetime` is not given.
@@ -164,6 +165,12 @@ pub async fn subscribe_cmd<T: TransportPort + 'static>(
 }
 
 fn print_cov_notification(received: &ReceivedCOVNotification, format: OutputFormat) {
+    println!("{}", cov_notification_text(received, format));
+}
+
+/// A COV notification as printed in `format`. A routed source prints in
+/// the target syntax, `2:0x05`, so it can be typed back as a target.
+fn cov_notification_text(received: &ReceivedCOVNotification, format: OutputFormat) -> String {
     let notification = &received.notification;
     let obj = format!(
         "{}:{}",
@@ -179,14 +186,10 @@ fn print_cov_notification(received: &ReceivedCOVNotification, format: OutputForm
         COVNotificationDelivery::Unconfirmed => "unconfirmed",
     };
     let source_mac = format_mac(&received.source_mac);
-    let source_address = received
-        .source_address
-        .as_ref()
-        .map(|address| format_mac(address));
     let routed_source = received
         .source_network
-        .zip(source_address.as_ref())
-        .map(|(network, address)| format!("{network}:{address}"));
+        .zip(received.source_address.as_ref())
+        .and_then(|(network, address)| routed_station(network, address));
 
     // Decode property values
     let mut props = Vec::new();
@@ -208,7 +211,7 @@ fn print_cov_notification(received: &ReceivedCOVNotification, format: OutputForm
             for (prop, val) in &props {
                 parts.push(format!("  {prop} = {val}"));
             }
-            println!("{}", parts.join("\n"));
+            parts.join("\n")
         }
         OutputFormat::Json => {
             let prop_map: serde_json::Map<String, serde_json::Value> = props
@@ -222,11 +225,11 @@ fn print_cov_notification(received: &ReceivedCOVNotification, format: OutputForm
                 "delivery": delivery,
                 "source_mac": source_mac,
                 "source_network": received.source_network,
-                "source_address": source_address,
+                "routed_source": routed_source,
                 "time_remaining": notification.time_remaining,
                 "values": prop_map,
             });
-            println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            serde_json::to_string(&json).unwrap_or_default()
         }
     }
 }
@@ -300,5 +303,66 @@ mod tests {
         }
         assert_eq!(format_mac(&[2, 0, 0, 0, 0, 1]), "02:00:00:00:00:01");
         assert_eq!(format_mac(&[7]), "07");
+    }
+
+    /// A routed COV source prints as the `NET:0xMAC` target, in the text
+    /// and the JSON forms, and parses back to the same station (#1916).
+    #[test]
+    fn routed_cov_sources_print_as_targets() {
+        use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
+        use bacnet_services::cov::COVNotificationRequest;
+        use bacnet_types::enums::ObjectType;
+        use bacnet_types::primitives::ObjectIdentifier;
+        use bacnet_types::MacAddr;
+
+        use super::cov_notification_text;
+        use crate::output::OutputFormat;
+
+        let received = |routed: Option<(u16, &[u8])>| ReceivedCOVNotification {
+            notification: COVNotificationRequest {
+                subscriber_process_identifier: 1,
+                initiating_device_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 2001)
+                    .unwrap(),
+                monitored_object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1)
+                    .unwrap(),
+                time_remaining: 300,
+                list_of_values: Vec::new(),
+            },
+            source_mac: MacAddr::from_slice(&[10, 0, 1, 1, 0xBA, 0xC0]),
+            source_network: routed.map(|(network, _)| network),
+            source_address: routed.map(|(_, mac)| MacAddr::from_slice(mac)),
+            delivery: COVNotificationDelivery::Unconfirmed,
+        };
+        let stations: [(u16, &[u8], &str); 2] = [
+            (2, &[5], "2:0x05"),
+            (3, &[127, 0, 0, 1, 0xC3, 0x50], "3:0x7F000001C350"),
+        ];
+        for (network, mac, text) in stations {
+            let notification = received(Some((network, mac)));
+            let table = cov_notification_text(&notification, OutputFormat::Table);
+            assert!(
+                table.contains(&format!("\n  routed-source = {text}")),
+                "{table}"
+            );
+            let json: serde_json::Value =
+                serde_json::from_str(&cov_notification_text(&notification, OutputFormat::Json))
+                    .unwrap();
+            assert_eq!(json["routed_source"], text);
+            assert_eq!(json["source_network"], network);
+            assert!(json.get("source_address").is_none());
+            assert_eq!(
+                parse_target(text),
+                Ok(Target::RoutedMac {
+                    dnet: network,
+                    mac: mac.to_vec()
+                })
+            );
+        }
+        // A local source has no routed source.
+        let local = received(None);
+        assert!(!cov_notification_text(&local, OutputFormat::Table).contains("routed-source"));
+        let json: serde_json::Value =
+            serde_json::from_str(&cov_notification_text(&local, OutputFormat::Json)).unwrap();
+        assert!(json["routed_source"].is_null());
     }
 }

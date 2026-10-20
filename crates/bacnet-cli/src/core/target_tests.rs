@@ -119,10 +119,10 @@ fn addresses_format_per_transport_and_read_back() {
     assert_eq!(AddressStyle::of(&bip), AddressStyle::Bip);
 }
 
-/// A routed station as the TUI's tables and the capture show it parses
-/// back to the same station: B/IP, MS/TP and SC MACs, and every network
-/// number a router can name. The broadcast form `NET:*` is display-only
-/// and does not parse.
+/// A routed station as the TUI's tables, the capture and the one-shot
+/// whois and subscribe show it parses back to the same station: B/IP,
+/// MS/TP and SC MACs, and every network number a router can name. An
+/// empty MAC names no station and gets no target form.
 #[test]
 fn routed_stations_read_back_as_the_same_target() {
     let stations: [(u16, &[u8], &str); 4] = [
@@ -132,7 +132,7 @@ fn routed_stations_read_back_as_the_same_target() {
         (65534, &[0xAB, 0xCD, 0xEF, 1, 2, 3], "65534:0xABCDEF010203"),
     ];
     for (network, station, text) in stations {
-        let shown = routed_station(network, station);
+        let shown = routed_station(network, station).unwrap();
         assert_eq!(shown, text);
         assert_eq!(
             parse_target(&shown),
@@ -143,9 +143,11 @@ fn routed_stations_read_back_as_the_same_target() {
             "{shown}"
         );
     }
-    // A broadcast on a network is shown, never typed back: it is not a target.
-    assert_eq!(routed_station(2, &[]), "2:*");
+    // An empty MAC is a broadcast on that network, not a station: it has
+    // no target form, so nothing prints one as a station.
+    assert_eq!(routed_station(2, &[]), None);
     assert!(parse_target("2:*").is_err());
+    assert!(parse_target("2:0x").is_err());
 }
 
 #[cfg(feature = "tui")]

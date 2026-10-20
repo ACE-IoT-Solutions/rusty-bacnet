@@ -16,7 +16,14 @@ use bacnet_transport::sc_frame::{
 use bytes::Bytes;
 
 use super::decode_npdu_layer;
-use crate::core::target::{hex, routed_station as routed};
+use crate::core::target::{hex, routed_station};
+
+/// A routed address as the capture shows it: a station in the target
+/// syntax, `2:0x05`, and a broadcast on a network (an empty MAC), which
+/// names no station, as `2:*`.
+fn routed(network: u16, mac: &[u8]) -> String {
+    routed_station(network, mac).unwrap_or_else(|| format!("{network}:*"))
+}
 
 /// The link a frame was captured on, which decides how its octets are read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

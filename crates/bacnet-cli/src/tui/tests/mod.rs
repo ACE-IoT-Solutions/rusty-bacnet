@@ -171,7 +171,7 @@ pub(super) fn routed_row(
     vendor_id: u16,
     seen: u64,
 ) -> DeviceRow {
-    let address = crate::core::target::routed_station(network, station);
+    let address = crate::core::target::routed_station(network, station).expect("a station");
     let mut row = row(instance, &address, vendor_id, seen);
     row.network = Some(network);
     row.via = Some(router.into());
