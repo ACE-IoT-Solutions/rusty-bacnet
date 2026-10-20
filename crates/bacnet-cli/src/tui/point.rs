@@ -29,6 +29,9 @@ pub(crate) struct NameAsk {
     /// Its address as the device table shows it, echoed in the results so
     /// each name is filed under the device it was asked about (#1931).
     pub(crate) address: String,
+    /// The Max_APDU_Length_Accepted from its I-Am, which sizes the name
+    /// reads' batches (#1930); `None` when the device table lacks it.
+    pub(crate) max_apdu: Option<u32>,
     /// The objects, in the order the screen shows them.
     pub(crate) objects: Vec<ObjectIdentifier>,
     /// The device answered again after a timeout: names it didn't answer

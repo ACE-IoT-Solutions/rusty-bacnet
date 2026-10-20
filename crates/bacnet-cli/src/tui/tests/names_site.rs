@@ -15,7 +15,7 @@ use super::*;
 use crate::tui::app::browser::ViewState;
 use crate::tui::app::names::Name;
 use crate::tui::point::{BrowseResult, NameAsk, ReqId};
-use crate::tui::worker::browse::names::NAMES_PER_RPM;
+use crate::tui::worker::browse::names::names_per_rpm;
 use crate::tui::worker::session::SessionOptions;
 
 const LAB: u32 = 100;
@@ -59,6 +59,7 @@ fn ask(req: ReqId, objects: &[ObjectIdentifier]) -> Command {
     let asks = vec![NameAsk {
         device: LAB,
         address: "10.0.0.100:47808".into(),
+        max_apdu: None,
         objects: objects.to_vec(),
         retry: false,
     }];
@@ -88,7 +89,7 @@ async fn names_are_read_through_the_gate_and_the_rate_cap() {
         site.app.name_of(LAB, ao1),
         Some(&Name::Known("Damper".into()))
     );
-    let rpms = asked.len().div_ceil(NAMES_PER_RPM);
+    let rpms = asked.len().div_ceil(names_per_rpm(Some(1476), 1476));
     assert_eq!(services_since(&site, before), vec![RPM; rpms]);
     assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
     let requests = site.hub.requests_to(&LAB_MAC);
@@ -346,6 +347,66 @@ async fn rows_scrolled_past_are_not_read() {
     );
     assert!(first.len() > 10);
     site.stop().await;
+}
+
+/// A lab device with Max_APDU_Length_Accepted `max_apdu` and `count`
+/// analog inputs, each named with the longest name the TUI keeps.
+fn long_names(max_apdu: u16, count: u32) -> Server {
+    let identity = super::lab::lab_identity(LAB)
+        .with_max_apdu(max_apdu)
+        .unwrap();
+    let mut db = bacnet_objects::database::ObjectDatabase::new();
+    let config = bacnet_objects::device::DeviceConfig {
+        identity,
+        ..Default::default()
+    };
+    let device = bacnet_objects::device::DeviceObject::new(config).unwrap();
+    db.add(Box::new(device)).unwrap();
+    for instance in 1..=count {
+        let name = format!("{instance:0>128}");
+        let units = bacnet_types::enums::EngineeringUnits::PERCENT;
+        let object = bacnet_objects::analog::AnalogInputObject::new(instance, name, units).unwrap();
+        db.add(Box::new(object)).unwrap();
+    }
+    Server {
+        database: Some(db),
+        max_apdu: Some(max_apdu),
+        ..Server::bare(100, LAB)
+    }
+}
+
+/// Name batches fit the device's Max_APDU from its I-Am (#1930): three
+/// 128-character names a request from a 480-octet device, ten from a
+/// 1476-octet one, each answered by its RPM, none refused for size.
+#[tokio::test(start_paused = true)]
+async fn batches_are_sized_from_the_devices_max_apdu() {
+    for (max_apdu, per_batch) in [(480, 3), (1476, 10)] {
+        let mut site =
+            Site::start_with(vec![long_names(max_apdu, 20)], ClientLimits::default()).await;
+        site.who_is("", 1).await;
+        let row = site.app.devices.get(LAB).expect("the device answered");
+        assert_eq!(row.max_apdu, u32::from(max_apdu));
+        let objects: Vec<_> = (1..=20).map(ai).collect();
+        let asks = vec![NameAsk {
+            device: LAB,
+            address: row.address.clone(),
+            max_apdu: Some(row.max_apdu),
+            objects: objects.clone(),
+            retry: false,
+        }];
+        site.send(vec![Command::Names { req: 1_000, asks }]).await;
+        known(&mut site, objects.clone()).await;
+        let rpms = objects.len().div_ceil(per_batch);
+        assert_eq!(services_since(&site, 0), vec![RPM; rpms], "{max_apdu}");
+        for object in &objects {
+            let name = site.app.name_of(LAB, *object);
+            assert!(
+                matches!(name, Some(Name::Known(text)) if text.len() == 128),
+                "{max_apdu} {object}: {name:?}"
+            );
+        }
+        site.stop().await;
+    }
 }
 
 /// Rows withdrawn while their batch waits on a silent device are not

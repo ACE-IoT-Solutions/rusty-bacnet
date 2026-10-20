@@ -7,8 +7,9 @@
 //! every other read) waits for a free slot in the cap before it takes a
 //! batch from the queue, so a row withdrawn while it waited costs neither
 //! a request nor a slot. It reads the batch with one ReadPropertyMultiple
-//! (Clause 15.7) or, from a device that refused it, one ReadProperty each
-//! (Clause 15.5), and reports it.
+//! (Clause 15.7) sized to fit an unsegmented answer ([`names_per_rpm`]) or,
+//! from a device that refused it, one ReadProperty each (Clause 15.5), and
+//! reports it.
 //!
 //! The queue remembers what is being read and, for a while, what was
 //! answered ([`ANSWERS_KEPT`]), so a set the UI sends before an answer
@@ -31,13 +32,37 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use super::read::{rpm_failure, unreachable, Halt, Reader, RpmFailure};
-use crate::tui::format::name_text;
+use crate::tui::format::{name_text, MAX_NAME_CHARS};
 use crate::tui::point::{ReadName, ReqId};
 
-/// Names one ReadPropertyMultiple asks for. Small enough that the answer
-/// usually fits an unsegmented APDU; when it doesn't, that batch is read
-/// one name at a time.
-pub(crate) const NAMES_PER_RPM: usize = 8;
+/// The most names one ReadPropertyMultiple asks for, however large the
+/// APDUs both sides take: a smaller batch gives way sooner to the device's
+/// other reads.
+pub(crate) const MAX_NAMES_PER_RPM: usize = 16;
+
+/// The octets one name takes in a ReadPropertyMultiple answer (Clause
+/// 21, ReadAccessResult) when it is [`MAX_NAME_CHARS`] octets long: the
+/// object identifier (5), the result list's opening and closing tags (2),
+/// the property identifier (2), the value's opening and closing tags (2),
+/// the character string's tag and length (2) and its character set (1).
+/// A longer encoding (two or more octets a character) may not fit; that
+/// batch is then read one name at a time.
+pub(crate) const NAME_RESULT_OCTETS: usize = 5 + 2 + 2 + 2 + 2 + 1 + MAX_NAME_CHARS;
+
+/// An unsegmented ComplexACK's header: type, invoke ID and service.
+const ACK_HEADER: usize = 3;
+
+/// Names one ReadPropertyMultiple asks for (#1930): as many as fit an
+/// unsegmented answer no longer than the device takes (`device`, its
+/// Max_APDU_Length_Accepted from the I-Am, when known) and this client
+/// takes (`client`), from 1 to [`MAX_NAMES_PER_RPM`].
+pub(crate) fn names_per_rpm(device: Option<u32>, client: u16) -> usize {
+    let client = usize::from(client);
+    let limit = device.map_or(client, |device| {
+        client.min(usize::try_from(device).unwrap_or(usize::MAX))
+    });
+    (limit.saturating_sub(ACK_HEADER) / NAME_RESULT_OCTETS).clamp(1, MAX_NAMES_PER_RPM)
+}
 
 /// Answers a device's queue remembers, the oldest forgotten first (#1931).
 /// They cover answers still on their way to the UI when it asks again, and
@@ -59,6 +84,8 @@ pub(crate) struct NameQueue {
     /// The device's address when the UI asked, echoed in the reports so
     /// the UI files each name under the device it asked about.
     address: String,
+    /// The device's Max_APDU_Length_Accepted, when the UI knows it.
+    max_apdu: Option<u32>,
     /// Names to read, in the order the UI shows them.
     wanted: VecDeque<ObjectIdentifier>,
     /// Those of the batch being read that the UI still wants. A row
@@ -84,6 +111,7 @@ impl NameQueue {
         &mut self,
         req: ReqId,
         address: String,
+        max_apdu: Option<u32>,
         objects: Vec<ObjectIdentifier>,
     ) -> bool {
         if address != self.address {
@@ -92,6 +120,7 @@ impl NameQueue {
             self.address = address;
         }
         self.req = req;
+        self.max_apdu = max_apdu;
         self.wanted.clear();
         let objects = &objects[..objects.len().min(MAX_WANTED)];
         self.in_flight.retain(|object| objects.contains(object));
@@ -141,6 +170,18 @@ impl NameQueue {
     fn take_replay(&mut self) -> (ReqId, String, Vec<NameRead>) {
         let replay = std::mem::take(&mut self.replay);
         (self.req, self.address.clone(), replay)
+    }
+
+    /// The next batch, now in flight, with the request and address to
+    /// report it under: one name, or by RPM as many as [`names_per_rpm`]
+    /// allows for the device and a client taking `client` octets.
+    fn take_batch(&mut self, rpm: bool, client: u16) -> (ReqId, String, Vec<ObjectIdentifier>) {
+        let count = if rpm {
+            names_per_rpm(self.max_apdu, client)
+        } else {
+            1
+        };
+        self.take(count)
     }
 
     /// The next batch of up to `count`, now in flight, with the request
@@ -243,8 +284,8 @@ pub(crate) async fn read_names<T, F, R>(
         if reader.free_turn().await.is_err() {
             return;
         }
-        let per_batch = if reader.rpm { NAMES_PER_RPM } else { 1 };
-        let (req, address, batch) = lock(queue).take(per_batch);
+        let client = reader.client.max_apdu_length();
+        let (req, address, batch) = lock(queue).take_batch(reader.rpm, client);
         if batch.is_empty() {
             return;
         }
@@ -394,7 +435,26 @@ mod tests {
     }
 
     fn want(queue: &mut NameQueue, req: ReqId, objects: Vec<ObjectIdentifier>) -> bool {
-        queue.want(req, HERE.into(), objects)
+        queue.want(req, HERE.into(), None, objects)
+    }
+
+    /// A batch fits an unsegmented answer from both sides: three names at
+    /// 480 octets, ten at 1476, one when the APDU is too small even for
+    /// that, and never more than the ceiling (#1930).
+    #[test]
+    fn batches_fit_the_smaller_max_apdu() {
+        assert_eq!(names_per_rpm(Some(480), 1476), 3);
+        assert_eq!(names_per_rpm(Some(1476), 1476), 10);
+        assert_eq!(names_per_rpm(Some(1476), 480), 3, "the client's limit");
+        assert_eq!(names_per_rpm(None, 1476), 10, "unknown: the client's");
+        assert_eq!(names_per_rpm(Some(50), 1476), 1);
+        assert_eq!(names_per_rpm(Some(1476), 0), 1);
+        assert_eq!(names_per_rpm(Some(u32::MAX), u16::MAX), MAX_NAMES_PER_RPM);
+        let mut queue = NameQueue::default();
+        queue.want(1, HERE.into(), Some(480), (1..=10).map(ai).collect());
+        assert_eq!(queue.take_batch(true, 1476).2.len(), 3);
+        queue.settle(&[]);
+        assert_eq!(queue.take_batch(false, 1476).2.len(), 1);
     }
 
     /// A new set replaces the old one, skipping what is in flight; what
@@ -505,7 +565,8 @@ mod tests {
         assert_eq!(queue.replay.len(), 1);
         // The same instance at another address: nothing is known there.
         queue.take_replay();
-        queue.want(3, "10.0.9.7:47808".into(), vec![ai(count - 1)]);
+        queue.want(3, "10.0.9.7:47808".into(), None, vec![ai(count - 1)]);
+
         assert_eq!(queue.wanted, [ai(count - 1)]);
         assert!(queue.answered.is_empty());
         // An ask never takes more than MAX_WANTED rows.

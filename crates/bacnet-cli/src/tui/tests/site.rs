@@ -370,6 +370,8 @@ pub(super) struct Server {
     pub(super) quirks: Quirks,
     /// Deny every write by mutation policy (SERVICE_REQUEST_DENIED).
     pub(super) deny_writes: bool,
+    /// Its Max_APDU_Length_Accepted, when not the default.
+    pub(super) max_apdu: Option<u16>,
 }
 
 impl Server {
@@ -381,6 +383,7 @@ impl Server {
             database: None,
             quirks: Quirks::default(),
             deny_writes: false,
+            max_apdu: None,
         }
     }
 
@@ -450,6 +453,11 @@ impl Site {
                 Some(database) => (lab_identity(server.instance), database),
                 None => bare_device(server.instance),
             };
+            let identity = match server.max_apdu {
+                Some(max_apdu) => identity.with_max_apdu(max_apdu).unwrap(),
+                None => identity,
+            };
+
             let policy = if server.deny_writes {
                 bacnet_server::mutation::MutationPolicy::DenyAll
             } else {

@@ -176,8 +176,14 @@ What M0 draws (80x24):
   scheduler (any other read of that device stops one between requests, and
   it resumes after). A name job waits until the cap has a slot free before
   it takes a batch from the queue, so a row withdrawn while it waited costs
-  neither a request nor a slot. A batch is one RPM for up to eight names, or
-  one ReadProperty each from a device that refused RPM. Since a name job
+  neither a request nor a slot. A batch is one RPM, or one ReadProperty
+  each from a device that refused RPM. An RPM asks for as many names as
+  fit an unsegmented answer within both the device's
+  Max_APDU_Length_Accepted (from its I-Am) and the client's own limit,
+  allowing 142 octets a name (a 128-octet name and its encoding), from one
+  to sixteen: three for a 480-octet device, ten for a 1476-octet one
+  (#1930). A batch whose answer still won't fit (names in a wider
+  encoding) is read one name at a time. Since a name job
   books no slot until one is free, a cap that watch polling keeps saturated
   can hold name reads back indefinitely; the watch list comes first.
 - The session keeps at most 4,096 names, forgetting the least recently used;

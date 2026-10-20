@@ -304,12 +304,6 @@ pub(crate) fn device_object(instance: u32) -> Option<ObjectIdentifier> {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).ok()
 }
 
-/// One device's rows on screen without a name.
-struct Wanted<'a> {
-    address: &'a str,
-    objects: Vec<ObjectIdentifier>,
-}
-
 impl App {
     /// True while names can be asked for: connected, and not passive.
     pub(crate) fn names_live(&self) -> bool {
@@ -367,29 +361,21 @@ impl App {
         names
             .asked
             .retain(|_, ask| !(ask.sent && ask.objects.is_empty() && !ask.retry));
-        let mut wanted: BTreeMap<u32, Wanted<'_>> = BTreeMap::new();
+        let mut wanted: BTreeMap<u32, Vec<ObjectIdentifier>> = BTreeMap::new();
         for (device, object) in rows {
             let address = devices.get(device).map_or("", |row| row.address.as_str());
             if names.get(device, address, object).is_some() {
                 names.touch(device, address, object);
             } else {
-                let want = wanted.entry(device).or_insert_with(|| Wanted {
-                    address,
-                    objects: Vec::new(),
-                });
-                want.objects.push(object);
+                wanted.entry(device).or_default().push(object);
             }
         }
         let all: BTreeSet<u32> = names.asked.keys().chain(wanted.keys()).copied().collect();
         let mut asks = Vec::new();
         for device in all {
-            let (address, now) = match wanted.get(&device) {
-                Some(want) => (want.address, want.objects.as_slice()),
-                None => (
-                    devices.get(device).map_or("", |r| r.address.as_str()),
-                    &[][..],
-                ),
-            };
+            let now = wanted.get(&device).map_or(&[][..], Vec::as_slice);
+            let row = devices.get(device);
+            let address = row.map_or("", |row| row.address.as_str());
             let unchanged = match names.asked.get(&device) {
                 Some(ask) => {
                     ask.sent
@@ -405,7 +391,9 @@ impl App {
                 asks.push(NameAsk {
                     device,
                     address: address.to_string(),
+                    max_apdu: row.map(|row| row.max_apdu),
                     objects: now.to_vec(),
+
                     retry,
                 });
             }

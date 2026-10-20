@@ -114,13 +114,13 @@ pub(crate) async fn run<T: TransportPort + 'static>(
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Names { req, asks }) => {
-                    for NameAsk { device, address, objects, retry } in asks {
+                    for NameAsk { device, address, max_apdu, objects, retry } in asks {
                         queues.entry(device).or_default();
                         let waiting = with_queue(&queues, device, |queue| {
                             if retry {
                                 queue.retry();
                             }
-                            queue.want(req, address, objects)
+                            queue.want(req, address, max_apdu, objects)
                         });
                         if waiting == Some(true) {
                             if let Some(started) = scheduler.submit_names(device) {

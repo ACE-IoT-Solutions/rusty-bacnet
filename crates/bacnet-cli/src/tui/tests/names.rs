@@ -351,6 +351,7 @@ fn a_timeout_is_asked_again_after_the_next_i_am() {
     let again = NameAsk {
         device: 2,
         address: "10.0.0.2:47808".into(),
+        max_apdu: Some(1476),
         objects: vec![device(2)],
         retry: true,
     };
