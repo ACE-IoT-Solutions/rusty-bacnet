@@ -236,12 +236,13 @@ impl Failure {
     }
 
     /// From an error that is only text (a profile the service refused,
-    /// say): the whole message, which the footer shortens with `…`. Its
+    /// say): the whole message without an OS error number, which the
+    /// footer shortens with `…`. Its
     /// clauses aren't split, as a `field: value` error needs both.
     pub(crate) fn text(detail: impl Into<String>) -> Self {
         let detail = detail.into();
         Self {
-            summary: detail.clone(),
+            summary: strip_os_error(&detail).to_string(),
             detail,
         }
     }

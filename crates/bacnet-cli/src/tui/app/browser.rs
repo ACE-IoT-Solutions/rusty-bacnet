@@ -231,7 +231,6 @@ impl App {
             self.flash("Not connected.", FLASH_FOR);
             return;
         }
-        let req = self.next_req();
         if self.screen != Screen::Browse {
             self.devices.settle();
             let Some(row) = self.devices.selected_row() else {
@@ -240,11 +239,14 @@ impl App {
             };
             let (device, address) = (row.instance, row.address.clone());
             self.filter_editing = false;
-            // The device kept from before is shown again as it was.
-            if self.browser.as_ref().is_some_and(|b| b.device == device) {
+            // The device kept from before is shown again as it was, at the
+            // address it answers from now.
+            if let Some(kept) = self.browser.as_deref_mut().filter(|b| b.device == device) {
+                kept.address = address;
                 self.screen = Screen::Browse;
                 return;
             }
+            let req = self.next_req();
             self.close_browser(out);
             self.screen = Screen::Browse;
             self.browser = Some(Box::new(Browser::new(device, address, req)));
@@ -255,6 +257,7 @@ impl App {
             });
             return;
         }
+        let req = self.next_req();
         match self.browser.as_deref_mut() {
             None => {}
             Some(browser) if browser.focus == Pane::Objects => {

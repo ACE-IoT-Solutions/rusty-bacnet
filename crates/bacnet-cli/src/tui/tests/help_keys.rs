@@ -213,10 +213,10 @@ fn contexts() -> Vec<(&'static str, App)> {
     contexts
 }
 
-/// The key a help row's word names, or `None` for a word that names no
-/// key. A row is a key row when every word in its keys column names a key
-/// (`d`, `Shift-Tab`, `Ctrl-C`); any other word (`watch DEVICE ...`) makes
-/// it a prose row, which the reverse check skips.
+/// The key a help row's word names (`d`, `Shift-Tab`, `Ctrl-C`), or
+/// `None`. Rows outside a screen's own sections (the Who-Is form's
+/// reference keys, the command list) are left out by `Section::on_screen`,
+/// never by their words.
 fn key_named(word: &str) -> Option<KeyEvent> {
     let none = KeyModifiers::NONE;
     let code = match word {
@@ -256,13 +256,16 @@ fn every_key_help_names_works_on_its_screen() {
     for (name, app) in &contexts {
         for section in sections(app).into_iter().filter(|s| s.on_screen) {
             for (keys, what) in section.rows {
-                let Some(events) = keys
+                // Every word of an on-screen row names a key: a typo such as
+                // `PgDown` fails here rather than passing as prose.
+                let events: Vec<KeyEvent> = keys
                     .split_whitespace()
-                    .map(key_named)
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    continue;
-                };
+                    .map(|word| {
+                        key_named(word).unwrap_or_else(|| {
+                            panic!("{name}: help row `{keys}` names no key with `{word}`")
+                        })
+                    })
+                    .collect();
                 for event in events {
                     let works = contexts
                         .iter()
@@ -454,6 +457,17 @@ fn screen_1_keeps_the_browser_and_2_brings_it_back() {
     press(&mut app, KeyCode::Down);
     assert_eq!(app.devices.selected_row().unwrap().instance, 1002);
     assert_eq!(app.browser.as_ref().unwrap().focus, focus);
+    // `/` filters the devices; the kept browser's filter is neither
+    // changed nor shown.
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "100");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.devices.filter(), "100");
+    assert_eq!(app.browser.as_ref().unwrap().objects.filter(), "ai");
+    let text = screen(&mut app, 80, 24);
+    assert!(!text.contains("\"ai\""), "{text}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.devices.filter(), "");
 
     press(&mut app, KeyCode::Char('2'));
     assert_eq!(app.screen, Screen::Browse);
@@ -514,4 +528,46 @@ fn tab_moves_from_the_pane_shown() {
     );
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.browser.as_ref().unwrap().focus, Pane::Card);
+}
+
+/// A session that ends or restarts while browsing takes the browser with
+/// it, so the app leaves Browse and `2` says there is nothing to show.
+#[test]
+fn a_session_reset_while_browsing_leaves_browse() {
+    let ended = |app: &mut App| {
+        let generation = app.generation;
+        worker(app, WorkerEvent::Disconnected { generation });
+    };
+    let restarted = |app: &mut App| {
+        let generation = app.generation + 1;
+        worker(app, WorkerEvent::SessionStarted { generation });
+    };
+    for reset in [ended, restarted] {
+        let mut app = browsing();
+        reset(&mut app);
+        assert!(app.browser.is_none());
+        assert_eq!(app.screen, Screen::Main);
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.screen, Screen::Main);
+        assert!(app
+            .flash
+            .as_ref()
+            .is_some_and(|f| f.text.starts_with("Open a device first")));
+    }
+}
+
+/// Showing the kept device again takes the address its row has now.
+#[test]
+fn the_kept_device_takes_its_new_address() {
+    let mut app = browsing();
+    press(&mut app, KeyCode::Char('1'));
+    worker(
+        &mut app,
+        WorkerEvent::Updated(row(1001, "10.0.1.99:47808", 260, 3)),
+    );
+    app.settle();
+    assert_eq!(app.devices.selected_row().unwrap().instance, 1001);
+    assert!(press(&mut app, KeyCode::Enter).is_empty(), "no new read");
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.browser.as_ref().unwrap().address, "10.0.1.99:47808");
 }

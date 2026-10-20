@@ -240,6 +240,16 @@ fn failures_keep_what_identifies_them() {
     // Text keeps both clauses; the footer shortens it to fit.
     let long = "profile 'plant-a-long-name': field 'Interface': no interface named \
                 enp0s31f6 on this host; pick one from the list";
+    // A profile error from the service keeps its clauses but not the OS
+    // error number.
+    let os = Failure::text("profile 'plant': interface en9: No such device (os error 19)");
+    assert_eq!(os.summary, "profile 'plant': interface en9: No such device");
+    assert!(os.detail.ends_with("(os error 19)"));
+    let mut app = new_app(None);
+    worker(&mut app, WorkerEvent::ConnectFailed { error: os });
+    let (_, footer) = chrome(&mut app, 120, 40);
+    assert!(!footer.contains("(os error 19)"), "{footer}");
+    assert!(footer.contains("No such device"), "{footer}");
     let text = Failure::text(long);
     assert_eq!(text.summary, long);
     let mut app = new_app(None);
