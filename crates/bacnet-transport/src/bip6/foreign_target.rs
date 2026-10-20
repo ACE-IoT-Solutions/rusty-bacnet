@@ -42,6 +42,13 @@ pub(crate) struct ForeignTarget {
     /// Wakes the re-registration task when an activation changes the
     /// registration.
     changed: Notify,
+    /// Holds a re-registration after it has read the target and before it
+    /// sends, so a test can land an activation while one is in flight.
+    #[cfg(test)]
+    pub(super) gate: tokio::sync::Semaphore,
+    /// Signalled when a re-registration reaches [`Self::gate`].
+    #[cfg(test)]
+    pub(super) reached: Notify,
 }
 
 fn property_error(code: ErrorCode) -> Error {
@@ -56,7 +63,18 @@ impl ForeignTarget {
         Self {
             state: Mutex::new(State { config, own: None }),
             changed: Notify::new(),
+            #[cfg(test)]
+            gate: tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS),
+            #[cfg(test)]
+            reached: Notify::new(),
         }
+    }
+
+    /// In a test, wait at [`Self::gate`] as a re-registration in flight.
+    #[cfg(test)]
+    pub(super) async fn in_flight(&self) {
+        self.reached.notify_one();
+        drop(self.gate.acquire().await);
     }
 
     /// A target for `bbmd`, for a test's receive loop or driver.
@@ -113,6 +131,13 @@ impl ForeignTarget {
 
     /// The registration `changes` would make, checked against this node's
     /// own address. Changes nothing.
+    ///
+    /// A BBMD passes when it is an IPv6 unicast host (loopback, unique local
+    /// or global unicast) other than this node, with a nonzero port, that
+    /// this host's routes reach from the socket's bound address; and the
+    /// time-to-live is nonzero. The unspecified, multicast, link-local,
+    /// IPv4-mapped and IPv4-compatible forms are refused, as are IPv4
+    /// hosts and host names.
     fn changed_config(
         state: &State,
         changes: &ForeignDeviceChanges,
@@ -137,18 +162,27 @@ impl ForeignTarget {
         let ip = config.bbmd_ip;
         // A link-local BBMD is never trusted as the sender of a
         // Forwarded-NPDU (no zone index travels with it), so it can't
-        // serve as one.
+        // serve as one. The deprecated IPv4-compatible form (::/96, other
+        // than :: and ::1) names an IPv4 host, which B/IP serves.
+        let ipv4_compatible = ip.segments()[..6] == [0; 6] && ip.segments()[6] != 0;
         if ip.is_unspecified()
             || ip.is_multicast()
             || ip.is_unicast_link_local()
             || ip.to_ipv4_mapped().is_some()
+            || ipv4_compatible
             || config.bbmd_port == 0
             || config.ttl == 0
             || (ip == *own.ip() && config.bbmd_port == own.port())
         {
             return Err(out_of_range());
         }
-        Ok(config)
+        // The socket stays bound to its address, so the new BBMD must be one
+        // this host reaches from it: a local probe, nothing is sent.
+        let bbmd = SocketAddrV6::new(ip, config.bbmd_port, 0, 0);
+        match super::socket::route_source(bbmd) {
+            Ok(source) if source == *own.ip() => Ok(config),
+            _ => Err(out_of_range()),
+        }
     }
 }
 

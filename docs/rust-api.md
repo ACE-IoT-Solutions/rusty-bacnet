@@ -8333,13 +8333,19 @@ Changes_Pending, and ACTIVATE_CHANGES or WARMSTART moves the running registratio
 The transport then registers with the new BBMD and time-to-live at once, sends its
 broadcasts and Address-Resolutions there, and trusts Forwarded-NPDUs from it only;
 `Bip6Transport::foreign_device_config` reports the registration in effect, and a
-later start uses it. A written value is checked at once: the BBMD must be an IPv6
-unicast host that isn't link-local, IPv4-mapped or the device's own address, with a
-nonzero port, and the time-to-live nonzero; anything else answers PROPERTY /
-VALUE_OUT_OF_RANGE. Only a running transport takes a change; while it is stopped the
-rows answer WRITE_ACCESS_DENIED. With a wildcard interface the source address chosen
-at start, from the route to the first BBMD, stays in use after a move. There is no
-B/IPv6 BBMD, so no BDT persistence either.
+later start uses it. A written value is checked at once: the BBMD must be a
+loopback, unique local or global unicast IPv6 host other than the device itself,
+with a nonzero port, and the time-to-live nonzero. The unspecified, multicast,
+link-local, IPv4-mapped and IPv4-compatible forms, IPv4 hosts and host names answer
+PROPERTY / VALUE_OUT_OF_RANGE. The socket stays bound to the address it started
+with, so the new BBMD must also be one this host's routes reach from that address;
+a local probe checks it, sending nothing, and a BBMD reached only from another
+source is refused the same way. Only a running transport takes a change; while it
+is stopped the rows answer WRITE_ACCESS_DENIED. After a move the old BBMD keeps
+forwarding broadcasts until the device's entry in its FDT expires; those
+Forwarded-NPDUs are dropped and counted in
+`Bip6ReceiveCounters::untrusted_forwarded_npdu`. There is no B/IPv6 BBMD, so no BDT
+persistence either.
 
 Registration refuses, besides `::` and multicast addresses, an IPv4-mapped address
 (register IPv4 as B/IP) and a link-local one, since IPv6_Zone_Index isn't modeled;

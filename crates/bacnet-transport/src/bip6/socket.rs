@@ -189,17 +189,23 @@ fn foreign_bind_address(
     if !requested.is_unspecified() {
         return Ok(SocketAddrV6::new(requested, port, 0, 0));
     }
-    // A UDP connect selects a route/source without sending a packet. Bind the
-    // production socket to that exact source, so subsequent registration and
-    // DBTN cannot silently advertise one address while using another.
+    // Bind the production socket to the route's exact source, so subsequent
+    // registration and DBTN cannot silently advertise one address while
+    // using another.
+    route_source(bbmd).map(|source| SocketAddrV6::new(source, port, 0, 0))
+}
+
+/// The source address this host's routes would send from to reach `bbmd`.
+/// A UDP connect selects a route and source without sending a packet, so
+/// this is a local, synchronous probe.
+pub(super) fn route_source(bbmd: SocketAddrV6) -> io::Result<Ipv6Addr> {
     let probe = std::net::UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))?;
     probe.connect(bbmd)?;
     match probe.local_addr()? {
-        SocketAddr::V6(mut address)
+        SocketAddr::V6(address)
             if !address.ip().is_unspecified() && !address.ip().is_multicast() =>
         {
-            address.set_port(port);
-            Ok(address)
+            Ok(*address.ip())
         }
         _ => Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,

@@ -27,9 +27,20 @@ fn address_of(peer: &UdpSocket) -> BACnetHostNPort {
 
 /// The next datagram `peer` receives that `accept` takes.
 async fn next<T>(peer: &UdpSocket, accept: impl Fn(Bvll6<'_>) -> Option<T>) -> T {
+    next_within(peer, Duration::from_secs(5), accept).await
+}
+
+/// [`next`] with a deadline of `within`: a test on paused time passes one
+/// longer than any renewal it waits for, since an idle runtime jumps to the
+/// earliest timer.
+async fn next_within<T>(
+    peer: &UdpSocket,
+    within: Duration,
+    accept: impl Fn(Bvll6<'_>) -> Option<T>,
+) -> T {
     let mut buf = [0u8; 1600];
     loop {
-        let (len, _) = timeout(Duration::from_secs(5), peer.recv_from(&mut buf))
+        let (len, _) = timeout(within, peer.recv_from(&mut buf))
             .await
             .expect("a datagram")
             .unwrap();
@@ -213,6 +224,7 @@ async fn forwarded_npdus_are_trusted_from_the_new_bbmd_only() {
         .unwrap();
         wire.to_vec()
     };
+    let untrusted = transport.receive_counters().untrusted_forwarded_npdu;
     old.send_to(&forwarded(0xA0), to).await.unwrap();
     new.send_to(&forwarded(0xB0), to).await.unwrap();
     let received = timeout(Duration::from_secs(5), rx.recv())
@@ -220,5 +232,115 @@ async fn forwarded_npdus_are_trusted_from_the_new_bbmd_only() {
         .unwrap()
         .unwrap();
     assert_eq!(received.npdu.last(), Some(&0xB0), "only the new BBMD's");
+    // The old BBMD's forward, which arrived first, counts as untrusted.
+    assert_eq!(
+        transport.receive_counters().untrusted_forwarded_npdu,
+        untrusted + 1
+    );
+    transport.stop().await.unwrap();
+}
+
+/// The socket stays bound to its address, so a BBMD this host reaches only
+/// from another source is refused, while another one on the same loopback
+/// address is taken.
+#[tokio::test]
+async fn a_bbmd_the_bound_socket_cannot_reach_is_refused() {
+    let peer = bbmd().await;
+    let (mut transport, lent) = started(&peer, 300).await;
+    let unreachable = BACnetHostNPort {
+        host: BACnetHostAddress::Ip(Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 1).into()),
+        port: 47808,
+    };
+    assert_eq!(
+        code(lent.check(&changes(Some(unreachable), None)).unwrap_err()),
+        ErrorCode::VALUE_OUT_OF_RANGE
+    );
+    let other = bbmd().await;
+    lent.check(&changes(Some(address_of(&other)), None))
+        .unwrap();
+    transport.stop().await.unwrap();
+}
+
+/// An activation that lands while a renewal is in flight, after it read the
+/// old target and before it sent, still ends with the new target
+/// registered, at once rather than at the next renewal.
+///
+/// Time is paused, and real sockets let the clock jump while a datagram is
+/// on its way, so the timing is read at the gate, which a renewal reaches
+/// with no I/O in between.
+#[tokio::test(start_paused = true)]
+async fn an_activation_during_a_renewal_in_flight_registers_the_new_target() {
+    let old = bbmd().await;
+    let new = bbmd().await;
+    let (mut transport, lent) = started(&old, 300).await;
+    let target = Arc::clone(transport.foreign_target().unwrap());
+    target
+        .gate
+        .forget_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    // The renewal reads the old target and waits at the gate.
+    target.reached.notified().await;
+    lent.activate(&changes(Some(address_of(&new)), Some(120)))
+        .unwrap();
+    target.gate.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    let released = tokio::time::Instant::now();
+    // The next pass starts at once, for the activation.
+    target.reached.notified().await;
+    assert_eq!(
+        released.elapsed(),
+        Duration::ZERO,
+        "no renewal period waited"
+    );
+    let long = Duration::from_secs(3600);
+    let in_flight = next_within(&old, long, |message| match message {
+        Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
+        _ => None,
+    })
+    .await;
+    assert_eq!(in_flight, 300, "the renewal in flight goes out as read");
+    let moved = next_within(&new, long, |message| match message {
+        Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
+        _ => None,
+    })
+    .await;
+    assert_eq!(moved, 120);
+    transport.stop().await.unwrap();
+}
+
+/// A new time-to-live sets the renewal period: half of it, at least 30 s.
+/// The periods are read at the gate, as above.
+#[tokio::test(start_paused = true)]
+async fn a_new_ttl_changes_the_renewal_period() {
+    let peer = bbmd().await;
+    let (mut transport, lent) = started(&peer, 300).await;
+    let target = Arc::clone(transport.foreign_target().unwrap());
+    let reached = || target.reached.notified();
+    reached().await;
+    let renewed = tokio::time::Instant::now();
+    reached().await;
+    assert_eq!(renewed.elapsed(), Duration::from_secs(150));
+    lent.activate(&changes(None, Some(100))).unwrap();
+    let moved = tokio::time::Instant::now();
+    reached().await;
+    assert_eq!(moved.elapsed(), Duration::ZERO, "at once");
+    reached().await;
+    assert_eq!(moved.elapsed(), Duration::from_secs(50));
+    lent.activate(&changes(None, Some(20))).unwrap();
+    reached().await;
+    let floor = tokio::time::Instant::now();
+    reached().await;
+    assert_eq!(floor.elapsed(), Duration::from_secs(30), "never under 30 s");
+    // The registrations carried the lifetimes in force.
+    let mut sent = Vec::new();
+    let long = Duration::from_secs(3600);
+    while sent.last() != Some(&20) || sent.len() < 6 {
+        sent.push(
+            next_within(&peer, long, |message| match message {
+                Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
+                _ => None,
+            })
+            .await,
+        );
+    }
+    assert_eq!(sent[..6], [300, 300, 100, 100, 20, 20]);
     transport.stop().await.unwrap();
 }

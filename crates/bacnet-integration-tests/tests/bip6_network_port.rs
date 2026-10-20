@@ -6,6 +6,11 @@
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 
+// The rebind of a stopped owner's port can lose it to another process.
+#[path = "../../bacnet-endpoint/tests/support/port_retry.rs"]
+mod port_retry;
+use port_retry::{bind_eventually, rerun_on_lost_port};
+
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::constructed::{decode_host_n_port, encode_host_n_port};
 use bacnet_encoding::primitives::decode_application_value;
@@ -382,6 +387,12 @@ async fn register_and_start(
 /// leaves the port free for the next owner, and so does a stop.
 #[tokio::test]
 async fn a_failed_start_and_a_stop_leave_the_port_free_for_the_next_owner() {
+    rerun_on_lost_port(failed_start_and_stop).await;
+}
+
+/// One run of the test above. The rebind of the stopped owner's UDP port can
+/// lose it to another process (#1419), which reruns the test.
+async fn failed_start_and_stop() -> std::io::Result<()> {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(loopback_port())).unwrap();
     // Port 2 names an address this host doesn't have, so its start fails
@@ -443,18 +454,28 @@ async fn a_failed_start_and_a_stop_leave_the_port_free_for_the_next_owner() {
     let bound = first.local_address().unwrap().port();
     first.stop().await.unwrap();
     assert_eq!(db.registered_port_internal(), None);
+    // The stopped owner let its UDP port go.
+    let released = SocketAddrV6::new(Ipv6Addr::LOCALHOST, bound, 0, 0);
+    bind_eventually(Duration::from_secs(5), || {
+        std::net::UdpSocket::bind(released)
+    })
+    .await
+    .map(drop)?;
 
     // A stopped owner's port registers again, here with another VMAC. The
     // port keeps the bind it last published, as a B/IP port does, so the
     // next owner binds the same UDP port.
     let mut second = Bip6Transport::new(Ipv6Addr::LOCALHOST, bound, Some(4321));
-    register_and_start(&mut db, port(), &mut second)
-        .await
-        .unwrap();
+    match register_and_start(&mut db, port(), &mut second).await {
+        Ok(()) => {}
+        Err(Error::Transport(error)) => return Err(error),
+        Err(other) => panic!("the second owner registers: {other:?}"),
+    }
     assert_eq!(db.registered_port_internal(), Some(port()));
     assert_eq!(
         read(&db, P::MAC_ADDRESS),
         PropertyValue::OctetString(vec![0x00, 0x10, 0xE1])
     );
     second.stop().await.unwrap();
+    Ok(())
 }

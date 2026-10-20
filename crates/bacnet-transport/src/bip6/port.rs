@@ -191,6 +191,12 @@ impl Bip6Transport {
         self.foreign_device.as_ref().map(|target| target.config())
     }
 
+    /// The foreign-device target, for a test's gate.
+    #[cfg(test)]
+    pub(super) fn foreign_target(&self) -> Option<&Arc<ForeignTarget>> {
+        self.foreign_device.as_ref()
+    }
+
     /// Forwarded-NPDUs dropped since this transport was created because
     /// their original source address is an IPv6 multicast group (#1493). No
     /// node sends from one, so such a frame is malformed and never reaches
@@ -468,6 +474,8 @@ impl TransportPort for Bip6Transport {
                         () = target.changed() => {}
                     }
                     let config = target.config();
+                    #[cfg(test)]
+                    target.in_flight().await;
                     let bbmd = SocketAddrV6::new(config.bbmd_ip, config.bbmd_port, 0, 0);
                     send_register_foreign_device_v6(&sock, bbmd, config.ttl, source_vmac).await;
                 }
@@ -479,6 +487,11 @@ impl TransportPort for Bip6Transport {
     }
 
     async fn stop(&mut self) -> Result<(), Error> {
+        // Refuse changes first, so none is accepted while the tasks stop
+        // and leaves a permit no task will take.
+        if let Some(fd) = &self.foreign_device {
+            fd.detach();
+        }
         if let Some(task) = self.registration_task.take() {
             task.abort();
             let _ = task.await;
@@ -492,9 +505,6 @@ impl TransportPort for Bip6Transport {
             let _ = task.await;
         }
         self.socket = None;
-        if let Some(fd) = &self.foreign_device {
-            fd.detach();
-        }
         self.local_mac = [0; 3];
         self.local_address = None;
         self.source_vmac = Bip6Vmac::new([0; 3]);
