@@ -159,8 +159,9 @@ fn row(label: &str, value: &str) -> String {
 fn lateness_lines(lateness: &Lateness, room: usize) -> Vec<Line<'static>> {
     let max = match lateness.max {
         None => "-".to_string(),
-        Some(LatenessMax::Exact(max)) => millis(max),
-        Some(LatenessMax::AtMost(max)) => format!("≤{}", millis(max)),
+        Some(LatenessMax::Exact(max)) => millis(max, false),
+        Some(LatenessMax::AtMost(max)) => format!("≤{}", millis(max, true)),
+        Some(LatenessMax::Below(edge)) => format!("<{} ms", edge.as_millis()),
     };
     let mut lines = vec![Line::raw(row("Timer lateness max", &max))];
     if room > LATENESS_BANDS.len() {
@@ -176,13 +177,26 @@ fn lateness_lines(lateness: &Lateness, room: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// A lateness in milliseconds to a tenth, or whole ones from 100 ms.
-fn millis(duration: std::time::Duration) -> String {
-    let micros = duration.as_micros();
-    if micros >= 100_000 {
-        format!("{} ms", micros / 1000)
+/// A lateness in milliseconds to a tenth, or whole ones from 100 ms: cut
+/// down, or rounded `up` for an upper bound, which then never reads below
+/// the value. A whole number of milliseconds under 100 keeps its tenth
+/// (`2.0 ms`).
+fn millis(duration: std::time::Duration, up: bool) -> String {
+    let nanos = duration.as_nanos();
+    let step = if nanos >= 100_000_000 {
+        1_000_000
     } else {
-        format!("{}.{} ms", micros / 1000, micros % 1000 / 100)
+        100_000
+    };
+    let steps = if up {
+        nanos.div_ceil(step)
+    } else {
+        nanos / step
+    };
+    if step == 1_000_000 {
+        format!("{steps} ms")
+    } else {
+        format!("{}.{} ms", steps / 10, steps % 10)
     }
 }
 
@@ -237,4 +251,28 @@ pub(super) fn join(frame: &mut Frame, area: Rect, dialog: &JoinDialog, theme: &T
         .border_style(theme.warn())
         .padding(Padding::horizontal(1));
     frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::millis;
+    use std::time::Duration;
+
+    /// Tenths under 100 ms, whole milliseconds from it; cut down for a
+    /// value, rounded up for a bound.
+    #[test]
+    fn lateness_reads_in_tenths_then_whole_milliseconds() {
+        let us = Duration::from_micros;
+        for (value, down, up) in [
+            (us(0), "0.0 ms", "0.0 ms"),
+            (us(6_400), "6.4 ms", "6.4 ms"),
+            (us(6_401), "6.4 ms", "6.5 ms"),
+            (us(99_999), "99.9 ms", "100.0 ms"),
+            (us(100_000), "100 ms", "100 ms"),
+            (us(123_456), "123 ms", "124 ms"),
+        ] {
+            assert_eq!(millis(value, false), down, "{value:?}");
+            assert_eq!(millis(value, true), up, "{value:?}");
+        }
+    }
 }

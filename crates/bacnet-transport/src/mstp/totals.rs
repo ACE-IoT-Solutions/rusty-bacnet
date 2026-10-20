@@ -63,6 +63,20 @@ pub struct LatenessHistogram {
 }
 
 impl LatenessHistogram {
+    /// The buckets' edges, as the core's
+    /// [`LatenessHistogram::EDGES`](bacnet_mstp_core::LatenessHistogram::EDGES):
+    /// each closes a bucket, exclusive, and opens the next.
+    pub const EDGES: [std::time::Duration; LATENESS_BUCKETS - 1] = {
+        let core = CoreLateness::EDGES;
+        let mut edges = [std::time::Duration::ZERO; LATENESS_BUCKETS - 1];
+        let mut i = 0;
+        while i < edges.len() {
+            edges[i] = std::time::Duration::from_nanos(core[i].as_nanos());
+            i += 1;
+        }
+        edges
+    };
+
     /// Add one take: its counts, and its maximum if that is larger.
     pub(super) fn add(&mut self, taken: CoreLateness) {
         for (total, count) in self.buckets.iter_mut().zip(taken.buckets) {
@@ -334,5 +348,9 @@ mod tests {
         assert_eq!(lateness.buckets, [u64::from(u32::MAX) + 1, 2, 1, 0, 0, 2]);
         assert_eq!(lateness.total(), u64::from(u32::MAX) + 6);
         assert_eq!(lateness.max, Duration::from_millis(30));
+        // The edges are the core's, in std time.
+        for (edge, core) in LatenessHistogram::EDGES.iter().zip(CoreLateness::EDGES) {
+            assert_eq!(*edge, std::time::Duration::from(core));
+        }
     }
 }

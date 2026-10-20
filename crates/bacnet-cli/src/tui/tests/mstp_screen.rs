@@ -183,6 +183,96 @@ fn timer_lateness_follows_the_threshold_and_the_clear() {
     assert_eq!(app.mstp.lateness().unwrap().max, exact(12_000));
 }
 
+/// After a clear, the largest lateness since is bounded by the top of the
+/// highest band that moved, when that is below the largest ever; by the
+/// largest ever when the open top band moved; and exact when the largest
+/// ever rose since. With no timed wake at all there is nothing to show.
+#[test]
+fn the_lateness_bound_after_a_clear_takes_the_tighter_edge() {
+    use crate::tui::app::mstp::LatenessMax;
+    use std::time::Duration;
+
+    let lateness_after = |buckets: [u64; 6], max_micros: u64| {
+        let mut app = joined();
+        let mut before = sample(1, false);
+        before.counters.mac.deadline_lateness.max = lateness_max(30_000);
+        worker(
+            &mut app,
+            WorkerEvent::Mstp(MstpReport::Sample(before.clone())),
+        );
+        press(&mut app, KeyCode::Char('z'));
+        let mut after = before;
+        let lateness = &mut after.counters.mac.deadline_lateness;
+        for (count, more) in lateness.buckets.iter_mut().zip(buckets) {
+            *count += more;
+        }
+        lateness.max = lateness_max(max_micros);
+        worker(&mut app, WorkerEvent::Mstp(MstpReport::Sample(after)));
+        let shown = app.mstp.lateness().unwrap().max;
+        (shown, screen(&mut app, 120, 40))
+    };
+    let ms = Duration::from_millis;
+
+    let (max, text) = lateness_after([5, 7, 0, 0, 0, 0], 30_000);
+    assert_eq!(max, Some(LatenessMax::Below(ms(2))));
+    assert!(text.contains("Timer lateness max         <2 ms"), "{text}");
+    let (max, text) = lateness_after([0, 0, 0, 0, 0, 1], 30_000);
+    assert_eq!(max, Some(LatenessMax::AtMost(ms(30))));
+    assert!(text.contains("≤30.0 ms"), "{text}");
+    let (max, text) = lateness_after([0, 0, 0, 0, 0, 1], 41_250);
+    assert_eq!(max, Some(LatenessMax::Exact(Duration::from_micros(41_250))));
+    assert!(text.contains("41.2 ms"), "{text}");
+
+    // No timed wake since joining: a dash, not 0.0 ms.
+    let mut app = joined();
+    let mut quiet = sample(1, false);
+    quiet.counters.mac.deadline_lateness = Default::default();
+    worker(&mut app, WorkerEvent::Mstp(MstpReport::Sample(quiet)));
+    assert_eq!(app.mstp.lateness().unwrap().max, None);
+    assert!(screen(&mut app, 120, 40).contains("Timer lateness max             -"));
+}
+
+/// The lateness bands appear exactly when the counters pane holds them:
+/// 27 rows does, 26 doesn't.
+#[test]
+fn the_lateness_bands_need_their_rows() {
+    let mut app = joined();
+    let text = screen(&mut app, 80, 27);
+    assert!(text.contains("timers ≥25 ms"), "{text}");
+    let text = screen(&mut app, 80, 26);
+    assert!(!text.contains("timers <1 ms"), "{text}");
+    assert!(text.contains("Timer lateness max"), "{text}");
+}
+
+/// Panes that don't fit side by side at their content's width fall back to
+/// 45/55, the long port wrapping in its pane.
+#[test]
+fn panes_too_wide_for_their_content_split_45_55() {
+    let mut app = mstp_app(None);
+    worker(
+        &mut app,
+        WorkerEvent::Connected {
+            local: "mstp:3".into(),
+        },
+    );
+    let port = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A10KXYZ1-if00-port0";
+    let station = MstpArgs {
+        port: port.into(),
+        ..settings()
+    };
+    worker(&mut app, WorkerEvent::Mstp(MstpReport::Joined(station)));
+    worker(
+        &mut app,
+        WorkerEvent::Mstp(MstpReport::Sample(sample(1, false))),
+    );
+    press(&mut app, KeyCode::Char('6'));
+    let text = screen(&mut app, 80, 24);
+    let top = text.lines().nth(1).unwrap().trim_matches('"');
+    // 45 % of 80 columns: the counters pane starts at column 36.
+    assert_eq!(top.chars().nth(36), Some('┌'), "{text}");
+    assert!(text.contains("Frames received"), "{text}");
+}
+
 /// The station screen at 80x24, 120x40 and 200x50 (#1893): each pane as
 /// wide as its content, no key row repeating the footer's, and the
 /// lateness bands where the counters pane is tall enough.

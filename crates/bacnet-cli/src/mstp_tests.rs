@@ -423,7 +423,8 @@ fn linux_offers_by_id_then_usb_adapters() {
     );
 }
 
-/// Windows: USB adapters first, then the rest, each by COM number.
+/// Windows: USB adapters first, then the rest, each by COM number; a name
+/// that isn't `COMn` comes last in its group.
 #[test]
 fn windows_offers_usb_adapters_first_by_number() {
     let listed = listing(&[
@@ -432,10 +433,11 @@ fn windows_offers_usb_adapters_first_by_number() {
         ("COM3", true, false),
         ("COM4", false, true),
         ("COM2", false, false),
+        (r"\\.\CNCA0", false, false),
     ]);
     assert_eq!(
         choose_ports(listed, Platform::Windows),
-        ["COM3", "COM10", "COM1", "COM2", "COM4"]
+        ["COM3", "COM10", "COM1", "COM2", "COM4", r"\\.\CNCA0"]
     );
 }
 

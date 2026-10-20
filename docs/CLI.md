@@ -608,9 +608,12 @@ errors, and how late the station's timers fired: the count 5 ms or more late
 (the transport's threshold), the largest lateness and, where the pane is tall
 enough, how many fell in each lateness band (under 1 ms, 1-2, 2-5, 5-10, 10-25
 and 25 ms or more). A Tokio timer fires up to about 2 ms late by its own
-rounding, so the first two bands are ordinary. `z` counts from now (the transport keeps its totals;
-the screen shows the change since), and Space pauses the screen or follows the
-counters again. The frame view is a later screen (#971).
+rounding, so the first two bands are ordinary. `z` counts from now (the
+transport keeps its totals; the screen shows the change since), and Space
+pauses the screen or follows the counters again. After `z` the largest
+lateness is exact once a later one comes; until then it shows a bound, `<N ms`
+(the top of the highest band that moved) or `≤N ms` (the largest before). The
+frame view is a later screen (#971).
 
 #### MS/TP monitor and safe join
 

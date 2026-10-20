@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use bacnet_transport::mstp::{MstpDiagnosticsSnapshot, HOST_LATE_DEADLINE};
+use bacnet_transport::mstp::{LatenessHistogram, MstpDiagnosticsSnapshot, HOST_LATE_DEADLINE};
 
 use super::{App, Link, Overlay, FLASH_FOR};
 use crate::mstp::MstpArgs;
@@ -112,23 +112,26 @@ impl MstpState {
     pub(crate) fn lateness(&self) -> Option<Lateness> {
         let now = self.shown?.counters.mac.deadline_lateness;
         let mut buckets = now.buckets;
-        let max = match self.baseline {
-            None => Some(LatenessMax::Exact(now.max.into())),
-            Some(base) => {
-                let base = base.mac.deadline_lateness;
-                for (count, before) in buckets.iter_mut().zip(base.buckets) {
-                    *count = count.saturating_sub(before);
-                }
-                // The transport keeps only the largest ever: one larger than
-                // at the clear came since; otherwise it bounds those since.
-                if buckets.iter().all(|&count| count == 0) {
-                    None
-                } else if now.max > base.max {
-                    Some(LatenessMax::Exact(now.max.into()))
-                } else {
-                    Some(LatenessMax::AtMost(now.max.into()))
-                }
+        let all_time: Duration = now.max.into();
+        let base = self.baseline.map(|base| base.mac.deadline_lateness);
+        if let Some(base) = base {
+            for (count, before) in buckets.iter_mut().zip(base.buckets) {
+                *count = count.saturating_sub(before);
             }
+        }
+        // The highest band with a timed wake in the span shown.
+        let max = match (buckets.iter().rposition(|&count| count > 0), base) {
+            (None, _) => None,
+            (Some(_), None) => Some(LatenessMax::Exact(all_time)),
+            // The transport keeps only the largest ever: one larger than at
+            // the clear came since.
+            (Some(_), Some(base)) if now.max > base.max => Some(LatenessMax::Exact(all_time)),
+            // Otherwise the largest ever bounds those since, and so does the
+            // top of the highest band that moved, which may be tighter.
+            (Some(top), Some(_)) => Some(match LatenessHistogram::EDGES.get(top) {
+                Some(&edge) if edge <= all_time => LatenessMax::Below(edge),
+                _ => LatenessMax::AtMost(all_time),
+            }),
         };
         Some(Lateness { buckets, max })
     }
@@ -153,6 +156,9 @@ pub(crate) enum LatenessMax {
     /// No more than this: the largest since joining, which came before the
     /// clear.
     AtMost(Duration),
+    /// Less than this: the upper edge of the highest band that moved since
+    /// the clear, when that is below the largest since joining.
+    Below(Duration),
 }
 
 /// The bucket labels, in [`Lateness::buckets`]' order.
