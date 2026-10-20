@@ -1382,7 +1382,8 @@ A station is addressed as `mstp:N` (or `mstp:0xNN`). A station behind a
 router is still `DNET:0xMAC`, as on any other transport. `mstp-ports` opens no
 port and needs no `--mstp`. It puts the likely choice first. On Linux it lists
 the stable names under `/dev/serial/by-id/`, then USB adapters (`ttyUSB*`,
-`ttyACM*`), then the rest. On macOS it lists only the call-out devices
+`ttyACM*`), then the rest; an adapter with a by-id name is listed once, by that
+name, not again as the `ttyUSB*` device it points to. On macOS it lists only the call-out devices
 (`/dev/cu.*`), which open without waiting for a carrier signal the way their
 `/dev/tty.*` twins do, leaves out Bluetooth ports and the debug console, and
 puts USB adapters first. On Windows it lists USB adapters first, each group in

@@ -393,6 +393,10 @@ pub(crate) struct Listed {
     pub(crate) usb: bool,
     /// Whether the system reports it as a Bluetooth service.
     pub(crate) bluetooth: bool,
+    /// For a stable link (Linux's `/dev/serial/by-id`), the device it
+    /// resolves to: that device is the same adapter, so it isn't offered
+    /// again under its kernel name.
+    pub(crate) target: Option<String>,
 }
 
 /// Names of macOS ports that are never an RS-485 line: the Bluetooth
@@ -406,16 +410,52 @@ const MACOS_SYSTEM_PORTS: [&str; 3] = ["bluetooth", "blth", "debug-console"];
 ///   for carrier; each has a dial-in `/dev/tty.*` twin), without Bluetooth
 ///   services or the debug console; USB adapters first.
 /// - Linux: the stable `/dev/serial/by-id` names, then USB adapters
-///   (`ttyUSB*`, `ttyACM*` or reported as USB), then the rest.
+///   (`ttyUSB*`, `ttyACM*` or reported as USB), then the rest. A device a
+///   by-id link resolves to is offered once, by the link's name (#1928).
 /// - Windows: USB adapters, then the rest, each by COM number.
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]
 pub(crate) fn choose_ports(listed: Vec<Listed>, platform: Platform) -> Vec<String> {
+    let linked: std::collections::HashSet<String> = listed
+        .iter()
+        .filter_map(|port| port.target.clone())
+        .collect();
+    let mut targets = std::collections::HashSet::new();
     let mut ports: Vec<Listed> = listed
         .into_iter()
         .filter(|port| platform != Platform::MacOs || offered_on_macos(port))
+        // The kernel name of a linked device, and a second link to it.
+        .filter(|port| match &port.target {
+            Some(target) => targets.insert(target.clone()),
+            None => !linked.contains(&port.name),
+        })
         .collect();
     ports.sort_by_key(|port| rank(port, platform));
     dedup(ports.into_iter().map(|port| port.name).collect())
+}
+
+/// The links in `dir` (Linux's `/dev/serial/by-id`), sorted by name, each
+/// with the device it resolves to; a dangling link has none.
+#[cfg_attr(not(all(feature = "serial", target_os = "linux")), allow(dead_code))]
+pub(crate) fn linked_ports(dir: &std::path::Path) -> Vec<Listed> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ports: Vec<Listed> = entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let path = entry.path();
+            Listed {
+                target: std::fs::canonicalize(&path)
+                    .ok()
+                    .map(|target| target.to_string_lossy().into_owned()),
+                name: path.to_string_lossy().into_owned(),
+                usb: false,
+                bluetooth: false,
+            }
+        })
+        .collect();
+    ports.sort_by(|a, b| a.name.cmp(&b.name));
+    ports
 }
 
 /// Whether a macOS port is one to offer: a call-out device that isn't a
@@ -432,7 +472,9 @@ fn rank(port: &Listed, platform: Platform) -> (u8, u32) {
     let name = port.name.as_str();
     match platform {
         Platform::MacOs => (u8::from(!port.usb), 0),
-        Platform::Linux if name.starts_with("/dev/serial/by-id/") => (0, 0),
+        Platform::Linux if port.target.is_some() || name.starts_with("/dev/serial/by-id/") => {
+            (0, 0)
+        }
         Platform::Linux
             if port.usb || name.starts_with("/dev/ttyUSB") || name.starts_with("/dev/ttyACM") =>
         {
@@ -459,29 +501,19 @@ pub(crate) fn dedup(names: Vec<String>) -> Vec<String> {
 
 /// The serial ports the operating system reports, as [`choose_ports`]
 /// offers them on this platform. On Linux the stable `/dev/serial/by-id`
-/// names come first; the kernel names they point to are still listed.
+/// names come first, in place of the kernel names they point to.
 #[cfg(feature = "serial")]
 pub(crate) fn list_ports() -> Result<Vec<String>, String> {
     use bacnet_transport::mstp_serial::{available_port_infos, PortKind};
     let mut listed = Vec::new();
     #[cfg(target_os = "linux")]
-    if let Ok(entries) = std::fs::read_dir("/dev/serial/by-id") {
-        let mut by_id: Vec<String> = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().to_string_lossy().into_owned())
-            .collect();
-        by_id.sort();
-        listed.extend(by_id.into_iter().map(|name| Listed {
-            name,
-            usb: false,
-            bluetooth: false,
-        }));
-    }
+    listed.extend(linked_ports(std::path::Path::new("/dev/serial/by-id")));
     let ports = available_port_infos().map_err(|e| e.to_string())?;
     listed.extend(ports.into_iter().map(|port| Listed {
         usb: port.kind == PortKind::Usb,
         bluetooth: port.kind == PortKind::Bluetooth,
         name: port.name,
+        target: None,
     }));
     Ok(choose_ports(listed, Platform::current()))
 }

@@ -98,7 +98,7 @@ As a participant, the MS/TP screen shows this station and its counters:
 
 ## Serial adapters
 
-`bacnet mstp-ports` lists the ports without opening any, and the join dialog offers the same list. Its order puts the likely choice first: USB adapters before other ports. On macOS it leaves out the `tty.` twin of each port, Bluetooth ports and the debug console.
+`bacnet mstp-ports` lists the ports without opening any, and the join dialog offers the same list. Its order puts the likely choice first: USB adapters before other ports. On Linux an adapter with a stable `/dev/serial/by-id` name is listed once, by that name, rather than also as the `ttyUSB` device it points to. On macOS it leaves out the `tty.` twin of each port, Bluetooth ports and the debug console.
 
 | Platform | Port names | Notes |
 |---|---|---|
