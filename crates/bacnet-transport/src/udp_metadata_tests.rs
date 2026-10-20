@@ -4,10 +4,8 @@ supported_unix_item! {
 /// Both control messages a BSD hands an IPv4 datagram fit the buffer, and
 /// Linux's packet info for either family, each with a receive timestamp.
 #[test]
-#[allow(unsafe_code)] // CMSG_SPACE is an unsafe fn in libc
 fn the_control_buffer_holds_every_message_a_datagram_carries() {
-    // SAFETY: CMSG_SPACE is arithmetic on its argument; it touches no memory.
-    let space = |length: usize| unsafe { libc::CMSG_SPACE(length as _) } as usize;
+    let space = crate::sys::libc_msg::cmsg_space;
     // The BSDs' link-layer socket address is 20 to 56 octets long.
     let bsd = space(std::mem::size_of::<libc::in_addr>())
         + space(56)

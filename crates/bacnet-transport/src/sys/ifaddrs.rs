@@ -125,7 +125,6 @@ fn truncated_netmask(raw: &[u8]) -> Option<Ipv4Addr> {
 ///
 /// `mask` is a node's `ifa_netmask` in a live list (the module's list
 /// invariant).
-#[allow(unsafe_code)] // reads a sockaddr through a raw pointer
 unsafe fn netmask_of(mask: *const libc::sockaddr) -> Option<Ipv4Addr> {
     if mask.is_null() {
         return None;
@@ -173,7 +172,6 @@ unsafe fn netmask_of(mask: *const libc::sockaddr) -> Option<Ipv4Addr> {
 /// # Safety
 ///
 /// `node` is a node of a live list (the module's list invariant).
-#[allow(unsafe_code)] // reads the node's sockaddrs and name through raw pointers
 unsafe fn read_node(node: &libc::ifaddrs) -> Option<InterfaceAddress> {
     let address = node.ifa_addr;
     if address.is_null() {
@@ -215,7 +213,6 @@ unsafe fn read_node(node: &libc::ifaddrs) -> Option<InterfaceAddress> {
 struct List(*mut libc::ifaddrs);
 
 impl Drop for List {
-    #[allow(unsafe_code)] // freeifaddrs
     fn drop(&mut self) {
         // SAFETY: the list invariant: a List holds only a list a successful
         // getifaddrs returned, and this is its one freeifaddrs, after the
@@ -225,7 +222,6 @@ impl Drop for List {
 }
 
 /// Every IPv4 and IPv6 entry `getifaddrs` reports, in its order.
-#[allow(unsafe_code)] // getifaddrs and the list walk
 pub(crate) fn interface_addresses() -> io::Result<Vec<InterfaceAddress>> {
     let mut head = std::ptr::null_mut();
     // SAFETY: `head` is a writable pointer slot; on success getifaddrs sets

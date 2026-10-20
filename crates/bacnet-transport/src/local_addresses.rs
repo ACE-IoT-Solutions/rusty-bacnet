@@ -63,7 +63,7 @@ fn reported_ipv4() -> io::Result<Vec<ReportedAddress>> {
     use std::net::IpAddr;
     use windows_sys::Win32::Networking::WinSock::AF_INET;
 
-    Ok(crate::windows_adapters::unicast_addresses(AF_INET)?
+    Ok(crate::sys::win_adapters::unicast_addresses(AF_INET)?
         .into_iter()
         .filter_map(|address| match address.ip {
             IpAddr::V4(ip) => Some(ReportedAddress {
@@ -95,7 +95,7 @@ pub(crate) fn interface_of(ip: Ipv4Addr) -> io::Result<Option<LocalInterface>> {
     use std::net::IpAddr;
     use windows_sys::Win32::Networking::WinSock::AF_INET;
 
-    let addresses: Vec<_> = crate::windows_adapters::unicast_addresses(AF_INET)?
+    let addresses: Vec<_> = crate::sys::win_adapters::unicast_addresses(AF_INET)?
         .into_iter()
         .filter_map(|address| match address.ip {
             IpAddr::V4(own) => Some((own, address)),
@@ -106,7 +106,7 @@ pub(crate) fn interface_of(ip: Ipv4Addr) -> io::Result<Option<LocalInterface>> {
         let host_bits = 32u32.checked_sub(u32::from(length))?;
         Some(Ipv4Addr::from(u32::MAX.checked_shl(host_bits).unwrap_or(0)))
     };
-    let on_subnet = |(own, address): &&(Ipv4Addr, crate::windows_adapters::UnicastAddress)| {
+    let on_subnet = |(own, address): &&(Ipv4Addr, crate::sys::win_adapters::UnicastAddress)| {
         netmask(address.prefix_length)
             .is_some_and(|mask| !mask.is_unspecified() && *own & mask == ip & mask)
     };

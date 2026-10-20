@@ -41,8 +41,8 @@ pub(crate) fn request_arrival_stamps(udp_socket: &Socket) -> io::Result<()> {
     // nix has no setter for this one.
     #[cfg(target_vendor = "apple")]
     {
-        set_option(
-            udp_socket,
+        crate::sys::libc_msg::set_int_option(
+            std::os::fd::AsFd::as_fd(udp_socket),
             libc::SOL_SOCKET,
             libc::SO_TIMESTAMP_MONOTONIC,
             1,

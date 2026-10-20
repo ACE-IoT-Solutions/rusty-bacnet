@@ -1,8 +1,11 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Redundant with the workspace lint, but explicit: only `sys` may allow it
+// (#1923).
+#![deny(unsafe_code)]
 
 /// Items for the targets whose libc has `getifaddrs`: the one walk over it
-/// (`ifaddrs`, #1884) and its callers.
+/// (`sys::ifaddrs`, #1884) and its callers.
 macro_rules! with_getifaddrs {
     ($($item:item)*) => {
         $(
@@ -67,9 +70,6 @@ mod direct_response;
 #[cfg(feature = "ethernet")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ethernet")))]
 pub mod ethernet;
-with_getifaddrs! {
-    mod ifaddrs;
-}
 mod local_addresses;
 pub mod loopback;
 pub mod mstp;
@@ -89,6 +89,7 @@ mod sc_limits;
 #[cfg(feature = "sc-tls")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
 pub mod sc_tls;
+mod sys;
 pub mod tap;
 #[cfg(feature = "sc-tls")]
 mod tcp_connect;
@@ -96,8 +97,6 @@ mod tcp_connect;
 mod tls_reject;
 mod udp_metadata;
 pub mod warn_throttle;
-#[cfg(windows)]
-mod windows_adapters;
 
 #[cfg(test)]
 mod log_capture;
