@@ -38,7 +38,7 @@ fn error_code(error: Error) -> ErrorCode {
 
 #[test]
 fn a_group_must_be_class_d_with_a_ttl_and_a_port() {
-    for ip in [[224, 0, 0, 0], [239, 255, 255, 255], [239, 255, 94, 1]] {
+    for ip in [[224, 0, 1, 0], [239, 255, 255, 255], [239, 255, 94, 1]] {
         let ip = Ipv4Addr::from(ip);
         assert_eq!(BipMulticast::new(ip).unwrap().group(), ip);
     }
@@ -50,6 +50,11 @@ fn a_group_must_be_class_d_with_a_ttl_and_a_port() {
     ] {
         let error = BipMulticast::new(Ipv4Addr::from(ip)).unwrap_err();
         assert!(error.to_string().contains("class D"), "{error}");
+    }
+    // The local network control block is refused.
+    for ip in [[224, 0, 0, 0], [224, 0, 0, 1], [224, 0, 0, 255]] {
+        let error = BipMulticast::new(Ipv4Addr::from(ip)).unwrap_err();
+        assert!(error.to_string().contains("224.0.0.0/24"), "{error}");
     }
     let multicast = BipMulticast::new(GROUP).unwrap();
     assert_eq!(
@@ -281,8 +286,30 @@ async fn an_activated_group_moves_the_members_and_zero_ends_multicast() {
         error_code(views[0].activate([10, 0, 0, 1]).unwrap_err()),
         ErrorCode::VALUE_OUT_OF_RANGE
     );
+    // Nor is the local network control block.
+    assert_eq!(
+        error_code(views[0].check([224, 0, 0, 1]).unwrap_err()),
+        ErrorCode::VALUE_OUT_OF_RANGE
+    );
 
     let moved = Ipv4Addr::new(239, 255, 94, 3);
+    // A listener that fails to open fails the activation, and nothing
+    // changes: the old group stays in use.
+    a.transport
+        .multicast
+        .fail_next_listener
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(matches!(
+        views[0].activate(moved.octets()),
+        Err(Error::Transport(_))
+    ));
+    assert_eq!(views[0].group(), GROUP.octets());
+    assert_eq!(
+        a.transport.bip_broadcast_endpoint(),
+        Some(SocketAddrV4::new(GROUP, port))
+    );
+    a.exchange(&mut b).await;
+
     for view in &views {
         view.check(moved.octets()).unwrap();
         view.activate(moved.octets()).unwrap();
@@ -334,4 +361,29 @@ fn only_a_plain_node_with_an_interface_lends_its_group() {
     let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::LOCALHOST);
     bbmd.enable_bbmd(Vec::new());
     assert!(!lent(&bbmd));
+}
+
+#[test]
+fn a_members_configured_broadcast_stays_a_group_destination() {
+    let mut member = BipTransport::new(
+        Ipv4Addr::new(192, 0, 2, 20),
+        47808,
+        Ipv4Addr::new(192, 0, 2, 255),
+    );
+    member.set_multicast(Some(group(47809))).unwrap();
+    let mac = |ip: [u8; 4], port| encode_bip_mac(ip, port);
+    // The group, any multicast address, and the subnet's directed
+    // broadcast at any port reach more than one node.
+    for (ip, port) in [
+        (GROUP.octets(), 47809),
+        ([239, 1, 2, 3], 47808),
+        ([192, 0, 2, 255], 47808),
+        ([192, 0, 2, 255], 47810),
+    ] {
+        assert!(member.is_group_destination(&mac(ip, port)), "{ip:?}:{port}");
+    }
+    assert!(!member.is_group_destination(&mac([192, 0, 2, 30], 47808)));
+    // Only the group is this link's broadcast.
+    assert!(member.is_broadcast_mac(&mac(GROUP.octets(), 47809)));
+    assert!(!member.is_broadcast_mac(&mac([192, 0, 2, 255], 47808)));
 }

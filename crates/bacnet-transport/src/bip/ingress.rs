@@ -90,6 +90,19 @@ impl Listener {
         })
     }
 
+    /// A B/IP-M group listener an activation opened (multicast.rs): set up
+    /// as a listener that reads in arrival order, keeping `lease` and
+    /// reporting what the node keeps to `tap`. Must run inside a tokio
+    /// runtime. Not used on Windows, whose primary socket joins the group.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(super) fn open_group(
+        socket: socket2::Socket,
+        lease: Option<Arc<()>>,
+        tap: &FrameTap,
+    ) -> io::Result<Self> {
+        Self::open(socket, lease, tap, false, true)
+    }
+
     /// The next datagram, which the primary's tap sees as it is read.
     async fn recv(&mut self) -> io::Result<ReceivedDatagram> {
         let received = self.receiver.recv_from(&self.socket, &mut self.buf).await?;
@@ -135,10 +148,6 @@ pub(super) struct Listeners {
     ordered: bool,
     /// How many datagrams the ordered receive has read, which numbers each.
     reads: u64,
-    /// What a listener opened later keeps and reports to: a B/IP-M group's,
-    /// when an activation moves the group (multicast.rs).
-    lease: Option<Arc<()>>,
-    tap: FrameTap,
 }
 
 /// Which socket [`Listeners::recv`] read: `None` for the primary, or the
@@ -159,37 +168,29 @@ impl Listeners {
         for (slot, socket) in broadcast.iter_mut().zip(bound.listeners) {
             *slot = Some(Listener::open(socket, lease.clone(), tap, false, ordered)?);
         }
-        let primary = Listener::open(bound.primary, lease.clone(), tap, true, ordered)?;
+        let primary = Listener::open(bound.primary, lease, tap, true, ordered)?;
         Ok(Self {
             primary,
             broadcast,
             ordered,
             reads: 0,
-            lease,
-            tap: tap.clone(),
         })
     }
 
     /// Read a B/IP-M node's new group listener in place of the old one, or,
     /// with `None`, no listener: an activation moved the group or ended it
-    /// (multicast.rs). A member binds no other listener, so the group's is
-    /// the first. From here on the sockets are read in arrival order, as
-    /// with any listener; the primary reports no receive stamps unless it
-    /// started with a listener, and read order then decides.
-    pub(super) fn replace_group(&mut self, listener: Option<socket2::Socket>) {
-        let opened = listener
-            .map(|socket| Listener::open(socket, self.lease.clone(), &self.tap, false, true));
-        self.broadcast[0] = match opened {
-            Some(Ok(listener)) => {
-                self.ordered = true;
-                Some(listener)
-            }
-            Some(Err(error)) => {
-                warn!(%error, "Could not read the new B/IP multicast group's listener");
-                None
-            }
-            None => None,
-        };
+    /// (multicast.rs), and opened the listener already, so nothing here can
+    /// fail. A member binds no other listener, so the group's is the first.
+    /// A datagram the old listener read ahead and still held is dropped
+    /// with it: it was sent to the group being left. From here on the
+    /// sockets are read in arrival order, as with any listener; the primary
+    /// reports no receive stamps unless it started with a listener, and
+    /// read order then decides.
+    pub(super) fn replace_group(&mut self, listener: Option<Listener>) {
+        if listener.is_some() {
+            self.ordered = true;
+        }
+        self.broadcast[0] = listener;
     }
 
     /// The socket every send leaves from.
@@ -317,18 +318,23 @@ pub(super) async fn receive_loop(
     mut listeners: Listeners,
     local: IngressAddresses,
     ctx: RecvContext,
-    swap: Arc<GroupSwap>,
+    swap: Option<Arc<GroupSwap>>,
 ) {
     loop {
-        // Both arms are cancel-safe and take no lock across an await:
-        // the receive holds a datagram it read ahead in its listener.
-        let (source, received) = tokio::select! {
-            biased;
-            listener = swap.next() => {
-                listeners.replace_group(listener);
-                continue;
-            }
-            received = listeners.recv() => received,
+        // Only a transport that can change its group waits on the
+        // hand-off, so the others pay nothing for it. Both arms are
+        // cancel-safe and take no lock across an await: the receive holds
+        // a datagram it read ahead in its listener.
+        let (source, received) = match swap.as_deref() {
+            Some(swap) => tokio::select! {
+                biased;
+                listener = swap.next() => {
+                    listeners.replace_group(listener);
+                    continue;
+                }
+                received = listeners.recv() => received,
+            },
+            None => listeners.recv().await,
         };
         let arrival = match source {
             None => Arrival::Primary,

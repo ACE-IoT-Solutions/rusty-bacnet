@@ -367,7 +367,7 @@ impl BipServerBuilder {
     /// refuses. A registered Network Port serves the group as
     /// `BACnet_IP_Multicast_Address`, writable when the server answers
     /// ReinitializeDevice (#941).
-    pub fn multicast(mut self, multicast: Option<bacnet_transport::bip::BipMulticast>) -> Self {
+    pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
         self.multicast = multicast;
         self
     }

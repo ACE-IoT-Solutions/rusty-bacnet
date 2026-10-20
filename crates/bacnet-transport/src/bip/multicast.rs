@@ -2,7 +2,8 @@
 //! broadcasts to an IPv4 multicast group, which stands in for its subnet's
 //! broadcast address, and takes broadcasts only from that group.
 //!
-//! **Configuration.** [`BipMulticast`] names the group (class D only), the
+//! **Configuration.** [`BipMulticast`] names the group (class D, outside
+//! the 224.0.0.0/24 local network control block), the
 //! multicast TTL (1 by default, so the group stays on the local network:
 //! raise it for a group that spans IP routers, which must forward
 //! multicast) and the group's UDP port (the transport's own by default).
@@ -13,17 +14,25 @@
 //! **Sockets.** The primary socket sends to the group from the interface
 //! (`IP_MULTICAST_IF`), with the TTL, and with loop on, so several stacks
 //! on one host can share a group: each drops its own looped-back copy, as
-//! it drops any datagram from its own address. It never takes the group's
-//! traffic itself: on Linux it turns `IP_MULTICAST_ALL` off, so it gets no
-//! group another socket joined. On Linux, macOS and the BSDs a receive-only
-//! listener binds the group address and port with `SO_REUSEADDR` (and
-//! `SO_REUSEPORT` on macOS and the BSDs) and joins the group on the
-//! interface. Each stack on the host has its own listener and the kernel
-//! hands each a copy; the receive loop reads it beside the primary socket,
-//! in arrival order (#1546). Windows can't bind a group address, so there
-//! the primary socket joins the group itself and the group's port must be
-//! the transport's own; it reports the group delivery in the receive
-//! flags. Windows multicast is untested.
+//! it drops any datagram from its own address. That needs the copy to come
+//! back from the interface address: bind the interface's primary address,
+//! since with a secondary (alias) address some systems send multicast from
+//! the primary one, and the node would then take its own broadcasts as a
+//! peer's. The primary socket never takes the group's traffic itself: on
+//! Linux it turns `IP_MULTICAST_ALL` off, so it gets no group another
+//! socket joined, and macOS and the BSDs only deliver a group to a socket
+//! that joined it. On Linux, macOS and the BSDs a receive-only listener
+//! binds the group address and port with `SO_REUSEADDR` (and `SO_REUSEPORT`
+//! on macOS and the BSDs) and joins the group on the interface. Each stack
+//! on the host has its own listener and the kernel hands each a copy; the
+//! receive loop reads it beside the primary socket, in arrival order
+//! (#1546). Another program holding the group's port without those options
+//! (bound to `0.0.0.0` on it, say) makes the listener's bind fail, and the
+//! start or activation fails with it. Windows can't bind a group address,
+//! so there the primary socket joins the group itself and the group's port
+//! must be the transport's own, which also means two members can't share
+//! one Windows host; it reports the group delivery in the receive flags.
+//! Windows multicast is untested.
 //!
 //! The group is left when its socket closes: when the transport stops, or
 //! when an activation replaces or ends the group.
@@ -51,7 +60,9 @@ use bacnet_types::error::Error;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
+use super::ingress::Listener;
 use super::node::NodeHandle;
+use crate::tap::FrameTap;
 
 /// A B/IP-M node's group (Annex J.8): where its broadcasts go and come
 /// from. See [`BipTransport::set_multicast`](super::BipTransport::set_multicast).
@@ -65,7 +76,7 @@ use super::node::NodeHandle;
 /// assert_eq!((group.ttl(), group.port()), (2, None));
 /// # Ok::<(), bacnet_types::error::Error>(())
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BipMulticast {
     group: Ipv4Addr,
     ttl: u8,
@@ -79,11 +90,20 @@ impl BipMulticast {
 
     /// The group `group` at the transport's own UDP port, with
     /// [`DEFAULT_TTL`](Self::DEFAULT_TTL). Fails unless `group` is a class D
-    /// (multicast) address.
+    /// (multicast) address outside 224.0.0.0/24, the block reserved for
+    /// local network control.
     pub fn new(group: Ipv4Addr) -> Result<Self, Error> {
         if !group.is_multicast() {
             return Err(config(format!(
                 "a B/IP multicast group must be a class D address (224.0.0.0/4), not {group}"
+            )));
+        }
+        if group.octets()[..3] == [224, 0, 0] {
+            // 224.0.0.0/24 is the local network control block (RFC 5771):
+            // routing and discovery protocols, never forwarded.
+            return Err(config(format!(
+                "a B/IP multicast group can't be in 224.0.0.0/24, reserved for local network \
+                 control; got {group}"
             )));
         }
         Ok(Self {
@@ -106,8 +126,9 @@ impl BipMulticast {
 
     /// This group at UDP port `port` rather than the transport's own: the
     /// port every member sends its broadcasts to. Members on one host, at
-    /// one IP address, need their own unicast ports and so this one. Not
-    /// on Windows, where the group's port is the transport's.
+    /// one IP address, need their own unicast ports and so this one. On
+    /// Windows the group's port must equal the transport's port, or
+    /// `set_multicast` refuses it.
     pub fn with_port(self, port: u16) -> Result<Self, Error> {
         if port == 0 {
             return Err(config(
@@ -150,6 +171,19 @@ impl fmt::Display for BipMulticast {
     }
 }
 
+/// Where a link sends its broadcasts, given `subnet`, the configured
+/// broadcast IP at the bound port: with `multicast`, its group at the
+/// group's port, `subnet` still counting as a group address beside it;
+/// without, `subnet` itself.
+pub(super) fn subnet(multicast: Option<BipMulticast>, subnet: SocketAddrV4) -> LocalSubnet {
+    match multicast {
+        Some(multicast) => {
+            LocalSubnet::member(multicast.endpoint(subnet.port()), Some(*subnet.ip()))
+        }
+        None => LocalSubnet::new(subnet),
+    }
+}
+
 fn config(message: String) -> Error {
     Error::Encoding(message)
 }
@@ -179,25 +213,26 @@ fn refusal(interface: Ipv4Addr, transport_port: u16, multicast: &BipMulticast) -
 }
 
 /// A new group listener for the receive loop, or none: the hand-off from an
-/// activation to the loop that reads it (unused on Windows, whose primary
-/// socket joins the group).
+/// activation to the loop that reads it. Windows has none: its primary
+/// socket joins the group, so its receive loop takes no hand-off.
 #[derive(Default)]
 pub(super) struct GroupSwap {
-    next: Mutex<Option<Option<socket2::Socket>>>,
+    next: Mutex<Option<Option<Listener>>>,
     ready: Notify,
 }
 
 impl GroupSwap {
-    /// Hand the loop `listener`, replacing the one it reads; `None` closes
-    /// it.
-    fn offer(&self, listener: Option<socket2::Socket>) {
+    /// Hand the loop `listener`, opened and configured already, replacing
+    /// the one it reads; `None` closes it.
+    #[cfg_attr(windows, allow(dead_code))]
+    fn offer(&self, listener: Option<Listener>) {
         *self.next.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
         self.ready.notify_one();
     }
 
     /// The next listener offered. Cancel-safe: the offer is taken in the
     /// same poll that sees it.
-    pub(super) async fn next(&self) -> Option<socket2::Socket> {
+    pub(super) async fn next(&self) -> Option<Listener> {
         loop {
             self.ready.notified().await;
             if let Some(listener) = self
@@ -269,16 +304,22 @@ struct ControlState {
     running: Option<Running>,
 }
 
-/// What an activation changes in a running transport.
-struct Running {
-    node: Weak<NodeHandle>,
+/// What an activation changes in a running transport. On Windows only the
+/// node and the subnet are read: the primary socket joins the group there.
+#[cfg_attr(windows, allow(dead_code))]
+pub(super) struct Running {
+    pub(super) node: Weak<NodeHandle>,
     /// The bound UDP port.
-    port: u16,
+    pub(super) port: u16,
     /// Where broadcasts go without a group: the configured broadcast
     /// address at the bound port.
-    subnet: SocketAddrV4,
-    /// The receive loop's listener hand-off.
-    swap: Arc<GroupSwap>,
+    pub(super) subnet: SocketAddrV4,
+    /// The receive loop's listener hand-off (not on Windows).
+    pub(super) swap: Option<Arc<GroupSwap>>,
+    /// What a new listener keeps and reports to: the Network Port lease and
+    /// the transport's frame tap.
+    pub(super) lease: Option<Arc<()>>,
+    pub(super) tap: FrameTap,
 }
 
 /// One transport's multicast group, shared with the Network Port object it
@@ -291,6 +332,9 @@ pub(crate) struct MulticastControl {
     /// The transport's configured port, 0 when the OS picks it: a group at
     /// a picked port couldn't share it with the other members.
     configured_port: u16,
+    /// Makes the next listener an activation opens fail, for tests.
+    #[cfg(test)]
+    pub(super) fail_next_listener: std::sync::atomic::AtomicBool,
 }
 
 impl MulticastControl {
@@ -304,6 +348,8 @@ impl MulticastControl {
             }),
             interface,
             configured_port,
+            #[cfg(test)]
+            fail_next_listener: Default::default(),
         }
     }
 
@@ -332,19 +378,8 @@ impl MulticastControl {
     }
 
     /// Hand the control the running transport, for activations.
-    pub(super) fn attach(
-        &self,
-        node: &Arc<NodeHandle>,
-        port: u16,
-        subnet: SocketAddrV4,
-        swap: Arc<GroupSwap>,
-    ) {
-        self.lock().running = Some(Running {
-            node: Arc::downgrade(node),
-            port,
-            subnet,
-            swap,
-        });
+    pub(super) fn attach(&self, running: Running) {
+        self.lock().running = Some(running);
     }
 
     /// Forget the running transport: it stopped.
@@ -377,54 +412,106 @@ impl MulticastControl {
     }
 }
 
-/// Ready the sockets for `next`: on Linux, macOS and the BSDs the sender's
-/// options and a listener joined to the group, for the receive loop to take
-/// in place of the old one (the old group is left when its listener
-/// closes).
+/// The sockets an activation readied for its new group, before the link
+/// moves: on Linux, macOS and the BSDs the new group's listener, opened and
+/// configured for the receive loop; on Windows the group the primary
+/// socket joined.
 #[cfg(not(windows))]
-fn move_sockets(
-    node: &NodeHandle,
-    interface: Ipv4Addr,
-    _old: Option<BipMulticast>,
-    next: Option<BipMulticast>,
-    port: u16,
-) -> io::Result<Option<socket2::Socket>> {
-    let Some(next) = next else {
-        return Ok(None);
-    };
-    configure_sender(
-        socket2::SockRef::from(&***node.socket()),
-        interface,
-        next.ttl,
-    )?;
-    group_listener(next.endpoint(port), interface).map(Some)
-}
-
-/// Ready the sockets for `next`: on Windows the primary socket joins the
-/// new group and leaves the old one, so there is no listener to hand over.
+type Prepared = Option<Listener>;
 #[cfg(windows)]
-fn move_sockets(
-    node: &NodeHandle,
-    interface: Ipv4Addr,
-    old: Option<BipMulticast>,
-    next: Option<BipMulticast>,
-    _port: u16,
-) -> io::Result<Option<socket2::Socket>> {
-    let primary = socket2::SockRef::from(&***node.socket());
-    if let Some(next) = next {
+type Prepared = Option<Ipv4Addr>;
+
+impl MulticastControl {
+    /// Ready the sockets for `next`, changing nothing the node reads yet:
+    /// every step that can fail runs here. On Linux, macOS and the BSDs the
+    /// sender's options and a listener joined to the group, wrapped for the
+    /// receive loop; the old group is left when its listener closes.
+    #[cfg(not(windows))]
+    fn prepare(
+        &self,
+        node: &NodeHandle,
+        running: &Running,
+        next: Option<BipMulticast>,
+    ) -> io::Result<Prepared> {
+        let Some(next) = next else {
+            return Ok(None);
+        };
+        #[cfg(test)]
+        if self
+            .fail_next_listener
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(io::Error::other("injected listener failure"));
+        }
+        // Wrapping the socket registers it with the runtime, which an
+        // activation outside one couldn't do.
+        tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
         configure_sender(
             socket2::SockRef::from(&***node.socket()),
-            interface,
+            self.interface,
             next.ttl,
         )?;
-        primary.join_multicast_v4(&next.group, &interface)?;
+        let socket = group_listener(next.endpoint(running.port), self.interface)?;
+        Listener::open_group(socket, running.lease.clone(), &running.tap).map(Some)
     }
-    if let Some(old) = old {
-        if let Err(error) = primary.leave_multicast_v4(&old.group, &interface) {
-            warn!(%error, group = %old.group, "Could not leave the old B/IP multicast group");
+
+    /// Ready the sockets for `next`: on Windows the primary socket joins
+    /// the new group. The old one is left once the link has moved
+    /// ([`commit`](Self::commit)).
+    #[cfg(windows)]
+    fn prepare(
+        &self,
+        node: &NodeHandle,
+        _running: &Running,
+        next: Option<BipMulticast>,
+    ) -> io::Result<Prepared> {
+        let Some(next) = next else {
+            return Ok(None);
+        };
+        let primary = socket2::SockRef::from(&***node.socket());
+        configure_sender(
+            socket2::SockRef::from(&***node.socket()),
+            self.interface,
+            next.ttl,
+        )?;
+        primary.join_multicast_v4(&next.group, &self.interface)?;
+        Ok(Some(next.group))
+    }
+
+    /// The link moved: hand the new listener over, or on Windows leave the
+    /// old group.
+    #[cfg_attr(windows, allow(unused_variables))]
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    fn commit(
+        &self,
+        node: &NodeHandle,
+        running: &Running,
+        prepared: Prepared,
+        old: Option<BipMulticast>,
+    ) {
+        #[cfg(not(windows))]
+        if let Some(swap) = &running.swap {
+            swap.offer(prepared);
+        }
+        #[cfg(windows)]
+        if let Some(old) = old.filter(|old| Some(old.group) != prepared) {
+            let primary = socket2::SockRef::from(&***node.socket());
+            if let Err(error) = primary.leave_multicast_v4(&old.group, &self.interface) {
+                warn!(%error, group = %old.group, "Could not leave the old B/IP multicast group");
+            }
         }
     }
-    Ok(None)
+
+    /// The link refused to move: undo what [`prepare`](Self::prepare) did.
+    /// A listener closes when dropped; on Windows the new group is left.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    fn roll_back(&self, node: &NodeHandle, prepared: Prepared, old: Option<BipMulticast>) {
+        #[cfg(windows)]
+        if let Some(group) = prepared.filter(|group| old.map(|old| old.group) != Some(*group)) {
+            let primary = socket2::SockRef::from(&***node.socket());
+            let _ = primary.leave_multicast_v4(&group, &self.interface);
+        }
+    }
 }
 
 fn protocol(code: ErrorCode) -> Error {
@@ -458,17 +545,19 @@ impl IpMulticast for MulticastControl {
         let Some((node, running)) = Self::running(&state) else {
             return Err(protocol(ErrorCode::WRITE_ACCESS_DENIED));
         };
-        let (port, swap) = (running.port, Arc::clone(&running.swap));
-        let subnet = next.map_or(running.subnet, |multicast| multicast.endpoint(port));
-        // The sockets first, since they can fail; then the link, which
-        // can't once the group is valid.
-        let moved =
-            move_sockets(&node, self.interface, state.config, next, port).map_err(|error| {
-                warn!(%error, "B/IP multicast group change failed; nothing changed");
-                Error::Transport(error)
-            })?;
-        node.set_subnet(LocalSubnet::new(subnet))?;
-        swap.offer(moved);
+        let old = state.config;
+        let subnet = subnet(next, running.subnet);
+        // Every step that can fail first, then the link, then the hand-off:
+        // a failure leaves the old group in use and nothing changed.
+        let prepared = self.prepare(&node, running, next).map_err(|error| {
+            warn!(%error, "B/IP multicast group change failed; nothing changed");
+            Error::Transport(error)
+        })?;
+        if let Err(error) = node.set_subnet(subnet) {
+            self.roll_back(&node, prepared, old);
+            return Err(error);
+        }
+        self.commit(&node, running, prepared, old);
         info!(group = ?next.map(|multicast| multicast.group), "B/IP multicast group changed");
         state.config = next;
         Ok(())
@@ -532,6 +621,33 @@ impl super::BipTransport {
             Some(multicast) => multicast.endpoint(self.port),
             None => SocketAddrV4::new(self.broadcast_address, self.port),
         }
+    }
+
+    /// Hand the multicast control the started node, so a Network Port
+    /// activation can move its group, and return the listener hand-off for
+    /// the receive loop: only for a transport that lends its group
+    /// ([`supports_multicast`](Self::supports_multicast)), and never on
+    /// Windows, whose primary socket joins the group. Without one the
+    /// receive loop waits on nothing extra.
+    pub(super) fn attach_multicast(
+        &self,
+        node: &Arc<NodeHandle>,
+        subnet: SocketAddrV4,
+    ) -> Option<Arc<GroupSwap>> {
+        if !self.supports_multicast() {
+            self.multicast.detach();
+            return None;
+        }
+        let swap = (!cfg!(windows)).then(|| Arc::new(GroupSwap::default()));
+        self.multicast.attach(Running {
+            node: Arc::downgrade(node),
+            port: subnet.port(),
+            subnet,
+            swap: swap.clone(),
+            lease: self.network_port_lease.clone(),
+            tap: self.frame_tap.clone(),
+        });
+        swap
     }
 
     /// Refuse, before any I/O, a start of a member that can't be one.

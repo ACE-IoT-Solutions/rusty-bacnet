@@ -80,11 +80,7 @@ fn database() -> ObjectDatabase {
 
 async fn start(mode: BipPortMode) -> BACnetServer<TestTransport> {
     let transport = TestTransport::builder()
-        .bip_port(BipPort {
-            endpoint: SocketAddrV4::new(PORT_IP.into(), UDP),
-            mode,
-            multicast: None,
-        })
+        .bip_port(BipPort::new(SocketAddrV4::new(PORT_IP.into(), UDP), mode))
         .build();
     let config = ServerConfig {
         registered_network_port: Some(port_oid()),

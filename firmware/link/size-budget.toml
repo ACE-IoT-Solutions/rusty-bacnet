@@ -59,6 +59,12 @@
 #   thumbv6m apdu     39796 / 5188 / 0 /  1056   45176 /  1056
 #   riscv32imc apdu   45236 / 5832 / 0 /  1056   51090 /  1056
 #
+# 2026-10-20 (#941): a B/IP-M member's directed broadcast stays a group
+# address in bacnet-bip-core, and a link refuses a group outside NORMAL
+# mode. Flash grew by up to 0.41 KB (node -20 to +208, bbmd +204 to +404,
+# router +72 to +256 octets across the four targets) and the router's RAM
+# by 8 octets; every image stays within its budget, so no budget changed.
+#
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
 # flash, the RAM unchanged. The mstp rows were too, when the master core

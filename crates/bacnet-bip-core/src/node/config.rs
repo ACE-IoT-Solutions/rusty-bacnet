@@ -192,10 +192,15 @@ impl Link {
     }
 
     /// Check the configuration: a nonzero own port, a usable foreign-device
-    /// registration, and a budget of at least [`MIN_BUDGET`] octets.
+    /// registration, a budget of at least [`MIN_BUDGET`] octets, and a
+    /// multicast group (a class D [`LocalSubnet::broadcast`]) only in
+    /// [`Mode::Normal`].
     pub const fn validate(&self) -> Result<(), ConfigError> {
         if self.address.port() == 0 {
             return Err(ConfigError::OwnPort);
+        }
+        if self.subnet.broadcast.ip().is_multicast() && !matches!(self.mode, Mode::Normal) {
+            return Err(ConfigError::MulticastMode);
         }
         if let Some(budget) = self.budget {
             if budget < MIN_BUDGET {
@@ -250,6 +255,11 @@ pub enum ConfigError {
     /// [`Node::retarget`](super::Node::retarget) on a node that is not a
     /// foreign device.
     NotForeign,
+    /// A multicast group as the subnet's broadcast address (B/IP-M, Annex
+    /// J.8) in a mode other than [`Mode::Normal`]: a foreign device
+    /// broadcasts through its BBMD, and a BBMD that serves a group is not
+    /// supported yet (#941).
+    MulticastMode,
 }
 
 impl fmt::Display for ConfigError {
@@ -265,6 +275,7 @@ impl fmt::Display for ConfigError {
             Self::BbmdIsSelf => "the BBMD is this node's own address",
             Self::Budget => "the datagram budget is below 64 octets",
             Self::NotForeign => "only a foreign device can change its BBMD",
+            Self::MulticastMode => "only a normal node can use a multicast group",
         })
     }
 }

@@ -210,6 +210,15 @@ impl NetworkPortObject {
             return Ok(false);
         }
         self.check_pending_changes()?;
+        // Only a NORMAL port lends a multicast group today, and NORMAL has
+        // no mode rows to write, so the two halves never wait together and
+        // the order below can't leave one half applied and the other
+        // refused. A BBMD that serves a group (#941, the next change) must
+        // revisit this: activate both or neither.
+        debug_assert!(
+            self.pending.is_empty() || !self.multicast.is_pending(),
+            "mode values and a multicast group pending together"
+        );
         if !self.pending.is_empty() {
             self.activate_mode_changes()?;
         }

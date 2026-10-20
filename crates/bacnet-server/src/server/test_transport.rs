@@ -565,11 +565,7 @@ impl TestTransportBuilder {
     /// Report `endpoint` as a NORMAL B/IP bind, so a server can register a
     /// Network Port on this link; the transport then holds the port's lease.
     pub(crate) fn normal_bip(self, endpoint: SocketAddrV4) -> Self {
-        self.bip_port(BipPort {
-            endpoint,
-            mode: BipPortMode::Normal,
-            multicast: None,
-        })
+        self.bip_port(BipPort::new(endpoint, BipPortMode::Normal))
     }
 
     /// Report `port`, a B/IP bind in any mode, for a server to register a

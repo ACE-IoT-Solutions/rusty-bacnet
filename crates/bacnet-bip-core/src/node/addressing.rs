@@ -132,16 +132,26 @@ pub struct Groups {
     /// loopback one, as loopback tests set up, is a group only at the
     /// network's port.
     pub interface: Ipv4Addr,
+    /// For a B/IP-M node, its IP subnet's directed broadcast address
+    /// ([`LocalSubnet::directed`](crate::LocalSubnet::directed)): no
+    /// longer where its broadcasts go, but still an address that reaches
+    /// more than one node. It counts as the broadcast IP does, at any port.
+    /// 0.0.0.0 for none: a plain address rather than an `Option`, so a
+    /// router's empty group rule stays all zero bits and its storage stays
+    /// in `.bss`.
+    pub directed: Ipv4Addr,
 }
 
 impl Groups {
     /// The group destinations of a link whose broadcast address is
-    /// `broadcast`, on the interface whose IP is `interface`.
+    /// `broadcast`, on the interface whose IP is `interface`, with no
+    /// directed broadcast beside it.
     #[must_use]
     pub const fn new(broadcast: SocketAddrV4, interface: Ipv4Addr) -> Self {
         Self {
             broadcast,
             interface,
+            directed: Ipv4Addr::UNSPECIFIED,
         }
     }
 
@@ -155,14 +165,17 @@ impl Groups {
     }
 
     /// Whether `ip` is a group at any port: 255.255.255.255, a multicast
-    /// address, or the broadcast IP when it is neither loopback nor the
-    /// node's own interface. This is the test for a datagram's UDP source.
+    /// address, or the broadcast IP or a member's directed broadcast when
+    /// it is neither loopback nor the node's own interface. This is the
+    /// test for a datagram's UDP source.
     #[must_use]
     pub const fn contains_ip(&self, ip: Ipv4Addr) -> bool {
-        let (ip_bits, broadcast) = (ip.to_bits(), self.broadcast.ip().to_bits());
+        let ip_bits = ip.to_bits();
+        let directed = !self.directed.is_unspecified() && self.directed.to_bits() == ip_bits;
+        let subnet = ip_bits == self.broadcast.ip().to_bits() || directed;
         ip.is_broadcast()
             || ip.is_multicast()
-            || (ip_bits == broadcast && !ip.is_loopback() && ip_bits != self.interface.to_bits())
+            || (subnet && !ip.is_loopback() && ip_bits != self.interface.to_bits())
     }
 }
 
@@ -181,6 +194,10 @@ impl Link {
         Groups {
             broadcast: self.subnet.broadcast,
             interface: *self.address.ip(),
+            directed: match self.subnet.directed {
+                Some(directed) => directed,
+                None => Ipv4Addr::UNSPECIFIED,
+            },
         }
     }
 

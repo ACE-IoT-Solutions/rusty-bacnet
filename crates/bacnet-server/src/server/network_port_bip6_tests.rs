@@ -403,11 +403,10 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
         ..Default::default()
     };
     let transport = TestTransport::builder()
-        .bip_port(BipPort {
-            endpoint: SocketAddrV4::new([127, 0, 0, 1].into(), UDP),
-            mode: BipPortMode::Normal,
-            multicast: None,
-        })
+        .bip_port(BipPort::new(
+            SocketAddrV4::new([127, 0, 0, 1].into(), UDP),
+            BipPortMode::Normal,
+        ))
         .build();
     assert_eq!(
         refusal(BACnetServer::start(config, database(), transport).await),

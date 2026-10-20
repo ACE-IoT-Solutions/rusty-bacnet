@@ -98,7 +98,9 @@ const NAT: &[PropertyMetadata] = &[
 // whose transport lends its group serves it, as 0.0.0.0 while off. Clause
 // 12.56.26 makes it writable whenever present, a write waiting for a
 // ReinitializeDevice as the mode rows' do (#941). It is listed read-only
-// here and becomes writable only for an owner that activates changes.
+// here and becomes writable only for an owner that activates changes: a
+// deviation, as for the BBMD rows (#1578), since without one a written
+// group could never take effect. The PICS draft shows it read-only then.
 const MULTICAST: &[PropertyMetadata] = &[PropertyMetadata::new(
     P::BACNET_IP_MULTICAST_ADDRESS,
     RequiredRead,

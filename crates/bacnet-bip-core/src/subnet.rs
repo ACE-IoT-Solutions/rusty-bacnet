@@ -40,6 +40,14 @@ pub struct LocalSubnet {
     /// no other device of the network shares the subnet, or they stop
     /// receiving remote broadcasts.
     pub alone: bool,
+    /// For a B/IP-M node, whose [`broadcast`](Self::broadcast) is its
+    /// multicast group, the IP subnet's directed broadcast address, when
+    /// the caller knows it. The node neither sends there nor takes
+    /// broadcasts from there, but the address still reaches more than one
+    /// node, so a datagram from it, or a Forwarded-NPDU naming it as the
+    /// origin, is dropped ([`Groups`](crate::node::Groups)). `None` for a
+    /// plain node, whose broadcast address already is it.
+    pub directed: Option<Ipv4Addr>,
 }
 
 impl LocalSubnet {
@@ -51,6 +59,20 @@ impl LocalSubnet {
             broadcast,
             mask: None,
             alone: false,
+            directed: None,
+        }
+    }
+
+    /// A B/IP-M node's subnet (Annex J.8.1): broadcasts go to `group`, a
+    /// multicast address at the network's port, and `directed`, the IP
+    /// subnet's own broadcast address when known, stays a group address.
+    #[must_use]
+    pub const fn member(group: SocketAddrV4, directed: Option<Ipv4Addr>) -> Self {
+        Self {
+            broadcast: group,
+            mask: None,
+            alone: false,
+            directed,
         }
     }
 }

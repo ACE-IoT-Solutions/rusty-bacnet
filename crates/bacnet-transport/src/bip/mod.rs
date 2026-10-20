@@ -34,7 +34,6 @@ use bacnet_bip_codec as codec;
 #[cfg(test)]
 use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Cast, Link, Mode};
-use bacnet_bip_core::LocalSubnet;
 use bacnet_npdu::NpduLimits;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode, ForeignRegistration};
 use bacnet_types::error::Error;
@@ -681,9 +680,7 @@ impl TransportPort for BipTransport {
         };
         // A B/IP-M node's group stands in for its subnet (Annex J.8.1).
         let subnet_broadcast = SocketAddrV4::new(self.broadcast_address, local_port);
-        let subnet = LocalSubnet::new(
-            multicast.map_or(subnet_broadcast, |group| group.endpoint(local_port)),
-        );
+        let subnet = multicast::subnet(multicast, subnet_broadcast);
         let link =
             Link::new(SocketAddrV4::new(local_ip, local_port), subnet, mode).map(|mut link| {
                 // NPDUs up to the 1497 octets B/IP carries (Table 6-1, #1622).
@@ -718,9 +715,7 @@ impl TransportPort for BipTransport {
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
         self.socket = Some(Arc::clone(&socket));
         self.node = Some(Arc::clone(&node));
-        let group_swap = Arc::new(multicast::GroupSwap::default());
-        self.multicast
-            .attach(&node, local_port, subnet_broadcast, Arc::clone(&group_swap));
+        let group_swap = self.attach_multicast(&node, subnet_broadcast);
 
         /// NPDU receive channel capacity for high-throughput UDP transports.
         const NPDU_CHANNEL_CAPACITY: usize = 256;

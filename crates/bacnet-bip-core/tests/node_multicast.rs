@@ -7,7 +7,7 @@ use core::net::Ipv4Addr;
 
 use bacnet_bip_codec::Bvll;
 use bacnet_bip_core::node::{
-    Addressed, Discard, LocalAddresses, Mode, Node, Received, SendRefusal,
+    Addressed, ConfigError, Discard, Link, LocalAddresses, Mode, Node, Received, SendRefusal,
 };
 use bacnet_bip_core::LocalSubnet;
 use node_support::*;
@@ -20,7 +20,7 @@ const GROUP: core::net::SocketAddrV4 = addr(239, 255, 0, 47, PORT);
 /// A member of [`GROUP`].
 fn member() -> bacnet_bip_core::node::Link {
     with(link(Mode::Normal), |link| {
-        link.subnet = LocalSubnet::new(GROUP)
+        link.subnet = LocalSubnet::member(GROUP, Some(*BROADCAST.ip()))
     })
 }
 
@@ -125,4 +125,49 @@ fn set_subnet_joins_and_leaves_the_group() {
     node.set_subnet(SUBNET).expect("valid");
     let (outgoing, _) = node.link().broadcast(NPDU).expect("fits");
     assert_eq!(outgoing.to, BROADCAST);
+}
+
+#[test]
+fn a_members_directed_broadcast_stays_a_group() {
+    let link = member();
+    let groups = link.groups();
+    for port in [PORT, PORT + 1] {
+        assert!(groups.contains(addr(192, 168, 1, 255, port)), "{port}");
+    }
+    assert!(groups.contains_ip(*BROADCAST.ip()));
+    let unicast = wire(Bvll::OriginalUnicastNpdu(NPDU));
+    // A datagram from the subnet's directed broadcast is dropped first.
+    assert_eq!(
+        receive(&link, &unicast, BROADCAST, classify(*OWN.ip())),
+        Received::Discarded(Discard::GroupSource)
+    );
+    // So is a Forwarded-NPDU naming it as the origin.
+    let forwarded = wire(Bvll::ForwardedNpdu {
+        origin: BROADCAST,
+        npdu: NPDU,
+    });
+    assert_eq!(
+        receive(&link, &forwarded, BBMD, classify(*GROUP.ip())),
+        Received::Discarded(Discard::GroupOrigin)
+    );
+    // A member that doesn't know its directed broadcast has only the group.
+    let unknown = with(member(), |link| link.subnet = LocalSubnet::new(GROUP));
+    assert!(!unknown.groups().contains_ip(*BROADCAST.ip()));
+}
+
+#[test]
+fn only_a_normal_node_takes_a_group() {
+    for mode in [Mode::Bbmd, Mode::Foreign(foreign())] {
+        assert_eq!(
+            Link::new(OWN, LocalSubnet::new(GROUP), mode),
+            Err(ConfigError::MulticastMode)
+        );
+        let mut node: Node = Node::new(link(mode), at(0)).expect("valid");
+        assert_eq!(
+            node.set_subnet(LocalSubnet::new(GROUP)),
+            Err(ConfigError::MulticastMode)
+        );
+        assert_eq!(node.link().subnet, SUBNET, "unchanged");
+    }
+    assert!(Link::new(OWN, LocalSubnet::new(GROUP), Mode::Normal).is_ok());
 }
