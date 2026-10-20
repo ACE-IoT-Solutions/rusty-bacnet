@@ -26,6 +26,15 @@ fn objects() -> Vec<Box<dyn BACnetObject>> {
             device_identifier: None,
         }))
         .unwrap();
+    // An unset enrollment serves `none` and generates no events (#1868).
+    enrollment.set_event_parameters(
+        bacnet_types::constructed::BACnetEventParameter::OutOfRange {
+            time_delay: 0,
+            low_limit: 0.0,
+            high_limit: 100.0,
+            deadband: 1.0,
+        },
+    );
     vec![
         Box::new(AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
         Box::new(AnalogOutputObject::new(1, "AO", EngineeringUnits::DEGREES_CELSIUS).unwrap()),

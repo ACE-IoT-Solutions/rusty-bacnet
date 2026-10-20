@@ -2,7 +2,9 @@
 //! never has more than one of our confirmed requests outstanding, and a
 //! global cap on how many requests a second leave across every device.
 //! Name reads for the rows on screen (#1896) are jobs too, the lowest
-//! priority: any other read stops one, and it resumes after.
+//! priority: any other read stops one, and it resumes after. They take no
+//! slot of their own, so under a cap that watch polling keeps saturated
+//! they can wait indefinitely.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,6 +76,13 @@ impl RateCap {
     /// Wait until a request could go at once, without reserving a slot: a
     /// caller that decides only then what to send (the name reads) spends
     /// no slot on work withdrawn while it waited.
+    ///
+    /// That holds only while the caller doesn't await between this and its
+    /// [`acquire`](Self::acquire): deciding what to send must be
+    /// synchronous (`read_names` takes its batch under a std mutex). An
+    /// await there lets other jobs book the free slot first, and the
+    /// caller's request then waits for a later one, for rows that may have
+    /// been withdrawn meanwhile.
     pub(crate) async fn wait_free(&self) {
         loop {
             let next = self

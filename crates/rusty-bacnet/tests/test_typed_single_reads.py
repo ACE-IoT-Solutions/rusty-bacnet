@@ -155,8 +155,8 @@ class PeerSingleReadTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((value.tag, value.value), ("application_data", malformed))
             value = await ReferencePeer(self, target).read(b"\x21\x07")
             self.assertEqual((value.tag, value.value), ("unsigned", 7))
-        # An application octet string is the enrollment's own unset form, not
-        # the CHOICE, so it keeps its generic shape.
+        # An application octet string, the legacy form older servers gave an
+        # unset enrollment, is not the CHOICE, so it keeps its generic shape.
         value = await ReferencePeer(self, PARAMETERS).read(b"\x60")
         self.assertEqual((value.tag, value.value), ("octet_string", b""))
 
@@ -232,6 +232,10 @@ class NativeSingleReadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_subordinate_list_and_event_parameters_set_locally(self):
         await self.reads(VIEW, P.SUBORDINATE_LIST, "list", [])
+        # Unset parameters serve the CHOICE's none alternative (#1868).
+        unset = await self.reads(ENROLLMENT, P.EVENT_PARAMETERS, "event_parameter",
+                                 {"kind": "none"})
+        self.assertEqual(unset.octets, bytes.fromhex("f814"))
         raw, expected = EVENT_PARAMETERS[0]
         await self.server.write_property_local(ENROLLMENT, P.EVENT_PARAMETERS,
                                                PropertyValue.application_data(raw),

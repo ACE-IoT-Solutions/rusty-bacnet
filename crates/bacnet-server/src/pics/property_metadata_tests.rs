@@ -294,6 +294,10 @@ fn pics_projects_migrated_property_metadata() {
             (PropertyIdentifier::ACKED_TRANSITIONS, false, false),
             (PropertyIdentifier::NOTIFY_TYPE, false, true),
             (PropertyIdentifier::EVENT_TIME_STAMPS, false, false),
+            (PropertyIdentifier::EVENT_MESSAGE_TEXTS, true, false),
+            (PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG, true, true),
+            (PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF, true, true),
+            (PropertyIdentifier::EVENT_ALGORITHM_INHIBIT, true, true),
             (PropertyIdentifier::PROPERTY_LIST, false, false),
         ])
     );

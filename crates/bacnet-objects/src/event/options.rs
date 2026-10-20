@@ -4,7 +4,8 @@
 //! Every object table here that has intrinsic reporting lists the three as
 //! rows that only an intrinsic reporter may have (Table 12-2, footnote 5,
 //! and the like). Event Enrollment's Table 12-14 lists them as plain
-//! optional rows, and its algorithm takes them the same way (#1507). Each
+//! optional rows, and its algorithm takes them the same way (#1507); Alert
+//! Enrollment's Table 12-61 does too (#1865). Each
 //! family keeps them in its
 //! [`EventHistory`](super::history::EventHistory), which serves and takes
 //! them, so every family reads, writes and acts on them the same way:

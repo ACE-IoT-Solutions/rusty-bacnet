@@ -181,6 +181,33 @@ pub(super) static ALERT_ENROLLMENT_PROPERTIES: &[PropertyMetadata] = &[
         None,
         ReadOnly,
     ),
+    // Table 12-61 lists the message texts and the reporting options as plain
+    // optional rows, as Table 12-14 does; the shared `ReportingOptions`
+    // serves them here too (#1865).
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+        Optional,
+        None,
+        ReadOnly,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        Optional,
+        None,
+        Always,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        Optional,
+        None,
+        Always,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+        Optional,
+        None,
+        Always,
+    ),
     PropertyMetadata::new(
         PropertyIdentifier::PROPERTY_LIST,
         RequiredRead,

@@ -71,6 +71,8 @@ mod mstp_monitor;
 mod mstp_monitor_pty;
 mod mstp_screen;
 mod names;
+mod names_cache;
+mod names_filter;
 mod names_site;
 mod network;
 mod network_frames;

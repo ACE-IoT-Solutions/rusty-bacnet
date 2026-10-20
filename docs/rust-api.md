@@ -433,6 +433,21 @@ contract described below and do not require command provenance.
 Input measurement setters keep their separate contract. Priority_Array stays
 read-only; a sourced Present_Value NULL relinquishes the specified priority.
 
+Lighting Output and Binary Lighting Output serve the same three rows (Tables
+12-64 and 12-69, #1866), and their context-free `write_property` denies
+Present_Value, and on a Lighting Output Lighting_Command, the same way. A
+Lighting_Command is its writer's command at the priority it acts at. A command
+that acts on its slot (a level, a fade, ramp or step, WARN_RELINQUISH,
+WARN_OFF, or a STOP that ends something) records its writer there; WARN, an
+ignored step and a STOP with nothing to stop leave the slot's source as it was.
+`LightingOutputObject::set_lighting_command` names no writer, so the slot it
+acts on reads source NONE that no one may correct; an application that wants
+its commands sourced (Clause 19.5.1.3) uses `BACnetServer::write_local` with a
+`LocalCommandSource`. WARN_RELINQUISH and WARN_OFF record their writer when
+written, but the slot's value changes only when the egress ends, so
+Last_Command_Time moves then, whether the timer runs out, a later command
+halts the egress, or a trim change advances past its end.
+
 The full server derives remote origins from direct network 0/source MAC or routed
 SNET/SADR, independently of Audit reporting. Address-to-Device correlation is a
 snapshot, not authentication. Once the server knows its own network number, a
@@ -482,9 +497,10 @@ selected interpretation of the last command), while the visible source moves to
 the next active slot or none.
 
 Single and Multiple subscriptions to commandable `Value_Source` on these six
-families report `Present_Value`, `Status_Flags`, `Value_Source`,
+families and the two lighting outputs report `Present_Value`, `Status_Flags`, `Value_Source`,
 `Last_Command_Time`, and `Current_Command_Priority` together. The trigger uses
-the object's PV criterion (its `COV_Increment` for analogs), flags, source, or
+the object's PV criterion (its `COV_Increment` for analogs and Lighting
+Output), flags, source, or
 priority changes; time alone does not trigger. A Value_Source subscription's
 increment does not replace the analog object's increment. Initial and renewal
 reports contain the same five fields. A failed or malformed required companion
@@ -3456,9 +3472,20 @@ framing, through the shared `bacnet-encoding` codecs.
   BACnetEventParameter and BACnetFaultParameter CHOICE framing. Modeled
   alternatives round-trip. An alternative the stack does not model is kept as
   opaque bytes, and omitted, deprecated and reserved choices, or trailing bytes
-  after a framed element, are rejected. Fault_Parameters without a fault
-  algorithm reads as the context-tagged `none` choice (`08`), and writing that
-  clears it. The CHOICE has no application NULL, so a NULL written to it
+  after a framed element, are rejected. Event_Parameters never set reads as
+  the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
+  enrollment evaluates reliability only (Clause 12.12.7), and one left
+  offnormal by earlier parameters returns to NORMAL with a TO_NORMAL. Any
+  enrollment with a monitored reference can fault, whatever its parameters,
+  so GetEnrollmentSummary lists it and its TO_FAULT takes an
+  AcknowledgeAlarm. Event_Type follows
+  Event_Parameters (Clause 12.12.5): NONE while they are `none`, the written
+  algorithm's type after. The `EventEnrollmentObject::new` type argument
+  applies only to the legacy octet-string parameters, which name no
+  algorithm, and to an opaque alternative at tag 64 or above, which names no
+  standard event type. Fault_Parameters
+  without a fault algorithm reads as the context-tagged `none` choice (`08`),
+  and writing that clears it. The CHOICE has no application NULL, so a NULL written to it
   succeeds and changes nothing (#1417).
 - **BACnetTimeStamp** (Clause 21) has one codec for every producer and consumer.
   The time form is a primitive tag holding raw Time octets, the sequence number
@@ -4287,6 +4314,12 @@ way, and the server also refreshes a referenced inhibit at the start of each
 enrollment evaluation pass. The server has no message text of its own for an
 enrollment: a transition sends the matching Event_Message_Texts_Config entry
 as written, and none when that entry is empty.
+
+An Alert Enrollment serves the same four rows too, as Table 12-61 lists them
+(#1865), and keeps the configuration across a detection reset. The stack
+doesn't distribute alerts yet, so for now the rows hold their values for the
+application: Event_Message_Texts stays at its initial empty strings, and the
+inhibit follows its reference as on any other object.
 
 Every Trend Log samples a BACnet property, so its Start_Time, Stop_Time,
 Log_Interval and Log_DeviceObjectProperty are classed required (Table 12-29

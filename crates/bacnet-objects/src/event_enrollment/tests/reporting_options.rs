@@ -207,3 +207,102 @@ fn event_enrollment_commit_stores_the_configured_text_or_none() {
         texts(["", "", ""])
     );
 }
+
+/// Alert Enrollment shares the rows (#1865): Table 12-61 lists them as plain
+/// optional rows, so the configuration survives a detection reset, the
+/// inhibit takes no write while detection is off, and with a reference the
+/// database refreshes it from the referenced property.
+#[test]
+fn alert_enrollment_shares_the_reporting_options() {
+    let source = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+    let mut alert = AlertEnrollmentObject::new(1, "AE-1", source).unwrap();
+    for property in [
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+    ] {
+        assert!(alert.is_writable_property(property), "{property:?}");
+    }
+    alert
+        .write_property(
+            PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+            None,
+            texts(["Alert", "", ""]),
+            None,
+        )
+        .unwrap();
+    alert
+        .write_property(
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+            None,
+            PropertyValue::Boolean(true),
+            None,
+        )
+        .unwrap();
+    assert_eq!(inhibit(&alert), PropertyValue::Boolean(true));
+
+    alert.set_event_detection_enable(false);
+    assert_eq!(
+        code(alert.write_property(
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+            None,
+            PropertyValue::Boolean(false),
+            None,
+        )),
+        ErrorCode::WRITE_ACCESS_DENIED
+    );
+    assert_eq!(
+        alert
+            .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG, Some(1))
+            .unwrap(),
+        PropertyValue::CharacterString("Alert".into())
+    );
+    assert_eq!(
+        alert
+            .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, None)
+            .unwrap(),
+        texts(["", "", ""])
+    );
+    alert.set_event_detection_enable(true);
+
+    // A reference hands the inhibit to the database's refresh.
+    let mut db = ObjectDatabase::new();
+    let bv = BinaryValueObject::new(4, "inhibit").unwrap();
+    let bv_oid = bv.object_identifier();
+    db.add(Box::new(bv)).unwrap();
+    let mut octets = BytesMut::new();
+    encode_object_property_reference(
+        &mut octets,
+        &BACnetObjectPropertyReference::new(bv_oid, PropertyIdentifier::PRESENT_VALUE.to_raw()),
+    );
+    alert
+        .write_property(
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+            None,
+            PropertyValue::ApplicationData(octets.to_vec()),
+            None,
+        )
+        .unwrap();
+    let alert_oid = alert.object_identifier();
+    db.add(Box::new(alert)).unwrap();
+    // The Binary Value reads INACTIVE, so the inhibit follows it to FALSE.
+    db.follow_event_algorithm_inhibit(&alert_oid);
+    assert_eq!(
+        inhibit(db.get(&alert_oid).unwrap()),
+        PropertyValue::Boolean(false)
+    );
+    db.get_mut(&bv_oid)
+        .unwrap()
+        .write_property(
+            PropertyIdentifier::RELINQUISH_DEFAULT,
+            None,
+            PropertyValue::Enumerated(BinaryPV::ACTIVE.to_raw()),
+            None,
+        )
+        .unwrap();
+    assert!(db.follow_event_algorithm_inhibit(&alert_oid));
+    assert_eq!(
+        inhibit(db.get(&alert_oid).unwrap()),
+        PropertyValue::Boolean(true)
+    );
+}

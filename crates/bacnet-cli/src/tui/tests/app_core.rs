@@ -93,6 +93,11 @@ fn sort_cycles_columns_and_reverses() {
     press(&mut app, KeyCode::Char('s'));
     assert_eq!(app.devices.sort().0, SortKey::LastSeen);
     assert_eq!(visible(&mut app), [2, 3, 1], "most recently seen first");
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.devices.sort().0, SortKey::Name);
+    assert_eq!(visible(&mut app), [1, 2, 3], "no names yet: by instance");
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.devices.sort().0, SortKey::Instance);
 }
 
 #[test]

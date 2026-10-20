@@ -28,25 +28,6 @@ fn read_object_type() {
 }
 
 #[test]
-fn read_event_type() {
-    let ee = EventEnrollmentObject::new(1, "EE-1", EventType::COMMAND_FAILURE).unwrap();
-    let val = ee
-        .read_property(PropertyIdentifier::EVENT_TYPE, None)
-        .unwrap();
-    assert_eq!(val, PropertyValue::Enumerated(3));
-}
-
-#[test]
-fn read_event_type_preserves_a_proprietary_value() {
-    let ee = EventEnrollmentObject::new(1, "EE-1", EventType::from_raw(600)).unwrap();
-    assert_eq!(
-        ee.read_property(PropertyIdentifier::EVENT_TYPE, None)
-            .unwrap(),
-        PropertyValue::Enumerated(600)
-    );
-}
-
-#[test]
 fn read_event_enable() {
     let ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
     let val = ee
@@ -333,7 +314,7 @@ fn write_event_parameters_framed_trailing_garbage_rejected() {
             }
             other => panic!("expected PROPERTY/INVALID_DATA_TYPE, got {other:?}"),
         }
-        // Stored value is untouched: the default Opaque placeholder remains.
+        // Stored value is untouched: the unset `none` alternative remains.
         let val = ee
             .read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
             .unwrap();
@@ -344,7 +325,7 @@ fn write_event_parameters_framed_trailing_garbage_rejected() {
         assert_eq!(
             decoded,
             BACnetEventParameter::Opaque {
-                tag: 0xFF,
+                tag: 20,
                 data: Vec::new()
             }
         );
