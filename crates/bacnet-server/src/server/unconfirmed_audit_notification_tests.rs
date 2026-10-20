@@ -82,10 +82,12 @@ async fn accepted_direct_and_routed_requests_commit_atomically_without_output() 
     let observed = Arc::clone(&contexts);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        unconfirmed_audit_notification_authorizer: Some(Arc::new(move |context| {
-            observed.lock().unwrap().push(context.clone());
-            true
-        })),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().unconfirmed_audit_notification(move |context| {
+                observed.lock().unwrap().push(context.clone());
+                true
+            }),
+        )),
         ..ServerConfig::default()
     };
     let routed = NpduAddress {
@@ -156,18 +158,15 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
 
     for authorizer in [
         None,
+        Some(crate::FnPolicy::new().unconfirmed_audit_notification(|_| false)),
         Some(
-            Arc::new(|_: &UnconfirmedAuditNotificationAuthorizationContext| false)
-                as UnconfirmedAuditNotificationAuthorizer,
+            crate::FnPolicy::new().unconfirmed_audit_notification(|_| -> bool { panic!("denied") }),
         ),
-        Some(Arc::new(
-            |_: &UnconfirmedAuditNotificationAuthorizationContext| -> bool { panic!("denied") },
-        ) as UnconfirmedAuditNotificationAuthorizer),
     ] {
         let db = database(Arc::new(MemoryPersistence::default()), 7);
         let config = ServerConfig {
             audit_notification_sink: Some(sink),
-            unconfirmed_audit_notification_authorizer: authorizer,
+            policy: authorizer.map(|policy| Arc::new(policy) as Arc<dyn crate::ServerPolicy>),
             ..ServerConfig::default()
         };
         assert_silent_drop(&db, sink, &config, valid.clone()).await;
@@ -175,7 +174,9 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
 
     let authorized = ServerConfig {
         audit_notification_sink: Some(sink),
-        unconfirmed_audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().unconfirmed_audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     };
     let db = database(Arc::new(MemoryPersistence::default()), 7);
@@ -202,7 +203,9 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
     ] {
         let config = ServerConfig {
             audit_notification_sink: configured_sink,
-            unconfirmed_audit_notification_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().unconfirmed_audit_notification(|_| true),
+            )),
             ..ServerConfig::default()
         };
         assert_silent_drop(&db, sink, &config, valid.clone()).await;

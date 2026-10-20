@@ -19,6 +19,8 @@ pub mod mutation;
 #[doc(hidden)]
 pub mod network_number;
 pub mod pics;
+pub mod policy;
+pub use policy::{FnPolicy, ServerPolicy};
 mod runtime_clock;
 pub mod schedule;
 pub mod server;

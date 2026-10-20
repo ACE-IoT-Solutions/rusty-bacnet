@@ -292,7 +292,7 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     bip_local_address: Option<std::net::SocketAddrV4>,
     registered_network_port: Option<ObjectIdentifier>,
     registered_port_lease: std::sync::Weak<()>,
-    device_write_authorizer: Option<bacnet_server::mutation::MutationAuthorizer>,
+    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
     pub(crate) reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     pub(crate) reinit_password: Option<String>,
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,

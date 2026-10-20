@@ -1566,8 +1566,12 @@ Delayed, already-admitted A segments can finish A's context after replacement;
 new frames from retired A cannot enter it.
 
 Mutation and LifeSafetyOperation authorization contexts expose
-`direct_sc_identity()`. Every WPM element retains the request's one snapshot,
-with existing per-element ordering and authorized-prefix behavior. Application
+`direct_sc_identity()`. Every `ServerPolicy` context, and `ReinitializeContext`,
+also exposes `principal()`, the same leaf digest as a stable `ScPrincipal`
+without the incarnation, `None` for a routed request; and
+`forwarding_peer_principal()`, the immediate direct peer's, routed or not (#524).
+Every WPM element retains the request's one snapshot, with existing
+per-element ordering and authorized-prefix behavior. Application
 policy still decides permission. `MutationTrust` and `ControlTrust` remain
 scope labels; claimed addresses remain claims. **Pre-1.0 API change:**
 `LifeSafetyOperationAuthorizationContext` now includes `provenance`, and its
@@ -5604,8 +5608,8 @@ Nothing is answered and a malformed request is dropped. DCC's
 DISABLE_INITIATION leaves WriteGroup running, as it only stops what the device
 starts (the server refuses the deprecated DISABLE outright). Local mutation
 policy decides each Channel write on its own (#1319): `MutationPolicy::DenyAll`
-denies it, and an installed `mutation_authorizer` is called once per Channel
-with a `MutationTarget::WriteGroup` (the Channel, group, channel number,
+denies it, and an installed `ServerPolicy` is asked (`authorize_mutation`)
+once per Channel with a `MutationTarget::WriteGroup` (the Channel, group, channel number,
 priority, value and inhibit flag), no invoke ID and
 `MutationService::Unconfirmed(WRITE_GROUP)`, so it can allow some Channels and
 not others. A denied write is skipped with nothing answered and counted in
@@ -7603,10 +7607,9 @@ AuditLogQuery against the retained in-memory snapshot of an explicitly backed
 `AuditLogObject`, returning newest-first typed records through the existing
 ComplexACK segmentation path. ConfirmedAuditNotification and
 UnconfirmedAuditNotification receipt are available only when the server is
-configured with exactly one `audit_notification_sink` and the corresponding
-fast `audit_notification_authorizer` or
-`unconfirmed_audit_notification_authorizer`; missing, false, or panicking
-policy fails closed. Each policy receives the immediate MAC, optional routed
+configured with exactly one `audit_notification_sink` and a `ServerPolicy`
+whose `authorize_audit_notification` or `authorize_unconfirmed_audit_notification`
+allows it; no policy, the default method, `false` or a panic fails closed. Each policy receives the immediate MAC, optional routed
 NPDU source, configured sink, and decoded request separately from the
 peer-reported payload; only the confirmed context has an invoke ID. Accepted
 lists merge or create records atomically through the sink's durable backend.
@@ -7842,6 +7845,7 @@ response socket affinity or segmented-response ACK/Abort confinement (#524).
 
 ```rust
 use bacnet_server::server::BACnetServer;
+use bacnet_server::FnPolicy;
 
 // Generic builder — accepts any pre-built TransportPort
 let server = BACnetServer::generic_builder()
@@ -7856,11 +7860,11 @@ let server = BACnetServer::bip_builder()
     .interface(Ipv4Addr::UNSPECIFIED)
     .port(0xBAC0)
     .broadcast_address(Ipv4Addr::BROADCAST)
-    .life_safety_operation_authorizer(|context| {
+    .policy(FnPolicy::new().life_safety_operation(|context| {
         // Use authenticated deployment identity where available; the
         // Requesting Source string is peer-controlled descriptive text.
         allowed_life_safety_peer(&context.source_mac, context.source_network.as_ref())
-    })
+    }))
     .build()
     .await?;
 
@@ -7890,12 +7894,15 @@ server.stop().await?;
 Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 `generic_builder()` with a prebuilt transport.
 
-All three Rust builders accept `.mutation_authorizer(|context| ...)`, also
-available as `ServerConfig::mutation_authorizer`. It covers only confirmed
+All three Rust builders accept `.policy(..)`, also available as
+`ServerConfig::policy`: one `bacnet_server::ServerPolicy` that makes the server's
+authorization decisions, each with a documented default
+([Server authorization policy](mutation-policy.md); `FnPolicy` builds one from
+closures). Its `authorize_mutation` covers only confirmed
 WriteProperty, WritePropertyMultiple, CreateObject, DeleteObject, AddListElement,
 RemoveListElement, AtomicWriteFile, SubscribeCOV, SubscribeCOVProperty, and
-SubscribeCOVPropertyMultiple. **Omitting it allows existing behavior**, unlike
-Audit/LifeSafety's fail-closed absence. False or panic returns
+SubscribeCOVPropertyMultiple, plus inbound WriteGroup. **It allows by default**,
+unlike the Audit and LifeSafety methods, which deny by default. False or panic returns
 `SERVICES / SERVICE_REQUEST_DENIED` without the denied mutation. WPM authorizes
 each element in order and retains an authorized prefix on later denial or
 malformed input; other covered services authorize once after service decoding.
@@ -7906,10 +7913,10 @@ database lock (#1321): still once, and in wire order among those elements, so
 ahead of earlier elements no object saves first, and possibly for an element the
 request never reaches because an earlier one fails. Counters and audit records
 cover only the elements the handler reaches.
-Callbacks must be fast, nonblocking, and side-effect-free. Context addresses and
-process IDs are claimed, not authenticated identities. DCC/Reinit, Audit/LifeSafety,
-reads, discovery, trusted local writes and unconfirmed services other than WriteGroup
-are unchanged. An inbound WriteGroup is decided once per Channel write it would make
+Policies must be fast, nonblocking, and side-effect-free. Context addresses and
+process IDs are claimed, not authenticated identities. DCC/Reinit, reads,
+discovery, trusted local writes and unconfirmed services other than WriteGroup
+are outside it. An inbound WriteGroup is decided once per Channel write it would make
 (#1319): the context's `target` is `MutationTarget::WriteGroup`, its `invoke_id` is
 `None` and its `service_choice` is `MutationService::Unconfirmed(WRITE_GROUP)`
 (a confirmed request's is `MutationService::Confirmed`, with `Some` invoke ID).
@@ -7921,14 +7928,17 @@ Each decision context also carries the reassembled ingress snapshot
 (`provenance: TransportProvenance`) and the derived channel/relay scope
 (`trust: MutationTrust`, mirroring RB-09 `ControlTrust`): `Unverified`,
 `VerifiedChannel` (SC-TLS channel), or `VerifiedRelay` (SC-hub relayed
-origin). These enums are scope-only; `context.direct_sc_identity()` separately
-exposes the [accepted-direct leaf/incarnation](#accepted-direct-tls-identity).
+origin). These enums are scope-only; `context.principal()` is the verified
+direct-SC leaf's `ScPrincipal` (`None` for hub-relayed and non-SC requests), and
+`context.direct_sc_identity()` adds its
+[connection incarnation](#accepted-direct-tls-identity).
 Baseline-only profile: an unknown
 origin — including a hub-mediated unknown leaf, which arrives unverified —
 never satisfies a baseline-only allow rule, and receive-permission is never
-write-permission; the callback owns the rule. Context `Debug` is redacted
-(address lengths and target kind only, no MAC bytes or decoded inputs), and
-decision counters retain no per-source state. The callback runs after
+write-permission; the policy owns the rule. Context `Debug` is redacted
+(address lengths, whether a principal is present and target kind only, no MAC
+bytes, fingerprint or decoded inputs), and
+decision counters retain no per-source state. The policy runs after
 validation and before mutation; denials perform no database mutation, no
 COV/event fan-out, and no audit-log write (counters and bounded diagnostics
 only). This policy governs standalone-server mutations; direct handler calls
@@ -7936,12 +7946,13 @@ and trusted local writes stay outside it. The shared endpoint's narrow
 [Device-write authorizer](#authorized-endpoint-device-writes) is configured
 separately. Python exposes the same native static policy through
 `BACnetServer(..., mutation_policy="permissive" | "deny_all")`, without a Python
-authorizer callback. See
-[Local mutation authorization](mutation-policy.md).
+policy callback. See
+[Server authorization policy](mutation-policy.md).
 
 ### Life Safety execution and COV
 
-Inbound LifeSafetyOperation is fail-closed unless an authorizer is configured.
+Inbound LifeSafetyOperation is fail-closed unless the server's `ServerPolicy`
+allows it (`authorize_life_safety_operation`).
 The built-in Life Safety Point and Zone objects execute the six silence and
 unsilence operations. `RESET`, `RESET_ALARM`, and `RESET_FAULT` execute only
 through a configured application-owned Point/Zone reset executor after exact
@@ -8071,7 +8082,7 @@ The server automatically dispatches:
 - GetAlarmSummary, GetEnrollmentSummary
 - ConfirmedTextMessage
 - LifeSafetyOperation (authorized silence/unsilence; reset via configured application executor)
-- ConfirmedAuditNotification (explicit sink and fail-closed authorizer; process-local duplicate detection)
+- ConfirmedAuditNotification (explicit sink and `ServerPolicy` approval, denied by default; process-local duplicate detection)
 - ConfirmedEventNotification (acknowledged once it decodes, then offered to the Notification Forwarder objects)
 - AuditLogQuery (retained records; three-state success filter; no query authorization)
 - ReadRange
@@ -8084,7 +8095,7 @@ The server automatically dispatches:
 - TimeSynchronization, UTCTimeSynchronization (opt-in source, step and rate limits: [time synchronization policy](time-sync-policy.md))
 - UnconfirmedTextMessage
 - UnconfirmedEventNotification (offered to the Notification Forwarder objects)
-- UnconfirmedAuditNotification (explicit sink and distinct fail-closed authorizer; no response or duplicate tracking)
+- UnconfirmedAuditNotification (explicit sink and its own `ServerPolicy` approval, denied by default; no response or duplicate tracking)
 
 **Outgoing (server-initiated):**
 - COV notifications (confirmed and unconfirmed, with `NotificationTransactions` retries for confirmed)
@@ -8176,8 +8187,8 @@ class and code instead. The rules:
   the Audit record). Apply a change that needs those, as ACTIVATE_CHANGES work
   on Network Port or Device properties may, through `write_local` after the
   reply, from a task the handler schedules.
-- Without `reinit_password` any peer reaches it. The mutation policy and the
-  mutation authorizer don't cover ReinitializeDevice, so restrict sources
+- Without `reinit_password` any peer reaches it. Neither `mutation_policy` nor
+  the `ServerPolicy` covers ReinitializeDevice, so restrict sources
   through the context; its addresses are claims, not authenticated identities.
 - Once the handler has run, the request can no longer be rejected (Clause
   20.1.8): a returned `Error::Reject`, or any error other than `Protocol` or
@@ -8406,7 +8417,7 @@ it with the guard dropped (on the blocking pool, as for the Audit Log), and the
 write then takes the saved list. A write
 that cannot be saved fails with DEVICE / OPERATIONAL_PROBLEM and leaves the old
 list. WritePropertyMultiple stages too, its writes to both lists as one save
-(#1423); under a `mutation_authorizer` the server decides each such attempt
+(#1423); under an installed `ServerPolicy` the server decides each such attempt
 before staging it and stages only those allowed (#1321). The operation task's
 lapse and minute saves coalesce, so a burst
 costs one save of the latest lists; one that fails is logged and retried a
@@ -9044,10 +9055,11 @@ settlement boundary.
 `BipEndpointBuilder::device_writes(authorizer)` enables WriteProperty for the
 one local Device's `Description` and, with a complete source profile,
 `Audit_Notification_Recipient`. Supply a mandatory Rust
-`bacnet_server::mutation::MutationAuthorizer`; its decoded context retains the
-immediate peer, claimed routed source, transport provenance and invoke ID.
-The callback must be fast, nonblocking and side-effect-free. Refusal or panic
-denies before mutation. Provenance is channel scope, not authenticated leaf identity.
+`bacnet_server::mutation::DeviceWriteAuthorizer`; its decoded context retains the
+immediate peer, claimed routed source, transport provenance and invoke ID, and
+its `principal()` names a verified direct SC peer (`None` on B/IP, for a routed
+request and for hub-relayed ingress). The callback must be fast, nonblocking and
+side-effect-free. Refusal or panic denies before mutation.
 
 Startup requires a server role and a concrete built-in local Device in the
 attached database (the lowest when it holds several; see

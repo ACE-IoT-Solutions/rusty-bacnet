@@ -2042,6 +2042,59 @@ x86_64), from `https://pypi.org/pypi/maturin/<version>/json`.
 `SOURCE_DATE_EPOCH`, the commit time, pins the sdist's and the wheels'
 timestamps.
 
+#### Release profile
+
+Both build scripts build the wheels and the CLI with `--profile dist`
+(#973), which the root `Cargo.toml` defines as `release` plus
+whole-program LTO (`lto = "fat"`) and one codegen unit. It keeps the
+symbol table (`strip = "debuginfo"`, which is also what `release` does by
+default), so a panic run with `RUST_BACKTRACE=1` still names its
+functions; with `strip = "symbols"` the backtrace comes out empty and only
+the panic's file and line remain. `release` itself is unchanged, so
+`cargo build --release`, the benchmark suites (the `bench` profile inherits
+`release`) and `maturin develop --release` build as fast as before and the
+numbers in `Benchmarks.md` still hold. `dist` lands in `target/<triple>/dist/`.
+
+Measured on an Apple Silicon Mac (10 cores) with the pinned toolchain,
+for the CLI with the release workflow's macOS features (`--features
+sc-tls`, plus the default `tui`) and for one CPython wheel. A clean build is
+from an empty profile directory, dependencies included; a rebuild is after
+touching `crates/bacnet-cli/src/main.rs`. Another build shared the machine,
+so build times vary by about a third between runs; sizes are exact. MB is
+10⁶ bytes.
+
+| Artifact | Profile | Size | Clean build | Rebuild |
+| --- | --- | --- | --- | --- |
+| CLI, macOS arm64 | `release` (before #973) | 18.9 MB | 48–60 s | 21–24 s |
+| | `release` + `strip = true` | 15.5 MB (−18%) | 50–77 s | 24–27 s |
+| | `release` + `strip = true` + `lto = "thin"` | 15.8 MB (−16%) | 46–58 s | 23–24 s |
+| | `release` + `lto = "thin"` | 19.1 MB (+1%) | 47 s | 22 s |
+| | **`dist`** (fat LTO, one codegen unit) | **12.4 MB (−34%)** | 114 s | 64 s |
+| | `dist` + `strip = true` | 10.6 MB (−44%) | 87 s | 62 s |
+| CLI, macOS x86_64 (built on arm64) | `release` (before #973) | 20.6 MB | 45 s | 20 s |
+| | `release` + `strip = true` | 17.2 MB (−17%) | 71 s | 25 s |
+| | `release` + `strip = true` + `lto = "thin"` | 17.5 MB (−15%) | 53 s | 29 s |
+| | **`dist`** | **14.5 MB (−30%)** | 83 s | 63 s |
+| Wheel, macOS arm64 (`.whl`; its `.so`) | `release` (before #973) | 10.4 MB; 34.1 MB | 69 s | |
+| | **`dist`** | **7.4 MB (−29%); 20.0 MB** | 149 s | |
+| | `dist` + `strip = true` | 6.8 MB; 15.7 MB | 142 s | |
+
+Thin LTO doesn't pay here: cargo's default for `release` already runs
+thin LTO within each crate, and across crates it made the binary slightly
+larger. Fat LTO with one codegen unit is what shrinks it, at about twice the
+build time. On the release runners that is a few minutes more per build job,
+well inside its 60-minute timeout. Each job's `ls -l dist out` prints the
+sizes for Linux and Windows.
+
+- **Code signature.** Apple's linker signs the arm64 binaries ad hoc after
+  LTO, and `strip`, if used, re-signs them: every arm64 binary above passed
+  `codesign -v`. The x86_64 ones carry no signature, which macOS doesn't
+  require there and the artifact check doesn't ask for.
+- **The TUI's share.** With `release`, the arm64 CLI was 13.4 MB on dev just
+  before #974 made `tui` a default feature (09c332ce7) and 18.9 MB after.
+  On today's dev, `--no-default-features` gives 12.7 MB under `release`
+  and 8.9 MB under `dist`, so `tui` adds 6.2 MB and 3.5 MB respectively.
+
 ### Third-party notices
 
 `scripts/release/third_party_notices.py` writes `THIRD-PARTY-NOTICES`: Rusty

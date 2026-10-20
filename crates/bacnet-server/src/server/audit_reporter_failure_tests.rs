@@ -292,7 +292,8 @@ async fn audit_reporter_policy_denial_of_invalid_values_never_enters_execution()
         if deny_all {
             fixture.server.config_mut().mutation_policy = crate::mutation::MutationPolicy::DenyAll;
         } else {
-            fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false));
+            fixture.server.config_mut().policy =
+                Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)));
         }
         assert!(matches!(
             failed_value_write(&fixture.server, None).await,

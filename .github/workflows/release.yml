@@ -270,7 +270,9 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: validate
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # The dist profile (fat LTO, #973) doubles build time: macos-x86_64 took
+    # 47 min in the first dry run, so leave headroom over that.
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:

@@ -357,7 +357,9 @@ async fn life_safety_wpm_reports_each_exact_change_of_an_a_b_a_request() {
 async fn life_safety_operation_change_reports_its_commit_time() {
     let mut h = Harness::start_with(
         ServerConfig {
-            life_safety_operation_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().life_safety_operation(|_| true),
+            )),
             ..ServerConfig::default()
         },
         life_safety_point,
