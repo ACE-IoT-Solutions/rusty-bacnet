@@ -6,6 +6,7 @@
 use bacnet_encoding::npdu::{Npdu, NpduAddress};
 use bacnet_router_core::node::{self, Node};
 use bacnet_router_core::router::Discard;
+use bacnet_transport::warn_throttle::WarnThrottle;
 use bytes::{Buf, Bytes};
 use tracing::{debug, warn};
 
@@ -73,10 +74,13 @@ pub(crate) enum Inbound {
 
 /// Run `frame`, from link source `source_mac`, through `node`, adding what
 /// it counted to `totals`. `controls` says whether a control receiver
-/// wants network messages.
+/// wants network messages. A drop warns at most once per `drop_warning`
+/// interval, with the drops since the last warning; the rest log at debug,
+/// so a flood of bad frames doesn't flood the log.
 pub(crate) fn admit(
     node: &mut Node,
     totals: &NodeTotals,
+    drop_warning: &WarnThrottle,
     source_mac: &[u8],
     link_group: bool,
     frame: Bytes,
@@ -107,8 +111,13 @@ pub(crate) fn admit(
             totals.add(&node.take_counters());
             if discard == Discard::NotRouted {
                 debug!("Discarding routed message (non-router)");
+            } else if let Some(dropped) = drop_warning.note() {
+                warn!(
+                    ?discard,
+                    dropped, "Dropping an inbound NPDU (drops since the last warning)"
+                );
             } else {
-                warn!(?discard, "Dropping an inbound NPDU");
+                debug!(?discard, "Dropping an inbound NPDU");
             }
             return Inbound::Dropped;
         }

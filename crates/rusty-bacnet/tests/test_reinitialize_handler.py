@@ -29,6 +29,8 @@ SERVICES_OTHER = (5, 0)
 SERVICE_REQUEST_DENIED = (5, 29)
 PASSWORD_FAILURE = (4, 26)
 CONFIGURATION_IN_PROGRESS = (0, 2)
+# What an after_reinitialize hook sends the peer; not a B/IP frame.
+MARKER = b"after_reinitialize ran"
 
 
 def request(invoke, state, password=None):
@@ -57,7 +59,6 @@ class Peer:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.setblocking(False)
-        self.received = []
 
     def close(self):
         self.sock.close()
@@ -67,20 +68,17 @@ class Peer:
         ip, port = self.sock.getsockname()
         return socket.inet_aton(ip) + port.to_bytes(2, "big")
 
-    def delivered(self):
-        """The last reply the link has delivered: taken by `ask` already, or
-        still waiting in the socket (peeked, not taken)."""
-        try:
-            return reply_apdu(self.sock.recv(2048, socket.MSG_PEEK))
-        except BlockingIOError:
-            return self.received[-1] if self.received else None
+    def mark(self):
+        """Send this peer a MARKER from another socket. Loopback delivers
+        datagrams in the order they were sent, so the marker arrives after
+        every datagram sent to the peer before the call."""
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as marker:
+            marker.sendto(MARKER, self.sock.getsockname())
 
-    async def ask(self, address, invoke, state, password=None):
-        ip, port = address.rsplit(":", 1)
-        self.sock.sendto(request(invoke, state, password), (ip, int(port)))
+    async def take(self):
+        """The next datagram: a reply's APDU, or the MARKER."""
         # Poll rather than use a loop reader: Windows' default event loop
-        # has no add_reader. Taking the datagram and recording it happen in
-        # one synchronous step, so `delivered` never misses a reply between.
+        # has no add_reader.
         async with asyncio.timeout(2):
             while True:
                 try:
@@ -88,8 +86,12 @@ class Peer:
                 except BlockingIOError:
                     await asyncio.sleep(0.002)
                     continue
-                self.received.append(reply_apdu(datagram))
-                return self.received[-1]
+                return datagram if datagram == MARKER else reply_apdu(datagram)
+
+    async def ask(self, address, invoke, state, password=None):
+        ip, port = address.rsplit(":", 1)
+        self.sock.sendto(request(invoke, state, password), (ip, int(port)))
+        return await self.take()
 
 
 def server(**keywords):
@@ -245,13 +247,20 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("server lock", failures[0])
 
     async def test_after_reinitialize_runs_once_the_reply_is_on_the_link(self):
+        """The hook runs only after the server sent the reply. Whether the
+        reply already sits in the peer's socket then is up to the platform:
+        macOS loopback delivers a datagram on another thread, after sendto
+        returns. Loopback does keep sends in order, though, so the hook
+        sends the peer a marker: the reply must arrive before it. (The
+        ordering itself is pinned without a socket in bacnet-server's
+        reinitialize_reply_tests.)"""
         for coroutine in [False, True]:
             with self.subTest(coroutine=coroutine):
                 notified = []
 
                 def record(request):
-                    # The reply already waits at the peer when this runs.
-                    notified.append((request.invoke_id, self.peer.delivered()))
+                    notified.append(request.invoke_id)
+                    self.peer.mark()
 
                 async def record_later(request):
                     record(request)
@@ -262,9 +271,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
                 async def exchange(address):
                     self.assertEqual(await self.peer.ask(address, 5, S.COLDSTART), ack(5))
-                    await eventually(lambda: notified)
+                    self.assertEqual(await self.peer.take(), MARKER)
                 await self.run_server(owner, exchange)
-                self.assertEqual(notified, [(5, ack(5))])
+                self.assertEqual(notified, [5])
 
     async def test_after_reinitialize_never_runs_for_a_refusal(self):
         notified = []
@@ -406,8 +415,8 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         endpoint = BipEndpoint(4103, interface="127.0.0.1", port=0,
                                broadcast_address="127.0.0.1", reinit_password="secret",
                                on_reinitialize=handler,
-                               after_reinitialize=lambda request: notified.append(
-                                   (request.invoke_id, peer.delivered())))
+                               after_reinitialize=lambda request: (
+                                   notified.append(request.invoke_id), peer.mark()))
         try:
             async with endpoint:
                 scope = (await endpoint.server()).service_scope()
@@ -420,12 +429,13 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await peer.ask(address, 3, S.WARMSTART),
                                  error(3, *PASSWORD_FAILURE))
                 self.assertEqual(await peer.ask(address, 4, S.START_BACKUP, "secret"), ack(4))
-                await eventually(lambda: notified)
+                # The hook's marker follows the reply (see the server test).
+                self.assertEqual(await peer.take(), MARKER)
                 await asyncio.sleep(0.05)
         finally:
             peer.close()
         self.assertEqual(seen, [1, 2, 4])
-        self.assertEqual(notified, [(4, ack(4))])
+        self.assertEqual(notified, [4])
 
     async def test_without_a_handler_the_endpoint_executes_read_property_only(self):
         async with BipEndpoint(4104, interface="127.0.0.1", port=0,

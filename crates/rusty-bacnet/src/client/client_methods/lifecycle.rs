@@ -156,6 +156,7 @@ impl BACnetClient {
 
     /// Start the client (called by `async with`).
     fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         let self_ref = slf.clone().unbind();
         let inner = slf.borrow().inner.clone();
         let transport_type = slf.borrow().transport_type.clone();

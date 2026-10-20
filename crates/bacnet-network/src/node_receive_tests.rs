@@ -101,6 +101,7 @@ async fn malformed_npdus_are_counted() {
 fn records_from_the_view_match_the_owned_decoder() {
     use crate::layer::receive::{admit, Inbound, NodeTotals};
     use bacnet_encoding::npdu::decode_npdu;
+    use bacnet_transport::warn_throttle::WarnThrottle;
     use bytes::Bytes;
 
     // SNET 9 / SADR 5, expecting a reply, urgent priority (Who-Is-Router).
@@ -109,16 +110,60 @@ fn records_from_the_view_match_the_owned_decoder() {
     let apdu = Bytes::from_static(&[1, 0x2A, 0xFF, 0xFF, 0, 0, 9, 1, 5, 7, 0x10, 0x08]);
     let (mut node, totals) = (Node::new(), NodeTotals::default());
 
-    let Inbound::Control(Some(npdu)) =
-        admit(&mut node, &totals, &[2], false, control.clone(), true)
-    else {
+    let Inbound::Control(Some(npdu)) = admit(
+        &mut node,
+        &totals,
+        &WarnThrottle::default(),
+        &[2],
+        false,
+        control.clone(),
+        true,
+    ) else {
         panic!("a control");
     };
     assert_eq!(npdu, decode_npdu(control).unwrap());
-    let Inbound::Apdu { apdu: payload, .. } =
-        admit(&mut node, &totals, &[2], false, apdu.clone(), true)
-    else {
+    let Inbound::Apdu { apdu: payload, .. } = admit(
+        &mut node,
+        &totals,
+        &WarnThrottle::default(),
+        &[2],
+        false,
+        apdu.clone(),
+        true,
+    ) else {
         panic!("an APDU");
     };
     assert_eq!(payload, decode_npdu(apdu).unwrap().payload);
+}
+
+/// A flood of bad frames warns once per interval (#1724): every drop goes
+/// through the layer's throttle, which holds the later ones back.
+#[tokio::test(start_paused = true)]
+async fn dropped_npdus_share_one_warning_throttle() {
+    use crate::layer::receive::{admit, Inbound, NodeTotals};
+    use bacnet_transport::warn_throttle::{WarnThrottle, WARNING_INTERVAL};
+    use bytes::Bytes;
+
+    // NPDU version 2: malformed.
+    let bad = Bytes::from_static(&[2, 0]);
+    let (mut node, totals, throttle) =
+        (Node::new(), NodeTotals::default(), WarnThrottle::default());
+    for _ in 0..3 {
+        let inbound = admit(
+            &mut node,
+            &totals,
+            &throttle,
+            &[2],
+            false,
+            bad.clone(),
+            true,
+        );
+        assert!(matches!(inbound, Inbound::Dropped));
+    }
+    tokio::time::advance(WARNING_INTERVAL).await;
+    assert_eq!(
+        throttle.note(),
+        Some(3),
+        "the first drop warned; two held back, and this one"
+    );
 }
