@@ -85,13 +85,20 @@ test('the key reference lists every key the key map handles', async () => {
     return page.slice(start, end === -1 ? undefined : end);
   };
   const functions = Object.fromEntries([...keymap.matchAll(/^fn (\w+)\([^)]*\)[^{]*\{([\s\S]*?)^\}/gm)].map(m => [m[1], m[2]]));
+  // A screen's keys are a table of rows (#1926): a const the fn names, whose
+  // rows may name shared consts (the movement keys) in turn.
+  const consts = Object.fromEntries([...keymap.matchAll(/^(?:pub\(crate\) )?const (?!fn\b)(\w+)\b[^=]*=([\s\S]*?)^[\])];/gm)].map(m => [m[1], m[2]]));
+  assert.ok(['GLOBAL', 'DEVICES', 'MOVE'].every(name => consts[name]), 'the key tables were found');
+  const expand = (body, seen = new Set()) => body + [...body.replace(/"[^"]*"/g, '""').matchAll(/\b[A-Z][A-Z_]+\b/g)]
+    .map(([name]) => name).filter(name => consts[name] && !seen.has(name) && seen.add(name))
+    .map(name => expand(consts[name], seen)).join('\n');
   for (const [fn, title] of Object.entries(sections)) {
     assert.ok(functions[fn], `keymap.rs still has fn ${fn}`);
     const text = section(title);
-    const missing = [...keysOf(functions[fn])].filter(key => !text.includes(`\`${key}\``));
+    const missing = [...keysOf(expand(functions[fn]))].filter(key => !text.includes(`\`${key}\``));
     assert.deepEqual(missing, [], `keys.mdx "${title}" lists every key of keymap.rs fn ${fn}`);
   }
-  assert.deepEqual(Object.keys(functions).filter(fn => !(fn in sections) && !['typed', 'movement', 'chorded'].includes(fn)), [],
+  assert.deepEqual(Object.keys(functions).filter(fn => !(fn in sections) && !['typed', 'movement', 'chorded', 'lookup', 'chord', 'screen'].includes(fn)), [],
     'every key-map context has a section');
 });
 

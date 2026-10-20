@@ -113,8 +113,12 @@ What M0 draws (80x24):
   least useful fields and key hints give way first, and the link state, the
   safety level, `? help` and `q quit` never do. A footer notice sits at the
   left beside the hints, which are cut to fit, and is dropped when the screen
-  changes or a dialog opens. Each footer lists only the keys that work on its
-  screen.
+  changes or a dialog opens. The way back, `? help` and `q quit` stay clear
+  of the notice, which is cut with `…`. From 160 columns (#1927) the way
+  back gives way too when that shows the whole notice, the other hints
+  going first, lowest priority first. A failed link's recovery key
+  (`p settings` or `c retry`) is always kept, at any width. Each footer
+  lists only the keys that work on its screen.
 - Below 120 columns the browser's priority array is a pane of its own in the
   Tab order (#1894), so the properties keep the whole width at 80; stacking
   it under the properties would leave them three rows at 80x24.
@@ -136,8 +140,11 @@ What M0 draws (80x24):
     it again; on another device opens that one. Esc in the browser closes it.
 - Help (`?`) is built from sections (#1895): the global keys, then the
   current screen's, then the command bar's commands, read from the same table
-  as the parser. A test presses every key on every screen and fails if one the
-  key map takes is missing from that screen's help. It scrolls with the
+  as the parser. Each screen's keys are one table in `keymap.rs` (#1926),
+  rows of keys, their actions and a description: the key map dispatches from
+  it and help prints it, so a description can't outlive its action. A test
+  presses every key on every screen and fails if one the key map takes is
+  missing from that screen's help. It scrolls with the
   movement keys when it doesn't fit. While typing a command, the footer shows
   the syntax of the commands that match, from that table too.
 - 80x24 is the functional minimum and 120x40 the full layout. From 120 columns
@@ -219,7 +226,7 @@ What M0 draws (80x24):
 
 | Screen | Contents |
 |---|---|
-| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not known yet (unread, refused or unanswered) last) and filter (the filter matches the router and any name already read, and reads none, #1929); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network) |
+| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not known yet (unread, refused or unanswered) last) and filter (the filter matches the router and any name already read, and reads none, #1929); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network), below the table or, from 160 columns when both fit at their content widths, beside it (#1915) |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with each object's name (#1896) and a filter that matches labels and names already read (#1929); property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD, and `:bbmd` alone goes back to ours. Write-BDT and Delete-FDT-Entry are later items |
