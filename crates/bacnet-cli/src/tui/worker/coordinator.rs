@@ -194,6 +194,12 @@ async fn run(
                                         options.safety.profile = Some(name.clone());
                                         options.safety.policy = prepared.stored.safety.clone();
                                         options.safety.transport = kind.label();
+                                        // The app sends an MS/TP profile's Connect only once
+                                        // its join is confirmed: record that join first.
+                                        if let Err(error) = record_join(&options, &args).await {
+                                            sink.deliver(WorkerEvent::Profile(Err(error))).await;
+                                            continue;
+                                        }
                                         let checks = crate::tui::profile::checks::inspect(&prepared.resolved);
                                         sink.deliver(WorkerEvent::Profile(Ok(Reply::Loaded { name, profile: prepared.stored, checks }))).await;
                                         let next = ConnectPlan { kind, args, await_interface: false };
@@ -291,6 +297,27 @@ async fn export(job: ExportJob, dir: PathBuf, sink: EventSink) {
     }
     sink.deliver(WorkerEvent::Capture(CaptureEvent::Exported(exported)))
         .await;
+}
+
+/// Record a profile session's MS/TP join in its workspace's audit log
+/// (#1862). Nothing for another transport, or a passive session, which
+/// never joins. A join that can't be recorded is not made.
+async fn record_join(
+    options: &SessionOptions,
+    args: &crate::transport::TransportArgs,
+) -> Result<(), String> {
+    let safety = &options.safety;
+    let (Some(settings), Some(dir), Some(profile)) =
+        (&args.mstp, &safety.workspace, &safety.profile)
+    else {
+        return Ok(());
+    };
+    if safety.passive {
+        return Ok(());
+    }
+    crate::tui::safety::audit::record_join(dir, profile, settings)
+        .await
+        .map_err(|error| format!("the join was not made: {error}"))
 }
 
 /// Why a JoinTrunk is refused outside an MS/TP session.

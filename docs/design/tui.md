@@ -320,7 +320,7 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 |---|---|---|
 | T0 | Reads, discovery, capture | None, except that a global or full-range Who-Is gets a one-line warning with the expected response volume and needs a second Enter (M0) |
 | T1 | Writes at priorities 9 to 16, non-commandable property writes | Preview (old to new, slot occupancy, whether the effective value changes), then Enter |
-| T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image: it is logged (`L`, `--log-file`), not yet written to the ledger or the audit log |
+| T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image, so it has no ledger entry; on a profile session each confirmed join is written to the audit log (`mstp-join`: profile, port, station, baud, time) before the port opens, and a join that can't be recorded is not made (#1862) |
 | T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. DCC defaults to a finite duration |
 | Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3); the deprecated plain-disable DCC option, which current-revision servers ignore (Clause 16.1) | Expert flag only |
 

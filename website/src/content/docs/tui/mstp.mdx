@@ -83,7 +83,7 @@ From then on the session is a participant at `READ-ONLY`. A join the transport r
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui
 ```
 
-Joining adds a master to the token ring, which every station notices, so the TUI asks before it opens the port. The dialog states the station, baud rate, Max_Master and Max_Info_Frames, and lists the serial ports: the one you gave first, then the others `bacnet mstp-ports` finds (an MS/TP profile offers its own port only). Up and Down choose the port. Only `y` joins; Esc goes back to the profile, or quits a flags-only session. Every later join, such as `c` after a disconnect, asks again.
+Joining adds a master to the token ring, which every station notices, so the TUI asks before it opens the port. The dialog states the station, baud rate, Max_Master and Max_Info_Frames, and lists the serial ports: the one you gave first, then the others `bacnet mstp-ports` finds (an MS/TP profile offers its own port only). Up and Down choose the port. Only `y` joins; Esc goes back to the profile, or quits a flags-only session. Every later join, such as `c` after a disconnect, asks again. On a profile, each join you confirm is recorded in the profile's audit log (`audit.jsonl`) with the port, station and baud rate before the port opens.
 
 ![The confirmation shown before joining a trunk with --mstp.](../../../assets/tui/mstp-participant-join.webp)
 

@@ -4,7 +4,8 @@
 //! Each record names when (UTC), who (OS user and host), where (profile,
 //! transport and local address), the session level and the event; a write
 //! adds its target, service, parameters, priority, pre-image and outcome.
-//! Arming, disarming, refusals and declined confirmations are recorded too.
+//! Arming, disarming, refusals and declined confirmations are recorded too,
+//! and so is each confirmed MS/TP trunk join on a profile session.
 //! Every line is flushed and synced before the next.
 //!
 //! Secrets never reach the file: a [`Secret`] serialises as `[redacted]`,
@@ -127,6 +128,35 @@ impl Audit {
         .await
         .map_err(|e| format!("the audit writer failed: {e}"))?
     }
+}
+
+/// The event of a confirmed MS/TP trunk join.
+pub(crate) const MSTP_JOIN: &str = "mstp-join";
+
+/// Record a confirmed MS/TP trunk join on profile `profile` (#1862):
+/// joining puts a new master in the token ring, a T2 change to a shared
+/// bus. Written before the port opens; the session is not armed, so the
+/// level is read-only.
+pub(crate) async fn record_join(
+    workspace: &Path,
+    profile: &str,
+    settings: &crate::mstp::MstpArgs,
+) -> Result<(), String> {
+    let context = Context {
+        profile: Some(profile.into()),
+        transport: "MSTP",
+        local: settings.port.clone(),
+    };
+    let fields = json!({
+        "port": settings.port,
+        "station": settings.mac,
+        "baud": settings.baud,
+        "max_master": settings.max_master,
+        "max_info_frames": settings.max_info_frames,
+    });
+    Audit::open(workspace, context)?
+        .record(Level::ReadOnly, MSTP_JOIN, fields)
+        .await
 }
 
 /// One record as a line.

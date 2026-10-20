@@ -601,7 +601,10 @@ others `mstp-ports` lists; a profile's own port only), and joins on `y`. Like
 the write session's T2 changes, nothing but `y` goes ahead; Esc goes back to
 the profile, or quits a flags-only session before its first join. Every later
 join (`c` after a disconnect or a failed join) shows the dialog again, and
-declining it then leaves the session disconnected. `--passive` joins nothing. The
+declining it then leaves the session disconnected. On a profile session each
+confirmed join is written to the workspace's `audit.jsonl` (event `mstp-join`,
+with the port, station, baud, Max_Master and Max_Info_Frames) before the port
+opens; a join that can't be recorded is not made. `--passive` joins nothing. The
 one-shot commands take `--mstp` itself as the request.
 
 **MS/TP screen.** `6` shows this station (port, MAC, baud rate, Max_Master,
