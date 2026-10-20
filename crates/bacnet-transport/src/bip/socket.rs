@@ -174,6 +174,56 @@ impl super::BipTransport {
         bind(plan).map(drop).map_err(Error::Transport)
     }
 
+    /// The host's local IPv4 addresses and its local address toward the
+    /// default route, as a wildcard bind reads them. A wildcard bind accepts
+    /// unicast only to a listed address, so this fails when the addresses
+    /// cannot be listed or none is usable. A listing error keeps its kind.
+    pub(super) async fn wildcard_local_ipv4(
+        &self,
+    ) -> Result<(Vec<Ipv4Addr>, Option<Ipv4Addr>), Error> {
+        const ADVICE: &str = "bind an explicit interface address instead";
+        let (ips, route_ip) = self.host_ipv4().await.map_err(|e| {
+            Error::Transport(io::Error::new(
+                e.kind(),
+                format!(
+                    "a B/IP transport bound to 0.0.0.0 could not list the host's IPv4 \
+                     addresses ({e}); {ADVICE}"
+                ),
+            ))
+        })?;
+        if ips.is_empty() {
+            return Err(Error::Transport(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!(
+                    "a B/IP transport bound to 0.0.0.0 found no usable IPv4 address on this \
+                     host; {ADVICE}"
+                ),
+            )));
+        }
+        Ok((ips, route_ip))
+    }
+
+    /// The listed IPv4 addresses and the default-route address, or what a
+    /// test injected. Listing adapters can be slow on a host with many
+    /// virtual adapters, so it runs on a blocking thread.
+    async fn host_ipv4(&self) -> io::Result<(Vec<Ipv4Addr>, Option<Ipv4Addr>)> {
+        #[cfg(test)]
+        if let Some(injected) = &self.local_ipv4_for_test {
+            return match injected {
+                Ok(local) => Ok(local.clone()),
+                Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+            };
+        }
+        tokio::task::spawn_blocking(|| {
+            Ok((
+                crate::local_addresses::ipv4()?,
+                crate::local_addresses::route_ipv4(),
+            ))
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
     /// What `start()` binds. In per-address mode it looks the interface up
     /// on a blocking thread.
     pub(super) async fn bind_plan_for_start(&self) -> BindPlan {

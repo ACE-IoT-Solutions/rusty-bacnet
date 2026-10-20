@@ -284,24 +284,6 @@ pub struct BipServerBuilder {
 }
 
 impl BipServerBuilder {
-    /// Set the local interface IP.
-    pub fn interface(mut self, ip: Ipv4Addr) -> Self {
-        self.config.interface = ip;
-        self
-    }
-
-    /// Set the UDP port.
-    pub fn port(mut self, port: u16) -> Self {
-        self.config.port = port;
-        self
-    }
-
-    /// Set the directed broadcast address.
-    pub fn broadcast_address(mut self, addr: Ipv4Addr) -> Self {
-        self.config.broadcast_address = addr;
-        self
-    }
-
     /// Set the one Device identity. With no supplied database, startup creates
     /// a stock Device after resolving the owned transport's receive capacity.
     pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {

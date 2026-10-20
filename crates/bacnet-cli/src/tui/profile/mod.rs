@@ -97,6 +97,9 @@ pub(crate) struct Bip {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) multicast: Option<Ipv4Addr>,
     /// The multicast TTL, 1 to 255; raise it for a group across routers.
+    /// Left out of the file at its default, so older profiles save
+    /// unchanged.
+    #[serde(skip_serializing_if = "is_default_multicast_ttl")]
     pub(crate) multicast_ttl: u8,
 }
 
@@ -115,6 +118,10 @@ impl Default for Bip {
             multicast_ttl: 1,
         }
     }
+}
+
+fn is_default_multicast_ttl(ttl: &u8) -> bool {
+    *ttl == bacnet_transport::bip::BipMulticast::DEFAULT_TTL
 }
 
 /// Whether a profile may arm a write session (`W`).
