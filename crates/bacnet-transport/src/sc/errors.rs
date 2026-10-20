@@ -84,6 +84,54 @@ impl fmt::Display for ScWebSocketErrorKind {
     }
 }
 
+/// The step a hub dial had reached when it ran out of time (#1839).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScDialStage {
+    /// Resolving the host name.
+    HostLookup,
+    /// Opening the TCP connection.
+    TcpConnect,
+    /// The TLS handshake, after TCP connected.
+    Tls,
+    /// The WebSocket HTTP upgrade, after TLS completed.
+    WebSocketUpgrade,
+}
+
+impl ScDialStage {
+    /// A nonzero code for the dial tracker; 0 means no stage yet.
+    #[cfg(feature = "sc-tls")]
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            Self::HostLookup => 1,
+            Self::TcpConnect => 2,
+            Self::Tls => 3,
+            Self::WebSocketUpgrade => 4,
+        }
+    }
+
+    pub(crate) fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::HostLookup),
+            2 => Some(Self::TcpConnect),
+            3 => Some(Self::Tls),
+            4 => Some(Self::WebSocketUpgrade),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ScDialStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::HostLookup => "host lookup",
+            Self::TcpConnect => "TCP connect",
+            Self::Tls => "TLS handshake",
+            Self::WebSocketUpgrade => "WebSocket upgrade",
+        })
+    }
+}
+
 /// Why a TLS handshake for BACnet/SC failed, from the TLS library's own
 /// error rather than its text. Under Annex AB.7.4 both peers vet each
 /// other's certificate (its encoding, its dates, revocation where known,
@@ -179,8 +227,10 @@ pub enum ScTlsAlert {
 /// }
 /// ```
 ///
-/// BACnet/SC connect timeouts use the existing top-level [`Error::Timeout`]
-/// variant, so callers should match that variant directly.
+/// A hub dial (host lookup, TCP, TLS and WebSocket upgrade) that runs out
+/// of time is
+/// [`ScConnectError::DialTimeout`]. A Connect-Request that gets no
+/// Connect-Accept in time uses the top-level [`Error::Timeout`] variant.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScConnectError {
@@ -231,6 +281,20 @@ pub enum ScConnectError {
         /// before that point or resumed handshakes. Requires `sc-tls`.
         #[cfg(feature = "sc-tls")]
         untrusted_peer: Option<std::sync::Arc<crate::sc_tls::ScUntrustedPeerInfo>>,
+        /// The HTTP status a server answered the WebSocket upgrade with
+        /// instead of switching protocols, such as a proxy's 403 or 502.
+        /// `None` when no HTTP response came back.
+        http_status: Option<u16>,
+    },
+    /// The hub dial (host lookup, TCP, TLS and WebSocket upgrade) did not
+    /// finish within the connect timeout.
+    #[non_exhaustive]
+    DialTimeout {
+        /// The connect timeout that ran out.
+        timeout: std::time::Duration,
+        /// The step the dial was in, when the dialler reports it (the
+        /// `sc-tls` hub dialler does); `None` for a custom connector.
+        stage: Option<ScDialStage>,
     },
 }
 
@@ -274,6 +338,7 @@ impl ScConnectError {
             | Self::UnexpectedResultAck { .. }
             | Self::ConnectAcceptMismatch => io::ErrorKind::InvalidData,
             Self::WebSocket { kind, .. } => kind.default_io_kind(),
+            Self::DialTimeout { .. } => io::ErrorKind::TimedOut,
         }
     }
 
@@ -330,6 +395,13 @@ impl fmt::Display for ScConnectError {
             }
             Self::WebSocket { kind, message, .. } => {
                 write!(f, "BACnet/SC WebSocket {kind} failure: {message}")
+            }
+            Self::DialTimeout { timeout, stage } => {
+                write!(f, "BACnet/SC hub dial timed out after {timeout:?}")?;
+                match stage {
+                    Some(stage) => write!(f, " during the {stage}"),
+                    None => Ok(()),
+                }
             }
         }
     }

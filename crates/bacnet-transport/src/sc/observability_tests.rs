@@ -92,6 +92,7 @@ fn a_lagging_subscriber_loses_the_oldest_events_and_never_blocks_the_sender() {
 fn errors_map_to_their_disconnect_causes() {
     let websocket = |kind| {
         ScConnectError::WebSocket {
+            http_status: None,
             kind,
             message: "fixture".into(),
             #[cfg(feature = "sc-tls")]
@@ -120,6 +121,7 @@ fn errors_map_to_their_disconnect_causes() {
         ),
         (
             ScConnectError::WebSocket {
+                http_status: None,
                 kind: ScWebSocketErrorKind::TlsHandshake,
                 message: "fixture".into(),
                 #[cfg(feature = "sc-tls")]
@@ -139,8 +141,9 @@ fn errors_map_to_their_disconnect_causes() {
         ),
         (
             Error::Timeout(Duration::from_secs(1)),
-            ScDisconnectCause::ConnectTimeout,
+            ScDisconnectCause::ConnectAcceptTimeout,
         ),
+        // A dial timeout and a refused upgrade: sc_tls's dial-failure fixtures.
         (
             nak,
             ScDisconnectCause::Nak {
@@ -748,3 +751,10 @@ async fn giving_up_without_a_dial_counts_no_attempts() {
     let seen = episode(ScActiveHub::Primary, None).await;
     assert_eq!(seen, [ScEvent::ReconnectGaveUp { attempts: 0 }]);
 }
+
+#[cfg(feature = "sc-tls")]
+#[path = "observability_dial_tests.rs"]
+mod dial;
+
+#[path = "restore_failed_tests.rs"]
+mod restore_failed;

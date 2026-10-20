@@ -354,6 +354,39 @@ async fn build_with_events_sees_the_first_connect() {
     primary.stop().await;
 }
 
+/// The transport-erased build has the same subscribe-before-start step
+/// (#1909): its receiver holds the first connect too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn build_any_with_events_sees_the_first_connect() {
+    use bacnet_transport::any::AnyTransport;
+    use bacnet_transport::mstp::NoSerial;
+    let pki = Pki::new();
+    let mut primary = pki.hub(0, "127.0.0.1:0", PRIMARY_VMAC).await.unwrap();
+    let (mut client, mut events) = BACnetClient::sc_builder()
+        .hub_url(&url(&primary))
+        .tls_config(pki.node.clone())
+        .vmac([0x02, 0, 0, 0, 0, 0x26])
+        .device_uuid([0x26; 16])
+        .build_any_with_events::<NoSerial>()
+        .await
+        .unwrap();
+    let AnyTransport::Sc(transport) = client.transport() else {
+        panic!("an SC build yields the SC variant");
+    };
+    let late = transport.connection_events();
+    let first = tokio::time::timeout(WAIT, events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        is_connected(&first, ScActiveHub::Primary, PRIMARY_VMAC),
+        "{first:?}"
+    );
+    assert!(late.is_empty());
+    client.stop().await.unwrap();
+    primary.stop().await;
+}
+
 #[tokio::test]
 async fn failover_settings_are_checked_before_any_dial() {
     let pki = Pki::new();

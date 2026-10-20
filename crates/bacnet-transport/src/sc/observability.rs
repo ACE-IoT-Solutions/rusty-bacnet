@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use crate::sc_frame::{decode_sc_bvlc_result, ScBvlcResult, ScFunction, ScMessage, Vmac};
 
 use super::{
-    ScConnectError, ScConnection, ScConnectionState, ScTlsFailure, ScTransport,
+    ScConnectError, ScConnection, ScConnectionState, ScDialStage, ScTlsFailure, ScTransport,
     ScWebSocketErrorKind, WebSocketPort,
 };
 
@@ -63,8 +63,24 @@ pub enum ScDisconnectCause {
         /// Error code carried by the NAK.
         error_code: ErrorCode,
     },
-    /// No Connect-Accept, or no fresh WebSocket, within the connect timeout.
-    ConnectTimeout,
+    /// The hub dial (host lookup, TCP, TLS and WebSocket upgrade) did not
+    /// finish within the connect timeout (#1839).
+    #[non_exhaustive]
+    DialTimeout {
+        /// The step the dial was in, when the dialler reports it.
+        stage: Option<ScDialStage>,
+    },
+    /// The WebSocket opened, but no Connect-Accept answered the
+    /// Connect-Request within the connect timeout (#1839).
+    ConnectAcceptTimeout,
+    /// The server answered the WebSocket upgrade with this HTTP status
+    /// instead of switching protocols: often a proxy or load balancer in
+    /// the path, such as a 502 from one that cannot reach the hub (#1839).
+    #[non_exhaustive]
+    UpgradeRefused {
+        /// The HTTP status code.
+        http_status: u16,
+    },
     /// A BVLC-Result that could not be decoded.
     MalformedResult,
     /// A reply to the Connect-Request that does not complete it: a
@@ -80,9 +96,16 @@ pub enum ScDisconnectCause {
 
 impl ScDisconnectCause {
     /// Classify a connect-path or WebSocket error.
+    ///
+    /// A bare [`Error::Timeout`] reads as [`Self::ConnectAcceptTimeout`],
+    /// since a dial run through [`dial_within`](super::dial_within) times out
+    /// as [`ScConnectError::DialTimeout`]. A custom connector that returns
+    /// `Error::Timeout` itself for a slow dial is therefore reported as a
+    /// Connect-Accept timeout.
     pub fn from_error(error: &Error) -> Self {
+        // A dial's timeout is typed; the bare timeout is the Connect-Request's.
         if let Error::Timeout(_) = error {
-            return Self::ConnectTimeout;
+            return Self::ConnectAcceptTimeout;
         }
         match ScConnectError::from_error(error) {
             Some(ScConnectError::HandshakeNak {
@@ -99,7 +122,14 @@ impl ScDisconnectCause {
             Some(
                 ScConnectError::UnexpectedResultAck { .. } | ScConnectError::ConnectAcceptMismatch,
             ) => Self::UnexpectedConnectReply,
+            Some(ScConnectError::DialTimeout { stage, .. }) => Self::DialTimeout { stage: *stage },
             Some(ScConnectError::WebSocket { tls: Some(tls), .. }) => Self::Tls(*tls),
+            Some(ScConnectError::WebSocket {
+                http_status: Some(http_status),
+                ..
+            }) => Self::UpgradeRefused {
+                http_status: *http_status,
+            },
             Some(ScConnectError::WebSocket {
                 kind: ScWebSocketErrorKind::Closed | ScWebSocketErrorKind::StreamEnded,
                 ..
@@ -147,7 +177,9 @@ impl ScDisconnectCause {
 ///   hub, within each attempt; both share the attempt number.
 /// - A primary restore reads `PrimaryRestored`, then `Connected` on the
 ///   primary. The replaced failover connection gets no `Disconnected`.
-///   Failed restore probes while on the failover hub are not reported.
+/// - While on the failover hub, each restore probe of the primary that
+///   fails reads `PrimaryRestoreFailed`: at most one per restore interval,
+///   since the next probe waits a full interval after this one ends.
 /// - A stop during a reconnect backoff ends the stream without a terminal
 ///   event: the last one is `Disconnected` or the latest `ConnectFailed`.
 #[non_exhaustive]
@@ -193,6 +225,13 @@ pub enum ScEvent {
     FailoverEngaged,
     /// The primary hub is back and has taken over from the failover hub.
     PrimaryRestored,
+    /// A probe of the primary hub, made while on the failover hub, failed;
+    /// the failover connection stays in use (#1828).
+    #[non_exhaustive]
+    PrimaryRestoreFailed {
+        /// Why the probe failed, sorted as for `ConnectFailed`.
+        cause: ScDisconnectCause,
+    },
     /// Reconnection stopped; the transport stays disconnected.
     #[non_exhaustive]
     ReconnectGaveUp {
@@ -339,6 +378,12 @@ impl ScObserver {
 
     pub(super) fn primary_restored(&self) {
         self.emit(ScEvent::PrimaryRestored);
+    }
+
+    pub(super) fn primary_restore_failed(&self, error: &Error) {
+        self.emit(ScEvent::PrimaryRestoreFailed {
+            cause: ScDisconnectCause::from_error(error),
+        });
     }
 
     pub(super) fn gave_up(&self, attempts: u32) {

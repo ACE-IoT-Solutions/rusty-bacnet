@@ -588,9 +588,12 @@ DNS, TCP, TLS, the WebSocket upgrade with the hub subprotocol, and
 Connect-Request/Accept), marks the one that failed and says what to try: an
 untrusted CA, an expired or future-dated certificate (with clock skew when it
 is close), a key mismatch, a missing client-authentication key usage, a proxy
-that drops the upgrade, or a duplicate VMAC. A failed connect opens the
-doctor. Connects, losses, reconnect attempts, failover and the primary's
-return go on the screen's timeline and in the log pane, and the status bar
+that drops the upgrade or refuses it with an HTTP status (which the hint
+names), a dial that stalls (placed on the step it stalled in), a hub that
+never answers the Connect-Request, or a duplicate VMAC. A failed connect opens
+the doctor. Connects, losses, reconnect attempts, failover, each failed probe
+of the primary while on the failover hub, and the primary's return go on the
+screen's timeline and in the log pane, and the status bar
 names the hub in use. The one-shot `--sc` commands report errors as before.
 
 **Joining an MS/TP trunk.** An MS/TP session adds a master to the trunk's

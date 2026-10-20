@@ -69,12 +69,16 @@ pub(crate) enum Severity {
 /// One timeline line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
-    /// When it arrived.
+    /// When it arrived; for a merged line, when the latest one did.
     pub(crate) at: Instant,
     /// How serious.
     pub(crate) severity: Severity,
     /// What happened.
     pub(crate) text: String,
+    /// How many times in a row: failed restore probes with the same cause
+    /// share one line, so one per restore interval can't push the loss and
+    /// failover lines out of the timeline.
+    pub(crate) repeats: u32,
 }
 
 /// A link state and the hub it was for, as the app saw it change.
@@ -187,6 +191,13 @@ pub(crate) fn describe(event: &LinkEvent) -> (Severity, String) {
             Severity::Info,
             "primary hub is back: leaving the failover hub".into(),
         ),
+        LinkEvent::PrimaryRestoreFailed { fault } => (
+            Severity::Warn,
+            format!(
+                "primary hub still unreachable: {}",
+                doctor::diagnose(fault).summary
+            ),
+        ),
         LinkEvent::GaveUp { attempts } => (
             Severity::Error,
             format!("gave up reconnecting after {attempts} attempts"),
@@ -199,7 +210,25 @@ impl ScState {
         if self.timeline.len() == TIMELINE {
             self.timeline.pop_front();
         }
-        self.timeline.push_back(Entry { at, severity, text });
+        self.timeline.push_back(Entry {
+            at,
+            severity,
+            text,
+            repeats: 1,
+        });
+    }
+
+    /// Fold a failed restore probe into the line before it when that line
+    /// says the same; true when it did.
+    fn repeat(&mut self, at: Instant, text: &str) -> bool {
+        match self.timeline.back_mut() {
+            Some(last) if last.text == text => {
+                last.repeats = last.repeats.saturating_add(1);
+                last.at = at;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Record a state when it differs from the last one recorded.
@@ -258,7 +287,11 @@ impl ScState {
 
     fn event(&mut self, at: Instant, event: LinkEvent) {
         let (severity, text) = describe(&event);
-        self.note(at, severity, text);
+        let repeated =
+            matches!(event, LinkEvent::PrimaryRestoreFailed { .. }) && self.repeat(at, &text);
+        if !repeated {
+            self.note(at, severity, text);
+        }
         match event {
             LinkEvent::Connected { hub, hub_vmac } => {
                 self.attempt = None;
@@ -320,7 +353,8 @@ impl ScState {
                     Some(ScActiveHub::Failover),
                 );
             }
-            LinkEvent::PrimaryRestored => {}
+            // The failover link stays up: the timeline line is enough.
+            LinkEvent::PrimaryRestored | LinkEvent::PrimaryRestoreFailed { .. } => {}
             LinkEvent::GaveUp { .. } => {
                 let hub = self.link.as_ref().and_then(|(link, _)| link.hub);
                 self.enter(at, ScConnectionState::Disconnected, hub);

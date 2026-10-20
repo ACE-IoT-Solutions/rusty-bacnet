@@ -726,7 +726,7 @@ impl ScClientBuilder {
     }
 
     /// Set the connect timeout in milliseconds (default 10 000). It bounds
-    /// each hub dial (TCP, TLS and WebSocket upgrade), including the ones
+    /// each hub dial (host lookup, TCP, TLS and WebSocket upgrade), including the ones
     /// `build()` makes, and each Connect-Request handshake.
     pub fn connect_timeout_ms(mut self, ms: u64) -> Self {
         self.connect_timeout_ms = ms;

@@ -17,7 +17,7 @@ pub(crate) mod doctor;
 use std::time::Duration;
 
 use bacnet_transport::sc::{
-    ScActiveHub, ScConnectError, ScConnectionState, ScDisconnectCause, ScTlsFailure,
+    ScActiveHub, ScConnectError, ScConnectionState, ScDialStage, ScDisconnectCause, ScTlsFailure,
     ScWebSocketErrorKind,
 };
 use bacnet_transport::sc_frame::ScFunction;
@@ -90,8 +90,14 @@ pub(crate) enum Fault {
         /// The transport drew a new random VMAC for the next attempt.
         reseeded: bool,
     },
-    /// No answer within the connect timeout.
-    Timeout,
+    /// The dial (TCP, TLS, WebSocket upgrade) ran past the connect
+    /// timeout, in this step when the transport says.
+    DialTimeout(Option<ScDialStage>),
+    /// The WebSocket opened but no Connect-Accept came within the connect
+    /// timeout.
+    ConnectAcceptTimeout,
+    /// The WebSocket upgrade was answered with this HTTP status.
+    UpgradeRefused(u16),
     /// The hub went silent past the heartbeat timeout.
     HeartbeatTimeout,
     /// The hub closed the connection.
@@ -153,7 +159,11 @@ impl From<ScDisconnectCause> for Fault {
                 reseeded: error_code == ErrorCode::NODE_DUPLICATE_VMAC
                     && result_for == ScFunction::ConnectRequest,
             },
-            ScDisconnectCause::ConnectTimeout => Self::Timeout,
+            ScDisconnectCause::DialTimeout { stage, .. } => Self::DialTimeout(stage),
+            ScDisconnectCause::ConnectAcceptTimeout => Self::ConnectAcceptTimeout,
+            ScDisconnectCause::UpgradeRefused { http_status, .. } => {
+                Self::UpgradeRefused(http_status)
+            }
             ScDisconnectCause::MalformedResult | ScDisconnectCause::UnexpectedConnectReply => {
                 Self::BadReply
             }
@@ -277,6 +287,11 @@ pub(crate) enum LinkEvent {
     FailoverEngaged,
     /// The primary is back and took over.
     PrimaryRestored,
+    /// A probe of the primary, made from the failover hub, failed.
+    PrimaryRestoreFailed {
+        /// Why.
+        fault: Fault,
+    },
     /// Reconnection stopped.
     GaveUp {
         /// Attempts made.
@@ -310,6 +325,9 @@ impl LinkEvent {
             },
             E::FailoverEngaged => Self::FailoverEngaged,
             E::PrimaryRestored => Self::PrimaryRestored,
+            E::PrimaryRestoreFailed { cause, .. } => Self::PrimaryRestoreFailed {
+                fault: cause.into(),
+            },
             E::ReconnectGaveUp { attempts, .. } => Self::GaveUp { attempts },
             _ => return None,
         })
@@ -378,7 +396,7 @@ mod tests {
     #[test]
     fn faults_sort_from_connect_errors() {
         let timeout = Error::Timeout(Duration::from_secs(10));
-        assert_eq!(Fault::from_error(&timeout), Fault::Timeout);
+        assert_eq!(Fault::from_error(&timeout), Fault::ConnectAcceptTimeout);
         let other = Error::Encoding("TLS config error".into());
         assert!(matches!(Fault::from_error(&other), Fault::Other(_)));
         let tls = ScDisconnectCause::Tls(ScTlsFailure::PeerCertificate(

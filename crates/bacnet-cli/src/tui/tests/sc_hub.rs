@@ -483,7 +483,10 @@ async fn refused_hub_certificates_each_land_on_tls_with_their_own_hint() {
             last.failure.detail
         );
         assert_eq!(last.diagnosis.failed, Some(Phase::Tls), "{expected:?}");
-        assert_ne!(last.failure.fault, Fault::Timeout);
+        assert!(!matches!(
+            last.failure.fault,
+            Fault::DialTimeout(_) | Fault::ConnectAcceptTimeout
+        ));
         // The refused hub's own certificate is shown, untrusted.
         let shown = &last.failure.presented[0];
         assert_eq!(shown.subject, format!("CN={name}"));
@@ -562,4 +565,86 @@ async fn an_expired_node_certificate_is_refused_before_the_hub() {
         std::io::ErrorKind::WouldBlock,
         "the hub was dialled"
     );
+}
+
+/// The timeouts and a refused upgrade, from real sockets, as the doctor
+/// reads them (#1839): a dial stalled in TLS lands on TLS, a hub that never
+/// answers the Connect-Request (the transport's bare timeout) on Connect,
+/// and a proxy answering the upgrade with 502 on WebSocket, its hint naming
+/// the status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalls_and_a_refusing_proxy_each_land_on_their_phase() {
+    use crate::tui::sc::doctor::diagnose;
+    use crate::tui::sc::ScFailure;
+    use bacnet_transport::sc::{dial_within, ScDialStage};
+    use bacnet_transport::sc_tls::TlsWebSocket;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const LIMIT: Duration = Duration::from_millis(300);
+    let site = Site::new("tui timeout CA");
+    let node = site.node_config(&client_leaf(&site));
+
+    // TCP connects; nothing answers the ClientHello.
+    let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("wss://{}", stalled.local_addr().unwrap());
+    let holder = tokio::spawn(async move {
+        let (_tcp, _) = stalled.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let error = dial_within(LIMIT, TlsWebSocket::connect(&url, node.clone()))
+        .await
+        .err()
+        .expect("a stalled TLS handshake cannot connect");
+    holder.abort();
+    let stalled = ScFailure::from_error(&error);
+    assert_eq!(stalled.fault, Fault::DialTimeout(Some(ScDialStage::Tls)));
+    assert_eq!(diagnose(&stalled.fault).failed, Some(Phase::Tls));
+
+    let silent = ScFailure::from_error(&bacnet_types::error::Error::Timeout(LIMIT));
+    assert_eq!(silent.fault, Fault::ConnectAcceptTimeout);
+    assert_eq!(diagnose(&silent.fault).failed, Some(Phase::Connect));
+
+    // TLS completes; the "proxy" answers the upgrade with 502.
+    let cert = site.leaf("proxy", ExtendedKeyUsagePurpose::ServerAuth, None, None);
+    let config = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der.clone()],
+            PrivatePkcs8KeyDer::from(cert.key.serialize_der()).into(),
+        )
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("wss://{}", proxy.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (tcp, _) = proxy.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = tls.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the upgrade request ended early");
+            request.extend_from_slice(&buf[..n]);
+        }
+        tls.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        // The client may have closed first; the 502 is already sent.
+        let _ = tls.shutdown().await;
+    });
+    let error = dial_within(WAIT, TlsWebSocket::connect(&url, node))
+        .await
+        .err()
+        .expect("a refused upgrade cannot connect");
+    task.await.unwrap();
+    let refused = ScFailure::from_error(&error);
+    assert_eq!(
+        refused.fault,
+        Fault::UpgradeRefused(502),
+        "{}",
+        refused.detail
+    );
+    let diagnosis = diagnose(&refused.fault);
+    assert_eq!(diagnosis.failed, Some(Phase::WebSocket));
+    assert!(diagnosis.hint.contains("HTTP 502"), "{}", diagnosis.hint);
+    assert!(diagnosis.hint.contains("proxy"), "{}", diagnosis.hint);
 }

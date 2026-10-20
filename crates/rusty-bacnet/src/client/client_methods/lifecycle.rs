@@ -252,7 +252,14 @@ impl BACnetClient {
                     if let Some(ms) = sc_connect_timeout_ms {
                         builder = builder.connect_timeout_ms(ms);
                     }
-                    Box::pin(builder.build_any::<crate::mstp_py::PySerial>()).await
+                    // Subscribed before the client starts, so the first
+                    // connection_events() sees the first Connected (#1908).
+                    Box::pin(builder.build_any_with_events::<crate::mstp_py::PySerial>())
+                        .await
+                        .map(|(client, events)| {
+                            inner.keep_first_sc_events(events);
+                            client
+                        })
                 }
                 "mstp" => {
                     let transport = crate::mstp_py::build_mstp_transport(&mstp)?;

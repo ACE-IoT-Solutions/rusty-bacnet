@@ -184,6 +184,61 @@ fn events_record_the_failover_and_the_return_in_order() {
     assert_eq!(text[5], "primary hub is back: leaving the failover hub");
 }
 
+/// A failed restore probe is a timeline line (#1828); the failover link it
+/// leaves in place keeps its state, and the doctor keeps the last dial
+/// failure.
+#[test]
+fn a_failed_restore_probe_is_a_timeline_line_only() {
+    let mut app = after_a_failover();
+    let before = (states(&app), app.sc.failure.clone(), app.sc.link);
+    sc(
+        &mut app,
+        ScReport::Event(LinkEvent::PrimaryRestoreFailed {
+            fault: Fault::WebSocket(ScWebSocketErrorKind::TcpDial),
+        }),
+    );
+    let last = app.sc.timeline.back().unwrap();
+    assert_eq!(last.severity, crate::tui::app::sc::Severity::Warn);
+    assert_eq!(
+        last.text,
+        "primary hub still unreachable: nothing accepted the TCP connection"
+    );
+    assert_eq!((states(&app), app.sc.failure.clone(), app.sc.link), before);
+}
+
+/// Failed restore probes in a row with the same cause share one line,
+/// with a count and the latest time, so they can't push the loss and
+/// failover lines out; a different cause starts a new line.
+#[test]
+fn repeated_restore_failures_share_one_timeline_line() {
+    let mut app = after_a_failover();
+    let lines = app.sc.timeline.len();
+    let probe = |fault| {
+        ScReport::Event(LinkEvent::PrimaryRestoreFailed {
+            fault: Fault::WebSocket(fault),
+        })
+    };
+    sc(&mut app, probe(ScWebSocketErrorKind::TcpDial));
+    let first_at = app.sc.timeline.back().unwrap().at;
+    let later = app.now + Duration::from_secs(30);
+    tick(&mut app, later);
+    sc(&mut app, probe(ScWebSocketErrorKind::TcpDial));
+    sc(&mut app, probe(ScWebSocketErrorKind::TcpDial));
+    assert_eq!(app.sc.timeline.len(), lines + 1);
+    let last = app.sc.timeline.back().unwrap();
+    assert_eq!(last.repeats, 3);
+    assert!(last.at > first_at, "the line keeps the latest time");
+    app.screen = Screen::Sc;
+    assert!(
+        screen(&mut app, 120, 40).contains("nothing accepted the TCP connection (3 times)"),
+        "{}",
+        screen(&mut app, 120, 40)
+    );
+    sc(&mut app, probe(ScWebSocketErrorKind::TlsHandshake));
+    assert_eq!(app.sc.timeline.len(), lines + 2);
+    assert_eq!(app.sc.timeline.back().unwrap().repeats, 1);
+}
+
 #[test]
 fn a_status_poll_resyncs_and_records_only_changes() {
     let mut app = sc_app();

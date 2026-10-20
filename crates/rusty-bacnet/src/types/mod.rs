@@ -3,11 +3,10 @@
 #![allow(non_snake_case)]
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::BytesMut;
-use pyo3::exceptions::{PyStopAsyncIteration, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use pyo3::Py;
