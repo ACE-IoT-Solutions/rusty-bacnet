@@ -749,11 +749,17 @@ TTL (OverflowError for an integer out of range), for `interface="0.0.0.0"`
 (the group is joined on the interface, which must be explicit), for
 `share_port_by_address=True`, for `port=0` without `Multicast(port=...)`
 (a picked port has nothing the group could share), on another transport,
-and with `bbmd=` or `foreign_device=`. A registered Network Port serves the
-group as BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the
-owner answers ReinitializeDevice; activation moves the running owner to the
-new group. A group changed that way lasts until the process exits: it isn't
-saved, so the next process starts with the `multicast=` it is given.
+and with `foreign_device=`. With `bbmd=` the owner is the BBMD that serves
+the group (Annex J.8.3): broadcasts from the group go on to its BDT peers
+and foreign devices, and theirs come back through the group. Its own BDT
+row must have the mask 255.255.255.255 (a `Bbmd()` without its own row
+gets one), or `start()` raises. A registered Network Port serves the group
+as BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the owner
+answers ReinitializeDevice and isn't a BBMD; activation moves the running
+owner to the new group. A group changed that way lasts until the process
+exits: it isn't saved, so the next process starts with the `multicast=` it
+is given. A BBMD's group is read-only, since its own BDT row depends on it
+(#1963 tracks changing both in one activation).
 Windows multicast is untested. See
 [B/IP multicast](rust-api.md#bip-multicast-bip-m) for the Rust side.
 

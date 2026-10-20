@@ -5,8 +5,8 @@ import sys
 import unittest
 
 from rusty_bacnet import (
-    BACnetClient, BACnetServer, Bbmd, BipEndpoint, Multicast, ObjectIdentifier,
-    ObjectType, PropertyIdentifier as P, PropertyValue as V,
+    BACnetClient, BACnetServer, Bbmd, BipEndpoint, ForeignDevice, Multicast,
+    ObjectIdentifier, ObjectType, PropertyIdentifier as P, PropertyValue as V,
 )
 
 GROUP = "239.255.97.1"
@@ -43,7 +43,7 @@ class OptionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Multicast(GROUP, port=0)
 
-    def test_multicast_needs_b_ip_an_interface_and_normal_mode(self):
+    def test_multicast_needs_b_ip_an_interface_and_no_foreign_device(self):
         group = Multicast(GROUP, port=47809)
         # The default interface is 0.0.0.0.
         with self.assertRaises(ValueError):
@@ -55,7 +55,11 @@ class OptionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             BACnetClient(interface="127.0.0.1", transport="ipv6", multicast=group)
         with self.assertRaises(ValueError):
-            BACnetServer(3200, interface="127.0.0.1", bbmd=Bbmd(), multicast=group)
+            BACnetServer(3200, interface="127.0.0.1",
+                         foreign_device=ForeignDevice("192.0.2.1:47808"),
+                         multicast=group)
+        # A BBMD serves the group (Annex J.8.3).
+        BACnetServer(3200, interface="127.0.0.1", bbmd=Bbmd(), multicast=group)
         # A port shared by address, or a picked port with no group port.
         with self.assertRaises(ValueError):
             BACnetClient(interface="127.0.0.1", port=47808,
@@ -103,6 +107,34 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
                     device = await client.get_device(3201)
                 self.assertEqual(device.object_identifier,
                                  ObjectIdentifier(ObjectType.DEVICE, 3201))
+                oid = ObjectIdentifier(ObjectType.NETWORK_PORT, 1)
+                self.assertEqual(
+                    await client.read_property(address, oid, P.BACNET_IP_MULTICAST_ADDRESS),
+                    V.octet_string(bytes([239, 255, 97, 1])))
+        finally:
+            await server.stop()
+
+    async def test_a_member_discovers_the_bbmd_that_serves_its_group(self):
+        group = Multicast(GROUP, port=free_port())
+        server = BACnetServer(3202, interface="127.0.0.1", port=0,
+                              broadcast_address="127.255.255.255",
+                              registered_network_port=1, bbmd=Bbmd(),
+                              multicast=group)
+        server.add_bip_network_port(1, "group BBMD", ip_address="127.0.0.1",
+                                    udp_port=0)
+        await server.start()
+        try:
+            address = await server.local_address()
+            async with BACnetClient(interface="127.0.0.1", port=0,
+                                    multicast=group) as client:
+                deadline = asyncio.get_running_loop().time() + 5
+                device = None
+                while device is None:
+                    self.assertLess(asyncio.get_running_loop().time(), deadline,
+                                    "the BBMD was not discovered")
+                    await client.who_is(3202, 3202)
+                    await asyncio.sleep(0.2)
+                    device = await client.get_device(3202)
                 oid = ObjectIdentifier(ObjectType.NETWORK_PORT, 1)
                 self.assertEqual(
                     await client.read_property(address, oid, P.BACNET_IP_MULTICAST_ADDRESS),

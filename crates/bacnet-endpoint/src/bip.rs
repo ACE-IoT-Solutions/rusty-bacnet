@@ -242,9 +242,10 @@ impl BipEndpointBuilder {
 
     /// Makes the endpoint a B/IP-M node in `multicast`'s group (Annex J.8),
     /// or, with `None` (the default), not. Needs an explicit interface; see
-    /// [`BipTransport::set_multicast`], whose refusals fail the build. A
-    /// registered Network Port serves the group as
-    /// `BACnet_IP_Multicast_Address` (#941).
+    /// [`BipTransport::set_multicast`], whose refusals fail the build. In
+    /// BBMD mode the endpoint serves the group (Annex J.8.3). A registered
+    /// Network Port serves the group as `BACnet_IP_Multicast_Address`
+    /// (#941).
     pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
         self.multicast = multicast;
         self

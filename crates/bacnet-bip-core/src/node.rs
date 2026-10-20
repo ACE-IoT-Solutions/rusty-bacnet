@@ -93,7 +93,7 @@
 //! | A function the annex doesn't define, 0x0C among them (its clause is deleted), is dropped unanswered | J.2.13 | `node_receive.rs` `unknown_functions_are_dropped_unanswered` |
 //! | A B/IP-M node sends its broadcasts to its multicast group, which stands in for the subnet's broadcast address, and directed messages by unicast as before | J.8.1, J.8.2 | `node_multicast.rs` `a_member_broadcasts_to_the_group_and_never_unicasts_there` |
 //! | A B/IP-M node takes Original-Broadcast-NPDU and Forwarded-NPDU from its group, and not from the subnet's broadcast address: members and plain devices don't share a subnet, so that broadcast belongs to another network | J.8.1 | `node_multicast.rs` `a_member_takes_broadcast_functions_from_the_group_and_unicast_ones_only_by_unicast` |
-//! | A BBMD that serves a group (J.8.3) | J.8.3 | Not yet (#941): [`Link::validate`] refuses a group in [`Mode::Bbmd`] and [`Mode::Foreign`] ([`ConfigError::MulticastMode`]); `node_multicast.rs` `only_a_normal_node_takes_a_group` |
+//! | A foreign device broadcasts through its BBMD, so it joins no group; a BBMD may serve one (its rules are in [`bbmd`](crate::bbmd)) | J.8.1, J.8.3 | `node_multicast.rs` `a_foreign_device_takes_no_group` |
 //!
 //! Local rules, beyond the annex:
 //!

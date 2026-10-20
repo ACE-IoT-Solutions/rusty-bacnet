@@ -66,7 +66,7 @@ mod multicast;
 pub use multicast::BipMulticast;
 mod socket;
 use bbmd_start::{
-    initial_bbmd_state, refresh_own_address, subnet_mask_of,
+    initial_bbmd_state, refresh_own_address, subnet_mask_of, warn_about_peers_on_the_group_subnet,
     warn_if_broadcast_may_leave_another_interface, BbmdConfig, OwnAddressContext,
 };
 use client_snapshot::ClientRecord;
@@ -122,6 +122,10 @@ pub struct BipTransport {
     bbmd_config: Option<BbmdConfig>,
     /// BBMD state (when acting as a BBMD, created in `start()`).
     bbmd: Option<Arc<std::sync::Mutex<BbmdState>>>,
+    /// Whether the BBMD state serves a B/IP-M group (Annex J.8.3), as last
+    /// set: a restart locks the state to change it only when the group
+    /// came or went.
+    bbmd_serves_group: bool,
     /// BBMD FDT expiry purge task.
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
     /// Foreign device registration (when registered as a foreign device),
@@ -207,6 +211,7 @@ impl BipTransport {
             recv_task: None,
             bbmd_config: None,
             bbmd: None,
+            bbmd_serves_group: false,
             bbmd_fdt_purge_task: None,
             foreign_device: None,
             node: None,
@@ -547,6 +552,8 @@ impl TransportPort for BipTransport {
         } else {
             self.interface
         };
+        // A BBMD's group is read-only, started or not (multicast.rs).
+        self.multicast.set_bbmd(staged_bbmd || self.bbmd.is_some());
         Some(BipPort {
             endpoint: SocketAddrV4::new(ip, self.port),
             mode,
@@ -569,8 +576,10 @@ impl TransportPort for BipTransport {
             )));
         }
 
-        // Validate before probing interfaces, binding sockets or sending bytes.
-        // A node is in one B/IP mode: a BBMD distributes its own broadcasts,
+        // Validate what the configuration alone decides before probing
+        // interfaces, binding sockets or sending bytes. The BDT's own checks,
+        // a group BBMD's two-hop own row among them (Annex J.8.3), need the
+        // own address, so they run after the bind. A node is in one B/IP mode: a BBMD distributes its own broadcasts,
         // and a foreign device hands them to its BBMD (#938).
         if self.foreign_device.is_some() && (self.bbmd_config.is_some() || self.bbmd.is_some()) {
             return Err(Error::Encoding(
@@ -627,11 +636,14 @@ impl TransportPort for BipTransport {
         // lookup is retried whole.
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
             let path = self.bdt_file.as_deref().map(bbmd::BdtFile::path);
-            let mut state = initial_bbmd_state(config, path, &own_address)?;
+            // A BBMD with a group serves it (Annex J.8.3): its own row must
+            // be two-hop.
+            let mut state = initial_bbmd_state(config, multicast.is_some(), path, &own_address)?;
             let ip = state.local_address().ip().octets();
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
+            self.bbmd_serves_group = multicast.is_some();
             Some(ip)
         } else if let Some(bbmd) = self.bbmd.as_ref().filter(|_| wildcard_bind) {
             // An explicit interface keeps its IP and port, and its mask,
@@ -645,8 +657,23 @@ impl TransportPort for BipTransport {
             bbmd::lock(bbmd).set_subnet_mask(mask);
             Some(ip)
         } else {
+            // A restart may come with another group, or none: only then is
+            // the state locked.
+            let group = multicast.is_some();
+            if let Some(bbmd) = self
+                .bbmd
+                .as_ref()
+                .filter(|_| self.bbmd_serves_group != group)
+            {
+                bbmd::lock(bbmd).set_serves_group(group)?;
+                self.bbmd_serves_group = group;
+            }
             None
         };
+        if let Some(bbmd) = self.bbmd.as_ref().filter(|_| multicast.is_some()) {
+            let state = bbmd::lock(bbmd);
+            warn_about_peers_on_the_group_subnet(&state, state.subnet_mask());
+        }
         if let Some(ip) = bbmd_ip {
             warn_if_broadcast_may_leave_another_interface(
                 &own_address,
@@ -899,6 +926,8 @@ mod malformed_bvll_tests;
 mod management_ack_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod multicast_bbmd_tests;
 #[cfg(test)]
 mod multicast_tests;
 #[cfg(test)]

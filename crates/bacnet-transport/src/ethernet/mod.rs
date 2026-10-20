@@ -60,6 +60,9 @@ fn is_ethernet_group(destination: &[u8; 6]) -> bool {
     *destination == ETHERNET_BROADCAST
 }
 
+// Off Linux only the tests reach the send path.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod egress;
 mod ingress;
 
 // Local single-link policy: only our unicast or BACnet all-FF broadcast.
@@ -286,6 +289,7 @@ mod transport {
     use tokio::task::JoinHandle;
     use tracing::{debug, warn};
 
+    use super::egress::{send_whole_frame, LlcReply, ReplyFailures};
     use super::ingress::{classify_frame, FrameIngress};
     use crate::port::{ReceivedNpdu, TransportPort, TransportProvenance};
 
@@ -312,6 +316,8 @@ mod transport {
         recv_task: Option<JoinHandle<()>>,
         /// See [`Self::group_source_drops`].
         group_source_drops: Arc<AtomicU64>,
+        /// See [`Self::reply_send_failures`].
+        reply_failures: Arc<ReplyFailures>,
     }
 
     impl EthernetTransport {
@@ -324,6 +330,7 @@ mod transport {
                 socket: None,
                 recv_task: None,
                 group_source_drops: Arc::default(),
+                reply_failures: Arc::default(),
             }
         }
 
@@ -336,6 +343,14 @@ mod transport {
         /// survives a restart.
         pub fn group_source_drops(&self) -> u64 {
             self.group_source_drops.load(Ordering::Relaxed)
+        }
+
+        /// XID and TEST responses (Clause 7.1) that failed to go out since
+        /// this transport was created, a short send included (#1918). Each
+        /// failure is also logged, as a warning at most once per ten
+        /// seconds and at debug otherwise. The total survives a restart.
+        pub fn reply_send_failures(&self) -> u64 {
+            self.reply_failures.count()
         }
     }
 
@@ -560,6 +575,7 @@ mod transport {
 
             let send_socket = Arc::clone(&socket);
             let group_source_drops = Arc::clone(&self.group_source_drops);
+            let reply_failures = Arc::clone(&self.reply_failures);
             let recv_task = tokio::spawn(async move {
                 let mut recv_buf = vec![0u8; 2048];
                 loop {
@@ -590,7 +606,12 @@ mod transport {
                                 FrameIngress::Xid { source } => {
                                     debug!(src = ?source, "XID command, sending response");
                                     let resp = build_xid_response(&local_mac, &source);
-                                    let _ = send_socket.send(&resp);
+                                    reply_failures.send_reply(
+                                        LlcReply::Xid,
+                                        &source,
+                                        &resp,
+                                        |frame| send_socket.send(frame),
+                                    );
                                     continue;
                                 }
                                 FrameIngress::Test { source, data } => {
@@ -600,7 +621,12 @@ mod transport {
                                         "TEST command, sending response"
                                     );
                                     let resp = build_test_response(&local_mac, &source, data);
-                                    let _ = send_socket.send(&resp);
+                                    reply_failures.send_reply(
+                                        LlcReply::Test,
+                                        &source,
+                                        &resp,
+                                        |frame| send_socket.send(frame),
+                                    );
                                     continue;
                                 }
                                 FrameIngress::Decode => {}
@@ -701,8 +727,8 @@ mod transport {
 
             // The frame carries its own 802.3 header, destination first, and
             // the bound socket sends on its interface: no address needed.
-            socket.send(&buf).map_err(Error::Transport)?;
-            Ok(())
+            // A short send is an error (#1918).
+            send_whole_frame(&buf, |frame| socket.send(frame)).map_err(Error::Transport)
         }
 
         async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {

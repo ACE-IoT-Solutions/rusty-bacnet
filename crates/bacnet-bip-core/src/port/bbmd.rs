@@ -48,7 +48,11 @@ impl<'t, const B: usize, const F: usize> BbmdPort<'t, B, F> {
     /// `targets` and reporting its foreign devices through `rows`: at
     /// least [`Tables::MAX_TARGETS`] targets, so no decision loses one, and
     /// `F` rows, so a Read-Foreign-Device-Table never fails. The link is
-    /// checked as [`Node::new`](crate::node::Node::new) checks one.
+    /// checked as [`Node::new`](crate::node::Node::new) checks one. A link
+    /// whose subnet is a multicast group serves it (Annex J.8.3): the port
+    /// tells the BDT so ([`Bdt::set_serves_group`](crate::bbmd::Bdt::set_serves_group)),
+    /// which refuses an own row that isn't two-hop
+    /// ([`PortError::Bdt`]), and a plain link clears it.
     pub fn new(
         link: Link,
         tables: &'t mut Tables<B, F>,
@@ -71,6 +75,10 @@ impl<'t, const B: usize, const F: usize> BbmdPort<'t, B, F> {
                 available: rows.len(),
             });
         }
+        tables
+            .bdt
+            .set_serves_group(link.subnet.is_group())
+            .map_err(PortError::Bdt)?;
         Ok(Self {
             link,
             tables,
@@ -158,6 +166,13 @@ impl<'t, const B: usize, const F: usize> BbmdPort<'t, B, F> {
         rules: &mut impl Rules,
         out: &mut impl Datagrams,
     ) -> Ingress<'d> {
+        // The group rule was set from the link in `new`; a caller that
+        // changed it through `tables_mut` broke the pairing.
+        debug_assert_eq!(
+            self.tables.bdt.serves_group(),
+            link.subnet.is_group(),
+            "the BDT's group rule no longer matches the link"
+        );
         let cx = Context::new(now, F);
         let (source, npdu) = match share {
             ForBbmd::OriginalBroadcast(delivery) => {

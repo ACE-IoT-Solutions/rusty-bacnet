@@ -335,9 +335,11 @@ impl BipServerBuilder {
     /// [`interface`](Self::interface), and a nonzero [`port`](Self::port)
     /// unless the group has its own; `build()` fails on what
     /// [`BipTransport::set_multicast`](bacnet_transport::bip::BipTransport::set_multicast)
-    /// refuses. A registered Network Port serves the group as
-    /// `BACnet_IP_Multicast_Address`, writable when the server answers
-    /// ReinitializeDevice (#941).
+    /// refuses. With [`BipMode::Bbmd`]
+    /// the server is the BBMD that serves the group (Annex J.8.3), and its
+    /// own BDT row must be two-hop. A registered Network Port serves the
+    /// group as `BACnet_IP_Multicast_Address`, writable when the server
+    /// answers ReinitializeDevice and isn't a BBMD (#941).
     pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
         self.multicast = multicast;
         self

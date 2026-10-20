@@ -326,7 +326,8 @@ impl PyMulticast {
 }
 
 /// The group the `multicast=` keyword asks for: only on B/IP, with an
-/// explicit interface, and in normal mode.
+/// explicit interface, and not for a foreign device. A BBMD with a group
+/// serves it (Annex J.8.3).
 pub(crate) fn bip_multicast(
     transport: &str,
     interface: &str,
@@ -343,9 +344,10 @@ pub(crate) fn bip_multicast(
             "multicast applies only to transport='bip'",
         ));
     }
-    if !matches!(mode, BipMode::Normal) {
+    if matches!(mode, BipMode::Foreign(_)) {
         return Err(PyValueError::new_err(
-            "multicast can't be combined with bbmd or foreign_device",
+            "multicast can't be combined with foreign_device: a foreign device broadcasts \
+             through its BBMD",
         ));
     }
     if parse_ip(interface, "interface")?.is_unspecified() {

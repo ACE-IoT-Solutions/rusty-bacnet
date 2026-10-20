@@ -241,11 +241,18 @@ fn load_persisted_bdt(path: &Path) -> Option<(Vec<BdtEntry>, Option<PersistedNat
     }
 }
 
-/// An empty BBMD state at `ip:port`, behind NAT when `config` says so, so
-/// the BDT set next is checked under NAT's rules (Annex J.7.5).
-fn new_state(config: &BbmdConfig, ip: Ipv4Addr, port: u16) -> Result<BbmdState, Error> {
+/// An empty BBMD state at `ip:port`, behind NAT when `config` says so, and
+/// serving a multicast group when `group` says so, so the BDT set next is
+/// checked under NAT's rules (Annex J.7.5) and the group's (J.8.3).
+fn new_state(
+    config: &BbmdConfig,
+    group: bool,
+    ip: Ipv4Addr,
+    port: u16,
+) -> Result<BbmdState, Error> {
     let mut state = BbmdState::new(ip.octets(), port);
     state.set_nat_traversal(config.nat.clone())?;
+    state.set_serves_group(group)?;
     Ok(state)
 }
 
@@ -254,6 +261,7 @@ fn new_state(config: &BbmdConfig, ip: Ipv4Addr, port: u16) -> Result<BbmdState, 
 /// the persisted BDT does; the private ranges are the configuration's.
 fn persisted_state(
     config: &BbmdConfig,
+    group: bool,
     nat: PersistedNat,
     ip: Ipv4Addr,
     port: u16,
@@ -265,6 +273,7 @@ fn persisted_state(
         .unwrap_or_default();
     let mut state = BbmdState::new(ip.octets(), port);
     state.set_persisted_nat(nat, ranges)?;
+    state.set_serves_group(group)?;
     Ok(state)
 }
 
@@ -291,9 +300,13 @@ fn warn_if_overridden(config: &BbmdConfig, nat: PersistedNat) {
 /// configured one, and this BBMD's own address chosen with that BDT. An
 /// invalid configured BDT or an undeterminable own address fails the start.
 /// An own address that cannot be chosen from a loaded persisted BDT fails it
-/// too, without trying the configured BDT.
+/// too, without trying the configured BDT. A BBMD that serves a B/IP-M
+/// group (`group`) needs a two-hop own row (Annex J.8.3): a persisted BDT
+/// without one falls back to the configured BDT, with a warning, and a
+/// configured one without one fails the start.
 pub(super) fn initial_bbmd_state(
     config: &BbmdConfig,
+    group: bool,
     persist_path: Option<&Path>,
     ctx: &OwnAddressContext<'_>,
 ) -> Result<BbmdState, Error> {
@@ -303,11 +316,12 @@ pub(super) fn initial_bbmd_state(
         let behind_nat = nat.map_or(config.nat.is_some(), |nat| nat.enabled);
         let ip = ctx.own_ip(&rows, BdtSource::Persisted(path), behind_nat)?;
         let state = match nat {
-            Some(nat) => persisted_state(config, nat, ip, ctx.port),
-            None => new_state(config, ip, ctx.port),
+            Some(nat) => persisted_state(config, group, nat, ip, ctx.port),
+            None => new_state(config, group, ip, ctx.port),
         };
         // The rows are canonical, so only the self row can still overflow,
-        // or, behind NAT, the NAT rules refuse them.
+        // or, behind NAT, the NAT rules refuse them, or the group's rule a
+        // one-hop own row.
         match state.and_then(|mut state| state.set_bdt(rows).map(|()| state)) {
             Ok(state) => {
                 if let Some(nat) = nat {
@@ -330,7 +344,7 @@ pub(super) fn initial_bbmd_state(
             let config_error = |e: Error| Error::Encoding(format!("BDT configuration error: {e}"));
             let rows = bbmd::canonical_bdt(config.initial_bdt.clone()).map_err(config_error)?;
             let ip = ctx.own_ip(&rows, BdtSource::Configured, config.nat.is_some())?;
-            let mut state = new_state(config, ip, ctx.port)?;
+            let mut state = new_state(config, group, ip, ctx.port)?;
             state.set_bdt(rows).map_err(config_error)?;
             state
         }
@@ -339,6 +353,40 @@ pub(super) fn initial_bbmd_state(
     state.set_foreign_device_policy(config.foreign_device_policy.clone());
     state.set_alone_on_subnet(config.alone_on_subnet);
     Ok(state)
+}
+
+/// Warn about each BDT peer at this BBMD's own port whose IP is on its own
+/// IP subnet (by `mask`), when the BBMD serves a B/IP-M group. B/IP-M and
+/// plain devices don't share a subnet (Annex J.8.1): such a peer's
+/// forwards still reach the group, but it takes this BBMD's forwards as
+/// heard on its subnet already (J.4.5), so its own subnet never gets them.
+/// Returns how many it warned about.
+pub(super) fn warn_about_peers_on_the_group_subnet(
+    state: &BbmdState,
+    mask: Option<Ipv4Addr>,
+) -> usize {
+    let Some(mask) = mask.filter(|_| state.serves_group()) else {
+        return 0;
+    };
+    let own = state.local_address();
+    let on_subnet = |row: &BdtEntry| {
+        let ip = Ipv4Addr::from(row.ip);
+        row.port == own.port()
+            && ip != *own.ip()
+            && (ip.to_bits() ^ own.ip().to_bits()) & mask.to_bits() == 0
+    };
+    let mut warned = 0;
+    for row in state.bdt().iter().filter(|row| on_subnet(row)) {
+        warn!(
+            peer = %Ipv4Addr::from(row.ip),
+            port = row.port,
+            "A BDT peer shares this multicast BBMD's IP subnet: B/IP-M and plain B/IP \
+             devices must not share a subnet, and that peer won't pass this BBMD's \
+             broadcasts on to its own subnet"
+        );
+        warned += 1;
+    }
+    warned
 }
 
 /// Choose the own address of a wildcard-bound BBMD again on a restart, from
