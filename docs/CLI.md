@@ -57,6 +57,9 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--device-instance <N>` | | Device instance whose VMAC the CLI uses on `--ipv6`; needed where the link has no multicast, such as Linux loopback |
 | `--sc` | | Use BACnet/SC transport |
 | `--sc-url <URL>` | | SC hub WebSocket URL |
+| `--sc-failover-url <URL>` | | SC failover hub, used when the primary can't be reached or its reconnects run out; turns on `--sc-reconnect` |
+| `--sc-reconnect` | off (a profile: on) | Redial a lost SC hub with backoff: 10 s doubling to 10 min, 10 attempts |
+| `--sc-connect-timeout <MS>` | 10000 | Bound on each SC hub dial and handshake, 1 to 600000 ms |
 | `--sc-ca <FILE>` | required for SC | Trusted site CA certificate(s) in PEM; no system-root fallback |
 | `--sc-cert <FILE>` | | SC TLS certificate PEM |
 | `--sc-key <FILE>` | | SC TLS private key PEM |
@@ -322,9 +325,19 @@ certificate and key PEM files. Only the paths are saved, never PEM text, key
 bytes or passwords; relative paths are made absolute on save. A blank VMAC or
 device UUID is generated when the profile is first saved (or first connected,
 for a hand-written file) and kept from then on, so the device UUID stays the
-same across restarts. A profile with a failover URL connects with automatic
-reconnect, using the client's default policy, and turns to the failover hub
-when the primary can't be reached.
+same across restarts. An SC profile reconnects with backoff after it loses its
+hub, primary-only profiles included, so a long session survives a hub restart:
+by default the first retry comes after 10 s, the delay doubles up to 10 min,
+and 10 attempts are made before a failover hub, if one is set, is tried.
+`reconnect = false` turns this off (a lost hub then stays down) and is refused
+with a failover URL, since the failover hub is reached by reconnecting. The
+backoff (`reconnect_initial_delay_ms`, `reconnect_max_delay_ms`,
+`reconnect_max_retries`) and the connect timeout (`connect_timeout_ms`, 1 to
+600000, default 10000) can be set in the file; the editor offers the connect
+timeout and reconnect on/off. `--sc-failover-url`, `--sc-reconnect` and
+`--sc-connect-timeout` override a profile like the other flags, and give a
+flags-only session the same settings (reconnect stays off there unless one of
+the first two is given).
 
 Before a connection is attempted, the preview checks that each named file
 opens for reading, and on Unix warns when the key file is readable by group or
@@ -397,6 +410,11 @@ vmac = "22:10:20:30:40:50"                           # generated when blank
 device_uuid = "6f1c2a9e-4407-4b3d-9a51-0e7c8821d40b" # generated when blank
 timeout_ms = 6000
 min_interval_ms = 0
+connect_timeout_ms = 10000
+reconnect = true                  # false: a lost hub stays down (no failover then)
+reconnect_initial_delay_ms = 10000
+reconnect_max_delay_ms = 600000
+reconnect_max_retries = 10
 
 [safety]
 writes = "session"

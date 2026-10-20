@@ -2,7 +2,8 @@
 //! certificates and keys stay where the site keeps them, and no PEM text,
 //! key bytes or password is ever written to a profile.
 
-use crate::transport::{parse_sc_device_uuid_arg, parse_sc_vmac_arg};
+use crate::transport::{check_sc_connect_timeout, parse_sc_device_uuid_arg, parse_sc_vmac_arg};
+use bacnet_transport::sc::ScReconnectConfig;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::path::PathBuf;
@@ -15,8 +16,8 @@ use std::path::PathBuf;
 pub(crate) struct Sc {
     /// The primary hub, a `wss://` URI.
     pub(crate) hub_url: String,
-    /// The failover hub, used after reconnects to the primary run out. A
-    /// profile that sets one also connects with the default reconnect policy.
+    /// The failover hub, used after reconnects to the primary run out. It
+    /// needs `reconnect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) failover_hub_url: Option<String>,
     /// Trusted site CA certificates (PEM file).
@@ -37,10 +38,49 @@ pub(crate) struct Sc {
     /// Minimum spacing between confirmed requests (0: none).
     #[serde(default)]
     pub(crate) min_interval_ms: u64,
+    /// The bound on each hub dial and Connect-Request handshake.
+    #[serde(default = "default_connect_timeout_ms")]
+    pub(crate) connect_timeout_ms: u64,
+    /// Redial a lost hub with backoff (#1831). On by default, so a long
+    /// session survives a hub restart; `false` leaves a lost connection
+    /// down, and is refused with a failover hub.
+    #[serde(default = "default_reconnect")]
+    pub(crate) reconnect: bool,
+    /// The first reconnect delay, doubled after each failed attempt.
+    #[serde(default = "default_initial_delay_ms")]
+    pub(crate) reconnect_initial_delay_ms: u64,
+    /// The longest reconnect delay.
+    #[serde(default = "default_max_delay_ms")]
+    pub(crate) reconnect_max_delay_ms: u64,
+    /// Reconnect attempts to the hub in use before turning to the failover
+    /// hub, if any.
+    #[serde(default = "default_max_retries")]
+    pub(crate) reconnect_max_retries: u32,
 }
 
 fn default_timeout_ms() -> u64 {
     6000
+}
+
+fn default_reconnect() -> bool {
+    true
+}
+
+fn default_initial_delay_ms() -> u64 {
+    ScReconnectConfig::default().initial_delay_ms
+}
+
+fn default_max_delay_ms() -> u64 {
+    ScReconnectConfig::default().max_delay_ms
+}
+
+fn default_max_retries() -> u32 {
+    ScReconnectConfig::default().max_retries
+}
+
+/// The SC client's own default connect timeout.
+fn default_connect_timeout_ms() -> u64 {
+    10_000
 }
 
 impl Default for Sc {
@@ -48,6 +88,11 @@ impl Default for Sc {
         Self {
             hub_url: String::new(),
             failover_hub_url: None,
+            reconnect: default_reconnect(),
+            reconnect_initial_delay_ms: default_initial_delay_ms(),
+            reconnect_max_delay_ms: default_max_delay_ms(),
+            reconnect_max_retries: default_max_retries(),
+            connect_timeout_ms: default_connect_timeout_ms(),
             ca: PathBuf::new(),
             cert: PathBuf::new(),
             key: PathBuf::new(),
@@ -68,7 +113,18 @@ impl Sc {
             if failover == &self.hub_url {
                 return Err("Failover URL must differ from the primary hub URL".into());
             }
+            if !self.reconnect {
+                return Err(
+                    "Failover URL needs reconnect on: the failover hub is reached by reconnecting"
+                        .into(),
+                );
+            }
         }
+        check_sc_connect_timeout(self.connect_timeout_ms)
+            .map_err(|e| format!("connect_timeout_ms {e}"))?;
+        self.reconnect_policy()
+            .validate()
+            .map_err(|e| format!("reconnect settings: {e}"))?;
         for (label, path) in [
             ("CA file", &self.ca),
             ("Certificate file", &self.cert),
@@ -82,6 +138,20 @@ impl Sc {
             return Err("min_interval_ms must be at most 3600000".into());
         }
         Ok(())
+    }
+
+    /// The backoff settings, whether or not `reconnect` is on.
+    pub(crate) fn reconnect_policy(&self) -> ScReconnectConfig {
+        ScReconnectConfig {
+            initial_delay_ms: self.reconnect_initial_delay_ms,
+            max_delay_ms: self.reconnect_max_delay_ms,
+            max_retries: self.reconnect_max_retries,
+        }
+    }
+
+    /// The reconnect policy the client gets: none when `reconnect` is off.
+    pub(crate) fn reconnect(&self) -> Option<ScReconnectConfig> {
+        self.reconnect.then(|| self.reconnect_policy())
     }
 
     /// Fill in a missing VMAC and device UUID. Returns whether anything

@@ -147,6 +147,9 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
                 "Hub URLs are wss://. Files are PEM paths; only the paths are saved.",
             ));
             lines.push(Line::raw(
+                "Reconnect on/off: redial a lost hub with backoff (a failover hub needs on).",
+            ));
+            lines.push(Line::raw(
                 if connection.identity_locked(crate::tui::app::connection::UUID_FIELD) {
                     "VMAC / UUID are kept for good; to change them, edit the profile file."
                 } else {
@@ -173,10 +176,22 @@ fn sc_lines(profile: &Profile, lines: &mut Vec<Line<'_>>) {
     let Some(s) = &profile.sc else { return };
     lines.push(Line::raw(format!("Hub: {}", s.hub_url)));
     if let Some(failover) = &s.failover_hub_url {
-        lines.push(Line::raw(format!(
-            "Failover hub: {failover} (with automatic reconnect)"
-        )));
+        lines.push(Line::raw(format!("Failover hub: {failover}")));
     }
+    lines.push(Line::raw(if s.reconnect {
+        format!(
+            "Reconnect: on, {} ms doubling to {} ms, {} attempts   Connect timeout: {} ms",
+            s.reconnect_initial_delay_ms,
+            s.reconnect_max_delay_ms,
+            s.reconnect_max_retries,
+            s.connect_timeout_ms
+        )
+    } else {
+        format!(
+            "Reconnect: off (a lost hub stays down)   Connect timeout: {} ms",
+            s.connect_timeout_ms
+        )
+    }));
     lines.push(Line::raw(format!("CA file:   {}", s.ca.display())));
     lines.push(Line::raw(format!("Cert file: {}", s.cert.display())));
     lines.push(Line::raw(format!("Key file:  {}", s.key.display())));

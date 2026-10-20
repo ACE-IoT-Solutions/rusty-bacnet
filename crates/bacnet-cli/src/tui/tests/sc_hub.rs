@@ -32,25 +32,25 @@ use crate::tui::sc::Fault;
 use crate::tui::worker::session::{self, ConnectPlan, SessionOptions, TransportKind};
 use crate::tui::worker::{coordinator, EventSink};
 
-const WAIT: Duration = Duration::from_secs(30);
+pub(super) const WAIT: Duration = Duration::from_secs(30);
 /// A date as year, month, day.
 type Ymd = (i32, u8, u8);
 /// A link state and its hub.
 type State = (ScConnectionState, Option<ScActiveHub>);
-const PRIMARY_VMAC: [u8; 6] = [0x10; 6];
-const FAILOVER_VMAC: [u8; 6] = [0x20; 6];
+pub(super) const PRIMARY_VMAC: [u8; 6] = [0x10; 6];
+pub(super) const FAILOVER_VMAC: [u8; 6] = [0x20; 6];
 /// 2031-01-01T00:00:00Z: the primary hub certificate's not-after.
 const HUB_NOT_AFTER: i64 = 1_924_992_000;
 
 /// A leaf certificate and its key.
-struct Leaf {
+pub(super) struct Leaf {
     der: CertificateDer<'static>,
     pem: String,
     key: KeyPair,
 }
 
 /// A site CA that issues leaves.
-struct Site {
+pub(super) struct Site {
     params: CertificateParams,
     key: KeyPair,
     der: CertificateDer<'static>,
@@ -58,7 +58,7 @@ struct Site {
 }
 
 impl Site {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         params.distinguished_name = rcgen::DistinguishedName::new();
@@ -75,7 +75,7 @@ impl Site {
 
     /// A leaf named `cn` for 127.0.0.1, signed by `signer` (this CA's key
     /// unless another is given: the key-mismatch case).
-    fn leaf(
+    pub(super) fn leaf(
         &self,
         cn: &str,
         usage: ExtendedKeyUsagePurpose,
@@ -118,12 +118,12 @@ impl Site {
     }
 }
 
-fn client_leaf(site: &Site) -> Leaf {
+pub(super) fn client_leaf(site: &Site) -> Leaf {
     site.leaf("tui node", ExtendedKeyUsagePurpose::ClientAuth, None, None)
 }
 
 /// Flags for an SC session trusting `site`, as `node`, dialling `url`.
-fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> TransportArgs {
+pub(super) fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> TransportArgs {
     let write = |name: &str, text: &str| {
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
@@ -138,6 +138,8 @@ fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> TransportArgs {
         sc: true,
         sc_url: Some(url.into()),
         sc_failover_url: None,
+        sc_reconnect: None,
+        sc_connect_timeout_ms: None,
         sc_ca: Some(write("ca.pem", &site.pem)),
         sc_cert: Some(write("node.pem", &node.pem)),
         sc_key: Some(write("node.key", &node.key.serialize_pem())),
@@ -151,14 +153,19 @@ fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> TransportArgs {
     }
 }
 
-async fn hub(site: &Site, cert: &Leaf, addr: &str, vmac: [u8; 6]) -> std::io::Result<ScHub> {
+pub(super) async fn hub(
+    site: &Site,
+    cert: &Leaf,
+    addr: &str,
+    vmac: [u8; 6],
+) -> std::io::Result<ScHub> {
     ScHub::start(addr, site.hub_config(cert), vmac, [vmac[0]; 16])
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 /// Start a hub on `addr`, retrying while the old listener's port lingers.
-async fn rebind(site: &Site, cert: &Leaf, addr: SocketAddr, vmac: [u8; 6]) -> ScHub {
+pub(super) async fn rebind(site: &Site, cert: &Leaf, addr: SocketAddr, vmac: [u8; 6]) -> ScHub {
     for _ in 0..100 {
         if let Ok(hub) = hub(site, cert, &addr.to_string(), vmac).await {
             return hub;
@@ -169,7 +176,7 @@ async fn rebind(site: &Site, cert: &Leaf, addr: SocketAddr, vmac: [u8; 6]) -> Sc
 }
 
 /// Feed worker events into `app` until `done` holds.
-async fn until(
+pub(super) async fn until(
     app: &mut App,
     events: &mut mpsc::Receiver<WorkerEvent>,
     what: &str,
@@ -185,7 +192,7 @@ async fn until(
     .unwrap_or_else(|_| panic!("{what} not seen in time; states {:?}", app.sc.transitions));
 }
 
-fn is_on(app: &App, hub: ScActiveHub) -> bool {
+pub(super) fn is_on(app: &App, hub: ScActiveHub) -> bool {
     app.sc.link.as_ref().is_some_and(|(link, _)| {
         link.state == ScConnectionState::Connected && link.hub == Some(hub)
     }) && !app.sc.chain.is_empty()

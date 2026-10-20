@@ -54,7 +54,7 @@ pub(crate) const BIP_LABELS: [&str; 11] = [
 ];
 
 /// BACnet/SC editor fields. Files are paths; their contents are never read here.
-pub(crate) const SC_LABELS: [&str; 12] = [
+pub(crate) const SC_LABELS: [&str; 14] = [
     "Name",
     "Hub URL",
     "Failover URL",
@@ -65,6 +65,8 @@ pub(crate) const SC_LABELS: [&str; 12] = [
     "Device UUID",
     "Timeout ms",
     "Pacing ms",
+    "Connect ms",
+    "Reconnect",
     "Writes",
     "Dangerous",
 ];
@@ -236,6 +238,8 @@ impl Connection {
                 s.device_uuid.map(|v| v.to_string()).unwrap_or_default(),
                 s.timeout_ms.to_string(),
                 s.min_interval_ms.to_string(),
+                s.connect_timeout_ms.to_string(),
+                if s.reconnect { "on" } else { "off" }.to_string(),
             ]);
         }
         if let Some(m) = &p.mstp {
@@ -315,6 +319,14 @@ impl Connection {
             s.min_interval_ms = f[9]
                 .parse()
                 .map_err(|_| "Pacing must be an unsigned number")?;
+            s.connect_timeout_ms = f[10]
+                .parse()
+                .map_err(|_| "Connect ms must be an unsigned number")?;
+            s.reconnect = match f[11].as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err("Reconnect must be on or off".into()),
+            };
         }
         if let Some(m) = &mut profile.mstp {
             m.port = f[1].trim().to_string();

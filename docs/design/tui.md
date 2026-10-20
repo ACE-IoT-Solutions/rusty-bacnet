@@ -651,9 +651,12 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
 
 B/IP and BACnet/SC profiles are implemented behind `tui`. The entry flow,
 schema and keys are in the [CLI reference](../CLI.md#terminal-ui). MS/TP
-profiles (#969) add a `transport` value and their own table. An SC profile's
-failover hub goes to the client builder with the default reconnect policy,
-which the builder needs for failover; the SC screen (#967) shows which hub is in use.
+profiles (#969) add a `transport` value and their own table. An SC profile
+reconnects with backoff by default, primary-only or not, and can turn that off
+unless it names a failover hub (the builder needs a reconnect policy for
+failover); its backoff and connect timeout reach the client builder, and
+`--sc-failover-url`, `--sc-reconnect` and `--sc-connect-timeout` give a
+flags-only session the same (#1831). The SC screen (#967) shows which hub is in use.
 
 - Each transport keeps its settings in its own table (`[bip]` or `[sc]`), and
   exactly the one `transport` names is present. B/IP files from before SC

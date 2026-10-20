@@ -86,6 +86,8 @@ mod sc_hub;
 mod sc_layout;
 mod sc_lint;
 mod sc_profiles;
+#[cfg(feature = "sc-tls")]
+mod sc_reconnect;
 mod sc_screen;
 mod site;
 mod values;
