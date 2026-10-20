@@ -230,8 +230,9 @@ async fn connect(
         TransportKind::Mstp => {
             let mut handle = None;
             let lines = options.mstp.lines.clone();
+            let thread = options.mstp.thread.clone();
             let build = async {
-                let (client, diagnostics) = lines.participant(&args).await?;
+                let (client, diagnostics) = lines.participant(&args, &thread).await?;
                 handle = Some(diagnostics);
                 Ok(client)
             };

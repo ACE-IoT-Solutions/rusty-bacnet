@@ -73,6 +73,8 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--mstp-baud <BAUD>` | `38400` | 9600, 19200, 38400, 57600, 76800 or 115200 (Clause 9.2.3) |
 | `--mstp-max-master <MAC>` | `127` | Highest master MAC on the trunk (Max_Master), 0 to 127, at least `--mstp-mac` |
 | `--mstp-max-info-frames <N>` | `1` | Frames this station sends each time it holds the token (Max_Info_Frames), 1 to 255 |
+| `--mstp-rt-priority <N>` | | Linux only: run the station's token handling under `SCHED_FIFO` at priority N, 1 to 99. See [MS/TP](#mstp) |
+| `--mstp-cpus <CPUS>` | | Linux only: pin the station's token handling to these CPUs, such as `2,3` |
 | `--format <FMT>` | auto | Output format: `table` or `json` |
 | `--json` | | JSON output shorthand |
 | `-v` | | Verbosity (`-v`, `-vv`, `-vvv`) |
@@ -1449,6 +1451,29 @@ subcommand, any B/IP, B/IPv6 or BACnet/SC flag (`-i`, `-p`, `-b`,
 The station runs its token handling on a dedicated thread. Its timing defaults
 suit a USB adapter: it waits up to 100 ms for the rest of a frame, and its
 usage and reply timeouts are the longest Clause 9.5 allows.
+
+**Real-time scheduling (Linux).** Two flags schedule that thread, for any
+station the process joins as: with `--mstp`, or in the terminal UI from a
+profile or the monitor's join. They are host settings, so profiles don't keep
+them.
+
+| Flag | Effect |
+|---|---|
+| `--mstp-rt-priority N` | Run the thread under `SCHED_FIFO` at priority N, 1 to 99. Needs `CAP_SYS_NICE` or an `RLIMIT_RTPRIO` of at least N (`ulimit -r`). |
+| `--mstp-cpus CPUS` | Pin the thread to these CPUs, such as `2` or `2,3`. |
+
+```bash
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --mstp-rt-priority 40 --mstp-cpus 3 discover
+bacnet tui --mstp-monitor /dev/ttyUSB0 --mstp-rt-priority 40
+```
+
+A setting the kernel won't apply fails the join with the reason (exit status 1
+for a one-shot command; the terminal UI shows the error), never a station that
+quietly runs without it. On macOS and Windows both flags are usage errors. They
+lower scheduling latency; they don't guarantee timing. Compare the MS/TP
+screen's timer lateness with and without them, and see the
+[Rust API guide](rust-api.md#real-time-scheduling-and-cpu-affinity-linux) for
+PREEMPT_RT, interrupt-thread priorities and memory locking.
 
 **Platforms.** The Linux release binary includes MS/TP. On macOS and Windows,
 `serial` builds and runs in CI with in-memory and pseudo-terminal tests, but no

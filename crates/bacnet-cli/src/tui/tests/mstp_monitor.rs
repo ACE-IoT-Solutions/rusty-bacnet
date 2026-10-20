@@ -143,6 +143,7 @@ impl Run {
             mstp: MstpOptions {
                 monitor: Some(plan.clone()),
                 lines,
+                thread: Default::default(),
             },
             ..SessionOptions::default()
         };
@@ -726,9 +727,18 @@ async fn the_test_line_has_one_owner_at_a_time() {
         max_master: 10,
         max_info_frames: 1,
     });
-    let busy = lines.participant(&args).await.err().expect("busy");
+    let plain = bacnet_transport::mstp::MstpThreadConfig::new();
+    // Thread settings the platform refuses fail the join (#501).
+    #[cfg(not(target_os = "linux"))]
+    {
+        let realtime = plain.clone().with_realtime_priority(50);
+        let refused = lines.participant(&args, &realtime).await.err();
+        let refused = refused.expect("refused").to_string();
+        assert!(refused.contains("Linux only"), "{refused}");
+    }
+    let busy = lines.participant(&args, &plain).await.err().expect("busy");
     assert!(busy.to_string().contains("still holds the port"), "{busy}");
     drop(reader);
-    let (mut client, _) = lines.participant(&args).await.unwrap();
+    let (mut client, _) = lines.participant(&args, &plain).await.unwrap();
     client.stop().await.unwrap();
 }

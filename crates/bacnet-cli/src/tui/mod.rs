@@ -163,6 +163,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         std::process::exit(1);
     }
     options.mstp.monitor.clone_from(&monitor);
+    options.mstp.thread = crate::mstp_thread::from_cli(&cli);
     let serial = matches!(kind, TransportKind::Mstp | TransportKind::MstpMonitor);
     if serial && !cfg!(feature = "serial") {
         eprintln!("Error: {}", crate::mstp::NO_SERIAL);

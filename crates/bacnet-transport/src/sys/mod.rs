@@ -26,6 +26,8 @@
 //! - `libc_msg`: the libc socket option, `recvmsg` and `sendmsg` paths, for
 //!   the Unix targets nix doesn't cover.
 //! - `serial`: Linux's `TIOCSRS485` and `TIOCGRS485`.
+//! - `sched`: Linux's `sched_setscheduler` and its read-back, for the MS/TP
+//!   transport's dedicated thread.
 
 #![allow(unsafe_code)]
 
@@ -38,6 +40,9 @@ pub(crate) mod libc_msg;
 
 #[cfg(all(feature = "serial", any(target_os = "linux", test)))]
 pub(crate) mod serial;
+
+#[cfg(target_os = "linux")]
+pub(crate) mod sched;
 
 #[cfg(windows)]
 pub(crate) mod win_adapters;

@@ -617,7 +617,7 @@ async fn the_cli_client_discovers_and_reads_a_server_on_the_trunk() {
         .build()
         .await
         .unwrap();
-    let mode = bacnet_transport::mstp::MstpExecutionMode::DedicatedThread;
+    let mode = bacnet_transport::mstp::MstpExecutionMode::dedicated_thread();
     let (mut client, diagnostics) =
         build_client_on(client_line, &settings(CLIENT_MAC), 6000, 0, mode)
             .await

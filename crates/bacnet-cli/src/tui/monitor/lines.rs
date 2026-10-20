@@ -8,7 +8,7 @@
 //! didn't wait for the monitor to close the port fails in tests too.
 
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::mstp::{Echo, MstpDiagnostics, MstpExecutionMode, MstpTransport, SerialPort};
+use bacnet_transport::mstp::{Echo, MstpDiagnostics, MstpThreadConfig, MstpTransport, SerialPort};
 use bacnet_types::error::Error;
 use tokio::io::AsyncRead;
 
@@ -98,19 +98,28 @@ impl Lines {
         }
     }
 
-    /// Open `args.mstp`'s port and join the trunk there.
+    /// Open `args.mstp`'s port and join the trunk there, the station's
+    /// thread scheduled as `thread` says (`--mstp-rt-priority`,
+    /// `--mstp-cpus`).
     pub(crate) async fn participant(
         &self,
         args: &TransportArgs,
+        thread: &MstpThreadConfig,
     ) -> Result<(BACnetClient<MstpTransport<CliSerial>>, MstpDiagnostics), Error> {
         let mstp = args
             .mstp
             .as_ref()
             .ok_or_else(|| Error::Encoding("no MS/TP settings to join with".into()))?;
         let (serial, mode) = match self {
-            Self::System => (system_serial(mstp)?, MstpExecutionMode::DedicatedThread),
+            Self::System => (system_serial(mstp)?, crate::mstp_thread::mode(thread)),
             #[cfg(test)]
-            Self::Test(line) => (line.participant()?, MstpExecutionMode::Tokio),
+            Self::Test(line) => {
+                // Paused time needs the loop on the test's runtime; the
+                // thread settings must still be ones the platform takes.
+                use bacnet_transport::mstp::MstpExecutionMode;
+                MstpExecutionMode::DedicatedThread(thread.clone()).validate()?;
+                (line.participant()?, MstpExecutionMode::Tokio)
+            }
         };
         crate::mstp::build_client_on(serial, mstp, args.timeout_ms, args.min_interval_ms, mode)
             .await

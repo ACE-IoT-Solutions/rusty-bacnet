@@ -393,7 +393,10 @@ async fn native_serial_execution_modes_share_host_timing_harness() {
         for chunked in [false, true] {
             for software_direction in [false, true] {
                 let mut baseline = None;
-                for mode in [MstpExecutionMode::Tokio, MstpExecutionMode::DedicatedThread] {
+                for mode in [
+                    MstpExecutionMode::Tokio,
+                    MstpExecutionMode::dedicated_thread(),
+                ] {
                     let (stream, peer) = SerialStream::pair().unwrap();
                     let serial = TokioSerialPort {
                         inner: Arc::new(Mutex::new(stream)),
@@ -518,7 +521,7 @@ async fn dedicated_blocking_io_keeps_app_responsive_and_stop_waits_for_release()
             .unwrap();
         peer.write(&incoming).await.unwrap();
         let mut transport = MstpTransport::new(serial, MstpConfig::default())
-            .with_execution_mode(MstpExecutionMode::DedicatedThread);
+            .with_execution_mode(MstpExecutionMode::dedicated_thread());
         let _npdus = transport.start().await.unwrap();
         // These bounds only catch a hang, so they are generous (#1912): a
         // loaded runner can take over a second to spawn and schedule the I/O

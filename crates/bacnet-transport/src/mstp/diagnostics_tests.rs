@@ -170,9 +170,13 @@ async fn ingress_drops_are_counted() {
 /// transport keeps them while its task and port go away.
 #[tokio::test]
 async fn execution_modes_share_the_counts() {
-    for mode in [MstpExecutionMode::Tokio, MstpExecutionMode::DedicatedThread] {
+    for mode in [
+        MstpExecutionMode::Tokio,
+        MstpExecutionMode::dedicated_thread(),
+    ] {
         let (serial, peer) = LoopbackSerial::pair();
-        let mut transport = MstpTransport::new(serial, config(3, 127)).with_execution_mode(mode);
+        let mut transport =
+            MstpTransport::new(serial, config(3, 127)).with_execution_mode(mode.clone());
         let observer = transport.diagnostics();
         assert_eq!(observer.snapshot(), MstpDiagnosticsSnapshot::default());
         let mut npdus = transport.start().await.unwrap();
