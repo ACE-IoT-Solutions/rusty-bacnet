@@ -2732,7 +2732,45 @@ seeds Total_Record_Count, an Unsigned32 (#1537). The first record is numbered
 one past it, so a log seeded at `2**32 - 2` numbers its records `2**32 - 1`,
 then 1, 2 and on: a reader's handling of the wrap can be tested without
 logging four billion records first. A value outside Unsigned32 raises
-`OverflowError`. Restoring saved records is Rust-only, through
+`OverflowError`.
+
+All three also take a keyword-only `storage_path` (a `str`) that keeps the
+log across restarts in `<storage_path>.slot0` and `<storage_path>.slot1`
+(#1541):
+
+```python
+server.add_trend_log_multiple(
+    1,
+    "Multi Log",
+    1000,
+    members=[(ObjectIdentifier(ObjectType.ANALOG_INPUT, 1), PropertyIdentifier.PRESENT_VALUE)],
+    log_interval=6000,
+    storage_path="/application/state/trend-log-multiple-1",
+)
+```
+
+- The log commits a snapshot every 100 records or, while it changes, once a
+  minute, whichever comes first, and once more when `stop()` runs; `stop()`
+  returns once that commit has landed. A power loss costs at most about a
+  minute of records, and a log polling every second writes its file about
+  once a minute rather than on every sample.
+- A log reopened from its files serves the records, sequence numbers and
+  Total_Record_Count it saved, plus one LOG_INTERRUPTED status record that
+  marks the restart, stamped with the server's clock when it starts. Its
+  BUFFER_READY counting carries on from the saved Last_Notify_Record.
+- It also keeps Buffer_Size, Enable, Stop_When_Full, Start_Time and
+  Stop_Time, and on the trend logs Logging_Type, Log_Interval,
+  Align_Intervals, Interval_Offset and Log_DeviceObjectProperty, as peers
+  last wrote them: the saved state wins over `buffer_size`,
+  `total_record_count` and the configuration keywords. `add_trend_log`'s
+  `client_cov_increment` and `cov_resubscription_interval`, `add_event_log`'s
+  `log_received_notifications`, and Notification_Threshold and the other
+  reporting settings aren't saved, so they apply on every start.
+- A file pair that can't be read raises `BacnetError`. One damaged slot (cut
+  short, or a bad checksum) is passed over for the other; a slot holding
+  another object's state is refused rather than passed over.
+
+Restoring records from your own storage instead is Rust-only, through
 `restore_log_buffer`.
 
 `add_trend_log` takes the same keyword arguments as `add_trend_log_multiple`,

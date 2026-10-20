@@ -1,6 +1,7 @@
 //! Trend Log (#1480) and Trend Log Multiple (#1235) registration with the
 //! configuration the server's poller acts on.
 use super::super::*;
+use bacnet_objects::log_persistence::FileLogPersistence;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
 use bacnet_types::enums::LoggingType;
 use bacnet_types::error::Error;
@@ -27,6 +28,9 @@ impl BACnetServer {
     /// `add_trend_log_multiple`. `"polled"` with `log_interval=0` raises
     /// ValueError: the Clause 12.25.9 switch would make that a COV log.
     /// `log_interval=0` alone leaves the new log polled and idle.
+    /// `storage_path` (a `str`) keeps the log in `<storage_path>.slot0` and
+    /// `.slot1`, as on `add_trend_log_multiple`; `client_cov_increment` and
+    /// `cov_resubscription_interval` aren't saved and apply on every start.
     #[pyo3(signature = (
         instance,
         name,
@@ -41,6 +45,7 @@ impl BACnetServer {
         stop_time=None,
         align_intervals=None,
         interval_offset=None,
+        storage_path=None,
         total_record_count=0
     ))]
     fn add_trend_log(
@@ -57,6 +62,7 @@ impl BACnetServer {
         stop_time: Option<&Bound<'_, PyAny>>,
         align_intervals: Option<bool>,
         interval_offset: Option<u32>,
+        storage_path: Option<&str>,
         total_record_count: u32,
     ) -> PyResult<()> {
         if logging_type == Some("polled") && log_interval == Some(0) {
@@ -94,7 +100,8 @@ impl BACnetServer {
             interval_offset,
             total_record_count,
         };
-        let obj = trend_log(instance, name, buffer_size, settings).map_err(to_py_err)?;
+        let obj =
+            trend_log(instance, name, buffer_size, storage_path, settings).map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 
@@ -119,6 +126,13 @@ impl BACnetServer {
     /// record; `write_property_local` writes it from the application.
     /// `total_record_count` seeds Total_Record_Count: the first record is
     /// numbered one past it, going from 2^32 - 1 on to 1 (#1537).
+    /// `storage_path` (a `str`) keeps the log in `<storage_path>.slot0` and
+    /// `.slot1` (#1541): it commits every 100 records or, while it changes,
+    /// once a minute, and once more at `stop()`. A log reopened from those
+    /// files keeps its saved records, Total_Record_Count, BUFFER_READY
+    /// counts and the settings a peer can write, ignoring `buffer_size` and
+    /// the keyword arguments, and appends a LOG_INTERRUPTED record. A file
+    /// that can't be read raises BacnetError.
     #[pyo3(signature = (
         instance,
         name,
@@ -131,6 +145,7 @@ impl BACnetServer {
         stop_time=None,
         align_intervals=None,
         interval_offset=None,
+        storage_path=None,
         total_record_count=0
     ))]
     fn add_trend_log_multiple(
@@ -145,6 +160,7 @@ impl BACnetServer {
         stop_time: Option<&Bound<'_, PyAny>>,
         align_intervals: Option<bool>,
         interval_offset: Option<u32>,
+        storage_path: Option<&str>,
         total_record_count: u32,
     ) -> PyResult<()> {
         let settings = TrendLogMultipleSettings {
@@ -164,7 +180,8 @@ impl BACnetServer {
             interval_offset,
             total_record_count,
         };
-        let obj = trend_log_multiple(instance, name, buffer_size, settings).map_err(to_py_err)?;
+        let obj = trend_log_multiple(instance, name, buffer_size, storage_path, settings)
+            .map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 }
@@ -198,14 +215,28 @@ struct TrendLogMultipleSettings {
 }
 
 /// Build the log through the Rust setters, so Python gets their checks.
-/// Logging_Type goes before Log_Interval, which it may set or lock.
+/// Logging_Type goes before Log_Interval, which it may set or lock. A log
+/// reopened from `storage_path` keeps what it saved, so the settings, all of
+/// which it saves, are left alone.
 fn trend_log_multiple(
     instance: u32,
     name: &str,
     buffer_size: u32,
+    storage_path: Option<&str>,
     settings: TrendLogMultipleSettings,
 ) -> Result<TrendLogMultipleObject, Error> {
-    let mut log = TrendLogMultipleObject::new(instance, name, buffer_size)?;
+    let mut log = match storage_path {
+        Some(path) => TrendLogMultipleObject::with_persistence(
+            instance,
+            name,
+            buffer_size,
+            Arc::new(FileLogPersistence::new(path)?),
+        )?,
+        None => TrendLogMultipleObject::new(instance, name, buffer_size)?,
+    };
+    if log.reopened() {
+        return Ok(log);
+    }
     log.restore_log_buffer(settings.total_record_count, [])?;
     for member in settings.members {
         log.add_property_reference(member)?;
@@ -250,14 +281,32 @@ struct TrendLogSettings {
 
 /// Build the log through the Rust setters, so Python gets their checks.
 /// Logging_Type goes before Log_Interval, which it may set or lock, and
-/// which may then switch POLLED and COV (Clause 12.25.9).
+/// which may then switch POLLED and COV (Clause 12.25.9). A log reopened
+/// from `storage_path` keeps what it saved: only the two COV settings, which
+/// it doesn't save, apply then.
 fn trend_log(
     instance: u32,
     name: &str,
     buffer_size: u32,
+    storage_path: Option<&str>,
     settings: TrendLogSettings,
 ) -> Result<TrendLogObject, Error> {
-    let mut log = TrendLogObject::new(instance, name, buffer_size)?;
+    let mut log = match storage_path {
+        Some(path) => TrendLogObject::with_persistence(
+            instance,
+            name,
+            buffer_size,
+            Arc::new(FileLogPersistence::new(path)?),
+        )?,
+        None => TrendLogObject::new(instance, name, buffer_size)?,
+    };
+    log.set_client_cov_increment(settings.client_cov_increment)?;
+    if let Some(seconds) = settings.cov_resubscription_interval {
+        log.set_cov_resubscription_interval(seconds)?;
+    }
+    if log.reopened() {
+        return Ok(log);
+    }
     log.restore_log_buffer(settings.total_record_count, [])?;
     log.set_log_device_object_property(settings.reference)?;
     if let Some(logging_type) = settings.logging_type {
@@ -265,10 +314,6 @@ fn trend_log(
     }
     if let Some(hundredths) = settings.log_interval {
         log.set_log_interval(hundredths)?;
-    }
-    log.set_client_cov_increment(settings.client_cov_increment)?;
-    if let Some(seconds) = settings.cov_resubscription_interval {
-        log.set_cov_resubscription_interval(seconds)?;
     }
     if let Some((date, time)) = settings.start_time {
         log.set_start_time(date, time)?;

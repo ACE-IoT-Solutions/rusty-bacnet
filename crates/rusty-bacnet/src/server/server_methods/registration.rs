@@ -497,12 +497,18 @@ impl BACnetServer {
     /// `log_received_notifications` it also records the event notifications
     /// the server receives, a few per source each second.
     /// `total_record_count` seeds Total_Record_Count, as on `add_trend_log`.
+    /// With `storage_path` (a `str`) the log is kept in that file pair, as
+    /// on `add_trend_log`: a log reopened from it keeps its saved records
+    /// and settings, ignores `buffer_size` and `total_record_count`, and
+    /// appends a LOG_INTERRUPTED record (#1541).
+    /// `log_received_notifications` isn't saved and applies on every start.
     #[pyo3(signature = (
         instance,
         name,
         buffer_size=100,
         log_received_notifications=false,
         *,
+        storage_path=None,
         total_record_count=0
     ))]
     fn add_event_log(
@@ -511,12 +517,23 @@ impl BACnetServer {
         name: &str,
         buffer_size: u32,
         log_received_notifications: bool,
+        storage_path: Option<&str>,
         total_record_count: u32,
     ) -> PyResult<()> {
-        let mut obj = EventLogObject::new(instance, name, buffer_size).map_err(to_py_err)?;
+        let mut obj = match storage_path {
+            Some(path) => {
+                let storage = bacnet_objects::log_persistence::FileLogPersistence::new(path)
+                    .map_err(to_py_err)?;
+                EventLogObject::with_persistence(instance, name, buffer_size, Arc::new(storage))
+            }
+            None => EventLogObject::new(instance, name, buffer_size),
+        }
+        .map_err(to_py_err)?;
         obj.set_log_received_notifications(log_received_notifications);
-        obj.restore_log_buffer(total_record_count, [])
-            .map_err(to_py_err)?;
+        if !obj.reopened() {
+            obj.restore_log_buffer(total_record_count, [])
+                .map_err(to_py_err)?;
+        }
         self.push_pending(Box::new(obj))
     }
 }

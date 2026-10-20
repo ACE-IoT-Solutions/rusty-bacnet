@@ -44,6 +44,7 @@ KEYWORDS = [
     "stop_time",
     "align_intervals",
     "interval_offset",
+    "storage_path",
 ]
 
 
