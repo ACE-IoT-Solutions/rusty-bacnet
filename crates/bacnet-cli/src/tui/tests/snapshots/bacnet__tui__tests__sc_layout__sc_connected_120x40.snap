@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/sc_layout.rs
 expression: text
 ---
-" bacnet | SC 22:10:20:30:40:50 | up | hub primary | READ-ONLY | COV 0 | drop 0                                   ? help "
+" 1 Devices 2 Browse 3 Watch [5 SC] 7 Capture | SC 22:10:20:30:40:50 | up | hub primary | READ-ONLY | drop 0      ? help "
 "┌ Hub connector ─────────────────────────────────────────────────────┐┌ VMAC and UUID ─────────────────────────────────┐"
 "│State      connected, primary hub                                   ││Local VMAC  22:10:20:30:40:50                   │"
 "│Hub        wss://hub.site.example:443/bacnet                        ││Device UUID 6f1c2a9e-4407-4b3d-9a51-0e7c8821d40b│"

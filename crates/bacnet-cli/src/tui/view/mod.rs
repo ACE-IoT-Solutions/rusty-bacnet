@@ -13,6 +13,7 @@ mod connection;
 mod devices;
 mod dialogs;
 mod fit;
+mod help;
 mod monitor;
 mod mstp;
 mod network;
@@ -97,7 +98,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
                 connection::draw(frame, area, connection, live, &theme);
             }
         }
-        Overlay::Help => chrome::help(frame, area, app, &theme),
+        Overlay::Help => help::draw(frame, area, app, &theme),
         Overlay::WhoIs(form) => dialogs::who_is(frame, area, app, form, &theme),
         Overlay::Picker(picker) => dialogs::picker(frame, area, picker, &theme),
         Overlay::Safety(modal) => safety::draw(frame, area, app, modal, &theme),

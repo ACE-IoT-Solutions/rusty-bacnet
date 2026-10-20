@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/writes.rs
 expression: "screen(&mut site.app, 80, 24)"
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | WRITE 14:59 | COV 0 | drop 0         ? help "
+" 1 [2 Browse] 3 4 7 | BIP 10.0.0.1:47808 | up | WRITE 14:59 | drop 0     ? help "
 " Device 100   Card    Objects   [Properties]   Tab switches                     "
 "┌ analog-output 1 ─────────────────────────────────────────────────────────────┐"
 "│ Reading...                                                                   │"

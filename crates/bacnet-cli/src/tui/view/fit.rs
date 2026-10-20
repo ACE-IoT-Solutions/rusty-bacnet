@@ -55,6 +55,8 @@ pub(super) fn fit(parts: Vec<Part>, separator: &Span<'static>, room: usize) -> V
         }
         total + gap * shown.saturating_sub(1)
     };
+    // Each step taken: the part and the form it had.
+    let mut steps = Vec::new();
     while width(&at) > room {
         let weakest = parts
             .iter()
@@ -67,8 +69,23 @@ pub(super) fn fit(parts: Vec<Part>, separator: &Span<'static>, room: usize) -> V
             // The lowest priority; among equals the rightmost.
             .min_by_key(|(keep, index)| (*keep, usize::MAX - index));
         let Some((_, index)) = weakest else { break };
+        steps.push((index, at[index]));
         let next = at[index].map(|form| form + 1);
         at[index] = next.filter(|form| *form < parts[index].forms.len());
+    }
+    // A later, larger step can leave room for an earlier one: undo the
+    // steps that fit again, the most important first. A step is undone
+    // only after every later step on the same part.
+    let mut kept: Vec<usize> = Vec::new();
+    for (index, before) in steps.into_iter().rev() {
+        if kept.contains(&index) {
+            continue;
+        }
+        let after = std::mem::replace(&mut at[index], before);
+        if width(&at) > room {
+            at[index] = after;
+            kept.push(index);
+        }
     }
     let mut out = Vec::new();
     for (part, form) in parts.into_iter().zip(at) {
@@ -155,6 +172,13 @@ mod tests {
         assert_eq!(text(&fit(parts(), &sep, 18)), "aaaa cccc help");
         assert_eq!(text(&fit(parts(), &sep, 13)), "aaaa help");
         assert_eq!(text(&fit(parts(), &sep, 2)), "help");
+    }
+
+    #[test]
+    fn a_part_comes_back_when_a_wider_one_went_after_it() {
+        let sep = Span::raw(" ");
+        let parts = vec![part(1, "ab"), part(5, &"x".repeat(20)), part(ALWAYS, "h")];
+        assert_eq!(text(&fit(parts, &sep, 10)), "ab h");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/network_frames.rs
 expression: "screen(&mut app, 120, 40)"
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | FD refused | drop 0                                      ? help "
+" 1 Devices 2 Browse 3 Watch [4 Network] 7 Capture | BIP 10.0.0.1:47808 | up | READ-ONLY | FD refused | drop 0    ? help "
 " REFUSED BBMD 10.0.1.1:47808 refused the foreign-device registration (register-foreign-device-nak); broadcasts through  "
 " it fail until it accepts. Check its foreign-device policy.                                                             "
 "┌ Foreign device ──────────────────────────────────────────────────────────────────────────────────────────────────────┐"

@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/frames.rs
 expression: "screen(&mut app, w, h)"
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0                                                   ? help "
+" [1 Devices] 2 Browse 3 Watch 4 Network 7 Capture | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0         ? help "
 "┌ Devices (5) | sort: instance ↑ ──────────────────────────────────────────────────────────────────────────────────────┐"
 "│  Instance* Address         Via            Network Vendor Max APDU Segmentation Last seen                             │"
 "│> 1001      10.0.1.21:47808                local   260    1476     none         2s                                    │"

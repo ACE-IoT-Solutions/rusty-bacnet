@@ -178,6 +178,8 @@ pub(crate) enum Action {
     Escape,
     /// Show or hide the help overlay.
     ToggleHelp,
+    /// Scroll the help overlay.
+    ScrollHelp(Movement),
     /// Show or hide the log pane.
     ToggleLog,
     /// Open the profile manager.
@@ -323,6 +325,9 @@ pub(crate) struct App {
     /// Counts flashes set, so `update` can tell a notice an action just
     /// set from one left over from before it.
     flashes: u64,
+    /// The help overlay's first line shown; the view clamps it to the
+    /// last page.
+    pub(crate) help_scroll: std::cell::Cell<usize>,
     ctrl_c_at: Option<Instant>,
     epoch: Instant,
     /// Time of the last tick.
@@ -381,6 +386,7 @@ impl App {
             next_op: 0,
             flash: None,
             flashes: 0,
+            help_scroll: std::cell::Cell::new(0),
             ctrl_c_at: None,
             epoch: config.now,
             now: config.now,
@@ -773,10 +779,25 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
         Action::Escape => app.escape(out),
         Action::ToggleHelp => {
             app.overlay = match std::mem::replace(&mut app.overlay, Overlay::None) {
-                Overlay::None => Overlay::Help,
+                Overlay::None => {
+                    app.help_scroll.set(0);
+                    Overlay::Help
+                }
                 Overlay::Help => Overlay::None,
                 other => other,
             }
+        }
+        Action::ScrollHelp(movement) => {
+            let at = app.help_scroll.get();
+            app.help_scroll.set(match movement {
+                Movement::Up => at.saturating_sub(1),
+                Movement::Down => at.saturating_add(1),
+                Movement::PageUp => at.saturating_sub(10),
+                Movement::PageDown => at.saturating_add(10),
+                Movement::Home => 0,
+                // The view clamps it to the last page.
+                Movement::End => usize::MAX,
+            });
         }
         Action::ToggleLog => app.show_log = !app.show_log,
         Action::OpenWhoIs => app.open_who_is(),

@@ -61,6 +61,7 @@ const sections = {
   main: 'Devices and the browser', watch: 'Watch list', network: 'Network screen', sc: 'BACnet/SC screen',
   mstp: 'MS/TP screen', capture: 'Capture screen', join: 'MS/TP join confirmation', connection: 'Profile dialog', picker: 'Interface picker',
   form: 'Who-Is form', filter: 'Filters', safety: 'Write dialogs', command_line: 'Command bar',
+  global: 'Everywhere', help: 'Help overlay',
 };
 const named = { Esc: 'Esc', Enter: 'Enter', Tab: 'Tab', BackTab: 'Shift-Tab', Up: 'Up', Down: 'Down', Left: 'Left',
   Right: 'Right', PageUp: 'PgUp', PageDown: 'PgDn', Home: 'Home', End: 'End', Backspace: 'Backspace', Delete: 'Delete' };
@@ -90,19 +91,18 @@ test('the key reference lists every key the key map handles', async () => {
     const missing = [...keysOf(functions[fn])].filter(key => !text.includes(`\`${key}\``));
     assert.deepEqual(missing, [], `keys.mdx "${title}" lists every key of keymap.rs fn ${fn}`);
   }
-  assert.deepEqual(Object.keys(functions).filter(fn => !(fn in sections) && !['typed', 'movement'].includes(fn)), [],
+  assert.deepEqual(Object.keys(functions).filter(fn => !(fn in sections) && !['typed', 'movement', 'chorded'].includes(fn)), [],
     'every key-map context has a section');
-  // The help overlay's keys live in map_key itself.
-  const help = keymap.match(/Overlay::Help => match key\.code \{([\s\S]*?)\},/)[1];
-  const missing = [...keysOf(help)].filter(key => !section('Help overlay').includes(`\`${key}\``));
-  assert.deepEqual(missing, []);
 });
 
 test('the key reference lists every command-bar command', async () => {
   const source = await readRepo('crates/bacnet-cli/src/tui/app/command_bar.rs');
-  const usage = source.match(/pub\(crate\) const USAGE: &str =\s*"commands: ([^"]*)";/)[1];
+  // Each form in the COMMANDS table, which the parser reads.
+  const table = source.slice(source.indexOf('pub(crate) const COMMANDS'), source.indexOf('\n];\n', source.indexOf('pub(crate) const COMMANDS')));
+  const usage = [...table.matchAll(/usage: &\[([^\n]*)\],\n/g)].flatMap(m => [...m[1].matchAll(/"([^"]*)"/g)].map(f => f[1]));
+  assert.ok(usage.length >= 6, 'the COMMANDS table was found');
   const page = await read('src/content/docs/tui/keys.mdx');
-  for (const command of usage.split(' | ')) {
+  for (const command of usage) {
     // "csv on|off" and "mstp rotation|hold MS" are listed one form a row.
     const [head, ...rest] = command.split(' ');
     for (const form of rest[0]?.includes('|') ? rest[0].split('|').map(word => [head, word, ...rest.slice(1)].join(' ')) : [command]) {

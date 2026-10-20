@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/watch.rs
 expression: text
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0                                                   ? help "
+" 1 Devices 2 Browse [3 Watch] 4 Network 7 Capture | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0         ? help "
 "┌ Watch (12) | COV 0 | requests 2.0/s ─────────────────────────────────────────────────────────────────────────────────┐"
 "│Device Object         Name    Property      Value Flags Source Age Trend                                              │"
 "│101    analog-value 1 Point 1 present-value 0           polled 1s  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                              │"

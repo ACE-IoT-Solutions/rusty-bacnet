@@ -120,6 +120,18 @@ What M0 draws (80x24):
   it under the properties would leave them three rows at 80x24.
 - Screens appear only where they apply: Network for B/IP, SC for SC, MS/TP for
   a serial port. Devices, Browse, Watch and Capture are always present.
+  - The numbered strip sits in the status bar rather than on a row of its own
+    (#1895), so it costs no content row at 80x24: `1 Devices 2 Browse
+    [3 Watch] 4 Network 7 Capture` where it fits, `1 2 [3 Watch] 4 7` (only
+    the screen shown keeps its name) where it doesn't. The screen shown is
+    listed even where it doesn't apply, and every number key works on every
+    session; the strip only leaves out what has nothing to show there.
+- Help (`?`) is built from sections (#1895): the global keys, then the
+  current screen's, then the command bar's commands, read from the same table
+  as the parser. A test presses every key on every screen and fails if one the
+  key map takes is missing from that screen's help. It scrolls with the
+  movement keys when it doesn't fit. While typing a command, the footer shows
+  the syntax of the commands that match, from that table too.
 - 80x24 is the functional minimum and 120x40 the full layout. From 120 columns
   the device table uses its wide columns; below 120 the planned Browse panes
   stack and the focused pane fills the width. Below 80x24 the TUI shows a

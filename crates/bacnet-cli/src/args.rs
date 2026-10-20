@@ -208,13 +208,15 @@ pub(crate) enum Command {
     /// Open the full-screen terminal UI (read-only until W arms writes).
     ///
     /// Plain `bacnet` on a terminal opens it too, with these defaults.
-    /// Opens B/IP profiles by default. Explicit transport flags without
-    /// --profile retain a nonpersistent B/IP, B/IPv6 or SC connection.
+    /// Opens the profile manager by default (B/IP, BACnet/SC and MS/TP
+    /// profiles). Explicit transport flags without --profile make a
+    /// nonpersistent B/IP, B/IPv6, SC or MS/TP connection.
     /// Writes need a profile, whose workspace holds the ledger and audit log.
     /// Needs an interactive terminal: stdin and stdout must be
     /// a TTY and TERM must not be "dumb".
     Tui {
-        /// Named BACnet/IP profile to preview before connecting.
+        /// Named B/IP, BACnet/SC or MS/TP profile to preview before
+        /// connecting.
         #[arg(long, value_name = "NAME", conflicts_with = "no_profile")]
         profile: Option<String>,
         /// Transmit nothing: no client is built, so no discovery, reads,
@@ -236,9 +238,9 @@ pub(crate) enum Command {
         /// Also write log lines to this file (the in-app log pane is `L`).
         #[arg(long, value_name = "FILE")]
         log_file: Option<PathBuf>,
-        /// Most confirmed requests a second the device browser sends, across
-        /// all devices (0 for no cap). Each device has at most one
-        /// outstanding at a time either way.
+        /// Most confirmed requests a second the device browser and the watch
+        /// list send together, across all devices (0 for no cap). Each
+        /// device has at most one outstanding at a time either way.
         #[arg(long, value_name = "N", default_value_t = 20)]
         max_rate: u32,
         /// Lifetime of the watch list's COV subscriptions, in seconds. They

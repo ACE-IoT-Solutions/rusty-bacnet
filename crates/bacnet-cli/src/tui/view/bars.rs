@@ -11,6 +11,7 @@ use ratatui::Frame;
 
 use super::fit::{self, hint, span, Part, ALWAYS};
 use super::{ellipsize, text_width, Theme};
+use crate::tui::app::command_bar;
 use crate::tui::app::watch::Screen;
 use crate::tui::app::{App, Link, Overlay};
 use crate::tui::safety::Level as Safety;
@@ -80,21 +81,28 @@ fn status_parts(app: &App, theme: &Theme, bar: Style) -> Vec<Part> {
             Span::styled(format!("{name} {}:{:02}", left / 60, left % 60), bar)
         }
     };
-    let mut parts = vec![Part::new(1, vec![span("bacnet", bar)])];
+    let mut parts = vec![
+        Part::new(1, vec![span("bacnet", bar)]),
+        strip(app, theme, bar),
+    ];
+    // The local address goes before the fields after it do; on SC before
+    // the hub state, as the SC screen shows the VMAC anyway.
+    let address = if app.transport == "SC" { 3 } else { 4 };
     parts.push(match &app.link {
-        // The local address goes before the fields after it do.
-        Link::Up { local } => Part::new(4, vec![span(format!("{transport} {local}"), bar)])
+        Link::Up { local } => Part::new(address, vec![span(format!("{transport} {local}"), bar)])
             .or(8, vec![span(transport, bar)]),
         _ => Part::new(8, vec![span(transport, bar)]),
     });
     parts.push(Part::new(ALWAYS, vec![span(state, bar)]));
     if let Some(hub) = hub_state(app) {
-        parts.push(Part::new(3, vec![span(hub, bar)]));
+        parts.push(Part::new(4, vec![span(hub, bar)]));
     }
     parts.push(Part::new(ALWAYS, vec![level]));
+    // Subscriptions held on devices matter more than none.
+    let subscriptions = app.watch.stats.subscriptions;
     parts.push(Part::new(
-        2,
-        vec![span(format!("COV {}", app.watch.stats.subscriptions), bar)],
+        if subscriptions > 0 { 5 } else { 2 },
+        vec![span(format!("COV {subscriptions}"), bar)],
     ));
     if let Some(registration) = app.network.registration_state() {
         parts.push(Part::new(
@@ -113,6 +121,34 @@ fn status_parts(app: &App, theme: &Theme, bar: Style) -> Vec<Part> {
         vec![span(format!("drop {}", app.dropped), bar)],
     ));
     parts
+}
+
+/// The numbered screen strip (#1895), with only the screens that apply to
+/// the session and the one shown in brackets: `1 Devices 2 Browse [3 Watch]
+/// 4 Network 7 Capture`, or in less room `1 2 [3 Watch] 4 7`. It sits in
+/// the status bar so it costs no row at 80x24.
+fn strip(app: &App, theme: &Theme, bar: Style) -> Part {
+    let tabs = crate::tui::help::screens(app);
+    let form = |labels: bool| {
+        let mut spans = Vec::new();
+        for (index, tab) in tabs.iter().enumerate() {
+            if index > 0 {
+                spans.push(span(" ", bar));
+            }
+            if tab.current {
+                spans.push(span(
+                    format!("[{} {}]", tab.key, tab.label),
+                    theme.selected(),
+                ));
+            } else if labels {
+                spans.push(span(format!("{} {}", tab.key, tab.label), bar));
+            } else {
+                spans.push(span(tab.key.to_string(), bar));
+            }
+        }
+        spans
+    };
+    Part::new(2, form(true)).or(7, form(false))
 }
 
 /// The SC hub connector in a few words, once the SC worker has reported:
@@ -136,12 +172,7 @@ fn hub_state(app: &App) -> Option<String> {
 pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, tab_focus: bool) {
     let width = usize::from(area.width);
     if let Overlay::Command(text) = &app.overlay {
-        let line = Line::from(vec![
-            Span::styled(" :", theme.accent()),
-            Span::styled(format!("{text}_"), theme.selected()),
-            Span::styled("  Enter run  Esc close", theme.dim()),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(command_line(text, width, theme)), area);
         return;
     }
     if app.filter_editing {
@@ -194,6 +225,35 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, ta
         left,
     );
     frame.render_widget(Paragraph::new(hints).alignment(Alignment::Right), right);
+}
+
+/// The command bar: what is typed, then the syntax of the commands it
+/// matches (#1895), from the table the parser reads, cut to fit before
+/// the keys.
+fn command_line(text: &str, width: usize, theme: &Theme) -> Line<'static> {
+    const KEYS: &str = "  Enter run  Esc close";
+    let typed = format!("{text}_");
+    let matches = command_bar::matching(text);
+    let syntax = if matches.is_empty() {
+        "no such command".to_string()
+    } else {
+        let forms: Vec<&str> = matches
+            .iter()
+            .flat_map(|s| s.usage.iter().copied())
+            .collect();
+        forms.join(" | ")
+    };
+    let room = width.saturating_sub(2 + text_width(&typed) + 2 + text_width(KEYS));
+    let mut spans = vec![
+        Span::styled(" :", theme.accent()),
+        Span::styled(typed, theme.selected()),
+    ];
+    if room > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(ellipsize(&syntax, room), theme.warn()));
+    }
+    spans.push(Span::styled(KEYS, theme.dim()));
+    Line::from(spans)
 }
 
 /// The footer's key hints for the screen shown, each with its priority:

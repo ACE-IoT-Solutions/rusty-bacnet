@@ -28,6 +28,8 @@
 //!   synthetic reports and keys, with their frames, and the sampler.
 //! - `footer`: the footer and the status bar at 80, 120 and 200 columns:
 //!   notices, hint priorities, the failure summary and the `FD` state.
+//! - `help_keys`: the screen strip, help against the key map, and the
+//!   command bar's syntax hints.
 //! - `watch_rows`: watch rows' names, routed devices and column fit at
 //!   80, 120 and 200 columns, and the name read against refusing devices.
 //!
@@ -53,6 +55,7 @@ mod discovery;
 mod event_loop;
 mod footer;
 mod frames;
+mod help_keys;
 mod inprocess;
 #[allow(dead_code)] // The integration tests use the rest.
 #[path = "../../../tests/support/lab.rs"]
