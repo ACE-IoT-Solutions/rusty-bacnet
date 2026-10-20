@@ -32,7 +32,7 @@ pub(super) fn write_wire(
     }
     .encode(&mut request)
     .unwrap();
-    handle_write_property(db, &request).map(|_| ())
+    sourced_wp(db, &request).map(|_| ())
 }
 
 pub(super) fn read_wire(

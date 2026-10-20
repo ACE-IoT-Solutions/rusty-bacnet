@@ -37,7 +37,7 @@ fn wp(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property(db, &bytes).map(|_| ())
+    sourced_wp(db, &bytes).map(|_| ())
 }
 
 fn wpm(
@@ -62,7 +62,7 @@ fn wpm(
         );
     }
     bacnet_encoding::tags::encode_closing_tag(&mut bytes, 1);
-    handle_write_property_multiple(db, &bytes).map(|_| ())
+    sourced_wpm(db, &bytes).map(|_| ())
 }
 
 fn read(
@@ -221,7 +221,7 @@ fn write_property_priority_errors_are_atomic_and_wpm_keeps_prior_prefix() {
         .encode(&mut bytes)
         .unwrap();
         bacnet_encoding::primitives::encode_ctx_unsigned(&mut bytes, 4, u64::from(priority));
-        assert_priority_range_error(handle_write_property(&mut db, &bytes).unwrap_err());
+        assert_priority_range_error(sourced_wp(&mut db, &bytes).unwrap_err());
         assert_eq!(
             read(&db, oid, PropertyIdentifier::EGRESS_ACTIVE, None),
             PropertyValue::Boolean(true)

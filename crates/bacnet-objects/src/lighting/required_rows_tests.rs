@@ -24,11 +24,12 @@ fn read(object: &dyn BACnetObject, property: PropertyIdentifier) -> PropertyValu
 
 fn command(object: &mut dyn BACnetObject, value: PropertyValue, priority: u8) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             value,
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }

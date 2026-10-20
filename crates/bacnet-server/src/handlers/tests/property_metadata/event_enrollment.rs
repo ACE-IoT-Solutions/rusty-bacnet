@@ -88,6 +88,10 @@ fn rpm_metadata_selectors_are_exact_for_alert_enrollment() {
             PropertyIdentifier::ACKED_TRANSITIONS,
             PropertyIdentifier::NOTIFY_TYPE,
             PropertyIdentifier::EVENT_TIME_STAMPS,
+            PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+            PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
         ]
     );
     assert_eq!(
@@ -108,6 +112,12 @@ fn rpm_metadata_selectors_are_exact_for_alert_enrollment() {
     );
     assert_eq!(
         rpm_property_ids(&db, oid, PropertyIdentifier::OPTIONAL),
-        vec![PropertyIdentifier::DESCRIPTION]
+        vec![
+            PropertyIdentifier::DESCRIPTION,
+            PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+            PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+            PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+        ]
     );
 }

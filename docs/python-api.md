@@ -447,7 +447,7 @@ contents as `bytes` for a vendor tag), `change_of_value` (`time_delay`, then
 encoded `bytes`), `none`, or `other` (`tag` and `data`, the encoded contents)
 for an algorithm the stack keeps as octets. There is no typed write; the read
 value writes back as its octets. An enrollment whose parameters were never set
-serves an empty `octet_string`, which reads as one.
+serves the `none` alternative (#1868).
 
 A Group's Present_Value results, and an `ActionCommand`'s `property_value`,
 are themselves read results: each value is shaped as a read of the property it
@@ -2547,7 +2547,7 @@ server.add_alert_enrollment(
 server.add_event_enrollment(
     instance=1,
     name="Event",
-    event_type=EventType.OUT_OF_RANGE,  # default: EventType.CHANGE_OF_BITSTRING
+    event_type=EventType.OUT_OF_RANGE,  # legacy octet parameters only; default CHANGE_OF_BITSTRING
 )
 ```
 
@@ -2783,7 +2783,9 @@ inhibit follow a local Boolean or BinaryPV property, read each time the
 server evaluates the object, so a read can trail it by about a second. The
 texts go out as written: there are no substitution codes. An Event
 Enrollment takes the same three properties (#1507); its notifications carry
-the configured text, or none when the entry is empty.
+the configured text, or none when the entry is empty. An Alert Enrollment
+serves them as well, with Event_Message_Texts (#1865); the server doesn't
+send alerts yet, so its rows only hold what is written.
 
 An Audit Log's `storage_path` is application-owned and produces two sibling
 snapshot files with `.slot0` and `.slot1` suffixes. Reuse the same path when
@@ -3423,6 +3425,13 @@ except Present_Value's warn values -1.0 (WARN), -2.0 (WARN_RELINQUISH) and
 -3.0 (WARN_OFF), which act as those lighting commands do (#1384).
 Tracking_Value reads the same level as Present_Value whenever no fade or ramp
 is running.
+
+Both lighting outputs serve Value_Source, Value_Source_Array and
+Last_Command_Time (#1866), as the other commandable objects do: a command
+through `write_property_local` names the server's Device (or the
+`source_object`) as the source of the slot it acts on, and a peer's command
+names that peer. They read typed, with the tags `"value_source"` and
+`"timestamp"`.
 
 A Lighting Output's `Lighting_Command` is a BACnetLightingCommand (#1263). It
 reads as `application_data` holding the command's context-tagged fields, and
