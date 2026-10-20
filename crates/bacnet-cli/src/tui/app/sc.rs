@@ -187,6 +187,13 @@ pub(crate) fn describe(event: &LinkEvent) -> (Severity, String) {
             Severity::Info,
             "primary hub is back: leaving the failover hub".into(),
         ),
+        LinkEvent::PrimaryRestoreFailed { fault } => (
+            Severity::Warn,
+            format!(
+                "primary hub still unreachable: {}",
+                doctor::diagnose(fault).summary
+            ),
+        ),
         LinkEvent::GaveUp { attempts } => (
             Severity::Error,
             format!("gave up reconnecting after {attempts} attempts"),
@@ -320,7 +327,8 @@ impl ScState {
                     Some(ScActiveHub::Failover),
                 );
             }
-            LinkEvent::PrimaryRestored => {}
+            // The failover link stays up: the timeline line is enough.
+            LinkEvent::PrimaryRestored | LinkEvent::PrimaryRestoreFailed { .. } => {}
             LinkEvent::GaveUp { .. } => {
                 let hub = self.link.as_ref().and_then(|(link, _)| link.hub);
                 self.enter(at, ScConnectionState::Disconnected, hub);

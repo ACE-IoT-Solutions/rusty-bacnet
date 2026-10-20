@@ -184,6 +184,28 @@ fn events_record_the_failover_and_the_return_in_order() {
     assert_eq!(text[5], "primary hub is back: leaving the failover hub");
 }
 
+/// A failed restore probe is a timeline line (#1828); the failover link it
+/// leaves in place keeps its state, and the doctor keeps the last dial
+/// failure.
+#[test]
+fn a_failed_restore_probe_is_a_timeline_line_only() {
+    let mut app = after_a_failover();
+    let before = (states(&app), app.sc.failure.clone(), app.sc.link);
+    sc(
+        &mut app,
+        ScReport::Event(LinkEvent::PrimaryRestoreFailed {
+            fault: Fault::WebSocket(ScWebSocketErrorKind::TcpDial),
+        }),
+    );
+    let last = app.sc.timeline.back().unwrap();
+    assert_eq!(last.severity, crate::tui::app::sc::Severity::Warn);
+    assert_eq!(
+        last.text,
+        "primary hub still unreachable: nothing accepted the TCP connection"
+    );
+    assert_eq!((states(&app), app.sc.failure.clone(), app.sc.link), before);
+}
+
 #[test]
 fn a_status_poll_resyncs_and_records_only_changes() {
     let mut app = sc_app();

@@ -1403,15 +1403,26 @@ outside this guard.
 receiver of `ScEvent`s (#959): `Connected { hub, hub_vmac }`,
 `Disconnected { hub, cause }`, `ConnectFailed { hub, cause }`,
 `ReconnectAttempt { hub, attempt, backoff }`, `FailoverEngaged`,
-`PrimaryRestored` and `ReconnectGaveUp { attempts }`. `hub` is an
-`ScActiveHub` (`Primary` or `Failover`, Annex AB.5.2). The cause is an
-`ScDisconnectCause`: local close, peer close, heartbeat timeout, a WebSocket
-or TLS error kind, a BVLC-Result NAK with its typed `ErrorClass` and
-`ErrorCode`, connect timeout, a malformed result, an unexpected connect reply,
-rejection expiry, or `Other` with diagnostic text that is not stable to match.
+`PrimaryRestored`, `PrimaryRestoreFailed { cause }` and
+`ReconnectGaveUp { attempts }`. `hub` is an `ScActiveHub` (`Primary` or
+`Failover`, Annex AB.5.2). While on the failover hub, each failed probe of
+the primary is one `PrimaryRestoreFailed`, at most one per restore interval
+(#1828). The cause is an `ScDisconnectCause`: local close, peer close,
+heartbeat timeout, a WebSocket or TLS error kind, a BVLC-Result NAK with its
+typed `ErrorClass` and `ErrorCode`, `DialTimeout { stage }` (the TCP, TLS or
+WebSocket-upgrade dial ran out of time, `stage` an `ScDialStage` when the
+dialler reports it), `ConnectAcceptTimeout` (no Connect-Accept in time),
+`UpgradeRefused { http_status }` (a server, often a proxy, answered the
+upgrade with that HTTP status), a malformed result, an unexpected connect
+reply, rejection expiry, or `Other` with diagnostic text that is not stable to
+match (#1839). A dial timeout is `ScConnectError::DialTimeout` inside
+`Error::Transport`; `bacnet_transport::sc::dial_within` bounds a dial the same
+way. A Connect-Request with no answer stays `Error::Timeout`.
 Events are sent without waiting: a receiver more than `SC_EVENT_CAPACITY` (64)
 events behind gets `RecvError::Lagged` and loses the oldest. Subscribe before
-`start()` to see the first connection.
+`start()` to see the first connection; a built client's
+`ScClientBuilder::build_with_events()` and `build_any_with_events()` return a
+receiver subscribed that way (#1909).
 
 `ScTransport::connection_status()` returns an `ScLinkStatus` snapshot: the
 connection state, the active hub, the hub VMAC from Connect-Accept, the
@@ -5742,7 +5753,8 @@ The first `ScEvent::Connected` goes out while `build()` starts the
 transport, before any caller of `transport().connection_events()` can
 subscribe. To see it, build with `build_with_events()` instead: it returns
 the client and a receiver subscribed before the start, so the first event
-on it is that connect.
+on it is that connect. `build_any_with_events::<S>()` does the same for a
+transport-erased `BACnetClient<AnyTransport<S>>` (#1909).
 
 ```rust
 let (sc_client, mut events) = BACnetClient::sc_builder()

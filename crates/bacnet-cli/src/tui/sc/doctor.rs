@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use bacnet_transport::sc::{
-    ScCertificateRejection, ScTlsAlert, ScTlsFailure, ScWebSocketErrorKind,
+    ScCertificateRejection, ScDialStage, ScTlsAlert, ScTlsFailure, ScWebSocketErrorKind,
 };
 use bacnet_types::enums::ErrorCode;
 
@@ -168,6 +168,33 @@ fn read(fault: &Fault) -> (Option<Phase>, String, String) {
              Check the URL path too."
                 .into(),
         ),
+        Fault::UpgradeRefused(status) => {
+            return (
+                Some(Phase::WebSocket),
+                format!("the WebSocket upgrade was refused with HTTP {status}"),
+                format!(
+                    "TLS worked, but the server answered the upgrade with HTTP {status} \
+                     instead of switching protocols. That is usually a proxy or load \
+                     balancer in the path: {}",
+                    upgrade_status_hint(*status)
+                ),
+            )
+        }
+        Fault::DialTimeout(Some(stage)) => {
+            let (phase, hint) = stalled(*stage);
+            return (
+                Some(phase),
+                format!("the dial stalled in the {stage}"),
+                hint.into(),
+            );
+        }
+        Fault::ConnectAcceptTimeout => (
+            Phase::Connect,
+            "the hub never answered the Connect-Request",
+            "The WebSocket opened, but no Connect-Accept came within the connect timeout. \
+             The server may not be a BACnet/SC hub, or the hub is stalled; check its log."
+                .into(),
+        ),
         Fault::WebSocket(K::HubSubprotocol | K::DirectSubprotocol) => (
             Phase::WebSocket,
             "the hub subprotocol was not accepted",
@@ -222,13 +249,13 @@ fn read(fault: &Fault) -> (Option<Phase>, String, String) {
                 "The connection was closed here, by a stop or a disconnect.".into(),
             )
         }
-        Fault::Timeout => {
+        Fault::DialTimeout(None) => {
             return (
                 None,
-                "no answer in time".into(),
-                "The dial or the Connect-Request got no answer within the connect timeout. \
-                 Something on the path accepted the connection and then went quiet: a \
-                 stalled hub, or a proxy holding the upgrade."
+                "the dial got no answer in time".into(),
+                "The TCP, TLS or WebSocket step of the dial did not finish within the \
+                 connect timeout; the dialler did not say which. Something on the path may \
+                 have accepted the connection and then gone quiet."
                     .into(),
             )
         }
@@ -241,6 +268,47 @@ fn read(fault: &Fault) -> (Option<Phase>, String, String) {
         }
     };
     (Some(phase), summary.into(), hint)
+}
+
+/// The phase and advice for a dial that ran out of time in `stage`.
+fn stalled(stage: ScDialStage) -> (Phase, &'static str) {
+    match stage {
+        ScDialStage::HostLookup => (
+            Phase::Dns,
+            "The host name lookup did not finish within the connect timeout. Check this \
+             computer's DNS servers; an IP address in the URL skips the lookup.",
+        ),
+        ScDialStage::TcpConnect => (
+            Phase::Tcp,
+            "Nothing answered the TCP connection: a firewall may be dropping the packets \
+             silently, or the address is not reachable from here.",
+        ),
+        ScDialStage::Tls => (
+            Phase::Tls,
+            "TCP connected, but the TLS handshake never finished. The port may serve \
+             something other than TLS, or a middlebox is holding the connection.",
+        ),
+        ScDialStage::WebSocketUpgrade => (
+            Phase::WebSocket,
+            "TLS worked, but the HTTP upgrade got no answer: a proxy or load balancer \
+             may be holding it. Let it pass WebSocket upgrades, or dial the hub directly.",
+        ),
+        _ => (
+            Phase::Connect,
+            "The dial ran out of time in a step this screen has no hint for.",
+        ),
+    }
+}
+
+/// What a proxy's answer to the upgrade most likely means.
+fn upgrade_status_hint(status: u16) -> &'static str {
+    match status {
+        401 | 407 => "it wants credentials this node does not send.",
+        403 => "it refused this client; check its access rules.",
+        404 => "check the URL path; the hub may serve another path.",
+        502..=504 => "it could not reach the hub behind it, or the hub did not answer it.",
+        _ => "let it pass WebSocket upgrades, or dial the hub directly.",
+    }
 }
 
 /// Advice for a TLS failure with no narrower reason.
@@ -421,7 +489,14 @@ mod tests {
             (Fault::WebSocket(K::HubSubprotocol), Some(Phase::WebSocket)),
             (Fault::BadReply, Some(Phase::Connect)),
             (Fault::HeartbeatTimeout, Some(Phase::Connect)),
-            (Fault::Timeout, None),
+            (Fault::DialTimeout(None), None),
+            (Fault::DialTimeout(Some(ScDialStage::Tls)), Some(Phase::Tls)),
+            (
+                Fault::DialTimeout(Some(ScDialStage::WebSocketUpgrade)),
+                Some(Phase::WebSocket),
+            ),
+            (Fault::ConnectAcceptTimeout, Some(Phase::Connect)),
+            (Fault::UpgradeRefused(502), Some(Phase::WebSocket)),
             (Fault::Other("x".into()), None),
         ];
         for (fault, phase) in cases {
@@ -520,6 +595,10 @@ mod tests {
     fn a_proxy_and_a_duplicate_vmac_get_their_hints() {
         let upgrade = diagnose(&Fault::WebSocket(ScWebSocketErrorKind::WebSocketHandshake));
         assert!(upgrade.hint.contains("proxy"));
+        let refused = diagnose(&Fault::UpgradeRefused(502));
+        assert!(refused.summary.contains("HTTP 502"), "{}", refused.summary);
+        assert!(refused.hint.contains("HTTP 502"), "{}", refused.hint);
+        assert!(refused.hint.contains("proxy"), "{}", refused.hint);
         let subprotocol = diagnose(&Fault::WebSocket(ScWebSocketErrorKind::HubSubprotocol));
         assert!(subprotocol.hint.contains("Sec-WebSocket-Protocol"));
         let duplicate = diagnose(&Fault::Nak {

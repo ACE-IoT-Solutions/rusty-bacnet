@@ -66,9 +66,13 @@ mod tap;
 use tap::{tapped_connector, TappedSocket};
 mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
+pub use connector::dial_within;
+#[cfg(feature = "sc-tls")]
+pub(crate) use connector::enter_dial_stage;
 use connector::{dial_failover_ws, WebSocketConnector};
 pub use errors::{
-    ScCertificateRejection, ScConnectError, ScTlsAlert, ScTlsFailure, ScWebSocketErrorKind,
+    ScCertificateRejection, ScConnectError, ScDialStage, ScTlsAlert, ScTlsFailure,
+    ScWebSocketErrorKind,
 };
 use failover::PrimaryRestoreContext;
 use handshake::perform_handshake;
@@ -614,6 +618,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                 Ok(None) => {}
                                 Err(e) => {
                                     debug!(%e, "SC primary restore attempt failed while failover active");
+                                    observer.primary_restore_failed(&e);
                                 }
                             }
                             // A full interval follows completion, however
