@@ -4471,6 +4471,61 @@ addr = await server.local_address()  # "0.0.0.0:47808"
 
 ---
 
+## Logging
+
+The stack's log events go to Python's `logging` (#1724). An event from the
+Rust module `bacnet_transport::bip::ingress` goes to the logger
+`rusty_bacnet.bacnet_transport.bip.ingress`, so you can set a level for the
+whole package (`rusty_bacnet`), a crate (`rusty_bacnet.bacnet_network`) or a
+module. Levels map as you'd expect: ERROR, WARNING, INFO and DEBUG, plus TRACE
+at level 5, which importing `rusty_bacnet` names `TRACE` in `logging`.
+
+With no logging configured, Python's root logger takes WARNING and above and
+its fallback handler prints them to stderr, so the stack's warnings (BBMD and
+foreign-device trouble, SC reconnect causes, the throttled drop warnings)
+show up there. Configure `logging` as usual to send them elsewhere or turn
+them off.
+
+```python
+import logging
+import rusty_bacnet
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("rusty_bacnet.bacnet_transport").setLevel(logging.DEBUG)
+rusty_bacnet.refresh_logging()  # pick up the levels set since import
+```
+
+### `refresh_logging()`
+
+The bridge reads the logging levels when `rusty_bacnet` is imported, and
+decides from that copy which events to forward, so an event your
+configuration doesn't want costs the stack one atomic load and never takes
+the GIL. After you lower a level (to see more), call
+`rusty_bacnet.refresh_logging()`; until then the events it newly allows are
+not forwarded. Raising a level, `Logger.disabled` and `logging.disable()`
+also filter at delivery, so they work at once, but a refresh makes the
+skipped events free again.
+
+### Records
+
+- The message is the event's message followed by its fields as `key=value`
+  (`Dropping an inbound NPDU discard=Malformed(Version)`).
+- `record.bacnet_fields` holds the fields as a dict, with integers, floats
+  and booleans as Python values and anything else as text;
+  `record.bacnet_target` is the Rust target (`bacnet_network::layer::receive`).
+- `pathname` and `lineno` name the Rust source line, and `created` is when
+  the event happened.
+
+Records are delivered by one background thread, in order, shortly after the
+event: a handler runs on that thread, not on your event loop's, and may call
+back into `rusty_bacnet`. If more than 4,096 records are waiting, newer ones
+are dropped, and the next delivery logs a warning on `rusty_bacnet` saying
+how many. Once the interpreter starts exiting, pending records are dropped.
+A handler that needs the records at once, such as a test's `assertLogs`,
+waits for them to arrive.
+
+---
+
 ## Exceptions
 
 All BACnet errors are raised as Python exceptions:

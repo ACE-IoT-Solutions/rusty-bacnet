@@ -2050,6 +2050,20 @@ def list_serial_ports() -> list[str]:
     """
     ...
 
+def refresh_logging() -> None:
+    """Read the ``logging`` levels again, so that a level lowered since import
+    (or the last call) forwards the stack's events it now allows.
+
+    The stack's log events go to the logger ``rusty_bacnet.<module path>``,
+    ``rusty_bacnet.bacnet_transport.bip`` for ``bacnet_transport::bip``, with
+    TRACE at level 5. The bridge decides from a copy of the levels, taken at
+    import and by this function, which events to forward, so a disabled
+    level never takes the GIL. Raised levels filter at delivery as well.
+    Records arrive from a background thread, shortly after the event, and
+    carry the event's fields as ``record.bacnet_fields``.
+    """
+    ...
+
 
 # ---------------------------------------------------------------------------
 # B/IP modes (#938)
