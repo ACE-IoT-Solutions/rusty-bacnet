@@ -10,7 +10,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "profiles-new-bip",
@@ -20,7 +20,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "n",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "profiles-new-mstp",
@@ -30,7 +30,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape m",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "profiles-preview-attest",
@@ -40,7 +40,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "profiles-passive",
@@ -50,7 +50,7 @@
    "source": "live",
    "command": "bacnet tui --profile lab --passive",
    "keys": "Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "discovery-whois-form",
@@ -60,7 +60,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "a d",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "discovery-whois-warning",
@@ -70,7 +70,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Right Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "discovery-devices",
@@ -80,7 +80,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "discovery-filter",
@@ -90,7 +90,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "/ \"100\" Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "discovery-who-has",
@@ -100,7 +100,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "/ Escape : \"find Damper\" Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "browser-device",
@@ -110,7 +110,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": ": \"find\" Enter g Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "browser-status-flags",
@@ -120,7 +120,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "g Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "browser-priority-array",
@@ -130,7 +130,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "BTab g j j j j Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "browser-trend-log",
@@ -140,7 +140,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "BTab g j j j j j j j j j j j j j j j j j j j Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "browser-schedule",
@@ -150,7 +150,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "BTab g j j j j j j j j j j j j j j j j j Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "browser-object-filter",
@@ -160,7 +160,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "BTab g / \"binary\"",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-not-armed",
@@ -170,7 +170,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape g j j j j Enter w",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-arm-dialog",
@@ -180,7 +180,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "W \"Docs lab\"",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-form",
@@ -190,7 +190,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Enter w \"65\" Tab BSpace BSpace \"12\"",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-preview-t1",
@@ -200,7 +200,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-result",
@@ -210,7 +210,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-preview-t2",
@@ -220,7 +220,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Enter w \"70\" Tab BSpace BSpace \"8\" Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-preview-t3",
@@ -230,7 +230,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape w \"70\" Tab BSpace BSpace \"5\" Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-blocked",
@@ -240,7 +240,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape w \"70\" Tab BSpace BSpace \"6\" Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-relinquish",
@@ -250,7 +250,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape n",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-writem-preview",
@@ -260,7 +260,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape : \"writem 1001 av:1 present-value 72@12 av:2 present-value 68@12\" Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-ledger",
@@ -270,7 +270,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape u",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "writes-exit-guard",
@@ -280,7 +280,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape q",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "watch-list",
@@ -290,7 +290,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Escape a : \"watch 1001 ai:2\" Enter : \"watch 1001 ai:3\" Enter : \"watch 1001 ai:1\" Enter : \"watch 2:2001 ai:1\" Enter : \"watch 1002 av:7\" Enter : \"watch 1001 bo:1\" Enter 3",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "overview-log-pane",
@@ -299,18 +299,18 @@
    "size": "120x36",
    "source": "live",
    "command": "bacnet tui",
-   "keys": "1 L",
-   "commit": "49f8a8495"
+   "keys": "2 L",
+   "commit": "93125c060"
   },
   {
    "name": "overview-help",
    "file": "overview-help.webp",
-   "alt": "The help overlay listing the keys by screen.",
+   "alt": "The help overlay: the global keys, then the current screen's keys, then the commands.",
    "size": "120x36",
    "source": "live",
    "command": "bacnet tui",
    "keys": "1 ?",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "network-fd-bdt",
@@ -320,7 +320,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "L 4",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "network-fdt",
@@ -330,7 +330,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Tab",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "network-matrix",
@@ -340,7 +340,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Tab m",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "network-networks",
@@ -350,7 +350,7 @@
    "source": "live",
    "command": "bacnet tui",
    "keys": "Tab r",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "network-bbmd-unreachable",
@@ -360,7 +360,7 @@
    "source": "live",
    "command": "bacnet -i 127.0.0.1 -p 0 -b 127.255.255.255 --foreign-bbmd 127.0.0.1:9 tui --no-profile",
    "keys": "4",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-preview",
@@ -370,7 +370,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-profile-editor",
@@ -380,7 +380,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "e",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-lint-warning",
@@ -390,7 +390,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-expiring",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-hub-certs",
@@ -400,7 +400,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "Escape a 5",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-doctor",
@@ -410,7 +410,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "Tab",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-credentials",
@@ -420,7 +420,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "Tab",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-devices",
@@ -430,7 +430,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "1 d Enter Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "sc-doctor-failure",
@@ -440,47 +440,47 @@
    "source": "live",
    "command": "bacnet tui --profile sc-untrusted",
    "keys": "y a 5",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "mstp-monitor-stations",
    "file": "mstp-monitor-stations.webp",
    "alt": "The MS/TP monitor's Stations view: an address map and a row per station heard.",
    "size": "120x40",
-   "source": "live",
-   "command": "bacnet tui --mstp-monitor /dev/cu.usbserial-B0037OSC --mstp-baud 38400 --passive",
+   "source": "snapshot",
+   "command": "(insta snapshot)",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "mstp-monitor-ring",
    "file": "mstp-monitor-ring.webp",
    "alt": "The Token ring view: successors, rotation times and per-master token statistics.",
    "size": "120x40",
-   "source": "live",
-   "command": "bacnet tui --mstp-monitor /dev/cu.usbserial-B0037OSC --mstp-baud 38400 --passive",
-   "keys": "Tab",
-   "commit": "49f8a8495"
+   "source": "snapshot",
+   "command": "(insta snapshot)",
+   "keys": "",
+   "commit": "93125c060"
   },
   {
    "name": "mstp-monitor-findings",
    "file": "mstp-monitor-findings.webp",
    "alt": "The Findings view warning that one master's Max_Master leaves a station out.",
    "size": "80x24",
-   "source": "live",
-   "command": "bacnet tui --mstp-monitor /dev/cu.usbserial-B0037OSC --mstp-baud 38400 --passive",
-   "keys": "Tab",
-   "commit": "49f8a8495"
+   "source": "snapshot",
+   "command": "(insta snapshot)",
+   "keys": "",
+   "commit": "93125c060"
   },
   {
    "name": "mstp-monitor-errors",
    "file": "mstp-monitor-errors.webp",
    "alt": "The Errors view: CRC errors, noise, a lost token and the adapter's timing note.",
    "size": "80x24",
-   "source": "live",
-   "command": "bacnet tui --mstp-monitor /dev/cu.usbserial-B0037OSC --mstp-baud 38400 --passive",
-   "keys": "Tab",
-   "commit": "49f8a8495"
+   "source": "snapshot",
+   "command": "(insta snapshot)",
+   "keys": "",
+   "commit": "93125c060"
   },
   {
    "name": "mstp-join-proposal",
@@ -490,7 +490,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "mstp-join-confirm",
@@ -500,7 +500,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "mstp-participant-join",
@@ -510,7 +510,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "mstp-participant",
@@ -520,7 +520,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "troubleshoot-narrow",
@@ -530,7 +530,7 @@
    "source": "live",
    "command": "bacnet tui --profile lab",
    "keys": "Enter d Right Enter Enter g Enter g j j j j Enter",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   },
   {
    "name": "troubleshoot-too-small",
@@ -540,7 +540,7 @@
    "source": "live",
    "command": "bacnet tui --profile lab --passive",
    "keys": "",
-   "commit": "49f8a8495"
+   "commit": "93125c060"
   }
  ]
 }

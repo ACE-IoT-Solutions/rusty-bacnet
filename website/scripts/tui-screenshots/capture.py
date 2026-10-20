@@ -100,7 +100,7 @@ SHOTS = {
     "writes-exit-guard": (MAIN, "The exit guard listing a change still in effect, with revert, keep and cancel."),
     "watch-list": (MAIN, "The watch list: COV and polled rows with values, units, status flags, age and sparklines."),
     "overview-log-pane": (MAIN, "The device browser with the log pane open below it."),
-    "overview-help": (MAIN, "The help overlay listing the keys by screen."),
+    "overview-help": (MAIN, "The help overlay: the global keys, then the current screen's keys, then the commands."),
     "network-fd-bdt": (MAIN, "The Network screen: the foreign-device panel and the BBMD's broadcast distribution table."),
     "network-fdt": (MAIN, "The Network screen's FDT tab with this client's own entry."),
     "network-matrix": (MAIN, "The BDT consistency matrix after a survey: both BBMDs agree."),
@@ -587,7 +587,7 @@ def focus_objects(p):
 
 
 def select_object(p, label, tries=60):
-    target = re.compile(r">\s+%s\s*(│|$)" % re.escape(label), re.M)
+    target = re.compile(r">\s+%s(\s|│|$)" % re.escape(label), re.M)
     focus_objects(p)
     p.send("g")
     for _ in range(tries):
@@ -721,7 +721,7 @@ def bip(s, p, lab):
     p.wait(r"Watch \(7\)")
     time.sleep(8)  # let the sparklines and the polled routed row fill in
     p.shot("watch-list", wait=r"polled")
-    p.send("1", "L")
+    p.send("2", "L")
     p.shot("overview-log-pane", wait=r"Log \(L to hide\)")
     p.send("L")
 
@@ -784,7 +784,7 @@ def select_object_narrow(p, label):
         if "┌ Objects (" in p.text():
             break
         p.send("Tab")
-    target = re.compile(r">\s+%s\s*(│|$)" % re.escape(label), re.M)
+    target = re.compile(r">\s+%s(\s|│|$)" % re.escape(label), re.M)
     p.send("g")
     for _ in range(60):
         if target.search(p.text()):
