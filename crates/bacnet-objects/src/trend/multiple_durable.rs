@@ -9,7 +9,9 @@ use bacnet_types::primitives::{Date, Time};
 
 use super::TrendLogMultipleObject;
 use crate::log_buffer::LogRecordBuffer;
-use crate::log_persistence::store::{impl_durable_log, DurableLog, LogState, LogStore};
+use crate::log_persistence::store::{
+    fit_to_buffer_size, impl_durable_log, DurableLog, LogState, LogStore,
+};
 use crate::log_persistence::{LogCommitCadence, LogPersistence};
 
 impl TrendLogMultipleObject {
@@ -26,16 +28,15 @@ impl TrendLogMultipleObject {
         persistence: Arc<dyn LogPersistence<BACnetLogMultipleRecord>>,
     ) -> Result<Self, Error> {
         let mut log = Self::new(instance, name, buffer_size)?;
-        let (mut store, loaded) = LogStore::open(log.oid, persistence)?;
+        let (mut store, loaded) = LogStore::open(log.oid, buffer_size, persistence)?;
         if let Some(mut snapshot) = loaded {
-            log.buffer_size = snapshot.buffer_size;
-            log.log_buffer = LogRecordBuffer::new(snapshot.buffer_size);
+            let resized = fit_to_buffer_size(&mut snapshot, buffer_size);
             log.lifecycle().reopen(&mut snapshot)?;
             if let Some(acquisition) = snapshot.acquisition {
                 log.acquisition.restore(acquisition);
             }
             log.log_device_object_property = snapshot.log_device_object_property;
-            store.reopened(log.log_state());
+            store.reopened(log.log_state(), resized);
         }
         log.store = Some(store);
         Ok(log)

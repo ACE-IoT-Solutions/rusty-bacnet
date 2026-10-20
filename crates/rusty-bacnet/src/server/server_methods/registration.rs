@@ -499,8 +499,9 @@ impl BACnetServer {
     /// `total_record_count` seeds Total_Record_Count, as on `add_trend_log`.
     /// With `storage_path` (a `str`) the log is kept in that file pair, as
     /// on `add_trend_log`: a log reopened from it keeps its saved records
-    /// and settings, ignores `buffer_size` and `total_record_count`, and
-    /// appends a LOG_INTERRUPTED record (#1541).
+    /// and settings, ignores `total_record_count`, and appends a
+    /// LOG_INTERRUPTED record (#1541); `buffer_size` wins over the saved
+    /// Buffer_Size.
     /// `log_received_notifications` isn't saved and applies on every start.
     #[pyo3(signature = (
         instance,

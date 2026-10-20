@@ -8,23 +8,27 @@ use bacnet_types::primitives::{Date, Time};
 
 use super::TrendLogObject;
 use crate::log_buffer::LogRecordBuffer;
-use crate::log_persistence::store::{impl_durable_log, DurableLog, LogState, LogStore};
+use crate::log_persistence::store::{
+    fit_to_buffer_size, impl_durable_log, DurableLog, LogState, LogStore,
+};
 use crate::log_persistence::{LogCommitCadence, LogPersistence};
 
 impl TrendLogObject {
     /// Open a Trend Log kept in `persistence`, or start one there when it
     /// holds none yet.
     ///
-    /// A log storage holds comes back as it was saved: Buffer_Size, Enable,
+    /// A log storage holds comes back as it was saved: Enable,
     /// Stop_When_Full, its records and Total_Record_Count, its BUFFER_READY
-    /// counting, and the settings a peer can write (the window, Logging_Type,
-    /// Log_Interval, Align_Intervals, Interval_Offset and
-    /// Log_DeviceObjectProperty). `buffer_size` only sizes a log storage
-    /// doesn't hold. It then owes a LOG_INTERRUPTED record, appended once it
-    /// can read a valid clock. See [`crate::log_persistence`] for when it
-    /// commits.
+    /// counting and Notification_Threshold, and the settings a peer can write
+    /// (the window, Logging_Type, Log_Interval, Align_Intervals,
+    /// Interval_Offset and Log_DeviceObjectProperty). `buffer_size` wins
+    /// over the saved Buffer_Size; a smaller one keeps the newest records.
+    /// It then owes a LOG_INTERRUPTED record, appended once it can read a
+    /// valid clock, unless it reopens full and stopped. See
+    /// [`crate::log_persistence`] for when it commits.
     ///
-    /// Fails with storage's error when the snapshot can't be loaded, and
+    /// Fails with [`Error::OutOfRange`] for a `buffer_size` a slot can't
+    /// hold, with storage's error when the snapshot can't be loaded, and
     /// when it doesn't hold together as a Trend Log's: another object's
     /// identity, a zero generation, more records than Buffer_Size, records
     /// with a Total_Record_Count of zero, a full buffer while Stop_When_Full
@@ -37,16 +41,15 @@ impl TrendLogObject {
         persistence: Arc<dyn LogPersistence<BACnetLogRecord>>,
     ) -> Result<Self, Error> {
         let mut log = Self::new(instance, name, buffer_size)?;
-        let (mut store, loaded) = LogStore::open(log.oid, persistence)?;
+        let (mut store, loaded) = LogStore::open(log.oid, buffer_size, persistence)?;
         if let Some(mut snapshot) = loaded {
-            log.buffer_size = snapshot.buffer_size;
-            log.log_buffer = LogRecordBuffer::new(snapshot.buffer_size);
+            let resized = fit_to_buffer_size(&mut snapshot, buffer_size);
             log.lifecycle().reopen(&mut snapshot)?;
             if let Some(acquisition) = snapshot.acquisition {
                 log.acquisition.restore(acquisition);
             }
             log.log_device_object_property = snapshot.log_device_object_property.pop();
-            store.reopened(log.log_state());
+            store.reopened(log.log_state(), resized);
         }
         log.store = Some(store);
         Ok(log)

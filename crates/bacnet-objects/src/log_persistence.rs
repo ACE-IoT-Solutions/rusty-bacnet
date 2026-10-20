@@ -10,7 +10,9 @@
 //!   past the count of the last commit, as a record lands;
 //! - once [`interval`](LogCommitCadence::interval) has passed since the last
 //!   commit and anything the snapshot holds has changed, as the server's
-//!   once-a-second operation pass looks at the log;
+//!   once-a-second operation pass looks at the log. After a quiet spell
+//!   longer than the interval, the first change commits at the next pass:
+//!   the interval has already run out, whichever trigger comes first;
 //! - once more when the server stops, and when the log is dropped, if
 //!   anything changed since the last commit.
 //!
@@ -32,8 +34,12 @@
 //! (Last_Notify_Record and where Records_Since_Notification counts from), and
 //! the settings a peer can write: Start_Time and Stop_Time, and on the trend
 //! logs Logging_Type, Log_Interval, Align_Intervals, Interval_Offset and
-//! Log_DeviceObjectProperty. A stored Buffer_Size wins over the one the
-//! constructor is given, which only sizes a log storage doesn't hold yet.
+//! Log_DeviceObjectProperty. Buffer_Size is the application's (peers can't
+//! write it), so the one the constructor is given wins over the saved one:
+//! a larger size keeps every record, and a smaller one keeps the newest
+//! records that fit and logs a warning naming both sizes. A Buffer_Size
+//! whose full buffer of the family's worst-case records couldn't fit a
+//! slot's 256 MiB is refused.
 //! Settings the application applies after opening replace the stored ones,
 //! so an application that configures its logs on every start should skip
 //! that for a log that [reopened](crate::trend::TrendLogObject::reopened).
@@ -45,7 +51,25 @@
 //! with a clock, or at the next record or window look after that. A record
 //! that arrives while no valid clock is bound lends the interruption its own
 //! timestamp, so the record still lands after it. Calling
-//! `record_interruption` first stands in for it.
+//! `record_interruption` first stands in for it. A log that reopens full
+//! and stopped (Enable FALSE, as Stop_When_Full leaves it) skips the marker
+//! rather than push out its oldest record; a stopped log with room takes it,
+//! marked LOG_DISABLED too.
+//!
+//! Notification_Threshold comes back with the counts, since BUFFER_READY
+//! resumes from them.
+//!
+//! # Failed commits
+//!
+//! A commit that fails is logged and leaves the log counted as changed, so
+//! the next interval pass, or the final commit at stop or drop, tries again
+//! even if nothing else changed.
+//!
+//! # Deleting a log
+//!
+//! Storage outlives the object: a log removed from the database leaves its
+//! slots on disk, and one built again on the same storage reopens from them.
+//! Delete the slot files to start afresh.
 //!
 //! [`TrendLogObject::with_persistence`]: crate::trend::TrendLogObject::with_persistence
 
@@ -100,6 +124,9 @@ pub struct LogSnapshot<R> {
     /// The Total_Record_Count Records_Since_Notification counts from: the
     /// count at the last report, purge or start of detection.
     pub records_since_notification_from: u32,
+    /// Notification_Threshold: the records that make a BUFFER_READY report,
+    /// zero for none.
+    pub notification_threshold: u32,
     /// Start_Time, as a local date and time; every field unspecified for an
     /// open start.
     pub start_time: (Date, Time),
@@ -167,3 +194,6 @@ mod reopen_tests;
 
 #[cfg(test)]
 mod cadence_tests;
+
+#[cfg(test)]
+mod reopen_fit_tests;

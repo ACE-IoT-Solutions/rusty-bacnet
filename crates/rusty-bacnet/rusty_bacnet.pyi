@@ -4115,7 +4115,7 @@ class BACnetServer:
         stop_time: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None,
         align_intervals: bool | None = None,
         interval_offset: int | None = None,
-        storage_path: str | None = None,
+        storage_path: Optional[str] = None,
         total_record_count: int = 0,
     ) -> None:
         """Add a Trend Log (Clause 12.25) that the server polls, triggers or
@@ -4183,7 +4183,7 @@ class BACnetServer:
         stop_time: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None,
         align_intervals: bool | None = None,
         interval_offset: int | None = None,
-        storage_path: str | None = None,
+        storage_path: Optional[str] = None,
         total_record_count: int = 0,
     ) -> None:
         """Add a Trend Log Multiple (Clause 12.30) that the server polls or
@@ -4222,17 +4222,23 @@ class BACnetServer:
         ``total_record_count`` seeds Total_Record_Count as on
         ``add_trend_log``.
 
-        ``storage_path`` (a ``str``) keeps the log in
-        ``<storage_path>.slot0`` and ``.slot1``. The log commits a snapshot
-        every 100 records or, while it changes, once a minute, and once more
-        at ``stop()``, so a power loss costs at most about a minute of
-        records. A log reopened from those files serves its saved records,
-        Total_Record_Count, BUFFER_READY counts (Last_Notify_Record), Enable,
-        Stop_When_Full, Buffer_Size and every setting a peer can write, and
-        appends one LOG_INTERRUPTED record to mark the restart; the saved
-        state wins over ``buffer_size`` and the keyword arguments. A file
-        pair that can't be read, or holds another object's state, raises
-        BacnetError.
+        ``storage_path`` keeps the log in ``<storage_path>.slot0`` and
+        ``.slot1``. It is a ``str``; a ``pathlib.Path`` raises TypeError. The
+        log commits a snapshot every 100 records or, while it changes, once a
+        minute, and once more at ``stop()``, so a power loss costs at most
+        about a minute of records; a failed commit is retried. A log reopened
+        from those files serves its saved records, Total_Record_Count,
+        BUFFER_READY counts and Notification_Threshold, Enable,
+        Stop_When_Full and every setting a peer can write, and appends one
+        LOG_INTERRUPTED record to mark the restart (none when it reopens full
+        and stopped); the saved state wins over the keyword arguments.
+        ``buffer_size`` wins over the saved Buffer_Size: a smaller one keeps
+        the newest records. A durable Trend Log Multiple holds at most 15849
+        records (178437 for an Event Log, 828302 for a Trend Log); a larger
+        ``buffer_size``, or a file pair that can't be read or holds another
+        object's state, raises BacnetError. To tell whether a log will
+        reopen, check whether either slot file exists before the call. The
+        files outlive the log: one added again on them reopens.
         """
         ...
     def add_event_log(
@@ -4242,7 +4248,7 @@ class BACnetServer:
         buffer_size: int = 100,
         log_received_notifications: bool = False,
         *,
-        storage_path: str | None = None,
+        storage_path: Optional[str] = None,
         total_record_count: int = 0,
     ) -> None:
         """Register an Event Log of ``buffer_size`` records before start().

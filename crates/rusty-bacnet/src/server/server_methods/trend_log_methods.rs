@@ -130,9 +130,11 @@ impl BACnetServer {
     /// `.slot1` (#1541): it commits every 100 records or, while it changes,
     /// once a minute, and once more at `stop()`. A log reopened from those
     /// files keeps its saved records, Total_Record_Count, BUFFER_READY
-    /// counts and the settings a peer can write, ignoring `buffer_size` and
-    /// the keyword arguments, and appends a LOG_INTERRUPTED record. A file
-    /// that can't be read raises BacnetError.
+    /// counts, Notification_Threshold and the settings a peer can write,
+    /// ignoring the keyword arguments, and appends a LOG_INTERRUPTED record.
+    /// `buffer_size` wins over the saved Buffer_Size; a smaller one keeps the
+    /// newest records. A file that can't be read, or a `buffer_size` past
+    /// what a slot holds, raises BacnetError.
     #[pyo3(signature = (
         instance,
         name,

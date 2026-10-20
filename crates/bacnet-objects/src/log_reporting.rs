@@ -195,6 +195,11 @@ impl BufferReadyReporting {
         (self.last_notify_record, self.count_restarted_at)
     }
 
+    /// Notification_Threshold, which a durable log saves with the counts.
+    pub(crate) fn notification_threshold(&self) -> u32 {
+        self.notification_threshold
+    }
+
     /// Take back the two counts [`counts`](Self::counts) gave, as a log
     /// reopened from storage does (#1541), so BUFFER_READY carries on from
     /// the saved Last_Notify_Record.

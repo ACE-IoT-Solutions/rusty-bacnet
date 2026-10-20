@@ -301,7 +301,17 @@ impl<'a, R: ResidentLogRecord> LogLifecycle<'a, R> {
     /// time, or without a valid clock at `fallback` if that is an actual
     /// moment, as a log reopened from storage does (#1541). Returns whether
     /// the record went in.
+    ///
+    /// A log that reopens full and stopped (Enable FALSE, as Stop_When_Full
+    /// leaves it, Clause 12.25.12) skips the record and returns true: the
+    /// marker would push out its oldest record, and a stopped log keeps its
+    /// records as they are. LOG_INTERRUPTED (Clause 12.25.14) only warns a
+    /// reader that samples may be missing, which isn't worth a sample. A
+    /// stopped log with room still takes it, with LOG_DISABLED.
     pub(crate) fn record_interruption_now(&mut self, fallback: Option<(Date, Time)>) -> bool {
+        if !*self.enabled && self.buffer.capacity() > 0 && self.buffer.is_full() {
+            return true;
+        }
         valid_timestamp(self.clock)
             .ok()
             .or(fallback)
@@ -329,6 +339,8 @@ impl<'a, R: ResidentLogRecord> LogLifecycle<'a, R> {
             snapshot.last_notify_record,
             snapshot.records_since_notification_from,
         );
+        self.reporting
+            .set_notification_threshold(snapshot.notification_threshold);
         Ok(())
     }
 

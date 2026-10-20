@@ -183,3 +183,56 @@ fn a_log_without_storage_commits_nothing_and_settles_nothing() {
     trend.set_commit_cadence(LogCommitCadence::default());
     assert!(!trend.reopened());
 }
+
+#[test]
+fn a_failed_commit_is_retried_at_the_next_interval_pass_without_a_new_change() {
+    let (mut log, storage) = trend_log(LogCommitCadence {
+        records: 0,
+        interval: 60 * SECOND,
+    });
+    log.advance_monotonic_time_internal(Duration::ZERO);
+    log.add_record(trend_record(1)).unwrap();
+    storage
+        .fail_next
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    log.advance_monotonic_time_internal(60 * SECOND);
+    settled(&mut log);
+    assert_eq!(storage.commits(), 0);
+    assert_eq!(stored_total(&storage), None);
+    // The look after the failed commit restarts the interval; nothing has
+    // changed since, but the state never landed, so the next pass commits.
+    log.advance_monotonic_time_internal(61 * SECOND);
+    log.advance_monotonic_time_internal(120 * SECOND);
+    settled(&mut log);
+    assert_eq!(storage.commits(), 0);
+    log.advance_monotonic_time_internal(121 * SECOND);
+    settled(&mut log);
+    assert_eq!(storage.commits(), 1);
+    assert_eq!(stored_total(&storage), Some(1));
+    // Landed: no further commit without a change.
+    log.advance_monotonic_time_internal(122 * SECOND);
+    log.advance_monotonic_time_internal(300 * SECOND);
+    settled(&mut log);
+    assert_eq!(storage.commits(), 1);
+}
+
+#[test]
+fn stop_retries_a_failed_commit_even_with_no_new_change() {
+    let (mut log, storage) = trend_log(LogCommitCadence {
+        records: 1,
+        interval: Duration::ZERO,
+    });
+    storage
+        .fail_next
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    log.add_record(trend_record(1)).unwrap();
+    settled(&mut log);
+    assert_eq!(storage.commits(), 0);
+    log.durable_writes_internal()
+        .unwrap()
+        .settle_forgotten_writes()
+        .unwrap()
+        .block();
+    assert_eq!(storage.commits(), 1);
+    assert_eq!(stored_total(&storage), Some(1));
+}

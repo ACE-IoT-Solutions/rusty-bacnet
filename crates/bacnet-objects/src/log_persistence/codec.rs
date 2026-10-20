@@ -5,7 +5,8 @@
 //! identifier, generation, payload length), the payload, and a CRC-32 of
 //! everything before it. The payload holds, in order: Buffer_Size, a flags
 //! octet (Enable, Stop_When_Full), Total_Record_Count, Last_Notify_Record,
-//! the Records_Since_Notification base, Start_Time and Stop_Time as four
+//! the Records_Since_Notification base, Notification_Threshold, Start_Time
+//! and Stop_Time as four
 //! octets of date and four of time each, the acquisition settings behind a
 //! presence octet, then the references and the records, each list a count
 //! followed by length-prefixed Clause 21 encodings. Every integer is
@@ -45,12 +46,18 @@ pub(crate) trait SnapshotRecord:
 {
     /// The log object type whose records these are.
     const OBJECT_TYPE: ObjectType;
+    /// The most octets one record the stack itself makes can take: what a
+    /// slot is sized for (see [`check_buffer_size`]).
+    const WORST_RECORD_OCTETS: usize;
     /// Decode one record at `offset`, returning it and the offset past it.
     fn decode_at(data: &[u8], offset: usize) -> Result<(Self, usize), Error>;
 }
 
 impl SnapshotRecord for BACnetLogRecord {
     const OBJECT_TYPE: ObjectType = ObjectType::TREND_LOG;
+    /// A timestamp, an any-value at the pollers' 256-octet cap with its
+    /// framing, and Status_Flags.
+    const WORST_RECORD_OCTETS: usize = 320;
     fn decode_at(data: &[u8], offset: usize) -> Result<(Self, usize), Error> {
         decode_log_record(data, offset)
     }
@@ -58,6 +65,9 @@ impl SnapshotRecord for BACnetLogRecord {
 
 impl SnapshotRecord for BACnetEventLogRecord {
     const OBJECT_TYPE: ObjectType = ObjectType::EVENT_LOG;
+    /// A timestamp and a notification no larger than the 1476-octet APDU
+    /// it could arrive in.
+    const WORST_RECORD_OCTETS: usize = 1_500;
     fn decode_at(data: &[u8], offset: usize) -> Result<(Self, usize), Error> {
         decode_event_log_record(data, offset)
     }
@@ -65,9 +75,37 @@ impl SnapshotRecord for BACnetEventLogRecord {
 
 impl SnapshotRecord for BACnetLogMultipleRecord {
     const OBJECT_TYPE: ObjectType = ObjectType::TREND_LOG_MULTIPLE;
+    /// A timestamp and one 256-octet any-value, framed, for each of the 64
+    /// references a log may hold.
+    const WORST_RECORD_OCTETS: usize = 32 + MAX_LOG_DEVICE_OBJECT_PROPERTIES * 264;
     fn decode_at(data: &[u8], offset: usize) -> Result<(Self, usize), Error> {
         decode_log_multiple_record(data, offset)
     }
+}
+
+/// Room in a slot for everything but the records: header, trailer, the
+/// fixed fields and 64 references.
+const FIXED_ALLOWANCE: usize = 64 * 1024;
+
+/// The largest Buffer_Size an `R` log can keep in a slot: enough of the
+/// family's worst-case records, each with its length prefix, to fill the
+/// slot cap.
+pub(crate) fn max_buffer_size<R: SnapshotRecord>() -> u32 {
+    let records = (MAX_SNAPSHOT_BYTES - FIXED_ALLOWANCE) / (R::WORST_RECORD_OCTETS + 4);
+    u32::try_from(records).unwrap_or(u32::MAX)
+}
+
+/// Refuse a Buffer_Size whose full buffer of worst-case records could
+/// outgrow a slot, so a durable log never grows into a state it can't save.
+pub(crate) fn check_buffer_size<R: SnapshotRecord>(buffer_size: u32) -> Result<(), Error> {
+    let max = max_buffer_size::<R>();
+    if buffer_size > max {
+        return Err(Error::OutOfRange(format!(
+            "a durable {:?} keeps at most {max} records, not Buffer_Size {buffer_size}",
+            R::OBJECT_TYPE
+        )));
+    }
+    Ok(())
 }
 
 fn corrupt(reason: impl std::fmt::Display) -> Error {
@@ -166,6 +204,7 @@ pub(crate) fn encode<R: SnapshotRecord>(snapshot: &LogSnapshot<R>) -> Result<Vec
     payload.extend_from_slice(&snapshot.total_record_count.to_be_bytes());
     payload.extend_from_slice(&snapshot.last_notify_record.to_be_bytes());
     payload.extend_from_slice(&snapshot.records_since_notification_from.to_be_bytes());
+    payload.extend_from_slice(&snapshot.notification_threshold.to_be_bytes());
     for (date, time) in [snapshot.start_time, snapshot.stop_time] {
         payload.extend_from_slice(&date.encode());
         payload.extend_from_slice(&time.encode());
@@ -334,19 +373,22 @@ impl<'a> Reader<'a> {
         Ok((date, time))
     }
 
-    /// A count, then that many length-prefixed elements, each decoded whole
-    /// by `decode`. The count is checked against what the payload can hold
-    /// before anything is allocated for it.
+    /// A count of at most `cap`, then that many length-prefixed elements,
+    /// each decoded whole by `decode`. The count is checked against `cap`
+    /// and what the payload can hold before anything is reserved for it, so
+    /// a crafted count can't reserve more than a valid snapshot needs.
     fn list<T>(
         &mut self,
         field: &str,
+        cap: usize,
         decode: impl Fn(&[u8], usize) -> Result<(T, usize), Error>,
     ) -> Result<Vec<T>, Error> {
         let count = self.u32(field)? as usize;
-        if count > (self.data.len() - self.offset) / 4 {
+        if count > cap || count > (self.data.len() - self.offset) / 4 {
             return Err(corrupt(format_args!("{field} count is too large")));
         }
-        let mut items = Vec::with_capacity(count);
+        // Reserve a modest start; a long list grows as its elements decode.
+        let mut items = Vec::with_capacity(count.min(4096));
         for _ in 0..count {
             let length = self.u32(field)? as usize;
             if length > MAX_ELEMENT_BYTES {
@@ -380,6 +422,7 @@ fn decode_payload<R: SnapshotRecord>(
     let total_record_count = reader.u32("Total_Record_Count")?;
     let last_notify_record = reader.u32("Last_Notify_Record")?;
     let records_since_notification_from = reader.u32("Records_Since_Notification base")?;
+    let notification_threshold = reader.u32("Notification_Threshold")?;
     let start_time = reader.date_time("Start_Time")?;
     let stop_time = reader.date_time("Stop_Time")?;
     let acquisition = if reader.flag("acquisition presence")? {
@@ -394,9 +437,14 @@ fn decode_payload<R: SnapshotRecord>(
     };
     let log_device_object_property: Vec<BACnetDeviceObjectPropertyReference> = reader.list(
         "Log_DeviceObjectProperty",
+        MAX_LOG_DEVICE_OBJECT_PROPERTIES,
         decode_device_object_property_reference,
     )?;
-    let records = reader.list("record", R::decode_at)?;
+    let records = reader.list(
+        "record",
+        buffer_size.min(max_buffer_size::<R>()) as usize,
+        R::decode_at,
+    )?;
     if reader.offset != reader.data.len() {
         return Err(corrupt("payload has trailing octets"));
     }
@@ -410,6 +458,7 @@ fn decode_payload<R: SnapshotRecord>(
         records,
         last_notify_record,
         records_since_notification_from,
+        notification_threshold,
         start_time,
         stop_time,
         acquisition,

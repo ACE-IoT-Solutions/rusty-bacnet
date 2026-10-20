@@ -2749,23 +2749,40 @@ server.add_trend_log_multiple(
 )
 ```
 
+- `storage_path` is a `str`; a `pathlib.Path` raises `TypeError`, so pass
+  `str(path)`.
 - The log commits a snapshot every 100 records or, while it changes, once a
-  minute, whichever comes first, and once more when `stop()` runs; `stop()`
-  returns once that commit has landed. A power loss costs at most about a
-  minute of records, and a log polling every second writes its file about
-  once a minute rather than on every sample.
+  minute, whichever comes first (after a quiet spell, the first change
+  commits within about a second), and once more when `stop()` runs; `stop()`
+  returns once that commit has landed. A commit that fails is logged and
+  tried again at the next pass or at `stop()`. A power loss costs at most
+  about a minute of records, and a log polling every second writes its file
+  about once a minute rather than on every sample.
 - A log reopened from its files serves the records, sequence numbers and
   Total_Record_Count it saved, plus one LOG_INTERRUPTED status record that
-  marks the restart, stamped with the server's clock when it starts. Its
-  BUFFER_READY counting carries on from the saved Last_Notify_Record.
-- It also keeps Buffer_Size, Enable, Stop_When_Full, Start_Time and
-  Stop_Time, and on the trend logs Logging_Type, Log_Interval,
-  Align_Intervals, Interval_Offset and Log_DeviceObjectProperty, as peers
-  last wrote them: the saved state wins over `buffer_size`,
-  `total_record_count` and the configuration keywords. `add_trend_log`'s
-  `client_cov_increment` and `cov_resubscription_interval`, `add_event_log`'s
-  `log_received_notifications`, and Notification_Threshold and the other
-  reporting settings aren't saved, so they apply on every start.
+  marks the restart, stamped with the server's clock when it starts (or, if
+  the clock isn't valid yet, with the first new record's timestamp). Its
+  BUFFER_READY counting carries on from the saved Last_Notify_Record and
+  Notification_Threshold. A log that reopens full and stopped (Enable FALSE
+  after Stop_When_Full) skips the marker rather than push out its oldest
+  record.
+- It also keeps Enable, Stop_When_Full, Start_Time and Stop_Time, and on the
+  trend logs Logging_Type, Log_Interval, Align_Intervals, Interval_Offset and
+  Log_DeviceObjectProperty, as peers last wrote them: the saved state wins
+  over `total_record_count` and the configuration keywords.
+  `add_trend_log`'s `client_cov_increment` and `cov_resubscription_interval`,
+  `add_event_log`'s `log_received_notifications`, and the reporting settings
+  other than Notification_Threshold aren't saved, so they apply on every
+  start.
+- `buffer_size` is the application's, so it wins over the saved Buffer_Size:
+  a larger one keeps every record, and a smaller one keeps the newest
+  records that fit and logs a warning. A durable log holds at most 828,302
+  records (Trend Log), 178,437 (Event Log) or 15,849 (Trend Log Multiple); a
+  larger `buffer_size` raises `BacnetError`.
+- The `add_*` methods return nothing, so to tell whether a log will reopen,
+  check whether `<storage_path>.slot0` or `.slot1` exists before the call.
+  The files outlive the log: deleting the object leaves them, and a log
+  added again with the same `storage_path` reopens from them.
 - A file pair that can't be read raises `BacnetError`. One damaged slot (cut
   short, or a bad checksum) is passed over for the other; a slot holding
   another object's state is refused rather than passed over.

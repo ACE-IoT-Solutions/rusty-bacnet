@@ -24,16 +24,20 @@ use crate::traits::BACnetObject;
 use crate::trend::{TrendLogMultipleObject, TrendLogObject};
 
 #[derive(Clone, Copy, Debug)]
-enum Kind {
+pub(super) enum Kind {
     Trend,
     Event,
     Multiple,
 }
 
-const KINDS: [Kind; 3] = [Kind::Trend, Kind::Event, Kind::Multiple];
+pub(super) const KINDS: [Kind; 3] = [Kind::Trend, Kind::Event, Kind::Multiple];
 
 /// One log of `kind` kept at `base`, and whether it reopened.
-fn open(kind: Kind, base: &Path, buffer_size: u32) -> Result<(Box<dyn BACnetObject>, bool), Error> {
+pub(super) fn open(
+    kind: Kind,
+    base: &Path,
+    buffer_size: u32,
+) -> Result<(Box<dyn BACnetObject>, bool), Error> {
     let file = || Arc::new(FileLogPersistence::new(base).unwrap());
     Ok(match kind {
         Kind::Trend => {
@@ -54,7 +58,7 @@ fn open(kind: Kind, base: &Path, buffer_size: u32) -> Result<(Box<dyn BACnetObje
     })
 }
 
-fn add(log: &mut dyn BACnetObject, hour: u8) {
+pub(super) fn add(log: &mut dyn BACnetObject, hour: u8) {
     match log.object_identifier().object_type() {
         ObjectType::TREND_LOG => log.add_trend_record(trend_record(hour)),
         ObjectType::EVENT_LOG => log.add_event_log_record(event_record(hour)),
@@ -63,7 +67,7 @@ fn add(log: &mut dyn BACnetObject, hour: u8) {
     .unwrap();
 }
 
-fn write(log: &mut dyn BACnetObject, property: P, value: PropertyValue) {
+pub(super) fn write(log: &mut dyn BACnetObject, property: P, value: PropertyValue) {
     log.write_property(property, None, value, None)
         .unwrap_or_else(|error| panic!("{property:?}: {error:?}"));
 }
@@ -122,7 +126,7 @@ fn settings(log: &dyn BACnetObject) -> Vec<Option<PropertyValue>> {
 }
 
 /// Every resident record as ReadRange serves it, with its sequence number.
-fn served(log: &dyn BACnetObject) -> Vec<(u64, Vec<u8>)> {
+pub(super) fn served(log: &dyn BACnetObject) -> Vec<(u64, Vec<u8>)> {
     let buffer = log.log_buffer_internal().unwrap();
     (0..buffer.record_count())
         .map(|index| {
@@ -136,7 +140,7 @@ fn served(log: &dyn BACnetObject) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
-fn total(log: &dyn BACnetObject) -> u64 {
+pub(super) fn total(log: &dyn BACnetObject) -> u64 {
     match log.read_property(P::TOTAL_RECORD_COUNT, None).unwrap() {
         PropertyValue::Unsigned(total) => total,
         other => panic!("Total_Record_Count read {other:?}"),
@@ -146,7 +150,7 @@ fn total(log: &dyn BACnetObject) -> u64 {
 /// The octets a LOG_INTERRUPTED record stamped `DATE` at `hour` serves as:
 /// the same for every family, which all put the log-status choice first
 /// after the timestamp.
-fn interrupted(hour: u8) -> Vec<u8> {
+pub(super) fn interrupted(hour: u8) -> Vec<u8> {
     let mut bytes = BytesMut::new();
     bacnet_encoding::constructed::encode_log_record(
         &BACnetLogRecord {
@@ -180,8 +184,7 @@ fn a_reopened_log_serves_its_buffer_and_settings_plus_one_interruption() {
         // Dropping the log commits its last state.
         drop(log);
 
-        // A different configured size: the stored Buffer_Size wins.
-        let (mut log, reopened) = open(kind, base.path(), 9).unwrap();
+        let (mut log, reopened) = open(kind, base.path(), 4).unwrap();
         assert!(reopened, "{kind:?}");
         assert_eq!(served(log.as_ref()), before.0, "{kind:?}");
         assert_eq!(total(log.as_ref()), before.1, "{kind:?}");
@@ -285,7 +288,7 @@ impl SettleForTest for Box<dyn BACnetObject> {
     }
 }
 
-fn unsigned(log: &dyn BACnetObject, property: P) -> u64 {
+pub(super) fn unsigned(log: &dyn BACnetObject, property: P) -> u64 {
     match log.read_property(property, None).unwrap() {
         PropertyValue::Unsigned(value) => value,
         other => panic!("{property:?} read {other:?}"),

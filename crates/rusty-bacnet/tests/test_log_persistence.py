@@ -80,6 +80,15 @@ class StoragePathSignatureTests(unittest.TestCase):
             Path(f"{base}.slot0").write_bytes(b"not a log snapshot")
             with self.assertRaises(BacnetError):
                 server.add_trend_log(1, "TL-1", storage_path=str(base))
+            for name in METHODS:
+                with self.subTest(path_object=name):
+                    with self.assertRaises(TypeError):
+                        getattr(server, name)(2, "Log", storage_path=Path(directory) / "p")
+            # Past what a slot holds for a Trend Log Multiple.
+            with self.assertRaisesRegex(BacnetError, "at most 15849"):
+                server.add_trend_log_multiple(
+                    3, "TLM-3", 15_850, storage_path=str(Path(directory) / "big")
+                )
         self.assertEqual(server._pending_registration_count(), 0)
 
 
@@ -165,7 +174,8 @@ class LogRestartTests(unittest.IsolatedAsyncioTestCase):
             # stop() commits each log and waits for the commit.
             await server.stop()
 
-        # Other sizes and settings: what the files hold wins.
+        # Another Log_Interval keyword: the saved one wins. Buffer_Size is the
+        # application's, so the new 50 wins over the saved 20.
         server = await self.start(buffer_size=50, log_interval=500)
         try:
             after = await self.records(server, MULTIPLE)
@@ -179,7 +189,7 @@ class LogRestartTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 await self.read(server, MULTIPLE, PropertyIdentifier.BUFFER_SIZE),
-                PropertyValue.unsigned(20),
+                PropertyValue.unsigned(50),
             )
             self.assertEqual(
                 await self.read(server, TREND_LOG, PropertyIdentifier.LOG_INTERVAL),

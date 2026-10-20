@@ -2,7 +2,7 @@
 //! thread its commits run on, and the hooks the three log objects share.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -29,6 +29,7 @@ pub(crate) struct LogState {
     record_count: usize,
     last_notify_record: u32,
     records_since_notification_from: u32,
+    notification_threshold: u32,
     start_time: (Date, Time),
     stop_time: (Date, Time),
     acquisition: Option<LogAcquisitionSettings>,
@@ -55,6 +56,7 @@ impl LogState {
             record_count: buffer.records().len(),
             last_notify_record,
             records_since_notification_from,
+            notification_threshold: reporting.notification_threshold(),
             start_time,
             stop_time,
             acquisition: None,
@@ -85,6 +87,7 @@ impl LogState {
             records: records.iter().cloned().collect(),
             last_notify_record: self.last_notify_record,
             records_since_notification_from: self.records_since_notification_from,
+            notification_threshold: self.notification_threshold,
             start_time: self.start_time,
             stop_time: self.stop_time,
             acquisition: self.acquisition,
@@ -104,6 +107,11 @@ pub(crate) struct LogStore<R: SnapshotRecord> {
     /// The state of the last snapshot queued, or loaded; `None` before
     /// either.
     queued: Option<LogState>,
+    /// Whether the last commit the writer ran failed. The writer's done
+    /// hook sets it after each commit, so it tells the outcome of the latest
+    /// one; while it is set the log counts as changed, and the next interval
+    /// pass, or the final commit, queues its state again.
+    last_failed: Arc<AtomicBool>,
     /// Total_Record_Count in that snapshot.
     queued_total: u32,
     /// The monotonic time the commit interval counts from, once the first
@@ -120,10 +128,18 @@ impl<R: SnapshotRecord> LogStore<R> {
     /// Load the log's snapshot from `persistence`, if it holds one, and set
     /// up the writer its commits go through. The caller applies the snapshot
     /// to the log and then calls [`reopened`](Self::reopened).
+    ///
+    /// `buffer_size` is the log's configured Buffer_Size; one whose
+    /// worst-case snapshot could outgrow a slot is refused before anything
+    /// is loaded. The loaded snapshot is checked again here, as a guard for
+    /// backends other than [`FileLogPersistence`](super::FileLogPersistence),
+    /// which checks it as it reads each slot.
     pub(crate) fn open(
         oid: ObjectIdentifier,
+        buffer_size: u32,
         persistence: Arc<dyn LogPersistence<R>>,
     ) -> Result<(Self, Option<LogSnapshot<R>>), Error> {
+        codec::check_buffer_size::<R>(buffer_size)?;
         let loaded = persistence.load(oid)?;
         if let Some(snapshot) = &loaded {
             if snapshot.object_identifier != oid {
@@ -133,6 +149,8 @@ impl<R: SnapshotRecord> LogStore<R> {
             }
             codec::validate(snapshot)?;
         }
+        let last_failed = Arc::new(AtomicBool::new(false));
+        let failed = Arc::clone(&last_failed);
         let generation = Arc::new(AtomicU64::new(
             loaded.as_ref().map_or(0, |snapshot| snapshot.generation),
         ));
@@ -154,8 +172,13 @@ impl<R: SnapshotRecord> LogStore<R> {
                 Ok(())
             },
             move |_, result| {
+                failed.store(result.is_err(), Ordering::Release);
                 if let Err(error) = result {
-                    tracing::warn!(log = %oid, %error, "Failed to commit a log snapshot");
+                    tracing::warn!(
+                        log = %oid,
+                        %error,
+                        "Failed to commit a log snapshot; the next pass or stop tries again"
+                    );
                 }
             },
         );
@@ -166,6 +189,7 @@ impl<R: SnapshotRecord> LogStore<R> {
                 generation,
                 cadence: LogCommitCadence::default(),
                 queued: None,
+                last_failed,
                 queued_total: 0,
                 interval_from: None,
                 restart_interval: false,
@@ -176,11 +200,12 @@ impl<R: SnapshotRecord> LogStore<R> {
         ))
     }
 
-    /// The log took its loaded snapshot and now holds `state`: nothing has
-    /// changed since, and a LOG_INTERRUPTED record is owed.
-    pub(crate) fn reopened(&mut self, state: LogState) {
+    /// The log took its loaded snapshot and now holds `state`, and a
+    /// LOG_INTERRUPTED record is owed. `resized` says the configured
+    /// Buffer_Size replaced the saved one, so storage no longer matches.
+    pub(crate) fn reopened(&mut self, state: LogState, resized: bool) {
         self.queued_total = state.total_record_count;
-        self.queued = Some(state);
+        self.queued = (!resized).then_some(state);
         self.reopened = true;
         self.interruption_pending = true;
     }
@@ -235,9 +260,10 @@ impl<R: SnapshotRecord> LogStore<R> {
         }
     }
 
-    /// Whether `state` differs from the last snapshot queued or loaded.
+    /// Whether `state` differs from the last snapshot queued or loaded, or
+    /// the last commit failed, so storage may hold an older state.
     pub(crate) fn changed(&self, state: &LogState) -> bool {
-        self.queued.as_ref() != Some(state)
+        self.last_failed.load(Ordering::Acquire) || self.queued.as_ref() != Some(state)
     }
 
     /// Queue a commit of `state` with `records` on the writer thread. A
@@ -254,6 +280,40 @@ impl<R: SnapshotRecord> LogStore<R> {
     pub(crate) fn idle(&self) -> SaveWait {
         self.writer.idle()
     }
+}
+
+/// Fit a loaded snapshot to the Buffer_Size the application configured,
+/// which wins over the saved one: peers can't write it, and Clause 12.25.13
+/// leaves what happens to the records on a resize to the device. Returns
+/// whether the snapshot changed.
+///
+/// A larger size keeps every record. A smaller one keeps the newest records
+/// that fit; their sequence numbers, Total_Record_Count and the
+/// BUFFER_READY counts, which all follow Total_Record_Count, stay as they
+/// were. A log with Stop_When_Full and Enable both TRUE keeps one slot fewer,
+/// since such a log stops before its last slot is taken, so its next record
+/// stops it with the usual LOG_DISABLED record.
+pub(crate) fn fit_to_buffer_size<R>(snapshot: &mut LogSnapshot<R>, buffer_size: u32) -> bool {
+    if snapshot.buffer_size == buffer_size {
+        return false;
+    }
+    let stops_when_full = snapshot.log_enable && snapshot.stop_when_full;
+    let room = if stops_when_full {
+        (buffer_size as usize).saturating_sub(1)
+    } else {
+        buffer_size as usize
+    };
+    let dropped = snapshot.records.len().saturating_sub(room);
+    tracing::warn!(
+        log = %snapshot.object_identifier,
+        saved = snapshot.buffer_size,
+        configured = buffer_size,
+        dropped,
+        "Reopening a log at the configured Buffer_Size, not the saved one"
+    );
+    snapshot.records.drain(..dropped);
+    snapshot.buffer_size = buffer_size;
+    true
 }
 
 /// The parts of a log object its storage works with. Each log implements it

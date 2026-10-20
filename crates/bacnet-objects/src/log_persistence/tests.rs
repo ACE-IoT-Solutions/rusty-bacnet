@@ -50,6 +50,8 @@ impl Drop for TempBase {
 pub(super) struct MemoryLog<R> {
     pub(super) stored: Mutex<Option<LogSnapshot<R>>>,
     pub(super) commits: AtomicU64,
+    /// Fail the next commit, once.
+    pub(super) fail_next: std::sync::atomic::AtomicBool,
 }
 
 impl<R> MemoryLog<R> {
@@ -57,6 +59,7 @@ impl<R> MemoryLog<R> {
         Arc::new(Self {
             stored: Mutex::new(None),
             commits: AtomicU64::new(0),
+            fail_next: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -71,6 +74,9 @@ impl<R: Clone + Send + Sync> LogPersistence<R> for MemoryLog<R> {
     }
 
     fn commit(&self, snapshot: &LogSnapshot<R>) -> Result<(), Error> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            return Err(Error::Encoding("injected commit failure".into()));
+        }
         *self.stored.lock().unwrap() = Some(snapshot.clone());
         self.commits.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -167,6 +173,7 @@ fn trend_snapshot(generation: u64) -> LogSnapshot<BACnetLogRecord> {
         records: (1..4).map(trend_record).collect(),
         last_notify_record: 5,
         records_since_notification_from: 6,
+        notification_threshold: 4,
         start_time: (DATE, at(1)),
         stop_time: UNSPECIFIED_DATETIME,
         acquisition: Some(LogAcquisitionSettings {
@@ -190,6 +197,7 @@ fn event_snapshot(generation: u64) -> LogSnapshot<BACnetEventLogRecord> {
         records: (1..3).map(event_record).collect(),
         last_notify_record: 0,
         records_since_notification_from: 0,
+        notification_threshold: 0,
         start_time: UNSPECIFIED_DATETIME,
         stop_time: (DATE, at(23)),
         acquisition: None,
@@ -209,6 +217,7 @@ fn multiple_snapshot(generation: u64) -> LogSnapshot<BACnetLogMultipleRecord> {
         records: (1..4).map(multiple_record).collect(),
         last_notify_record: u32::MAX,
         records_since_notification_from: 1,
+        notification_threshold: 0,
         start_time: UNSPECIFIED_DATETIME,
         stop_time: UNSPECIFIED_DATETIME,
         acquisition: Some(LogAcquisitionSettings {
@@ -403,4 +412,28 @@ fn the_default_cadence_is_one_hundred_records_or_a_minute() {
     let cadence = LogCommitCadence::default();
     assert_eq!(cadence.records, 100);
     assert_eq!(cadence.interval, std::time::Duration::from_secs(60));
+}
+
+#[test]
+fn a_crafted_record_count_is_refused_before_anything_is_reserved() {
+    let base = TempBase::new("crafted-count");
+    let store = FileLogPersistence::new(base.path()).unwrap();
+    let oid = event_snapshot(1).object_identifier;
+    store.commit(&event_snapshot(1)).unwrap();
+    let [_, slot1] = store.slot_paths();
+    let mut data = std::fs::read(&slot1).unwrap();
+    // An Event Log's payload: 37 octets of fixed fields, the acquisition
+    // presence octet, an empty reference list, then the record count.
+    let at = super::codec::HEADER_LEN + 37 + 1 + 4;
+    assert_eq!(data[at..at + 4], 2u32.to_be_bytes());
+    // Past Buffer_Size (4), though the payload could still frame that
+    // many length prefixes.
+    data[at..at + 4].copy_from_slice(&5u32.to_be_bytes());
+    reseal(&mut data);
+    std::fs::write(&slot1, data).unwrap();
+    let error = LogPersistence::<BACnetEventLogRecord>::load(&store, oid).unwrap_err();
+    assert!(
+        matches!(&error, Error::Encoding(message) if message.contains("count is too large")),
+        "{error:?}"
+    );
 }
