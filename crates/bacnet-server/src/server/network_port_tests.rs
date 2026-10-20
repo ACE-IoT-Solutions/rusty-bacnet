@@ -6,6 +6,8 @@ use bacnet_objects::network_port::{BipPortConfig, NetworkPortObject};
 mod network_port_activation_refusal_tests;
 #[path = "network_port_activation_tests.rs"]
 mod network_port_activation_tests;
+#[path = "network_port_bip6_tests.rs"]
+mod network_port_bip6_tests;
 #[path = "network_port_bip_mode_tests.rs"]
 mod network_port_bip_mode_tests;
 #[path = "network_port_foreign_activation_tests.rs"]

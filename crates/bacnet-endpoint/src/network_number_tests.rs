@@ -645,7 +645,7 @@ async fn network_number_endpoint_input_closed_keeps_admitted_control_lease_until
             .await
             .unwrap();
         assert_eq!(
-            guard.registered_bip_port_internal(),
+            guard.registered_port_internal(),
             Some(selected()),
             "control still owns the lease after actual socket cleanup"
         );

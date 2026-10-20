@@ -95,6 +95,7 @@ fn driven(resolution_to: SocketAddrV6) -> (Arc<Resolver>, Arc<Capture>) {
         resolver: Arc::clone(&resolver),
         source: OWN,
         resolution_to,
+        foreign: None,
     };
     tokio::spawn(driver.run());
     (resolver, capture)
@@ -400,7 +401,7 @@ async fn receiver(
         local_ip,
         unicast_ips: vec![local_ip],
         wildcard_bind: false,
-        foreign_bbmd: foreign.then(|| (*bbmd().ip(), bbmd().port())),
+        foreign_bbmd: foreign.then(|| super::foreign_target::ForeignTarget::at(bbmd())),
         neighbours: resolver,
         forwarded_group_origin_drops: Arc::default(),
         drops: Arc::default(),

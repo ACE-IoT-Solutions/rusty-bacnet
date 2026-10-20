@@ -8322,17 +8322,84 @@ SC or Ethernet profile. Both `DeviceIdentity` database builders use these same
 constructors with declared1476 port capacity independent of Device/role limits.
 Live transport association, post-bind synchronization and activation are separate.
 
+`NetworkPortObject::new_bip6(instance, name, Bip6PortConfig)` is the IPV6
+(B/IPv6, Annex U) counterpart (#1579), under the same 1–255 instance policy. It
+serves BACnet_IPv6_Mode, IPv6_Address, IPv6_Prefix_Length (1–128),
+BACnet_IPv6_UDP_Port, IPv6_Default_Gateway, BACnet_IPv6_Multicast_Address and
+the IPv6_DNS_Server array (the IPV6 rows of Tables 12-71 and 12-72), all
+read-only, and none of the IPv4 rows. `Bip6PortConfig` holds sixteen-octet
+addresses (the unspecified `::` means unknown), a prefix length (default 64),
+the broadcast group (default `FF05::BAC0`, which must be a multicast address)
+and the three-octet VMAC that MAC_Address serves (Clause 12.56.15). The
+multicast row is the group followed by the port's UDP port, since the
+transport sends its broadcasts to the group at its own port. The port's
+address is configuration, not something it assigns itself, so the optional
+IPv6_Auto_Addressing_Enable, DHCPv6 and IPv6_Zone_Index rows are absent.
+
 ### Registered B/IP Network Port
 
 This receiving-port association is a bounded single B/IP profile, in whichever B/IP mode the owned transport runs (#939). Local Network Number behavior is described below; complete Network Port conformance and multiport routing remain outside this registration contract.
 
-A transport reports its registration capability through `TransportPort::bip_port()`, which returns a `bacnet_transport::port::BipPort`: the endpoint (configured before start, announced after) and a `bacnet_types::bip_port::BipPortMode`. Startup publishes that mode with the bind, and the port's BACnet_IP_Mode reads it: NORMAL, FOREIGN or BBMD. Property_List and the property metadata follow the mode (Clause 12.56, Table 12-71 footnotes 11 to 13):
+A transport reports its registration capability through `TransportPort::bip_port()`, which returns a `bacnet_transport::port::BipPort`: the endpoint (configured before start, announced after) and a `bacnet_types::bip_port::BipPortMode`. Startup publishes that mode with the bind, and the port's BACnet_IP_Mode reads it: NORMAL, FOREIGN or BBMD. BACnet_IP_Mode is read-only. Property_List and the property metadata follow the mode (Clause 12.56, Table 12-71 footnotes 11 to 13):
 
 - **FOREIGN** adds FD_BBMD_Address (a `BACnetHostNPort`) and FD_Subscription_Lifetime, read on every property read through the `bacnet_types::bip_port::ForeignRegistration` view the transport lends (`BipPortMode::Foreign { registration }`). `BipPortMode::fixed_foreign` lends a registration that never changes.
 - **BBMD** adds BBMD_Broadcast_Distribution_Table and BBMD_Foreign_Device_Table (BACnetLISTs of `BACnetBDTEntry` and `BACnetFDTEntry`) and BBMD_Accept_FD_Registrations. The object holds the transport's own BBMD state through the `bacnet_types::bip_port::BbmdTables` view and reads it on every property read, so a BDT change, a new or expired registration, or a policy change made through `BipTransport::bbmd_state()` shows on the next read. FDT entries carry each registrant's time to live and the seconds it has left, grace period included; an entry past its time no longer appears even before the purge task removes it. The BDT includes the BBMD's own row.
 - **NORMAL** has none of them: reading one answers UNKNOWN_PROPERTY.
 
 In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked against the transport's BDT policy at once, through `BbmdTables::check_broadcast_distribution_table`: a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. NAT traversal (BACnet_IP_NAT_Traversal, BACnet_IP_Global_Address) and B/IP multicast (BACnet_IP_Multicast_Address) are not modeled yet.
+
+### Registered B/IPv6 Network Port
+
+A B/IPv6 transport registers its Network Port the same way (#1579), through
+`TransportPort::bip6_port()`, which returns a `bacnet_transport::port::Bip6Port`:
+the endpoint (configured before start, bound after), the VMAC (known before start
+only when it comes from a Device instance), the multicast group and the same
+`BipPortMode`. The selected object must be an IPV6 one (`new_bip6`) whose address
+and UDP port match the transport's (port zero allowed before bind); an IPV4 object
+can't register a B/IPv6 link or the reverse. `Bip6Transport` and `AnyTransport::Bip6` report it.
+Startup publishes the bound address and port, the VMAC as MAC_Address, the group and
+the mode, which BACnet_IPv6_Mode reads (Clause 12.56.39). The mode's rows are the
+B/IP ones, served by the same code: FOREIGN adds FD_BBMD_Address (an IPv6
+`BACnetHostNPort`) and FD_Subscription_Lifetime, BBMD adds the BDT (rows with no
+mask), the FDT (18-octet addresses) and BBMD_Accept_FD_Registrations (Table 12-71
+footnotes 11 to 13). A written value waits for ACTIVATE_CHANGES or WARMSTART exactly
+as on a B/IP port, when the transport's view takes changes.
+
+BACnet_IPv6_Mode is read-only, like BACnet_IP_Mode: the mode is the
+transport's configuration, which no write can change.
+
+What `Bip6Transport` supports: NORMAL and FOREIGN mode. It has no BBMD mode, so it
+never reports one; a custom transport that implements a B/IPv6 BBMD can lend its
+tables through `BipPortMode::Bbmd`, and its rows then behave as a B/IP BBMD's. In
+FOREIGN mode it lends a live, changeable registration, as `BipTransport` does
+(#1825): with a ReinitializeDevice handler, FD_BBMD_Address and
+FD_Subscription_Lifetime are writable (Clauses 12.56.37, 12.56.38), a write sets
+Changes_Pending, and ACTIVATE_CHANGES or WARMSTART moves the running registration.
+The transport then registers with the new BBMD and time-to-live at once, sends its
+broadcasts and Address-Resolutions there, and trusts Forwarded-NPDUs from it only;
+`Bip6Transport::foreign_device_config` reports the registration in effect, and a
+later start uses it. A written value is checked at once: the BBMD must be a
+loopback, unique local or global unicast IPv6 host other than the device itself,
+with a nonzero port, and the time-to-live nonzero. The unspecified, multicast,
+link-local, IPv4-mapped and IPv4-compatible forms, IPv4 hosts and host names answer
+PROPERTY / VALUE_OUT_OF_RANGE. The socket stays bound to the address it started
+with, so the new BBMD must also be one this host's routes reach from that address;
+a local probe checks it, sending nothing, and a BBMD reached only from another
+source is refused the same way. Only a running transport takes a change; while it
+is stopped the rows answer WRITE_ACCESS_DENIED. After a move the old BBMD keeps
+forwarding broadcasts until the device's entry in its FDT expires; those
+Forwarded-NPDUs are dropped and counted in
+`Bip6ReceiveCounters::untrusted_forwarded_npdu`. There is no B/IPv6 BBMD, so no BDT
+persistence either.
+
+Registration refuses, besides `::` and multicast addresses, an IPv4-mapped address
+(register IPv4 as B/IP) and a link-local one, since IPv6_Zone_Index isn't modeled;
+`Bip6PortConfig` refuses an IPv4-mapped address too. When a transport reports both
+`bip_port()` and `bip6_port()`, registration takes the B/IP one. The transport hands
+the registration lease to its socket, which every task that owns it shares, so the
+port stays registered until the last of them ends: a start that fails, or a stop,
+leaves the port free for the next owner, which binds the UDP port the port last
+published. The shared endpoint has no B/IPv6 builder and registers B/IP only.
 
 The BBMD state lock is a synchronous `std::sync::Mutex` (it was a Tokio mutex before #939): the transport and the Network Port view hold it only for short, synchronous critical sections, so the object can read it under the database read lock without awaiting. Lock order stays ObjectDatabase, then the BBMD state; the transport never takes the database.
 
@@ -8356,7 +8423,7 @@ SC starts UNKNOWN with no configured SC Network Port API; unrelated configured o
 
 B/IP BBMD and configured foreign modes start UNKNOWN unless a Network Port is registered for them, which then supplies configured authority as in NORMAL mode. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; only a registered Network Port adds configured authority in these modes.
 
-B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
+B/IPv6 starts UNKNOWN unless a B/IPv6 Network Port is registered (#1579), which then supplies configured authority as on B/IP. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
 
 Linux Ethernet full servers and standalone Rust clients start UNKNOWN with no configured Ethernet Network Port authority. The AF_PACKET receive path admits only the bound MAC and all-FF broadcast, before UI, XID or TEST handling; of those, only all-FF is a logical group. As a destination, though, every MAC with the group bit (the low bit of its first octet) set is a group destination (`bacnet_transport::ethernet::is_group_mac`), so no confirmed request goes to a multicast MAC either (#1493). No station sends from a group address, so a frame whose source MAC has the group bit set is dropped before the XID and TEST handlers and before decoding, and counted in `EthernetTransport::group_source_drops()` (#1492): otherwise an answer to it, or to a confirmed request in it, would go to the whole group. This is the local single-link admission policy, not an additional quoted Clause 7 mandate. Existing self-source refusal remains. Actual isolated Docker Ethernet tests independently inspect destination/source, 802.3 length, LLC bytes, exact learned reply flag zero and padding, and verify stop/drop raw-FD release plus canceled transport-stop resumption. No privileged host interface or physical LAN is involved. The [opt-in fixture](../crates/bacnet-integration-tests/tests/ethernet_network_numbers/README.md) requires Linux and CAP_NET_RAW and is excluded from ordinary CI. There is no Ethernet endpoint builder or Python Ethernet API in this slice.
 
@@ -8400,6 +8467,8 @@ concrete object and preserves per-target records. Endpoint responder RPM remains
 unsupported. Same-device multiport/router generations, rebind, pending activation
 (and with it writes to the BBMD and foreign-device rows), NAT traversal, B/IP
 multicast, DHCP and full Network Port conformance remain outside this profile.
+A B/IPv6 port registers under the same contract; see
+[Registered B/IPv6 Network Port](#registered-bipv6-network-port).
 
 `EndpointSession::bip_local_address()` returns the active post-bind announced
 address, including the actual ephemeral UDP port, for registered and unregistered

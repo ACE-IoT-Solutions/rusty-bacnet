@@ -97,7 +97,7 @@ impl Node {
             local_ip: local_ip(),
             unicast_ips: vec![local_ip()],
             wildcard_bind: false,
-            foreign_bbmd: foreign.then(|| (*bbmd().ip(), bbmd().port())),
+            foreign_bbmd: foreign.then(|| super::foreign_target::ForeignTarget::at(bbmd())),
             neighbours: Resolver::with_own(LOCAL_VMAC),
             forwarded_group_origin_drops: Arc::default(),
             drops: Arc::default(),

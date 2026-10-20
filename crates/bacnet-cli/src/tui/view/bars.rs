@@ -1,7 +1,8 @@
 //! The status bar and the footer (#1894). Both fit their width by
 //! priority ([`super::fit`]): at 80 columns the least useful parts give way
 //! first, and `? help` and `q quit` always stay. A footer notice sits
-//! beside the key hints rather than over them.
+//! beside the key hints rather than over them; from [`WIDE_WIDTH`] columns
+//! the hints give way so it shows in full where they can (#1927).
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -10,7 +11,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::fit::{self, hint, span, Part, ALWAYS};
-use super::{ellipsize, text_width, Theme};
+use super::{ellipsize, text_width, Theme, WIDE_WIDTH};
 use crate::tui::app::command_bar;
 use crate::tui::app::watch::Screen;
 use crate::tui::app::{App, Link, Overlay};
@@ -20,7 +21,9 @@ use crate::tui::safety::Level as Safety;
 const HELP_WIDTH: u16 = 9;
 
 /// Hints kept at this priority or above stay clear of a footer notice:
-/// the way back, `? help` and `q quit`.
+/// the way back (or a failed link's recovery key), `? help` and `q quit`.
+/// From [`WIDE_WIDTH`], when giving up the way back shows the whole
+/// notice, only `? help` and `q quit` do; never while the link has failed.
 const RESERVED: u8 = 8;
 
 /// `bacnet | BIP 10.0.1.5:47808 | up | READ-ONLY | COV 0 FD held | drop 0`
@@ -214,10 +217,20 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, ta
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     };
-    // The way back, `? help` and `q quit` are kept clear of the notice;
-    // the other hints get what the notice leaves.
-    let kept = fit::reserve(&parts, RESERVED);
-    let notice_room = width.saturating_sub(1 + kept + 2);
+    // The way back (or a failed link's recovery key), `? help` and `q quit`
+    // are kept clear of the notice; the other hints get what the notice
+    // leaves, the lowest priority giving way first. On a wide terminal the
+    // way back gives way too, but only when that shows the whole notice;
+    // the recovery key never does.
+    let room = |keep| width.saturating_sub(1 + fit::reserve(&parts, keep) + 2);
+    let failed = matches!(app.link, Link::Failed(_));
+    let whole = text_width(text) <= room(ALWAYS);
+    let reserved = if area.width >= WIDE_WIDTH && whole && !failed {
+        ALWAYS
+    } else {
+        RESERVED
+    };
+    let notice_room = room(reserved);
     let notice = ellipsize(text, notice_room);
     let used = 1 + text_width(&notice);
     let hints = fit::hints(parts, width.saturating_sub(used + 2));

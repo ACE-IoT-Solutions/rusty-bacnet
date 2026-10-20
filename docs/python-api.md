@@ -3926,7 +3926,10 @@ is its object instance, restricted to 1–255; UDP zero is independently allowed
 The constructor accepts keyword-only `ip_address`, `udp_port`, `network_number`,
 `apdu_length`, `subnet_mask`, `default_gateway`, and `dns_servers`. Defaults use
 zero addresses/mask/gateway and one zero DNS address for unavailable configuration;
-an explicitly empty DNS list is invalid. Addresses must be IPv4 strings.
+an explicitly empty DNS list is invalid. Addresses must be IPv4 strings. A malformed
+address raises `ValueError`; a value outside these ranges raises
+`BacnetProtocolError` (VALUE_OUT_OF_RANGE), a number too large for its type
+`OverflowError`, and a call after `start()` `RuntimeError`.
 Network numbers range from 0 to 65534; zero has UNKNOWN quality, and explicitly
 configured nonzero values have CONFIGURED quality. APDU_Length (399) is any
 unsigned value at least 50, independent of Device property62's discrete limits.
@@ -3940,6 +3943,31 @@ obsolete Network Port property62 are absent. Description
 and Out_Of_Service retain their existing object-local behavior. This is not a live
 port control or complete Network Port/BBMD/foreign/DHCP support claim. The pre-1.0
 raw `add_network_port(network_type=...)` API is removed.
+
+`add_bip6_network_port` is the IPV6 (B/IPv6) counterpart (#1579):
+
+```python
+server.add_bip6_network_port(instance=1, name="B/IPv6 Port", ip_address="2001:db8::10",
+                             udp_port=47808, prefix_length=64, vmac=bytes([0, 4, 0xD2]))
+```
+
+It takes keyword-only `ip_address`, `udp_port`, `network_number`, `apdu_length`,
+`prefix_length` (1–128, default 64), `default_gateway`, `dns_servers`,
+`multicast_address` (an IPv6 multicast group, default `ff05::bac0`) and `vmac`
+(three octets, default zero). Addresses must be IPv6 strings; `::` means unknown.
+A malformed address or a `vmac` of another length raises `ValueError`; a value
+outside the ranges above, a group that isn't multicast or an IPv4-mapped
+`ip_address` raises `BacnetProtocolError` (VALUE_OUT_OF_RANGE), a number too large
+for its type `OverflowError`, and a call after `start()` `RuntimeError`.
+The object serves BACnet_IPv6_Mode, IPv6_Address, IPv6_Prefix_Length,
+BACnet_IPv6_UDP_Port, IPv6_Default_Gateway, BACnet_IPv6_Multicast_Address (the
+group followed by the UDP port) and IPv6_DNS_Server, all read-only, with the VMAC
+as MAC_Address, and none of the IPv4 rows. With `transport="ipv6"`,
+`registered_network_port=1` and a concrete `ipv6_interface` (not link-local or
+IPv4-mapped), start checks the
+object's address and UDP port against the transport's, then publishes the bound
+port and the VMAC the server uses (its device instance). The Python B/IPv6 server
+runs in normal mode only, so BACnet_IPv6_Mode reads 0.
 
 ### Registered B/IP Network Port
 
@@ -3980,7 +4008,7 @@ SC starts UNKNOWN with no configured SC Network Port API; unrelated configured o
 
 B/IP BBMD and configured foreign-mode owners without a registered Network Port start UNKNOWN; a registered port in either mode reports its configured number as above. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
 
-B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python B/IPv6 foreign-device API.
+B/IPv6 starts UNKNOWN unless a B/IPv6 Network Port is registered (`add_bip6_network_port` with `registered_network_port`, #1579), which then supplies configured authority as on B/IP. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python B/IPv6 foreign-device API.
 
 Linux Ethernet full servers and standalone Rust clients start UNKNOWN with no configured Ethernet Network Port authority. The AF_PACKET receive path admits only the bound MAC and all-FF broadcast, before UI, XID or TEST handling; only all-FF is a logical group. This is the local single-link admission policy, not an additional quoted Clause 7 mandate. Existing self-source refusal remains. Actual isolated Docker Ethernet tests independently inspect destination/source, 802.3 length, LLC bytes, exact learned reply flag zero and padding, and verify stop/drop raw-FD release plus canceled transport-stop resumption. No privileged host interface or physical LAN is involved. The [opt-in fixture](../crates/bacnet-integration-tests/tests/ethernet_network_numbers/README.md) requires Linux and CAP_NET_RAW and is excluded from ordinary CI. There is no Ethernet endpoint builder or Python Ethernet API in this slice.
 

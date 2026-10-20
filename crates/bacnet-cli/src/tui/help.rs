@@ -2,13 +2,15 @@
 //! to the session, for the status bar's strip, and the help overlay's
 //! sections, the global keys and then the current screen's.
 //!
-//! Each section names the keys `keymap.rs` handles on that screen; a test
-//! presses every key on every screen and checks that each one the key map
-//! takes is named in that screen's help.
+//! A screen's section is its key table in `keymap.rs` (#1926), the rows
+//! the key map dispatches from, so each description belongs to the key's
+//! action. A test presses every key on every screen and checks that each
+//! one the key map takes is named in that screen's help.
 
 use super::app::command_bar::COMMANDS;
 use super::app::watch::Screen;
 use super::app::{App, Link};
+use super::keymap::{Binding, BROWSER, CAPTURE, DEVICES, GLOBAL, MSTP, NETWORK, SC, WATCH};
 
 /// One screen in the strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,171 +74,49 @@ pub(crate) struct Section {
 }
 
 impl Section {
-    fn new(title: &'static str, rows: &[(&str, &str)]) -> Self {
+    /// A screen's section, from the key table its key map dispatches from.
+    fn keys(title: &'static str, table: &[Binding]) -> Self {
         Self {
             title,
             on_screen: true,
-            rows: rows
+            rows: table
                 .iter()
-                .map(|(keys, what)| (keys.to_string(), what.to_string()))
+                .map(|row| (row.label(), row.what.to_string()))
                 .collect(),
         }
     }
 }
 
-/// The movement keys, where a list takes them.
-const MOVE: (&str, &str) = ("Up Down k j", "Move");
-/// The keys that jump.
-const JUMP: (&str, &str) = ("PgUp PgDn", "A page up or down");
-/// The keys to the ends.
-const ENDS: (&str, &str) = ("Home End g G", "The first or last row");
-
-const GLOBAL: &[(&str, &str)] = &[
-    ("?", "This help; Up, Down, PgUp and PgDn scroll it"),
-    ("q", "Quit (asks first while writes are in effect)"),
-    (
-        "Ctrl-C",
-        "Close a dialog or cancel the request; twice quits",
-    ),
-    ("L", "Show or hide the log pane"),
-    (
-        "W u",
-        "Arm or disarm writes (read-only until then); the ledger",
-    ),
-    (":", "The command bar, with the commands listed below"),
-    ("p c", "The profile dialog; connect again, or retry"),
-    ("1 2", "Devices; 2 is Browse, the open device's browser"),
-    (
-        "3 4 5 6 7",
-        "Watch, Network, SC, MS/TP, Capture; see the top line",
-    ),
-];
-
-const DEVICES: &[(&str, &str)] = &[
-    ("d", "The Who-Is form"),
-    (
-        "Enter",
-        "Browse the selected device (the one kept open comes back as it was)",
-    ),
-    MOVE,
-    JUMP,
-    ENDS,
-    (
-        "/ s S",
-        "Filter (Esc clears it); sort by the next column; reverse",
-    ),
-    ("x", "Disconnect, or cancel a connection attempt"),
-    ("Esc", "Clear the filter, or a notice"),
-];
-
-const BROWSER: &[(&str, &str)] = &[
-    ("Enter", "Read the selected object"),
-    (
-        "Tab Shift-Tab",
-        "Next or previous pane; below 120 columns a commandable object's priority array is one",
-    ),
-    ("/ r", "Filter the objects; read the object again"),
-    ("a", "Watch the selected object's present-value"),
-    (
-        "w n",
-        "In a write session: write a property; relinquish a slot",
-    ),
-    MOVE,
-    JUMP,
-    ENDS,
-    ("x", "Disconnect"),
-    (
-        "Esc",
-        "Clear the filter, then close the device and go back (1 keeps it)",
-    ),
-];
-
+/// The Who-Is form's keys, shown for reference under the devices: the
+/// form is a dialog that takes typed text, so it has no key table.
 const WHO_IS: &[(&str, &str)] = &[
     ("Tab Up Down", "Next or previous field"),
     ("Left Right Space", "Change the scope"),
     ("Enter Esc", "Send (again past a warning); close"),
 ];
 
-const WATCH: &[(&str, &str)] = &[
-    MOVE,
-    JUMP,
-    ENDS,
-    (
-        "x Delete",
-        "Stop watching the row and cancel its subscription",
-    ),
-    ("Esc", "Back to the devices"),
-];
-
-const NETWORK: &[(&str, &str)] = &[
-    (
-        "Tab Shift-Tab",
-        "Next or previous table: BDT, FDT, Matrix, Networks; from 160 columns, the next pane",
-    ),
-    (
-        "r",
-        "Read the BBMD's tables again; on Networks, ask the routers",
-    ),
-    ("m", "Survey every BBMD the tables lead to, for the matrix"),
-    ("x", "Disconnect"),
-    ("Esc", "Back to the devices"),
-];
-
-const SC: &[(&str, &str)] = &[
-    (
-        "Tab Shift-Tab",
-        "Next or previous view: hub certificates, doctor, my credentials; from 160 columns the credentials view shows the hub's chain on its left",
-    ),
-    ("x", "Disconnect"),
-    ("Esc", "Back to the devices"),
-];
-
-const MSTP: &[(&str, &str)] = &[
-    ("z", "Count from now"),
-    ("Space", "Pause the screen, or follow again"),
-    ("x", "Disconnect, or stop the monitor"),
-    (
-        "Tab Shift-Tab",
-        "Monitor: stations, token ring, findings, errors",
-    ),
-    ("J", "Monitor: start the safe join"),
-    ("+ = -", "Safe join: the next or previous free MAC"),
-    ("Enter", "Safe join: review the proposal in the join dialog"),
-    ("Esc", "Back to the devices"),
-];
-
-const CAPTURE: &[(&str, &str)] = &[
-    ("Space", "Pause the list, or follow the newest frame"),
-    ("Tab Shift-Tab", "List, decode tree, hex view"),
-    ("Enter Left Right", "To the tree; close or open a node"),
-    ("/", "Filter: dev: mac: net: svc: pdu: errors bcast"),
-    ("e E", "Export to pcap: B/IP as Ethernet, or as raw IPv4"),
-    ("z", "Forget every frame"),
-    ("x", "Disconnect"),
-    MOVE,
-    JUMP,
-    ENDS,
-    ("Esc", "Clear the filter, then back to the devices"),
-];
-
 /// The help for the screen shown: the global keys, the screen's own, and
 /// the command bar's commands.
 pub(crate) fn sections(app: &App) -> Vec<Section> {
-    let mut out = vec![Section::new("Global", GLOBAL)];
+    let mut out = vec![Section::keys("Global", GLOBAL)];
     match app.screen {
-        Screen::Browse => out.push(Section::new("Browse (2)", BROWSER)),
+        Screen::Browse => out.push(Section::keys("Browse (2)", BROWSER)),
         Screen::Main => {
-            out.push(Section::new("Devices (1)", DEVICES));
+            out.push(Section::keys("Devices (1)", DEVICES));
             out.push(Section {
+                title: "Who-Is form (d)",
                 on_screen: false,
-                ..Section::new("Who-Is form (d)", WHO_IS)
+                rows: WHO_IS
+                    .iter()
+                    .map(|(keys, what)| (keys.to_string(), what.to_string()))
+                    .collect(),
             });
         }
-        Screen::Watch => out.push(Section::new("Watch (3)", WATCH)),
-        Screen::Network => out.push(Section::new("Network (4)", NETWORK)),
-        Screen::Sc => out.push(Section::new("BACnet/SC (5)", SC)),
-        Screen::Mstp => out.push(Section::new("MS/TP (6)", MSTP)),
-        Screen::Capture => out.push(Section::new("Capture (7)", CAPTURE)),
+        Screen::Watch => out.push(Section::keys("Watch (3)", WATCH)),
+        Screen::Network => out.push(Section::keys("Network (4)", NETWORK)),
+        Screen::Sc => out.push(Section::keys("BACnet/SC (5)", SC)),
+        Screen::Mstp => out.push(Section::keys("MS/TP (6)", MSTP)),
+        Screen::Capture => out.push(Section::keys("Capture (7)", CAPTURE)),
     }
     out.push(Section {
         title: "Commands (:)",

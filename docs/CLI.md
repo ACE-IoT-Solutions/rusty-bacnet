@@ -473,7 +473,7 @@ table is refreshed from the client's discovery table afterwards.
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
-| `?` | Help: the global keys, this screen's, and the commands; Up, Down, PgUp and PgDn scroll it |
+| `?` | Help: the global keys, this screen's, and the commands; the movement keys scroll it |
 | `Ctrl-C` | Close a dialog or cancel the running Who-Is/connection attempt; press again within 2 s to quit |
 | `q` | Quit; with changes still in the ledger, the exit guard asks first |
 
@@ -555,7 +555,8 @@ for itself.
 object named NAME (the rest of the line, exactly as typed, apostrophes and
 runs of spaces included; a name that is one quoted word, `"Zone  Temp"`, is
 unwrapped, and `:find ""` closes the panel like `:find` alone) and lists the
-devices whose I-Have answers it in a panel below the device table: the
+devices whose I-Have answers it in a panel below the device table (beside
+it from 160 columns, when both fit at their content widths): the
 device, the object as the browser labels it (`analog-input 3`), the object's
 name (cut with `…` when it doesn't fit, control characters shown as spaces),
 the address it answered from as the device table writes it, the router in a
