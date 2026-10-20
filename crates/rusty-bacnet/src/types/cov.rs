@@ -145,7 +145,7 @@ impl PyCovNotificationIterator {
     }
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let next = self.0.next();
+        let (next, put_back) = self.0.next();
         crate::py_async::future_into_py_or_put_back(
             py,
             async move {
@@ -153,13 +153,12 @@ impl PyCovNotificationIterator {
                     .map(|next| next.map(|inner| PyCovNotification { inner }))
                     .ok_or_else(|| crate::event_stream::ended("COV notifications"))
             },
-            self.0.put_back(),
+            put_back,
         )
     }
 
-    /// Notifications this iterator lost: because it fell behind the
-    /// client's COV channel, or, rarely, because a second cancelled
-    /// `__anext__` found the redelivery slot full.
+    /// Notifications this iterator lost because it fell behind the
+    /// client's COV channel.
     #[getter]
     fn missed(&self) -> u64 {
         self.0.missed()

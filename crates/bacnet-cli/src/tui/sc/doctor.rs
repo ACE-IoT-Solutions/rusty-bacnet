@@ -276,7 +276,8 @@ fn stalled(stage: ScDialStage) -> (Phase, &'static str) {
         ScDialStage::HostLookup => (
             Phase::Dns,
             "The host name lookup did not finish within the connect timeout. Check this \
-             computer's DNS servers; an IP address in the URL skips the lookup.",
+             computer's DNS servers. An IP address in the URL skips the lookup, but the \
+             hub's certificate must then list that IP as a subject alternative name.",
         ),
         ScDialStage::TcpConnect => (
             Phase::Tcp,

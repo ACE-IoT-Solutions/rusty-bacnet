@@ -919,7 +919,7 @@ interval (#1828).
 `connect_accept_timeout`, `upgrade_refused`, `malformed_result`,
 `unexpected_connect_reply`, `rejection_expired` or `other`; `cause_detail`
 adds text for `websocket`, `tls` and `other`. A `dial_timeout` is a dial
-(TCP, TLS or WebSocket upgrade) that ran out of time, with `dial_stage`
+(host lookup, TCP, TLS or WebSocket upgrade) that ran out of time, with `dial_stage`
 (`host_lookup`, `tcp_connect`, `tls` or `websocket_upgrade`) saying where; a
 `connect_accept_timeout` is a hub that opened the WebSocket but never answered
 the Connect-Request. An `upgrade_refused` is a server, often a proxy, that
@@ -932,7 +932,8 @@ link stands. Each `connection_events()` call is an independent subscription.
 A cancel before an event arrives loses nothing, and one that lands while an
 event is being delivered, as a timed-out `asyncio.wait_for` does, puts the
 event back in a one-event slot that the next `__anext__` returns first
-(#1858). A second such event while the slot is full is counted in `missed`.
+(#1858). Reads wait behind an event on its way back, so it keeps its place
+before later events and before the end of the iteration.
 Iteration ends
 (`StopAsyncIteration`) once the client stops; the iterator holds no reference
 to the client.

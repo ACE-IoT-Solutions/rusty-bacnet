@@ -628,7 +628,8 @@ async fn stalls_and_a_refusing_proxy_each_land_on_their_phase() {
         tls.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
             .await
             .unwrap();
-        tls.shutdown().await.unwrap();
+        // The client may have closed first; the 502 is already sent.
+        let _ = tls.shutdown().await;
     });
     let error = dial_within(WAIT, TlsWebSocket::connect(&url, node))
         .await

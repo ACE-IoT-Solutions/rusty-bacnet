@@ -227,7 +227,8 @@ pub enum ScTlsAlert {
 /// }
 /// ```
 ///
-/// A hub dial (TCP, TLS and WebSocket upgrade) that runs out of time is
+/// A hub dial (host lookup, TCP, TLS and WebSocket upgrade) that runs out
+/// of time is
 /// [`ScConnectError::DialTimeout`]. A Connect-Request that gets no
 /// Connect-Accept in time uses the top-level [`Error::Timeout`] variant.
 #[non_exhaustive]
@@ -285,8 +286,8 @@ pub enum ScConnectError {
         /// `None` when no HTTP response came back.
         http_status: Option<u16>,
     },
-    /// The hub dial (TCP, TLS and WebSocket upgrade) did not finish within
-    /// the connect timeout.
+    /// The hub dial (host lookup, TCP, TLS and WebSocket upgrade) did not
+    /// finish within the connect timeout.
     #[non_exhaustive]
     DialTimeout {
         /// The connect timeout that ran out.

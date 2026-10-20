@@ -1409,8 +1409,8 @@ receiver of `ScEvent`s (#959): `Connected { hub, hub_vmac }`,
 the primary is one `PrimaryRestoreFailed`, at most one per restore interval
 (#1828). The cause is an `ScDisconnectCause`: local close, peer close,
 heartbeat timeout, a WebSocket or TLS error kind, a BVLC-Result NAK with its
-typed `ErrorClass` and `ErrorCode`, `DialTimeout { stage }` (the TCP, TLS or
-WebSocket-upgrade dial ran out of time, `stage` an `ScDialStage` when the
+typed `ErrorClass` and `ErrorCode`, `DialTimeout { stage }` (the dial ran out of
+time in its host lookup, TCP connect, TLS handshake or WebSocket upgrade, `stage` an `ScDialStage` when the
 dialler reports it), `ConnectAcceptTimeout` (no Connect-Accept in time),
 `UpgradeRefused { http_status }` (a server, often a proxy, answered the
 upgrade with that HTTP status), a malformed result, an unexpected connect

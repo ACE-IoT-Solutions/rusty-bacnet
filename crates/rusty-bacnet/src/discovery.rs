@@ -220,7 +220,7 @@ impl PyIHaveIterator {
     }
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let next = self.0.next();
+        let (next, put_back) = self.0.next();
         crate::py_async::future_into_py_or_put_back(
             py,
             async move {
@@ -228,7 +228,7 @@ impl PyIHaveIterator {
                     .map(|next| next.map(PyIHave))
                     .ok_or_else(|| ended("I-Have events"))
             },
-            self.0.put_back(),
+            put_back,
         )
     }
 
@@ -262,7 +262,7 @@ impl PyNetworkReportIterator {
     }
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let next = self.0.next();
+        let (next, put_back) = self.0.next();
         crate::py_async::future_into_py_or_put_back(
             py,
             async move {
@@ -270,7 +270,7 @@ impl PyNetworkReportIterator {
                     .map(|next| next.map(PyNetworkReport))
                     .ok_or_else(|| ended("network reports"))
             },
-            self.0.put_back(),
+            put_back,
         )
     }
 

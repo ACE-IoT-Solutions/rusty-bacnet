@@ -127,6 +127,10 @@ pub(crate) trait PutBack: Send + Sync + 'static {
     /// Called on the thread that found the future done, attached to the
     /// interpreter.
     fn put_back(&self, py: Python<'_>, value: Py<PyAny>);
+
+    /// Called once a value has reached its future or gone to `put_back`,
+    /// so the iterator can hand out the next one in order.
+    fn settled(&self);
 }
 
 /// [`future_into_py`], except that a successful value that finds its
@@ -248,6 +252,7 @@ impl Completion {
         if done {
             if let Some(put_back) = put_back {
                 put_back.put_back(py, value.unbind());
+                put_back.settled();
             }
             return Ok(());
         }
@@ -266,6 +271,7 @@ impl Completion {
             }
             if let Some(put_back) = put_back {
                 put_back.put_back(py, value.unbind());
+                put_back.settled();
             }
         }
         Ok(())
@@ -274,7 +280,8 @@ impl Completion {
 
 /// Runs on the event loop: set the result unless the future was cancelled
 /// while the result was on its way; a value it can no longer take goes to
-/// the put-back hook, when there is one.
+/// the put-back hook, when there is one. Either way the hook then hears that
+/// the value settled; one that errors out settles when the hook drops.
 #[pyclass(frozen)]
 struct SetUnlessDone(Option<Arc<dyn PutBack>>);
 
@@ -291,6 +298,9 @@ impl SetUnlessDone {
             setter.call1((value,))?;
         } else if let Some(put_back) = &self.0 {
             put_back.put_back(py, value.clone().unbind());
+        }
+        if let Some(put_back) = &self.0 {
+            put_back.settled();
         }
         Ok(())
     }

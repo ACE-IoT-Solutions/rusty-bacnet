@@ -507,11 +507,18 @@ fn timeline(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 let age = format!("{:>5} ago ", age_label(app.now, entry.at));
                 // The text hangs after the age and the level, however wide.
                 let indent = layout::cols(&age) + level.width() + 1;
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(age, theme.dim()),
                     level,
                     Span::raw(format!(" {}", entry.text)),
-                ]);
+                ];
+                if entry.repeats > 1 {
+                    spans.push(Span::styled(
+                        format!(" ({} times)", entry.repeats),
+                        theme.dim(),
+                    ));
+                }
+                let line = Line::from(spans);
                 Row::hang(line, indent)
             })
             .collect()

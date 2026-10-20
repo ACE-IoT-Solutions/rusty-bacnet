@@ -63,8 +63,8 @@ pub enum ScDisconnectCause {
         /// Error code carried by the NAK.
         error_code: ErrorCode,
     },
-    /// The hub dial (TCP, TLS and WebSocket upgrade) did not finish within
-    /// the connect timeout (#1839).
+    /// The hub dial (host lookup, TCP, TLS and WebSocket upgrade) did not
+    /// finish within the connect timeout (#1839).
     #[non_exhaustive]
     DialTimeout {
         /// The step the dial was in, when the dialler reports it.
@@ -96,6 +96,12 @@ pub enum ScDisconnectCause {
 
 impl ScDisconnectCause {
     /// Classify a connect-path or WebSocket error.
+    ///
+    /// A bare [`Error::Timeout`] reads as [`Self::ConnectAcceptTimeout`],
+    /// since a dial run through [`dial_within`](super::dial_within) times out
+    /// as [`ScConnectError::DialTimeout`]. A custom connector that returns
+    /// `Error::Timeout` itself for a slow dial is therefore reported as a
+    /// Connect-Accept timeout.
     pub fn from_error(error: &Error) -> Self {
         // A dial's timeout is typed; the bare timeout is the Connect-Request's.
         if let Error::Timeout(_) = error {

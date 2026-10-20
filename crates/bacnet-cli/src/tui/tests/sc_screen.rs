@@ -206,6 +206,39 @@ fn a_failed_restore_probe_is_a_timeline_line_only() {
     assert_eq!((states(&app), app.sc.failure.clone(), app.sc.link), before);
 }
 
+/// Failed restore probes in a row with the same cause share one line,
+/// with a count and the latest time, so they can't push the loss and
+/// failover lines out; a different cause starts a new line.
+#[test]
+fn repeated_restore_failures_share_one_timeline_line() {
+    let mut app = after_a_failover();
+    let lines = app.sc.timeline.len();
+    let probe = |fault| {
+        ScReport::Event(LinkEvent::PrimaryRestoreFailed {
+            fault: Fault::WebSocket(fault),
+        })
+    };
+    sc(&mut app, probe(ScWebSocketErrorKind::TcpDial));
+    let first_at = app.sc.timeline.back().unwrap().at;
+    let later = app.now + Duration::from_secs(30);
+    tick(&mut app, later);
+    sc(&mut app, probe(ScWebSocketErrorKind::TcpDial));
+    sc(&mut app, probe(ScWebSocketErrorKind::TcpDial));
+    assert_eq!(app.sc.timeline.len(), lines + 1);
+    let last = app.sc.timeline.back().unwrap();
+    assert_eq!(last.repeats, 3);
+    assert!(last.at > first_at, "the line keeps the latest time");
+    app.screen = Screen::Sc;
+    assert!(
+        screen(&mut app, 120, 40).contains("nothing accepted the TCP connection (3 times)"),
+        "{}",
+        screen(&mut app, 120, 40)
+    );
+    sc(&mut app, probe(ScWebSocketErrorKind::TlsHandshake));
+    assert_eq!(app.sc.timeline.len(), lines + 2);
+    assert_eq!(app.sc.timeline.back().unwrap().repeats, 1);
+}
+
 #[test]
 fn a_status_poll_resyncs_and_records_only_changes() {
     let mut app = sc_app();

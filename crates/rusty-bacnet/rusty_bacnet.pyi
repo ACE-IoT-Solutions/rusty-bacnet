@@ -1741,8 +1741,7 @@ class CovNotificationIterator:
     def __anext__(self) -> Awaitable[CovNotification]: ...
     @property
     def missed(self) -> int:
-        """Notifications lost so far: behind the channel, or, rarely, a
-        second cancelled delivery while one already waits to come back."""
+        """Notifications lost so far because this iterator fell behind."""
         ...
 
 
@@ -2378,7 +2377,7 @@ class ScEvent:
                                "rejection_expired", "other"] | None:
         """Why a ``disconnected`` link ended, or a ``connect_failed`` attempt
         or ``primary_restore_failed`` probe failed. ``dial_timeout``: the
-        dial (TCP, TLS, WebSocket upgrade) ran out of time;
+        dial (host lookup, TCP, TLS, WebSocket upgrade) ran out of time;
         ``connect_accept_timeout``: the hub never answered the
         Connect-Request; ``upgrade_refused``: the server answered the
         upgrade with ``http_status`` (#1839)."""
@@ -2450,8 +2449,8 @@ class ScEventIterator:
     def __anext__(self) -> Awaitable[ScEvent]: ...
     @property
     def missed(self) -> int:
-        """Events lost so far: behind the connector, or, rarely, a second
-        cancelled delivery while one already waits to come back."""
+        """Events lost so far because this iterator fell behind the
+        connector."""
         ...
 
 class BACnetClient:
@@ -3596,8 +3595,9 @@ class BACnetClient:
     def connection_events(self) -> Awaitable[ScEventIterator]:
         """Subscribe to the SC hub-connector events (#1829). The first call
         after a start gets the events since the client was built, starting
-        with the first ``connected`` (#1908); a later call is a late
-        subscriber and gets the events from that call on. A slow reader
+        with the first ``connected`` (#1908); if that first call comes long
+        after the start, its first events may be old ones from the build. A
+        later call is a late subscriber and gets the events from that call on. A slow reader
         never holds up the connector: see ``ScEventIterator.missed``.
         RuntimeError for a stopped or non-SC client."""
         ...

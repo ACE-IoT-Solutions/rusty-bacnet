@@ -289,7 +289,7 @@ impl PyScEventIterator {
     }
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let next = self.0.next();
+        let (next, put_back) = self.0.next();
         crate::py_async::future_into_py_or_put_back(
             py,
             async move {
@@ -297,13 +297,12 @@ impl PyScEventIterator {
                     .map(|next| next.map(PyScEvent))
                     .ok_or_else(|| crate::event_stream::ended("SC connection events"))
             },
-            self.0.put_back(),
+            put_back,
         )
     }
 
-    /// Events this iterator lost: because it fell more than 64 behind, or,
-    /// rarely, because a second cancelled `__anext__` found the redelivery
-    /// slot full. The connector never waits for a reader; after a gap, read
+    /// Events this iterator lost because it fell more than 64 behind. The
+    /// connector never waits for a reader; after a gap, read
     /// `connection_status()` for where the link stands.
     #[getter]
     fn missed(&self) -> u64 {

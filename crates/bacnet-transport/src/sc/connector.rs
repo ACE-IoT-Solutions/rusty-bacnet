@@ -24,7 +24,8 @@ pub(crate) fn enter_dial_stage(stage: ScDialStage) {
     let _ = DIAL_STAGE.try_with(|at| at.store(stage.code(), Ordering::Relaxed));
 }
 
-/// Run a hub dial (TCP, TLS and WebSocket upgrade), bounded by `timeout`.
+/// Run a hub dial (host lookup, TCP, TLS and WebSocket upgrade), bounded by
+/// `timeout`.
 ///
 /// When the time runs out, the error is [`ScConnectError::DialTimeout`],
 /// naming the step the dial was in when the dialler reports its steps, as

@@ -10,9 +10,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// Short, since each fixture stalls on purpose and never answers.
 const LIMIT: Duration = Duration::from_millis(300);
 
-async fn listener() -> (tokio::net::TcpListener, String) {
+/// A loopback listener and a URL for it naming `host`.
+async fn listener(host: &str) -> (tokio::net::TcpListener, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("wss://localhost:{}", listener.local_addr().unwrap().port());
+    let url = format!("wss://{host}:{}", listener.local_addr().unwrap().port());
     (listener, url)
 }
 
@@ -21,7 +22,9 @@ async fn listener() -> (tokio::net::TcpListener, String) {
 #[tokio::test]
 async fn a_stalled_tls_handshake_is_a_dial_timeout_in_tls() {
     let (node, _) = test_tls_pair();
-    let (listener, url) = listener().await;
+    // An IP, so a lookup of localhost that tries ::1 first can't fail the
+    // dial in TCP; the handshake never gets far enough to check the name.
+    let (listener, url) = listener("127.0.0.1").await;
     let holder = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         std::future::pending::<()>().await;
@@ -56,7 +59,7 @@ async fn a_stalled_tls_handshake_is_a_dial_timeout_in_tls() {
 #[tokio::test]
 async fn a_silent_hub_is_a_connect_accept_timeout() {
     let (node, server) = test_tls_pair();
-    let (listener, url) = listener().await;
+    let (listener, url) = listener("localhost").await;
     let hub = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let tls = TlsAcceptor::from(server).accept(tcp).await.unwrap();
@@ -104,7 +107,7 @@ async fn a_silent_hub_is_a_connect_accept_timeout() {
 #[tokio::test]
 async fn a_refused_upgrade_keeps_its_http_status() {
     let (node, server) = test_tls_pair();
-    let (listener, url) = listener().await;
+    let (listener, url) = listener("localhost").await;
     let proxy = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut tls = TlsAcceptor::from(server).accept(tcp).await.unwrap();
@@ -120,7 +123,8 @@ async fn a_refused_upgrade_keeps_its_http_status() {
         )
         .await
         .unwrap();
-        tls.shutdown().await.unwrap();
+        // The client may have closed first; the 502 is already sent.
+        let _ = tls.shutdown().await;
     });
     let error = match dial_within(LIMIT * 10, TlsWebSocket::connect(&url, node)).await {
         Ok(_) => panic!("a refused upgrade cannot connect"),
