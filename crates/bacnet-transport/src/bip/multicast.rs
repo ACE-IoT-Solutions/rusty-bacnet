@@ -2,6 +2,22 @@
 //! broadcasts to an IPv4 multicast group, which stands in for its subnet's
 //! broadcast address, and takes broadcasts only from that group.
 //!
+//! **A BBMD for the group.** A BBMD with a group serves it (Annex J.8.3):
+//! it joins as a member does, and `bacnet-bip-core` uses the group where a
+//! plain BBMD uses its subnet's broadcast address. A broadcast that comes
+//! through the group goes on to the BDT and the foreign devices, a peer's
+//! Forwarded-NPDU and a foreign device's Distribute-Broadcast-To-Network go
+//! to the group too, and its own BDT row must be two-hop, which `start()`
+//! checks. A network that mixes B/IP-M and plain B/IP devices has exactly
+//! one BBMD for the group, and the two kinds of device don't share an IP
+//! subnet (Annex J.8.1); neither is something one node can check. Like a
+//! member it keeps its IP subnet's directed broadcast as a group address,
+//! so a datagram from it, or a Forwarded-NPDU naming it as the origin,
+//! is still dropped: a BBMD that answered one would reach the whole
+//! subnet. It may also run behind a NAT router (#940): both want a two-hop
+//! own row, and the NAT rules for the origin of what it forwards don't
+//! change.
+//!
 //! **Configuration.** [`BipMulticast`] names the group (class D, outside
 //! the 224.0.0.0/24 local network control block), the
 //! multicast TTL (1 by default, so the group stays on the local network:
@@ -44,7 +60,10 @@
 //! joined before the link changes (the primary socket's multicast send
 //! options may be set first), then the link moves to the group and the
 //! receive loop takes the listener in place of the old one. A later start
-//! uses the group activated last.
+//! uses the group activated last. A BBMD serves the row read-only: its
+//! group and its own BDT row go together under the all-ones rule, and the
+//! Network Port activates its BBMD rows and its group through separate
+//! views, so a joint change could take effect half way.
 //!
 //! Lock order: the object database (held by the caller), then the
 //! control's lock, then the node's. No lock here is held across an await.
@@ -315,8 +334,11 @@ pub(super) struct Running {
     /// Where broadcasts go without a group: the configured broadcast
     /// address at the bound port.
     pub(super) subnet: SocketAddrV4,
-    /// The receive loop's listener hand-off (not on Windows).
+    /// The receive loop's listener hand-off (not on Windows, nor for a
+    /// BBMD, whose group doesn't change at run time).
     pub(super) swap: Option<Arc<GroupSwap>>,
+    /// The transport is a BBMD: its group is read-only (module docs).
+    pub(super) bbmd: bool,
     /// What a new listener keeps and reports to: the Network Port lease and
     /// the transport's frame tap.
     pub(super) lease: Option<Arc<()>>,
@@ -389,9 +411,10 @@ impl MulticastControl {
         self.lock().running = None;
     }
 
-    /// The running node: attached, and not stopped.
+    /// The running node: attached, not stopped, and not a BBMD's, whose
+    /// group stays as it started.
     fn running(state: &ControlState) -> Option<(Arc<NodeHandle>, &Running)> {
-        let running = state.running.as_ref()?;
+        let running = state.running.as_ref().filter(|running| !running.bbmd)?;
         let node = running.node.upgrade().filter(|node| !node.is_stopped())?;
         Some((node, running))
     }
@@ -576,8 +599,13 @@ impl IpMulticast for MulticastControl {
         Ok(())
     }
 
+    /// Not for a running BBMD (module docs).
     fn can_change(&self) -> bool {
-        true
+        !self
+            .lock()
+            .running
+            .as_ref()
+            .is_some_and(|running| running.bbmd)
     }
 }
 
@@ -594,12 +622,13 @@ impl super::BipTransport {
     /// Fails, changing nothing, on a transport bound to 0.0.0.0: the group
     /// is joined on the interface, which must be explicit. With no group
     /// port ([`BipMulticast::with_port`]) the transport's port must be
-    /// nonzero. `start()` also refuses a member that is a BBMD (a BBMD that
-    /// serves a group comes later, #941), registers as a foreign device, or
-    /// shares its port by address. Call it before `start()`. A registered
-    /// Network Port serves the group as BACnet_IP_Multicast_Address, which a
-    /// ReinitializeDevice can change while the transport runs; a later start
-    /// keeps that change.
+    /// nonzero. `start()` also refuses a member that is a foreign device
+    /// too, or shares its port by address. A BBMD with a group serves it
+    /// (Annex J.8.3, module docs): `start()` then refuses a BDT whose own
+    /// row isn't two-hop. Call it before `start()`. A registered Network
+    /// Port serves the group as BACnet_IP_Multicast_Address, which a
+    /// ReinitializeDevice can change while a member runs; a later start
+    /// keeps that change. A BBMD's row is read-only.
     pub fn set_multicast(&mut self, multicast: Option<BipMulticast>) -> Result<(), Error> {
         if let Some(refused) = multicast.and_then(|group| self.multicast.refusal(&group)) {
             return Err(config(refused));
@@ -614,16 +643,15 @@ impl super::BipTransport {
         self.multicast.config()
     }
 
-    /// Whether this transport can be a B/IP-M member, so it lends its group
-    /// to the Network Port: an explicit interface, NORMAL mode, not sharing
-    /// its port by address, and a port for the group.
+    /// Whether this transport can use a B/IP-M group, as a member or as the
+    /// BBMD that serves it, so it lends its group to the Network Port: an
+    /// explicit interface, not a foreign device, not sharing its port by
+    /// address, and a port for the group.
     pub(super) fn supports_multicast(&self) -> bool {
         let group_port = self.multicast.config().and_then(|group| group.port);
         !self.interface.is_unspecified()
             && !self.share_port_by_address
             && self.foreign_device.is_none()
-            && self.bbmd_config.is_none()
-            && self.bbmd.is_none()
             && (self.multicast.configured_port != 0 || group_port.is_some())
     }
 
@@ -639,9 +667,10 @@ impl super::BipTransport {
     /// Hand the multicast control the started node, so a Network Port
     /// activation can move its group, and return the listener hand-off for
     /// the receive loop: only for a transport that lends its group
-    /// ([`supports_multicast`](Self::supports_multicast)), and never on
-    /// Windows, whose primary socket joins the group. Without one the
-    /// receive loop waits on nothing extra.
+    /// ([`supports_multicast`](Self::supports_multicast)), never for a BBMD,
+    /// whose group doesn't change, and never on Windows, whose primary
+    /// socket joins the group. Without one the receive loop waits on
+    /// nothing extra.
     pub(super) fn attach_multicast(
         &self,
         node: &Arc<NodeHandle>,
@@ -651,12 +680,14 @@ impl super::BipTransport {
             self.multicast.detach();
             return None;
         }
-        let swap = (!cfg!(windows)).then(|| Arc::new(GroupSwap::default()));
+        let bbmd = self.bbmd.is_some();
+        let swap = (!cfg!(windows) && !bbmd).then(|| Arc::new(GroupSwap::default()));
         self.multicast.attach(Running {
             node: Arc::downgrade(node),
             port: subnet.port(),
             subnet,
             swap: swap.clone(),
+            bbmd,
             lease: self.network_port_lease.clone(),
             tap: self.frame_tap.clone(),
         });
@@ -669,13 +700,7 @@ impl super::BipTransport {
         multicast: &BipMulticast,
         foreign: bool,
     ) -> Result<(), Error> {
-        let refused = if self.bbmd_config.is_some() || self.bbmd.is_some() {
-            Some(
-                "a B/IP BBMD can't serve a multicast group yet (#941); run the member and the \
-                 BBMD on separate transports"
-                    .to_string(),
-            )
-        } else if foreign {
+        let refused = if foreign {
             Some(
                 "a B/IP foreign device broadcasts through its BBMD, so it can't also be a \
                  multicast group member"

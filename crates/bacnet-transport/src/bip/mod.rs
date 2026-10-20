@@ -122,6 +122,10 @@ pub struct BipTransport {
     bbmd_config: Option<BbmdConfig>,
     /// BBMD state (when acting as a BBMD, created in `start()`).
     bbmd: Option<Arc<std::sync::Mutex<BbmdState>>>,
+    /// Whether the BBMD state serves a B/IP-M group (Annex J.8.3), as last
+    /// set: a restart locks the state to change it only when the group
+    /// came or went.
+    bbmd_serves_group: bool,
     /// BBMD FDT expiry purge task.
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
     /// Foreign device registration (when registered as a foreign device),
@@ -207,6 +211,7 @@ impl BipTransport {
             recv_task: None,
             bbmd_config: None,
             bbmd: None,
+            bbmd_serves_group: false,
             bbmd_fdt_purge_task: None,
             foreign_device: None,
             node: None,
@@ -628,10 +633,14 @@ impl TransportPort for BipTransport {
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
             let path = self.bdt_file.as_deref().map(bbmd::BdtFile::path);
             let mut state = initial_bbmd_state(config, path, &own_address)?;
+            // A BBMD with a group serves it (Annex J.8.3): its own row must
+            // be two-hop.
+            state.set_serves_group(multicast.is_some())?;
             let ip = state.local_address().ip().octets();
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
+            self.bbmd_serves_group = multicast.is_some();
             Some(ip)
         } else if let Some(bbmd) = self.bbmd.as_ref().filter(|_| wildcard_bind) {
             // An explicit interface keeps its IP and port, and its mask,
@@ -645,6 +654,17 @@ impl TransportPort for BipTransport {
             bbmd::lock(bbmd).set_subnet_mask(mask);
             Some(ip)
         } else {
+            // A restart may come with another group, or none: only then is
+            // the state locked.
+            let group = multicast.is_some();
+            if let Some(bbmd) = self
+                .bbmd
+                .as_ref()
+                .filter(|_| self.bbmd_serves_group != group)
+            {
+                bbmd::lock(bbmd).set_serves_group(group)?;
+                self.bbmd_serves_group = group;
+            }
             None
         };
         if let Some(ip) = bbmd_ip {
@@ -899,6 +919,8 @@ mod malformed_bvll_tests;
 mod management_ack_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod multicast_bbmd_tests;
 #[cfg(test)]
 mod multicast_tests;
 #[cfg(test)]

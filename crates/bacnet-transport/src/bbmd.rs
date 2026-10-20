@@ -387,6 +387,20 @@ impl BbmdState {
             .map_err(bdt_error)
     }
 
+    /// Say whether this BBMD serves a B/IP-M group (Annex J.8.3, #941):
+    /// its own BDT row must then have the all-ones mask, and a BDT whose own
+    /// row has another is refused from now on. Turning it on fails, changing
+    /// nothing, while the own row has another mask.
+    pub(crate) fn set_serves_group(&mut self, serves: bool) -> Result<(), Error> {
+        self.tables.bdt.set_serves_group(serves).map_err(bdt_error)
+    }
+
+    /// Whether this BBMD serves a B/IP-M group (Annex J.8.3): see
+    /// [`BipTransport::set_multicast`](crate::bip::BipTransport::set_multicast).
+    pub fn serves_group(&self) -> bool {
+        self.tables.bdt.serves_group()
+    }
+
     /// A copy of the current BDT, this BBMD's own row included.
     pub fn bdt(&self) -> Vec<BdtEntry> {
         rows_of(self.tables.bdt.rows())
@@ -517,13 +531,16 @@ impl BbmdState {
     /// the subnet's mask). The sender's own row doesn't matter. One
     /// that arrives by broadcast never is; see
     /// [`Tables::rebroadcasts_forwarded`](core_bbmd::Tables::rebroadcasts_forwarded).
+    /// A BBMD that serves a B/IP-M group ([`Self::serves_group`]) passes it
+    /// to the group whatever the peer's subnet (Annex J.8.3).
     pub fn forwarded_npdu_needs_local_broadcast(&self, ip: [u8; 4], port: u16) -> bool {
         let sender = address(ip, port);
+        let mask = self.subnet_mask.filter(|_| !self.serves_group());
         sender != self.tables.bdt.own_address()
             && self.tables.bdt.contains(sender)
             && self
                 .tables
-                .rebroadcasts_forwarded(self.subnet_mask, sender, Arrival::Unicast)
+                .rebroadcasts_forwarded(mask, sender, Arrival::Unicast)
     }
 
     /// The mask of the subnet this BBMD's own address is on, as the host
