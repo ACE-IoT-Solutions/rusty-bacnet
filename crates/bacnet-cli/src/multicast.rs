@@ -19,15 +19,32 @@ pub(crate) fn parse_group_arg(value: &str) -> Result<Ipv4Addr, String> {
     Ok(group)
 }
 
-/// The group `--bip-multicast` and `--bip-multicast-ttl` ask for: B/IP
-/// only, in normal mode, on an explicit interface.
+/// A group with its TTL and, when set, its own port, checked as the
+/// transport checks it.
+pub(crate) fn group(group: Ipv4Addr, ttl: u8, port: Option<u16>) -> Result<BipMulticast, String> {
+    let multicast = BipMulticast::new(group).and_then(|multicast| multicast.with_ttl(ttl));
+    match port {
+        Some(port) => multicast.and_then(|multicast| multicast.with_port(port)),
+        None => multicast,
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// The group `--bip-multicast`, `--bip-multicast-ttl` and
+/// `--bip-multicast-port` ask for: B/IP only, in normal mode, on an
+/// explicit interface, with a port for the group.
 pub(crate) fn from_cli(
     cli: &crate::args::Cli,
     interface: Ipv4Addr,
 ) -> Result<Option<BipMulticast>, String> {
-    let Some(group) = cli.bip_multicast else {
-        if cli.explicit_args.iter().any(|id| id == "bip_multicast_ttl") {
-            return Err("--bip-multicast-ttl requires --bip-multicast".into());
+    let Some(group_ip) = cli.bip_multicast else {
+        for (id, flag) in [
+            ("bip_multicast_ttl", "--bip-multicast-ttl"),
+            ("bip_multicast_port", "--bip-multicast-port"),
+        ] {
+            if cli.explicit_args.iter().any(|arg| arg == id) {
+                return Err(format!("{flag} requires --bip-multicast"));
+            }
         }
         return Ok(None);
     };
@@ -42,10 +59,10 @@ pub(crate) fn from_cli(
     if interface.is_unspecified() {
         return Err("--bip-multicast needs --interface: the group is joined there".into());
     }
-    BipMulticast::new(group)
-        .and_then(|multicast| multicast.with_ttl(cli.bip_multicast_ttl))
-        .map(Some)
-        .map_err(|e| e.to_string())
+    if cli.port == 0 && cli.bip_multicast_port.is_none() {
+        return Err("--bip-multicast with --port 0 needs --bip-multicast-port".into());
+    }
+    group(group_ip, cli.bip_multicast_ttl, cli.bip_multicast_port).map(Some)
 }
 
 #[cfg(test)]
@@ -147,5 +164,42 @@ mod tests {
         for bad in ["10.0.0.1", "255.255.255.255", "group"] {
             assert!(parse_group_arg(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_group_port_flag_reaches_the_transport() {
+        let cli = parse([
+            "bacnet",
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--bip-multicast",
+            "239.255.66.1",
+            "--bip-multicast-port",
+            "47809",
+            "discover",
+        ])
+        .unwrap();
+        let multicast = transport(&cli).unwrap().multicast.unwrap();
+        assert_eq!(multicast.port(), Some(47809));
+        // A picked port has none the group could share.
+        let cli = parse([
+            "bacnet",
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--bip-multicast",
+            "239.255.66.1",
+            "discover",
+        ])
+        .unwrap();
+        let error = transport(&cli).err().unwrap();
+        assert!(error.contains("--bip-multicast-port"), "{error}");
+        let cli = parse(["bacnet", "--bip-multicast-port", "47809", "discover"]).unwrap();
+        let error = transport(&cli).err().unwrap();
+        assert!(error.contains("requires --bip-multicast"), "{error}");
+        assert!(parse(["bacnet", "--bip-multicast-port", "0", "discover"]).is_err());
     }
 }

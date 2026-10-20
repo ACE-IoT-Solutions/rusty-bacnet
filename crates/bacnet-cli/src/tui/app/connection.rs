@@ -39,7 +39,7 @@ pub(crate) enum Screen {
 }
 
 /// B/IP editor fields, in the order the editor and its renderer share.
-pub(crate) const BIP_LABELS: [&str; 11] = [
+pub(crate) const BIP_LABELS: [&str; 13] = [
     "Name",
     "Interface",
     "UDP port",
@@ -49,6 +49,8 @@ pub(crate) const BIP_LABELS: [&str; 11] = [
     "BBMD",
     "TTL seconds",
     "Renewal sec",
+    "Group",
+    "Group TTL",
     "Writes",
     "Dangerous",
 ];
@@ -225,6 +227,8 @@ impl Connection {
                 b.bbmd.map(|v| v.to_string()).unwrap_or_default(),
                 b.ttl.to_string(),
                 b.renewal_secs.map(|v| v.to_string()).unwrap_or_default(),
+                b.multicast.map(|v| v.to_string()).unwrap_or_default(),
+                b.multicast_ttl.to_string(),
             ]);
         }
         if let Some(s) = &p.sc {
@@ -298,6 +302,12 @@ impl Connection {
             if b.bbmd.is_none() {
                 b.renewal_secs = None;
             }
+            // A blank group clears multicast, and the group port with it.
+            b.multicast = optional(&f[9], "Group must be an IPv4 multicast address")?;
+            if b.multicast.is_none() {
+                b.multicast_port = None;
+            }
+            b.multicast_ttl = f[10].parse().map_err(|_| "Group TTL must be 1-255")?;
         }
         if let Some(s) = &mut profile.sc {
             s.hub_url = f[1].clone();

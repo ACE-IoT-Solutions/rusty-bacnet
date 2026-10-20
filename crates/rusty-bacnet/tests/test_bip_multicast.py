@@ -26,9 +26,14 @@ class OptionTests(unittest.TestCase):
         default = Multicast(GROUP)
         self.assertEqual((default.ttl, default.port), (1, None))
         self.assertIn(GROUP, repr(group))
+        # A value: equal settings compare and hash equal.
+        self.assertEqual(group, Multicast(GROUP, ttl=4, port=47809))
+        self.assertNotEqual(group, Multicast(GROUP, ttl=4))
+        self.assertEqual(hash(group), hash(Multicast(GROUP, ttl=4, port=47809)))
+        self.assertNotEqual(group, GROUP)
 
     def test_multicast_refuses_bad_settings(self):
-        for bad in ("10.0.0.1", "255.255.255.255", "not an address"):
+        for bad in ("10.0.0.1", "255.255.255.255", "224.0.0.1", "not an address"):
             with self.subTest(group=bad), self.assertRaises(ValueError):
                 Multicast(bad)
         with self.assertRaises(ValueError):
@@ -51,6 +56,24 @@ class OptionTests(unittest.TestCase):
             BACnetClient(interface="127.0.0.1", transport="ipv6", multicast=group)
         with self.assertRaises(ValueError):
             BACnetServer(3200, interface="127.0.0.1", bbmd=Bbmd(), multicast=group)
+        # A port shared by address, or a picked port with no group port.
+        with self.assertRaises(ValueError):
+            BACnetClient(interface="127.0.0.1", port=47808,
+                         share_port_by_address=True, multicast=group)
+        with self.assertRaises(ValueError):
+            BACnetServer(3200, interface="127.0.0.1", port=47808,
+                         share_port_by_address=True, multicast=group)
+        with self.assertRaises(ValueError):
+            BipEndpoint(3200, interface="127.0.0.1", port=47808,
+                        share_port_by_address=True, multicast=group)
+        no_port = Multicast(GROUP)
+        with self.assertRaises(ValueError):
+            BACnetClient(interface="127.0.0.1", port=0, multicast=no_port)
+        with self.assertRaises(ValueError):
+            BACnetServer(3200, interface="127.0.0.1", port=0, multicast=no_port)
+        with self.assertRaises(ValueError):
+            BipEndpoint(3200, interface="127.0.0.1", port=0, multicast=no_port)
+        BACnetClient(interface="127.0.0.1", port=47808, multicast=no_port)
         BACnetClient(interface="127.0.0.1", port=0, multicast=group)
         BACnetServer(3200, interface="127.0.0.1", port=0, multicast=group)
         BipEndpoint(3200, interface="127.0.0.1", port=0, multicast=group)

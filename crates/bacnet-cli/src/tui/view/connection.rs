@@ -149,6 +149,9 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
             lines.push(Line::raw(
                 "Blank renewal = half TTL; interface 0.0.0.0 = all interfaces.",
             ));
+            lines.push(Line::raw(
+                "Group: a multicast group (B/IP-M) on an explicit interface.",
+            ));
         }
         Transport::Sc => {
             lines.push(Line::raw(
@@ -231,14 +234,27 @@ fn bip_lines<'a>(profile: &Profile, lines: &mut Vec<Line<'a>>, theme: &Theme) {
         "Mode: {}",
         if b.bbmd.is_some() {
             "Foreign Device"
+        } else if b.multicast.is_some() {
+            "Normal, multicast (B/IP-M)"
         } else {
             "Normal"
         }
     )));
-    lines.push(Line::raw(format!(
-        "Bind: {}:{}   Broadcast: {}",
-        b.interface, b.port, b.broadcast
-    )));
+    match b.multicast {
+        // A member broadcasts to its group, not the subnet (Annex J.8).
+        Some(group) => lines.push(Line::raw(format!(
+            "Bind: {}:{}   Group: {}:{}   TTL: {}",
+            b.interface,
+            b.port,
+            group,
+            b.multicast_port.unwrap_or(b.port),
+            b.multicast_ttl
+        ))),
+        None => lines.push(Line::raw(format!(
+            "Bind: {}:{}   Broadcast: {}",
+            b.interface, b.port, b.broadcast
+        ))),
+    }
     lines.push(Line::raw(format!(
         "APDU timeout: {} ms   Pacing: {} ms",
         b.timeout_ms, b.min_interval_ms

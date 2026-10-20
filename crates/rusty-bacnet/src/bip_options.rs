@@ -255,8 +255,11 @@ impl PyBbmd {
     name = "Multicast",
     module = "rusty_bacnet",
     frozen,
+    eq,
+    hash,
     skip_from_py_object
 )]
+#[derive(PartialEq, Eq, Hash)]
 pub(crate) struct PyMulticast {
     multicast: BipMulticast,
 }
@@ -305,6 +308,21 @@ impl PyMulticast {
             self.ttl()
         )
     }
+
+    /// Copy and pickle as a call to the constructor with the same settings,
+    /// keywords included, so a copy is equal and checked again.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, ())> {
+        let py = slf.py();
+        let this = slf.get();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("ttl", this.ttl())?;
+        kwargs.set_item("port", this.port())?;
+        let rebuild = py
+            .import("functools")?
+            .getattr("partial")?
+            .call((slf.get_type(), this.group()), Some(&kwargs))?;
+        Ok((rebuild, ()))
+    }
 }
 
 /// The group the `multicast=` keyword asks for: only on B/IP, with an
@@ -312,6 +330,8 @@ impl PyMulticast {
 pub(crate) fn bip_multicast(
     transport: &str,
     interface: &str,
+    port: u16,
+    share_port_by_address: bool,
     mode: &BipMode,
     multicast: Option<PyRef<'_, PyMulticast>>,
 ) -> PyResult<Option<BipMulticast>> {
@@ -331,6 +351,17 @@ pub(crate) fn bip_multicast(
     if parse_ip(interface, "interface")?.is_unspecified() {
         return Err(PyValueError::new_err(
             "multicast needs an explicit interface address, not 0.0.0.0",
+        ));
+    }
+    if share_port_by_address {
+        return Err(PyValueError::new_err(
+            "multicast can't be combined with share_port_by_address; give each owner on \
+             the host its own port and the group a shared one (Multicast(port=...))",
+        ));
+    }
+    if port == 0 && multicast.multicast.port().is_none() {
+        return Err(PyValueError::new_err(
+            "multicast with port=0 needs the group's own port: Multicast(group, port=...)",
         ));
     }
     Ok(Some(multicast.multicast))

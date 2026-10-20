@@ -101,6 +101,10 @@ pub(crate) struct Bip {
     /// unchanged.
     #[serde(skip_serializing_if = "is_default_multicast_ttl")]
     pub(crate) multicast_ttl: u8,
+    /// The group's own UDP port, when it isn't `port`: several stacks on
+    /// one host at one address each take their own `port` and share this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) multicast_port: Option<u16>,
 }
 
 impl Default for Bip {
@@ -116,6 +120,7 @@ impl Default for Bip {
             renewal_secs: None,
             multicast: None,
             multicast_ttl: 1,
+            multicast_port: None,
         }
     }
 }
@@ -338,6 +343,9 @@ impl Bip {
     /// interface and no BBMD.
     fn multicast(&self) -> Result<Option<bacnet_transport::bip::BipMulticast>, String> {
         let Some(group) = self.multicast else {
+            if self.multicast_port.is_some() {
+                return Err("multicast_port needs a multicast group".into());
+            }
             return Ok(None);
         };
         if self.bbmd.is_some() {
@@ -346,10 +354,10 @@ impl Bip {
         if self.interface.is_unspecified() {
             return Err("a multicast group needs an explicit interface, not 0.0.0.0".into());
         }
-        bacnet_transport::bip::BipMulticast::new(group)
-            .and_then(|multicast| multicast.with_ttl(self.multicast_ttl))
-            .map(Some)
-            .map_err(|e| e.to_string())
+        if self.port == 0 && self.multicast_port.is_none() {
+            return Err("a multicast group with port 0 needs a multicast_port".into());
+        }
+        crate::multicast::group(group, self.multicast_ttl, self.multicast_port).map(Some)
     }
 }
 

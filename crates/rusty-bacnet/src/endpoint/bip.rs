@@ -251,7 +251,14 @@ impl PyBipEndpoint {
             reinit_password,
         )?;
         let mode = crate::bip_options::bip_mode("bip", bbmd, foreign_device)?;
-        let multicast = crate::bip_options::bip_multicast("bip", interface, &mode, multicast)?;
+        let multicast = crate::bip_options::bip_multicast(
+            "bip",
+            interface,
+            port,
+            share_port_by_address,
+            &mode,
+            multicast,
+        )?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",

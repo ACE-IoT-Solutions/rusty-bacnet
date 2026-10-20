@@ -1,5 +1,6 @@
 ---
 section: Added
 ---
-- The CLI takes `--bip-multicast GROUP` and `--bip-multicast-ttl`, and TUI
-  profiles keep `multicast` and `multicast_ttl` (#941).
+- The CLI takes `--bip-multicast GROUP`, `--bip-multicast-ttl` and
+  `--bip-multicast-port`; TUI profiles keep the group, TTL and port, and
+  the profile editor and summary show the group (#941).

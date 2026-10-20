@@ -108,6 +108,17 @@ pub(crate) struct Cli {
     )]
     pub(crate) bip_multicast_ttl: u8,
 
+    /// UDP port of the --bip-multicast group (default: --port). Several
+    /// stacks on one host at one address each need their own --port, and
+    /// share this one.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PORT",
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
+    pub(crate) bip_multicast_port: Option<u16>,
+
     /// Use BACnet/IPv6 transport.
     #[arg(long, global = true)]
     pub(crate) ipv6: bool,

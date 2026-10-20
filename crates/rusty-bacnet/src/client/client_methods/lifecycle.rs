@@ -92,8 +92,14 @@ impl BACnetClient {
         )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
         let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
-        let multicast =
-            crate::bip_options::bip_multicast(transport, interface, &bip_mode, multicast)?;
+        let multicast = crate::bip_options::bip_multicast(
+            transport,
+            interface,
+            port,
+            share_port_by_address,
+            &bip_mode,
+            multicast,
+        )?;
         let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
         if transport == "sc" {
             crate::tls::required_sc_credentials(

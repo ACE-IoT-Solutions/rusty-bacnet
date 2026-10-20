@@ -742,13 +742,19 @@ async with BACnetClient(interface="192.0.2.20", multicast=group) as client:
     await client.who_is()
 ```
 
-The constructor raises ValueError for a bad group or TTL (OverflowError for
-an integer out of range), for `interface="0.0.0.0"` (the group is joined on
-the interface, which must be explicit), on another transport, and with
-`bbmd=` or `foreign_device=`. A registered Network Port serves the group as
-BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the owner
-answers ReinitializeDevice; activation moves the running owner to the new
-group. Windows multicast is untested. See
+`Multicast` refuses a group in 224.0.0.0/24, the block reserved for local
+network control. Two `Multicast` values with the same settings compare and
+hash equal. The owner's constructor raises ValueError for a bad group or
+TTL (OverflowError for an integer out of range), for `interface="0.0.0.0"`
+(the group is joined on the interface, which must be explicit), for
+`share_port_by_address=True`, for `port=0` without `Multicast(port=...)`
+(a picked port has nothing the group could share), on another transport,
+and with `bbmd=` or `foreign_device=`. A registered Network Port serves the
+group as BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the
+owner answers ReinitializeDevice; activation moves the running owner to the
+new group. A group changed that way lasts until the process exits: it isn't
+saved, so the next process starts with the `multicast=` it is given.
+Windows multicast is untested. See
 [B/IP multicast](rust-api.md#bip-multicast-bip-m) for the Rust side.
 
 ### BBMD management

@@ -51,4 +51,22 @@ fn a_profiles_group_is_refused_where_it_cant_apply() {
         |b| b.bbmd = Some("127.0.0.2:47809".parse().unwrap()),
         "BBMD",
     );
+    refused(|b| b.port = 0, "multicast_port");
+    refused(|b| b.multicast_port = Some(0), "nonzero");
+    refused(
+        |b| {
+            b.multicast = None;
+            b.multicast_port = Some(47809);
+        },
+        "needs a multicast group",
+    );
+}
+
+#[test]
+fn a_profiles_group_port_reaches_the_transport() {
+    let mut profile = member();
+    profile.bip_mut().port = 0;
+    profile.bip_mut().multicast_port = Some(47809);
+    let multicast = profile.transport_args().unwrap().multicast.unwrap();
+    assert_eq!(multicast.port(), Some(47809));
 }

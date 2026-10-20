@@ -2150,13 +2150,19 @@ class Multicast:
     the group's UDP port, by default the owner's own; several owners on one
     host at one address need their own ports and a shared group port.
 
-    Multicast needs an explicit ``interface`` (not ``"0.0.0.0"``) and can't
-    be combined with ``bbmd=`` or ``foreign_device=``: the constructor
-    raises ValueError. A registered Network Port serves the group as
-    BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the
-    server answers ReinitializeDevice. Invalid values raise ValueError, or
-    OverflowError for an integer out of range. Windows multicast is
-    untested.
+    ``group`` can't be in 224.0.0.0/24, the block reserved for local
+    network control.
+
+    Multicast needs an explicit ``interface`` (not ``"0.0.0.0"``), a port
+    for the group (``port=0`` needs ``Multicast(port=...)``), and can't be
+    combined with ``share_port_by_address=True``, ``bbmd=`` or
+    ``foreign_device=``: the owner's constructor raises ValueError. A
+    registered Network Port serves the group as BACnet_IP_Multicast_Address
+    (0.0.0.0 when off), writable when the server answers ReinitializeDevice;
+    a group changed that way lasts until the process exits, and isn't
+    saved. Two ``Multicast`` values with the same settings compare and hash
+    equal. Invalid values raise ValueError, or OverflowError for an integer
+    out of range. Windows multicast is untested.
     """
 
     def __init__(self, group: str, *, ttl: int = 1, port: Optional[int] = None) -> None: ...
