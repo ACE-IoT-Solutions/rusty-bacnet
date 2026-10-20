@@ -1,7 +1,8 @@
 //! The status bar and the footer (#1894). Both fit their width by
 //! priority ([`super::fit`]): at 80 columns the least useful parts give way
 //! first, and `? help` and `q quit` always stay. A footer notice sits
-//! beside the key hints rather than over them.
+//! beside the key hints rather than over them; from [`WIDE_WIDTH`] columns
+//! it shows in full and the hints give way to it (#1927).
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -10,7 +11,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::fit::{self, hint, span, Part, ALWAYS};
-use super::{ellipsize, text_width, Theme};
+use super::{ellipsize, text_width, Theme, WIDE_WIDTH};
 use crate::tui::app::command_bar;
 use crate::tui::app::watch::Screen;
 use crate::tui::app::{App, Link, Overlay};
@@ -19,8 +20,10 @@ use crate::tui::safety::Level as Safety;
 /// Columns the status bar keeps for `? help` at its right.
 const HELP_WIDTH: u16 = 9;
 
-/// Hints kept at this priority or above stay clear of a footer notice:
-/// the way back, `? help` and `q quit`.
+/// Hints kept at this priority or above stay clear of a footer notice
+/// below [`WIDE_WIDTH`]: the way back, `? help` and `q quit`. From
+/// [`WIDE_WIDTH`] only `? help` and `q quit` do, so a long notice shows in
+/// full and the other hints, the way back last, give way to it.
 const RESERVED: u8 = 8;
 
 /// `bacnet | BIP 10.0.1.5:47808 | up | READ-ONLY | COV 0 FD held | drop 0`
@@ -214,9 +217,15 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, ta
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     };
-    // The way back, `? help` and `q quit` are kept clear of the notice;
-    // the other hints get what the notice leaves.
-    let kept = fit::reserve(&parts, RESERVED);
+    // The way back, `? help` and `q quit` are kept clear of the notice
+    // (only the last two on a wide terminal); the other hints get what the
+    // notice leaves, the lowest priority giving way first.
+    let reserved = if area.width >= WIDE_WIDTH {
+        ALWAYS
+    } else {
+        RESERVED
+    };
+    let kept = fit::reserve(&parts, reserved);
     let notice_room = width.saturating_sub(1 + kept + 2);
     let notice = ellipsize(text, notice_room);
     let used = 1 + text_width(&notice);

@@ -113,7 +113,10 @@ What M0 draws (80x24):
   least useful fields and key hints give way first, and the link state, the
   safety level, `? help` and `q quit` never do. A footer notice sits at the
   left beside the hints, which are cut to fit, and is dropped when the screen
-  changes or a dialog opens. Each footer lists only the keys that work on its
+  changes or a dialog opens. Below 160 columns the way back, `? help` and
+  `q quit` stay clear of the notice, which is cut with `…`; from 160 columns
+  (#1927) only `? help` and `q quit` do, so a long notice shows in full and
+  the other hints give way to it, the lowest priority first. Each footer lists only the keys that work on its
   screen.
 - Below 120 columns the browser's priority array is a pane of its own in the
   Tab order (#1894), so the properties keep the whole width at 80; stacking

@@ -49,7 +49,7 @@ Every screen has the same three parts:
   - On BACnet/SC it also names the hub in use, such as `hub primary`.
   - Before a profile connects it reads `no profile`. In a narrow terminal the least useful fields go first; the link state, the level and `? help` always stay.
 - **The screen** in the middle.
-- **The footer**, on the bottom line: the keys that work right now. In a narrow terminal the less used keys go first; `? help` and `q quit` always stay. A message, such as a refusal or an error, sits at the left beside the keys for a few seconds, and goes as soon as you change screens or open a dialog. A failed connection shows its cause there with the keys that recover (`p settings`, `c retry`); the device screen and the log pane have the whole error.
+- **The footer**, on the bottom line: the keys that work right now. In a narrow terminal the less used keys go first; `? help` and `q quit` always stay. A message, such as a refusal or an error, sits at the left beside the keys for a few seconds, and goes as soon as you change screens or open a dialog. From 160 columns a long message shows in full, and the keys give way to it, all but `? help` and `q quit`. A failed connection shows its cause there with the keys that recover (`p settings`, `c retry`); the device screen and the log pane have the whole error.
 
 Number keys switch screens. The strip shows Network once a session is connected (its Networks tab works on every transport), BACnet/SC only for SC and MS/TP only with a serial port, but every key works on every session:
 

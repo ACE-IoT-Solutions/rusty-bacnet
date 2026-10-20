@@ -132,6 +132,43 @@ fn a_notice_sits_beside_the_hints_and_keeps_help_and_quit() {
     assert_snapshot!("footer_flash", chrome_at_sizes(&mut app));
 }
 
+/// A notice `len` characters long, ending in `|` so a cut one shows.
+fn long_notice(app: &mut App, len: usize) -> String {
+    let text = format!("{}|", "n".repeat(len - 1));
+    app.flash = Some(crate::tui::app::Flash {
+        text: text.clone(),
+        until: app.now + Duration::from_secs(4),
+    });
+    text
+}
+
+/// From 160 columns a notice shows in full (#1927): the hints give way
+/// to it, the lowest priority first, and only `? help` and `q quit` are
+/// kept clear of it. Below that the way back is kept too.
+#[test]
+fn a_wide_footer_shows_a_long_notice_in_full() {
+    let mut app = foreign_app();
+    let text = long_notice(&mut app, 120);
+    let (_, footer) = chrome(&mut app, 200, 50);
+    assert!(footer.starts_with(&format!(" {text}")), "{footer}");
+    assert!(footer.trim_end().ends_with("? help  q quit"), "{footer}");
+    // The hints that fit beside it stay; `:bbmd` (the lowest) went first.
+    assert!(footer.contains("r read tables"), "{footer}");
+    assert!(footer.contains("Esc back"), "{footer}");
+    assert!(!footer.contains(":bbmd"), "{footer}");
+    // Below 160 columns the same notice is cut and the way back stays.
+    let (_, footer) = chrome(&mut app, 120, 40);
+    assert!(!footer.contains(&text) && footer.contains('…'), "{footer}");
+    assert!(footer.contains("Esc back  ? help  q quit"), "{footer}");
+
+    // A notice that leaves no room for the way back pushes it out too.
+    let text = long_notice(&mut app, 180);
+    let (_, footer) = chrome(&mut app, 200, 50);
+    assert!(footer.starts_with(&format!(" {text}")), "{footer}");
+    assert!(footer.trim_end().ends_with("? help  q quit"), "{footer}");
+    assert!(!footer.contains("Esc back"), "{footer}");
+}
+
 /// Every screen keeps `? help` and `q quit` at 80 columns; the Network
 /// screen keeps its way back too.
 #[test]
