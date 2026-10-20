@@ -661,7 +661,8 @@ on its own; its first broadcasts wait for the first registration to be
 answered.
 
 `Bbmd(bdt=None, *, accept_foreign_devices=False, management_acl=None,
-bdt_persist_path=None)` takes the BDT as `"ip:port"` rows (forwarded to by
+bdt_persist_path=None, alone_on_subnet=False, nat_global_address=None,
+nat_private_ranges=None)` takes the BDT as `"ip:port"` rows (forwarded to by
 unicast) or `("ip:port", "mask")` pairs; the BBMD's own row is added when
 missing. Without `accept_foreign_devices=True` every registration is
 refused, and `management_acl` lists the addresses allowed to delete Foreign
@@ -671,6 +672,34 @@ BDT activated through the registered Network Port is saved there (#1826).
 Write-BDT from the network is always refused. Both classes check their
 values when built and raise `ValueError`, or `OverflowError` for an integer
 out of range (a `ttl` outside 1 to 65535, say).
+
+A BBMD behind a NAT router that port-forwards a public address to it (Annex
+J.7.5, #940) takes that address as `nat_global_address`, `"ip"` or
+`"ip:port"`, a non-loopback address (loopback is refused). A BDT with rows must
+then list it as the BBMD's own row, and every row must be two-hop (the plain
+`"ip:port"` form), or `Bbmd` raises `ValueError`; an empty BDT, a BBMD that
+serves foreign devices only, is fine. The Forwarded-NPDUs the BBMD builds name the global address as
+their origin, so devices at other sites can answer, while one it passes on
+keeps its origin. A foreign device that registered from a private address
+(RFC 1918, or one of up to four `nat_private_ranges` such as
+`"100.64.0.0/10"`; `"0.0.0.0/0"` makes that every device) has its
+broadcasts sent on from the global address too;
+one that registered from a public address keeps its own. Behind NAT a BBMD
+is usually alone on its subnet, so `alone_on_subnet=True` fits. The
+registered Network Port serves the setting as BACnet_IP_NAT_Traversal and
+BACnet_IP_Global_Address, writable behind a ReinitializeDevice handler in
+any order; the values are checked together at activation, and an activated
+setting is saved with the BDT in `bdt_persist_path`.
+A foreign device behind NAT needs only a short `renewal`, below its router's
+mapping timeout (30 seconds or less for many routers). For linking sites
+across the internet, prefer BACnet/SC: a BBMD open to the internet has only
+its access lists, quotas and rate limits to protect it. See
+[A BBMD behind a NAT router](rust-api.md#a-bbmd-behind-a-nat-router).
+
+```python
+bbmd = Bbmd(["203.0.113.1:47809", "198.51.100.2:47809"],
+            alone_on_subnet=True, nat_global_address="203.0.113.1:47809")
+```
 
 `foreign_registration()`, on all three owners, returns how the registration
 is going without sending anything: `registered`, `lease_remaining` and

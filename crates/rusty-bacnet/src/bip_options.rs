@@ -5,7 +5,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
+use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal, PrivateRange};
 use bacnet_transport::bip::{
     BbmdOptions, BipMode, ForeignDeviceConfig, ForeignRegistrationOutcome,
     ForeignRegistrationSnapshot, DEFAULT_BACNET_PORT,
@@ -119,7 +119,14 @@ impl PyForeignDevice {
 /// activated through the registered Network Port is saved. `alone_on_subnet`
 /// says this BBMD is the only device of its B/IP network on its subnet, as
 /// behind a NAT router: it then skips the local rebroadcast of forwarded and
-/// distributed broadcasts (default False).
+/// distributed broadcasts (default False). `nat_global_address`, `"ip"` or
+/// `"ip:port"`, runs it behind a NAT router that port-forwards that public
+/// address to it (Annex J.7.5): the BDT must then list that address, and
+/// every row must be two-hop, or `ValueError` is raised (an empty BDT, a
+/// BBMD serving foreign devices only, is fine). `nat_private_ranges` lists
+/// up to four `"a.b.c.d/n"` ranges to count as private besides RFC 1918;
+/// `"0.0.0.0/0"` counts every foreign device as private, so all their
+/// broadcasts go on from the global address.
 #[pyclass(name = "Bbmd", module = "rusty_bacnet", frozen, skip_from_py_object)]
 pub(crate) struct PyBbmd {
     options: BbmdOptions,
@@ -129,13 +136,16 @@ pub(crate) struct PyBbmd {
 impl PyBbmd {
     /// Check and keep the BBMD's settings.
     #[new]
-    #[pyo3(signature = (bdt=None, *, accept_foreign_devices=false, management_acl=None, bdt_persist_path=None, alone_on_subnet=false))]
+    #[pyo3(signature = (bdt=None, *, accept_foreign_devices=false, management_acl=None, bdt_persist_path=None, alone_on_subnet=false, nat_global_address=None, nat_private_ranges=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         bdt: Option<Vec<Bound<'_, PyAny>>>,
         accept_foreign_devices: bool,
         management_acl: Option<Vec<String>>,
         bdt_persist_path: Option<PathBuf>,
         alone_on_subnet: bool,
+        nat_global_address: Option<String>,
+        nat_private_ranges: Option<Vec<String>>,
     ) -> PyResult<Self> {
         let bdt = bdt
             .unwrap_or_default()
@@ -147,6 +157,10 @@ impl PyBbmd {
             .iter()
             .map(|ip| parse_ip(ip, "management_acl").map(|ip| ip.octets()))
             .collect::<PyResult<Vec<_>>>()?;
+        let nat = nat_options(nat_global_address, nat_private_ranges)?;
+        if let Some(nat) = &nat {
+            check_nat_bdt(&bdt, nat.global_address)?;
+        }
         Ok(Self {
             options: BbmdOptions {
                 bdt,
@@ -154,6 +168,7 @@ impl PyBbmd {
                 management_acl,
                 bdt_persist_path,
                 alone_on_subnet,
+                nat,
                 ..BbmdOptions::default()
             },
         })
@@ -193,10 +208,30 @@ impl PyBbmd {
         self.options.alone_on_subnet
     }
 
+    /// The NAT router's public `"ip:port"` this BBMD runs behind, if any.
+    #[getter]
+    fn nat_global_address(&self) -> Option<String> {
+        self.options
+            .nat
+            .as_ref()
+            .map(|nat| nat.global_address.to_string())
+    }
+
+    /// The ranges counted as private besides RFC 1918, as `"a.b.c.d/n"`.
+    #[getter]
+    fn nat_private_ranges(&self) -> Vec<String> {
+        self.options.nat.as_ref().map_or_else(Vec::new, |nat| {
+            nat.private_ranges.iter().map(ToString::to_string).collect()
+        })
+    }
+
     fn __repr__(&self) -> String {
         let python = |flag: bool| if flag { "True" } else { "False" };
+        let nat = self
+            .nat_global_address()
+            .map_or_else(|| "None".to_string(), |global| format!("'{global}'"));
         format!(
-            "Bbmd(bdt={} rows, accept_foreign_devices={}, alone_on_subnet={})",
+            "Bbmd(bdt={} rows, accept_foreign_devices={}, alone_on_subnet={}, nat_global_address={nat})",
             self.options.bdt.len(),
             python(self.accept_foreign_devices()),
             python(self.options.alone_on_subnet),
@@ -252,6 +287,72 @@ pub(crate) fn registration_dict(registration: ForeignRegistrationSnapshot) -> Py
         dict.set_item("renewal_hints", registration.renewal_hints)?;
         Ok(dict.into_any().unbind())
     })
+}
+
+/// The NAT setting the `nat_global_address` and `nat_private_ranges`
+/// keywords ask for: none without a global address, and ranges only with
+/// one.
+fn nat_options(
+    global: Option<String>,
+    ranges: Option<Vec<String>>,
+) -> PyResult<Option<NatTraversal>> {
+    let Some(global) = global else {
+        if ranges.is_some_and(|ranges| !ranges.is_empty()) {
+            return Err(PyValueError::new_err(
+                "nat_private_ranges needs nat_global_address",
+            ));
+        }
+        return Ok(None);
+    };
+    let address = parse_address(&global, "nat_global_address")?;
+    if address.ip().is_loopback() {
+        return Err(PyValueError::new_err(format!(
+            "nat_global_address must be a non-loopback address, got '{global}'"
+        )));
+    }
+    let mut nat = NatTraversal::new(address);
+    for range in ranges.unwrap_or_default() {
+        nat.private_ranges.push(parse_range(&range)?);
+    }
+    if nat.private_ranges.len() > NatTraversal::MAX_PRIVATE_RANGES {
+        return Err(PyValueError::new_err(format!(
+            "nat_private_ranges holds at most {} ranges",
+            NatTraversal::MAX_PRIVATE_RANGES
+        )));
+    }
+    Ok(Some(nat))
+}
+
+/// Behind NAT, a BDT with rows must list the global address, and every row
+/// must be two-hop (Annex J.7.5); an empty one serves foreign devices only.
+fn check_nat_bdt(bdt: &[BdtEntry], global: SocketAddrV4) -> PyResult<()> {
+    if bdt.iter().any(|row| row.broadcast_mask != [255; 4]) {
+        return Err(PyValueError::new_err(
+            "behind NAT every bdt row must be two-hop ('ip:port', mask 255.255.255.255)",
+        ));
+    }
+    let lists_global = bdt
+        .iter()
+        .any(|row| SocketAddrV4::new(Ipv4Addr::from(row.ip), row.port) == global);
+    if !bdt.is_empty() && !lists_global {
+        return Err(PyValueError::new_err(format!(
+            "behind NAT the bdt must list nat_global_address {global} as this BBMD's own row"
+        )));
+    }
+    Ok(())
+}
+
+/// `"a.b.c.d/n"`, a prefix of at most 32 bits.
+fn parse_range(text: &str) -> PyResult<PrivateRange> {
+    let refused = || {
+        PyValueError::new_err(format!(
+            "nat_private_ranges entries are 'a.b.c.d/n', got '{text}'"
+        ))
+    };
+    let (network, prefix) = text.split_once('/').ok_or_else(refused)?;
+    let network = network.parse::<Ipv4Addr>().map_err(|_| refused())?;
+    let prefix = prefix.parse::<u8>().map_err(|_| refused())?;
+    PrivateRange::new(network, prefix).map_err(|_| refused())
 }
 
 /// A BDT row as Python reads it: `("ip:port", "mask")`.

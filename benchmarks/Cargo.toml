@@ -57,6 +57,10 @@ name = "bacnet-sc-hub"
 path = "src/bin/bacnet_sc_hub.rs"
 
 [[bin]]
+name = "nat-probe"
+path = "src/bin/nat_probe.rs"
+
+[[bin]]
 name = "stress-orchestrator"
 path = "src/bin/stress_orchestrator.rs"
 

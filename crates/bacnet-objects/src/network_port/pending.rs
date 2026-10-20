@@ -1,6 +1,8 @@
 //! Writes that wait for activation: a BBMD port's
 //! BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations
-//! (Clause 12.56.34, 12.56.35, #1578), and a foreign device's
+//! (Clause 12.56.34, 12.56.35, #1578) and, behind a NAT router,
+//! BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clause 12.56.32,
+//! 12.56.33, #940), and a foreign device's
 //! FD_BBMD_Address and FD_Subscription_Lifetime (Clause 12.56.37,
 //! 12.56.38, #1825).
 //!
@@ -13,9 +15,13 @@
 //! ([`NetworkPortObject::activate_changes`]).
 //!
 //! A written value is checked by the transport when it is written, so one
-//! it would refuse is refused then and changes nothing: a BDT against the
-//! BBMD's BDT policy, a BBMD address and time-to-live as the registration
-//! they would make together with the other value waiting. The rows take
+//! it would refuse is refused then and changes nothing: a BBMD's value on
+//! its own (a BDT against the row policy, a global address as an IPv4
+//! unicast host), and a BBMD address and time-to-live as the registration
+//! they would make together with the other value waiting. A BBMD's values
+//! are checked together at activation (a NAT BBMD's BDT must list its
+//! global address and be two-hop only), so they can be written in any
+//! order. The rows take
 //! writes only when the port's owner answers ReinitializeDevice
 //! (`set_activation_internal`); otherwise a written value could never take
 //! effect, and the write is WRITE_ACCESS_DENIED.
@@ -59,6 +65,13 @@ impl NetworkPortObject {
                 .bbmd
                 .accept_foreign_device_registrations
                 .map(|accept| Ok(PropertyValue::Boolean(accept))),
+            P::BACNET_IP_NAT_TRAVERSAL => pending
+                .bbmd
+                .nat_traversal
+                .map(|nat| Ok(PropertyValue::Boolean(nat))),
+            P::BACNET_IP_GLOBAL_ADDRESS => {
+                pending.bbmd.global_address.as_ref().map(host_n_port_value)
+            }
             P::FD_BBMD_ADDRESS => pending.foreign.bbmd.as_ref().map(host_n_port_value),
             P::FD_SUBSCRIPTION_LIFETIME => pending
                 .foreign
@@ -77,10 +90,12 @@ impl NetworkPortObject {
         value: &PropertyValue,
     ) -> Option<Result<(), Error>> {
         let row = match &self.mode {
-            LiveMode::Bbmd(_) => matches!(
-                property,
-                P::BBMD_BROADCAST_DISTRIBUTION_TABLE | P::BBMD_ACCEPT_FD_REGISTRATIONS
-            ),
+            LiveMode::Bbmd(_) => {
+                matches!(
+                    property,
+                    P::BBMD_BROADCAST_DISTRIBUTION_TABLE | P::BBMD_ACCEPT_FD_REGISTRATIONS
+                ) || (nat_row(property) && self.serves_nat())
+            }
             LiveMode::Foreign(_) => {
                 matches!(property, P::FD_BBMD_ADDRESS | P::FD_SUBSCRIPTION_LIFETIME)
             }
@@ -100,22 +115,37 @@ impl NetworkPortObject {
             return Some(Err(common::property_is_not_an_array_error()));
         }
         Some(match &self.mode {
-            LiveMode::Bbmd(tables) => match (property, value) {
-                (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, PropertyValue::ApplicationData(octets)) => {
-                    bacnet_encoding::constructed::decode_bdt_entry_list(octets)
+            LiveMode::Bbmd(tables) => {
+                // The value written, alone.
+                let mut changes = BbmdChanges::default();
+                let decoded = match (property, value) {
+                    (
+                        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+                        PropertyValue::ApplicationData(octets),
+                    ) => bacnet_encoding::constructed::decode_bdt_entry_list(octets)
                         .map_err(|_| common::invalid_data_encoding_error())
-                        .and_then(|table| {
-                            tables.check_broadcast_distribution_table(&table)?;
-                            self.pending.bbmd.broadcast_distribution_table = Some(table);
-                            Ok(())
-                        })
-                }
-                (P::BBMD_ACCEPT_FD_REGISTRATIONS, PropertyValue::Boolean(accept)) => {
-                    self.pending.bbmd.accept_foreign_device_registrations = Some(*accept);
-                    Ok(())
-                }
-                _ => Err(common::invalid_data_type_error()),
-            },
+                        .map(|table| changes.broadcast_distribution_table = Some(table)),
+                    (P::BBMD_ACCEPT_FD_REGISTRATIONS, PropertyValue::Boolean(accept)) => {
+                        changes.accept_foreign_device_registrations = Some(*accept);
+                        Ok(())
+                    }
+                    (P::BACNET_IP_NAT_TRAVERSAL, PropertyValue::Boolean(nat)) => {
+                        changes.nat_traversal = Some(*nat);
+                        Ok(())
+                    }
+                    (P::BACNET_IP_GLOBAL_ADDRESS, PropertyValue::ApplicationData(octets)) => {
+                        decode_host_n_port(octets)
+                            .map(|global| changes.global_address = Some(global))
+                    }
+                    _ => Err(common::invalid_data_type_error()),
+                };
+                // Checked alone; the rules that tie the values together (a
+                // NAT BBMD's BDT lists its global address) wait for
+                // activation, so they can be written in any order.
+                decoded
+                    .and_then(|()| tables.check_value(&changes))
+                    .map(|()| merge(&mut self.pending.bbmd, changes))
+            }
             LiveMode::Foreign(registration) => {
                 let mut changes = self.pending.foreign.clone();
                 let decoded = match (property, value) {
@@ -148,11 +178,7 @@ impl NetworkPortObject {
             return Ok(());
         }
         match &self.mode {
-            LiveMode::Bbmd(tables) => match &self.pending.bbmd.broadcast_distribution_table {
-                Some(table) => tables.check_broadcast_distribution_table(table),
-                // Any Boolean is a valid registration setting.
-                None => Ok(()),
-            },
+            LiveMode::Bbmd(tables) => tables.check(&self.pending.bbmd),
             LiveMode::Foreign(registration) => registration.check(&self.pending.foreign),
             LiveMode::Normal => Err(common::write_access_denied_error()),
         }
@@ -191,7 +217,24 @@ impl NetworkPortObject {
     }
 }
 
-/// A written FD_BBMD_Address: exactly one BACnetHostNPort.
+/// Add `written`'s values to `pending`.
+fn merge(pending: &mut BbmdChanges, written: BbmdChanges) {
+    if written.broadcast_distribution_table.is_some() {
+        pending.broadcast_distribution_table = written.broadcast_distribution_table;
+    }
+    if written.accept_foreign_device_registrations.is_some() {
+        pending.accept_foreign_device_registrations = written.accept_foreign_device_registrations;
+    }
+    if written.nat_traversal.is_some() {
+        pending.nat_traversal = written.nat_traversal;
+    }
+    if written.global_address.is_some() {
+        pending.global_address = written.global_address;
+    }
+}
+
+/// A written FD_BBMD_Address or BACnet_IP_Global_Address: exactly one
+/// BACnetHostNPort.
 fn decode_host_n_port(octets: &[u8]) -> Result<bacnet_types::constructed::BACnetHostNPort, Error> {
     match bacnet_encoding::constructed::decode_host_n_port(octets, 0) {
         Ok((address, end)) if end == octets.len() => Ok(address),
@@ -208,5 +251,24 @@ pub(super) fn writable_pending_row(property: P) -> bool {
             | P::BBMD_ACCEPT_FD_REGISTRATIONS
             | P::FD_BBMD_ADDRESS
             | P::FD_SUBSCRIPTION_LIFETIME
+    ) || nat_row(property)
+}
+
+/// The two NAT rows (Clause 12.56.32, 12.56.33).
+pub(super) fn nat_row(property: P) -> bool {
+    matches!(
+        property,
+        P::BACNET_IP_NAT_TRAVERSAL | P::BACNET_IP_GLOBAL_ADDRESS
     )
+}
+
+impl NetworkPortObject {
+    /// Whether this port serves the NAT rows: an IPv4 port in BBMD mode
+    /// whose transport can run behind a NAT router.
+    pub(super) fn serves_nat(&self) -> bool {
+        self.ip
+            .as_ref()
+            .is_some_and(super::ip_config::IpConfig::is_ipv4)
+            && self.mode.has_nat_rows()
+    }
 }

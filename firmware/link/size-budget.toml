@@ -103,6 +103,13 @@
 # The apdu text, rodata and flash budgets are the sizes after both, measured
 # 2026-10-18, plus 12%; the device budgets absorb its growth.
 #
+# The bbmd image grew when the BBMD core learned NAT traversal (#940), which
+# adds the NAT checks to the BDT and the origin choice to the forwarding
+# decisions the image links. Measured 2026-10-20, same toolchain, bbmd .text
+# against dev at 93125c06: thumbv7m 10052 -> 10212 (+160), thumbv6m
+# 11812 -> 12188 (+376), riscv32imc 12684 -> 13044 (+360), thumbv7em
+# 9988 -> 10200 (+212); RAM unchanged. The budgets are unchanged.
+#
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
 # a little smaller than thumbv7m's:
