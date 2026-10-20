@@ -89,6 +89,8 @@ mod group_delivery_tests;
 #[cfg(all(test, unix))]
 mod multicast_resolution_tests;
 #[cfg(test)]
+mod network_port_tests;
+#[cfg(test)]
 mod receive_counters_tests;
 #[cfg(test)]
 mod reply_tests;

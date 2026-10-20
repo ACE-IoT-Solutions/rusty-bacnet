@@ -333,3 +333,101 @@ fn pics_lists_the_pending_rows_writable_only_when_their_view_can_change() {
         }
     }
 }
+
+/// The PICS draft for a registered B/IPv6 port (#1579) lists the IPV6 rows
+/// (Table 12-72) as required and read-only, no IPv4 row, and each mode's
+/// own rows, as for B/IP.
+#[test]
+fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
+    use bacnet_objects::network_port::{Bip6Bind, Bip6PortConfig};
+    use bacnet_types::bip_port::BipPortMode;
+    use bacnet_types::constructed::BACnetHostNPort;
+    let ip = std::net::Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 5);
+    let common = [
+        (P::OBJECT_IDENTIFIER, false, false),
+        (P::OBJECT_NAME, false, false),
+        (P::DESCRIPTION, true, true),
+        (P::OBJECT_TYPE, false, false),
+        (P::STATUS_FLAGS, false, false),
+        (P::OUT_OF_SERVICE, false, false),
+        (P::RELIABILITY, false, false),
+        (P::NETWORK_TYPE, false, false),
+        (P::PROTOCOL_LEVEL, false, false),
+        (P::NETWORK_NUMBER, false, false),
+        (P::NETWORK_NUMBER_QUALITY, false, false),
+        (P::MAC_ADDRESS, false, false),
+        (P::APDU_LENGTH, false, false),
+        (P::LINK_SPEED, true, false),
+        (P::CHANGES_PENDING, false, false),
+        (P::BACNET_IPV6_MODE, false, false),
+        (P::IPV6_ADDRESS, false, false),
+        (P::IPV6_PREFIX_LENGTH, false, false),
+        (P::BACNET_IPV6_UDP_PORT, false, false),
+        (P::IPV6_DEFAULT_GATEWAY, false, false),
+        (P::BACNET_IPV6_MULTICAST_ADDRESS, false, false),
+        (P::IPV6_DNS_SERVER, false, false),
+        (P::PROPERTY_LIST, false, false),
+    ];
+    let foreign = BipPortMode::fixed_foreign(
+        BACnetHostNPort::from_socket_addr(std::net::SocketAddr::new(ip.into(), 47809)),
+        300,
+    );
+    let bbmd = BipPortMode::Bbmd {
+        tables: Some(std::sync::Arc::new(NoTables)),
+    };
+    for (mode, added) in [
+        (BipPortMode::Normal, &[][..]),
+        (
+            foreign,
+            &[
+                (P::FD_BBMD_ADDRESS, false, false),
+                (P::FD_SUBSCRIPTION_LIFETIME, false, false),
+            ][..],
+        ),
+        (
+            bbmd,
+            &[
+                (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, false, false),
+                (P::BBMD_ACCEPT_FD_REGISTRATIONS, false, false),
+                (P::BBMD_FOREIGN_DEVICE_TABLE, false, false),
+            ][..],
+        ),
+    ] {
+        let oid = ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1).unwrap();
+        let mut db = ObjectDatabase::new();
+        let config = Bip6PortConfig {
+            ip_address: ip.octets(),
+            ..Default::default()
+        };
+        db.add(Box::new(
+            NetworkPortObject::new_bip6(1, "NP-1", config.clone()).unwrap(),
+        ))
+        .unwrap();
+        let (_, _lease) = db
+            .reserve_bip6_port_internal(oid, ip.octets(), 47808)
+            .unwrap();
+        let bind = Bip6Bind {
+            ip: ip.octets(),
+            udp: 47808,
+            vmac: [0, 0, 1],
+            multicast: config.multicast_address,
+        };
+        db.publish_bip6_port_internal(oid, bind, 1476, mode)
+            .unwrap();
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let rows: Vec<_> = pics.supported_object_types[0]
+            .supported_properties
+            .iter()
+            .map(|row| (row.property_id, row.access.optional, row.access.writable))
+            .collect();
+        let expected: Vec<_> = common.iter().chain(added).copied().collect();
+        assert_eq!(rows, sorted_rows(&expected));
+        let text = pics.generate_text();
+        for (property, ..) in common.iter().chain(added) {
+            assert!(
+                text.contains(&property.to_string()),
+                "{property} in PICS text"
+            );
+        }
+    }
+}

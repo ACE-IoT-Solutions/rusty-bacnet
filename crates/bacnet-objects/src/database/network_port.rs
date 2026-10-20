@@ -1,13 +1,18 @@
-//! Explicit receiving-port reservation and publication for one owned B/IP link.
+//! Explicit receiving-port reservation and publication for one owned B/IP
+//! or B/IPv6 link. Both IP versions share one registration path; only the
+//! address types differ.
 use super::*;
-use crate::network_port::{BipPortConfig, NetworkPortObject};
+use crate::network_port::{
+    Bip6Bind, Bip6PortConfig, BipPortConfig, NetworkPortObject, PortAddress, PortBind,
+};
 use bacnet_types::bip_port::BipPortMode;
 use std::sync::Weak;
 
 pub(super) struct NetworkPortRegistration {
     oid: ObjectIdentifier,
     lease: Weak<()>,
-    configured: BipPortConfig,
+    /// The configured address and UDP port the reservation checked.
+    configured: PortAddress,
     published: bool,
 }
 
@@ -36,6 +41,17 @@ impl ObjectDatabase {
             .cloned()
     }
 
+    /// Snapshot only the concrete built-in B/IPv6 object.
+    #[doc(hidden)]
+    pub fn configured_bip6_port_internal(
+        &mut self,
+        oid: &ObjectIdentifier,
+    ) -> Option<Bip6PortConfig> {
+        self.builtin_network_port_mut(oid)?
+            .bip6_configuration_internal()
+            .cloned()
+    }
+
     /// Reserve exactly one concrete built-in B/IP object before bind, in any
     /// B/IP mode. The returned token must move into the transport before it
     /// can start.
@@ -46,6 +62,35 @@ impl ObjectDatabase {
         ip: [u8; 4],
         udp: u16,
     ) -> Result<(BipPortConfig, Arc<()>), Error> {
+        let lease = self.reserve_port(oid, PortAddress::V4(ip, udp))?;
+        let configured = self
+            .configured_bip_port_internal(&oid)
+            .expect("reserved B/IP port");
+        Ok((configured, lease))
+    }
+
+    /// Reserve exactly one concrete built-in B/IPv6 object before bind, in
+    /// any mode, as [`reserve_bip_port_internal`](Self::reserve_bip_port_internal)
+    /// does for B/IP.
+    #[doc(hidden)]
+    pub fn reserve_bip6_port_internal(
+        &mut self,
+        oid: ObjectIdentifier,
+        ip: [u8; 16],
+        udp: u16,
+    ) -> Result<(Bip6PortConfig, Arc<()>), Error> {
+        let lease = self.reserve_port(oid, PortAddress::V6(ip, udp))?;
+        let configured = self
+            .configured_bip6_port_internal(&oid)
+            .expect("reserved B/IPv6 port");
+        Ok((configured, lease))
+    }
+
+    fn reserve_port(
+        &mut self,
+        oid: ObjectIdentifier,
+        address: PortAddress,
+    ) -> Result<Arc<()>, Error> {
         if oid.object_type() != ObjectType::NETWORK_PORT
             || !(1..=255).contains(&oid.instance_number())
         {
@@ -61,24 +106,29 @@ impl ObjectDatabase {
         let authority = self
             .builtin_network_port_mut(&oid)
             .ok_or_else(|| invalid("registration requires the selected built-in Network Port"))?;
-        let configured = authority
-            .configuration_internal()
-            .cloned()
-            .ok_or_else(|| invalid("registration requires an IPV4 port"))?;
-        if configured.ip_address != ip || configured.udp_port != udp {
-            return Err(invalid(
-                "Network Port configuration differs from transport interface/UDP",
-            ));
-        }
+        let configured = match authority.configured_address_internal() {
+            Some(configured) if configured == address => configured,
+            Some(configured) if configured.same_family(address) => {
+                return Err(invalid(
+                    "Network Port configuration differs from transport interface/UDP",
+                ))
+            }
+            _ => {
+                return Err(invalid(match address {
+                    PortAddress::V4(..) => "registration requires an IPV4 port",
+                    PortAddress::V6(..) => "registration requires an IPV6 port",
+                }))
+            }
+        };
         let lease = Arc::new(());
         authority.reserve_internal(&lease)?;
         self.network_port = Some(NetworkPortRegistration {
             oid,
             lease: Arc::downgrade(&lease),
-            configured: configured.clone(),
+            configured,
             published: false,
         });
-        Ok((configured, lease))
+        Ok(lease)
     }
 
     /// Reconcile one actual bind and its B/IP mode under the database write
@@ -93,6 +143,30 @@ impl ObjectDatabase {
         capacity: u32,
         mode: BipPortMode,
     ) -> Result<(), Error> {
+        self.publish_port(oid, PortBind::V4(ip, udp), capacity, mode)
+    }
+
+    /// Reconcile one actual B/IPv6 bind, VMAC, group and mode, as
+    /// [`publish_bip_port_internal`](Self::publish_bip_port_internal) does
+    /// for B/IP.
+    #[doc(hidden)]
+    pub fn publish_bip6_port_internal(
+        &mut self,
+        oid: ObjectIdentifier,
+        bind: Bip6Bind,
+        capacity: u32,
+        mode: BipPortMode,
+    ) -> Result<(), Error> {
+        self.publish_port(oid, PortBind::V6(bind), capacity, mode)
+    }
+
+    fn publish_port(
+        &mut self,
+        oid: ObjectIdentifier,
+        bind: PortBind,
+        capacity: u32,
+        mode: BipPortMode,
+    ) -> Result<(), Error> {
         let registration = self
             .network_port
             .as_ref()
@@ -102,16 +176,18 @@ impl ObjectDatabase {
             .lease
             .upgrade()
             .ok_or_else(|| invalid("Network Port owner expired"))?;
+        let actual = bind.address();
+        let configured = registration.configured;
         if registration.published
-            || registration.configured.ip_address != ip
-            || udp == 0
-            || (registration.configured.udp_port != 0 && registration.configured.udp_port != udp)
+            || !configured.same_ip(actual)
+            || actual.udp() == 0
+            || (configured.udp() != 0 && configured.udp() != actual.udp())
         {
             return Err(invalid("post-bind Network Port identity mismatch"));
         }
         self.builtin_network_port_mut(&oid)
             .ok_or_else(|| invalid("selected Network Port authority disappeared"))?
-            .reconcile_internal(&lease, ip, udp, capacity, mode)?;
+            .reconcile_internal(&lease, bind, capacity, mode)?;
         self.network_port
             .as_mut()
             .expect("validated registration")

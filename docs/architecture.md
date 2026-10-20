@@ -133,6 +133,7 @@ pub trait TransportPort: Send + Sync {
     fn egress_apdu_limit(&self) -> u16; // current outgoing path limit
     fn supports_local_nonrouter_number_controls(&self) -> bool; // opt-in, default false
     fn bip_port(&self) -> Option<BipPort>; // registration metadata: endpoint and B/IP mode
+    fn bip6_port(&self) -> Option<Bip6Port>; // the B/IPv6 counterpart: endpoint, VMAC, group, mode
     fn max_npdu(&self) -> NpduLimits; // longest NPDU sent, unicast and broadcast; default 1497
     fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>>; // SC: its hub's limit; default None
     fn prepare_for_routing(&mut self); // BACnetRouter calls it before start; MS/TP turns on extended frames

@@ -2,13 +2,15 @@ use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 
+use bacnet_types::bip_port::BipPortMode;
+use bacnet_types::constructed::BACnetHostNPort;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::port::{ReceivedNpdu, TransportPort};
+use crate::port::{Bip6Port, ReceivedNpdu, TransportPort};
 
 use super::collision_probe::Probe;
 use super::frame::encoded;
@@ -74,6 +76,11 @@ pub struct Bip6Transport {
     foreign_device: Option<Bip6ForeignDeviceConfig>,
     /// Foreign device re-registration task handle.
     registration_task: Option<JoinHandle<()>>,
+    /// The registered Network Port's lease, handed to the socket at start
+    /// so every task that owns the socket keeps the port registered.
+    network_port_lease: Option<Arc<()>>,
+    /// Set by the first start: a lease can be retained only before it.
+    registration_closed: bool,
     /// See [`Self::forwarded_group_origin_drops`].
     forwarded_group_origin_drops: Arc<std::sync::atomic::AtomicU64>,
     /// See [`Self::receive_counters`].
@@ -143,6 +150,8 @@ impl Bip6Transport {
             broadcast_scope: Bip6BroadcastScope::SiteLocal,
             foreign_device: None,
             registration_task: None,
+            network_port_lease: None,
+            registration_closed: false,
             forwarded_group_origin_drops: Arc::default(),
             receive_drops: Arc::default(),
             frame_tap: crate::tap::FrameTap::new(),
@@ -222,7 +231,54 @@ impl TransportPort for Bip6Transport {
         true
     }
 
+    /// NORMAL, or FOREIGN with the BBMD and time-to-live it was configured
+    /// with. This transport can't act as a BBMD, and can't move its
+    /// registration while it runs, so FD_BBMD_Address and
+    /// FD_Subscription_Lifetime are lent read-only.
+    fn bip6_port(&self) -> Option<Bip6Port> {
+        let (endpoint, vmac) = match self.local_address {
+            Some(bound) => (*bound.ip(), Some(self.source_vmac.octets())),
+            None => (
+                self.interface,
+                self.device_instance
+                    .and_then(|instance| vmac_from_device_instance(instance).ok())
+                    .map(Bip6Vmac::octets),
+            ),
+        };
+        let port = self.local_address.map_or(self.port, |bound| bound.port());
+        let mode = match &self.foreign_device {
+            Some(fd) => BipPortMode::fixed_foreign(
+                BACnetHostNPort::from_socket_addr(
+                    SocketAddrV6::new(fd.bbmd_ip, fd.bbmd_port, 0, 0).into(),
+                ),
+                fd.ttl,
+            ),
+            None => BipPortMode::Normal,
+        };
+        Some(Bip6Port {
+            endpoint: SocketAddrV6::new(endpoint, port, 0, 0),
+            vmac,
+            multicast_group: self.broadcast_scope.multicast_addr(),
+            mode,
+        })
+    }
+
+    fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
+        if self.registration_closed
+            || self.socket.is_some()
+            || self.recv_task.is_some()
+            || self.network_port_lease.is_some()
+        {
+            return Err(Error::Encoding(
+                "registered B/IPv6 lease requires an unstarted transport".into(),
+            ));
+        }
+        self.network_port_lease = Some(lease);
+        Ok(())
+    }
+
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+        self.registration_closed = true;
         if self.recv_task.is_some() {
             return Err(Error::Transport(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -250,7 +306,8 @@ impl TransportPort for Bip6Transport {
             Bip6Socket::bind(self.interface, self.port, foreign)
                 .await
                 .map_err(Error::Transport)?
-                .tapped(self.frame_tap.clone()),
+                .tapped(self.frame_tap.clone())
+                .leased(self.network_port_lease.clone()),
         );
         let bound = socket.local_address().map_err(Error::Transport)?;
         let local_port = bound.port();
@@ -433,6 +490,8 @@ impl TransportPort for Bip6Transport {
         self.source_vmac = Bip6Vmac::new([0; 3]);
         self.resolver.clear();
         self.resolver.set_own(None);
+        // Every task that owned the socket has ended.
+        self.network_port_lease = None;
         Ok(())
     }
 

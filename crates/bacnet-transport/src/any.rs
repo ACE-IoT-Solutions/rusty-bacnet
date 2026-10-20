@@ -103,12 +103,23 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
     ) -> Result<(), Error> {
         match self {
             Self::Bip(transport) => transport.retain_network_port_lease_internal(lease),
-            _ => Err(Error::Encoding("registered ports require B/IP".into())),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(transport) => transport.retain_network_port_lease_internal(lease),
+            _ => Err(Error::Encoding(
+                "registered ports require B/IP or B/IPv6".into(),
+            )),
         }
     }
     fn bip_port(&self) -> Option<crate::port::BipPort> {
         match self {
             Self::Bip(transport) => transport.bip_port(),
+            _ => None,
+        }
+    }
+    fn bip6_port(&self) -> Option<crate::port::Bip6Port> {
+        match self {
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(transport) => transport.bip6_port(),
             _ => None,
         }
     }

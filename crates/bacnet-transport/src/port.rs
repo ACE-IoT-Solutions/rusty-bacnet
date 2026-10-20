@@ -335,6 +335,24 @@ pub struct BipPort {
     pub mode: bacnet_types::bip_port::BipPortMode,
 }
 
+/// What a B/IPv6 transport reports for registration as a Network Port
+/// ([`TransportPort::bip6_port`]).
+#[derive(Debug, Clone)]
+pub struct Bip6Port {
+    /// The IPv6 address and UDP port: configured before start, bound
+    /// after. The scope ID and flow label are not part of the port's
+    /// identity and are zero.
+    pub endpoint: std::net::SocketAddrV6,
+    /// The node's 3-octet VMAC (Annex U.1.3): known before start only when
+    /// it comes from a configured Device instance, always after.
+    pub vmac: Option<[u8; 3]>,
+    /// The multicast group broadcasts go to; the transport sends them to
+    /// it at its own UDP port.
+    pub multicast_group: std::net::Ipv6Addr,
+    /// The B/IPv6 mode, with what its Network Port properties need.
+    pub mode: bacnet_types::bip_port::BipPortMode,
+}
+
 /// Trait for BACnet data-link transports.
 ///
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
@@ -376,9 +394,18 @@ pub trait TransportPort: Send + Sync {
         None
     }
 
+    /// Explicit capability for registration as one IPv6 Network Port, with
+    /// the B/IPv6 mode the port reports (Clause 12.56.39): the B/IPv6
+    /// counterpart of [`bip_port`](Self::bip_port), under the same
+    /// contract. A transport reports at most one of the two. The default
+    /// refuses registration.
+    fn bip6_port(&self) -> Option<Bip6Port> {
+        None
+    }
+
     /// Retain selected Network Port protection through the last socket owner.
     /// Must be installed once before start, only on a transport that reports
-    /// a [`bip_port`](Self::bip_port).
+    /// a [`bip_port`](Self::bip_port) or a [`bip6_port`](Self::bip6_port).
     /// Successful stop releases it after quiescence; abort/drop must retain it
     /// in every surviving socket worker. Custom implementors own this contract.
     #[doc(hidden)]

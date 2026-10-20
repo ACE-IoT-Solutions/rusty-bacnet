@@ -3882,6 +3882,14 @@ class BACnetServer:
         ``ForeignDevice``. A registered Network Port reports the mode in
         BACnet_IP_Mode (normal 0, foreign 1, BBMD 2).
 
+        ``registered_network_port`` (B/IP or B/IPv6, 1 to 255): the Network
+        Port object, added with ``add_bip_network_port`` (``transport="bip"``)
+        or ``add_bip6_network_port`` (``transport="ipv6"``), that represents
+        the server's link. Start checks the object's address and UDP port
+        against the transport's, then publishes the bound port. A B/IPv6
+        port also publishes its VMAC and multicast group, and reports
+        BACnet_IPv6_Mode NORMAL (0).
+
         ``sc_npdu_per_origin_limit`` (SC only, default None): maximum
         queued, unconsumed NPDUs per ingress path and source. None keeps 32;
         explicit values must be 1 through 256. Invalid values or a non-SC
@@ -4891,6 +4899,15 @@ class BACnetServer:
         """
         ...
     def add_bip_network_port(self, instance: int, name: str, *, ip_address: str = "0.0.0.0", udp_port: int = 47808, network_number: int = 0, apdu_length: int = 1476, subnet_mask: str = "0.0.0.0", default_gateway: str = "0.0.0.0", dns_servers: Optional[List[str]] = None) -> None: ...
+    def add_bip6_network_port(self, instance: int, name: str, *, ip_address: str = "::", udp_port: int = 47808, network_number: int = 0, apdu_length: int = 1476, prefix_length: int = 64, default_gateway: str = "::", dns_servers: Optional[List[str]] = None, multicast_address: str = "ff05::bac0", vmac: Optional[bytes] = None) -> None:
+        """Add a configured, unbound IPV6 (B/IPv6) Network Port snapshot.
+
+        The B/IPv6 counterpart of ``add_bip_network_port``: every row is
+        read-only and nothing binds a socket. ``vmac`` is the 3-octet
+        MAC_Address until a registered ``transport="ipv6"`` server publishes
+        the VMAC it uses; ``multicast_address`` is the broadcast group.
+        """
+        ...
 
     # --- Server lifecycle ---
     def start(self) -> Awaitable[None]:
