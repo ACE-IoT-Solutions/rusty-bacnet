@@ -154,6 +154,8 @@ MAC address format varies by transport:
 
 `AnyTransport<S>` is a type-erased enum wrapping all transport types, enabling mixed-transport routing (e.g., BIP + MS/TP + Loopback on the same router).
 
+The transports' OS calls that still need `unsafe` (Winsock, `GetAdaptersAddresses`, `getifaddrs`, the libc `recvmsg`/`sendmsg` fallbacks for targets nix doesn't cover, and the RS-485 ioctl) sit in one private module, `bacnet-transport`'s `sys`, behind safe wrappers. It is the only place in the crate allowed to use `unsafe`, and the crate's `unsafe_stays_in_sys` test fails on unsafe code anywhere else (#1923).
+
 ### RS-485 Direction Control (MS/TP)
 
 RS-485 is half-duplex — the transceiver's DE/RE pin must be toggled between transmit and receive. The stack supports three modes:

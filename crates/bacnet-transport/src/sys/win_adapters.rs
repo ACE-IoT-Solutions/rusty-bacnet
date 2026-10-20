@@ -3,8 +3,7 @@
 //!
 //! B/IP lists its local IPv4 addresses with this (`local_addresses`), and
 //! B/IPv6 picks its link from the IPv6 ones (`bip6::link`). The calls and
-//! the list walk are FFI, so each item that needs unsafe carries its own
-//! `#[allow(unsafe_code)]`.
+//! the list walk are FFI; [`unicast_addresses`] is the safe way in.
 
 use std::io;
 use std::mem::{size_of, MaybeUninit};
@@ -58,7 +57,6 @@ pub(crate) struct UnicastAddress {
 
 /// Every unicast address of `family` (`AF_INET`, `AF_INET6` or `AF_UNSPEC`)
 /// on every adapter, whatever its state. `ERROR_NO_DATA` is an empty list.
-#[allow(unsafe_code)] // GetAdaptersAddresses
 pub(crate) fn unicast_addresses(family: ADDRESS_FAMILY) -> io::Result<Vec<UnicastAddress>> {
     let mut bytes = INITIAL_BUFFER_BYTES;
     for _ in 0..ATTEMPTS {
@@ -113,7 +111,6 @@ pub(crate) fn unicast_addresses(family: ADDRESS_FAMILY) -> io::Result<Vec<Unicas
 /// `head` is null or the first record of a list that a successful
 /// `GetAdaptersAddresses` call wrote, and the buffer holding that list stays
 /// alive and unmodified for the whole call.
-#[allow(unsafe_code)] // walks the OS-written adapter list
 unsafe fn copy_addresses(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<UnicastAddress> {
     let mut addresses = Vec::new();
     let mut adapter_ptr = head;
@@ -157,7 +154,6 @@ unsafe fn copy_addresses(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<UnicastAdd
 ///
 /// A non-null `lpSockaddr` points to at least `iSockaddrLength` readable
 /// bytes.
-#[allow(unsafe_code)] // reads a sockaddr through a raw pointer
 unsafe fn decode_socket_address(address: &SOCKET_ADDRESS) -> Option<IpAddr> {
     let sockaddr = address.lpSockaddr.cast_const();
     let length = usize::try_from(address.iSockaddrLength).ok()?;
@@ -201,7 +197,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)] // calls decode_socket_address
     fn decodes_ipv4_and_ipv6_and_rejects_short_or_foreign_addresses() {
         // An IPv4 socket address one byte off alignment.
         let mut v4 = vec![0u8; 1 + size_of::<SOCKADDR_IN>()];
