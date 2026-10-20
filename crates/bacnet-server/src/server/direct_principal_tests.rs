@@ -27,6 +27,8 @@ mod contexts;
 mod policy;
 #[path = "direct_response_tests.rs"]
 mod responses;
+#[path = "direct_principal_router_tests.rs"]
+mod router;
 #[path = "direct_principal_segment_tests.rs"]
 mod segments;
 #[path = "warn_spy.rs"]

@@ -13,6 +13,40 @@
 //! Deny is a silent local drop: no mutation, relay, ACK, or Reject emission.
 //! Validation precedes policy. The router's engine asks for each decision
 //! under its lock, with the message's claims, before anything changes.
+//!
+//! ## Who may change routes (#518)
+//!
+//! [`ControlAuthContext::principal`] is the verified leaf certificate of the
+//! direct BACnet/SC peer that sent the control message, the router
+//! advertising or withdrawing routes. A `Hardened` gate with an authorizer
+//! that allows only configured router principals keeps every other node, and
+//! every non-SC or hub-relayed sender, from changing the table:
+//!
+//! ```
+//! use std::sync::Arc;
+//! use bacnet_network::router::control_policy::{ControlAuthorizer, ControlPolicy};
+//! use bacnet_transport::port::ScPrincipal;
+//!
+//! fn routers_only(routers: Vec<ScPrincipal>) -> (ControlPolicy, ControlAuthorizer) {
+//!     let authorizer: ControlAuthorizer = Arc::new(move |context| {
+//!         context.principal().is_some_and(|peer| routers.contains(&peer))
+//!     });
+//!     (ControlPolicy::Hardened, authorizer)
+//! }
+//! ```
+//!
+//! What can't be attributed: a message a BACnet/SC hub relays carries the
+//! hub's registration of its sender's VMAC, never the sender's certificate,
+//! so it has no principal and such a policy refuses it. B/IP, B/IPv6, MS/TP
+//! and Ethernet senders have none either. SC mutual TLS authenticates a
+//! connection; it doesn't authorize route changes. The router stays
+//! `Permissive` unless a policy is configured, for interoperability with
+//! routers that announce themselves as the standard expects.
+//!
+//! Repeated advertisements circulating in a looped topology are a separate
+//! problem, tracked as #1810 in `bacnet-router-core`. Each SC node also
+//! limits how many network-layer messages one source may hand in
+//! (`ScControlRateLimit` in `bacnet-transport`).
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,6 +121,16 @@ pub struct ControlAuthContext {
     pub targets_omitted: bool,
 }
 
+impl ControlAuthContext {
+    /// The verified leaf certificate of the direct BACnet/SC peer that sent
+    /// this message: the router announcing the change. `None` for a
+    /// hub-relayed message and for any other data link (see the
+    /// [module documentation](self)).
+    pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        self.provenance.principal()
+    }
+}
+
 impl std::fmt::Debug for ControlAuthContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ControlAuthContext")
@@ -94,6 +138,7 @@ impl std::fmt::Debug for ControlAuthContext {
             .field("port_network", &self.port_network)
             .field("source_mac_len", &self.source_mac.len())
             .field("provenance", &self.provenance)
+            .field("principal", &self.principal().is_some())
             .field("trust", &self.trust)
             .field("message_type", &self.message_type)
             .field("vendor_id", &self.vendor_id)

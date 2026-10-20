@@ -3797,6 +3797,7 @@ class DccOutcomeCounters(TypedDict):
 class ScNpduDropCounts(TypedDict):
     """Owned, queue-wide lifetime counters for one started SC transport."""
 
+    control_rate_drops: int
     fairness_drops: int
     full_drops: int
     closed_drops: int

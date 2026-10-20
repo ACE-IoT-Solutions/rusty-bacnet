@@ -2882,6 +2882,50 @@ let StartedRouter { router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
 ```
 
+#### Who may change routes (#518)
+
+SC mutual TLS authenticates a connection; it doesn't authorize a peer to change
+the routing table. With `control_policy(ControlPolicy::Hardened)` and a
+`control_authorizer()`, only the controls the authorizer allows can learn, mark
+busy or available, reject or initialize routes. `ControlAuthContext::principal()`
+is the `ScPrincipal` of the verified leaf certificate of the direct BACnet/SC peer
+that sent the message, the router announcing the change, so an authorizer can
+admit route changes only from configured router certificates:
+
+```rust
+use std::sync::Arc;
+use bacnet_network::router::control_policy::{ControlAuthorizer, ControlPolicy};
+
+let authorizer: ControlAuthorizer = Arc::new(move |context| {
+    context.principal().is_some_and(|peer| routers.contains(&peer))
+});
+let options = RouterOptions::new()
+    .control_policy(ControlPolicy::Hardened)
+    .control_authorizer(authorizer);
+```
+
+What can't be attributed: a message a BACnet/SC hub relays carries only the hub's
+registration of its sender's VMAC, never the sender's certificate, so it has no
+principal and that authorizer refuses it; so are senders on B/IP, B/IPv6, MS/TP
+and Ethernet. Deploy route authorities over direct connections. The router stays
+`Permissive` unless a policy is configured, so routers that announce themselves
+as the standard expects keep working by default. Advertisements circulating in a
+looped topology are a separate problem, tracked in #1810. A relayed
+Who-Is-Router-To-Network keeps the requester's SNET/SADR, or gains the arrival
+network and sender when it had none (Clause 6.6.3.2), pinned by
+`envelope_discovery_tests`.
+
+Each BACnet/SC node also limits the network-layer messages one source may hand
+in (#518): `ScControlRateLimit`, set with `with_control_rate_limit()` on
+`ScTransport` or `DirectAcceptConfig`, gives each originating VMAC on the hub
+path, and each direct peer, a bucket of 32 messages refilling at 8 a second.
+Messages over budget are dropped before they take a queue slot and counted in
+`ScNpduDropCounts::control_rate_drops`; APDUs are never charged, so a control
+flood starves neither that source's application traffic nor anyone else's. At
+most 256 sources keep their own bucket; once all are in use and none has
+refilled, new sources share one overflow bucket. The VMAC is a scheduling key,
+not an identity.
+
 Every routing decision is `bacnet-router-core`'s engine (#1679), which the
 router keeps behind one lock: each port's dispatch task takes it for one
 frame at a time, as the aging sweep and `table()` do, and nothing holds it

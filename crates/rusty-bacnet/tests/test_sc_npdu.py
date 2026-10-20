@@ -53,7 +53,8 @@ class ScNpduOptionsTests(unittest.TestCase):
         self.assertEqual(shape.keywords, [])  # required keys, not total=False
         self.assertEqual({field.target.id: ast.unparse(field.annotation)
                           for field in shape.body if isinstance(field, ast.AnnAssign)},
-                         dict(fairness_drops="int", full_drops="int", closed_drops="int"))
+                         dict(control_rate_drops="int", fairness_drops="int", full_drops="int",
+                              closed_drops="int"))
         self.assertFalse(hasattr(rusty_bacnet, "ScNpduDropCounts"))
         for api in [BACnetClient, BACnetServer]:
             node = stub_method(classes[api.__name__], "sc_npdu_drop_counts")
@@ -113,7 +114,8 @@ class ScNpduLifecycleTests(ClientScFixture):
                     self.assertIsInstance(value, RuntimeError)
                     self.assertTrue("closing" in str(value) or "not started" in str(value))
                 else:
-                    self.assertEqual(value, dict(fairness_drops=0, full_drops=0, closed_drops=0))
+                    self.assertEqual(value, dict(control_rate_drops=0, fairness_drops=0, full_drops=0,
+                                                closed_drops=0))
 
     async def test_recovering_client_keeps_transport_snapshot_available(self):
         hub, _ = await self.serving_hub()

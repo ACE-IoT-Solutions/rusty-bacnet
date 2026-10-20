@@ -148,6 +148,7 @@ async fn bursty_source_capped_while_legitimate_origins_progress() {
             fairness_drops: burst_drops,
             full_drops: 1,
             closed_drops: 0,
+            ..Default::default()
         }
     );
     // Draining proves progress per origin: burst first, then each origin.

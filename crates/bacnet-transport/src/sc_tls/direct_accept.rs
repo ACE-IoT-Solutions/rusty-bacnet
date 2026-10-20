@@ -162,9 +162,17 @@ impl DirectAcceptConfig {
     /// the aggregate cap stays the fixed channel capacity. The peer VMAC is
     /// a scheduling key, never identity.
     pub fn with_npdu_per_origin_limit(mut self, limit: usize) -> Self {
-        self.npdu_admission_policy = ScNpduAdmissionPolicy {
-            per_origin_limit: limit,
-        };
+        self.npdu_admission_policy.per_origin_limit = limit;
+        self
+    }
+
+    /// Set the per-peer limit on inbound network-layer messages
+    /// (builder-style; default [`ScControlRateLimit::default`](crate::sc::ScControlRateLimit::default), #518).
+    /// A message over budget is dropped silently and counted in
+    /// `control_rate_drops`; APDUs are never charged. [`DirectListener::start`]
+    /// validates it before binding.
+    pub fn with_control_rate_limit(mut self, limit: crate::sc::ScControlRateLimit) -> Self {
+        self.npdu_admission_policy.control_rate = limit;
         self
     }
 }

@@ -22,6 +22,7 @@ pub(crate) fn policy(transport: &str, limit: Option<usize>) -> PyResult<ScNpduAd
 
 pub(crate) fn snapshot(counts: ScNpduDropCounts) -> HashMap<&'static str, u64> {
     HashMap::from([
+        ("control_rate_drops", counts.control_rate_drops),
         ("fairness_drops", counts.fairness_drops),
         ("full_drops", counts.full_drops),
         ("closed_drops", counts.closed_drops),

@@ -1037,13 +1037,14 @@ return an owned dictionary with required integer fields:
 
 | Field | Counted NPDU admission failure |
 | --- | --- |
+| `control_rate_drops` | Network-layer message over its source's rate limit (#518) |
 | `fairness_drops` | Per-origin quota reached |
 | `full_drops` | Quota passed but aggregate queue full |
 | `closed_drops` | Receive queue closed |
 
 The counters are queue-wide lifetime totals, saturating at the native unsigned
 64-bit maximum. Each dropped NPDU increments one field, with closed checked
-before fairness and fairness before full. Reading them performs no network I/O
+first, then the control-message rate, fairness and full. Reading them performs no network I/O
 and remains available while the started SC transport is disconnected or the
 client is reconnecting. Before start, after stop, or on a started non-SC owner,
 the accessor raises `RuntimeError`. A new transport on a subsequent start has

@@ -31,6 +31,7 @@ mod connect_result;
 mod connection;
 mod connector;
 mod control_admission;
+mod control_rate;
 mod data_attributes;
 pub(crate) mod diagnostic_throttle;
 pub(crate) mod direct_discovery;
@@ -70,6 +71,7 @@ pub use connector::dial_within;
 #[cfg(feature = "sc-tls")]
 pub(crate) use connector::enter_dial_stage;
 use connector::{dial_failover_ws, WebSocketConnector};
+pub use control_rate::ScControlRateLimit;
 pub use errors::{
     ScCertificateRejection, ScConnectError, ScDialStage, ScTlsAlert, ScTlsFailure,
     ScWebSocketErrorKind,
