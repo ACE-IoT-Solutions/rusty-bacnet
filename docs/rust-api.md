@@ -2723,8 +2723,10 @@ transport.set_multicast(Some(group))?;
   group in BBMD or foreign-device mode (`ConfigError::MulticastMode`).
 - **Network Port.** BACnet_IP_Multicast_Address reads the group, or
   0.0.0.0 while off. A ReinitializeDevice activation of a written group
-  binds, joins and wraps a new listener before anything changes (a failure
-  leaves the old group and answers the activation with the error), then
+  binds, joins and wraps a new listener before the link changes (a failure
+  leaves the old group and answers the activation with the error; the
+  primary socket's multicast send options may already be set, which matters
+  only to multicast sends), then
   moves the link and hands the listener to the receive loop, which drops a
   datagram the old listener had read ahead; 0.0.0.0 leaves multicast and
   returns to the configured broadcast address. Only a transport that lends

@@ -307,7 +307,11 @@ impl Connection {
             if b.multicast.is_none() {
                 b.multicast_port = None;
             }
-            b.multicast_ttl = f[10].parse().map_err(|_| "Group TTL must be 1-255")?;
+            b.multicast_ttl = f[10]
+                .parse()
+                .ok()
+                .filter(|ttl| *ttl != 0)
+                .ok_or("Group TTL must be 1-255")?;
         }
         if let Some(s) = &mut profile.sc {
             s.hub_url = f[1].clone();

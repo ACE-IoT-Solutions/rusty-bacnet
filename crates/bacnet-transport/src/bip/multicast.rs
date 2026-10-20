@@ -41,7 +41,8 @@
 //! BACnet_IP_Multicast_Address (Clause 12.56.26): the group, or 0.0.0.0
 //! while off. A written group waits for a ReinitializeDevice, which joins
 //! it at run time through [`MulticastControl`]: a new listener is bound and
-//! joined before anything changes, then the link moves to the group and the
+//! joined before the link changes (the primary socket's multicast send
+//! options may be set first), then the link moves to the group and the
 //! receive loop takes the listener in place of the old one. A later start
 //! uses the group activated last.
 //!
@@ -425,7 +426,10 @@ impl MulticastControl {
     /// Ready the sockets for `next`, changing nothing the node reads yet:
     /// every step that can fail runs here. On Linux, macOS and the BSDs the
     /// sender's options and a listener joined to the group, wrapped for the
-    /// receive loop; the old group is left when its listener closes.
+    /// receive loop; the old group is left when its listener closes. The
+    /// sender's options (interface, TTL, loop) may already be set on the
+    /// primary socket when a later step fails, and stay set: they only
+    /// apply to multicast sends, which a node without a group makes none of.
     #[cfg(not(windows))]
     fn prepare(
         &self,
@@ -489,6 +493,13 @@ impl MulticastControl {
         prepared: Prepared,
         old: Option<BipMulticast>,
     ) {
+        // A listener only comes from a transport whose receive loop takes
+        // the hand-off; without one it would close unread.
+        #[cfg(not(windows))]
+        debug_assert!(
+            running.swap.is_some() || prepared.is_none(),
+            "a group listener with no receive loop to hand it to"
+        );
         #[cfg(not(windows))]
         if let Some(swap) = &running.swap {
             swap.offer(prepared);
@@ -548,9 +559,10 @@ impl IpMulticast for MulticastControl {
         let old = state.config;
         let subnet = subnet(next, running.subnet);
         // Every step that can fail first, then the link, then the hand-off:
-        // a failure leaves the old group in use and nothing changed.
+        // a failure leaves the old group in use, the link and the listener
+        // as they were (the primary's multicast send options may be set).
         let prepared = self.prepare(&node, running, next).map_err(|error| {
-            warn!(%error, "B/IP multicast group change failed; nothing changed");
+            warn!(%error, "B/IP multicast group change failed; the old group stays in use");
             Error::Transport(error)
         })?;
         if let Err(error) = node.set_subnet(subnet) {

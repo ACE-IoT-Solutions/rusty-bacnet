@@ -80,6 +80,19 @@ fn the_editor_sets_and_clears_a_group() {
 }
 
 #[test]
+fn a_zero_group_ttl_is_refused_even_without_a_group() {
+    let mut app = profile_app();
+    press(&mut app, KeyCode::Char('n'));
+    type_text(&mut app, "no-group");
+    focus(&mut app, 10);
+    press(&mut app, KeyCode::Backspace);
+    type_text(&mut app, "0");
+    assert!(press(&mut app, KeyCode::Enter).is_empty(), "not saved");
+    let error = app.connection.as_ref().unwrap().error.clone().unwrap();
+    assert!(error.contains("Group TTL must be 1-255"), "{error}");
+}
+
+#[test]
 fn a_bad_group_is_refused_in_the_editor() {
     let mut app = profile_app();
     press(&mut app, KeyCode::Char('n'));
