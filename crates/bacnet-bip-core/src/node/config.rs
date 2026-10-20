@@ -41,6 +41,9 @@ pub enum Mode {
     Foreign(Foreign),
     /// A BBMD: the receive decisions hand the BBMD's share of each message
     /// to the caller, which runs it through [`bbmd::Tables`](crate::bbmd::Tables).
+    /// With a multicast group as its subnet ([`LocalSubnet::is_group`]) it
+    /// serves that group (Annex J.8.3), and its BDT must say so
+    /// ([`Bdt::set_serves_group`](crate::bbmd::Bdt::set_serves_group)).
     Bbmd,
 }
 
@@ -192,14 +195,15 @@ impl Link {
     }
 
     /// Check the configuration: a nonzero own port, a usable foreign-device
-    /// registration, a budget of at least [`MIN_BUDGET`] octets, and a
-    /// multicast group (a class D [`LocalSubnet::broadcast`]) only in
-    /// [`Mode::Normal`].
+    /// registration, a budget of at least [`MIN_BUDGET`] octets, and no
+    /// multicast group (a class D [`LocalSubnet::broadcast`]) in
+    /// [`Mode::Foreign`]. A normal node with a group is a B/IP-M member, and
+    /// a BBMD with one serves the group (Annex J.8.3).
     pub const fn validate(&self) -> Result<(), ConfigError> {
         if self.address.port() == 0 {
             return Err(ConfigError::OwnPort);
         }
-        if self.subnet.broadcast.ip().is_multicast() && !matches!(self.mode, Mode::Normal) {
+        if self.subnet.is_group() && matches!(self.mode, Mode::Foreign(_)) {
             return Err(ConfigError::MulticastMode);
         }
         if let Some(budget) = self.budget {
@@ -256,9 +260,8 @@ pub enum ConfigError {
     /// foreign device.
     NotForeign,
     /// A multicast group as the subnet's broadcast address (B/IP-M, Annex
-    /// J.8) in a mode other than [`Mode::Normal`]: a foreign device
-    /// broadcasts through its BBMD, and a BBMD that serves a group is not
-    /// supported yet (#941).
+    /// J.8) in [`Mode::Foreign`]: a foreign device broadcasts through its
+    /// BBMD, never to a group.
     MulticastMode,
 }
 
@@ -275,7 +278,7 @@ impl fmt::Display for ConfigError {
             Self::BbmdIsSelf => "the BBMD is this node's own address",
             Self::Budget => "the datagram budget is below 64 octets",
             Self::NotForeign => "only a foreign device can change its BBMD",
-            Self::MulticastMode => "only a normal node can use a multicast group",
+            Self::MulticastMode => "a foreign device can't use a multicast group",
         })
     }
 }

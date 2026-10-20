@@ -261,7 +261,7 @@ impl<const B: usize, const F: usize> Tables<B, F> {
         table: bacnet_bip_codec::BdtEntries<'_>,
     ) -> Result<(), BdtError> {
         let own = Self::own_address_for(nat.as_ref(), local)?;
-        let mut bdt = Bdt::with_nat(own, nat.is_some());
+        let mut bdt = self.bdt.with_nat(own, nat.is_some());
         bdt.set_without(table, self.leaving_nat(nat.as_ref()))?;
         self.bdt = bdt;
         self.nat = nat;
@@ -364,6 +364,12 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     /// subnet, the subnet's broadcast address first. The peers don't get
     /// it again. Behind a NAT router too the origin stays as it came
     /// (Annex J.7.5).
+    ///
+    /// For a BBMD that serves a B/IP-M group ([`LocalSubnet::is_group`])
+    /// the subnet's broadcast address is the group, and the subnet's mask
+    /// isn't used: a peer on the BBMD's IP subnet reaches it with its own
+    /// broadcasts, but no group member takes those (Annex J.8.1), so its
+    /// forwards go to the group too (Annex J.8.3).
     pub fn forwarded_npdu<'o>(
         &self,
         cx: &Context,
@@ -380,7 +386,8 @@ impl<const B: usize, const F: usize> Tables<B, F> {
             return Err(ForwardRefusal::NotFromPeer);
         }
         let mut writer = Writer::new(out);
-        if !subnet.alone && self.rebroadcasts_forwarded(subnet.mask, sender, arrival) {
+        let mask = subnet.mask.filter(|_| !subnet.is_group());
+        if !subnet.alone && self.rebroadcasts_forwarded(mask, sender, arrival) {
             writer.push_local(subnet.broadcast);
         }
         self.foreign_device_targets_into(&mut writer, cx, origin);

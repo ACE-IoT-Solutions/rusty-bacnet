@@ -103,7 +103,7 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::Bvll;
 
-use crate::bbmd::{ForwardRefusal, Served};
+use crate::bbmd::{BdtError, ForwardRefusal, Served};
 use bacnet_npdu::MAX_NPDU;
 
 use crate::node::{ConfigError, Delivery, Discard, SendRefusal};
@@ -191,6 +191,10 @@ pub enum PortError {
         /// The rows lent.
         available: usize,
     },
+    /// A [`BbmdPort`] whose link serves a B/IP-M group was lent tables
+    /// whose own BDT row isn't two-hop
+    /// ([`BdtError::OneHopForGroup`]).
+    Bdt(BdtError),
 }
 
 impl fmt::Display for PortError {
@@ -214,6 +218,7 @@ impl fmt::Display for PortError {
                 f,
                 "a BBMD reports up to {needed} registrations, with rows for {available}"
             ),
+            Self::Bdt(why) => write!(f, "invalid BDT: {why}"),
         }
     }
 }

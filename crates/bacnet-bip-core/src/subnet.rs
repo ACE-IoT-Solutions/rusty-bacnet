@@ -28,7 +28,9 @@ pub struct LocalSubnet {
     /// Forwarded-NPDU again when the peer sent it from this subnet at the
     /// BBMD's own port: the network's devices there heard it first hand.
     /// Leave it `None` when it isn't known, or when the own address isn't
-    /// on the subnet, as behind NAT; such a forward is then broadcast.
+    /// on the subnet, as behind NAT; such a forward is then broadcast. A
+    /// BBMD that serves a multicast group doesn't use it: a peer's own
+    /// broadcasts reach its IP subnet, not the group.
     pub mask: Option<Ipv4Addr>,
     /// Whether the node is the only device of its B/IP network on the
     /// subnet, as a BBMD behind a NAT router often is (Annex J.7.5). A BBMD
@@ -66,6 +68,7 @@ impl LocalSubnet {
     /// A B/IP-M node's subnet (Annex J.8.1): broadcasts go to `group`, a
     /// multicast address at the network's port, and `directed`, the IP
     /// subnet's own broadcast address when known, stays a group address.
+    /// A BBMD that serves the group (Annex J.8.3) has the same subnet.
     #[must_use]
     pub const fn member(group: SocketAddrV4, directed: Option<Ipv4Addr>) -> Self {
         Self {
@@ -74,5 +77,12 @@ impl LocalSubnet {
             alone: false,
             directed,
         }
+    }
+
+    /// Whether the broadcast address is a multicast group: the subnet of a
+    /// B/IP-M node, or of the BBMD that serves its group (Annex J.8).
+    #[must_use]
+    pub const fn is_group(&self) -> bool {
+        self.broadcast.ip().is_multicast()
     }
 }

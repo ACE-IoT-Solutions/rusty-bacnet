@@ -156,18 +156,23 @@ fn a_members_directed_broadcast_stays_a_group() {
 }
 
 #[test]
-fn only_a_normal_node_takes_a_group() {
-    for mode in [Mode::Bbmd, Mode::Foreign(foreign())] {
-        assert_eq!(
-            Link::new(OWN, LocalSubnet::new(GROUP), mode),
-            Err(ConfigError::MulticastMode)
-        );
+fn a_foreign_device_takes_no_group() {
+    let mode = Mode::Foreign(foreign());
+    assert_eq!(
+        Link::new(OWN, LocalSubnet::new(GROUP), mode),
+        Err(ConfigError::MulticastMode)
+    );
+    let mut node: Node = Node::new(link(mode), at(0)).expect("valid");
+    assert_eq!(
+        node.set_subnet(LocalSubnet::new(GROUP)),
+        Err(ConfigError::MulticastMode)
+    );
+    assert_eq!(node.link().subnet, SUBNET, "unchanged");
+    // A normal node is a member, and a BBMD serves the group (J.8.3,
+    // `port_bbmd_multicast.rs`).
+    for mode in [Mode::Normal, Mode::Bbmd] {
+        assert!(Link::new(OWN, LocalSubnet::new(GROUP), mode).is_ok());
         let mut node: Node = Node::new(link(mode), at(0)).expect("valid");
-        assert_eq!(
-            node.set_subnet(LocalSubnet::new(GROUP)),
-            Err(ConfigError::MulticastMode)
-        );
-        assert_eq!(node.link().subnet, SUBNET, "unchanged");
+        node.set_subnet(LocalSubnet::new(GROUP)).expect("valid");
     }
-    assert!(Link::new(OWN, LocalSubnet::new(GROUP), Mode::Normal).is_ok());
 }
