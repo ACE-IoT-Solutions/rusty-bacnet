@@ -122,9 +122,10 @@ enum Field {
 
 /// The columns for a table `width` columns wide, each sized to its content
 /// over every visible row (not just those on screen, so scrolling doesn't
-/// move them). From [`FULL_WIDTH`] the headers are spelled out. Instance and
-/// address are never cut, and the Via column appears only when the whole of
-/// it fits.
+/// move them). With `full` (a terminal [`FULL_WIDTH`] columns wide or more,
+/// even when the Who-Has panel takes some of it) the headers are spelled
+/// out. Instance and address are never cut, and the Via column appears
+/// only when the whole of it fits.
 ///
 /// The vendor column is the one that gives way when a row is too wide. A
 /// vendor ID (at most five digits) never needs to; the shrink is there for
@@ -136,8 +137,7 @@ enum Field {
 /// (at 80 columns with long addresses, say), when its names aren't asked for.
 /// Sorted by name, it always shows: the columns in [`GIVES_WAY`] are left
 /// out to make room for it.
-fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
-    let full = width >= FULL_WIDTH;
+fn columns(width: u16, full: bool, app: &App) -> Vec<Column<Field>> {
     let sorted = sorted_field(app.devices.sort().0);
     let column = |field: Field, short: &str, long: &str| {
         let mut header = if full { long } else { short }.to_string();
@@ -273,12 +273,31 @@ fn cells<'a>(
         .collect()
 }
 
-pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+/// The filter's title on the table's top border, when one is set.
+fn filter_title(app: &App) -> Option<String> {
+    let filter = app.devices.filter();
+    (!filter.is_empty()).then(|| format!(" filter: \"{filter}\" "))
+}
+
+/// The columns the table takes at its content width in a terminal `width`
+/// wide (#1915): its columns, or the text it shows when it has no row,
+/// and its top titles, inside its borders. The Who-Is status on the bottom
+/// border is left out, so a long error doesn't move the panes.
+pub(super) fn content_width(width: u16, app: &App) -> usize {
+    let body = if app.devices.visible_len() == 0 {
+        text_width(&empty_text(app))
+    } else {
+        columns::total(&columns(width, width >= FULL_WIDTH, app))
+    };
+    let titles = text_width(&title(app)) + filter_title(app).map_or(0, |f| 1 + text_width(&f));
+    body.max(titles) + 2
+}
+
+pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, full: bool) {
     let mut block = Block::bordered()
         .title(Line::styled(title(app), theme.accent()))
         .border_style(theme.dim());
-    if !app.devices.filter().is_empty() {
-        let filter = format!(" filter: \"{}\" ", app.devices.filter());
+    if let Some(filter) = filter_title(app) {
         block = block.title(Line::styled(filter, theme.warn()).alignment(Alignment::Right));
     }
     if let Some(status) = op_status(app) {
@@ -290,7 +309,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         empty(frame, inner, app, theme);
         return;
     }
-    let columns = columns(area.width, app);
+    let columns = columns(area.width, full, app);
     let named = columns.iter().any(|column| column.kind == Field::Name);
     app.devices.named.set(named);
     // One line for the header row.
@@ -348,7 +367,14 @@ fn scroll(app: &App, height: usize) -> usize {
 }
 
 fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let text = match (&app.link, app.devices.len()) {
+    let text = empty_text(app);
+    let lines = vec![Line::raw(""), Line::from(Span::styled(text, theme.dim()))];
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+}
+
+/// What the table says when it has no row to show.
+fn empty_text(app: &App) -> String {
+    match (&app.link, app.devices.len()) {
         (Link::Down, _) => "Disconnected. Press p for profiles or c to connect.".into(),
         (Link::Disconnecting, _) => "Disconnecting; waiting for local resources to stop...".into(),
         (Link::Picking, _) => String::new(),
@@ -362,9 +388,7 @@ fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             "No device matches \"{}\". Esc clears the filter.",
             app.devices.filter()
         ),
-    };
-    let lines = vec![Line::raw(""), Line::from(Span::styled(text, theme.dim()))];
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+    }
 }
 
 #[cfg(test)]

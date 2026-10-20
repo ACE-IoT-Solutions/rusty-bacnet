@@ -1,5 +1,6 @@
-//! The `:find` panel below the device table (#960). Every state is
-//! marked by text as well as colour.
+//! The `:find` panel (#960), below the device table or, from
+//! [`WIDE_WIDTH`] columns when both fit at their content widths, beside it
+//! (#1915). Every state is marked by text as well as colour.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
@@ -7,49 +8,111 @@ use ratatui::widgets::{Block, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use super::columns::{self, Column};
-use super::{ellipsize, sanitize, text_width, Theme, FULL_WIDTH};
+use super::{ellipsize, sanitize, text_width, Theme, FULL_WIDTH, WIDE_WIDTH};
 use crate::tui::app::devices::age_label;
 use crate::tui::app::objects::object_label;
+use crate::tui::app::who_has::WhoHasSearch;
 use crate::tui::app::App;
 use crate::tui::network::discovery::FoundRow;
 
 /// The most result rows the Who-Has panel takes room for.
 const PANEL_ROWS: usize = 6;
 
-/// The Devices screen: the table, and the `:find` results below it.
+/// The Devices screen: the table, and the `:find` results below it or
+/// beside it.
 pub(super) fn devices(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let full = area.width >= FULL_WIDTH;
     let Some(search) = &app.who_has else {
-        super::devices::table(frame, area, app, theme);
+        super::devices::table(frame, area, app, theme, full);
         return;
     };
+    if let Some(width) = beside(area.width, app, search) {
+        let [table, panel_area] =
+            Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
+        super::devices::table(frame, table, app, theme, full);
+        panel(frame, panel_area, app, search, theme, full);
+        return;
+    }
     // Borders and the header row, around at least one line.
     let rows = search.found.len().clamp(1, PANEL_ROWS) as u16 + 3;
-    let [table, panel] =
+    let [table, panel_area] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(rows)]).areas(area);
-    super::devices::table(frame, table, app, theme);
+    super::devices::table(frame, table, app, theme, full);
+    panel(frame, panel_area, app, search, theme, full);
+}
+
+/// The device table's width when the panel goes beside it: from
+/// [`WIDE_WIDTH`] columns, when the table at its content width leaves the
+/// panel room for its own. The panel takes the rest.
+fn beside(width: u16, app: &App, search: &WhoHasSearch) -> Option<u16> {
+    if width < WIDE_WIDTH {
+        return None;
+    }
+    let table = super::devices::content_width(width, app);
+    let fits = table + content_width(search) <= usize::from(width);
+    fits.then_some(table as u16)
+}
+
+/// The panel's title: what was searched for, how many answered, when.
+fn title(search: &WhoHasSearch, age: &str) -> String {
     let found = match search.found.len() {
         1 => "1 found".to_string(),
         n => format!("{n} found"),
     };
-    let title = format!(
-        " Who-Has \"{}\" | {found} | sent {} ago | :find closes ",
-        search.name,
-        age_label(app.now, search.sent)
-    );
+    format!(
+        " Who-Has \"{}\" | {found} | sent {age} ago | :find closes ",
+        search.name
+    )
+}
+
+/// What the panel shows with no result.
+fn empty_text(search: &WhoHasSearch) -> String {
+    match &search.failed {
+        Some(error) => format!("Not sent: {error}"),
+        None => "No I-Have yet.".to_string(),
+    }
+}
+
+/// The columns the panel takes at its content width, borders included:
+/// every name in full and its title, but not the Via column, which goes
+/// in only when the room is there. The age in the title is counted at its
+/// widest (`59s`), so the panes don't move as it counts.
+fn content_width(search: &WhoHasSearch) -> usize {
+    let body = if search.found.is_empty() {
+        text_width(&empty_text(search))
+    } else {
+        let mut columns = columns(u16::MAX, true, &search.found);
+        columns.retain(|column| column.kind != Field::Via);
+        columns::total(&columns)
+    };
+    body.max(text_width(&title(search, "59s"))) + 2
+}
+
+/// The bordered panel of results in `area`.
+fn panel(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    search: &WhoHasSearch,
+    theme: &Theme,
+    full: bool,
+) {
+    let title = title(search, &age_label(app.now, search.sent));
     let block = Block::bordered()
         .title(Line::styled(title, theme.accent()))
         .border_style(theme.dim());
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     if search.found.is_empty() {
-        let text = match &search.failed {
-            Some(error) => Line::styled(format!("Not sent: {error}"), theme.danger()),
-            None => Line::styled("No I-Have yet.", theme.dim()),
+        let style = match search.failed {
+            Some(_) => theme.danger(),
+            None => theme.dim(),
         };
+        let text = Line::styled(empty_text(search), style);
         frame.render_widget(Paragraph::new(text), inner);
         return;
     }
-    let columns = columns(panel.width, &search.found);
+    let columns = columns(area.width, full, &search.found);
     let rows: Vec<Row> = search
         .found
         .iter()
@@ -102,19 +165,16 @@ fn cell(field: Field, row: &FoundRow) -> String {
     }
 }
 
-/// The columns for a panel `width` wide, sized to the results. Device,
+/// The columns for a panel `width` wide, sized to the results; `full` (a
+/// terminal [`FULL_WIDTH`] columns wide) spells out Network. Device,
 /// object, address and network are never cut; the name takes the room
 /// left, cut with `…` when it is longer, and the Via column appears only
 /// when the whole of it fits beside every name in full. Unlike the device
 /// table, where Via goes in after the vendor has given way, here Via is
 /// placed before the name shrinks: the name has the room first, and the
 /// router is left out rather than a name cut to make space for it.
-fn columns(width: u16, found: &[FoundRow]) -> Vec<Column<Field>> {
-    let network = if width >= FULL_WIDTH {
-        "Network"
-    } else {
-        "Net"
-    };
+fn columns(width: u16, full: bool, found: &[FoundRow]) -> Vec<Column<Field>> {
+    let network = if full { "Network" } else { "Net" };
     let mut columns = vec![
         Column::new(Field::Device, "Device"),
         Column::new(Field::Object, "Object"),
