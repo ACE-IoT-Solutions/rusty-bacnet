@@ -1,7 +1,9 @@
 //! Real loopback lifecycle tests plus pure UI generation/admission checks.
 
+use super::port_retry::rerun_on_lost_port;
 use super::*;
 use crate::tui::app::{Link, Overlay};
+use crate::tui::message::Failure;
 use crate::tui::profile::service::{Request, Service};
 use crate::tui::profile::store::Store;
 use crate::tui::profile::{Overrides, Profile};
@@ -27,19 +29,49 @@ pub(super) async fn event(events: &mut mpsc::Receiver<WorkerEvent>) -> WorkerEve
 }
 
 pub(super) async fn connected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64) -> String {
+    match outcome(events, generation).await {
+        Ok(local) => local,
+        Err(error) => panic!("connection failed: {error}"),
+    }
+}
+
+/// How connection attempt `generation` ends: the local address, or why it
+/// failed.
+async fn outcome(
+    events: &mut mpsc::Receiver<WorkerEvent>,
+    generation: u64,
+) -> Result<String, Failure> {
     loop {
         match event(events).await {
             WorkerEvent::Session {
                 generation: actual,
                 event,
             } if actual == generation => match *event {
-                WorkerEvent::Connected { local } => return local,
-                WorkerEvent::ConnectFailed { error } => panic!("connection failed: {error}"),
+                WorkerEvent::Connected { local } => return Ok(local),
+                WorkerEvent::ConnectFailed { error } => return Err(error),
                 _ => {}
             },
             _ => {}
         }
     }
+}
+
+/// [`connected`] on a port the test picked and freed, which another process
+/// may take before the session binds it (#1877). A failed attempt probes the
+/// port: when another socket holds it, the probe's bind error goes back to
+/// [`rerun_on_lost_port`], which reruns the test on a fresh port. A failure
+/// on a free port panics.
+async fn connected_on(
+    events: &mut mpsc::Receiver<WorkerEvent>,
+    generation: u64,
+    port: u16,
+) -> std::io::Result<String> {
+    let error = match outcome(events, generation).await {
+        Ok(local) => return Ok(local),
+        Err(error) => error,
+    };
+    std::net::UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
+    panic!("connection failed on a free port: {error}")
 }
 
 pub(super) async fn disconnected(events: &mut mpsc::Receiver<WorkerEvent>, generation: u64) {
@@ -50,35 +82,52 @@ pub(super) async fn disconnected(events: &mut mpsc::Receiver<WorkerEvent>, gener
     }
 }
 
+/// The session binds a port the test freed, frees it on each disconnect and
+/// binds it again, and the closing probe binds it once more. Another process
+/// can take it in any of those gaps, so the test then reruns on a fresh port
+/// (#1877).
 #[tokio::test]
 async fn coordinator_disconnects_reconnects_same_port_and_joins_on_quit() {
-    let mut p = profile();
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    p.bip_mut().port = socket.local_addr().unwrap().port();
-    drop(socket);
-    let args = p.transport_args().unwrap();
-    let plan = ConnectPlan {
-        kind: TransportKind::Bip,
-        args,
-        await_interface: false,
-    };
-    let (sink, mut events) = EventSink::channel(32);
-    let (commands, rx) = mpsc::channel(16);
-    let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
-    let first = connected(&mut events, 1).await;
-    for generation in 1..=3 {
-        commands.send(Command::Disconnect).await.unwrap();
-        disconnected(&mut events, generation).await;
-        commands.send(Command::Reconnect).await.unwrap();
-        assert_eq!(connected(&mut events, generation + 1).await, first);
-    }
-    drop((commands, events));
-    tokio::time::timeout(Duration::from_secs(2), task)
-        .await
-        .unwrap()
-        .unwrap();
-    std::net::UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, p.bip().port))
-        .expect("socket released after coordinator join");
+    rerun_on_lost_port(async || {
+        let mut p = profile();
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        p.bip_mut().port = port;
+        drop(socket);
+        let args = p.transport_args().unwrap();
+        let plan = ConnectPlan {
+            kind: TransportKind::Bip,
+            args,
+            await_interface: false,
+        };
+        let (sink, mut events) = EventSink::channel(32);
+        let (commands, rx) = mpsc::channel(16);
+        let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
+        let cycled = async {
+            let first = connected_on(&mut events, 1, port).await?;
+            for generation in 1..=3 {
+                commands.send(Command::Disconnect).await.unwrap();
+                disconnected(&mut events, generation).await;
+                commands.send(Command::Reconnect).await.unwrap();
+                assert_eq!(
+                    connected_on(&mut events, generation + 1, port).await?,
+                    first
+                );
+            }
+            std::io::Result::Ok(())
+        }
+        .await;
+        // Join the coordinator on a lost port too, so a rerun starts clean.
+        drop((commands, events));
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        cycled?;
+        // The joined coordinator released the port.
+        std::net::UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).map(drop)
+    })
+    .await;
 }
 
 #[tokio::test]

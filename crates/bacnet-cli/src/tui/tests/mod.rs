@@ -74,6 +74,9 @@ mod names;
 mod names_site;
 mod network;
 mod network_frames;
+/// Reruns a test whose freed ephemeral port another process takes (#1877).
+#[path = "../../../../bacnet-endpoint/tests/support/port_retry.rs"]
+mod port_retry;
 mod profile_ui;
 #[cfg(feature = "sc-tls")]
 mod sc_hub;
