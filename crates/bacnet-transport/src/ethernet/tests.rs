@@ -161,6 +161,92 @@ fn ethernet_transport_new() {
     assert_eq!(t.local_mac(), &[0; 6]); // not started yet
 }
 
+/// #1883: an interface that doesn't exist, or whose name the kernel can't
+/// hold, is a clear `NotFound` naming it, not a panic.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_missing_interface_is_a_clear_error() {
+    for name in [
+        "bacnet-none0",
+        "an-interface-name-far-too-long",
+        "nul\0name",
+        "",
+    ] {
+        match super::transport::interface_link(name) {
+            Err(Error::Transport(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{name:?}");
+                assert!(error.to_string().contains(&format!("{name:?}")), "{error}");
+            }
+            other => panic!("{name:?}: {other:?}"),
+        }
+    }
+    // A lookup that fails for want of a resource is not a missing interface.
+    use nix::errno::Errno;
+    for (errno, kind) in [
+        (Errno::ENODEV, std::io::ErrorKind::NotFound),
+        (Errno::ENXIO, std::io::ErrorKind::NotFound),
+        (Errno::EINVAL, std::io::ErrorKind::NotFound),
+        (Errno::EMFILE, std::io::Error::from(Errno::EMFILE).kind()),
+        (Errno::ENOMEM, std::io::ErrorKind::OutOfMemory),
+    ] {
+        let Error::Transport(error) = super::transport::lookup_error("eth9", "index", errno) else {
+            panic!("{errno}");
+        };
+        assert_eq!(error.kind(), kind, "{errno}");
+        assert!(error.to_string().contains("\"eth9\""), "{error}");
+    }
+    assert_ne!(
+        std::io::Error::from(Errno::EMFILE).kind(),
+        std::io::ErrorKind::NotFound
+    );
+}
+
+/// #1883: the drain after the bind empties the queue, a datagram longer
+/// than its buffer included, and stops at an empty one. A Unix datagram
+/// pair stands in for the packet socket: delivery is synchronous, and a
+/// short read discards the rest of a datagram as it does a frame.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_drain_drops_every_queued_frame_and_stops() {
+    let (sender, receiver) =
+        socket2::Socket::pair(socket2::Domain::UNIX, socket2::Type::DGRAM, None).unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    assert_eq!(super::transport::drain_queued_frames(&receiver), 0);
+    for frame in [&[1u8; 60][..], &[2; 1514], &[3; 17]] {
+        sender.send(frame).unwrap();
+    }
+    assert_eq!(super::transport::drain_queued_frames(&receiver), 3);
+    assert_eq!(super::transport::drain_queued_frames(&receiver), 0);
+}
+
+/// #1883: the loopback interface, present on every Linux host and
+/// container, resolves to its own index with a six-octet address, and the
+/// address's protocol leaves the socket's in place on bind.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_loopback_link_resolves_by_index() {
+    let link = super::transport::interface_link("lo").unwrap();
+    let index = nix::net::if_::if_nametoindex("lo").unwrap();
+    assert_eq!(link.ifindex(), index as usize);
+    assert_eq!(link.halen(), 6);
+    assert_eq!(link.protocol(), 0);
+}
+
+/// #1883: starting on a missing interface fails before any socket opens,
+/// so it needs no raw-socket permission, and leaves the transport unstarted.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn starting_on_a_missing_interface_fails_cleanly() {
+    let mut transport = EthernetTransport::new("bacnet-none0");
+    let error = transport.start().await.unwrap_err();
+    assert!(error.to_string().contains("bacnet-none0"), "{error}");
+    assert_eq!(transport.local_mac(), &[0; 6]);
+    assert!(matches!(
+        transport.send_broadcast(&[1, 0]).await,
+        Err(Error::Transport(e)) if e.kind() == std::io::ErrorKind::NotConnected
+    ));
+}
+
 /// Group MACs: the all-ones broadcast and multicast MACs (IPv4 and IPv6
 /// mapped, a bridge group, a locally administered group).
 const GROUP_MACS: [[u8; 6]; 5] = [
