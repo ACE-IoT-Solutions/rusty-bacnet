@@ -7,7 +7,8 @@
 //! into `u64`s that saturate.
 
 use bacnet_mstp_core::{
-    Duration, MstpCounters as CoreCounters, QueueCounters as CoreQueueCounters,
+    Duration, LatenessHistogram as CoreLateness, MstpCounters as CoreCounters,
+    QueueCounters as CoreQueueCounters, LATENESS_BUCKETS,
 };
 
 /// One transmit queue's counts since the transport started: the core's
@@ -46,6 +47,38 @@ impl QueueCounters {
     }
 }
 
+/// How late the core serviced its deadlines since the transport started:
+/// the core's [`LatenessHistogram`](bacnet_mstp_core::LatenessHistogram),
+/// added up. The buckets keep the core's edges
+/// ([`LatenessHistogram::EDGES`](bacnet_mstp_core::LatenessHistogram::EDGES))
+/// and saturate at `u64::MAX`; the maximum is the largest of the takes'.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LatenessHistogram {
+    /// Deadlines serviced in each lateness band: under 1 ms, 1 to 2 ms, 2 to
+    /// 5 ms, 5 to 10 ms, 10 to 25 ms, and 25 ms or more.
+    pub buckets: [u64; LATENESS_BUCKETS],
+    /// The largest lateness of a serviced deadline.
+    pub max: Duration,
+}
+
+impl LatenessHistogram {
+    /// Add one take: its counts, and its maximum if that is larger.
+    pub(super) fn add(&mut self, taken: CoreLateness) {
+        for (total, count) in self.buckets.iter_mut().zip(taken.buckets) {
+            add(total, count);
+        }
+        self.max = self.max.max(taken.max);
+    }
+
+    /// Deadlines serviced, all buckets together, saturating.
+    pub fn total(&self) -> u64 {
+        self.buckets
+            .iter()
+            .fold(0u64, |sum, &count| sum.saturating_add(count))
+    }
+}
+
 /// The master core's counts since the transport started: its
 /// [`MstpCounters`](bacnet_mstp_core::MstpCounters), added up, where each
 /// field is described. Each count saturates at `u64::MAX`.
@@ -54,8 +87,12 @@ impl QueueCounters {
 pub struct MstpCounters {
     /// State-machine transitions.
     pub state_transitions: u64,
-    /// Deadlines serviced a millisecond or more after they fell due.
-    pub deadline_misses: u64,
+    /// Deadlines serviced the core's `late_deadline` or more after they fell
+    /// due: [`HOST_LATE_DEADLINE`](super::HOST_LATE_DEADLINE), 5 ms, on this
+    /// transport.
+    pub late_deadlines: u64,
+    /// How late every serviced deadline was.
+    pub deadline_lateness: LatenessHistogram,
     /// Tokens passed to a successor.
     pub token_rotations: u64,
     /// Tokens generated after the token was lost.
@@ -130,7 +167,8 @@ impl MstpCounters {
     /// Add one take of the core's counters.
     pub(super) fn add(&mut self, taken: CoreCounters) {
         add(&mut self.state_transitions, taken.state_transitions);
-        add(&mut self.deadline_misses, taken.deadline_misses);
+        add(&mut self.late_deadlines, taken.late_deadlines);
+        self.deadline_lateness.add(taken.deadline_lateness);
         add(&mut self.token_rotations, taken.token_rotations);
         add(&mut self.token_regenerations, taken.token_regenerations);
         add(
@@ -207,7 +245,7 @@ mod tests {
         let mut taken = CoreCounters::default();
         let counts = [
             &mut taken.state_transitions,
-            &mut taken.deadline_misses,
+            &mut taken.late_deadlines,
             &mut taken.token_rotations,
             &mut taken.token_regenerations,
             &mut taken.missed_generation_slots,
@@ -240,6 +278,8 @@ mod tests {
             *count = value;
         }
         taken.de_assertion = Duration::from_nanos(1_234_567);
+        taken.deadline_lateness.buckets = [301, 302, 303, 304, 305, 306];
+        taken.deadline_lateness.max = Duration::from_micros(7_654);
         for (base, queue) in [(100, &mut taken.unicast), (200, &mut taken.broadcast)] {
             queue.depth = base + 1;
             queue.high_water = base + 2;
@@ -276,5 +316,23 @@ mod tests {
         totals.frames_received = u64::MAX - 1;
         totals.add(taken);
         assert_eq!(totals.frames_received, u64::MAX);
+    }
+
+    /// The lateness buckets add up, past `u32::MAX`, and the maximum is the
+    /// largest of the takes', not the latest.
+    #[test]
+    fn lateness_totals_add_buckets_and_keep_the_largest_max() {
+        let mut totals = MstpCounters::default();
+        let mut taken = CoreCounters::default();
+        taken.deadline_lateness.buckets = [u32::MAX, 1, 0, 0, 0, 2];
+        taken.deadline_lateness.max = Duration::from_millis(30);
+        totals.add(taken);
+        taken.deadline_lateness.buckets = [1, 1, 1, 0, 0, 0];
+        taken.deadline_lateness.max = Duration::from_millis(3);
+        totals.add(taken);
+        let lateness = totals.deadline_lateness;
+        assert_eq!(lateness.buckets, [u64::from(u32::MAX) + 1, 2, 1, 0, 0, 2]);
+        assert_eq!(lateness.total(), u64::from(u32::MAX) + 6);
+        assert_eq!(lateness.max, Duration::from_millis(30));
     }
 }

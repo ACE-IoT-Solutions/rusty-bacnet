@@ -138,7 +138,7 @@ fn echo_grace_does_not_move_the_completion_stamp() {
     sim.run_until(wire_end + Duration::from_millis(40));
     assert_eq!(sim.host_stats(0).unwrap().last_completion, Some(wire_end));
     assert_eq!(sim.host_stats(0).unwrap().echo_missing, 1);
-    assert_eq!(sim.core(0).unwrap().counters().deadline_misses, 1);
+    assert_eq!(sim.core(0).unwrap().counters().late_deadlines, 1);
     sim.assert_no_violations();
 }
 

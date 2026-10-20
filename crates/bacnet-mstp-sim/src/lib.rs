@@ -283,7 +283,7 @@
 //!    ([`RequestError`](bacnet_mstp_core::RequestError)); adapter and
 //!    internal errors, delivery drops and frames from a station's own address
 //!    (its echo leaking past the adapter) stay zero; a punctual adapter's core
-//!    counts no deadline misses; no new deadline lies in the past, and none
+//!    counts no late deadlines; no new deadline lies in the past, and none
 //!    stays due after being serviced over and over at one instant.
 //! 7. **Usage delay.** A punctual master answers a Token or Poll For Master
 //!    addressed to it within Tusage_delay, unless it is still answering a

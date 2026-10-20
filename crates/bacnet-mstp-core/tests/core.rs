@@ -264,7 +264,7 @@ fn poll_for_master_uses_usage_timeout_not_slot() {
     assert_eq!(core.poll_action(), Action::Idle);
     core.on_deadline(at(521));
     assert_eq!(core.state(), MasterState::PollForMaster);
-    assert!(core.counters().deadline_misses == 0);
+    assert!(core.counters().late_deadlines == 0);
 }
 
 #[test]
@@ -513,7 +513,7 @@ fn monotone_random_events_never_panic_and_deadlines_are_causal() {
                 _ => { core.on_deadline(now); }
             }
             if let Some(deadline) = core.next_deadline() {
-                prop_assert!(deadline >= now || core.counters().deadline_misses > 0);
+                prop_assert!(deadline >= now || core.counters().late_deadlines > 0);
             }
             let _ = core.counters();
         }
@@ -650,7 +650,7 @@ fn a_clock_that_steps_back_is_held_at_the_latest_time() {
     // A deadline call stamped before then is taken at 100 ms, early.
     core.on_deadline(at(10));
     assert_eq!(core.state(), MasterState::Idle);
-    assert_eq!(core.counters().deadline_misses, 0);
+    assert_eq!(core.counters().late_deadlines, 0);
     // An NPDU queued at 20 ms is queued at 100 ms, and expires five seconds
     // (the queues' maximum age) after that.
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(20))

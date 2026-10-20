@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{centered, Theme};
-use crate::tui::app::mstp::{JoinDialog, JoinOrigin, MstpState};
+use crate::tui::app::mstp::{
+    JoinDialog, JoinOrigin, Lateness, LatenessMax, MstpState, LATENESS_BANDS,
+};
 use crate::tui::app::App;
 
 /// The MS/TP screen.
@@ -106,8 +108,13 @@ fn counters(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
         Some(rows) => {
             let mut lines: Vec<Line> = rows
                 .into_iter()
-                .map(|(label, value)| Line::raw(format!("{label:<20}{value:>12}")))
+                .map(|(label, value)| Line::raw(row(&label, &value.to_string())))
                 .collect();
+            if let Some(lateness) = mstp.lateness() {
+                // The key row below, and the borders.
+                let room = usize::from(area.height.saturating_sub(3));
+                lines.extend(lateness_lines(&lateness, room.saturating_sub(lines.len())));
+            }
             lines.push(Line::styled(
                 "z clear | Space pause/follow | Esc back",
                 theme.dim(),
@@ -116,6 +123,44 @@ fn counters(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
         }
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// A counter row: its label, then its value right-aligned.
+fn row(label: &str, value: &str) -> String {
+    let pad = 32usize.saturating_sub(super::text_width(label) + super::text_width(value));
+    format!("{label}{:pad$}{value}", "")
+}
+
+/// The timer-lateness rows, in `room` rows: the largest lateness, then the
+/// histogram's buckets when they fit too.
+fn lateness_lines(lateness: &Lateness, room: usize) -> Vec<Line<'static>> {
+    let max = match lateness.max {
+        None => "-".to_string(),
+        Some(LatenessMax::Exact(max)) => millis(max),
+        Some(LatenessMax::AtMost(max)) => format!("≤{}", millis(max)),
+    };
+    let mut lines = vec![Line::raw(row("Timer lateness max", &max))];
+    if room > LATENESS_BANDS.len() {
+        lines.extend(
+            LATENESS_BANDS
+                .iter()
+                .zip(lateness.buckets)
+                .map(|(band, count)| {
+                    Line::raw(row(&format!("  timers {band}"), &count.to_string()))
+                }),
+        );
+    }
+    lines
+}
+
+/// A lateness in milliseconds to a tenth, or whole ones from 100 ms.
+fn millis(duration: std::time::Duration) -> String {
+    let micros = duration.as_micros();
+    if micros >= 100_000 {
+        format!("{} ms", micros / 1000)
+    } else {
+        format!("{}.{} ms", micros / 1000, micros % 1000 / 100)
+    }
 }
 
 /// The join confirmation (T2): what joining does, the port, then `y`.

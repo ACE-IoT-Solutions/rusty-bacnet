@@ -35,11 +35,6 @@ use pending::{Origin, PendingSend};
 /// a header, the size of the shortest frame.
 pub const MIN_RX_STORAGE: usize = PREAMBLE.len() + HEADER_LENGTH;
 
-/// A deadline serviced at least this long after it fell due counts in
-/// [`MstpCounters::deadline_misses`]. Smaller lateness is normal for an
-/// adapter driven by a timer tick.
-pub const LATE_DEADLINE: Duration = Duration::from_millis(1);
-
 /// Token-passing master state names from Clause 9.5.6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MasterState {
@@ -510,9 +505,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         if now < deadline {
             return;
         }
-        if now - deadline >= LATE_DEADLINE {
-            self.counters.record_deadline_miss();
-        }
+        self.counters
+            .record_deadline(now - deadline, self.config.late_deadline);
         if let Some(tx) = self.active_transmit {
             if now >= tx.asserted_at + self.config.transmit_watchdog {
                 return self.on_transmit_aborted(tx.id, TransmitFailure::Timeout, now);

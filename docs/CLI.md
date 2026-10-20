@@ -603,8 +603,12 @@ names), the next station and the one it polls, and a warning when it believes
 it is the only master. Beside it are the transport's counters, read once a
 second: frames received and sent, NPDUs delivered, tokens passed, retried and
 regenerated, invalid and aborted frames, reply timeouts, postponed and late
-replies, deadline misses, frames from another station with this MAC, queue
-refusals and serial errors. `z` counts from now (the transport keeps its totals;
+replies, frames from another station with this MAC, queue refusals, serial
+errors, and how late the station's timers fired: the count 5 ms or more late
+(the transport's threshold), the largest lateness and, where the pane is tall
+enough, how many fell in each lateness band (under 1 ms, 1-2, 2-5, 5-10, 10-25
+and 25 ms or more). A Tokio timer fires up to about 2 ms late by its own
+rounding, so the first two bands are ordinary. `z` counts from now (the transport keeps its totals;
 the screen shows the change since), and Space pauses the screen or follows the
 counters again. The frame view is a later screen (#971).
 

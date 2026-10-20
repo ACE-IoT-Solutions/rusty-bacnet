@@ -61,7 +61,19 @@ fn counters(scale: u64) -> MstpDiagnosticsSnapshot {
     c.mac.parser_errors = 2 * scale;
     c.wait_for_reply_timeouts = scale;
     c.reply_postponed_tx = 3 * scale;
+    c.mac.deadline_lateness.buckets = [100 * scale, 180 * scale, 15 * scale, scale, 0, 0];
+    c.mac.late_deadlines = scale;
+    c.mac.deadline_lateness.max = lateness_max(6_400);
     c
+}
+
+/// `micros` as the transport's lateness maximum.
+fn lateness_max<T>(micros: u64) -> T
+where
+    T: TryFrom<std::time::Duration>,
+    T::Error: std::fmt::Debug,
+{
+    std::time::Duration::from_micros(micros).try_into().unwrap()
 }
 
 fn sample(scale: u64, sole_master: bool) -> Box<Sample> {
@@ -99,7 +111,7 @@ fn joined() -> App {
 fn value(app: &App, label: &str) -> u64 {
     let rows = app.mstp.counters().expect("a reading");
     rows.into_iter()
-        .find(|(name, _)| *name == label)
+        .find(|(name, _)| name == label)
         .unwrap_or_else(|| panic!("no row {label}"))
         .1
 }
@@ -123,6 +135,54 @@ fn the_panel_shows_the_station_its_token_state_and_counters() {
     }
     assert_snapshot!("mstp_panel_120x40", text);
     assert_snapshot!("mstp_panel_80x24", screen(&mut app, 80, 24));
+}
+
+/// The late-timer row counts from the transport's threshold, and the
+/// largest lateness since a clear is exact only when it rose since; else
+/// the largest since joining bounds it, and with no timed wake there is
+/// none to show.
+#[test]
+fn timer_lateness_follows_the_threshold_and_the_clear() {
+    use crate::tui::app::mstp::{Lateness, LatenessMax};
+    use std::time::Duration;
+
+    let mut app = joined();
+    let label = format!(
+        "Late timers (≥{} ms)",
+        bacnet_transport::mstp::HOST_LATE_DEADLINE.as_millis()
+    );
+    assert_eq!(label, "Late timers (≥5 ms)");
+    assert_eq!(value(&app, &label), 1);
+    let exact = |micros| Some(LatenessMax::Exact(Duration::from_micros(micros)));
+    assert_eq!(
+        app.mstp.lateness(),
+        Some(Lateness {
+            buckets: [100, 180, 15, 1, 0, 0],
+            max: exact(6_400),
+        })
+    );
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("Timer lateness max        6.4 ms"), "{text}");
+    assert!(text.contains("  timers 1-2 ms              180"), "{text}");
+
+    press(&mut app, KeyCode::Char('z'));
+    assert_eq!(app.mstp.lateness().unwrap().max, None, "nothing since");
+    assert!(screen(&mut app, 120, 40).contains("Timer lateness max             -"));
+    let mut later = sample(2, false);
+    worker(
+        &mut app,
+        WorkerEvent::Mstp(MstpReport::Sample(later.clone())),
+    );
+    let since = app.mstp.lateness().unwrap();
+    assert_eq!(since.buckets, [100, 180, 15, 1, 0, 0]);
+    assert_eq!(
+        since.max,
+        Some(LatenessMax::AtMost(Duration::from_micros(6_400)))
+    );
+    assert!(screen(&mut app, 120, 40).contains("≤6.4 ms"));
+    later.counters.mac.deadline_lateness.max = lateness_max(12_000);
+    worker(&mut app, WorkerEvent::Mstp(MstpReport::Sample(later)));
+    assert_eq!(app.mstp.lateness().unwrap().max, exact(12_000));
 }
 
 #[test]
