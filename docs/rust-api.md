@@ -2617,6 +2617,14 @@ keep the router's UDP mapping open. Set `ForeignDeviceConfig::renewal_interval`
 below the router's mapping timeout, 30 s or less for many routers, and keep
 the TTL long; any interval from 100 ms up is taken.
 
+Such a device hears only what comes back through its own BBMD. A router that
+forwards nothing inbound drops a unicast reply that another site sends it
+directly, such as an I-Am answering its Who-Is: servers answer a Who-Is with a
+directed I-Am by default (`DiscoveryPolicy::prefer_directed_responses`). To
+reach a foreign device behind such a router, have the remote devices answer
+with a broadcast I-Am (set that field to false), which travels back through the
+BBMDs, or give the device a port forward of its own.
+
 The registered Network Port serves the setting as BACnet_IP_NAT_Traversal and
 BACnet_IP_Global_Address; see
 [Registered B/IP Network Port](#registered-bip-network-port).
