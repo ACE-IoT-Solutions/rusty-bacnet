@@ -136,8 +136,11 @@ What M0 draws (80x24):
     it again; on another device opens that one. Esc in the browser closes it.
 - Help (`?`) is built from sections (#1895): the global keys, then the
   current screen's, then the command bar's commands, read from the same table
-  as the parser. A test presses every key on every screen and fails if one the
-  key map takes is missing from that screen's help. It scrolls with the
+  as the parser. Each screen's keys are one table in `keymap.rs` (#1926),
+  rows of keys, their actions and a description: the key map dispatches from
+  it and help prints it, so a description can't outlive its action. A test
+  presses every key on every screen and fails if one the key map takes is
+  missing from that screen's help. It scrolls with the
   movement keys when it doesn't fit. While typing a command, the footer shows
   the syntax of the commands that match, from that table too.
 - 80x24 is the functional minimum and 120x40 the full layout. From 120 columns
