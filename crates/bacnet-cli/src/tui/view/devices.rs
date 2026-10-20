@@ -6,8 +6,9 @@ use ratatui::widgets::{Block, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use super::columns::{self, Column};
-use super::{ellipsize, text_width, Theme, FULL_WIDTH};
+use super::{ellipsize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME};
 use crate::tui::app::devices::{age_label, segmentation_label, SortKey};
+use crate::tui::app::names::device_object;
 use crate::tui::app::{App, Link, OpState};
 use crate::tui::message::DeviceRow;
 
@@ -101,6 +102,8 @@ enum Field {
     Marker,
     /// Device instance.
     Instance,
+    /// The device's Object_Name (#1896).
+    Name,
     /// Its address, or a routed device's station, as a target.
     Address,
     /// The router a routed device answered through.
@@ -125,8 +128,12 @@ enum Field {
 ///
 /// The vendor column is the one that gives way when a row is too wide. A
 /// vendor ID (at most five digits) never needs to; the shrink is there for
-/// the vendor names #1896 brings. It stops at the header's own width, sort
-/// marker included, so the header is never clipped.
+/// vendor names, should the table show them. It stops at the header's own
+/// width, sort marker included, so the header is never clipped.
+///
+/// The Name column (#1896) comes last: it takes the room the others leave,
+/// a long name ending in `…`, and is left out below [`MIN_NAME`] columns
+/// (at 80 columns with long addresses, say), when its names aren't asked for.
 fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     let full = width >= FULL_WIDTH;
     let sorted = sorted_field(app.devices.sort().0);
@@ -148,8 +155,10 @@ fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
         column(Field::Seen, "Seen", "Last seen"),
     ];
     let mut via = column(Field::Via, "Via", "Via");
+    let mut name = column(Field::Name, "Name", "Name");
     let mut routed = false;
     for row in app.devices.visible() {
+        name.fit(cell_width(Field::Name, row, app));
         for column in &mut columns {
             column.fit(cell_width(column.kind, row, app));
         }
@@ -168,6 +177,7 @@ fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     if routed {
         columns::insert_if_room(&mut columns, 3, via, room);
     }
+    columns::insert_narrowed(&mut columns, 2, name, room, MIN_NAME);
     columns
 }
 
@@ -176,6 +186,7 @@ fn cell(field: Field, row: &DeviceRow, app: &App, selected: bool) -> String {
     match field {
         Field::Marker => if selected { ">" } else { " " }.to_string(),
         Field::Instance => row.instance.to_string(),
+        Field::Name => name(row, app).to_string(),
         Field::Address => row.address.clone(),
         Field::Via => row.via.clone().unwrap_or_default(),
         Field::Network => row
@@ -188,6 +199,11 @@ fn cell(field: Field, row: &DeviceRow, app: &App, selected: bool) -> String {
     }
 }
 
+/// The device's name as its cell shows it.
+fn name<'a>(row: &DeviceRow, app: &'a App) -> &'a str {
+    Names::of(app).text(row.instance, device_object(row.instance))
+}
+
 /// The width of [`cell`]'s text, without building it where the cell is a
 /// number or a string the row already holds: the columns are measured over
 /// every visible row on every frame.
@@ -196,6 +212,7 @@ fn cell_width(field: Field, row: &DeviceRow, app: &App) -> usize {
     match field {
         Field::Marker => 1,
         Field::Instance => digits(row.instance),
+        Field::Name => text_width(name(row, app)),
         Field::Address => text_width(&row.address),
         Field::Via => row.via.as_deref().map_or(0, text_width),
         Field::Network => row.network.map_or("local".len(), |n| digits(n.into())),
@@ -214,7 +231,7 @@ fn cells(columns: &[Column<Field>], row: &DeviceRow, app: &App, selected: bool) 
         .map(|column| {
             let text = cell(column.kind, row, app, selected);
             match column.kind {
-                Field::Vendor => ellipsize(&text, column.width),
+                Field::Vendor | Field::Name => ellipsize(&text, column.width),
                 _ => text,
             }
         })
@@ -239,6 +256,8 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     let columns = columns(area.width, app);
+    let named = columns.iter().any(|column| column.kind == Field::Name);
+    app.devices.named.set(named);
     // One line for the header row.
     let height = usize::from(inner.height.saturating_sub(1)).max(1);
     let offset = scroll(app, height);
@@ -332,6 +351,7 @@ mod tests {
         let fields = [
             Field::Marker,
             Field::Instance,
+            Field::Name,
             Field::Address,
             Field::Via,
             Field::Network,

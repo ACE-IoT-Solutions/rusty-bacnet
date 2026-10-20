@@ -5,7 +5,7 @@
 use bacnet_types::enums::{resolve_bits, ObjectType, PropertyIdentifier, ResolvedBits};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
-use crate::tui::format::{decode_all, units, Floats, RawRow, StateTexts, ValueFormat};
+use crate::tui::format::{decode_all, object_name, units, Floats, RawRow, StateTexts, ValueFormat};
 use crate::tui::point::{
     DeviceCard, Health, ObjectView, PriorityView, PropertyRow, ReadVia, PRIORITIES,
 };
@@ -51,6 +51,7 @@ pub(crate) fn card(rows: &[RawRow], via: ReadVia) -> DeviceCard {
     ];
     let texts = StateTexts::default();
     let format = ValueFormat::new(ObjectType::DEVICE, &texts, Floats::Display);
+    let name = object_name(rows);
     let rows = LABELS
         .iter()
         .map(|&(property, label)| {
@@ -67,6 +68,7 @@ pub(crate) fn card(rows: &[RawRow], via: ReadVia) -> DeviceCard {
     DeviceCard {
         rows,
         via: Some(via),
+        name,
     }
 }
 
@@ -157,6 +159,7 @@ pub(crate) fn object_view(object: ObjectIdentifier, rows: &[RawRow], via: ReadVi
         health: health(rows),
         priority,
         via,
+        name: object_name(rows),
     }
 }
 

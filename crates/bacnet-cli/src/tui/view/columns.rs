@@ -73,6 +73,25 @@ pub(super) fn insert_if_room<K>(
     true
 }
 
+/// Put `column` before index `at`, narrowed to the room `columns` leave in
+/// `room` but no narrower than `min` (or its own width, when that is less).
+/// Left out when even that doesn't fit. Returns whether it went in.
+pub(super) fn insert_narrowed<K>(
+    columns: &mut Vec<Column<K>>,
+    at: usize,
+    mut column: Column<K>,
+    room: usize,
+    min: usize,
+) -> bool {
+    let left = room.saturating_sub(total(columns) + GAP);
+    if left < min.min(column.width) {
+        return false;
+    }
+    column.width = column.width.min(left);
+    columns.insert(at.min(columns.len()), column);
+    true
+}
+
 /// The table's width constraints.
 pub(super) fn constraints<K>(columns: &[Column<K>]) -> Vec<Constraint> {
     columns
@@ -106,5 +125,28 @@ mod tests {
         assert!(!insert_if_room(&mut columns, 1, Column::new(3, "Via"), 18));
         assert!(insert_if_room(&mut columns, 1, Column::new(3, "Via"), 20));
         assert_eq!(columns[1].kind, 3);
+    }
+
+    #[test]
+    fn a_narrowed_column_takes_the_room_left_down_to_its_minimum() {
+        let base = || vec![Column::new(1, "Id")];
+        let name = |width| {
+            let mut column = Column::new(2, "Name");
+            column.fit(width);
+            column
+        };
+        // Room for all of it, then for part of it, then not enough.
+        let mut columns = base();
+        assert!(insert_narrowed(&mut columns, 1, name(20), 40, 8));
+        assert_eq!(columns[1].width, 20);
+        let mut columns = base();
+        assert!(insert_narrowed(&mut columns, 1, name(20), 13, 8));
+        assert_eq!(columns[1].width, 10);
+        let mut columns = base();
+        assert!(!insert_narrowed(&mut columns, 1, name(20), 10, 8));
+        // A column narrower than the minimum goes in whole when it fits.
+        let mut columns = base();
+        assert!(insert_narrowed(&mut columns, 1, name(5), 8, 8));
+        assert_eq!((columns.len(), columns[1].width), (2, 5));
     }
 }

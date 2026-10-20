@@ -8,6 +8,10 @@
 //!
 //! The properties pane sizes its name column from the longest name, keeps
 //! a gap before each value, and wraps long values under the value column.
+//!
+//! The object list puts each object's name after its label (#1896), the
+//! labels padded to the longest among the objects listed, and leaves the
+//! names out when fewer than [`MIN_NAME`] columns are left for them.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -16,7 +20,9 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{sanitize, text_width, Theme, FULL_WIDTH, WIDE_WIDTH};
+use super::{
+    ellipsize, sanitize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME, PENDING, WIDE_WIDTH,
+};
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
 use crate::tui::app::objects::{kebab, object_label, ListRow};
 use crate::tui::point::{priority_label, ObjectView, PriorityView, ReadVia, PRIORITIES};
@@ -38,8 +44,11 @@ const MIN_VALUE_WIDTH: usize = 12;
 /// Width of a card label.
 const CARD_LABEL: usize = 18;
 
+/// Columns before an object's label: the selection marker and indent.
+const LABEL_INDENT: usize = 3;
+
 /// Draw the browser in `area`.
-pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
+pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, names: Names, theme: &Theme) {
     if area.width >= FULL_WIDTH {
         let wide = area.width >= WIDE_WIDTH;
         let left_width = if wide {
@@ -56,7 +65,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
         let [card, objects] =
             Layout::vertical([Constraint::Length(card_height), Constraint::Min(5)]).areas(left);
         card_pane(frame, card, browser, theme);
-        objects_pane(frame, objects, browser, theme);
+        objects_pane(frame, objects, browser, names, theme);
         object_panes(frame, right, browser, theme, wide);
         return;
     }
@@ -66,7 +75,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
     // properties keep the whole width at 80 columns (#1894).
     match browser.shown_focus() {
         Pane::Card => card_pane(frame, pane, browser, theme),
-        Pane::Objects => objects_pane(frame, pane, browser, theme),
+        Pane::Objects => objects_pane(frame, pane, browser, names, theme),
         Pane::Properties => properties_pane(frame, pane, browser, theme),
         Pane::Priority => match &browser.view {
             ViewState::Ready(view) if view.priority.is_some() => {
@@ -156,7 +165,24 @@ fn list_status(browser: &Browser) -> String {
     }
 }
 
-fn objects_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
+/// Width of the longest object label among `rows`, measured without
+/// writing each label out: the list may hold many thousands.
+fn label_width(rows: &[ListRow]) -> usize {
+    let digits = |n: u32| n.checked_ilog10().map_or(1, |d| d as usize + 1);
+    let mut kind = 0;
+    let mut widest = 0;
+    for row in rows {
+        match row {
+            ListRow::Group { object_type, .. } => kind = text_width(&kebab(object_type)),
+            ListRow::Object(object) => {
+                widest = widest.max(kind + 1 + digits(object.instance_number()));
+            }
+        }
+    }
+    widest
+}
+
+fn objects_pane(frame: &mut Frame, area: Rect, browser: &Browser, names: Names, theme: &Theme) {
     let objects = &browser.objects;
     let count = if objects.shown() == objects.len() {
         objects.len().to_string()
@@ -191,6 +217,11 @@ fn objects_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme)
     }
     offset = offset.min(objects.rows().len().saturating_sub(height));
     objects.offset.set(offset);
+    let label = label_width(objects.rows());
+    // Inside the border, after the label and a gap of two.
+    let room = usize::from(area.width.saturating_sub(2)).saturating_sub(LABEL_INDENT + label + 2);
+    let named = room >= MIN_NAME;
+    objects.named.set(named);
     let lines: Vec<Line> = objects
         .rows()
         .iter()
@@ -201,10 +232,29 @@ fn objects_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme)
             ListRow::Group { object_type, count } => {
                 Line::styled(format!(" {} ({count})", kebab(object_type)), theme.accent())
             }
-            ListRow::Object(object) if selected == Some(index) => {
-                Line::styled(format!(">  {}", object_label(*object)), theme.selected())
+            ListRow::Object(object) => {
+                let chosen = selected == Some(index);
+                let marker = if chosen { ">  " } else { "   " };
+                let text = object_label(*object);
+                let mut spans = vec![Span::raw(format!("{marker}{text}"))];
+                let name = names.text(browser.device, Some(*object));
+                if named && !name.is_empty() {
+                    let pad = " ".repeat(label - text_width(&text) + 2);
+                    let style = if name == PENDING {
+                        theme.dim()
+                    } else {
+                        Style::new()
+                    };
+                    spans.push(Span::raw(pad));
+                    spans.push(Span::styled(ellipsize(name, room), style));
+                }
+                let line = Line::from(spans);
+                if chosen {
+                    line.style(theme.selected())
+                } else {
+                    line
+                }
             }
-            ListRow::Object(object) => Line::raw(format!("   {}", object_label(*object))),
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);

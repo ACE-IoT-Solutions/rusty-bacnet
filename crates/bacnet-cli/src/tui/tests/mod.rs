@@ -30,6 +30,9 @@
 //!   notices, hint priorities, the failure summary and the `FD` state.
 //! - `help_keys`: the screen strip, help against the key map, and the
 //!   command bar's syntax hints.
+//! - `names`: object and device names (#1896): only the rows on screen
+//!   are asked for, free names cost nothing, failures are kept, and the
+//!   reads go through the per-device gate and the rate cap.
 //! - `watch_rows`: watch rows' names, routed devices and column fit at
 //!   80, 120 and 200 columns, and the name read against refusing devices.
 //!
@@ -66,6 +69,7 @@ mod mstp_monitor;
 #[cfg(all(target_os = "linux", feature = "serial"))]
 mod mstp_monitor_pty;
 mod mstp_screen;
+mod names;
 mod network;
 mod network_frames;
 mod profile_ui;

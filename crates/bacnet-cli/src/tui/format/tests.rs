@@ -343,3 +343,22 @@ fn special_date_values_are_named() {
         );
     }
 }
+
+#[test]
+fn the_name_is_the_object_name_with_its_control_characters_as_spaces() {
+    let named = vec![(
+        P::OBJECT_NAME,
+        Ok(encoded(&[PropertyValue::CharacterString(
+            "Zone\nTemp\u{1b}".into(),
+        )])),
+    )];
+    assert_eq!(object_name(&named).as_deref(), Some("Zone Temp "));
+    // An error for the name alone, or no name at all: no name.
+    let refused = vec![(P::OBJECT_NAME, Err("property:unknown-property".into()))];
+    assert_eq!(object_name(&refused), None);
+    assert_eq!(object_name(&[]), None);
+    // Not a string, or a name longer than the cap.
+    assert_eq!(name_text(&encoded(&[PropertyValue::Unsigned(5)])), None);
+    let long = encoded(&[PropertyValue::CharacterString("é".repeat(500))]);
+    assert_eq!(name_text(&long).unwrap().chars().count(), MAX_NAME_CHARS);
+}

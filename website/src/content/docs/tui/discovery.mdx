@@ -33,9 +33,10 @@ Ctrl-C cancels a Who-Is that is still listening.
 
 ![The device table after a global Who-Is: two local devices and one routed device on network 2.](../../../assets/tui/discovery-devices.webp)
 
-Each row is one device: its instance, address, network, vendor ID, Max APDU, segmentation, and how long ago its last I-Am arrived. The bottom border shows the latest request and how many replies it got.
+Each row is one device: its instance, name, address, network, vendor ID, Max APDU, segmentation, and how long ago its last I-Am arrived. The bottom border shows the latest request and how many replies it got.
 
 - **Address.** A local device shows its own address. A device behind a router shows its station in the CLI's target syntax, `NET:0xMAC`, such as `2:0x7F000001C335` (or `2:0x05` for an MS/TP station). A one-shot command takes that text back as its target, as in `bacnet read 2:0x05 ai:1 pv`.
+- **Name.** The device's object name. Names are read only for the rows on screen, a few at a time within `--max-rate`, and kept for the session; a name the TUI already has, from the device's card in the browser or an I-Have, costs no request. `…` means the name is being read, and `-` that the device couldn't give one. The column takes the room the others leave, a long name ending in `…`; on a narrow terminal with long addresses it is left out, and no names are read for it.
 - **Via.** The router a routed device was heard through, such as `127.0.0.1:53180`. The column appears only when the whole of it fits, so on a narrow terminal with long addresses it is left out.
 - **Network.** `local`, or the remote network number.
 - **Vendor.** The vendor ID from the I-Am.

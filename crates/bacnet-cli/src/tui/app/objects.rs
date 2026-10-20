@@ -49,6 +49,9 @@ pub(crate) struct ObjectList {
     pub(crate) offset: Cell<usize>,
     /// Rows that fit on screen in the last frame.
     pub(crate) page: Cell<usize>,
+    /// The last frame drew the list with room for names, so the names of
+    /// the rows it showed are asked for (#1896).
+    pub(crate) named: Cell<bool>,
 }
 
 impl ObjectList {

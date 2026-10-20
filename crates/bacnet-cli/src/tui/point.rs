@@ -16,6 +16,11 @@ pub(crate) enum BrowseRead {
     Device,
     /// One object's properties.
     Object(ObjectIdentifier),
+    /// The Object_Name of each of these objects, for the rows on screen
+    /// (#1896). It replaces the names the device was last asked for, so
+    /// rows scrolled off are no longer read; names already read or being
+    /// read are not read again.
+    Names(Vec<ObjectIdentifier>),
 }
 
 /// How a property list was read.
@@ -43,6 +48,8 @@ pub(crate) struct DeviceCard {
     pub(crate) rows: Vec<(&'static str, String)>,
     /// How the card was read.
     pub(crate) via: Option<ReadVia>,
+    /// The device's Object_Name, when it was read.
+    pub(crate) name: Option<String>,
 }
 
 /// The health columns of Clause 12's common status properties, shown as
@@ -125,6 +132,8 @@ pub(crate) struct ObjectView {
     pub(crate) priority: Option<PriorityView>,
     /// How the properties were read.
     pub(crate) via: ReadVia,
+    /// Its Object_Name, when it was read.
+    pub(crate) name: Option<String>,
 }
 
 impl ObjectView {
@@ -162,6 +171,14 @@ pub(crate) enum BrowseResult {
     },
     /// One object's properties.
     Object(Box<ObjectView>),
+    /// Object names read for [`BrowseRead::Names`]: `None` where the
+    /// device couldn't give one, which isn't asked again this session.
+    Names {
+        /// The device read.
+        device: u32,
+        /// Each object and its name.
+        names: Vec<(ObjectIdentifier, Option<String>)>,
+    },
     /// The request failed.
     Failed(String),
 }
