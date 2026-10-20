@@ -126,3 +126,98 @@ async fn the_multicast_group_is_served_written_and_activated() {
     );
     server.stop().await.unwrap();
 }
+
+/// A BBMD server that serves [`GROUP`] at its own port, as Windows needs.
+async fn group_bbmd_server(port: u16) -> BACnetServer<BipTransport> {
+    let mut db = ObjectDatabase::new();
+    let config = BipPortConfig {
+        ip_address: [127, 0, 0, 1],
+        udp_port: port,
+        ..Default::default()
+    };
+    db.add(Box::new(
+        NetworkPortObject::new_bip(1, "group BBMD", config).unwrap(),
+    ))
+    .unwrap();
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::LOCALHOST);
+    let multicast = BipMulticast::new(GROUP.into())
+        .unwrap()
+        .with_port(port)
+        .unwrap();
+    transport.set_multicast(Some(multicast)).unwrap();
+    transport.enable_bbmd(Vec::new());
+    let config = ServerConfig {
+        registered_network_port: Some(port_oid()),
+        on_reinitialize: Some(Arc::new(|_: &_, _: &mut _| Ok(())) as ReinitializeHandler),
+        ..Default::default()
+    };
+    BACnetServer::start(config, db, transport).await.unwrap()
+}
+
+/// A BBMD that serves a group (Annex J.8.3) lists its group beside the BBMD
+/// rows, read-only: its own BDT row and its group go together, so the
+/// group stays as it started. A written BDT whose own row isn't two-hop
+/// is refused at activation.
+#[tokio::test]
+async fn a_group_bbmd_serves_its_group_read_only() {
+    use bacnet_encoding::constructed::encode_bdt_entry_list;
+    use bacnet_types::constructed::BACnetBDTEntry;
+
+    let port = free_port();
+    let mut server = group_bbmd_server(port).await;
+    let listed = property_list(&server).await;
+    assert!(listed.contains(&P::BACNET_IP_MULTICAST_ADDRESS));
+    assert!(listed.contains(&P::BBMD_BROADCAST_DISTRIBUTION_TABLE));
+    assert_eq!(
+        rp(&server, P::BACNET_IP_MULTICAST_ADDRESS).await.unwrap(),
+        tagged(GROUP)
+    );
+    for group in [MOVED, [0; 4]] {
+        assert_eq!(
+            wp(&server, P::BACNET_IP_MULTICAST_ADDRESS, tagged(group)).await,
+            Err((ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED))
+        );
+    }
+    assert_eq!(rp(&server, P::CHANGES_PENDING).await.unwrap(), FALSE);
+    assert_eq!(group_in_use(&server), Some(GROUP));
+
+    // The PICS draft agrees: the group read-only, the BDT writable.
+    let pics = server
+        .generate_pics(&crate::pics::PicsConfig::default())
+        .await;
+    let writable = |property| {
+        pics.supported_object_types
+            .iter()
+            .flat_map(|object| &object.supported_properties)
+            .find(|row| row.property_id == property)
+            .map(|row| row.access.writable)
+    };
+    assert_eq!(writable(P::BACNET_IP_MULTICAST_ADDRESS), Some(false));
+    assert_eq!(writable(P::BBMD_BROADCAST_DISTRIBUTION_TABLE), Some(true));
+
+    // The BBMD's own row with a subnet mask passes the row policy when
+    // written, and is refused at activation, leaving it pending.
+    let own_one_hop = BACnetBDTEntry {
+        bbmd_address: super::network_port_mode_tests::host([127, 0, 0, 1], port),
+        broadcast_mask: Some([255, 0, 0, 0]),
+    };
+    let mut octets = BytesMut::new();
+    encode_bdt_entry_list(&mut octets, &[own_one_hop]).unwrap();
+    wp(
+        &server,
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        octets.to_vec(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        reinitialize(&server, ReinitializedState::ACTIVATE_CHANGES).await,
+        Apdu::Error(_)
+    ));
+    assert_eq!(rp(&server, P::CHANGES_PENDING).await.unwrap(), TRUE);
+    let transport = server.test_network().transport();
+    let state = transport.bbmd_state().unwrap();
+    let own = state.lock().unwrap().bdt();
+    assert!(own.iter().all(|row| row.broadcast_mask == [0xFF; 4]));
+    server.stop().await.unwrap();
+}

@@ -10,7 +10,10 @@
 //! the value written, while the port keeps its group until activation.
 //! The view checks a written group when it is written, and the row takes
 //! writes only while the owner answers ReinitializeDevice and the view
-//! can change; otherwise it is listed read-only and refuses them.
+//! can change; otherwise it is listed read-only and refuses them. The
+//! B/IP transport's view of a BBMD that serves a group (Annex J.8.3) can't
+//! change: its own BDT row and its group go together, and the BBMD rows
+//! activate apart from this one (one activation for both is #1963).
 
 use std::sync::Arc;
 

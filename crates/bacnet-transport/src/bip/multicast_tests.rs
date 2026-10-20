@@ -108,17 +108,11 @@ fn multicast_needs_an_explicit_interface_and_a_port() {
 }
 
 #[tokio::test]
-async fn a_member_cant_be_a_bbmd_a_foreign_device_or_share_its_port_by_address() {
+async fn a_member_cant_be_a_foreign_device_or_share_its_port_by_address() {
     // The transports take the group's port, which Windows requires; each
-    // start is refused before it binds anything.
+    // start is refused before it binds anything. A BBMD may serve a group
+    // (multicast_bbmd_tests.rs).
     let multicast = group(47809);
-    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::LOCALHOST);
-    bbmd.set_multicast(Some(multicast)).unwrap();
-    bbmd.enable_bbmd(Vec::new());
-    assert!(bbmd.bip_port().unwrap().multicast.is_none());
-    let error = bbmd.start().await.unwrap_err();
-    assert!(error.to_string().contains("BBMD"), "{error}");
-
     let mut foreign = BipTransport::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::LOCALHOST);
     foreign.set_multicast(Some(multicast)).unwrap();
     foreign.register_as_foreign_device(ForeignDeviceConfig {
@@ -358,7 +352,7 @@ async fn an_activated_group_moves_the_members_and_zero_ends_multicast() {
 }
 
 #[test]
-fn only_a_plain_node_with_an_interface_lends_its_group() {
+fn a_node_with_an_interface_lends_its_group_unless_foreign() {
     let lent = |transport: &BipTransport| transport.bip_port().unwrap().multicast.is_some();
     let explicit = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::LOCALHOST);
     assert!(lent(&explicit), "off, but able");
@@ -369,9 +363,14 @@ fn only_a_plain_node_with_an_interface_lends_its_group() {
     let mut shared = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::LOCALHOST);
     shared.set_share_port_by_address(true);
     assert!(!lent(&shared));
-    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::LOCALHOST);
-    bbmd.enable_bbmd(Vec::new());
-    assert!(!lent(&bbmd));
+    let mut foreign = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::LOCALHOST);
+    foreign.register_as_foreign_device(ForeignDeviceConfig {
+        bbmd_ip: Ipv4Addr::new(192, 0, 2, 1),
+        bbmd_port: 47808,
+        ttl: 60,
+        renewal_interval: None,
+    });
+    assert!(!lent(&foreign));
 }
 
 #[test]

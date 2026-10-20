@@ -262,7 +262,7 @@ includes BACnet/IPv6, BACnet/SC and MS/TP, but not Ethernet.
 
 | Transport | Feature | Notes |
 |---|---|---|
-| BACnet/IP (UDP/IPv4) | none | Includes BBMD and foreign-device registration, and a BBMD behind a NAT router (Annex J.7.5) at a configured global address. A node can join a B/IP multicast group (Annex J.8) on an explicit interface; a BBMD that serves a group is not implemented yet. |
+| BACnet/IP (UDP/IPv4) | none | Includes BBMD and foreign-device registration, and a BBMD behind a NAT router (Annex J.7.5) at a configured global address. A node can join a B/IP multicast group (Annex J.8) on an explicit interface, and a BBMD can serve the group (J.8.3), joining it to plain B/IP subnets and foreign devices. |
 | BACnet/IPv6 | `ipv6` | Selects one concrete interface and address and keeps traffic on that link. With `::`, startup fails if the host has more than one candidate, so pass a concrete address. |
 | BACnet/SC | `sc-tls` | Nodes, direct connections and a hub over TLS 1.3. Requires a site CA, a certificate and key for each device, and a provisioned device UUID. |
 | MS/TP | `serial` (`serial-gpio` for GPIO direction control) | Standard frames, plus extended (COBS-encoded) frames for NPDUs up to 1497 octets with `MstpConfig::extended_frames`, which a router turns on for its MS/TP ports. RS-485 kernel options and GPIO are Linux-only. Evidence comes from a simulator and loopback; on-wire timing isn't qualified on any adapter or OS. |

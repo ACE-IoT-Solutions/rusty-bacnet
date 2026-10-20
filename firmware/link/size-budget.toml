@@ -65,6 +65,13 @@
 # router +72 to +256 octets across the four targets) and the router's RAM
 # by 8 octets; every image stays within its budget, so no budget changed.
 #
+# 2026-10-20 (#941, part 2): a BBMD may serve its multicast group, with the
+# BDT's all-ones own-row rule (Bdt::set_serves_group) that BbmdPort::new
+# sets from its link. Flash, measured against the parent commit with the
+# same toolchain: bbmd +16 to +160 octets (riscv32imc +16, thumbv7m +140,
+# thumbv6m and thumbv7em +160), router +76 to +132; the other images and
+# all RAM unchanged. Every image stays within its budget; no budget changed.
+#
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
 # flash, the RAM unchanged. The mstp rows were too, when the master core

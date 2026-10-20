@@ -210,11 +210,12 @@ impl NetworkPortObject {
             return Ok(false);
         }
         self.check_pending_changes()?;
-        // Only a NORMAL port lends a multicast group today, and NORMAL has
+        // Only a NORMAL port lends a group that can change, and NORMAL has
         // no mode rows to write, so the two halves never wait together and
         // the order below can't leave one half applied and the other
-        // refused. A BBMD that serves a group (#941, the next change) must
-        // revisit this: activate both or neither.
+        // refused. A BBMD that serves a group (#941) lends it read-only,
+        // since its own BDT row and its group go together (Annex J.8.3):
+        // making it writable needs one activation for both (#1963).
         debug_assert!(
             self.pending.is_empty() || !self.multicast.is_pending(),
             "mode values and a multicast group pending together"

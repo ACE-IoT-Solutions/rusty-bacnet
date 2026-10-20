@@ -23,7 +23,7 @@ This summary describes v0.13.0; its [release notes](https://github.com/jscott320
 
 **Transports.** BACnet/IP is always built; the others are Cargo features of `bacnet-transport`:
 
-- BACnet/IP: BBMD and foreign-device registration, and a BBMD behind a NAT router at a configured global address (Annex J.7.5), and B/IP multicast nodes (Annex J.8) on an explicit interface. A BBMD that serves a multicast group is not implemented yet.
+- BACnet/IP: BBMD and foreign-device registration, and a BBMD behind a NAT router at a configured global address (Annex J.7.5), and B/IP multicast nodes (Annex J.8) on an explicit interface, with a BBMD that serves the group (J.8.3).
 - BACnet/IPv6 (`ipv6`): selects one concrete local interface and address and keeps traffic on that link; the socket itself binds the wildcard address. Peers are named by their 3-octet VMAC, found by address resolution, and a server's VMAC is its device instance.
 - BACnet/SC (`sc-tls`): nodes, direct connections and a hub over TLS 1.3. Each device needs a site CA, its own certificate and key, and a provisioned device UUID.
 - MS/TP (`serial`): standard frames, and extended (COBS-encoded) frames for NPDUs up to 1497 octets with `MstpConfig::extended_frames`, which a router turns on for its MS/TP ports. RS-485 kernel options and GPIO direction control (`serial-gpio`) are Linux-only, and on-wire timing is not qualified on any adapter.
