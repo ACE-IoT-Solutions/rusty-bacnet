@@ -8,6 +8,15 @@
 //! the client kept acking segments of a transaction that no longer existed.
 //!
 //! The tests run a real client over a loopback pair; the test plays the server.
+//!
+//! The tests that set a short APDU timeout run on paused time (#1919). On the
+//! real clock, a loaded runner could stretch a gap the test leaves on purpose
+//! past the client's timer and turn a pass into a dropped transaction. The
+//! loopback pair carries frames over Tokio channels only, so Tokio advances
+//! the clock only while every task waits on a timer, and always to the
+//! earliest deadline. Timers then fire in deadline order: a request timer the
+//! client failed to stop would fire before the test's own sleep ends, and the
+//! segment timer is still far off when the test resumes.
 
 use std::sync::Arc;
 
@@ -363,7 +372,7 @@ async fn error_and_reject_without_a_session_surface_as_themselves() {
 /// Clause 5.4.4.3 stops RequestTimer when segment zero moves the transaction
 /// into SEGMENTED_CONF. A response may therefore cross the original request
 /// timeout without replaying the ConfirmedRequest or losing its invoke ID.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn segmented_response_stops_request_timer_and_completes() {
     let config = ClientConfig {
         apdu_timeout_ms: 150,
@@ -398,7 +407,7 @@ async fn segmented_response_stops_request_timer_and_completes() {
 
 /// Each accepted segment restarts the receive timer. The complete response
 /// may take longer than four Tseg as long as no individual gap does.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn segment_activity_restarts_the_receive_timer() {
     let config = ClientConfig {
         apdu_timeout_ms: 100,
@@ -430,7 +439,7 @@ async fn segment_activity_restarts_the_receive_timer() {
 
 /// The response wait after the final outgoing request SegmentACK uses the
 /// same receive-side phase transition as an unsegmented outgoing request.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn segmented_request_response_stops_its_request_timer() {
     let config = ClientConfig {
         apdu_timeout_ms: 150,
@@ -500,7 +509,7 @@ async fn segmented_request_response_stops_its_request_timer() {
 
 /// Cleanup after a completed response wait must preserve a newer segmented
 /// request, regardless of invoke-ID reuse.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn segmented_request_timeout_cleanup_preserves_replacement_sender() {
     let config = ClientConfig {
         apdu_timeout_ms: 100,
