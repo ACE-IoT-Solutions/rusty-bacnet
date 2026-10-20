@@ -430,7 +430,9 @@ impl BACnetServer {
 
     /// Add an Event Enrollment object to the server (before starting).
     ///
-    /// `event_type` defaults to `EventType.CHANGE_OF_BITSTRING`.
+    /// `event_type` defaults to `EventType.CHANGE_OF_BITSTRING`. Event_Type
+    /// follows Event_Parameters; this type applies only while the legacy
+    /// octet-string parameters, which name no algorithm, are held (#1868).
     #[pyo3(signature = (
         instance,
         name,

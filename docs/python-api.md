@@ -2547,7 +2547,7 @@ server.add_alert_enrollment(
 server.add_event_enrollment(
     instance=1,
     name="Event",
-    event_type=EventType.OUT_OF_RANGE,  # default: EventType.CHANGE_OF_BITSTRING
+    event_type=EventType.OUT_OF_RANGE,  # legacy octet parameters only; default CHANGE_OF_BITSTRING
 )
 ```
 
@@ -3425,6 +3425,13 @@ except Present_Value's warn values -1.0 (WARN), -2.0 (WARN_RELINQUISH) and
 -3.0 (WARN_OFF), which act as those lighting commands do (#1384).
 Tracking_Value reads the same level as Present_Value whenever no fade or ramp
 is running.
+
+Both lighting outputs serve Value_Source, Value_Source_Array and
+Last_Command_Time (#1866), as the other commandable objects do: a command
+through `write_property_local` names the server's Device (or the
+`source_object`) as the source of the slot it acts on, and a peer's command
+names that peer. They read typed, with the tags `"value_source"` and
+`"timestamp"`.
 
 A Lighting Output's `Lighting_Command` is a BACnetLightingCommand (#1263). It
 reads as `application_data` holding the command's context-tagged fields, and

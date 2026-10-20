@@ -3,6 +3,7 @@ mod atomic_commit;
 mod detection_enable;
 mod enrollment;
 mod enrollment_summary;
+mod event_type;
 mod fault_parameters;
 mod object_name;
 mod reliability_commit;

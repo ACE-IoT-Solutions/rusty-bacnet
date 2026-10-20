@@ -39,7 +39,9 @@ pub struct EventEnrollmentObject {
     oid: ObjectIdentifier,
     name: String,
     description: String,
-    event_type: EventType,
+    /// The algorithm the legacy octet layout of Event_Parameters runs, which
+    /// names none itself; every other alternative names its own (#1868).
+    legacy_event_type: EventType,
     notify_type: NotifyType,
     event_parameters: BACnetEventParameter,
     object_property_reference: Option<BACnetDeviceObjectPropertyReference>,
@@ -71,18 +73,25 @@ pub struct EventEnrollmentObject {
 }
 
 impl EventEnrollmentObject {
-    /// Create a new EventEnrollment object whose Event_Type is `event_type`.
+    /// Create a new EventEnrollment object.
+    ///
+    /// Event_Type follows Event_Parameters (Clause 12.12.5): it reads NONE
+    /// while the parameters are the unset `none` alternative and the
+    /// matching type once parameters are set. `legacy_event_type` only
+    /// matters for the pre-framing octet layout of Event_Parameters, which
+    /// carries no algorithm of its own: it is the algorithm that layout runs
+    /// and the Event_Type served while it is held.
     pub fn new(
         instance: u32,
         name: impl Into<String>,
-        event_type: EventType,
+        legacy_event_type: EventType,
     ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::EVENT_ENROLLMENT, instance)?;
         Ok(Self {
             oid,
             name: name.into(),
             description: String::new(),
-            event_type,
+            legacy_event_type,
             notify_type: NotifyType::ALARM,
             event_parameters: Self::UNSET_EVENT_PARAMETERS,
             object_property_reference: None,
@@ -240,6 +249,16 @@ impl EventEnrollmentObject {
         }
     }
 
+    /// Event_Type as Event_Parameters gives it (Clause 12.12.5): each
+    /// framed alternative's tag is its event type (`none`, tag 20, is NONE),
+    /// and the legacy octet layout uses the constructor's type.
+    fn event_type(&self) -> EventType {
+        match &self.event_parameters {
+            BACnetEventParameter::Opaque { tag: 0xFF, .. } => self.legacy_event_type,
+            parameters => EventType::from_raw(u32::from(parameters.tag())),
+        }
+    }
+
     fn effective_fault_parameters(&self) -> &FaultParameters {
         self.fault_parameters
             .as_ref()
@@ -259,9 +278,11 @@ impl BACnetObject for EventEnrollmentObject {
     fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
         let supported_parameters = match &self.event_parameters {
             BACnetEventParameter::Extended { .. } => false,
-            // Only the legacy octet layout evaluates; `none` (the unset
-            // form) and the unmodeled alternatives run no algorithm.
-            BACnetEventParameter::Opaque { tag, .. } => *tag == 0xFF,
+            // The legacy octet layout evaluates, and `none` configures an
+            // enrollment that evaluates reliability only (Clause 12.12.7):
+            // its TO_FAULT transitions are listed and acknowledged like any
+            // other (#1868). The unmodeled alternatives run nothing.
+            BACnetEventParameter::Opaque { tag, .. } => *tag == 0xFF || *tag == 20,
             _ => true,
         } || matches!(
             self.effective_fault_parameters(),
@@ -269,7 +290,7 @@ impl BACnetObject for EventEnrollmentObject {
         );
         (self.object_property_reference.is_some() && supported_parameters).then_some(
             EnrollmentSummaryCapability {
-                event_type: self.event_type,
+                event_type: self.event_type(),
                 last_transition: self.event_history.last_transition(),
             },
         )
@@ -307,7 +328,7 @@ impl BACnetObject for EventEnrollmentObject {
                 ObjectType::EVENT_ENROLLMENT.to_raw(),
             )),
             p if p == PropertyIdentifier::EVENT_TYPE => {
-                Ok(PropertyValue::Enumerated(self.event_type.to_raw()))
+                Ok(PropertyValue::Enumerated(self.event_type().to_raw()))
             }
             p if p == PropertyIdentifier::NOTIFY_TYPE => {
                 Ok(PropertyValue::Enumerated(self.notify_type.to_raw()))

@@ -233,3 +233,65 @@ fn binary_lighting_output_tracks_each_writer_and_lets_only_it_correct() {
     .unwrap();
     assert_eq!(read(&blo, VS, None), published(20));
 }
+
+/// A Lighting_Command with `operation` at priority 8, encoded.
+fn at_eight(operation: LightingOperation) -> PropertyValue {
+    let mut command = BACnetLightingCommand::new(operation);
+    command.priority = Some(8);
+    command::encode(&command)
+}
+
+/// An ignored step and a STOP with nothing to stop act on no slot, so the
+/// slot keeps its writer; a STOP that ends a fade writes the slot and
+/// records the STOP's writer.
+#[test]
+fn ignored_steps_and_idle_stops_keep_the_writer_and_a_stop_that_ends_a_fade_records_its_own() {
+    let mut f = super::engine_tests::Fixture::new();
+    f.lo.write_property_from(PV, None, PropertyValue::Real(0.0), Some(8), &origin(1, 10))
+        .unwrap();
+    // STEP_UP does nothing from off, and nothing runs to STOP.
+    for operation in [LightingOperation::STEP_UP, LightingOperation::STOP] {
+        f.lo.write_property_from(LC, None, at_eight(operation), None, &origin(2, 20))
+            .unwrap();
+        assert_eq!(read(&f.lo, VS, None), published(10), "{operation:?}");
+    }
+
+    let mut fade = BACnetLightingCommand::new(LightingOperation::FADE_TO);
+    fade.target_level = Some(80.0);
+    fade.fade_time = Some(10_000);
+    fade.priority = Some(8);
+    f.lo.write_property_from(LC, None, command::encode(&fade), None, &origin(1, 10))
+        .unwrap();
+    f.at(1_000);
+    f.lo.write_property_from(
+        LC,
+        None,
+        at_eight(LightingOperation::STOP),
+        None,
+        &origin(2, 20),
+    )
+    .unwrap();
+    assert_eq!(read(&f.lo, VS, None), published(20));
+}
+
+/// A trim change advances the engine first, so an egress that ran out
+/// before it ends its command there and moves Last_Command_Time on.
+#[test]
+fn an_egress_ending_inside_a_trim_change_moves_last_command_time_on() {
+    let mut f = super::engine_tests::Fixture::new();
+    f.write(
+        PropertyIdentifier::BLINK_WARN_ENABLE,
+        PropertyValue::Boolean(true),
+    );
+    f.write(PropertyIdentifier::EGRESS_TIME, PropertyValue::Unsigned(5));
+    let writer = origin(1, 10);
+    f.lo.write_property_from(PV, None, PropertyValue::Real(60.0), Some(8), &writer)
+        .unwrap();
+    f.lo.write_property_from(PV, None, PropertyValue::Real(-2.0), Some(8), &writer)
+        .unwrap();
+    let held = read(&f.lo, LCT, None);
+    f.at(6_000);
+    f.lo.set_high_end_trim(Some(90.0)).unwrap();
+    assert_eq!(read(&f.lo, PV, None), PropertyValue::Real(0.0));
+    assert_ne!(read(&f.lo, LCT, None), held);
+}

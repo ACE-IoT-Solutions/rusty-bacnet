@@ -199,7 +199,9 @@ impl LightingOutputObject {
     /// else.
     ///
     /// The command names no writer, so a slot it acts on reads Value_Source
-    /// NONE, which no one may correct.
+    /// NONE, which no one may correct. An application that wants its
+    /// commands sourced (Clause 19.5.1.3) writes Lighting_Command through
+    /// `BACnetServer::write_local` with a `LocalCommandSource` instead.
     pub fn set_lighting_command(&mut self, command: BACnetLightingCommand) -> Result<(), Error> {
         command::check(&command)?;
         let priority = self.command_priority(&command);

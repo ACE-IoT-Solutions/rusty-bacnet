@@ -168,6 +168,7 @@ mod loop_reference_follow;
 mod multi_element_writes;
 mod noncommandable_null_writes;
 mod noncommandable_value_source;
+mod none_enrollment_fault;
 mod passwords;
 mod property_metadata;
 mod pulse_converter_input_reference;

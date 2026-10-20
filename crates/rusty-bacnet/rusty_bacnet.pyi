@@ -4747,6 +4747,12 @@ class BACnetServer:
     ) -> None:
         """Add an Event Enrollment (Clause 12.12) to the server (before starting).
 
+        Event_Type follows Event_Parameters: it reads NONE while they are
+        unset (the ``none`` alternative) and the written algorithm's type
+        after. ``event_type`` only applies to the legacy octet-string
+        Event_Parameters, which name no algorithm: it is the algorithm they
+        run and the Event_Type served while they are held.
+
         Object_Property_Reference, read-only to peers, reads as one typed
         ``device_object_property_reference`` mapping. It names Analog Input
         4194303's Present_Value while the enrollment has no reference.

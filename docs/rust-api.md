@@ -441,8 +441,12 @@ that acts on its slot (a level, a fade, ramp or step, WARN_RELINQUISH,
 WARN_OFF, or a STOP that ends something) records its writer there; WARN, an
 ignored step and a STOP with nothing to stop leave the slot's source as it was.
 `LightingOutputObject::set_lighting_command` names no writer, so the slot it
-acts on reads source NONE that no one may correct. An egress that runs out
-later still counts as its command for Last_Command_Time.
+acts on reads source NONE that no one may correct; an application that wants
+its commands sourced (Clause 19.5.1.3) uses `BACnetServer::write_local` with a
+`LocalCommandSource`. WARN_RELINQUISH and WARN_OFF record their writer when
+written, but the slot's value changes only when the egress ends, so
+Last_Command_Time moves then, whether the timer runs out, a later command
+halts the egress, or a trim change advances past its end.
 
 The full server derives remote origins from direct network 0/source MAC or routed
 SNET/SADR, independently of Audit reporting. Address-to-Device correlation is a
@@ -3469,8 +3473,14 @@ framing, through the shared `bacnet-encoding` codecs.
   alternatives round-trip. An alternative the stack does not model is kept as
   opaque bytes, and omitted, deprecated and reserved choices, or trailing bytes
   after a framed element, are rejected. Event_Parameters never set reads as
-  the context-tagged `none` choice (`F8 14`, tag 20); such an enrollment runs
-  no algorithm and stays out of enrollment summaries (#1868). Fault_Parameters
+  the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
+  enrollment evaluates reliability only (Clause 12.12.7): with a monitored
+  reference its TO_FAULT is listed by GetEnrollmentSummary and
+  GetEventInformation and takes an AcknowledgeAlarm. Event_Type follows
+  Event_Parameters (Clause 12.12.5): NONE while they are `none`, the written
+  algorithm's type after. The `EventEnrollmentObject::new` type argument
+  applies only to the legacy octet-string parameters, which name no
+  algorithm. Fault_Parameters
   without a fault algorithm reads as the context-tagged `none` choice (`08`),
   and writing that clears it. The CHOICE has no application NULL, so a NULL written to it
   succeeds and changes nothing (#1417).

@@ -106,8 +106,9 @@ fn detection_enable_is_separate_from_configured_capability() {
 
 /// An enrollment whose Event_Parameters were never set serves the `none`
 /// alternative of the CHOICE: context tag 20 with a NULL body, which takes
-/// the extended tag-number form `F8 14`. It runs no algorithm, so even with
-/// a monitored reference it stays out of enrollment summaries (#1868).
+/// the extended tag-number form `F8 14`. It evaluates reliability only
+/// (Clause 12.12.7), so with a monitored reference it is listed with
+/// Event_Type NONE (#1868).
 #[test]
 fn unset_event_parameters_serve_the_none_alternative() {
     let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::OUT_OF_RANGE).unwrap();
@@ -130,6 +131,14 @@ fn unset_event_parameters_serve_the_none_alternative() {
             2
         )
     );
+    assert_eq!(
+        ee.enrollment_summary_capability_internal()
+            .unwrap()
+            .event_type,
+        EventType::NONE
+    );
+    // Without a reference it can't fault, so it stays out.
+    ee.set_object_property_reference(None).unwrap();
     assert_eq!(ee.enrollment_summary_capability_internal(), None);
 
     // The served value writes back as itself.

@@ -29,9 +29,9 @@ fn fields(commandable: bool, flags: bool) -> &'static [P] {
 
 /// Whether a subscription to `property` of `object` takes the specialized
 /// Table 13-1a-2 report. Commandable outputs and values, and the two
-/// lighting outputs (#1866), use the commandable row. The single-source objects that track Value_Source (#1552: the
-/// noncommandable value modes, Color and Color Temperature) use the
-/// noncommandable row (#1582).
+/// lighting outputs (#1866), use the commandable row. The single-source
+/// objects that track Value_Source (#1552: the noncommandable value modes,
+/// Color and Color Temperature) use the noncommandable row (#1582).
 pub(crate) fn applies(object: &dyn BACnetObject, property: P) -> bool {
     if property != P::VALUE_SOURCE {
         return false;

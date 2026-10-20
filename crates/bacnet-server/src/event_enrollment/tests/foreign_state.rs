@@ -135,10 +135,9 @@ fn foreign_high_limit_recovers_under_cos_params() {
     assert_eq!(transitions.len(), 1);
     assert_eq!(transitions[0].change.from, EventState::HIGH_LIMIT);
     assert_eq!(transitions[0].change.to, EventState::NORMAL);
-    // The transition is labeled by the enrollment's own EVENT_TYPE
-    // (constructor-configured, OUT_OF_RANGE here) — the evaluator dispatches
-    // on the params tag but reports the enrollment's declared identity.
-    assert_eq!(transitions[0].event_type, EventType::OUT_OF_RANGE);
+    // Event_Type follows the rewritten parameters (Clause 12.12.5, #1868),
+    // so the recovery is labeled CHANGE_OF_STATE.
+    assert_eq!(transitions[0].event_type, EventType::CHANGE_OF_STATE);
     assert_eq!(event_state(&db, &ee_oid), EventState::NORMAL);
 
     // And the arm is alive afterwards from inside its own state space.
@@ -181,9 +180,8 @@ fn foreign_offnormal_recovers_under_oor_params() {
         EventState::NORMAL,
         "in-band value under the new OOR params settles NORMAL"
     );
-    // Labeled by the enrollment's configured EVENT_TYPE (CHANGE_OF_STATE) —
-    // the params tag drives dispatch, the property drives identity.
-    assert_eq!(transitions[0].event_type, EventType::CHANGE_OF_STATE);
+    // Event_Type follows the rewritten parameters (Clause 12.12.5, #1868).
+    assert_eq!(transitions[0].event_type, EventType::OUT_OF_RANGE);
     assert_eq!(event_state(&db, &ee_oid), EventState::NORMAL);
 }
 
