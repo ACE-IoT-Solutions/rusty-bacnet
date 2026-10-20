@@ -241,12 +241,7 @@ async fn the_networks_tab_maps_a_real_router() {
         .await
         .expect("the router binds its port");
     let bbmd = std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    // A foreign device takes a Forwarded-NPDU only by unicast from its
-    // BBMD, and with 127.0.0.1 as its broadcast address too, every datagram
-    // to it would look like a broadcast; the one-shot default is used.
-    let mut plan = plan(Some(bbmd));
-    plan.args.broadcast = Ipv4Addr::BROADCAST;
-    let mut net = Net::start(plan).await;
+    let mut net = Net::start(plan(Some(bbmd))).await;
     net.pump_until("registered", |app| {
         app.network
             .registration
