@@ -47,7 +47,7 @@ pub struct DeviceInfo {
 /// 4 IP + 2 port) as `ip:port`, and a B/IPv6 VMAC (3 bytes, the only
 /// 3-byte MAC the CLI's transports use) as `bip6:0x0004D2`. Falls back to
 /// hex display for other MACs. A routed station is written with its network
-/// by [`routed_station`](crate::core::target::routed_station) instead.
+/// by [`crate::core::target::routed_station`] instead.
 pub fn format_mac(mac: &[u8]) -> String {
     if mac.len() == 6 {
         let ip = Ipv4Addr::new(mac[0], mac[1], mac[2], mac[3]);

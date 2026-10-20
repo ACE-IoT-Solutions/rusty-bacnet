@@ -215,7 +215,7 @@ fn object(word: &str) -> Result<ObjectIdentifier, String> {
     ObjectIdentifier::new(object_type, instance).map_err(|e| format!("'{word}': {e}"))
 }
 
-/// A VALUE[@P] word as the value grammar's text and the priority. A word
+/// A `VALUE[@P]` word as the value grammar's text and the priority. A word
 /// with a quoted part is a CharacterString, its priority an `@P` after the
 /// last quote; any other word is read by the one-shot value grammar.
 fn value(word: &Word) -> Result<(String, Option<u8>), String> {
