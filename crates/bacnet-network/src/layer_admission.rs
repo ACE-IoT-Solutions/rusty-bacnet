@@ -1,6 +1,7 @@
 use super::receive::{self, Inbound};
 use super::*;
 use bacnet_router_core::node::Node;
+use bacnet_transport::warn_throttle::WarnThrottle;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::task::Poll;
@@ -542,12 +543,14 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         let dispatch_task = tokio::spawn(async move {
             // The layer's receive rules are the router core's (#1795).
             let mut node = Node::new();
+            let drop_warning = WarnThrottle::default();
             while let Some(mut received) = npdu_rx.recv().await {
                 // Moved, not cloned: nothing below reads the frame again.
                 let frame = std::mem::take(&mut received.npdu);
                 let inbound = receive::admit(
                     &mut node,
                     &totals,
+                    &drop_warning,
                     &received.source_mac,
                     received.link_layer_group,
                     frame,

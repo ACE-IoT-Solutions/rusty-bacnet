@@ -3001,6 +3001,7 @@ dependencies = [
  "pyo3",
  "tokio",
  "tokio-rustls",
+ "tracing",
 ]
 
 [[package]]
