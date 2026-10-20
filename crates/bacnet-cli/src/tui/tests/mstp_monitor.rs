@@ -280,8 +280,8 @@ async fn the_monitor_reports_the_scripted_ring_and_writes_nothing() {
     let text = screen(&mut run.app, 120, 40);
     for want in [
         "Masters",
-        "  1  master      1001",
-        "  5  slave",
+        "  1 master   1001",
+        "  5 slave",
         "listen only",
         "PASSIVE",
     ] {

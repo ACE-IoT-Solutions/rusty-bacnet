@@ -1,13 +1,16 @@
 //! The MS/TP screen (#969): this station and its place in the token ring on
 //! the left, the transport's counters on the right; and the join
 //! confirmation. Every state is marked by text as well as colour.
+//!
+//! Each pane is as wide as its content where both fit (#1893), and a pane
+//! too short for its rows ends with `+N more`. The keys are in the footer.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::{centered, Theme};
+use super::{centered, more, text_width, Theme};
 use crate::tui::app::mstp::{
     JoinDialog, JoinOrigin, Lateness, LatenessMax, MstpState, LATENESS_BANDS,
 };
@@ -34,17 +37,40 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(lines.block(block), area);
         return;
     }
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
-    participant(frame, left, mstp, theme);
-    counters(frame, right, mstp, theme);
-}
-
-fn participant(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
+    let station = participant_lines(mstp, theme);
+    let (counters_title, counters) = counter_lines(mstp, area.height, theme);
+    // Each pane's content, its borders and padding.
+    let fitted = |lines: &[Line], title: &Line| {
+        let widest = lines.iter().map(Line::width).max().unwrap_or(0);
+        (widest + 4).max(title.width() + 2) as u16
+    };
+    let title = Line::raw(STATION_TITLE);
+    let (left, right) = (fitted(&station, &title), fitted(&counters, &counters_title));
+    let widths = if left + right <= area.width {
+        [Constraint::Length(left), Constraint::Length(right)]
+    } else {
+        [Constraint::Percentage(45), Constraint::Percentage(55)]
+    };
+    let [left, right] = Layout::horizontal(widths).areas(area);
     let block = Block::bordered()
-        .title(Line::styled(" This station ", theme.accent()))
+        .title(Line::styled(STATION_TITLE, theme.accent()))
         .border_style(theme.dim())
         .padding(Padding::horizontal(1));
+    let paragraph = Paragraph::new(station).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph.block(block), left);
+    let block = Block::bordered()
+        .title(counters_title)
+        .border_style(theme.dim())
+        .padding(Padding::horizontal(1));
+    let counters = more(counters, right.height.saturating_sub(2), theme);
+    frame.render_widget(Paragraph::new(counters).block(block), right);
+}
+
+/// The station pane's title.
+const STATION_TITLE: &str = " This station ";
+
+/// The station pane: the settings joined with and the token state.
+fn participant_lines(mstp: &MstpState, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(station) = &mstp.station {
         lines.push(Line::raw(format!("Port         {}", station.port)));
@@ -84,11 +110,16 @@ fn participant(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
             }
         }
     }
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph.block(block), area);
+    lines
 }
 
-fn counters(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
+/// The counters pane's title and rows, for a pane `height` rows tall:
+/// the lateness bands only where they fit.
+fn counter_lines(
+    mstp: &MstpState,
+    height: u16,
+    theme: &Theme,
+) -> (Line<'static>, Vec<Line<'static>>) {
     let since = if mstp.baseline.is_some() {
         "since clear"
     } else {
@@ -99,10 +130,6 @@ fn counters(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
         Span::styled(" Counters ", theme.accent()),
         Span::styled(format!("({since}, {state}) "), theme.dim()),
     ]);
-    let block = Block::bordered()
-        .title(title)
-        .border_style(theme.dim())
-        .padding(Padding::horizontal(1));
     let lines: Vec<Line> = match mstp.counters() {
         None => vec![Line::styled("No reading yet.", theme.dim())],
         Some(rows) => {
@@ -111,23 +138,19 @@ fn counters(frame: &mut Frame, area: Rect, mstp: &MstpState, theme: &Theme) {
                 .map(|(label, value)| Line::raw(row(&label, &value.to_string())))
                 .collect();
             if let Some(lateness) = mstp.lateness() {
-                // The key row below, and the borders.
-                let room = usize::from(area.height.saturating_sub(3));
+                // Inside the borders.
+                let room = usize::from(height.saturating_sub(2));
                 lines.extend(lateness_lines(&lateness, room.saturating_sub(lines.len())));
             }
-            lines.push(Line::styled(
-                "z clear | Space pause/follow | Esc back",
-                theme.dim(),
-            ));
             lines
         }
     };
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    (title, lines)
 }
 
 /// A counter row: its label, then its value right-aligned.
 fn row(label: &str, value: &str) -> String {
-    let pad = 32usize.saturating_sub(super::text_width(label) + super::text_width(value));
+    let pad = 32usize.saturating_sub(text_width(label) + text_width(value));
     format!("{label}{:pad$}{value}", "")
 }
 

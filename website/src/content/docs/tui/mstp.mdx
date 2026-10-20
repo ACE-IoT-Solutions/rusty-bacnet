@@ -34,7 +34,7 @@ A map of every address: masters 0 to 127 and slaves 128 to 254. Each address is 
 | `x` | Silent: heard before, or sent requests, but quiet for 10 s |
 | `.` | Nothing heard |
 
-Below the map is a row per station: its role, its device instance once its I-Am is seen, how many frames it sent, and when it was last heard.
+Below the map is a row per station: its role, its device instance once its I-Am is seen, how many frames it sent, and when it was last heard. From 160 columns the map and the table sit side by side. When the stations don't all fit, the table's last row says how many more there are (`+N more`).
 
 ### Token ring
 
@@ -98,7 +98,7 @@ As a participant, the MS/TP screen shows this station and its counters:
 
 ## Serial adapters
 
-`bacnet mstp-ports` lists the ports without opening any. Its order puts the likely choice first.
+`bacnet mstp-ports` lists the ports without opening any, and the join dialog offers the same list. Its order puts the likely choice first: USB adapters before other ports. On macOS it leaves out the `tty.` twin of each port, Bluetooth ports and the debug console.
 
 | Platform | Port names | Notes |
 |---|---|---|

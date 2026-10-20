@@ -133,8 +133,6 @@ fn the_panel_shows_the_station_its_token_state_and_counters() {
     ] {
         assert!(text.contains(want), "{want}:\n{text}");
     }
-    assert_snapshot!("mstp_panel_120x40", text);
-    assert_snapshot!("mstp_panel_80x24", screen(&mut app, 80, 24));
 }
 
 /// The late-timer row counts from the transport's threshold, and the
@@ -183,6 +181,24 @@ fn timer_lateness_follows_the_threshold_and_the_clear() {
     later.counters.mac.deadline_lateness.max = lateness_max(12_000);
     worker(&mut app, WorkerEvent::Mstp(MstpReport::Sample(later)));
     assert_eq!(app.mstp.lateness().unwrap().max, exact(12_000));
+}
+
+/// The station screen at 80x24, 120x40 and 200x50 (#1893): each pane as
+/// wide as its content, no key row repeating the footer's, and the
+/// lateness bands where the counters pane is tall enough.
+#[test]
+fn the_panel_fits_each_size_without_a_second_key_row() {
+    let mut app = joined();
+    for (width, height) in [(80, 24), (120, 40), (200, 50)] {
+        let text = screen(&mut app, width, height);
+        assert_eq!(
+            text.matches("Space pause/follow").count(),
+            1,
+            "only the footer's:\n{text}"
+        );
+        assert_eq!(text.contains("timers 2-5 ms"), height > 24, "{text}");
+        assert_snapshot!(format!("mstp_panel_{width}x{height}"), text);
+    }
 }
 
 #[test]

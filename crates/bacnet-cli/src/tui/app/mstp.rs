@@ -239,7 +239,7 @@ impl JoinDialog {
     /// the system lists, in `mstp-ports`' order.
     pub(crate) fn for_flags(settings: MstpArgs, listed: Vec<String>) -> Self {
         let mut ports = vec![settings.port.clone()];
-        ports.extend(crate::mstp::order_ports(listed));
+        ports.extend(listed);
         let ports = crate::mstp::dedup(ports);
         Self {
             settings,
