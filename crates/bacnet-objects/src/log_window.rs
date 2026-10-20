@@ -142,6 +142,11 @@ impl LogWindow {
         Ok(())
     }
 
+    /// Start_Time and Stop_Time, as configured or written.
+    pub(crate) fn ends(&self) -> ((Date, Time), (Date, Time)) {
+        (self.start, self.stop)
+    }
+
     /// Whether both ends are open, so the span admits every moment and a look
     /// needs no clock.
     pub(crate) fn is_unbounded(&self) -> bool {

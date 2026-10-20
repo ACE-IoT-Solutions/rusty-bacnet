@@ -297,6 +297,41 @@ impl<'a, R: ResidentLogRecord> LogLifecycle<'a, R> {
         Ok(())
     }
 
+    /// [`record_interruption`](Self::record_interruption) at the clock's
+    /// time, or without a valid clock at `fallback` if that is an actual
+    /// moment, as a log reopened from storage does (#1541). Returns whether
+    /// the record went in.
+    pub(crate) fn record_interruption_now(&mut self, fallback: Option<(Date, Time)>) -> bool {
+        valid_timestamp(self.clock)
+            .ok()
+            .or(fallback)
+            .is_some_and(|at| self.record_interruption(at).is_ok())
+    }
+
+    /// Take back a saved log (#1541): Enable, Stop_When_Full, the window
+    /// ends, the records and Total_Record_Count, and BUFFER_READY's two
+    /// counts. The buffer is already sized to the saved Buffer_Size. The
+    /// window's last look is forgotten, so the first look only notes where
+    /// it stands. Nothing is recorded.
+    pub(crate) fn reopen(
+        &mut self,
+        snapshot: &mut crate::log_persistence::LogSnapshot<R>,
+    ) -> Result<(), Error> {
+        self.window.configure(P::START_TIME, snapshot.start_time)?;
+        self.window.configure(P::STOP_TIME, snapshot.stop_time)?;
+        *self.enabled = snapshot.log_enable;
+        *self.stop_when_full = snapshot.stop_when_full;
+        self.restore(
+            snapshot.total_record_count,
+            std::mem::take(&mut snapshot.records).into(),
+        )?;
+        self.reporting.resume(
+            snapshot.last_notify_record,
+            snapshot.records_since_notification_from,
+        );
+        Ok(())
+    }
+
     fn insert_status(&mut self, timestamp: (Date, Time), status: LogStatus) {
         self.buffer
             .insert_forced(R::log_status(timestamp.0, timestamp.1, status));

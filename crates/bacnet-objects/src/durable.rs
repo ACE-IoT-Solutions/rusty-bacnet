@@ -7,6 +7,9 @@
 //! A storage call can be slow, since the file backends write, synchronize and
 //! rename, so none of these objects makes one while its caller holds the
 //! database's write guard. They all follow the pattern this module provides.
+//! The Trend Log, Trend Log Multiple and Event Log commit to their
+//! [`LogPersistence`] through the same writer, on a cadence rather than per
+//! request (see [`crate::log_persistence`]), so they never stage.
 //!
 //! - Under the guard, the object copies the state to keep and queues the copy
 //!   on its save writer. The writer's own thread makes the storage calls, one
@@ -118,6 +121,7 @@
 //! [`NotificationForwarderPersistence`]: crate::notification_forwarder::NotificationForwarderPersistence
 //! [`NotificationClassPersistence`]: crate::notification_class::NotificationClassPersistence
 //! [`AccessRightsPersistence`]: crate::access_control::AccessRightsPersistence
+//! [`LogPersistence`]: crate::log_persistence::LogPersistence
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -591,6 +595,19 @@ pub(crate) fn sync_parent_dir(path: &Path) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+/// The CRC-32 (IEEE 802.3, reflected) of `data`, which the two-slot
+/// snapshot files end with.
+pub(crate) fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
+        }
+    }
+    !crc
 }
 
 /// Whether a directory sync failed only because the filesystem cannot
