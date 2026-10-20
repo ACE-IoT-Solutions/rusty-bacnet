@@ -2783,7 +2783,9 @@ inhibit follow a local Boolean or BinaryPV property, read each time the
 server evaluates the object, so a read can trail it by about a second. The
 texts go out as written: there are no substitution codes. An Event
 Enrollment takes the same three properties (#1507); its notifications carry
-the configured text, or none when the entry is empty.
+the configured text, or none when the entry is empty. An Alert Enrollment
+serves them as well, with Event_Message_Texts (#1865); the server doesn't
+send alerts yet, so its rows only hold what is written.
 
 An Audit Log's `storage_path` is application-owned and produces two sibling
 snapshot files with `.slot0` and `.slot1` suffixes. Reuse the same path when

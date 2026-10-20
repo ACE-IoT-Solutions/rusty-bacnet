@@ -4290,6 +4290,12 @@ enrollment evaluation pass. The server has no message text of its own for an
 enrollment: a transition sends the matching Event_Message_Texts_Config entry
 as written, and none when that entry is empty.
 
+An Alert Enrollment serves the same four rows too, as Table 12-61 lists them
+(#1865), and keeps the configuration across a detection reset. The stack
+doesn't distribute alerts yet, so for now the rows hold their values for the
+application: Event_Message_Texts stays at its initial empty strings, and the
+inhibit follows its reference as on any other object.
+
 Every Trend Log samples a BACnet property, so its Start_Time, Stop_Time,
 Log_Interval and Log_DeviceObjectProperty are classed required (Table 12-29
 footnotes 1 and 8, #1481): RPM with REQUIRED returns them, and the PICS lists
