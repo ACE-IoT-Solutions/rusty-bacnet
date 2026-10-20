@@ -149,9 +149,8 @@ impl ScClientBuilder {
             let tls = tls_config.clone();
             let url = url.to_owned();
             async move {
-                tokio::time::timeout(limit, Box::pin(TlsWebSocket::connect(&url, tls)))
+                bacnet_transport::sc::dial_within(limit, Box::pin(TlsWebSocket::connect(&url, tls)))
                     .await
-                    .unwrap_or(Err(Error::Timeout(limit)))
             }
         };
         let (ws, hub) = match dial(&self.hub_url).await {
@@ -301,13 +300,31 @@ impl ScClientBuilder {
         Error,
     > {
         Box::pin(async move {
-            let (config, transport, options) = Box::pin(self.prepare()).await?;
-            let events = transport.connection_events();
+            let (config, transport, options, events) = Box::pin(self.prepare_subscribed()).await?;
             let client =
                 Box::pin(BACnetClient::start_with_options(config, transport, options)).await?;
             Ok((client, events))
         })
         .await
+    }
+
+    /// [`prepare`](Self::prepare), then subscribe to the transport's events
+    /// before anything starts it. The first `Connected` goes out while the
+    /// client starts, so every `*_with_events` build goes through here.
+    async fn prepare_subscribed(
+        self,
+    ) -> Result<
+        (
+            ClientConfig,
+            bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>,
+            ClientOptions,
+            tokio::sync::broadcast::Receiver<bacnet_transport::sc::ScEvent>,
+        ),
+        Error,
+    > {
+        let (config, transport, options) = Box::pin(self.prepare()).await?;
+        let events = transport.connection_events();
+        Ok((config, transport, options, events))
     }
 
     /// Connect to the hub and start a transport-erased BACnet/SC client.
@@ -341,6 +358,55 @@ impl ScClientBuilder {
                 options,
             ))
             .await
+        })
+        .await
+    }
+
+    /// Connect to the hub and start a transport-erased BACnet/SC client, as
+    /// [`build_any`](Self::build_any) does, and also return a hub-connector
+    /// event receiver subscribed before the client started (#1909).
+    ///
+    /// As with [`build_with_events`](Self::build_with_events), the receiver
+    /// holds the first
+    /// [`ScEvent::Connected`](bacnet_transport::sc::ScEvent::Connected),
+    /// which a later `connection_events()` call misses.
+    ///
+    /// ```no_run
+    /// use bacnet_client::client::BACnetClient;
+    /// use bacnet_transport::{mstp::NoSerial, sc::ScEvent};
+    /// use bacnet_transport::sc_tls::ScNodeTlsConfig;
+    ///
+    /// async fn first_event(tls: ScNodeTlsConfig) -> Result<(), bacnet_types::error::Error> {
+    ///     let (client, mut events) = BACnetClient::sc_builder()
+    ///         .hub_url("wss://hub.example.com/bacnet")
+    ///         .tls_config(tls)
+    ///         .vmac([0x02, 0, 0, 0, 0, 0x01])
+    ///         .device_uuid([0x42; 16])
+    ///         .build_any_with_events::<NoSerial>()
+    ///         .await?;
+    ///     assert!(matches!(events.recv().await, Ok(ScEvent::Connected { .. })));
+    ///     drop(client);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn build_any_with_events<S: SerialPort>(
+        self,
+    ) -> Result<
+        (
+            BACnetClient<AnyTransport<S>>,
+            tokio::sync::broadcast::Receiver<bacnet_transport::sc::ScEvent>,
+        ),
+        Error,
+    > {
+        Box::pin(async move {
+            let (config, transport, options, events) = Box::pin(self.prepare_subscribed()).await?;
+            let client = Box::pin(BACnetClient::start_with_options(
+                config,
+                transport.into(),
+                options,
+            ))
+            .await?;
+            Ok((client, events))
         })
         .await
     }
