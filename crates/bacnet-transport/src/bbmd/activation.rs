@@ -2,19 +2,24 @@
 //! the BDT policy and put into effect on activation (Clause 12.56.13,
 //! 12.56.32 to 12.56.35, #1578, #940).
 //!
-//! The BDT and the NAT setting are checked and put into effect together:
-//! behind a NAT router the BDT must list the global address and be
-//! two-hop only, so a new global address and the table that lists it can
-//! only go in at once.
+//! A write is checked alone ([`BbmdState::check_value`]): a BDT against the
+//! row policy, a global address as an IPv4 unicast host and port. The rules
+//! that tie values together, a NAT BBMD's BDT listing its global address and
+//! being two-hop only, are checked at activation, when every value waiting
+//! goes in at once ([`BbmdState::check_changes`]). So values can be written
+//! in any order, and a new global address and the table that lists it go
+//! in together.
 
 use std::net::{IpAddr, SocketAddrV4};
 
 use bacnet_bip_codec::{self as codec, BdtEntries};
+use bacnet_bip_core::bbmd as core_bbmd;
 use bacnet_types::bip_port::BbmdChanges;
 use bacnet_types::constructed::{BACnetBDTEntry, BACnetHostAddress, BACnetHostNPort};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::Error;
 
+use super::nat::check_global;
 use super::BbmdState;
 
 /// The WriteProperty refusal of a value the BBMD can't take.
@@ -43,14 +48,17 @@ fn rows(table: &[BACnetBDTEntry]) -> Result<Vec<codec::BdtEntry>, Error> {
         .collect()
 }
 
-/// A written BACnet_IP_Global_Address: an IPv4 host and a nonzero port, or
-/// the `None` host with port 0, which clears it (Clause 12.56.33). This
-/// BBMD resolves no host names.
+/// A written BACnet_IP_Global_Address: an IPv4 unicast host (not the
+/// unspecified, broadcast, a multicast or a loopback address) and a nonzero
+/// port, or the `None` host with port 0, which clears it (Clause 12.56.33).
+/// This BBMD resolves no host names.
 fn global_of(address: &BACnetHostNPort) -> Result<Option<SocketAddrV4>, Error> {
     match (&address.host, address.port) {
         (BACnetHostAddress::None, 0) => Ok(None),
-        (BACnetHostAddress::Ip(IpAddr::V4(ip)), port) if port != 0 => {
-            Ok(Some(SocketAddrV4::new(*ip, port)))
+        (BACnetHostAddress::Ip(IpAddr::V4(ip)), port) => {
+            let global = SocketAddrV4::new(*ip, port);
+            check_global(global, false).map_err(|_| out_of_range())?;
+            Ok(Some(global))
         }
         _ => Err(out_of_range()),
     }
@@ -64,12 +72,32 @@ struct Candidate {
 }
 
 impl BbmdState {
-    /// Whether `table` would pass as this BBMD's BDT: the same checks
-    /// [`Self::set_bdt`] makes, its own row included, on a copy.
+    /// Whether `table` would pass as this BBMD's BDT: the row policy and
+    /// the NAT rules as the BBMD stands, its own row included, on a copy.
     pub(crate) fn check_written_bdt(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
         let mut changes = BbmdChanges::default();
         changes.broadcast_distribution_table = Some(table.to_vec());
         self.check_changes(&changes)
+    }
+
+    /// Check written values each on its own, as a WriteProperty takes them:
+    /// a BDT's rows against the row policy, without the NAT rules, which
+    /// [`Self::check_changes`] applies at activation, and a global address
+    /// as an IPv4 unicast host and port.
+    pub(crate) fn check_value(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        if let Some(table) = &changes.broadcast_distribution_table {
+            let rows = rows(table)?;
+            let mut out = rows.clone();
+            let distinct = core_bbmd::canonicalize(BdtEntries::from_entries(&rows), &mut out)
+                .map_err(|_| out_of_range())?;
+            if distinct > Self::MAX_BDT_ENTRIES {
+                return Err(out_of_range());
+            }
+        }
+        if let Some(address) = &changes.global_address {
+            global_of(address)?;
+        }
+        Ok(())
     }
 
     /// The NAT setting and BDT after `changes`, when they touch either.
@@ -97,7 +125,7 @@ impl BbmdState {
 
     /// Whether [`Self::activate`] would take `changes`, changing nothing:
     /// the BDT, the NAT setting and the global address are checked as they
-    /// would go in together.
+    /// would go in together, on a copy.
     pub(crate) fn check_changes(&self, changes: &BbmdChanges) -> Result<(), Error> {
         let Some(candidate) = self.candidate(changes)? else {
             return Ok(());

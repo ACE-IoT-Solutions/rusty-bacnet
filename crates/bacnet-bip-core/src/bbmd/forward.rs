@@ -226,23 +226,34 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     ///
     /// Behind NAT the BBMD's own address becomes [`Nat::global`], and the
     /// BDT's NAT rules apply ([`Bdt::set`]): the configured rows are checked
-    /// against them now, so a table that lacks the global address or has a
-    /// one-hop row refuses the change. Without NAT the own address is
-    /// `local`, and an own row is added as usual. On error nothing changes.
-    /// The global address must pass [`validate_entry`](super::validate_entry)
-    /// as a two-hop row.
+    /// against them now, so a table that has rows but lacks the global
+    /// address, or has a one-hop row, refuses the change. Without NAT the
+    /// own address is `local`, and an own row is added as usual. Turning NAT
+    /// off drops the row of the old global address, which no longer names
+    /// this BBMD. On error nothing changes. The global address must pass
+    /// [`validate_entry`](super::validate_entry) as a two-hop row.
     pub fn set_nat(&mut self, nat: Option<Nat>, local: SocketAddrV4) -> Result<(), BdtError> {
         let own = Self::own_address_for(nat.as_ref(), local)?;
-        self.bdt.reconfigure(own, nat.is_some())?;
+        let drop = self.leaving_nat(nat.as_ref());
+        self.bdt.reconfigure(own, nat.is_some(), drop)?;
         self.nat = nat;
         Ok(())
+    }
+
+    /// The old global address when `nat` turns NAT off.
+    fn leaving_nat(&self, nat: Option<&Nat>) -> Option<SocketAddrV4> {
+        match (&self.nat, nat) {
+            (Some(old), None) => Some(old.global),
+            _ => None,
+        }
     }
 
     /// [`set_nat`](Self::set_nat) and [`Bdt::set`] in one step: run behind
     /// a NAT router as `nat` says, or not, with the BDT `table`, checked
     /// under the rules that setting brings. A change of global address and
-    /// the table that lists it go in together this way. On error nothing
-    /// changes.
+    /// the table that lists it go in together this way. Turning NAT off
+    /// drops the old global address's row from `table`, as
+    /// [`set_nat`](Self::set_nat) does. On error nothing changes.
     pub fn set_nat_and_bdt(
         &mut self,
         nat: Option<Nat>,
@@ -251,7 +262,7 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     ) -> Result<(), BdtError> {
         let own = Self::own_address_for(nat.as_ref(), local)?;
         let mut bdt = Bdt::with_nat(own, nat.is_some());
-        bdt.set(table)?;
+        bdt.set_without(table, self.leaving_nat(nat.as_ref()))?;
         self.bdt = bdt;
         self.nat = nat;
         Ok(())
@@ -424,8 +435,12 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     ///
     /// Behind a NAT router the origin is the global address when `sender`
     /// registered from a private address ([`Nat::is_private`]), which other
-    /// sites couldn't answer, and `sender` otherwise. The decision is this
-    /// crate's reading of Annex J.7.5, which doesn't single the case out.
+    /// sites couldn't answer, and `sender` otherwise. Read literally, Annex
+    /// J.7.5 would put the global address on every Forwarded-NPDU the BBMD
+    /// builds, this one included; keeping a public device's own address is
+    /// a deliberate departure (maintainer decision, 2026-10-20, #940), so
+    /// replies to a device that registered from the public side reach it
+    /// directly.
     pub fn distribute_broadcast<'n, 'o>(
         &self,
         cx: &Context,

@@ -193,7 +193,11 @@ pub struct ServiceSupport {
 }
 
 /// Data link layer support.
+///
+/// It is `#[non_exhaustive]`, so a new option isn't a breaking change: a
+/// `match` on it needs a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataLinkSupport {
     /// BACnet/IP over IPv4.
     BipV4,

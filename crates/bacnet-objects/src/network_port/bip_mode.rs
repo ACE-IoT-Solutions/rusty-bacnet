@@ -61,6 +61,11 @@ impl LiveMode {
         matches!(self, Self::Bbmd(tables) if tables.nat_traversal().is_some())
     }
 
+    /// Whether this mode is a BBMD running behind a NAT router now.
+    pub(super) fn nat_on(&self) -> bool {
+        matches!(self, Self::Bbmd(tables) if tables.nat_traversal() == Some(true))
+    }
+
     /// Whether the transport behind this mode takes written values, so its
     /// pending-activation rows are writable at all.
     pub(super) fn can_change(&self) -> bool {

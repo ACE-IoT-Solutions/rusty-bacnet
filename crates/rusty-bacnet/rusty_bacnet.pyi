@@ -2081,7 +2081,10 @@ class Bbmd:
     Forwarded-NPDUs it builds name that address as their origin.
     ``nat_private_ranges`` lists up to four ``"a.b.c.d/n"`` ranges to count
     as private besides RFC 1918: a foreign device registered from a private
-    address has its broadcasts sent on from the global address. The
+    address has its broadcasts sent on from the global address
+    (``"0.0.0.0/0"`` makes that every foreign device). A BDT with rows that
+    doesn't list the global address, or has a one-hop row, raises
+    ValueError; an empty one serves foreign devices only. The
     registered Network Port serves both as BACnet_IP_NAT_Traversal and
     BACnet_IP_Global_Address. Write-BDT from the network is always refused.
     Invalid values raise ValueError, or OverflowError for an integer out of

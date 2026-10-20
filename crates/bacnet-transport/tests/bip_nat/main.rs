@@ -40,16 +40,6 @@ fn two_hop(address: SocketAddrV4) -> BdtEntry {
     }
 }
 
-/// A UDP port free on 127.0.0.1 a moment ago, so a transport's address is
-/// known before it starts.
-fn free_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// A loopback BBMD whose local broadcasts come back to its own socket,
 /// where they are dropped as its own echo: nothing else shares its subnet.
 fn loopback(port: u16) -> BipTransport {
@@ -65,8 +55,8 @@ async fn bbmd(
     let mut transport = loopback(0);
     transport.set_mode(BipMode::Bbmd(BbmdOptions {
         bdt: bdt.iter().copied().map(two_hop).collect(),
-        // The rate limits run on the host's clock, not Tokio's paused one,
-        // and every device here registers from 127.0.0.1.
+        // Every device here registers from 127.0.0.1, and the fast one
+        // several times a second.
         foreign_device_policy: Some(ForeignDevicePolicy {
             registration_rate_per_source: 1_000,
             registration_rate_global: 1_000,
@@ -81,16 +71,21 @@ async fn bbmd(
     (transport, rx, private)
 }
 
-/// A foreign device at `port`, registering with `bbmd` every `renewal`.
+/// A foreign device behind site `site`'s router, registering with `bbmd`
+/// every `renewal`. It binds port 0, so the router learns its address from
+/// its first registration ([`Internet::claim_next`]); this returns once it
+/// has.
 async fn foreign_device(
-    port: u16,
+    internet: &Internet,
+    site: usize,
     bbmd: SocketAddrV4,
     renewal: Option<Duration>,
 ) -> (BipTransport, mpsc::Receiver<ReceivedNpdu>) {
+    internet.claim_next(site);
     // Not its own address as the broadcast one: its BBMD's forwards must
     // read as unicast, the only kind a foreign device takes.
     let mut transport =
-        BipTransport::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::new(127, 255, 255, 255));
+        BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::new(127, 255, 255, 255));
     transport.register_as_foreign_device(ForeignDeviceConfig {
         bbmd_ip: *bbmd.ip(),
         bbmd_port: bbmd.port(),
@@ -98,6 +93,17 @@ async fn foreign_device(
         renewal_interval: renewal,
     });
     let rx = transport.start().await.unwrap();
+    timeout(Duration::from_secs(5), async {
+        while internet.private(site).is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the device's first registration reaches its router");
+    assert_eq!(
+        internet.private(site),
+        Some(address_of(transport.local_mac()))
+    );
     (transport, rx)
 }
 
@@ -146,9 +152,8 @@ async fn two_sites_and_a_foreign_device_talk_through_their_routers() {
     let (b, mut b_rx, private_b) = bbmd(global_b, &sites).await;
     internet.place(0, private_a);
     internet.place(1, private_b);
-    let fd_port = free_port();
-    internet.place(2, SocketAddrV4::new(Ipv4Addr::LOCALHOST, fd_port));
-    let (fd, mut fd_rx) = foreign_device(fd_port, global_b, Some(Duration::from_secs(1))).await;
+    let (fd, mut fd_rx) =
+        foreign_device(&internet, 2, global_b, Some(Duration::from_secs(1))).await;
     registered(&fd).await;
 
     // B recorded the device under its router's address, not its own.
@@ -191,14 +196,14 @@ async fn two_sites_and_a_foreign_device_talk_through_their_routers() {
     assert_eq!(address_of(&at_a.source_mac), internet.global(2));
 }
 
-/// A foreign device behind a router whose mapping lapses after 5 s keeps
-/// receiving the BBMD's broadcasts when it registers every 2 s; one that
+/// A foreign device behind a router whose mapping lapses after 500 ms keeps
+/// receiving the BBMD's broadcasts when it registers every 150 ms; one that
 /// registers at the default half time-to-live (30 s) stops receiving them
-/// once its mapping lapses (Annex J.7.5). Time is paused: the shim's
-/// mappings and the registration schedule run on Tokio's clock.
-#[tokio::test(start_paused = true)]
+/// once its mapping lapses (Annex J.7.5). Real time: the shim's mappings
+/// and the registration schedule share the host's clock with the sockets.
+#[tokio::test]
 async fn a_foreign_device_behind_nat_needs_a_short_reregistration_interval() {
-    let lapse = Duration::from_secs(5);
+    let lapse = Duration::from_millis(500);
     let internet = Internet::new(&[
         Router::PortForward,
         Router::Dynamic(lapse),
@@ -208,19 +213,17 @@ async fn a_foreign_device_behind_nat_needs_a_short_reregistration_interval() {
     let global_b = internet.global(0);
     let (b, _b_rx, private_b) = bbmd(global_b, &[global_b]).await;
     internet.place(0, private_b);
-    let (fast_port, slow_port) = (free_port(), free_port());
-    internet.place(1, SocketAddrV4::new(Ipv4Addr::LOCALHOST, fast_port));
-    internet.place(2, SocketAddrV4::new(Ipv4Addr::LOCALHOST, slow_port));
     let (fast, mut fast_rx) =
-        foreign_device(fast_port, global_b, Some(Duration::from_secs(2))).await;
-    let (slow, mut slow_rx) = foreign_device(slow_port, global_b, None).await;
+        foreign_device(&internet, 1, global_b, Some(Duration::from_millis(150))).await;
+    let (slow, mut slow_rx) = foreign_device(&internet, 2, global_b, None).await;
     registered(&fast).await;
     registered(&slow).await;
 
-    // Well past the mapping lapse, and before the slow device renews.
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    // Three times the mapping lapse, and long before the slow device
+    // renews.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
     b.send_broadcast(WHO_IS).await.unwrap();
-    let at_fast = next(&mut fast_rx, Duration::from_secs(1), "the fast device").await;
+    let at_fast = next(&mut fast_rx, Duration::from_secs(2), "the fast device").await;
     assert_eq!(at_fast.npdu.as_ref(), WHO_IS);
     assert_eq!(address_of(&at_fast.source_mac), global_b);
     assert!(
@@ -232,9 +235,8 @@ async fn a_foreign_device_behind_nat_needs_a_short_reregistration_interval() {
     assert!(internet.counts().expired >= 1);
     let renewals = fast.bvlc_client_snapshot().foreign_registration;
     // What keeps the mapping open is the device's own traffic: an attempt
-    // every 2 s. (Under the paused clock an answer can be counted late, so
-    // the attempts are what is checked, not the answers.)
-    assert!(renewals.attempts >= 9, "{renewals:?}");
+    // every 150 ms.
+    assert!(renewals.attempts >= 5, "{renewals:?}");
     assert_eq!(renewals.refused, 0, "{renewals:?}");
     drop(slow);
 }

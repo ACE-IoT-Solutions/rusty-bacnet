@@ -130,12 +130,29 @@ fn behind_nat_a_table_without_the_global_address_is_refused() {
         set(&mut tables, &peer_only),
         Err(BdtError::NoOwnRow { own: NAT_A })
     );
-    // An empty table too: the global row is never added.
-    assert_eq!(
-        set(&mut tables, &[]),
-        Err(BdtError::NoOwnRow { own: NAT_A })
-    );
     assert_eq!(tables.bdt.rows(), BDT, "unchanged");
+}
+
+/// A BBMD behind NAT with no peers serves only foreign devices (Annex
+/// J.7.5): an empty table is taken, and no own row is added to it.
+#[test]
+fn behind_nat_an_empty_table_serves_foreign_devices_only() {
+    let mut tables = bbmd1();
+    set(&mut tables, &[]).unwrap();
+    assert!(tables.bdt.is_empty(), "the global row is never added");
+    let mut out = [Target::UNUSED; Site::MAX_TARGETS];
+    let sent = tables.own_broadcast(&cx(), NPDU, &mut out);
+    assert_eq!(sent.origin, NAT_A);
+    assert_eq!(
+        destinations(sent.fanout.targets),
+        [ROAMING, INSIDE, CARRIER]
+    );
+    // Turning NAT on over an empty table, and off again, works too.
+    let mut fresh = Site::new(PRIVATE);
+    fresh.set_nat(Some(Nat::new(NAT_A)), PRIVATE).unwrap();
+    set(&mut fresh, &[]).unwrap();
+    fresh.set_nat(None, PRIVATE).unwrap();
+    assert_eq!(fresh.bdt.rows(), [BdtEntry::new(PRIVATE, TWO_HOP_MASK)]);
 }
 
 #[test]
@@ -197,14 +214,24 @@ fn a_global_address_no_peer_could_send_to_is_refused() {
 }
 
 #[test]
-fn turning_nat_off_returns_to_the_local_address_and_its_appended_row() {
+fn turning_nat_off_returns_to_the_local_address_and_drops_the_global_row() {
     let mut tables = bbmd1();
     tables.set_nat(None, PRIVATE).unwrap();
     assert!(!tables.bdt.behind_nat());
     assert_eq!(tables.bdt.own_address(), PRIVATE);
+    // The old global row named this BBMD; it would read as a peer now.
     assert_eq!(
         tables.bdt.rows(),
-        [BDT[0], BDT[1], BdtEntry::new(PRIVATE, TWO_HOP_MASK)]
+        [BDT[1], BdtEntry::new(PRIVATE, TWO_HOP_MASK)]
+    );
+    // set_nat_and_bdt drops it from the table it is given, too.
+    let mut again = bbmd1();
+    again
+        .set_nat_and_bdt(None, PRIVATE, BdtEntries::from_entries(&BDT))
+        .unwrap();
+    assert_eq!(
+        again.bdt.rows(),
+        [BDT[1], BdtEntry::new(PRIVATE, TWO_HOP_MASK)]
     );
     // One-hop rows are allowed again.
     let one_hop = BdtEntry::new(addr(198, 51, 100, 1, NAT_PORT), MASK_24);

@@ -66,7 +66,7 @@ fn behind_nat_the_own_row_is_global_and_the_socket_stays_local() {
     assert!(state.nat_traversal());
     assert_eq!(state.global_address(), Some(GLOBAL));
     assert_eq!(state.own_address(), GLOBAL);
-    assert_eq!(state.local_address(), (LOCAL, PORT));
+    assert_eq!(state.local_pair(), (LOCAL, PORT));
     assert_eq!(state.bdt(), [two_hop(GLOBAL), two_hop(OTHER_SITE)]);
     assert_eq!(state.global_address_value(), host(GLOBAL));
     // Without NAT the value is the unset sentinel (Clause 12.56.33).
@@ -110,7 +110,7 @@ fn a_global_address_no_peer_could_reach_is_refused() {
 fn a_restart_moves_the_socket_but_not_the_global_row() {
     let mut state = behind_nat();
     state.set_local_address([192, 168, 1, 11], PORT).unwrap();
-    assert_eq!(state.local_address(), ([192, 168, 1, 11], PORT));
+    assert_eq!(state.local_pair(), ([192, 168, 1, 11], PORT));
     assert_eq!(state.own_address(), GLOBAL);
     assert_eq!(state.bdt(), [two_hop(GLOBAL), two_hop(OTHER_SITE)]);
 }
@@ -224,7 +224,7 @@ fn a_global_address_is_an_ipv4_host_and_port_or_the_unset_sentinel() {
 }
 
 #[test]
-fn turning_nat_off_returns_to_the_local_own_row() {
+fn turning_nat_off_returns_to_the_local_own_row_and_drops_the_global_one() {
     let mut state = behind_nat();
     let mut off = BbmdChanges::default();
     off.nat_traversal = Some(false);
@@ -233,10 +233,82 @@ fn turning_nat_off_returns_to_the_local_own_row() {
     assert_eq!(state.global_address(), Some(GLOBAL), "kept");
     assert_eq!(state.own_address(), SocketAddrV4::new(LOCAL.into(), PORT));
     let local_row = two_hop(SocketAddrV4::new(LOCAL.into(), PORT));
-    assert_eq!(
-        state.bdt(),
-        [two_hop(GLOBAL), two_hop(OTHER_SITE), local_row]
-    );
+    // The global row named this BBMD; it would read as a peer now.
+    assert_eq!(state.bdt(), [two_hop(OTHER_SITE), local_row.clone()]);
+    // The same through set_nat_traversal.
+    let mut state = behind_nat();
+    state.set_nat_traversal(None).unwrap();
+    assert_eq!(state.bdt(), [two_hop(OTHER_SITE), local_row]);
+}
+
+/// Written values are checked alone at write time; the rules that tie
+/// them together wait for activation (#940).
+#[test]
+fn a_written_value_is_checked_alone() {
+    let state = behind_nat();
+    // A BDT without the global row passes alone, and fails at activation.
+    let mut table = BbmdChanges::default();
+    table.broadcast_distribution_table = Some(written(&[two_hop(OTHER_SITE)]));
+    state.check_value(&table).unwrap();
+    assert!(state.check_changes(&table).is_err());
+    // A one-hop row too.
+    let mut one_hop = BbmdChanges::default();
+    one_hop.broadcast_distribution_table = Some(written(&[
+        two_hop(GLOBAL),
+        row(OTHER_SITE, [255, 255, 255, 0]),
+    ]));
+    state.check_value(&one_hop).unwrap();
+    assert!(state.check_changes(&one_hop).is_err());
+    // The row policy still applies at once.
+    let mut multicast = BbmdChanges::default();
+    multicast.broadcast_distribution_table = Some(written(&[two_hop(SocketAddrV4::new(
+        Ipv4Addr::new(224, 0, 0, 1),
+        PORT,
+    ))]));
+    assert!(state.check_value(&multicast).is_err());
+    // A global address must be an IPv4 unicast host and port.
+    for refused in [
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST,
+        Ipv4Addr::new(239, 1, 1, 1),
+        Ipv4Addr::LOCALHOST,
+    ] {
+        let mut global = BbmdChanges::default();
+        global.global_address = Some(host(SocketAddrV4::new(refused, PORT)));
+        assert!(state.check_value(&global).is_err(), "{refused}");
+    }
+    let mut global = BbmdChanges::default();
+    global.global_address = Some(host(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 9), PORT)));
+    state.check_value(&global).unwrap();
+}
+
+/// Behind NAT, a new global address and the BDT that lists it activate
+/// together, whichever was written first.
+#[test]
+fn the_global_address_moves_while_nat_is_on() {
+    let mut state = behind_nat();
+    let moved = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 9), PORT);
+    let mut alone = BbmdChanges::default();
+    alone.global_address = Some(host(moved));
+    assert!(state.check_changes(&alone).is_err(), "the BDT lacks it");
+    let mut both = alone.clone();
+    both.broadcast_distribution_table = Some(written(&[two_hop(moved), two_hop(OTHER_SITE)]));
+    state.check_changes(&both).unwrap();
+    state.activate(&both).unwrap();
+    assert_eq!(state.own_address(), moved);
+    assert_eq!(state.bdt(), [two_hop(moved), two_hop(OTHER_SITE)]);
+}
+
+/// Behind NAT an empty BDT is taken: a BBMD with no peers that serves only
+/// foreign devices.
+#[test]
+fn behind_nat_an_empty_bdt_is_taken() {
+    let mut state = behind_nat();
+    state.set_bdt(Vec::new()).unwrap();
+    assert!(state.bdt().is_empty());
+    let mut empty = BbmdChanges::default();
+    empty.broadcast_distribution_table = Some(Vec::new());
+    state.check_changes(&empty).unwrap();
 }
 
 #[test]

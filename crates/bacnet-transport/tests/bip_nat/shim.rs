@@ -35,6 +35,9 @@ pub enum Router {
 struct Site {
     router: Router,
     private: Option<SocketAddrV4>,
+    /// Whether the next sender that is no site's private address is put
+    /// behind this router ([`Internet::claim_next`]).
+    claim_next: bool,
     /// When the private side last sent through the router.
     last_outbound: Option<Instant>,
 }
@@ -76,6 +79,7 @@ impl Internet {
                 .map(|&router| Site {
                     router,
                     private: None,
+                    claim_next: false,
                     last_outbound: None,
                 })
                 .collect(),
@@ -104,6 +108,18 @@ impl Internet {
         self.shared.lock().unwrap().sites[site].private = Some(private);
     }
 
+    /// Put the next sender that is no site's private address behind site
+    /// `site`'s router: a transport bound to port 0, whose address is known
+    /// only once it sends. Start one such transport at a time.
+    pub fn claim_next(&self, site: usize) {
+        self.shared.lock().unwrap().sites[site].claim_next = true;
+    }
+
+    /// Who sits behind site `site`'s router, once known.
+    pub fn private(&self, site: usize) -> Option<SocketAddrV4> {
+        self.shared.lock().unwrap().sites[site].private
+    }
+
     /// What the shim has done so far.
     pub fn counts(&self) -> Counts {
         self.shared.lock().unwrap().counts
@@ -128,13 +144,19 @@ async fn run(to: usize, sockets: Vec<Arc<UdpSocket>>, shared: Arc<Mutex<Shared>>
         let now = Instant::now();
         let route = {
             let mut shared = shared.lock().unwrap();
-            let Some(from) = shared
+            let known = shared
                 .sites
                 .iter()
-                .position(|site| site.private == Some(source))
-            else {
+                .position(|site| site.private == Some(source));
+            let claimed = || shared.sites.iter().position(|site| site.claim_next);
+            let Some(from) = known.or_else(claimed) else {
                 continue;
             };
+            let site = &mut shared.sites[from];
+            if site.claim_next {
+                site.claim_next = false;
+                site.private = Some(source);
+            }
             shared.sites[from].last_outbound = Some(now);
             let site = &shared.sites[to];
             let open = match site.router {

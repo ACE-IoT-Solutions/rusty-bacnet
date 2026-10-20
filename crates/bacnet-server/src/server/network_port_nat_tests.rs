@@ -72,31 +72,47 @@ async fn nat_rows_are_served_written_and_activated_with_the_bdt() {
         }
     );
 
-    // NAT with no global address, or with one the BDT doesn't list, is
-    // refused when written.
+    // A loopback global address is refused when written; the rest is
+    // checked alone, in any order.
     assert_eq!(
-        wp(&server, P::BACNET_IP_NAT_TRAVERSAL, TRUE.to_vec()).await,
+        wp(
+            &server,
+            P::BACNET_IP_GLOBAL_ADDRESS,
+            host_octets(&host([127, 0, 0, 1], 47809))
+        )
+        .await,
         Err((ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE))
     );
+    wp(&server, P::BACNET_IP_NAT_TRAVERSAL, TRUE.to_vec())
+        .await
+        .unwrap();
     let global = host(GLOBAL.0, GLOBAL.1);
     wp(&server, P::BACNET_IP_GLOBAL_ADDRESS, host_octets(&global))
         .await
         .unwrap();
-    assert_eq!(
-        wp(&server, P::BACNET_IP_NAT_TRAVERSAL, TRUE.to_vec()).await,
-        Err((ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE))
-    );
-    // The BDT naming it first, then NAT.
+    // With a BDT that has a peer but not the global address, the
+    // activation refuses the set before the handler runs, and the values
+    // stay pending. (An empty BDT would do: a BBMD with no peers.)
     let peer = host([198, 51, 100, 2], 47809);
-    let table = [two_hop(global.clone()), two_hop(peer)];
-    let mut bdt = BytesMut::new();
-    encode_bdt_entry_list(&mut bdt, &table).unwrap();
-    wp(&server, P::BBMD_BROADCAST_DISTRIBUTION_TABLE, bdt.to_vec())
-        .await
-        .unwrap();
-    wp(&server, P::BACNET_IP_NAT_TRAVERSAL, TRUE.to_vec())
-        .await
-        .unwrap();
+    wp(
+        &server,
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        bdt_octets(&[two_hop(peer.clone())]),
+    )
+    .await
+    .unwrap();
+    assert_invalid_configuration(
+        &reinitialize(&server, ReinitializedState::ACTIVATE_CHANGES).await,
+    );
+    assert_eq!(rp(&server, P::CHANGES_PENDING).await.unwrap(), TRUE);
+    let table = [two_hop(global.clone()), two_hop(peer.clone())];
+    wp(
+        &server,
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        bdt_octets(&table),
+    )
+    .await
+    .unwrap();
     assert_eq!(rp(&server, P::CHANGES_PENDING).await.unwrap(), TRUE);
     assert_eq!(rp(&server, P::BACNET_IP_NAT_TRAVERSAL).await.unwrap(), TRUE);
     assert_eq!(global_read(&server).await, global);
@@ -142,5 +158,48 @@ async fn nat_rows_are_served_written_and_activated_with_the_bdt() {
         "no private own row behind NAT"
     );
     assert_eq!(rp(&server, P::BACNET_IP_NAT_TRAVERSAL).await.unwrap(), TRUE);
+
+    // While NAT is on, the global address moves: the new address and the
+    // BDT that lists it, written in either order, activate together.
+    let moved = host([203, 0, 113, 9], 47809);
+    wp(&server, P::BACNET_IP_GLOBAL_ADDRESS, host_octets(&moved))
+        .await
+        .unwrap();
+    assert_invalid_configuration(
+        &reinitialize(&server, ReinitializedState::ACTIVATE_CHANGES).await,
+    );
+    let table = [two_hop(moved.clone()), two_hop(peer)];
+    wp(
+        &server,
+        P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        bdt_octets(&table),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        reinitialize(&server, ReinitializedState::ACTIVATE_CHANGES).await,
+        Apdu::SimpleAck(_)
+    ));
+    let (nat, own) = state();
+    assert!(nat);
+    assert_eq!(
+        own,
+        std::net::SocketAddrV4::new([203, 0, 113, 9].into(), 47809)
+    );
+    assert_eq!(global_read(&server).await, moved);
     server.stop().await.unwrap();
+}
+
+fn bdt_octets(table: &[BACnetBDTEntry]) -> Vec<u8> {
+    let mut octets = BytesMut::new();
+    encode_bdt_entry_list(&mut octets, table).unwrap();
+    octets.to_vec()
+}
+
+fn assert_invalid_configuration(reply: &Apdu) {
+    let Apdu::Error(error) = reply else {
+        panic!("an Error PDU, not {reply:?}");
+    };
+    assert_eq!(error.error_class, ErrorClass::PROPERTY);
+    assert_eq!(error.error_code, ErrorCode::INVALID_CONFIGURATION_DATA);
 }

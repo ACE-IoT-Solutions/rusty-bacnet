@@ -16,7 +16,8 @@
 #   site-c    192.168.30.0/24  nat-c .1, probe-behind-nat .10
 #
 # Docker refuses two bridge networks with one subnet, so the sites use
-# different private ranges, where the standard's example reuses one.
+# different private ranges, where the standard's example reuses one. Each
+# network's Docker gateway is .254, leaving .1 to the site's NAT router.
 #
 # Run it with ./run.sh (it builds, starts, probes and tears down).
 
@@ -133,10 +134,10 @@ services:
 
 networks:
   internet:
-    ipam: { config: [{ subnet: 198.18.0.0/24 }] }
+    ipam: { config: [{ subnet: 198.18.0.0/24, gateway: 198.18.0.254 }] }
   site-a:
-    ipam: { config: [{ subnet: 192.168.10.0/24 }] }
+    ipam: { config: [{ subnet: 192.168.10.0/24, gateway: 192.168.10.254 }] }
   site-b:
-    ipam: { config: [{ subnet: 192.168.20.0/24 }] }
+    ipam: { config: [{ subnet: 192.168.20.0/24, gateway: 192.168.20.254 }] }
   site-c:
-    ipam: { config: [{ subnet: 192.168.30.0/24 }] }
+    ipam: { config: [{ subnet: 192.168.30.0/24, gateway: 192.168.30.254 }] }

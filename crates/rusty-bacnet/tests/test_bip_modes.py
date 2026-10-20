@@ -107,6 +107,8 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(bbmd.nat_private_ranges, ["100.64.0.0/10"])
         self.assertEqual(Bbmd(nat_global_address="203.0.113.1")
                          .nat_global_address, "203.0.113.1:47808")
+        # No peers: a BBMD that serves foreign devices only.
+        self.assertEqual(Bbmd([], nat_global_address="203.0.113.1:47809").bdt, [])
         self.assertIn("nat_global_address='203.0.113.1:47809'", repr(bbmd))
         for kwargs in ({"nat_global_address": "203.0.113"},
                        {"nat_global_address": "203.0.113.1:0"},
@@ -117,7 +119,13 @@ class OptionTests(unittest.TestCase):
                        {"nat_global_address": "203.0.113.1",
                         "nat_private_ranges": ["100.64.0.0"]},
                        {"nat_global_address": "203.0.113.1",
-                        "nat_private_ranges": [f"100.{i}.0.0/16" for i in range(5)]}):
+                        "nat_private_ranges": [f"100.{i}.0.0/16" for i in range(5)]},
+                       {"nat_global_address": "127.0.0.1:47809"},
+                       {"bdt": ["198.51.100.2:47809"],
+                        "nat_global_address": "203.0.113.1:47809"},
+                       {"bdt": ["203.0.113.1:47809",
+                                ("198.51.100.0:47809", "255.255.255.0")],
+                        "nat_global_address": "203.0.113.1:47809"}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 Bbmd(**kwargs)
 

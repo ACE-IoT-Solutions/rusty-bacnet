@@ -4,7 +4,12 @@
 //! there, so a restart keeps it (#1826).
 //!
 //! The file holds the BDT rows as a Write-BDT payload carries them, 10
-//! octets each, as the loader reads it. A write goes to a temporary file
+//! octets each, as the loader reads it. Since #940 a save adds an 11-octet
+//! trailer after them with the NAT setting the Network Port activated:
+//! `NAT1`, then 1 when NAT traversal is on and 0 when it is off, then the
+//! global address (IPv4 and UDP port, all zero when none). Rows are a
+//! multiple of 10 octets, so the trailer is told apart by the length, and a
+//! file without one, from before #940, loads as it always did. A write goes to a temporary file
 //! beside it, is synced, and then renamed over it, so a reader or a crash
 //! sees the old table or the new one, never part of one; on Unix the
 //! directory is synced too, so the rename itself survives a crash.
@@ -20,6 +25,7 @@
 //! a restart would lose it.
 
 use std::io::Write as _;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -27,7 +33,60 @@ use std::sync::{Arc, Mutex, PoisonError};
 use bytes::BytesMut;
 use tracing::{debug, warn};
 
-use super::{encode_bdt_entries, BdtEntry};
+use bacnet_types::error::Error;
+
+use super::{encode_bdt_entries, BbmdState, BdtEntry};
+
+/// The NAT setting saved with the BDT: whether NAT traversal is on, and
+/// the global address, kept while it is off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PersistedNat {
+    pub(crate) enabled: bool,
+    pub(crate) global: Option<SocketAddrV4>,
+}
+
+/// The trailer's tag.
+const NAT_TAG: &[u8; 4] = b"NAT1";
+/// The trailer's length.
+const NAT_TRAILER: usize = 11;
+
+impl PersistedNat {
+    fn encode(self, out: &mut BytesMut) {
+        out.extend_from_slice(NAT_TAG);
+        out.extend_from_slice(&[u8::from(self.enabled)]);
+        let global = self
+            .global
+            .unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+        out.extend_from_slice(&global.ip().octets());
+        out.extend_from_slice(&global.port().to_be_bytes());
+    }
+
+    fn decode(trailer: &[u8]) -> Option<Self> {
+        let [t0, t1, t2, t3, enabled, a, b, c, d, high, low] =
+            <[u8; NAT_TRAILER]>::try_from(trailer).ok()?;
+        if [t0, t1, t2, t3] != *NAT_TAG || enabled > 1 {
+            return None;
+        }
+        let global = SocketAddrV4::new(Ipv4Addr::new(a, b, c, d), u16::from_be_bytes([high, low]));
+        Some(Self {
+            enabled: enabled == 1,
+            global: (!global.ip().is_unspecified() || global.port() != 0).then_some(global),
+        })
+    }
+}
+
+/// A persisted-BDT file's rows and, when it has the trailer, its NAT
+/// setting.
+pub(crate) fn decode_file(data: &[u8]) -> Result<(Vec<BdtEntry>, Option<PersistedNat>), Error> {
+    if data.len() % 10 == NAT_TRAILER % 10 && data.len() >= NAT_TRAILER {
+        let (rows, trailer) = data.split_at(data.len() - NAT_TRAILER);
+        let nat = PersistedNat::decode(trailer).ok_or_else(|| {
+            Error::Encoding("persisted BDT: unknown trailer after the rows".into())
+        })?;
+        return Ok((BbmdState::decode_bdt(rows)?, Some(nat)));
+    }
+    Ok((BbmdState::decode_bdt(data)?, None))
+}
 
 /// One BBMD's persisted-BDT file.
 #[derive(Debug)]
@@ -83,9 +142,14 @@ impl BdtFile {
     /// still saves. Outside one (a caller with no runtime) the save runs
     /// here, under whatever locks the caller holds. A save that never runs
     /// or panics is counted as failed ([`PendingSave`]).
-    pub(crate) fn save_later(self: &Arc<Self>, generation: u64, rows: Vec<BdtEntry>) {
+    pub(crate) fn save_later(
+        self: &Arc<Self>,
+        generation: u64,
+        rows: Vec<BdtEntry>,
+        nat: Option<PersistedNat>,
+    ) {
         let pending = self.pending_save();
-        let save = move || pending.run(generation, &rows);
+        let save = move || pending.run_with(generation, &rows, nat);
         if tokio::runtime::Handle::try_current().is_err() {
             return save();
         }
@@ -107,12 +171,19 @@ impl BdtFile {
     /// unless a newer generation was already written; a failure is logged
     /// and counted, and doesn't count as written, so an older save may
     /// still land.
+    #[cfg(test)]
     pub(crate) fn save(&self, generation: u64, rows: &[BdtEntry]) {
+        self.save_with(generation, rows, None);
+    }
+
+    /// Write `rows`, of `generation`, with the NAT setting in the trailer
+    /// when given, as described on `save`.
+    pub(crate) fn save_with(&self, generation: u64, rows: &[BdtEntry], nat: Option<PersistedNat>) {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         if generation <= *written {
             debug!(generation, newest = *written, "Skipped saving an older BDT");
         } else {
-            match self.write(rows) {
+            match self.write(rows, nat) {
                 Ok(()) => {
                     *written = generation;
                     debug!(
@@ -137,10 +208,13 @@ impl BdtFile {
         );
     }
 
-    fn write(&self, rows: &[BdtEntry]) -> std::io::Result<()> {
+    fn write(&self, rows: &[BdtEntry], nat: Option<PersistedNat>) -> std::io::Result<()> {
         static TEMPORARY: AtomicU64 = AtomicU64::new(0);
         let mut octets = BytesMut::new();
         encode_bdt_entries(rows, &mut octets);
+        if let Some(nat) = nat {
+            nat.encode(&mut octets);
+        }
         let name = self.path.file_name().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "the path names no file")
         })?;
@@ -177,9 +251,20 @@ pub(crate) struct PendingSave {
 
 impl PendingSave {
     /// Run the save; it then no longer counts as lost.
-    pub(crate) fn run(mut self, generation: u64, rows: &[BdtEntry]) {
+    #[cfg(test)]
+    pub(crate) fn run(self, generation: u64, rows: &[BdtEntry]) {
+        self.run_with(generation, rows, None);
+    }
+
+    /// Run the save, with the NAT setting in the trailer when given.
+    pub(crate) fn run_with(
+        mut self,
+        generation: u64,
+        rows: &[BdtEntry],
+        nat: Option<PersistedNat>,
+    ) {
         if let Some(file) = &self.file {
-            file.save(generation, rows);
+            file.save_with(generation, rows, nat);
         }
         self.file = None;
     }

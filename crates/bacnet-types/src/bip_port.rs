@@ -73,6 +73,14 @@ pub trait BbmdTables: Send + Sync {
         None
     }
 
+    /// Check one written value on its own, as a WriteProperty takes it:
+    /// `changes` holds only that value. The default is [`check`](Self::check).
+    /// A view whose values depend on one another checks only what the value
+    /// alone decides here, and the rest in `check`, at activation.
+    fn check_value(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        self.check(changes)
+    }
+
     /// Check every written value waiting together, changing nothing: `Ok`
     /// when [`activate`](Self::activate) would take them. The default
     /// checks a BDT alone with

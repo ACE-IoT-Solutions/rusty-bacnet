@@ -15,11 +15,13 @@
 //! ([`NetworkPortObject::activate_changes`]).
 //!
 //! A written value is checked by the transport when it is written, so one
-//! it would refuse is refused then and changes nothing: a BBMD's values
-//! together with the others waiting, as the BDT, NAT setting and global
-//! address they would make (a NAT BBMD's BDT must list its global address),
-//! and a BBMD address and time-to-live as the registration they would make
-//! together with the other value waiting. The rows take
+//! it would refuse is refused then and changes nothing: a BBMD's value on
+//! its own (a BDT against the row policy, a global address as an IPv4
+//! unicast host), and a BBMD address and time-to-live as the registration
+//! they would make together with the other value waiting. A BBMD's values
+//! are checked together at activation (a NAT BBMD's BDT must list its
+//! global address and be two-hop only), so they can be written in any
+//! order. The rows take
 //! writes only when the port's owner answers ReinitializeDevice
 //! (`set_activation_internal`); otherwise a written value could never take
 //! effect, and the write is WRITE_ACCESS_DENIED.
@@ -114,7 +116,8 @@ impl NetworkPortObject {
         }
         Some(match &self.mode {
             LiveMode::Bbmd(tables) => {
-                let mut changes = self.pending.bbmd.clone();
+                // The value written, alone.
+                let mut changes = BbmdChanges::default();
                 let decoded = match (property, value) {
                     (
                         P::BBMD_BROADCAST_DISTRIBUTION_TABLE,
@@ -136,11 +139,12 @@ impl NetworkPortObject {
                     }
                     _ => Err(common::invalid_data_type_error()),
                 };
-                // Checked with every value waiting, as they would go in
-                // together: behind NAT the BDT must list the global address.
+                // Checked alone; the rules that tie the values together (a
+                // NAT BBMD's BDT lists its global address) wait for
+                // activation, so they can be written in any order.
                 decoded
-                    .and_then(|()| tables.check(&changes))
-                    .map(|()| self.pending.bbmd = changes)
+                    .and_then(|()| tables.check_value(&changes))
+                    .map(|()| merge(&mut self.pending.bbmd, changes))
             }
             LiveMode::Foreign(registration) => {
                 let mut changes = self.pending.foreign.clone();
@@ -210,6 +214,22 @@ impl NetworkPortObject {
         }
         self.pending = Pending::default();
         Ok(true)
+    }
+}
+
+/// Add `written`'s values to `pending`.
+fn merge(pending: &mut BbmdChanges, written: BbmdChanges) {
+    if written.broadcast_distribution_table.is_some() {
+        pending.broadcast_distribution_table = written.broadcast_distribution_table;
+    }
+    if written.accept_foreign_device_registrations.is_some() {
+        pending.accept_foreign_device_registrations = written.accept_foreign_device_registrations;
+    }
+    if written.nat_traversal.is_some() {
+        pending.nat_traversal = written.nat_traversal;
+    }
+    if written.global_address.is_some() {
+        pending.global_address = written.global_address;
     }
 }
 

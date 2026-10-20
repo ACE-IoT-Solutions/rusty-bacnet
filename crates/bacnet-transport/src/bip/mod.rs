@@ -661,7 +661,7 @@ impl TransportPort for BipTransport {
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
             let path = self.bdt_file.as_deref().map(bbmd::BdtFile::path);
             let mut state = initial_bbmd_state(config, path, &own_address)?;
-            let (ip, _) = state.local_address();
+            let ip = state.local_address().ip().octets();
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
@@ -672,7 +672,7 @@ impl TransportPort for BipTransport {
             let ip = {
                 let mut state = bbmd::lock(bbmd);
                 refresh_own_address(&mut state, &own_address)?;
-                state.local_address().0
+                state.local_address().ip().octets()
             };
             let mask = subnet_mask_of(Ipv4Addr::from(ip)).await;
             bbmd::lock(bbmd).set_subnet_mask(mask);
@@ -924,6 +924,8 @@ mod malformed_bvll_tests;
 mod management_ack_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod nat_persist_tests;
 #[cfg(test)]
 mod npdu_addressing_tests;
 #[cfg(test)]

@@ -83,7 +83,8 @@ const BBMD: &[PropertyMetadata] = &[
 // NAT router (Annex J.7.5) has BACnet_IP_NAT_Traversal, and one configured
 // to has BACnet_IP_Global_Address. This stack's BBMD can, so an IPv4 BBMD
 // port whose transport says so serves both, the address as the unset
-// sentinel while none is configured. Clauses 12.56.32 and 12.56.33 make
+// sentinel while none is configured; the address is listed required while
+// NAT traversal is on, optional otherwise. Clauses 12.56.32 and 12.56.33 make
 // them writable (the address because this stack never discovers it), with
 // a write waiting for a ReinitializeDevice as the BBMD rows' do (#940).
 // They are listed read-only here and become writable only for an owner
@@ -123,6 +124,12 @@ pub(super) fn for_object(object: &NetworkPortObject) -> Cow<'_, [PropertyMetadat
                 .map(|mut row| {
                     if row.property_identifier == P::OUT_OF_SERVICE && object.is_bound() {
                         row.write_capability = ReadOnly;
+                    }
+                    // Footnote 10: required once the port runs behind NAT.
+                    if row.property_identifier == P::BACNET_IP_GLOBAL_ADDRESS
+                        && object.mode.nat_on()
+                    {
+                        row.conformance = RequiredRead;
                     }
                     if object.activates_changes()
                         && super::pending::writable_pending_row(row.property_identifier)

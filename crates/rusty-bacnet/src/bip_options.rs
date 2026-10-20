@@ -122,8 +122,11 @@ impl PyForeignDevice {
 /// distributed broadcasts (default False). `nat_global_address`, `"ip"` or
 /// `"ip:port"`, runs it behind a NAT router that port-forwards that public
 /// address to it (Annex J.7.5): the BDT must then list that address, and
-/// every row must be two-hop. `nat_private_ranges` lists up to four
-/// `"a.b.c.d/n"` ranges to count as private besides RFC 1918.
+/// every row must be two-hop, or `ValueError` is raised (an empty BDT, a
+/// BBMD serving foreign devices only, is fine). `nat_private_ranges` lists
+/// up to four `"a.b.c.d/n"` ranges to count as private besides RFC 1918;
+/// `"0.0.0.0/0"` counts every foreign device as private, so all their
+/// broadcasts go on from the global address.
 #[pyclass(name = "Bbmd", module = "rusty_bacnet", frozen, skip_from_py_object)]
 pub(crate) struct PyBbmd {
     options: BbmdOptions,
@@ -155,6 +158,9 @@ impl PyBbmd {
             .map(|ip| parse_ip(ip, "management_acl").map(|ip| ip.octets()))
             .collect::<PyResult<Vec<_>>>()?;
         let nat = nat_options(nat_global_address, nat_private_ranges)?;
+        if let Some(nat) = &nat {
+            check_nat_bdt(&bdt, nat.global_address)?;
+        }
         Ok(Self {
             options: BbmdOptions {
                 bdt,
@@ -298,7 +304,13 @@ fn nat_options(
         }
         return Ok(None);
     };
-    let mut nat = NatTraversal::new(parse_address(&global, "nat_global_address")?);
+    let address = parse_address(&global, "nat_global_address")?;
+    if address.ip().is_loopback() {
+        return Err(PyValueError::new_err(format!(
+            "nat_global_address must be a public address, got '{global}'"
+        )));
+    }
+    let mut nat = NatTraversal::new(address);
     for range in ranges.unwrap_or_default() {
         nat.private_ranges.push(parse_range(&range)?);
     }
@@ -309,6 +321,25 @@ fn nat_options(
         )));
     }
     Ok(Some(nat))
+}
+
+/// Behind NAT, a BDT with rows must list the global address, and every row
+/// must be two-hop (Annex J.7.5); an empty one serves foreign devices only.
+fn check_nat_bdt(bdt: &[BdtEntry], global: SocketAddrV4) -> PyResult<()> {
+    if bdt.iter().any(|row| row.broadcast_mask != [255; 4]) {
+        return Err(PyValueError::new_err(
+            "behind NAT every bdt row must be two-hop ('ip:port', mask 255.255.255.255)",
+        ));
+    }
+    let lists_global = bdt
+        .iter()
+        .any(|row| SocketAddrV4::new(Ipv4Addr::from(row.ip), row.port) == global);
+    if !bdt.is_empty() && !lists_global {
+        return Err(PyValueError::new_err(format!(
+            "behind NAT the bdt must list nat_global_address {global} as this BBMD's own row"
+        )));
+    }
+    Ok(())
 }
 
 /// `"a.b.c.d/n"`, a prefix of at most 32 bits.

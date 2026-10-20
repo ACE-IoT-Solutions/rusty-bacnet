@@ -35,6 +35,7 @@ use super::{bdt_error, BbmdState};
 /// # Ok::<(), NatError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NatTraversal {
     /// The NAT router's public address and port that forward to this BBMD.
     /// The BDT must list it, with an all-ones mask, as this BBMD's own row.
@@ -59,6 +60,32 @@ impl NatTraversal {
             private_ranges: Vec::new(),
         }
     }
+
+    /// This setting with `range` counted as private too.
+    #[must_use]
+    pub fn with_private_range(mut self, range: PrivateRange) -> Self {
+        self.private_ranges.push(range);
+        self
+    }
+}
+
+/// Refuse a global address no peer could send to: the unspecified,
+/// broadcast or a multicast address, or port 0. A loopback one is refused
+/// too unless `allow_loopback`: the Rust configuration takes it, for
+/// tests on one host, but a Network Port write does not.
+pub(super) fn check_global(global: SocketAddrV4, allow_loopback: bool) -> Result<(), Error> {
+    let ip = global.ip();
+    if global.port() == 0
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || (ip.is_loopback() && !allow_loopback)
+    {
+        return Err(Error::Encoding(format!(
+            "NAT global address {global} is not a unicast address and port"
+        )));
+    }
+    Ok(())
 }
 
 /// What a BBMD keeps of its NAT setting: whether it runs behind NAT
@@ -128,6 +155,36 @@ impl BbmdState {
         self.tables.set_nat(core, self.local).map_err(nat_error)?;
         self.nat = setting;
         Ok(())
+    }
+
+    /// Take a NAT setting a persisted-BDT file holds: `enabled` and
+    /// `global`, with `private_ranges` from the configuration. On error
+    /// nothing changes.
+    pub(crate) fn set_persisted_nat(
+        &mut self,
+        nat: super::PersistedNat,
+        private_ranges: Vec<PrivateRange>,
+    ) -> Result<(), Error> {
+        let setting = NatSetting {
+            enabled: nat.enabled,
+            global: nat.global,
+            private_ranges,
+        };
+        if let Some(global) = setting.global {
+            check_global(global, true)?;
+        }
+        let core = setting.core(setting.enabled, setting.global)?;
+        self.tables.set_nat(core, self.local).map_err(nat_error)?;
+        self.nat = setting;
+        Ok(())
+    }
+
+    /// The NAT setting a persisted-BDT file saves.
+    pub(crate) fn persisted_nat(&self) -> super::PersistedNat {
+        super::PersistedNat {
+            enabled: self.nat.enabled,
+            global: self.nat.global,
+        }
     }
 
     /// Whether this BBMD runs behind a NAT router.

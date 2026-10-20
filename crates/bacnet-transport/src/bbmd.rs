@@ -33,7 +33,7 @@ mod tables;
 pub(crate) use forward::Forward;
 use nat::NatSetting;
 pub use nat::{NatError, NatTraversal, PrivateRange};
-pub(crate) use persist::BdtFile;
+pub(crate) use persist::{decode_file, BdtFile, PersistedNat};
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use serve::Reply;
@@ -335,7 +335,13 @@ impl BbmdState {
     /// one given to [`Self::new`], or the one a restart of a `0.0.0.0`-bound
     /// transport chose. Behind a NAT router the BDT knows it by its global
     /// address instead ([`Self::own_address`]).
-    pub fn local_address(&self) -> ([u8; 4], u16) {
+    pub fn local_address(&self) -> SocketAddrV4 {
+        self.local
+    }
+
+    /// [`Self::local_address`] as the octets and port the tests compare.
+    #[cfg(test)]
+    pub(crate) fn local_pair(&self) -> ([u8; 4], u16) {
         (self.local.ip().octets(), self.local.port())
     }
 

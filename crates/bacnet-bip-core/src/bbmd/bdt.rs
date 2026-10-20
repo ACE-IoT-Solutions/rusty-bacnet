@@ -394,10 +394,11 @@ impl<const N: usize> Bdt<N> {
 
     /// Replace the table with `table`, as [`canonicalize`] cleans it, plus a
     /// row for this BBMD's own address with [`TWO_HOP_MASK`] when `table` has
-    /// none. Behind a NAT router a table without the own row is refused
-    /// instead ([`BdtError::NoOwnRow`]), as is one with a mask other than
-    /// [`TWO_HOP_MASK`] ([`BdtError::OneHopBehindNat`]). On error the table
-    /// is unchanged.
+    /// none. Behind a NAT router no own row is added: a table with rows must
+    /// list the own (global) address ([`BdtError::NoOwnRow`]), and every
+    /// mask must be [`TWO_HOP_MASK`] ([`BdtError::OneHopBehindNat`]). An
+    /// empty table is taken there: a BBMD with no peers that serves only
+    /// foreign devices (Annex J.7.5). On error the table is unchanged.
     pub fn set(&mut self, table: BdtEntries<'_>) -> Result<(), BdtError> {
         let mut next = Self::new(self.own);
         next.behind_nat = self.behind_nat;
@@ -407,11 +408,11 @@ impl<const N: usize> Bdt<N> {
             if let Some(entry) = table.iter().find(|row| row.mask != TWO_HOP_MASK) {
                 return Err(BdtError::OneHopBehindNat { entry });
             }
-            if !has_own {
+            if !has_own && found.distinct > 0 {
                 return Err(BdtError::NoOwnRow { own: self.own });
             }
         }
-        let needed = found.distinct + usize::from(!has_own);
+        let needed = found.distinct + usize::from(!has_own && !self.behind_nat);
         if needed > N {
             return Err(BdtError::Capacity {
                 needed,
@@ -419,7 +420,9 @@ impl<const N: usize> Bdt<N> {
             });
         }
         next.len = found.stored;
-        next.ensure_own_row();
+        if !self.behind_nat {
+            next.ensure_own_row();
+        }
         *self = next;
         Ok(())
     }
@@ -438,7 +441,7 @@ impl<const N: usize> Bdt<N> {
         }
         if self.behind_nat {
             // The table must list the new global address itself.
-            return self.reconfigure(own, true);
+            return self.reconfigure(own, true, None);
         }
         let configured = self.configured_rows();
         let has_own = configured.iter().any(|row| row.address == own);
@@ -459,24 +462,48 @@ impl<const N: usize> Bdt<N> {
     }
 
     /// Move to the own address `own`, behind a NAT router or not, keeping
-    /// the configured rows: they are set again under the new rules, so an
-    /// own row appended for the old address goes, and on error nothing
-    /// changes. A table never set takes the new address and rules alone.
+    /// the configured rows but `drop`'s: they are set again under the new
+    /// rules, so an own row appended for the old address goes, and on error
+    /// nothing changes. A table never set takes the new address and rules
+    /// alone.
     pub(super) fn reconfigure(
         &mut self,
         own: SocketAddrV4,
         behind_nat: bool,
+        drop: Option<SocketAddrV4>,
     ) -> Result<(), BdtError> {
-        if self.is_empty() {
+        // Only a table behind NAT is empty once set.
+        if self.is_empty() && !self.behind_nat {
             self.own = own;
             self.behind_nat = behind_nat;
             return Ok(());
         }
-        let mut next = Self::new(own);
-        next.behind_nat = behind_nat;
-        next.set(BdtEntries::from_entries(self.configured_rows()))?;
+        let mut next = Self::with_nat(own, behind_nat);
+        next.set_without(BdtEntries::from_entries(self.configured_rows()), drop)?;
         *self = next;
         Ok(())
+    }
+
+    /// [`Bdt::set`] with `table` less any row for `drop`.
+    pub(super) fn set_without(
+        &mut self,
+        table: BdtEntries<'_>,
+        drop: Option<SocketAddrV4>,
+    ) -> Result<(), BdtError> {
+        let Some(drop) = drop else {
+            return self.set(table);
+        };
+        let mut kept = [EMPTY_ROW; N];
+        let mut len = 0;
+        for row in table.iter().filter(|row| row.address != drop) {
+            // A candidate longer than the storage is refused as `set` would.
+            let Some(slot) = kept.get_mut(len) else {
+                return self.set(table);
+            };
+            *slot = row;
+            len += 1;
+        }
+        self.set(BdtEntries::from_entries(&kept[..len]))
     }
 
     /// Append the own row when the table lacks one. The callers have checked

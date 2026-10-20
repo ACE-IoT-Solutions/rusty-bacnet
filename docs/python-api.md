@@ -670,17 +670,21 @@ out of range (a `ttl` outside 1 to 65535, say).
 
 A BBMD behind a NAT router that port-forwards a public address to it (Annex
 J.7.5, #940) takes that address as `nat_global_address`, `"ip"` or
-`"ip:port"`. The BDT must then list it as the BBMD's own row, and every row
-must be two-hop (the plain `"ip:port"` form); the owner fails to start
-otherwise. The Forwarded-NPDUs the BBMD builds name the global address as
+`"ip:port"`, a public address (loopback is refused). A BDT with rows must
+then list it as the BBMD's own row, and every row must be two-hop (the plain
+`"ip:port"` form), or `Bbmd` raises `ValueError`; an empty BDT, a BBMD that
+serves foreign devices only, is fine. The Forwarded-NPDUs the BBMD builds name the global address as
 their origin, so devices at other sites can answer, while one it passes on
 keeps its origin. A foreign device that registered from a private address
 (RFC 1918, or one of up to four `nat_private_ranges` such as
-`"100.64.0.0/10"`) has its broadcasts sent on from the global address too;
+`"100.64.0.0/10"`; `"0.0.0.0/0"` makes that every device) has its
+broadcasts sent on from the global address too;
 one that registered from a public address keeps its own. Behind NAT a BBMD
 is usually alone on its subnet, so `alone_on_subnet=True` fits. The
 registered Network Port serves the setting as BACnet_IP_NAT_Traversal and
-BACnet_IP_Global_Address, writable behind a ReinitializeDevice handler.
+BACnet_IP_Global_Address, writable behind a ReinitializeDevice handler in
+any order; the values are checked together at activation, and an activated
+setting is saved with the BDT in `bdt_persist_path`.
 A foreign device behind NAT needs only a short `renewal`, below its router's
 mapping timeout (30 seconds or less for many routers). For linking sites
 across the internet, prefer BACnet/SC: a BBMD open to the internet has only

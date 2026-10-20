@@ -19,7 +19,8 @@
 //! when they cannot be listed or none is usable, a wildcard `start()` fails
 //! before it gets here.
 //!
-//! The BDT is the persisted one when it loads, else the configured one. A
+//! The BDT is the persisted one when it loads, else the configured one; a
+//! persisted NAT setting (#940) comes with it, the same way. A
 //! persisted BDT that loads is authoritative: when no own address can be
 //! chosen from it, `start()` fails rather than retrying with the configured
 //! BDT. Only a self row that would overflow the persisted BDT still falls back
@@ -32,9 +33,9 @@ use std::fmt;
 use std::net::Ipv4Addr;
 use std::path::Path;
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-use crate::bbmd::{self, BbmdState, BdtEntry, ForeignDevicePolicy, NatTraversal};
+use crate::bbmd::{self, BbmdState, BdtEntry, ForeignDevicePolicy, NatTraversal, PersistedNat};
 use bacnet_types::error::Error;
 
 /// Pre-start configuration for BBMD mode.
@@ -80,9 +81,21 @@ pub(super) struct OwnAddressContext<'a> {
 }
 
 impl OwnAddressContext<'_> {
-    fn own_ip(&self, rows: &[BdtEntry], source: BdtSource<'_>) -> Result<Ipv4Addr, Error> {
+    fn own_ip(
+        &self,
+        rows: &[BdtEntry],
+        source: BdtSource<'_>,
+        behind_nat: bool,
+    ) -> Result<Ipv4Addr, Error> {
         if self.interface.is_unspecified() {
-            select_wildcard_bbmd_ip(rows, self.port, self.host, self.route_ip, source)
+            select_wildcard_bbmd_ip(
+                rows,
+                self.port,
+                self.host,
+                self.route_ip,
+                source,
+                behind_nat,
+            )
         } else {
             Ok(self.interface)
         }
@@ -102,13 +115,15 @@ fn route_text(route_ip: Option<Ipv4Addr>) -> String {
 
 /// The own IP of a BBMD bound to `0.0.0.0` at `port` (rules in the module
 /// docs). `rows` must already be canonical. Only rows at `port` are checked
-/// against `host`.
+/// against `host`. Behind a NAT router (`behind_nat`) the rows are global
+/// addresses, so only the default route can name it.
 pub(super) fn select_wildcard_bbmd_ip(
     rows: &[BdtEntry],
     port: u16,
     host: &[Ipv4Addr],
     route_ip: Option<Ipv4Addr>,
     source: BdtSource<'_>,
+    behind_nat: bool,
 ) -> Result<Ipv4Addr, Error> {
     let mut own: Vec<Ipv4Addr> = rows
         .iter()
@@ -123,6 +138,15 @@ pub(super) fn select_wildcard_bbmd_ip(
         [] => route_ip
             .filter(|ip| !ip.is_loopback() && host.contains(ip))
             .ok_or_else(|| {
+                if behind_nat {
+                    return own_address_error(format!(
+                        "BBMD behind a NAT router and bound to 0.0.0.0 cannot determine its \
+                         own local B/IP address: its BDT lists global addresses, and the \
+                         default-route address ({}) is not a local non-loopback address; \
+                         bind an explicit interface address",
+                        route_text(route_ip)
+                    ));
+                }
                 own_address_error(format!(
                     "BBMD bound to 0.0.0.0 cannot determine its own B/IP address: {source} \
                      has no row for a local IPv4 address at port {port}, and the \
@@ -196,19 +220,20 @@ pub(super) async fn subnet_mask_of(ip: Ipv4Addr) -> Option<Ipv4Addr> {
     mask
 }
 
-/// Read and validate the persisted BDT. `None`, after a warning when the file
-/// is unusable, means the configured BDT is used.
-fn load_persisted_bdt(path: &Path) -> Option<Vec<BdtEntry>> {
+/// Read and validate the persisted BDT, and the NAT setting saved with it
+/// when the file has one. `None`, after a warning when the file is
+/// unusable, means the configured BDT is used.
+fn load_persisted_bdt(path: &Path) -> Option<(Vec<BdtEntry>, Option<PersistedNat>)> {
     let data = std::fs::read(path).ok()?;
-    let entries = match BbmdState::decode_bdt(&data) {
-        Ok(entries) => entries,
+    let (entries, nat) = match bbmd::decode_file(&data) {
+        Ok(decoded) => decoded,
         Err(e) => {
             warn!(error = %e, "Failed to decode persisted BDT, using config");
             return None;
         }
     };
     match bbmd::canonical_bdt(entries) {
-        Ok(rows) => Some(rows),
+        Ok(rows) => Some((rows, nat)),
         Err(e) => {
             warn!(error = %e, "Persisted BDT invalid, using config");
             None
@@ -224,6 +249,38 @@ fn new_state(config: &BbmdConfig, ip: Ipv4Addr, port: u16) -> Result<BbmdState, 
     Ok(state)
 }
 
+/// An empty BBMD state at `ip:port` with the NAT setting a persisted file
+/// saved, which an activation made, so it wins over the configured one, as
+/// the persisted BDT does; the private ranges are the configuration's.
+fn persisted_state(
+    config: &BbmdConfig,
+    nat: PersistedNat,
+    ip: Ipv4Addr,
+    port: u16,
+) -> Result<BbmdState, Error> {
+    let configured = PersistedNat {
+        enabled: config.nat.is_some(),
+        global: config.nat.as_ref().map(|nat| nat.global_address),
+    };
+    if nat != configured {
+        info!(
+            persisted_nat = nat.enabled,
+            persisted_global = ?nat.global,
+            configured_nat = configured.enabled,
+            configured_global = ?configured.global,
+            "Using the persisted NAT setting, not the configured one"
+        );
+    }
+    let ranges = config
+        .nat
+        .as_ref()
+        .map(|nat| nat.private_ranges.clone())
+        .unwrap_or_default();
+    let mut state = BbmdState::new(ip.octets(), port);
+    state.set_persisted_nat(nat, ranges)?;
+    Ok(state)
+}
+
 /// The BBMD state for a first start: the persisted BDT when it loads, else the
 /// configured one, and this BBMD's own address chosen with that BDT. An
 /// invalid configured BDT or an undeterminable own address fails the start.
@@ -236,15 +293,21 @@ pub(super) fn initial_bbmd_state(
 ) -> Result<BbmdState, Error> {
     let mut loaded = None;
     let persisted = persist_path.and_then(|path| Some((path, load_persisted_bdt(path)?)));
-    if let Some((path, rows)) = persisted {
-        let ip = ctx.own_ip(&rows, BdtSource::Persisted(path))?;
-        let mut state = new_state(config, ip, ctx.port)?;
-        // The rows are canonical, so only the self row can still overflow.
-        match state.set_bdt(rows) {
-            Ok(()) => {
+    if let Some((path, (rows, nat))) = persisted {
+        let behind_nat = nat.map_or(config.nat.is_some(), |nat| nat.enabled);
+        let ip = ctx.own_ip(&rows, BdtSource::Persisted(path), behind_nat)?;
+        let state = match nat {
+            Some(nat) => persisted_state(config, nat, ip, ctx.port),
+            None => new_state(config, ip, ctx.port),
+        };
+        // The rows are canonical, so only the self row can still overflow,
+        // or, behind NAT, the NAT rules refuse them.
+        match state.and_then(|mut state| state.set_bdt(rows).map(|()| state)) {
+            Ok(state) => {
                 debug!(
                     path = %path.display(),
                     entries = state.bdt().len(),
+                    nat = state.nat_traversal(),
                     "Loaded persisted BDT"
                 );
                 loaded = Some(state);
@@ -257,7 +320,7 @@ pub(super) fn initial_bbmd_state(
         None => {
             let config_error = |e: Error| Error::Encoding(format!("BDT configuration error: {e}"));
             let rows = bbmd::canonical_bdt(config.initial_bdt.clone()).map_err(config_error)?;
-            let ip = ctx.own_ip(&rows, BdtSource::Configured)?;
+            let ip = ctx.own_ip(&rows, BdtSource::Configured, config.nat.is_some())?;
             let mut state = new_state(config, ip, ctx.port)?;
             state.set_bdt(rows).map_err(config_error)?;
             state
@@ -276,8 +339,13 @@ pub(super) fn refresh_own_address(
     state: &mut BbmdState,
     ctx: &OwnAddressContext<'_>,
 ) -> Result<(), Error> {
-    let ip = ctx.own_ip(&state.configured_bdt(), BdtSource::Current)?;
-    let (old_ip, old_port) = state.local_address();
+    let ip = ctx.own_ip(
+        &state.configured_bdt(),
+        BdtSource::Current,
+        state.nat_traversal(),
+    )?;
+    let old = state.local_address();
+    let (old_ip, old_port) = (old.ip().octets(), old.port());
     state.set_local_address(ip.octets(), ctx.port).map_err(|e| {
         Error::Encoding(format!(
             "BBMD restart moved its own B/IP address from {}:{old_port} to {ip}:{}, and a \

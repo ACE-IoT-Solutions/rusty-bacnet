@@ -114,29 +114,39 @@ impl BbmdTables for LiveTables {
         Some(lock(&self.state).global_address_value())
     }
 
+    fn check_value(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        lock(&self.state).check_value(changes)
+    }
+
     fn check(&self, changes: &BbmdChanges) -> Result<(), Error> {
         lock(&self.state).check_changes(changes)
     }
 
-    /// A new BDT is saved to the persisted-BDT file once it is in effect.
+    /// A new BDT or NAT setting is saved to the persisted-BDT file once it
+    /// is in effect, the two together (#940).
     /// Only the activation and taking the rows happen under the locks the
     /// caller and this view hold; the file is written on a thread of its
     /// own afterwards (`BdtFile::save_later`). A failed save is logged and counted and doesn't undo the
     /// activation.
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
-        let file = self
-            .file
-            .as_ref()
-            .filter(|_| changes.broadcast_distribution_table.is_some());
+        let file = self.file.as_ref().filter(|_| {
+            changes.broadcast_distribution_table.is_some()
+                || changes.nat_traversal.is_some()
+                || changes.global_address.is_some()
+        });
         let Some(file) = file else {
             return lock(&self.state).activate(changes);
         };
-        let (generation, rows) = {
+        let (generation, rows, nat) = {
             let mut state = lock(&self.state);
             state.activate(changes)?;
-            (file.next_generation(), state.configured_bdt())
+            (
+                file.next_generation(),
+                state.configured_bdt(),
+                state.persisted_nat(),
+            )
         };
-        file.save_later(generation, rows);
+        file.save_later(generation, rows, Some(nat));
         Ok(())
     }
 

@@ -77,6 +77,15 @@ impl BbmdTables for Tables {
     fn global_address(&self) -> Option<BACnetHostNPort> {
         self.capable.then(|| self.global.lock().unwrap().clone())
     }
+    /// A value alone: only an IPv4 host (or the unset sentinel) is a
+    /// global address.
+    fn check_value(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        match changes.global_address.as_ref().map(|g| (&g.host, g.port)) {
+            None | Some((BACnetHostAddress::None, 0)) => Ok(()),
+            Some((BACnetHostAddress::Ip(IpAddr::V4(_)), port)) if port != 0 => Ok(()),
+            Some(_) => Err(refusal()),
+        }
+    }
     fn check(&self, changes: &BbmdChanges) -> Result<(), Error> {
         let global = changes
             .global_address
@@ -244,24 +253,16 @@ fn written_nat_rows_read_back_and_wait_for_activation() {
             .write_capability;
         assert_eq!(capability, PropertyWriteCapability::Always, "{row}");
     }
-    // NAT before the address is refused: there'd be no global address.
-    assert!(write(
-        &mut db,
-        P::BACNET_IP_NAT_TRAVERSAL,
-        PropertyValue::Boolean(true)
-    )
-    .is_err());
-    assert_eq!(
-        read(&db, P::CHANGES_PENDING).unwrap(),
-        PropertyValue::Boolean(false)
-    );
-    write(&mut db, P::BACNET_IP_GLOBAL_ADDRESS, written(&global())).unwrap();
+    // Any order: NAT first is taken, and with no global address yet the
+    // pair fails only the check activation makes.
     write(
         &mut db,
         P::BACNET_IP_NAT_TRAVERSAL,
         PropertyValue::Boolean(true),
     )
     .unwrap();
+    assert!(db.check_network_port_changes().is_err());
+    write(&mut db, P::BACNET_IP_GLOBAL_ADDRESS, written(&global())).unwrap();
     assert_eq!(
         read(&db, P::CHANGES_PENDING).unwrap(),
         PropertyValue::Boolean(true)
@@ -278,6 +279,19 @@ fn written_nat_rows_read_back_and_wait_for_activation() {
     assert_eq!(db.activate_network_port_changes().unwrap(), 1);
     assert!(*tables.nat.lock().unwrap());
     assert_eq!(*tables.global.lock().unwrap(), global());
+    // Behind NAT the address is required (Table 12-71, footnote 10).
+    let conformance = db
+        .get(&oid())
+        .unwrap()
+        .property_metadata()
+        .iter()
+        .find(|meta| meta.property_identifier == P::BACNET_IP_GLOBAL_ADDRESS)
+        .unwrap()
+        .conformance;
+    assert_eq!(
+        conformance,
+        crate::property_metadata::PropertyConformance::RequiredRead
+    );
     let activated = tables.activated.lock().unwrap();
     assert_eq!(activated.len(), 1, "both in one activation");
     assert_eq!(activated[0].nat_traversal, Some(true));
