@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/sc_lint.rs
 expression: "screen(&mut app, 120, 40)"
 ---
-" bacnet | BIP | disconnected | READ-ONLY | COV 0 FD 0 | drop 0                                                   ? help "
+" bacnet | [1 Devices] 2 Browse 3 Watch 7 Capture | BIP | disconnected | READ-ONLY | COV 0 | drop 0               ? help "
 "┌ Devices (0) | sort: instance ↑ ──────────────────────────────────────────────────────────────────────────────────────┐"
 "│                                                                                                                      │"
 "│                                  Disconnected. Press p for profiles or c to connect.                                 │"

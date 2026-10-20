@@ -41,6 +41,38 @@ pub(crate) enum View {
     Networks,
 }
 
+/// Where the foreign-device registration stands: the status bar's `FD`
+/// field and the Network screen's banner both read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Registration {
+    /// The BBMD accepted it and the lease holds.
+    Held,
+    /// No answer yet: the first attempt is out, or a renewal is.
+    Pending,
+    /// The BBMD's last answer refused it.
+    Refused,
+    /// None accepted, and this many attempts went unanswered.
+    NoAnswer {
+        /// Attempts with no answer.
+        unanswered: u64,
+    },
+    /// A lease lapsed and no renewal since was accepted.
+    Lapsed,
+}
+
+impl Registration {
+    /// The status bar's word for it.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Held => "held",
+            Self::Pending => "pending",
+            Self::Refused => "refused",
+            Self::NoAnswer { .. } => "no answer",
+            Self::Lapsed => "lapsed",
+        }
+    }
+}
+
 /// A key on the Network screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NetworkKey {
@@ -122,34 +154,25 @@ impl NetworkState {
         Some(left.saturating_sub(now.saturating_duration_since(*at)))
     }
 
-    /// The registration banner: while the BBMD refuses the registration,
-    /// or once registrations go unanswered (none accepted after the first
-    /// attempt, or a lease lapsed with no newer success).
+    /// Where the foreign-device registration stands (#1894), for the
+    /// status bar and the banner alike: `None` without a registration and
+    /// no refusal on record.
     ///
     /// It keys on the counters rather than the last outcome, since a fresh
     /// attempt reads `Pending` while the earlier ones went unanswered.
-    pub(crate) fn registration_banner(&self) -> Option<String> {
-        let (snapshot, _) = self.registration.as_ref()?;
-        let bbmd = snapshot
-            .last_bbmd
-            .map_or_else(|| "The BBMD".to_string(), |bbmd| format!("BBMD {bbmd}"));
+    pub(crate) fn registration_state(&self) -> Option<Registration> {
+        let Some((snapshot, _)) = self.registration.as_ref() else {
+            return self.foreign.map(|_| Registration::Pending);
+        };
         if snapshot.last_outcome == Some(ForeignRegistrationOutcome::Refused) {
-            let result = snapshot
-                .last_result
-                .map_or_else(String::new, |code| format!(" ({})", kebab(code)));
-            return Some(format!(
-                " REFUSED {bbmd} refused the foreign-device registration{result}; \
-                 broadcasts through it fail until it accepts. Check its foreign-device policy."
-            ));
+            return Some(Registration::Refused);
         }
-        if self.foreign.is_none() || snapshot.registered {
-            return None;
+        self.foreign?;
+        if snapshot.registered {
+            return Some(Registration::Held);
         }
         if snapshot.lapses > 0 {
-            return Some(format!(
-                " LAPSED The registration with {bbmd} lapsed, and no renewal since was \
-                 accepted; broadcasts through it are not delivered."
-            ));
+            return Some(Registration::Lapsed);
         }
         // Attempts that ended with no answer. The last one doesn't count
         // while in flight, or when it never reached the BBMD (not sent, or
@@ -166,14 +189,43 @@ impl NetworkState {
         let unanswered = snapshot
             .attempts
             .saturating_sub(snapshot.accepted + snapshot.refused + u64::from(not_the_bbmds));
-        let plural = if unanswered == 1 { "" } else { "s" };
         if snapshot.accepted == 0 && unanswered > 0 {
-            return Some(format!(
-                " NO ANSWER {bbmd} has not answered {unanswered} foreign-device \
-                 registration{plural}; broadcasts through it are not delivered."
-            ));
+            return Some(Registration::NoAnswer { unanswered });
         }
-        None
+        Some(Registration::Pending)
+    }
+
+    /// The registration banner: while the BBMD refuses the registration,
+    /// or once registrations go unanswered (none accepted after the first
+    /// attempt, or a lease lapsed with no newer success).
+    pub(crate) fn registration_banner(&self) -> Option<String> {
+        let (snapshot, _) = self.registration.as_ref()?;
+        let bbmd = snapshot
+            .last_bbmd
+            .map_or_else(|| "The BBMD".to_string(), |bbmd| format!("BBMD {bbmd}"));
+        match self.registration_state()? {
+            Registration::Refused => {
+                let result = snapshot
+                    .last_result
+                    .map_or_else(String::new, |code| format!(" ({})", kebab(code)));
+                Some(format!(
+                    " REFUSED {bbmd} refused the foreign-device registration{result}; \
+                     broadcasts through it fail until it accepts. Check its foreign-device policy."
+                ))
+            }
+            Registration::Lapsed => Some(format!(
+                " LAPSED The registration with {bbmd} lapsed, and no renewal since was \
+                 accepted; broadcasts through it are not delivered."
+            )),
+            Registration::NoAnswer { unanswered } => {
+                let plural = if unanswered == 1 { "" } else { "s" };
+                Some(format!(
+                    " NO ANSWER {bbmd} has not answered {unanswered} foreign-device \
+                     registration{plural}; broadcasts through it are not delivered."
+                ))
+            }
+            Registration::Held | Registration::Pending => None,
+        }
     }
 
     /// Whether the tables shown are from the BBMD we register with, so our
@@ -267,8 +319,27 @@ impl App {
         }
     }
 
+    /// `:bbmd [ADDRESS]`: that BBMD's tables, or with no address those of
+    /// the BBMD the session registers with.
+    pub(super) fn show_bbmd(&mut self, bbmd: Option<SocketAddrV4>, out: &mut Vec<Command>) {
+        match bbmd.or(self.network.foreign.map(|f| f.bbmd)) {
+            Some(bbmd) => self.set_bbmd(bbmd, out),
+            None => self.flash(
+                "No foreign-device registration: type :bbmd ADDRESS.",
+                FLASH_FOR,
+            ),
+        }
+    }
+
+    /// The registration's BBMD while the screen shows another one's
+    /// tables (after `:bbmd OTHER`), so the footer can say how to go back.
+    pub(crate) fn away_from_own_bbmd(&self) -> Option<SocketAddrV4> {
+        let own = self.network.foreign?.bbmd;
+        (self.network.target.is_some_and(|target| target != own)).then_some(own)
+    }
+
     /// `:bbmd ADDRESS`: show that BBMD's tables, and read them.
-    pub(super) fn set_bbmd(&mut self, bbmd: SocketAddrV4, out: &mut Vec<Command>) {
+    fn set_bbmd(&mut self, bbmd: SocketAddrV4, out: &mut Vec<Command>) {
         let state = &mut self.network;
         if state.target != Some(bbmd) {
             state.target = Some(bbmd);

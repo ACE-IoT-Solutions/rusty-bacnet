@@ -106,9 +106,40 @@ What M0 draws (80x24):
 - The status bar shows the transport and local address, link state, the safety
   level, and a dropped-events counter. Later milestones add the site, the
   foreign-device countdown or SC hub state, and the remote footprint (active
-  COV subscriptions and FD registrations).
-- Screens appear only where they apply: Network for B/IP, SC for SC, MS/TP for
-  a serial port. Devices, Browse, Watch and Capture are always present.
+  COV subscriptions and FD registrations). `FD` names the registration's state
+  (held, pending, refused, no answer, lapsed), derived from the same state as
+  the Network screen's banner (#1894).
+- The status bar and the footer fit their width by priority (#1894): the
+  least useful fields and key hints give way first, and the link state, the
+  safety level, `? help` and `q quit` never do. A footer notice sits at the
+  left beside the hints, which are cut to fit, and is dropped when the screen
+  changes or a dialog opens. Each footer lists only the keys that work on its
+  screen.
+- Below 120 columns the browser's priority array is a pane of its own in the
+  Tab order (#1894), so the properties keep the whole width at 80; stacking
+  it under the properties would leave them three rows at 80x24.
+- Screens appear only where they have something to show: Network once a
+  session is connected, on every transport (its Networks tab lists the routers
+  heard; the B/IP-only parts show their own empty states elsewhere), SC for
+  SC, MS/TP for a serial port. Devices, Browse, Watch and Capture are always
+  present.
+  - The numbered strip sits in the status bar rather than on a row of its own
+    (#1895), so it costs no content row at 80x24: `1 Devices 2 Browse
+    [3 Watch] 4 Network 7 Capture` where it fits, `1 2 [3 Watch] 4 7` (only
+    the screen shown keeps its name) where it doesn't. The screen shown is
+    listed even where it doesn't apply, and every number key works on every
+    session.
+  - Devices (`1`) and Browse (`2`) are separate screens (`Screen::Main` and
+    `Screen::Browse`). `1` hides an open browser and keeps it as it was
+    (device, object, pane, scroll, filter); `2` shows it again, or with no
+    device open stays on Devices and says so. Enter on the kept device shows
+    it again; on another device opens that one. Esc in the browser closes it.
+- Help (`?`) is built from sections (#1895): the global keys, then the
+  current screen's, then the command bar's commands, read from the same table
+  as the parser. A test presses every key on every screen and fails if one the
+  key map takes is missing from that screen's help. It scrolls with the
+  movement keys when it doesn't fit. While typing a command, the footer shows
+  the syntax of the commands that match, from that table too.
 - 80x24 is the functional minimum and 120x40 the full layout. From 120 columns
   the device table uses its wide columns; below 120 the planned Browse panes
   stack and the focused pane fills the width. Below 80x24 the TUI shows a
@@ -138,7 +169,7 @@ What M0 draws (80x24):
 | Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content; a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort and filter (the filter matches the router too); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network) |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with a filter; property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
-| Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |
+| Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD, and `:bbmd` alone goes back to ours. Write-BDT and Delete-FDT-Entry are later items |
 | SC (#967) | Hub connector status (state, primary or failover hub, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory and pre-dial lint (#968) are a third view on the same screen, beside the chain or the doctor from 160 columns. Panes fit their content and the timeline takes the spare height (#1890) |
 | MS/TP (#969, #970, #1893, #1897) | Participant panel (`--mstp`): this station and its counters, each pane sized to its content, with timer lateness (late count, maximum, and the lateness bands where the pane is tall enough); or the passive monitor (`tui --mstp-monitor PORT`): a station grid, the token ring with rotation and hold times, Max_Master findings, error counters, and the safe-join wizard (`J`) that hands the port to a participant through the T2 join dialog. The monitor's summary wraps rather than being cut at 80 columns; from 160 columns the address map and station table sit side by side, and a table out of rows ends with `+N more`. The join dialog lists the ports `mstp-ports` does: on macOS only USB and other call-out devices, without Bluetooth or the debug console |
 | Capture (#971) | Frame list (number, UTC time, link, direction, source and destination, link message, APDU type, invoke ID, service, error/reject/abort/NAK) over a bounded ring (50k frames by default); the selected frame's decode tree beside a hex view that marks the selected field's octets; Space pauses; filters by device, MAC, network, service, PDU type, errors, broadcasts and text; pcap export (B/IP as LINKTYPE 1 or 228 with made-up IPv4 and UDP headers, MS/TP as 165). Sources: the session's frame tap (#957), the MS/TP monitor's stream (#958), libpcap with `--capture-device` |

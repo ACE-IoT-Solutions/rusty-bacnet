@@ -270,7 +270,7 @@ impl App {
             self.flash(ARM_HINT, FLASH_FOR);
             return;
         }
-        let Some(browser) = self.browser.as_deref() else {
+        let Some(browser) = self.shown_browser() else {
             self.flash("Open a device and an object first.", FLASH_FOR);
             return;
         };

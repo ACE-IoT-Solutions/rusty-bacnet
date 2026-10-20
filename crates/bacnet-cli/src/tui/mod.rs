@@ -34,6 +34,7 @@ mod app;
 mod capture;
 mod event_loop;
 mod format;
+mod help;
 mod keymap;
 mod log_layer;
 mod message;
@@ -226,6 +227,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     if let Some(connection) = connection {
         app.connection = Some(connection);
         app.link = Link::Down;
+        // No transport until a profile connects: the status bar says so
+        // rather than naming B/IP before an SC or MS/TP profile (#1894).
+        app.transport = "";
         app.overlay = Overlay::Connection;
     }
     if let Some(plan) = &monitor {

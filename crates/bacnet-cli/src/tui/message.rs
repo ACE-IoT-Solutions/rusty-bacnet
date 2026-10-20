@@ -199,6 +199,85 @@ impl DeviceRow {
     }
 }
 
+/// Why a connection failed (#1894): a short summary the footer shows with
+/// the recovery keys, and the whole error for the device screen and the
+/// log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failure {
+    /// A few words, such as `address in use`.
+    pub(crate) summary: String,
+    /// The whole error.
+    pub(crate) detail: String,
+}
+
+impl Failure {
+    /// From the stack's typed error: an I/O failure by its kind, a timeout
+    /// as such, anything else as its message.
+    pub(crate) fn of(error: &bacnet_types::error::Error) -> Self {
+        use bacnet_types::error::Error;
+        let summary = match error {
+            Error::Transport(io) => io_summary(io),
+            Error::Timeout(_) => "timed out".to_string(),
+            other => other.to_string(),
+        };
+        Self {
+            summary,
+            detail: error.to_string(),
+        }
+    }
+
+    /// `error` with `context` (a serial port, say) in front of both parts.
+    pub(crate) fn within(context: &str, error: &bacnet_types::error::Error) -> Self {
+        let Self { summary, detail } = Self::of(error);
+        Self {
+            summary: format!("{context}: {summary}"),
+            detail: format!("{context}: {detail}"),
+        }
+    }
+
+    /// From an error that is only text (a profile the service refused,
+    /// say): the whole message without an OS error number, which the
+    /// footer shortens with `…`. Its
+    /// clauses aren't split, as a `field: value` error needs both.
+    pub(crate) fn text(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        Self {
+            summary: strip_os_error(&detail).to_string(),
+            detail,
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for Failure {
+    fn from(detail: &str) -> Self {
+        Self::text(detail)
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+/// An OS error by its kind (`address in use`); one the stack wrote itself
+/// (`own address not local`) by its own message.
+fn io_summary(error: &std::io::Error) -> String {
+    match error.raw_os_error() {
+        Some(_) => error.kind().to_string(),
+        None => strip_os_error(&error.to_string()).to_string(),
+    }
+}
+
+/// `text` without a trailing ` (os error N)`.
+fn strip_os_error(text: &str) -> &str {
+    match text.rfind(" (os error ") {
+        Some(at) if text.ends_with(')') => &text[..at],
+        _ => text,
+    }
+}
+
 /// How an operation ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OpOutcome {
@@ -236,7 +315,7 @@ pub(crate) enum WorkerEvent {
     /// Building the client failed. The connection can be edited and retried.
     ConnectFailed {
         /// The error.
-        error: String,
+        error: Failure,
     },
     /// A new device answered.
     Discovered(DeviceRow),

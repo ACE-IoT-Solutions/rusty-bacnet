@@ -30,7 +30,7 @@ use self::picker::{Picker, PickerKey};
 use self::watch::{Screen, WatchList};
 use self::whois::{FormKey, FormOutcome, WhoIsForm};
 use super::log_layer::LogRing;
-use super::message::{Command, OpId, OpOutcome, WhoIsSpec, WorkerEvent};
+use super::message::{Command, Failure, OpId, OpOutcome, WhoIsSpec, WorkerEvent};
 use crate::core::target::AddressStyle;
 
 /// A second Ctrl-C within this window quits.
@@ -56,7 +56,7 @@ pub(crate) enum Link {
         local: String,
     },
     /// Building the client failed.
-    Failed(String),
+    Failed(Failure),
     /// `--passive`: no client, nothing transmitted.
     Passive,
 }
@@ -131,6 +131,18 @@ pub(crate) struct Flash {
     pub(crate) until: Instant,
 }
 
+/// What a footer notice belongs to; see [`App::drop_stale_notice`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NoticeContext {
+    screen: Screen,
+    /// The open dialog's kind, and a write dialog's stage.
+    dialog: Option<(
+        std::mem::Discriminant<Overlay>,
+        Option<std::mem::Discriminant<safety::Modal>>,
+    )>,
+    flashes: u64,
+}
+
 /// A key while the filter line is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FilterKey {
@@ -166,6 +178,8 @@ pub(crate) enum Action {
     Escape,
     /// Show or hide the help overlay.
     ToggleHelp,
+    /// Scroll the help overlay.
+    ScrollHelp(Movement),
     /// Show or hide the log pane.
     ToggleLog,
     /// Open the profile manager.
@@ -308,6 +322,12 @@ pub(crate) struct App {
     next_op: OpId,
     /// Footer message.
     pub(crate) flash: Option<Flash>,
+    /// Counts flashes set, so `update` can tell a notice an action just
+    /// set from one left over from before it.
+    flashes: u64,
+    /// The help overlay's first line shown; the view clamps it to the
+    /// last page.
+    pub(crate) help_scroll: std::cell::Cell<usize>,
     ctrl_c_at: Option<Instant>,
     epoch: Instant,
     /// Time of the last tick.
@@ -365,6 +385,8 @@ impl App {
             last_spec: None,
             next_op: 0,
             flash: None,
+            flashes: 0,
+            help_scroll: std::cell::Cell::new(0),
             ctrl_c_at: None,
             epoch: config.now,
             now: config.now,
@@ -401,22 +423,75 @@ impl App {
         self.op.as_ref().is_some_and(Operation::running)
     }
 
+    /// The browser, while it is the screen shown (screen 2). Screen 1
+    /// keeps an open one hidden, so its keys reach the device table.
+    pub(crate) fn shown_browser(&self) -> Option<&Browser> {
+        self.browser
+            .as_deref()
+            .filter(|_| self.screen == Screen::Browse)
+    }
+
+    pub(super) fn shown_browser_mut(&mut self) -> Option<&mut Browser> {
+        let shown = self.screen == Screen::Browse;
+        self.browser.as_deref_mut().filter(|_| shown)
+    }
+
+    /// `2`: the open device's browser; without one, stay and say so.
+    fn show_browser(&mut self) {
+        if self.browser.is_some() {
+            self.screen = Screen::Browse;
+        } else {
+            self.flash("Open a device first (Enter on a row).", FLASH_FOR);
+        }
+    }
+
     /// The filter of the list on screen: the browser's objects or the devices.
     pub(crate) fn filter_text(&self) -> &str {
         if self.screen == Screen::Capture {
             return &self.capture.filter;
         }
-        match &self.browser {
+        match self.shown_browser() {
             Some(browser) => browser.objects.filter(),
             None => self.devices.filter(),
         }
     }
 
     fn flash(&mut self, text: impl Into<String>, lasts: Duration) {
+        self.flashes += 1;
         self.flash = Some(Flash {
             text: text.into(),
             until: self.now + lasts,
         });
+    }
+
+    /// What a notice belongs to: the screen and the open dialog, a write
+    /// dialog by its stage (form, waiting, preview), with the flash count.
+    fn notice_context(&self) -> NoticeContext {
+        let dialog = match &self.overlay {
+            Overlay::None => None,
+            Overlay::Safety(modal) => Some((
+                std::mem::discriminant(&self.overlay),
+                Some(std::mem::discriminant(modal.as_ref())),
+            )),
+            other => Some((std::mem::discriminant(other), None)),
+        };
+        NoticeContext {
+            screen: self.screen,
+            dialog,
+            flashes: self.flashes,
+        }
+    }
+
+    /// Drop a notice set before an action that changed the screen or
+    /// opened a dialog (#1894): it was about what the user left, and would
+    /// otherwise sit under the new one. Closing a dialog keeps it.
+    fn drop_stale_notice(&mut self, before: &NoticeContext) {
+        let after = self.notice_context();
+        let moved = after.screen != before.screen
+            || (after.dialog.is_some() && after.dialog != before.dialog);
+        if moved && after.flashes == before.flashes && self.flash.take().is_some() {
+            self.dirty = true;
+        }
     }
 
     fn running_op_mut(&mut self, id: OpId) -> Option<&mut Operation> {
@@ -509,13 +584,13 @@ impl App {
             // As the dialog's own Esc: a preview closed is a decline.
             Overlay::Safety(_) => self.modal_key(safety::ModalKey::Esc, out),
             Overlay::Join(_) => self.decline_join(),
-            Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
-            Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
+            Overlay::None if self.screen == Screen::Browse => match self.shown_browser_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
                     browser.objects.clear_filter();
                 }
                 _ => self.close_browser(out),
             },
+            Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
             Overlay::None if !self.devices.filter().is_empty() => {
                 self.devices.clear_filter();
                 self.devices.settle();
@@ -544,7 +619,8 @@ impl App {
         if self.screen == Screen::Capture {
             return self.capture_filter_key(key);
         }
-        if let Some(browser) = self.browser.as_deref_mut() {
+        let shown = self.screen == Screen::Browse;
+        if let Some(browser) = self.browser.as_deref_mut().filter(|_| shown) {
             let objects = &mut browser.objects;
             match key {
                 FilterKey::Char(ch) => objects.push_filter(ch),
@@ -624,6 +700,9 @@ impl App {
     fn reset_session(&mut self) {
         self.devices = DeviceTable::default();
         self.browser = None;
+        if self.screen == Screen::Browse {
+            self.screen = Screen::Main;
+        }
         // The worker of the ended session cancelled the subscriptions.
         self.watch = WatchList::default();
         self.network = network::NetworkState::default();
@@ -704,6 +783,13 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
     if !matches!(action, Action::Tick { .. }) {
         app.dirty = true;
     }
+    let before = app.notice_context();
+    apply(app, action, &mut out);
+    app.drop_stale_notice(&before);
+    out
+}
+
+fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
     match action {
         Action::Tick {
             now,
@@ -711,27 +797,42 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             log_generation,
         } => {
             app.tick(now, dropped, log_generation);
-            app.safety_tick(&mut out);
+            app.safety_tick(out);
         }
         Action::Resize => {}
         Action::Quit => app.request_quit(),
-        Action::CtrlC => app.ctrl_c(&mut out),
-        Action::Escape => app.escape(&mut out),
+        Action::CtrlC => app.ctrl_c(out),
+        Action::Escape => app.escape(out),
         Action::ToggleHelp => {
             app.overlay = match std::mem::replace(&mut app.overlay, Overlay::None) {
-                Overlay::None => Overlay::Help,
+                Overlay::None => {
+                    app.help_scroll.set(0);
+                    Overlay::Help
+                }
                 Overlay::Help => Overlay::None,
                 other => other,
             }
         }
+        Action::ScrollHelp(movement) => {
+            let at = app.help_scroll.get();
+            app.help_scroll.set(match movement {
+                Movement::Up => at.saturating_sub(1),
+                Movement::Down => at.saturating_add(1),
+                Movement::PageUp => at.saturating_sub(10),
+                Movement::PageDown => at.saturating_add(10),
+                Movement::Home => 0,
+                // The view clamps it to the last page.
+                Movement::End => usize::MAX,
+            });
+        }
         Action::ToggleLog => app.show_log = !app.show_log,
         Action::OpenWhoIs => app.open_who_is(),
         Action::OpenConnection => app.open_connection(),
-        Action::Connection(key) => app.connection_key(key, &mut out),
+        Action::Connection(key) => app.connection_key(key, out),
         Action::Disconnect => {
             // From the connection screen, stay there to watch the link go down.
             let stay = matches!(app.overlay, Overlay::Connection);
-            app.disconnect(&mut out);
+            app.disconnect(out);
             if stay {
                 app.overlay = Overlay::Connection;
             }
@@ -749,21 +850,21 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
                 }
             }
         }
-        Action::Move(movement) => match app.browser.as_deref_mut() {
-            _ if app.screen == Screen::Watch => app.watch.move_selection(movement),
-            _ if app.screen == Screen::Capture => {
-                app.capture_key(capture::CaptureKey::Move(movement), &mut out);
-            }
-            Some(browser) => browser.move_selection(movement),
-            None => app.devices.move_selection(movement),
+        Action::Move(movement) => match app.screen {
+            Screen::Watch => app.watch.move_selection(movement),
+            Screen::Capture => app.capture_key(capture::CaptureKey::Move(movement), out),
+            _ => match app.shown_browser_mut() {
+                Some(browser) => browser.move_selection(movement),
+                None => app.devices.move_selection(movement),
+            },
         },
-        Action::Open => app.open(&mut out),
+        Action::Open => app.open(out),
         Action::CyclePane { back } => {
-            if let Some(browser) = app.browser.as_deref_mut() {
+            if let Some(browser) = app.shown_browser_mut() {
                 browser.cycle_focus(back);
             }
         }
-        Action::Refresh => app.refresh(&mut out),
+        Action::Refresh => app.refresh(out),
         Action::CycleSort => {
             app.devices.cycle_sort();
             app.devices.settle();
@@ -773,30 +874,30 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             app.devices.settle();
         }
         Action::StartFilter => {
-            if let Some(browser) = app.browser.as_deref_mut() {
+            if let Some(browser) = app.shown_browser_mut() {
                 browser.focus = browser::Pane::Objects;
             }
             app.filter_editing = true;
         }
         Action::Filter(key) => app.filter_key(key),
-        Action::Form(key) => app.form_key(key, &mut out),
-        Action::Picker(key) => app.picker_key(key, &mut out),
-        Action::ShowScreen(Screen::Capture) => app.show_capture(&mut out),
+        Action::Form(key) => app.form_key(key, out),
+        Action::Picker(key) => app.picker_key(key, out),
+        Action::ShowScreen(Screen::Capture) => app.show_capture(out),
+        Action::ShowScreen(Screen::Browse) => app.show_browser(),
         Action::ShowScreen(screen) => app.screen = screen,
-        Action::AddWatch => app.watch_selected(&mut out),
-        Action::RemoveWatch => app.unwatch_selected(&mut out),
+        Action::AddWatch => app.watch_selected(out),
+        Action::RemoveWatch => app.unwatch_selected(out),
         Action::OpenCommandLine => app.open_command_line(),
-        Action::CommandLine(key) => app.command_line_key(key, &mut out),
-        Action::ToggleArm => app.toggle_arm(&mut out),
+        Action::CommandLine(key) => app.command_line_key(key, out),
+        Action::ToggleArm => app.toggle_arm(out),
         Action::OpenLedger => app.open_ledger(),
         Action::OpenWrite { relinquish } => app.open_write(relinquish),
-        Action::Modal(key) => app.modal_key(key, &mut out),
-        Action::Network(key) => app.network_key(key, &mut out),
+        Action::Modal(key) => app.modal_key(key, out),
+        Action::Network(key) => app.network_key(key, out),
         Action::Sc(key) => app.sc_key(key),
-        Action::Join(key) => app.join_key(key, &mut out),
+        Action::Join(key) => app.join_key(key, out),
         Action::Mstp(key) => app.mstp_key(key),
-        Action::Capture(key) => app.capture_key(key, &mut out),
-        Action::Worker(event) => app.worker_event(event, &mut out),
+        Action::Capture(key) => app.capture_key(key, out),
+        Action::Worker(event) => app.worker_event(event, out),
     }
-    out
 }

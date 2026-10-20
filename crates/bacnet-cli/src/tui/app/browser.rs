@@ -12,6 +12,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use super::devices::Movement;
 use super::objects::ObjectList;
+use super::watch::Screen;
 use super::{App, Link, FLASH_FOR};
 use crate::tui::message::Command;
 use crate::tui::point::{BrowseRead, BrowseResult, DeviceCard, ObjectView, ReqId};
@@ -24,8 +25,12 @@ pub(crate) enum Pane {
     Card,
     /// The object list.
     Objects,
-    /// The selected object's properties and priority array.
+    /// The selected object's properties.
     Properties,
+    /// A commandable object's priority array (#1894). Below the full
+    /// width it is a pane of its own, so the properties keep the width;
+    /// from it, the pane beside the properties takes the accent.
+    Priority,
 }
 
 /// Progress of the device read.
@@ -157,13 +162,37 @@ impl Browser {
 
     /// Focus the next pane, or the previous one with `back`.
     pub(crate) fn cycle_focus(&mut self, back: bool) {
-        const ORDER: [Pane; 3] = [Pane::Card, Pane::Objects, Pane::Properties];
-        let at = ORDER
+        let order = self.panes();
+        let at = order
             .iter()
-            .position(|pane| *pane == self.focus)
+            .position(|pane| *pane == self.shown_focus())
             .unwrap_or(1);
-        let next = if back { at + ORDER.len() - 1 } else { at + 1 };
-        self.focus = ORDER[next % ORDER.len()];
+        let next = if back { at + order.len() - 1 } else { at + 1 };
+        self.focus = order[next % order.len()];
+    }
+
+    /// The panes Tab visits: the priority array only for an object that
+    /// has one.
+    pub(crate) fn panes(&self) -> &'static [Pane] {
+        const ALL: [Pane; 4] = [Pane::Card, Pane::Objects, Pane::Properties, Pane::Priority];
+        if self.has_priority() {
+            &ALL
+        } else {
+            &ALL[..3]
+        }
+    }
+
+    /// The focused pane as drawn: the priority pane falls back to the
+    /// properties once the object shown has no priority array.
+    pub(crate) fn shown_focus(&self) -> Pane {
+        match self.focus {
+            Pane::Priority if !self.has_priority() => Pane::Properties,
+            focus => focus,
+        }
+    }
+
+    fn has_priority(&self) -> bool {
+        matches!(&self.view, ViewState::Ready(view) if view.priority.is_some())
     }
 
     /// Move in the focused pane.
@@ -182,7 +211,7 @@ impl Browser {
                     Movement::End => usize::MAX,
                 });
             }
-            Pane::Card => {}
+            Pane::Card | Pane::Priority => {}
         }
     }
 }
@@ -202,23 +231,35 @@ impl App {
             self.flash("Not connected.", FLASH_FOR);
             return;
         }
+        if self.screen != Screen::Browse {
+            self.devices.settle();
+            let Some(row) = self.devices.selected_row() else {
+                self.flash("No device selected. Press d to send a Who-Is.", FLASH_FOR);
+                return;
+            };
+            let (device, address) = (row.instance, row.address.clone());
+            self.filter_editing = false;
+            // The device kept from before is shown again as it was, at the
+            // address it answers from now.
+            if let Some(kept) = self.browser.as_deref_mut().filter(|b| b.device == device) {
+                kept.address = address;
+                self.screen = Screen::Browse;
+                return;
+            }
+            let req = self.next_req();
+            self.close_browser(out);
+            self.screen = Screen::Browse;
+            self.browser = Some(Box::new(Browser::new(device, address, req)));
+            out.push(Command::Browse {
+                req,
+                device,
+                read: BrowseRead::Device,
+            });
+            return;
+        }
         let req = self.next_req();
         match self.browser.as_deref_mut() {
-            None => {
-                self.devices.settle();
-                let Some(row) = self.devices.selected_row() else {
-                    self.flash("No device selected. Press d to send a Who-Is.", FLASH_FOR);
-                    return;
-                };
-                let device = row.instance;
-                self.browser = Some(Box::new(Browser::new(device, row.address.clone(), req)));
-                self.filter_editing = false;
-                out.push(Command::Browse {
-                    req,
-                    device,
-                    read: BrowseRead::Device,
-                });
-            }
+            None => {}
             Some(browser) if browser.focus == Pane::Objects => {
                 if let Some(object) = browser.objects.selected() {
                     browser.object_req = Some(req);
@@ -243,11 +284,11 @@ impl App {
             return;
         }
         let req = self.next_req();
-        let Some(browser) = self.browser.as_deref_mut() else {
+        let Some(browser) = self.shown_browser_mut() else {
             return;
         };
-        let reading = match (&browser.view, browser.focus) {
-            (ViewState::Ready(view), Pane::Properties) => Some(view.object),
+        let reading = match (&browser.view, browser.shown_focus()) {
+            (ViewState::Ready(view), Pane::Properties | Pane::Priority) => Some(view.object),
             (ViewState::Failed(object, _) | ViewState::Reading(object), Pane::Properties) => {
                 Some(*object)
             }
@@ -280,6 +321,9 @@ impl App {
 
     /// Leave the browser for the device table, stopping its reads.
     pub(super) fn close_browser(&mut self, out: &mut Vec<Command>) {
+        if self.screen == Screen::Browse {
+            self.screen = Screen::Main;
+        }
         if let Some(browser) = self.browser.take() {
             self.filter_editing = false;
             out.push(Command::StopBrowse {
@@ -347,6 +391,7 @@ mod tests {
         let mut browser = Browser::new(7, "10.0.0.7:47808".into(), 1);
         browser.objects.set(vec![ai]);
         app.browser = Some(Box::new(browser));
+        app.screen = Screen::Browse;
         let read = update(&mut app, Action::Open);
         let [Command::Browse {
             req: object_req, ..

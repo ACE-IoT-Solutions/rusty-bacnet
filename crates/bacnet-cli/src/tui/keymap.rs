@@ -26,11 +26,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         Overlay::Connection => connection(app, key),
         Overlay::Picker(_) => picker(key),
         Overlay::WhoIs(_) => form(key),
-        Overlay::Help => match key.code {
-            KeyCode::Esc | KeyCode::Char('?') => Some(Action::ToggleHelp),
-            KeyCode::Char('q') => Some(Action::Quit),
-            _ => None,
-        },
+        Overlay::Help => help(key),
         Overlay::Command(_) => command_line(key),
         Overlay::Safety(_) => safety(key),
         Overlay::Join(_) => join(key),
@@ -40,6 +36,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         Overlay::None if app.screen == Screen::Sc => sc(key),
         Overlay::None if app.screen == Screen::Mstp => mstp(key),
         Overlay::None if app.screen == Screen::Capture => capture(app, key),
+        Overlay::None if app.screen == Screen::Browse => browse(key),
         Overlay::None => main(key),
     }
 }
@@ -70,8 +67,66 @@ fn movement(code: KeyCode) -> Option<Movement> {
     })
 }
 
+/// A printable character typed with Ctrl or Alt, which no screen takes.
+fn chorded(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char(_)) && typed(key).is_none()
+}
+
+/// The keys every screen takes (#1895), after its own: help, quit, the
+/// log, writes, the command bar, profiles, connecting, and the screens.
+fn global(key: KeyEvent) -> Option<Action> {
+    Some(match key.code {
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('L') => Action::ToggleLog,
+        KeyCode::Char('W') => Action::ToggleArm,
+        KeyCode::Char('u') => Action::OpenLedger,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('p') => Action::OpenConnection,
+        KeyCode::Char('c') => Action::Reconnect,
+        KeyCode::Char('1') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('2') => Action::ShowScreen(Screen::Browse),
+        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
+        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
+        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
+        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
+        _ => return None,
+    })
+}
+
+/// The help overlay scrolls with the movement keys.
+fn help(key: KeyEvent) -> Option<Action> {
+    Some(match key.code {
+        KeyCode::Esc | KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('q') => Action::Quit,
+        code => Action::ScrollHelp(movement(code)?),
+    })
+}
+
+/// The device table (screen 1).
 fn main(key: KeyEvent) -> Option<Action> {
-    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+    if chorded(key) {
+        return None;
+    }
+    if let Some(m) = movement(key.code) {
+        return Some(Action::Move(m));
+    }
+    Some(match key.code {
+        KeyCode::Esc => Action::Escape,
+        KeyCode::Enter => Action::Open,
+        KeyCode::Char('d') => Action::OpenWhoIs,
+        KeyCode::Char('x') => Action::Disconnect,
+        KeyCode::Char('/') => Action::StartFilter,
+        KeyCode::Char('s') => Action::CycleSort,
+        KeyCode::Char('S') => Action::ReverseSort,
+        _ => return global(key),
+    })
+}
+
+/// The browser (screen 2): panes, reads, watching and writes.
+fn browse(key: KeyEvent) -> Option<Action> {
+    if chorded(key) {
         return None;
     }
     if let Some(m) = movement(key.code) {
@@ -83,106 +138,57 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Tab => Action::CyclePane { back: false },
         KeyCode::BackTab => Action::CyclePane { back: true },
         KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char('L') => Action::ToggleLog,
-        KeyCode::Char('d') => Action::OpenWhoIs,
-        KeyCode::Char('p') => Action::OpenConnection,
-        KeyCode::Char('c') => Action::Reconnect,
         KeyCode::Char('x') => Action::Disconnect,
         KeyCode::Char('/') => Action::StartFilter,
-        KeyCode::Char('s') => Action::CycleSort,
-        KeyCode::Char('S') => Action::ReverseSort,
         KeyCode::Char('a') => Action::AddWatch,
         KeyCode::Char('w') => Action::OpenWrite { relinquish: false },
         KeyCode::Char('n') => Action::OpenWrite { relinquish: true },
-        KeyCode::Char('W') => Action::ToggleArm,
-        KeyCode::Char('u') => Action::OpenLedger,
-        KeyCode::Char(':') => Action::OpenCommandLine,
-        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
-        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
-        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
-        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
-        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
-        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
-        _ => return None,
+        _ => return global(key),
     })
 }
 
-/// The watch list: move, remove, the command bar and the global keys.
+/// The watch list: move, remove, back.
 fn watch(key: KeyEvent) -> Option<Action> {
-    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+    if chorded(key) {
         return None;
     }
     if let Some(m) = movement(key.code) {
         return Some(Action::Move(m));
     }
     Some(match key.code {
-        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
-        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
-        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
-        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
-        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
+        KeyCode::Esc => Action::ShowScreen(Screen::Main),
         KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
-        KeyCode::Char('W') => Action::ToggleArm,
-        KeyCode::Char('u') => Action::OpenLedger,
-        KeyCode::Char(':') => Action::OpenCommandLine,
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char('L') => Action::ToggleLog,
-        _ => return None,
+        _ => return global(key),
     })
 }
 
-/// The Network screen: read, survey, switch tables and the global keys.
+/// The Network screen: read, survey, switch tables.
 fn network(key: KeyEvent) -> Option<Action> {
-    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+    if chorded(key) {
         return None;
     }
     Some(match key.code {
-        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
-        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
-        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
-        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
-        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
+        KeyCode::Esc => Action::ShowScreen(Screen::Main),
         KeyCode::Char('r') => Action::Network(NetworkKey::Refresh),
         KeyCode::Char('m') => Action::Network(NetworkKey::Survey),
         KeyCode::Tab => Action::Network(NetworkKey::Cycle { back: false }),
         KeyCode::BackTab => Action::Network(NetworkKey::Cycle { back: true }),
-        KeyCode::Char('W') => Action::ToggleArm,
-        KeyCode::Char('u') => Action::OpenLedger,
-        KeyCode::Char(':') => Action::OpenCommandLine,
         KeyCode::Char('x') => Action::Disconnect,
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char('L') => Action::ToggleLog,
-        _ => return None,
+        _ => return global(key),
     })
 }
 
-/// The SC screen: switch views, other screens and the global keys.
+/// The SC screen: switch views.
 fn sc(key: KeyEvent) -> Option<Action> {
-    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+    if chorded(key) {
         return None;
     }
     Some(match key.code {
-        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
-        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
-        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
-        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
-        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
+        KeyCode::Esc => Action::ShowScreen(Screen::Main),
         KeyCode::Tab => Action::Sc(ScKey::Cycle { back: false }),
         KeyCode::BackTab => Action::Sc(ScKey::Cycle { back: true }),
-        KeyCode::Char('W') => Action::ToggleArm,
-        KeyCode::Char('u') => Action::OpenLedger,
-        KeyCode::Char(':') => Action::OpenCommandLine,
-        KeyCode::Char('p') => Action::OpenConnection,
-        KeyCode::Char('c') => Action::Reconnect,
         KeyCode::Char('x') => Action::Disconnect,
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char('L') => Action::ToggleLog,
-        _ => return None,
+        _ => return global(key),
     })
 }
 
@@ -214,7 +220,7 @@ fn join(key: KeyEvent) -> Option<Action> {
 /// monitor, Tab changes view, `J` starts the join wizard, `+` and `-` pick
 /// a MAC and Enter takes it to the join confirmation.
 fn mstp(key: KeyEvent) -> Option<Action> {
-    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+    if chorded(key) {
         return None;
     }
     Some(match key.code {
@@ -225,30 +231,17 @@ fn mstp(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('+' | '=') => Action::Mstp(MstpKey::Pick { back: false }),
         KeyCode::Char('-') => Action::Mstp(MstpKey::Pick { back: true }),
         KeyCode::Enter => Action::Mstp(MstpKey::Accept),
-        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
-        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
-        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
-        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
-        KeyCode::Char('7') => Action::ShowScreen(Screen::Capture),
         KeyCode::Char('z') => Action::Mstp(MstpKey::Clear),
         KeyCode::Char(' ') => Action::Mstp(MstpKey::ToggleWatch),
-        KeyCode::Char('W') => Action::ToggleArm,
-        KeyCode::Char('u') => Action::OpenLedger,
-        KeyCode::Char(':') => Action::OpenCommandLine,
-        KeyCode::Char('p') => Action::OpenConnection,
-        KeyCode::Char('c') => Action::Reconnect,
         KeyCode::Char('x') => Action::Disconnect,
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char('L') => Action::ToggleLog,
-        _ => return None,
+        _ => return global(key),
     })
 }
 
 /// The Capture screen: move, Tab between the list, the tree and the hex
 /// view, Space to pause, `/` to filter, `e` to export, `z` to clear.
 fn capture(app: &App, key: KeyEvent) -> Option<Action> {
-    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+    if chorded(key) {
         return None;
     }
     if let Some(m) = movement(key.code) {
@@ -267,21 +260,8 @@ fn capture(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('e') => Action::Capture(CaptureKey::Export { raw_ipv4: false }),
         KeyCode::Char('E') => Action::Capture(CaptureKey::Export { raw_ipv4: true }),
         KeyCode::Char('/') => Action::StartFilter,
-        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
-        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
-        KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
-        KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
-        KeyCode::Char('6') => Action::ShowScreen(Screen::Mstp),
-        KeyCode::Char('W') => Action::ToggleArm,
-        KeyCode::Char('u') => Action::OpenLedger,
-        KeyCode::Char(':') => Action::OpenCommandLine,
-        KeyCode::Char('p') => Action::OpenConnection,
-        KeyCode::Char('c') => Action::Reconnect,
         KeyCode::Char('x') => Action::Disconnect,
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char('L') => Action::ToggleLog,
-        _ => return None,
+        _ => return global(key),
     })
 }
 
@@ -355,6 +335,9 @@ fn connection(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Enter => Key::Submit,
         KeyCode::Backspace if editing => Key::Backspace,
         _ if editing => Key::Char(typed(key)?),
+        // As in the other lists (#1894).
+        KeyCode::Char('j') => Key::Next,
+        KeyCode::Char('k') => Key::Prev,
         KeyCode::Char('n') => Key::New,
         KeyCode::Char('s') => Key::NewSc,
         KeyCode::Char('m') => Key::NewMstp,

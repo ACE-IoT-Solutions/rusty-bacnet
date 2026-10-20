@@ -10,8 +10,9 @@
 //!   WritePropertyMultiple to the device, any number of `OBJECT PROPERTY
 //!   VALUE` groups, previewed and confirmed at T2 or above. Needs an armed
 //!   write session.
-//! - `bbmd ADDRESS`: show and read that BBMD's tables on the Network screen
-//!   (`ip` or `ip:port`, port 47808 by default).
+//! - `bbmd [ADDRESS]`: show and read that BBMD's tables on the Network screen
+//!   (`ip` or `ip:port`, port 47808 by default); `bbmd` alone goes back to
+//!   the tables of the BBMD the session registers with.
 //! - `find NAME`: broadcast a Who-Has for the object named NAME, the rest
 //!   of the line as typed, and list the answers below the device table;
 //!   `find` alone closes the list.
@@ -31,9 +32,95 @@ use crate::tui::message::Command;
 use crate::tui::safety::WriteSpec;
 use crate::tui::watched::{Point, WatchCommand};
 
+/// One command: its name, a short alias, its forms and what it does. The
+/// parser finds the command here, and the command bar's hint, the help
+/// overlay and the usage line all read the same rows (#1895), so none can
+/// name a command the parser doesn't take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Syntax {
+    /// The first word.
+    pub(crate) name: &'static str,
+    /// Another first word for it, if any.
+    pub(crate) alias: Option<&'static str>,
+    /// Each form, as typed.
+    pub(crate) usage: &'static [&'static str],
+    /// What it does, in a few words.
+    pub(crate) what: &'static str,
+}
+
+/// Every command the bar takes.
+pub(crate) const COMMANDS: &[Syntax] = &[
+    Syntax {
+        name: "watch",
+        alias: Some("w"),
+        usage: &["watch DEVICE OBJECT [PROPERTY]"],
+        what: "Watch a property (present-value by default); w for short",
+    },
+    Syntax {
+        name: "csv",
+        alias: None,
+        usage: &["csv on|off"],
+        what: "Log the watched values to the workspace, or stop",
+    },
+    Syntax {
+        name: "writem",
+        alias: None,
+        usage: &["writem DEVICE OBJECT PROPERTY VALUE[@P] ..."],
+        what: "One WritePropertyMultiple to a device, previewed first",
+    },
+    Syntax {
+        name: "bbmd",
+        alias: None,
+        usage: &["bbmd [ADDRESS]"],
+        what: "Another BBMD's tables; alone, back to our own BBMD's",
+    },
+    Syntax {
+        name: "find",
+        alias: None,
+        usage: &["find NAME"],
+        what: "Who-Has by object name; alone, close the list",
+    },
+    Syntax {
+        name: "mstp",
+        alias: None,
+        usage: &["mstp rotation|hold MS", "mstp listen SECS"],
+        what: "The MS/TP monitor's thresholds; how long a safe join listens",
+    },
+];
+
+/// The command whose name or alias is `word`.
+fn command(word: &str) -> Option<&'static Syntax> {
+    COMMANDS
+        .iter()
+        .find(|syntax| syntax.name == word || syntax.alias == Some(word))
+}
+
 /// The usage line shown for an unknown command.
-pub(crate) const USAGE: &str =
-    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS | find NAME | mstp rotation|hold MS | mstp listen SECS";
+pub(crate) fn usage() -> String {
+    let forms: Vec<&str> = COMMANDS
+        .iter()
+        .flat_map(|s| s.usage.iter().copied())
+        .collect();
+    format!("commands: {}", forms.join(" | "))
+}
+
+/// The commands that match what is typed so far, for the hint beside the
+/// bar: the one named by a complete first word, or every one whose name
+/// starts with a partial one (all of them before anything is typed).
+pub(crate) fn matching(text: &str) -> Vec<&'static Syntax> {
+    let first = text.split_whitespace().next().unwrap_or_default();
+    let typed_on = text.trim_start().len() > first.len();
+    if let Some(syntax) = command(first).filter(|_| typed_on || first.len() > 1) {
+        return vec![syntax];
+    }
+    if typed_on {
+        return Vec::new();
+    }
+    COMMANDS
+        .iter()
+        .filter(|syntax| syntax.name.starts_with(first))
+        .collect()
+}
 
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +132,7 @@ pub(crate) enum Line {
     /// A WritePropertyMultiple batch.
     Writem(Vec<WriteSpec>),
     /// Show a BBMD's tables.
-    Bbmd(std::net::SocketAddrV4),
+    Bbmd(Option<std::net::SocketAddrV4>),
     /// Search for an object by name; empty closes the search.
     Find(String),
     /// An MS/TP monitor setting.
@@ -112,14 +199,22 @@ fn writes(device: u32, words: &[&str]) -> Result<Vec<WriteSpec>, String> {
         .collect()
 }
 
-/// Parse one command line.
+/// Parse one command line: its first word picks the row of [`COMMANDS`],
+/// and the rest is read by that row's form.
 pub(crate) fn parse(text: &str) -> Result<Line, String> {
     let words: Vec<&str> = text.split_whitespace().collect();
-    match words.as_slice() {
-        ["writem", target, rest @ ..] => {
+    let Some((first, args)) = words.split_first() else {
+        return Err(usage());
+    };
+    let Some(syntax) = command(first) else {
+        return Err(format!("unknown command '{}'; {}", text.trim(), usage()));
+    };
+    let wrong = || format!("usage: {}", syntax.usage.join(" | "));
+    match (syntax.name, args) {
+        ("writem", [target, rest @ ..]) => {
             Ok(Line::Writem(writes(device(target, "writem")?.0, rest)?))
         }
-        [command, target, object_word, rest @ ..] if matches!(*command, "watch" | "w") => {
+        ("watch", [target, object_word, rest @ ..]) => {
             let (device, network) = device(target, "watch")?;
             let object = object(object_word)?;
             let property = match rest {
@@ -128,7 +223,7 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
                     (property, None) => property,
                     (_, Some(_)) => return Err("the watch list takes no array index".into()),
                 },
-                _ => return Err(format!("too many words; {USAGE}")),
+                _ => return Err(format!("too many words; {}", wrong())),
             };
             Ok(Line::Watch(Point {
                 device,
@@ -137,17 +232,17 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
                 property,
             }))
         }
-        ["csv", "on"] => Ok(Line::Csv(true)),
-        ["csv", "off"] => Ok(Line::Csv(false)),
-        ["bbmd", address] => Ok(Line::Bbmd(crate::foreign::parse_bbmd_arg(address)?)),
-        ["mstp", which, value] => Ok(Line::Mstp(mstp_setting(which, value)?)),
-        ["find", ..] => {
+        ("csv", ["on"]) => Ok(Line::Csv(true)),
+        ("csv", ["off"]) => Ok(Line::Csv(false)),
+        ("bbmd", []) => Ok(Line::Bbmd(None)),
+        ("bbmd", [address]) => Ok(Line::Bbmd(Some(crate::foreign::parse_bbmd_arg(address)?))),
+        ("mstp", [which, value]) => Ok(Line::Mstp(mstp_setting(which, value)?)),
+        ("find", _) => {
             // A name may hold several spaces in a row: keep it as typed.
             let rest = text.trim_start().strip_prefix("find").unwrap_or_default();
             Ok(Line::Find(rest.trim().to_string()))
         }
-        [] => Err(USAGE.into()),
-        _ => Err(format!("unknown command '{}'; {USAGE}", text.trim())),
+        _ => Err(wrong()),
     }
 }
 
@@ -175,7 +270,7 @@ impl App {
                     Ok(Line::Watch(point)) => self.watch_point(point, out),
                     Ok(Line::Csv(on)) => out.push(Command::Watch(WatchCommand::Csv(on))),
                     Ok(Line::Writem(specs)) => self.prepare(specs, true, out),
-                    Ok(Line::Bbmd(bbmd)) => self.set_bbmd(bbmd, out),
+                    Ok(Line::Bbmd(bbmd)) => self.show_bbmd(bbmd, out),
                     Ok(Line::Find(name)) => self.find(name, out),
                     Ok(Line::Mstp(setting)) => self.mstp_setting(setting),
                     Err(error) => self.flash(error, FLASH_FOR),
@@ -215,9 +310,10 @@ mod tests {
         assert_eq!(parse("csv on"), Ok(Line::Csv(true)));
         assert_eq!(
             parse("bbmd 10.0.0.1"),
-            Ok(Line::Bbmd("10.0.0.1:47808".parse().unwrap()))
+            Ok(Line::Bbmd(Some("10.0.0.1:47808".parse().unwrap())))
         );
         assert!(parse("bbmd 10.0.0").is_err());
+        assert_eq!(parse("bbmd"), Ok(Line::Bbmd(None)));
         assert!(parse("watch 10.0.0.5 ai:1")
             .unwrap_err()
             .contains("device instance"));
@@ -264,5 +360,67 @@ mod tests {
         assert!(parse("writem 100 ao:1 pv").is_err());
         assert!(parse("writem 100 ao:1 pv 42@17").is_err());
         assert!(parse("writem 100").is_err());
+    }
+
+    /// The table row a parsed line came from. A new `Line` fails to
+    /// compile here until it names its row.
+    fn row_of(line: &Line) -> &'static str {
+        match line {
+            Line::Watch(_) => "watch",
+            Line::Csv(_) => "csv",
+            Line::Writem(_) => "writem",
+            Line::Bbmd(_) => "bbmd",
+            Line::Find(_) => "find",
+            Line::Mstp(_) => "mstp",
+        }
+    }
+
+    /// Every parsed command has a row, so a hint and a help line; every
+    /// row parses; and the hint for a line is its own row's.
+    #[test]
+    fn every_command_has_its_hint_from_the_table_the_parser_reads() {
+        let samples = [
+            "watch 100 ai:1",
+            "w 100 ai:1 pv",
+            "csv on",
+            "writem 100 ao:1 pv 42@8",
+            "bbmd",
+            "bbmd 10.0.0.1",
+            "find Supply Temp",
+            "mstp hold 250",
+            "mstp listen 30",
+        ];
+        let mut rows = std::collections::BTreeSet::new();
+        for sample in samples {
+            let line = parse(sample).unwrap_or_else(|e| panic!("{sample}: {e}"));
+            let row = row_of(&line);
+            assert!(command(row).is_some(), "{row} has a row");
+            let hint = matching(sample);
+            assert_eq!(hint.len(), 1, "{sample}");
+            assert_eq!(hint[0].name, row, "{sample}");
+            rows.insert(row);
+        }
+        let names: std::collections::BTreeSet<&str> = COMMANDS.iter().map(|s| s.name).collect();
+        assert_eq!(rows, names, "every row is parsed by a sample");
+        for syntax in COMMANDS {
+            for form in syntax.usage {
+                assert_eq!(form.split_whitespace().next(), Some(syntax.name), "{form}");
+            }
+            assert!(usage().contains(syntax.usage[0]));
+        }
+        // A wrong form names its command's usage.
+        assert_eq!(parse("csv maybe"), Err("usage: csv on|off".into()));
+    }
+
+    #[test]
+    fn hints_follow_what_is_typed() {
+        let names = |text: &str| -> Vec<&str> { matching(text).iter().map(|s| s.name).collect() };
+        assert_eq!(names("").len(), COMMANDS.len());
+        assert_eq!(names("w"), ["watch", "writem"]);
+        assert_eq!(names("w "), ["watch"]);
+        assert_eq!(names("wr"), ["writem"]);
+        assert_eq!(names("mstp hold"), ["mstp"]);
+        assert!(names("zz").is_empty());
+        assert!(names("zz 1").is_empty());
     }
 }

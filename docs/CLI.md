@@ -465,15 +465,15 @@ table is refreshed from the client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `3` / `4` / `5` / `6` / `1` | Show the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / back to the devices |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd ADDRESS`, `find NAME` |
+| `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
-| `?` | Help |
+| `?` | Help: the global keys, this screen's, and the commands; Up, Down, PgUp and PgDn scroll it |
 | `Ctrl-C` | Close a dialog or cancel the running Who-Is/connection attempt; press again within 2 s to quit |
 | `q` | Quit; with changes still in the ledger, the exit guard asks first |
 
@@ -536,7 +536,8 @@ the lease left; a refused registration raises a red banner on every screen.
 Once the BBMD accepts, the TUI reads its FDT and shows the entry the BBMD
 recorded for us, the address it forwards broadcasts to; when no entry has our
 address, a NAT router may have rewritten it. `:bbmd ADDRESS` reads any other
-BBMD. Tab switches between the BDT, with what each entry's mask means for
+BBMD, and `:bbmd` alone goes back to ours, as the footer says meanwhile. Tab
+switches between the BDT, with what each entry's mask means for
 forwarding, the FDT, with each entry's seconds left, and the consistency
 matrix; `r` reads again. `m` reads the BDT of every BBMD the tables lead to (up
 to 16) and shows which lists which: a peer listed one way only, a BDT without
@@ -827,9 +828,25 @@ is a client-side record, separate from BACnet's own audit reporting.
 discovery, browsing, watching and arming are refused with a notice. The
 status bar shows `PASSIVE`.
 
-**Footprint.** The status bar's `COV n FD m` counts the state this session
+**Footprint.** The status bar's `COV n` and `FD` show the state this session
 holds on other devices: COV subscriptions, and our entry in a BBMD's
-foreign-device table. `ledger n` counts changes still in effect.
+foreign-device table. `FD` appears only with a registration and says
+where it stands (`held`, `pending`, `refused`, `no answer` or `lapsed`), from
+the same state the Network screen's banner reads. `ledger n` counts changes
+still in effect.
+
+**Status bar and footer.** Both fit their width by priority: at 80 columns
+the least useful fields and keys go first, while the link state, the
+session level, `? help` and `q quit` always stay. A notice sits at the
+footer's left beside the keys, and goes when the screen changes or a dialog
+opens. A failed connection's footer shows its cause in a few words with the
+recovery keys (`p settings`, `c retry`); the device screen and the log pane
+keep the whole error. Before a profile connects the status bar reads
+`no profile`. Each screen's footer lists only keys that work there, so the
+SC and MS/TP screens of a session on another transport offer just the way
+back (and `p` for profiles). Below 120 columns the browser's priority array
+is a pane of its own, after Properties in the Tab order, so the properties
+keep the whole width.
 
 The `tui` cargo feature is on by default from 0.14.0, so the release binaries
 and a plain `cargo install bacnet-cli` include it. `--no-default-features`

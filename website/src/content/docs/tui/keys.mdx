@@ -19,20 +19,24 @@ Keys are case-sensitive: `w` writes and `W` arms a write session. Text fields (f
 | `:` | The command bar |
 | `W` | Arm a write session, or disarm the armed one |
 | `u` | The session ledger |
+| `p` | The profile dialog |
+| `c` | Connect again, or retry a failed connection |
 
-The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP, `7` Capture. Each screen below lists the ones it takes.
+The number keys switch screens: `1` the devices, `2` Browse (the browser of the device you opened, as you left it; with none open it stays on the devices and says so), `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP, `7` Capture. The status bar's strip numbers the screens that apply to the session, with the one shown in brackets: `1 Devices 2 Browse [3 Watch] 4 Network 7 Capture`, or `1 2 [3 Watch] 4 7` in a narrow terminal. Network appears once a session is connected, BACnet/SC for SC, and MS/TP with a serial port; the keys work on every session. `1` hides an open browser without closing it; `Esc` in the browser closes it.
+
+The help overlay (`?`) lists these keys, then the screen's own and the command bar's commands.
 
 ## Devices and the browser
 
 | Key | Action |
 |---|---|
-| `d` | Who-Is form |
+| `d` | Devices: the Who-Is form |
 | `Enter` | Browse the selected device; in the browser, read the selected object |
-| `Esc` | Back: from the browser to the device table |
+| `Esc` | Browser: clear the filter, then close the browser and go back to the devices (`1` only hides it, keeping it as it was) |
 | `/` | Filter the devices, or in the browser the objects |
-| `s` | Sort by the next column |
-| `S` | Reverse the sort order |
-| `Tab` | Browser: the next pane |
+| `s` | Devices: sort by the next column |
+| `S` | Devices: reverse the sort order |
+| `Tab` | Browser: the next pane. Below 120 columns a commandable object's priority array is a pane of its own |
 | `Shift-Tab` | Browser: the previous pane |
 | `r` | Browser: read the open object again |
 | `a` | Browser: watch the open object's Present_Value |
@@ -131,7 +135,7 @@ In the list and the preview:
 
 | Key | Action |
 |---|---|
-| `Up`, `Down`, `Tab`, `Shift-Tab` | Choose a profile |
+| `Up`, `Down`, `k`, `j`, `Tab`, `Shift-Tab` | Choose a profile |
 | `Enter` | Preview the profile; in a preview, connect |
 | `a` | Attest to first use, save the authorization and connect |
 | `y` | Accept the credential warnings shown |
@@ -205,11 +209,14 @@ The arm dialog, the write and relinquish forms, the previews, the ledger and the
 | Key | Action |
 |---|---|
 | `?`, `Esc` | Close the help |
+| `Up`, `Down`, `k`, `j` | Scroll a line |
+| `PgUp`, `PgDn` | Scroll a page |
+| `Home`, `End`, `g`, `G` | The top or the end |
 | `q` | Quit |
 
 ## Command bar
 
-`:` opens it on the footer line. `Enter` runs the line, `Esc` closes it and `Backspace` erases. An unknown command shows the list below in the footer.
+`:` opens it on the footer line. `Enter` runs the line, `Esc` closes it and `Backspace` erases. While you type, the footer shows the syntax of the commands that match, such as `watch DEVICE OBJECT [PROPERTY]` after `wa`. An unknown command shows the list below in the footer.
 
 | Command | What it does |
 |---|---|
@@ -217,7 +224,7 @@ The arm dialog, the write and relinquish forms, the previews, the ledger and the
 | `csv on` | Log every watched value to a CSV file in the profile's workspace |
 | `csv off` | Stop logging |
 | `writem DEVICE OBJECT PROPERTY VALUE[@P] ...` | Several writes to one device in one WritePropertyMultiple, previewed and confirmed at T2 or above; needs an armed session |
-| `bbmd ADDRESS` | Show and read that BBMD's tables on the Network screen (`ip` or `ip:port`) |
+| `bbmd [ADDRESS]` | Show and read that BBMD's tables on the Network screen (`ip` or `ip:port`); with no address, go back to the tables of the BBMD you register with |
 | `find NAME` | Broadcast a Who-Has for the object named NAME and list the answers |
 | `find` | Close the Who-Has panel |
 | `mstp rotation MS` | Monitor: flag token rotations longer than this |
