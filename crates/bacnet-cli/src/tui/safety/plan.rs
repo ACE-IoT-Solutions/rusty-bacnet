@@ -28,6 +28,27 @@ pub(crate) const PRE_READ: [PropertyIdentifier; 4] = [
     PropertyIdentifier::OUT_OF_SERVICE,
 ];
 
+/// What was read before one write: the [`PRE_READ`] properties (and the
+/// whole target property, for a write without an array index) as rows,
+/// and for an indexed write the element itself, or why it couldn't be.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PreRead {
+    /// The properties read by name.
+    pub(crate) rows: Vec<RawRow>,
+    /// The element an indexed write targets, as read just before it.
+    /// `None` for a write without an index.
+    pub(crate) element: Option<Result<Vec<u8>, String>>,
+}
+
+impl From<Vec<RawRow>> for PreRead {
+    fn from(rows: Vec<RawRow>) -> Self {
+        Self {
+            rows,
+            element: None,
+        }
+    }
+}
+
 /// The priority a commandable write without one gets (Clause 19.2.1).
 pub(crate) const DEFAULT_PRIORITY: u8 = 16;
 
@@ -89,11 +110,11 @@ pub(crate) fn repeated_target(specs: &[&WriteSpec]) -> Option<String> {
     })
 }
 
-/// Build the preview of `specs` from `rows`, one list per spec. `ours`
-/// says whether the ledger wrote what a slot holds now (its encoded value).
+/// Build the preview of `specs` from `reads`, one per spec. `ours` says
+/// whether the ledger wrote what a slot holds now (its encoded value).
 pub(crate) fn preview(
     specs: &[WriteSpec],
-    rows: &[Vec<RawRow>],
+    reads: &[PreRead],
     ours: impl Fn(&WriteSpec, Option<u8>, &[u8]) -> bool,
     dangerous: bool,
     batch: bool,
@@ -104,8 +125,8 @@ pub(crate) fn preview(
     }
     let items = specs
         .iter()
-        .zip(rows)
-        .map(|(spec, rows)| plan(spec, rows, &ours, dangerous))
+        .zip(reads)
+        .map(|(spec, read)| plan(spec, read, &ours, dangerous))
         .collect::<Result<Vec<_>, _>>()?;
     let gate = overall(&items, batch);
     Ok(Preview {
@@ -180,10 +201,11 @@ fn effective(
 /// One write's preview.
 fn plan(
     spec: &WriteSpec,
-    rows: &[RawRow],
+    read: &PreRead,
     ours: &impl Fn(&WriteSpec, Option<u8>, &[u8]) -> bool,
     dangerous: bool,
 ) -> Result<Planned, String> {
+    let rows = read.rows.as_slice();
     let texts = StateTexts::from_rows(rows);
     let format = ValueFormat::new(spec.object.object_type(), &texts, Floats::Exact);
     let present_value = spec.property == PropertyIdentifier::PRESENT_VALUE && spec.index.is_none();
@@ -202,10 +224,13 @@ fn plan(
         },
     };
     let commandable = present_value && slots.is_some();
-    let current = if spec.index.is_none() {
-        raw(rows, spec.property)
-    } else {
-        None
+    // An indexed write's pre-image is the element, read on its own; when
+    // that read failed the pre-image is unknown, and the note says why.
+    let (current, unread) = match (spec.index, &read.element) {
+        (None, _) => (raw(rows, spec.property), None),
+        (Some(_), Some(Ok(bytes))) => (Some(bytes.as_slice()), None),
+        (Some(_), Some(Err(why))) => (None, Some(why.as_str())),
+        (Some(_), None) => (None, Some("not read")),
     };
     let default = raw(rows, PropertyIdentifier::RELINQUISH_DEFAULT);
     let mut notes = Vec::new();
@@ -273,7 +298,14 @@ fn plan(
                     bytes: bytes.to_vec(),
                 }),
                 None => {
-                    notes.push("the old value could not be read, so this can't be reverted".into());
+                    notes.push(match unread {
+                        Some(why) => format!(
+                            "the element's old value could not be read ({why}), so this can't be reverted"
+                        ),
+                        None => {
+                            "the old value could not be read, so this can't be reverted".into()
+                        }
+                    });
                     None
                 }
             };
@@ -362,7 +394,7 @@ mod tests {
     }
 
     fn one(spec: WriteSpec) -> Planned {
-        let preview = preview(&[spec], &[ao1()], |_, _, _| false, false, false).unwrap();
+        let preview = preview(&[spec], &[ao1().into()], |_, _, _| false, false, false).unwrap();
         preview.items.into_iter().next().unwrap()
     }
 
@@ -410,7 +442,7 @@ mod tests {
             value: None,
             ..spec(None, 8)
         };
-        let preview = preview(&[spec], &[rows], |_, _, _| true, false, false).unwrap();
+        let preview = preview(&[spec], &[rows.into()], |_, _, _| true, false, false).unwrap();
         assert_eq!(
             preview.items[0].effect,
             Effect::Changes {
@@ -502,7 +534,14 @@ mod tests {
             }
         );
         assert_eq!(planned.before.unwrap().text, "55");
-        let ours = preview(&[spec(None, 10)], &[ao1()], |_, _, _| true, false, false).unwrap();
+        let ours = preview(
+            &[spec(None, 10)],
+            &[ao1().into()],
+            |_, _, _| true,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(ours.items[0].occupancy, Occupancy::Ours);
         assert_eq!(ours.gate, Gate::Allowed(Tier::T1));
     }
@@ -519,7 +558,7 @@ mod tests {
     fn a_batch_takes_its_strongest_tier_and_any_block() {
         let batch = preview(
             &[spec(Some("1"), 12), other(Some("2"), 13)],
-            &[ao1(), ao1()],
+            &[ao1().into(), ao1().into()],
             |_, _, _| false,
             false,
             true,
@@ -528,7 +567,7 @@ mod tests {
         assert_eq!(batch.gate, Gate::Allowed(Tier::T2));
         let blocked = preview(
             &[spec(Some("1"), 12), other(Some("2"), 6)],
-            &[ao1(), ao1()],
+            &[ao1().into(), ao1().into()],
             |_, _, _| false,
             false,
             true,
@@ -543,7 +582,7 @@ mod tests {
     fn a_batch_may_not_name_one_property_twice() {
         let error = preview(
             &[spec(Some("1"), 8), spec(Some("2"), 9)],
-            &[ao1(), ao1()],
+            &[ao1().into(), ao1().into()],
             |_, _, _| false,
             false,
             true,
@@ -560,17 +599,31 @@ mod tests {
         assert_eq!(planned.gate, Gate::Allowed(Tier::T2));
         let mut description = spec(Some("null"), 12);
         description.property = PropertyIdentifier::DESCRIPTION;
-        assert!(preview(&[description], &[ao1()], |_, _, _| false, false, false).is_err());
+        assert!(preview(
+            &[description],
+            &[ao1().into()],
+            |_, _, _| false,
+            false,
+            false
+        )
+        .is_err());
     }
 
     #[test]
     fn a_slot_is_ours_only_by_its_current_value() {
         let fifty_five = encoded(&[PropertyValue::Real(55.0)]);
         let ours = |_: &WriteSpec, _: Option<u8>, now: &[u8]| now == fifty_five.as_slice();
-        let planned = preview(&[spec(None, 10)], &[ao1()], ours, false, false).unwrap();
+        let planned = preview(&[spec(None, 10)], &[ao1().into()], ours, false, false).unwrap();
         assert_eq!(planned.items[0].occupancy, Occupancy::Ours);
         let wrote_other = |_: &WriteSpec, _: Option<u8>, now: &[u8]| now == [0x44, 0, 0, 0, 0];
-        let planned = preview(&[spec(None, 10)], &[ao1()], wrote_other, false, false).unwrap();
+        let planned = preview(
+            &[spec(None, 10)],
+            &[ao1().into()],
+            wrote_other,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(planned.items[0].occupancy, Occupancy::Other);
         assert_eq!(planned.gate, Gate::Allowed(Tier::T2));
     }
@@ -581,7 +634,7 @@ mod tests {
         rows[1].1 = Ok(encoded(&vec![PropertyValue::Null; 4]));
         let error = preview(
             &[spec(Some("1"), 12)],
-            &[rows.clone()],
+            &[rows.clone().into()],
             |_, _, _| false,
             false,
             false,
@@ -591,7 +644,7 @@ mod tests {
         rows[1].1 = Ok(vec![0xFF]);
         assert!(preview(
             &[spec(Some("1"), 12)],
-            &[rows],
+            &[rows.into()],
             |_, _, _| false,
             false,
             false
@@ -602,7 +655,7 @@ mod tests {
         rows[1].1 = Err("PROPERTY:UNKNOWN_PROPERTY".into());
         let planned = preview(
             &[spec(Some("1"), 12)],
-            &[rows],
+            &[rows.into()],
             |_, _, _| false,
             false,
             false,
@@ -620,15 +673,73 @@ mod tests {
         ));
         let mut description = spec(Some("\"new\""), 12);
         description.property = PropertyIdentifier::DESCRIPTION;
-        let planned = preview(&[description], &[rows], |_, _, _| false, false, false)
-            .unwrap()
-            .items
-            .remove(0);
+        let planned = preview(
+            &[description],
+            &[rows.into()],
+            |_, _, _| false,
+            false,
+            false,
+        )
+        .unwrap()
+        .items
+        .remove(0);
         assert_eq!(planned.priority, None);
         assert_eq!(planned.before.unwrap().text, "\"old\"");
         assert_eq!(planned.effect, Effect::NotPresentValue);
         let mut relinquish = spec(None, 12);
         relinquish.property = PropertyIdentifier::DESCRIPTION;
-        assert!(preview(&[relinquish], &[ao1()], |_, _, _| false, false, false).is_err());
+        assert!(preview(
+            &[relinquish],
+            &[ao1().into()],
+            |_, _, _| false,
+            false,
+            false
+        )
+        .is_err());
+    }
+
+    /// `state-text[2]` of MSV:1, with `element` as the element's read.
+    fn state_text(element: Option<Result<Vec<u8>, String>>) -> Planned {
+        let spec = WriteSpec {
+            object: ObjectIdentifier::new(ObjectType::MULTI_STATE_VALUE, 1).unwrap(),
+            property: PropertyIdentifier::STATE_TEXT,
+            index: Some(2),
+            priority: None,
+            ..spec(Some("\"Low\""), 12)
+        };
+        // The rows hold no State_Text: an indexed write reads its element alone.
+        let read = PreRead {
+            rows: Vec::new(),
+            element,
+        };
+        preview(&[spec], &[read], |_, _, _| false, false, false)
+            .unwrap()
+            .items
+            .remove(0)
+    }
+
+    #[test]
+    fn an_indexed_write_keeps_the_element_as_its_pre_image() {
+        let old = encoded(&[PropertyValue::CharacterString("State 2".into())]);
+        let planned = state_text(Some(Ok(old.clone())));
+        let before = planned.before.expect("the element's old value");
+        assert_eq!(before.bytes, old);
+        assert_eq!(before.text, "\"State 2\"");
+        assert!(planned.notes.is_empty(), "{:?}", planned.notes);
+    }
+
+    #[test]
+    fn an_unreadable_element_leaves_the_pre_image_unknown_and_says_why() {
+        let planned = state_text(Some(Err("PROPERTY:INVALID_ARRAY_INDEX".into())));
+        assert_eq!(planned.before, None);
+        assert!(
+            planned
+                .notes
+                .iter()
+                .any(|n| n.contains("INVALID_ARRAY_INDEX") && n.contains("can't be reverted")),
+            "{:?}",
+            planned.notes
+        );
+        assert_eq!(state_text(None).before, None, "never read");
     }
 }

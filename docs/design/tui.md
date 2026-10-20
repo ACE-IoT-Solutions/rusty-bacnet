@@ -345,7 +345,10 @@ from a device's mutation policy is shown as `DENIED`, apart from other errors.
 
 **Session ledger** (#964). Every change records its pre-image (the slot value,
 or the property's old value, Out_Of_Service included; BDT entries come with
-BDT writes). `ledger.json` in the workspace is saved atomically before each
+BDT writes). A write to one array element reads that element alone first and
+keeps it as the pre-image, so revert writes it back at the same index (#1801);
+when the element can't be read, the pre-image is unknown, the preview says why,
+and revert leaves the entry and says so. `ledger.json` in the workspace is saved atomically before each
 request goes out and after its answer, so a kill mid-request still leaves the
 entry (state `sending`, or `unknown` after a timeout); a write is not sent if
 the ledger can't be saved. Repeated writes to one target keep the first

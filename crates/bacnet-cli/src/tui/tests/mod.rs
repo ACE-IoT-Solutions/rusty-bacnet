@@ -92,6 +92,7 @@ mod watch;
 mod watch_rows;
 mod writes;
 mod writes_app;
+mod writes_indexed;
 mod writes_ledger;
 
 use std::net::Ipv4Addr;

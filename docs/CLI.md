@@ -820,6 +820,9 @@ wrote; one someone has overwritten since is treated as another commander's.
 `u` lists the ledger, and `R` then `y` reverts everything, latest write first:
 our slots are relinquished, or given back the value another commander had
 there; other properties (Out_Of_Service included) get their old value back. A
+write to one array element (`state-text[2]`) keeps that element's old value and
+reverts just that element; if the element couldn't be read before the write,
+revert leaves the entry and says the old value is unknown. A
 device not yet discovered (after a restart, say) is looked for first. Reverting
 needs a connection but not an armed session. Quitting with entries in the
 ledger, or with a write session request still out, opens the exit guard: `r`
