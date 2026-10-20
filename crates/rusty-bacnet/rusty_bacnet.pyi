@@ -2179,12 +2179,15 @@ class Multicast:
 
     Multicast needs an explicit ``interface`` (not ``"0.0.0.0"``), a port
     for the group (``port=0`` needs ``Multicast(port=...)``), and can't be
-    combined with ``share_port_by_address=True``, ``bbmd=`` or
-    ``foreign_device=``: the owner's constructor raises ValueError. A
+    combined with ``share_port_by_address=True`` or ``foreign_device=``:
+    the owner's constructor raises ValueError. With ``bbmd=`` the owner is
+    the BBMD that serves the group (Annex J.8.3): it forwards the group's
+    broadcasts to its BDT and foreign devices and theirs to the group, and
+    its own BDT row must have the mask 255.255.255.255, or start raises. A
     registered Network Port serves the group as BACnet_IP_Multicast_Address
-    (0.0.0.0 when off), writable when the server answers ReinitializeDevice;
-    a group changed that way lasts until the process exits, and isn't
-    saved. Two ``Multicast`` values with the same settings compare and hash
+    (0.0.0.0 when off), writable when the server answers ReinitializeDevice
+    and isn't a BBMD; a group changed that way lasts until the process
+    exits, and isn't saved. Two ``Multicast`` values with the same settings compare and hash
     equal. Invalid values raise ValueError, or OverflowError for an integer
     out of range. Windows multicast is untested.
     """
