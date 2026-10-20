@@ -95,6 +95,7 @@ mod watch;
 mod watch_rows;
 mod writes;
 mod writes_app;
+mod writes_arrays;
 mod writes_indexed;
 mod writes_ledger;
 

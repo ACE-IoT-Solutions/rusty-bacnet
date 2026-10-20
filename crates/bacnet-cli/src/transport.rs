@@ -62,8 +62,10 @@ impl TransportArgs {
                 "--foreign-bbmd requires BACnet/IP transport (do not use --sc or --ipv6)".into(),
             );
         }
-        if cli.sc_failover_url.is_some() && cli.sc_failover_url == cli.sc_url {
-            return Err("--sc-failover-url must differ from --sc-url".into());
+        if let (Some(failover), Some(primary)) = (&cli.sc_failover_url, &cli.sc_url) {
+            if same_hub_url(failover, primary) {
+                return Err("--sc-failover-url must differ from --sc-url".into());
+            }
         }
         Ok(Self {
             interface,
@@ -269,9 +271,10 @@ pub fn sc_client_builder(
         .device_uuid(sc_device_uuid)
         .apdu_timeout_ms(args.timeout_ms)
         .min_request_interval_ms(args.min_interval_ms);
-    if let Some(ms) = args.sc_connect_timeout_ms {
-        builder = builder.connect_timeout_ms(ms);
-    }
+    builder = builder.connect_timeout_ms(
+        args.sc_connect_timeout_ms
+            .unwrap_or(DEFAULT_SC_CONNECT_TIMEOUT_MS),
+    );
     if let Some(policy) = args.sc_reconnect.clone() {
         builder = builder.reconnect(policy);
     }
@@ -280,6 +283,30 @@ pub fn sc_client_builder(
         builder = builder.failover_hub_url(failover);
     }
     Ok(builder)
+}
+
+/// The connect timeout the CLI gives the SC client builder when none is
+/// set: 10 s, the builder's own default (`ScClientBuilder::connect_timeout_ms`),
+/// and a profile's.
+#[cfg_attr(not(any(feature = "tui", feature = "sc-tls")), allow(dead_code))]
+pub(crate) const DEFAULT_SC_CONNECT_TIMEOUT_MS: u64 = 10_000;
+
+/// Whether two hub URLs name the same hub: compared with the scheme and
+/// host lowercased and a trailing slash ignored.
+pub(crate) fn same_hub_url(a: &str, b: &str) -> bool {
+    fn normalized(url: &str) -> String {
+        let url = url.trim();
+        let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, tail) = rest.split_at(end);
+        let tail = tail.strip_suffix('/').unwrap_or(tail);
+        format!(
+            "{}://{}{tail}",
+            scheme.to_ascii_lowercase(),
+            authority.to_ascii_lowercase()
+        )
+    }
+    normalized(a) == normalized(b)
 }
 
 /// The longest connect timeout a profile or `--sc-connect-timeout` takes.

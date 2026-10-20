@@ -510,8 +510,9 @@ impl<'a> Runner<'a> {
                 Err(Halt::Cancelled) => return Err("cancelled".into()),
             };
             // An indexed write's pre-image is its element, read alone.
+            // Index 0 (a resize) has no pre-image to read.
             let element = match spec.index {
-                None => None,
+                None | Some(0) => None,
                 Some(index) => {
                     let read = tokio::select! {
                         biased;

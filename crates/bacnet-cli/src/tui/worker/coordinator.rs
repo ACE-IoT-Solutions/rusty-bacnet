@@ -189,17 +189,19 @@ async fn run(
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
                                         let kind = prepared.stored.transport.kind();
-                                        options.watch.workspace = profiles.workspace(&name);
+                                        let workspace = profiles.workspace(&name);
+                                        // The app sends an MS/TP profile's Connect only once
+                                        // its join is confirmed: record that join first, and
+                                        // change nothing when it can't be.
+                                        if let Err(error) = record_join(workspace.as_deref(), &name, options.safety.passive, &args).await {
+                                            sink.deliver(WorkerEvent::Profile(Err(error))).await;
+                                            continue;
+                                        }
+                                        options.watch.workspace = workspace;
                                         options.safety.workspace = options.watch.workspace.clone();
                                         options.safety.profile = Some(name.clone());
                                         options.safety.policy = prepared.stored.safety.clone();
                                         options.safety.transport = kind.label();
-                                        // The app sends an MS/TP profile's Connect only once
-                                        // its join is confirmed: record that join first.
-                                        if let Err(error) = record_join(&options, &args).await {
-                                            sink.deliver(WorkerEvent::Profile(Err(error))).await;
-                                            continue;
-                                        }
                                         let checks = crate::tui::profile::checks::inspect(&prepared.resolved);
                                         sink.deliver(WorkerEvent::Profile(Ok(Reply::Loaded { name, profile: prepared.stored, checks }))).await;
                                         let next = ConnectPlan { kind, args, await_interface: false };
@@ -303,16 +305,15 @@ async fn export(job: ExportJob, dir: PathBuf, sink: EventSink) {
 /// (#1862). Nothing for another transport, or a passive session, which
 /// never joins. A join that can't be recorded is not made.
 async fn record_join(
-    options: &SessionOptions,
+    workspace: Option<&std::path::Path>,
+    profile: &str,
+    passive: bool,
     args: &crate::transport::TransportArgs,
 ) -> Result<(), String> {
-    let safety = &options.safety;
-    let (Some(settings), Some(dir), Some(profile)) =
-        (&args.mstp, &safety.workspace, &safety.profile)
-    else {
+    let (Some(settings), Some(dir)) = (&args.mstp, workspace) else {
         return Ok(());
     };
-    if safety.passive {
+    if passive {
         return Ok(());
     }
     crate::tui::safety::audit::record_join(dir, profile, settings)

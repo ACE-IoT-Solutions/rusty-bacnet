@@ -2,7 +2,10 @@
 //! certificates and keys stay where the site keeps them, and no PEM text,
 //! key bytes or password is ever written to a profile.
 
-use crate::transport::{check_sc_connect_timeout, parse_sc_device_uuid_arg, parse_sc_vmac_arg};
+use crate::transport::{
+    check_sc_connect_timeout, parse_sc_device_uuid_arg, parse_sc_vmac_arg, same_hub_url,
+    DEFAULT_SC_CONNECT_TIMEOUT_MS,
+};
 use bacnet_transport::sc::ScReconnectConfig;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -78,9 +81,9 @@ fn default_max_retries() -> u32 {
     ScReconnectConfig::default().max_retries
 }
 
-/// The SC client's own default connect timeout.
+/// The SC client's default connect timeout.
 fn default_connect_timeout_ms() -> u64 {
-    10_000
+    DEFAULT_SC_CONNECT_TIMEOUT_MS
 }
 
 impl Default for Sc {
@@ -110,13 +113,12 @@ impl Sc {
         check_hub_url("Hub URL", &self.hub_url)?;
         if let Some(failover) = &self.failover_hub_url {
             check_hub_url("Failover URL", failover)?;
-            if failover == &self.hub_url {
+            if same_hub_url(failover, &self.hub_url) {
                 return Err("Failover URL must differ from the primary hub URL".into());
             }
             if !self.reconnect {
                 return Err(
-                    "Failover URL needs reconnect on: the failover hub is reached by reconnecting"
-                        .into(),
+                    "Failover URL needs reconnect on: failover happens by reconnecting".into(),
                 );
             }
         }

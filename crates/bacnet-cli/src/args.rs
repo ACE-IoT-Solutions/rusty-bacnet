@@ -713,11 +713,11 @@ mod tests {
             "--sc-url",
             "wss://hub.example",
             "--sc-failover-url",
-            "wss://hub.example",
+            "WSS://Hub.Example/",
             "discover",
         ])
         .unwrap();
-        assert!(args(&same).err().unwrap().contains("differ"));
+        assert!(args(&same).err().unwrap().contains("differ"), "normalized");
         for bad in ["0", "600001", "soon"] {
             let error = parse(["bacnet", "--sc-connect-timeout", bad, "discover"]).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::ValueValidation, "{bad}");

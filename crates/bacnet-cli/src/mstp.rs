@@ -445,16 +445,16 @@ pub(crate) fn linked_ports(dir: &std::path::Path) -> Vec<Listed> {
     };
     let mut ports: Vec<Listed> = entries
         .filter_map(Result::ok)
-        .map(|entry| {
+        .filter_map(|entry| {
             let path = entry.path();
-            Listed {
-                target: std::fs::canonicalize(&path)
-                    .ok()
-                    .map(|target| target.to_string_lossy().into_owned()),
+            // A dangling link names an adapter that is gone: not offered.
+            let target = resolve(&path.to_string_lossy())?;
+            Some(Listed {
+                target: Some(target),
                 name: path.to_string_lossy().into_owned(),
                 usb: false,
                 bluetooth: false,
-            }
+            })
         })
         .collect();
     ports.sort_by(|a, b| a.name.cmp(&b.name));
@@ -490,6 +490,34 @@ fn rank(port: &Listed, platform: Platform) -> (u8, u32) {
         }
         Platform::Other => (0, 0),
     }
+}
+
+/// The device `name` resolves to (a link followed), or `None` when it
+/// doesn't exist.
+#[cfg_attr(
+    not(any(feature = "tui", all(feature = "serial", target_os = "linux"))),
+    allow(dead_code)
+)]
+pub(crate) fn resolve(name: &str) -> Option<String> {
+    std::fs::canonicalize(name)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// `names` without repeats by the device each `resolve`s to, so a by-id
+/// link and the kernel name it points to count once (#1928); each is kept
+/// where it first appears, and a name that doesn't resolve is compared as
+/// written.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn dedup_resolved(
+    names: Vec<String>,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .filter(|name| seen.insert(resolve(name).unwrap_or_else(|| name.clone())))
+        .collect()
 }
 
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]

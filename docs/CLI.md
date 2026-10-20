@@ -622,7 +622,8 @@ join (`c` after a disconnect or a failed join) shows the dialog again, and
 declining it then leaves the session disconnected. On a profile session each
 confirmed join is written to the workspace's `audit.jsonl` (event `mstp-join`,
 with the port, station, baud, Max_Master and Max_Info_Frames) before the port
-opens; a join that can't be recorded is not made. `--passive` joins nothing. The
+opens. Unlike a write, whose audit record failing is only logged, a join that
+can't be recorded is not made. `--passive` joins nothing. The
 one-shot commands take `--mstp` itself as the request.
 
 **MS/TP screen.** `6` shows this station (port, MAC, baud rate, Max_Master,
@@ -843,7 +844,9 @@ our slots are relinquished, or given back the value another commander had
 there; other properties (Out_Of_Service included) get their old value back. A
 write to one array element (`state-text[2]`) keeps that element's old value and
 reverts just that element; if the element couldn't be read before the write,
-revert leaves the entry and says the old value is unknown. A
+revert leaves the entry and says the old value is unknown. Writing index 0 (the
+array's length) is a resize, which is never reverted. Element and whole writes
+to one array revert to the array as it was before the first of them. A
 device not yet discovered (after a restart, say) is looked for first. Reverting
 needs a connection but not an armed session. Quitting with entries in the
 ledger, or with a write session request still out, opens the exit guard: `r`

@@ -103,7 +103,7 @@ Single and double quotes both work, and a backslash makes the quote, whitespace 
 
 Every change still in effect is kept in the profile's `ledger.json` with its pre-image, the value it replaced. The ledger is saved before each request goes out and after each answer, so it outlives a crash. A slot counts as yours only while it still holds what you wrote; if someone has written over it since, it is treated as theirs.
 
-`u` opens the ledger. `R`, then `y`, reverts everything, newest first: your slots are relinquished, or given back the value another commander had there, and other properties get their old value back. A write to one array element, such as `state-text[2]`, puts back just that element. If the old value couldn't be read before the write, revert leaves the entry and says why. Reverting needs a connection but not an armed session. A device not yet discovered, after a restart for example, is looked for first.
+`u` opens the ledger. `R`, then `y`, reverts everything, newest first: your slots are relinquished, or given back the value another commander had there, and other properties get their old value back. A write to one array element, such as `state-text[2]`, puts back just that element. If the old value couldn't be read before the write, revert leaves the entry and says why. Writing index 0, the array's length, resizes the array and is never reverted. Writes to one array, by element and whole, revert to the array as it was before the first of them. Reverting needs a connection but not an armed session. A device not yet discovered, after a restart for example, is looked for first.
 
 ![The session ledger with one write and its undo value.](../../../assets/tui/writes-ledger.webp)
 

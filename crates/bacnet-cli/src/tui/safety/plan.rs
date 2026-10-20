@@ -49,6 +49,9 @@ impl From<Vec<RawRow>> for PreRead {
     }
 }
 
+/// Why a write to an array's length (index 0) has no pre-image.
+pub(crate) const RESIZE: &str = "a resize can't be reverted";
+
 /// The priority a commandable write without one gets (Clause 19.2.1).
 pub(crate) const DEFAULT_PRIORITY: u8 = 16;
 
@@ -226,11 +229,22 @@ fn plan(
     let commandable = present_value && slots.is_some();
     // An indexed write's pre-image is the element, read on its own; when
     // that read failed the pre-image is unknown, and the note says why.
-    let (current, unread) = match (spec.index, &read.element) {
+    // Index 0 is the array's length: writing it resizes the array, which
+    // putting the old length back would not undo.
+    let (current, unknown) = match (spec.index, &read.element) {
         (None, _) => (raw(rows, spec.property), None),
+        (Some(0), _) => (None, Some(RESIZE.to_string())),
         (Some(_), Some(Ok(bytes))) => (Some(bytes.as_slice()), None),
-        (Some(_), Some(Err(why))) => (None, Some(why.as_str())),
-        (Some(_), None) => (None, Some("not read")),
+        (Some(_), Some(Err(why))) => (
+            None,
+            Some(format!(
+                "the element's old value could not be read ({why}), so this can't be reverted"
+            )),
+        ),
+        (Some(_), None) => (
+            None,
+            Some("the element's old value was not read, so this can't be reverted".into()),
+        ),
     };
     let default = raw(rows, PropertyIdentifier::RELINQUISH_DEFAULT);
     let mut notes = Vec::new();
@@ -298,14 +312,9 @@ fn plan(
                     bytes: bytes.to_vec(),
                 }),
                 None => {
-                    notes.push(match unread {
-                        Some(why) => format!(
-                            "the element's old value could not be read ({why}), so this can't be reverted"
-                        ),
-                        None => {
-                            "the old value could not be read, so this can't be reverted".into()
-                        }
-                    });
+                    notes.push(unknown.clone().unwrap_or_else(|| {
+                        "the old value could not be read, so this can't be reverted".into()
+                    }));
                     None
                 }
             };
@@ -741,5 +750,32 @@ mod tests {
             planned.notes
         );
         assert_eq!(state_text(None).before, None, "never read");
+    }
+
+    /// Index 0 is the array's length: a resize, never reverted, even with
+    /// the old length in hand.
+    #[test]
+    fn writing_index_0_is_a_resize_with_no_pre_image() {
+        let spec = WriteSpec {
+            object: ObjectIdentifier::new(ObjectType::MULTI_STATE_VALUE, 1).unwrap(),
+            property: PropertyIdentifier::STATE_TEXT,
+            index: Some(0),
+            priority: None,
+            ..spec(Some("4"), 12)
+        };
+        let read = PreRead {
+            rows: Vec::new(),
+            element: Some(Ok(encoded(&[PropertyValue::Unsigned(3)]))),
+        };
+        let planned = preview(&[spec], &[read], |_, _, _| false, false, false)
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(planned.before, None);
+        assert!(
+            planned.notes.iter().any(|n| n == RESIZE),
+            "{:?}",
+            planned.notes
+        );
     }
 }

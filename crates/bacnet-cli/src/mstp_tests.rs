@@ -370,7 +370,7 @@ fn listing(ports: &[(&str, bool, bool)]) -> Vec<Listed> {
 
 /// A by-id link and the kernel device it resolves to are one adapter:
 /// offered once, by the stable link name (#1928). A second link to the same
-/// device is dropped too; a dangling link stays.
+/// device is dropped too.
 #[test]
 fn linux_offers_a_linked_adapter_once_by_its_by_id_name() {
     let link = |name: &str, target: Option<&str>| Listed {
@@ -385,7 +385,6 @@ fn linux_offers_a_linked_adapter_once_by_its_by_id_name() {
             "/dev/serial/by-id/usb-FTDI-A10K-alias",
             Some("/dev/ttyUSB0"),
         ),
-        link("/dev/serial/by-id/usb-gone-if00", None),
     ];
     listed.extend(listing(&[
         ("/dev/ttyS0", false, false),
@@ -396,7 +395,6 @@ fn linux_offers_a_linked_adapter_once_by_its_by_id_name() {
         choose_ports(listed, Platform::Linux),
         [
             "/dev/serial/by-id/usb-FTDI-A10K-if00",
-            "/dev/serial/by-id/usb-gone-if00",
             "/dev/ttyUSB1",
             "/dev/ttyS0",
         ]
@@ -429,13 +427,11 @@ fn linked_ports_resolve_each_link_in_a_fake_by_id_directory() {
         [
             text(&by_id.join("usb-Arduino-if00")),
             text(&by_id.join("usb-FTDI-A10K-if00-port0")),
-            text(&by_id.join("usb-unplugged-if00")),
         ],
-        "sorted by name"
+        "sorted by name, the dangling link left out"
     );
     assert_eq!(linked[0].target, Some(text(&acm0)));
     assert_eq!(linked[1].target, Some(text(&usb0)));
-    assert_eq!(linked[2].target, None, "dangling");
 
     let mut listed = linked;
     listed.push(Listed {
@@ -453,6 +449,25 @@ fn linked_ports_resolve_each_link_in_a_fake_by_id_directory() {
     let offered = choose_ports(listed, Platform::Linux);
     assert_eq!(offered, names, "each adapter once, by its link");
     assert!(linked_ports(&root.path().join("missing")).is_empty());
+
+    // The join dialog's list: the configured kernel name first, and the
+    // listed link to it dropped as the same port.
+    let configured = text(&usb0);
+    let ports = vec![
+        configured.clone(),
+        text(&by_id.join("usb-FTDI-A10K-if00-port0")),
+        text(&by_id.join("usb-Arduino-if00")),
+        "/dev/ttyNOWHERE9".into(),
+        "/dev/ttyNOWHERE9".into(),
+    ];
+    assert_eq!(
+        dedup_resolved(ports, resolve),
+        [
+            configured,
+            text(&by_id.join("usb-Arduino-if00")),
+            "/dev/ttyNOWHERE9".into(),
+        ]
+    );
 }
 
 /// macOS offers call-out devices only, without the Bluetooth services or

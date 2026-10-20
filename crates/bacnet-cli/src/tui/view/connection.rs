@@ -29,9 +29,17 @@ pub(super) fn draw(
     if let Some(error) = &connection.error {
         lines.push(Line::styled(error.clone(), theme.danger()));
     }
-    // Grow past the usual 22 rows when a taller terminal has the room.
-    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX).max(22);
-    let box_area = centered(area, area.width.saturating_sub(4).min(96), height);
+    // Grow past the usual 22 rows when a taller terminal has the room,
+    // counting each line by the rows it wraps to (borders and padding
+    // take four columns).
+    let width = area.width.saturating_sub(4).min(96);
+    let inner = usize::from(width.saturating_sub(4)).max(1);
+    let rows: usize = lines
+        .iter()
+        .map(|line| line.width().div_ceil(inner).max(1))
+        .sum();
+    let height = u16::try_from(rows + 2).unwrap_or(u16::MAX).max(22);
+    let box_area = centered(area, width, height);
     frame.render_widget(Clear, box_area);
     let block = Block::bordered()
         .title(Line::styled(" Connection profiles ", theme.accent()))
@@ -147,7 +155,7 @@ fn editor<'a>(connection: &'a Connection, theme: &Theme) -> Vec<Line<'a>> {
                 "Hub URLs are wss://. Files are PEM paths; only the paths are saved.",
             ));
             lines.push(Line::raw(
-                "Reconnect on/off: redial a lost hub with backoff (a failover hub needs on).",
+                "Reconnect on/off: redial a lost hub; a failover hub needs it on.",
             ));
             lines.push(Line::raw(
                 if connection.identity_locked(crate::tui::app::connection::UUID_FIELD) {
@@ -180,17 +188,11 @@ fn sc_lines(profile: &Profile, lines: &mut Vec<Line<'_>>) {
     }
     lines.push(Line::raw(if s.reconnect {
         format!(
-            "Reconnect: on, {} ms doubling to {} ms, {} attempts   Connect timeout: {} ms",
-            s.reconnect_initial_delay_ms,
-            s.reconnect_max_delay_ms,
-            s.reconnect_max_retries,
-            s.connect_timeout_ms
+            "Reconnect: on, {} ms doubling to {} ms, {} attempts",
+            s.reconnect_initial_delay_ms, s.reconnect_max_delay_ms, s.reconnect_max_retries,
         )
     } else {
-        format!(
-            "Reconnect: off (a lost hub stays down)   Connect timeout: {} ms",
-            s.connect_timeout_ms
-        )
+        "Reconnect: off (a lost hub stays down)".into()
     }));
     lines.push(Line::raw(format!("CA file:   {}", s.ca.display())));
     lines.push(Line::raw(format!("Cert file: {}", s.cert.display())));
@@ -202,8 +204,8 @@ fn sc_lines(profile: &Profile, lines: &mut Vec<Line<'_>>) {
         s.device_uuid.map_or_else(unset, |v| v.to_string()),
     )));
     lines.push(Line::raw(format!(
-        "APDU timeout: {} ms   Pacing: {} ms",
-        s.timeout_ms, s.min_interval_ms
+        "APDU timeout: {} ms   Pacing: {} ms   Connect timeout: {} ms",
+        s.timeout_ms, s.min_interval_ms, s.connect_timeout_ms
     )));
 }
 

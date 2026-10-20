@@ -516,3 +516,28 @@ fn sc_connection_screen_frames_at_120x40() {
     );
     assert_snapshot!("sc_profile_ready_120x40", screen(&mut app, 120, 40));
 }
+
+/// The SC editor fits the minimum terminal with its error showing: a
+/// failover hub with reconnect turned off is refused (#1831).
+#[test]
+fn sc_editor_at_80x24_shows_the_failover_needs_reconnect_error() {
+    let mut app = profile_app();
+    press(&mut app, KeyCode::Char('s'));
+    field(&mut app, "hub-west");
+    field(&mut app, "wss://hub.site.example:443/bacnet");
+    field(&mut app, "wss://hub2.site.example:443/bacnet");
+    // CA, cert, key, VMAC, UUID, timeout, pacing, connect ms: to Reconnect.
+    for _ in 0..8 {
+        press(&mut app, KeyCode::Tab);
+    }
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Backspace);
+    type_text(&mut app, "off");
+    press(&mut app, KeyCode::Enter);
+    let error = app.connection.as_ref().unwrap().error.clone().unwrap();
+    assert!(error.contains("needs reconnect on"), "{error}");
+    let text = screen(&mut app, 80, 24);
+    assert!(text.contains("needs reconnect on"), "{text}");
+    assert!(text.contains("Reconnect     off"), "{text}");
+    assert_snapshot!("sc_profile_editor_error_80x24", text);
+}

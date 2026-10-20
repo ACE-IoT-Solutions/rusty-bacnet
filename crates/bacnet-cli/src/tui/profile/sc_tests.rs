@@ -310,7 +310,7 @@ fn sc_validation_covers_urls_paths_and_failover() {
         ),
         (|s| s.hub_url = "wss://hub:0".into(), "1-65535"),
         (
-            |s| s.failover_hub_url = Some("wss://hub.example".into()),
+            |s| s.failover_hub_url = Some("WSS://HUB.example/".into()),
             "differ",
         ),
         (|s| s.failover_hub_url = Some("hub2".into()), "Failover URL"),
