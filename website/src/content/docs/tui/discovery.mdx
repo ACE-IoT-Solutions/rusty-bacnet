@@ -48,8 +48,8 @@ If a burst of I-Am traffic outruns the UI, events are dropped rather than queued
 
 ### Sort and filter
 
-- `s` sorts by the next column; the sorted column is marked with `*` and the title says which. `S` reverses the order.
-- `/` filters the rows by instance, address, router, network or vendor as you type. Enter keeps the filter, and Esc clears it.
+- `s` sorts by the next column: instance, address, network, vendor, last seen, then name, with names not read yet last either way. The sorted column is marked with `*` and the title says which. `S` reverses the order.
+- `/` filters the rows by instance, name, address, router, network or vendor as you type. It matches only the names already read, and reads none. Enter keeps the filter, and Esc clears it.
 - Arrows, `j` and `k`, PgUp and PgDn, Home and End (or `g` and `G`) move.
 
 ![The device table filtered to instances containing 100.](../../../assets/tui/discovery-filter.webp)

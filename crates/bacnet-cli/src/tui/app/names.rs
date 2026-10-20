@@ -84,6 +84,9 @@ pub(crate) struct NameCache {
     clock: u64,
     /// Per instance, how many of its entries are [`Name::Unreachable`].
     stalled: HashMap<u32, usize>,
+    /// Counts changes to known names, so a filter or a sort by name knows
+    /// to look again (#1929).
+    changes: u64,
     asked: BTreeMap<u32, Ask>,
 }
 
@@ -101,6 +104,24 @@ impl NameCache {
             .iter()
             .find(|entry| entry.address == address)
             .map(|entry| &entry.name)
+    }
+
+    /// `object`'s name on that device, when it is known.
+    pub(crate) fn known(
+        &self,
+        device: u32,
+        address: &str,
+        object: ObjectIdentifier,
+    ) -> Option<&str> {
+        match self.get(device, address, object)? {
+            Name::Known(name) => Some(name),
+            Name::Unavailable | Name::Unreachable => None,
+        }
+    }
+
+    /// Bumped whenever a known name is learned, changed or forgotten.
+    pub(crate) fn changes(&self) -> u64 {
+        self.changes
     }
 
     /// Names held.
@@ -186,6 +207,9 @@ impl NameCache {
         } else if was_unreachable && !unreachable {
             self.unstall(device);
         }
+        if matches!(name, Name::Known(_)) || matches!(old, Some(Name::Known(_))) {
+            self.changes += 1;
+        }
         while self.by_use.len() > MAX_NAMES {
             self.evict_oldest();
         }
@@ -222,8 +246,10 @@ impl NameCache {
 
     /// Account for a forgotten entry of `device` holding `name`.
     fn forgotten(&mut self, device: u32, name: &Name) {
-        if *name == Name::Unreachable {
-            self.unstall(device);
+        match name {
+            Name::Unreachable => self.unstall(device),
+            Name::Known(_) => self.changes += 1,
+            Name::Unavailable => {}
         }
     }
 
@@ -296,6 +322,35 @@ impl NameCache {
     #[cfg(test)]
     pub(crate) fn asked_devices(&self) -> usize {
         self.asked.len()
+    }
+}
+
+/// The names of one device's objects, for the browser's object filter.
+#[derive(Clone, Copy)]
+pub(crate) struct NameLookup<'a> {
+    cache: &'a NameCache,
+    device: u32,
+    address: &'a str,
+}
+
+impl<'a> NameLookup<'a> {
+    /// The names `cache` holds for `device` at `address`.
+    pub(crate) fn new(cache: &'a NameCache, device: u32, address: &'a str) -> Self {
+        Self {
+            cache,
+            device,
+            address,
+        }
+    }
+
+    /// `object`'s name, when it is known.
+    pub(crate) fn name(&self, object: ObjectIdentifier) -> Option<&'a str> {
+        self.cache.known(self.device, self.address, object)
+    }
+
+    /// See [`NameCache::changes`].
+    pub(crate) fn changes(&self) -> u64 {
+        self.cache.changes()
     }
 }
 

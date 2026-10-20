@@ -293,6 +293,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn sorted_field(key: SortKey) -> Field {
     match key {
         SortKey::Instance => Field::Instance,
+        SortKey::Name => Field::Name,
         SortKey::Address => Field::Address,
         SortKey::Network => Field::Network,
         SortKey::Vendor => Field::Vendor,

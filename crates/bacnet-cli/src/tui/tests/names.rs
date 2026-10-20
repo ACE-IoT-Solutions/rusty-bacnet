@@ -110,7 +110,7 @@ fn card(app: &mut App, req: ReqId) {
 
 /// A connected app browsing device 7, whose Object_List holds `count`
 /// analog inputs and whose card named it `Plant`.
-fn browsing(count: u32) -> App {
+pub(super) fn browsing(count: u32) -> App {
     let mut app = connected_app();
     worker(
         &mut app,

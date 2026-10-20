@@ -95,6 +95,7 @@ impl App {
                     self.names.learn_name(device, address, object, name);
                 }
             }
+            self.settle_objects();
         }
     }
 

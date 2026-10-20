@@ -1,5 +1,9 @@
 //! The browser's object list: a device's Object_List grouped by object
 //! type, with a filter and a selection that skips the group headings.
+//!
+//! The filter matches an object's label and, once known, its name
+//! (#1929). Only names already in the session's cache count: filtering
+//! never asks for one.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -8,6 +12,7 @@ use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use super::devices::Movement;
+use super::names::NameLookup;
 
 /// `ANALOG_INPUT` as `analog-input`.
 pub(crate) fn kebab(name: impl std::fmt::Display) -> String {
@@ -52,13 +57,30 @@ pub(crate) struct ObjectList {
     /// The last frame drew the list with room for names, so the names of
     /// the rows it showed are asked for (#1896).
     pub(crate) named: Cell<bool>,
+    /// The objects or the filter changed since `rows` was built.
+    stale: bool,
+    /// The cache's [`changes`](super::names::NameCache::changes) when
+    /// `rows` was built with names.
+    names_seen: u64,
 }
 
 impl ObjectList {
     /// Replace the objects, keeping the selection when it is still there.
+    /// [`settle`](Self::settle) rebuilds the rows.
     pub(crate) fn set(&mut self, objects: Vec<ObjectIdentifier>) {
         self.objects = objects;
-        self.rebuild();
+        self.stale = true;
+    }
+
+    /// Rebuild the rows when the objects or the filter changed, or when
+    /// the filter is on and a name changed.
+    pub(crate) fn settle(&mut self, names: &NameLookup<'_>) {
+        let renamed = !self.filter.is_empty() && names.changes() != self.names_seen;
+        if self.stale || renamed {
+            self.stale = false;
+            self.names_seen = names.changes();
+            self.rebuild(names);
+        }
     }
 
     /// Objects held, filtered or not.
@@ -97,30 +119,36 @@ impl ObjectList {
         &self.filter
     }
 
-    /// Append to the filter.
+    /// Append to the filter; [`settle`](Self::settle) applies it.
     pub(crate) fn push_filter(&mut self, ch: char) {
         self.filter.push(ch);
-        self.rebuild();
+        self.stale = true;
     }
 
     /// Remove the filter's last character.
     pub(crate) fn pop_filter(&mut self) {
         self.filter.pop();
-        self.rebuild();
+        self.stale = true;
     }
 
     /// Clear the filter.
     pub(crate) fn clear_filter(&mut self) {
         self.filter.clear();
-        self.rebuild();
+        self.stale = true;
     }
 
-    fn rebuild(&mut self) {
+    fn rebuild(&mut self, names: &NameLookup<'_>) {
         let keep = self.selected();
         let needle = self.filter.to_lowercase();
+        let matches = |object: ObjectIdentifier| {
+            object_label(object).contains(&needle)
+                || names
+                    .name(object)
+                    .is_some_and(|name| name.to_lowercase().contains(&needle))
+        };
         let mut groups: BTreeMap<u32, Vec<ObjectIdentifier>> = BTreeMap::new();
         for &object in &self.objects {
-            if needle.is_empty() || object_label(object).contains(&needle) {
+            if needle.is_empty() || matches(object) {
                 groups
                     .entry(object.object_type().to_raw())
                     .or_default()
@@ -178,6 +206,7 @@ impl ObjectList {
 
 #[cfg(test)]
 mod tests {
+    use super::super::names::NameCache;
     use super::*;
 
     fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
@@ -186,6 +215,8 @@ mod tests {
 
     #[test]
     fn objects_are_grouped_by_type_and_the_selection_skips_headings() {
+        let cache = NameCache::default();
+        let names = NameLookup::new(&cache, 9, "");
         let mut list = ObjectList::default();
         list.set(vec![
             oid(ObjectType::DEVICE, 9),
@@ -193,6 +224,7 @@ mod tests {
             oid(ObjectType::ANALOG_OUTPUT, 1),
             oid(ObjectType::ANALOG_INPUT, 1),
         ]);
+        list.settle(&names);
         assert_eq!(list.rows().len(), 7);
         assert_eq!(list.selected(), Some(oid(ObjectType::ANALOG_INPUT, 1)));
         list.move_selection(Movement::Down);
@@ -202,9 +234,44 @@ mod tests {
         assert_eq!(list.selected(), Some(oid(ObjectType::DEVICE, 9)));
         // The filter keeps the selection when it still matches.
         list.push_filter('d');
+        list.settle(&names);
         assert_eq!(list.shown(), 1);
         assert_eq!(list.selected(), Some(oid(ObjectType::DEVICE, 9)));
         list.clear_filter();
+        list.settle(&names);
         assert_eq!(list.shown(), 4);
+    }
+
+    /// The filter matches cached names too, whatever their case, and a
+    /// name learned later joins the match on the next settle (#1929).
+    #[test]
+    fn the_filter_matches_cached_names() {
+        let mut cache = NameCache::default();
+        let ai = |instance| oid(ObjectType::ANALOG_INPUT, instance);
+        cache.learn_name(9, "10.0.0.9:47808", ai(1), "Supply Fan".into());
+        let mut list = ObjectList::default();
+        list.set(vec![ai(1), ai(2), ai(3)]);
+        for ch in "fan".chars() {
+            list.push_filter(ch);
+        }
+        list.settle(&NameLookup::new(&cache, 9, "10.0.0.9:47808"));
+        assert_eq!(
+            list.rows(),
+            [
+                ListRow::Group {
+                    object_type: ObjectType::ANALOG_INPUT,
+                    count: 1
+                },
+                ListRow::Object(ai(1))
+            ]
+        );
+        // Another device's names don't count.
+        list.push_filter(' ');
+        list.pop_filter();
+        list.settle(&NameLookup::new(&cache, 9, "10.0.9.9:47808"));
+        assert_eq!(list.shown(), 0);
+        cache.learn_name(9, "10.0.0.9:47808", ai(3), "Exhaust FAN".into());
+        list.settle(&NameLookup::new(&cache, 9, "10.0.0.9:47808"));
+        assert_eq!(list.shown(), 2);
     }
 }
