@@ -77,6 +77,20 @@ fn with_queue<R>(queues: &Queues, device: u32, f: impl FnOnce(&mut NameQueue) ->
     Some(f(&mut queue.lock().unwrap_or_else(PoisonError::into_inner)))
 }
 
+/// Name queues kept before idle ones are dropped (#1931). An idle queue
+/// holds only remembered answers; a device asked again gets a fresh one.
+const MAX_QUEUES: usize = 256;
+
+/// Past [`MAX_QUEUES`], drop the queues no job holds and nothing waits in.
+fn prune(queues: &mut Queues) {
+    if queues.len() > MAX_QUEUES {
+        queues.retain(|_, queue| {
+            Arc::strong_count(queue) > 1
+                || !queue.lock().unwrap_or_else(PoisonError::into_inner).idle()
+        });
+    }
+}
+
 /// Serve browse commands until `commands` closes, every request after a
 /// slot from `rate`, the cap the watch list shares. Dropping the returned
 /// future drops every job, and with it any request still outstanding.
@@ -100,13 +114,13 @@ pub(crate) async fn run<T: TransportPort + 'static>(
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Names { req, asks }) => {
-                    for NameAsk { device, objects, retry } in asks {
+                    for NameAsk { device, address, max_apdu, objects, retry } in asks {
                         queues.entry(device).or_default();
                         let waiting = with_queue(&queues, device, |queue| {
                             if retry {
                                 queue.retry();
                             }
-                            queue.want(req, objects)
+                            queue.want(req, address, max_apdu, objects)
                         });
                         if waiting == Some(true) {
                             if let Some(started) = scheduler.submit_names(device) {
@@ -114,6 +128,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                             }
                         }
                     }
+                    prune(&mut queues);
                 }
                 Some(Command::Browse { req, device, read }) => {
                     // A fresh read of the device may ask again for names
@@ -165,7 +180,17 @@ async fn job<T: TransportPort + 'static>(
     let (req, read) = match task {
         Task::Read(Job { req, read }) => (req, read),
         Task::Names => {
-            let report = |req, names| deliver(sink, req, BrowseResult::Names { device, names });
+            let report = |req, address, names| {
+                deliver(
+                    sink,
+                    req,
+                    BrowseResult::Names {
+                        device,
+                        address,
+                        names,
+                    },
+                )
+            };
             names::read_names(&mut reader, &queue, report).await;
             return Done {
                 device,
@@ -236,4 +261,42 @@ async fn read_object<T: TransportPort + 'static>(
     let view = view::object_view(object, &rows, via);
     deliver(sink, req, BrowseResult::Object(Box::new(view))).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_types::enums::ObjectType;
+
+    use super::*;
+
+    /// Past [`MAX_QUEUES`], idle queues go; one a job holds, or one with
+    /// names waiting, stays (#1931).
+    #[test]
+    fn idle_name_queues_past_the_cap_are_dropped() {
+        let mut queues = Queues::new();
+        for device in 0..u32::try_from(MAX_QUEUES).unwrap() {
+            queues.entry(device).or_default();
+        }
+        prune(&mut queues);
+        assert_eq!(queues.len(), MAX_QUEUES, "at the cap nothing goes");
+        let held = Arc::clone(queues.entry(10_000).or_default());
+        let object = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+        queues.entry(10_001).or_default();
+        with_queue(&queues, 10_001, |queue| {
+            queue.want(1, "10.0.0.1:47808".into(), None, vec![object])
+        });
+        prune(&mut queues);
+        let mut kept: Vec<u32> = queues.keys().copied().collect();
+        kept.sort_unstable();
+        assert_eq!(kept, [10_000, 10_001]);
+        drop(held);
+        with_queue(&queues, 10_001, |queue| {
+            queue.want(2, "10.0.0.1:47808".into(), None, Vec::new())
+        });
+        for device in 0..u32::try_from(MAX_QUEUES).unwrap() {
+            queues.entry(device).or_default();
+        }
+        prune(&mut queues);
+        assert!(queues.is_empty(), "{:?}", queues.keys());
+    }
 }

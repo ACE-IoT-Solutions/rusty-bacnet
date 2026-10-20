@@ -232,7 +232,7 @@ impl App {
             return;
         }
         if self.screen != Screen::Browse {
-            self.devices.settle();
+            self.settle_devices();
             let Some(row) = self.devices.selected_row() else {
                 self.flash("No device selected. Press d to send a Who-Is.", FLASH_FOR);
                 return;
@@ -393,6 +393,7 @@ mod tests {
         browser.objects.set(vec![ai]);
         app.browser = Some(Box::new(browser));
         app.screen = Screen::Browse;
+        app.settle();
         let read = update(&mut app, Action::Open);
         let [Command::Browse {
             req: object_req, ..

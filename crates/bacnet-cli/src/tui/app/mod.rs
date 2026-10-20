@@ -10,6 +10,7 @@ pub(crate) mod capture;
 pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
+mod filter;
 pub(crate) mod monitor;
 pub(crate) mod mstp;
 pub(crate) mod names;
@@ -404,15 +405,6 @@ impl App {
         }
     }
 
-    /// Rebuild derived state (the visible table order) before drawing.
-    pub(crate) fn settle(&mut self) {
-        self.devices.settle();
-        // Only a frame on screen is decoded.
-        if self.screen == Screen::Capture {
-            self.capture.settle();
-        }
-    }
-
     /// End the TUI with an error, keeping the first reason if there are two.
     pub(crate) fn fail(&mut self, error: impl Into<String>, code: i32) {
         if self.exit_error.is_none() {
@@ -446,17 +438,6 @@ impl App {
             self.screen = Screen::Browse;
         } else {
             self.flash("Open a device first (Enter on a row).", FLASH_FOR);
-        }
-    }
-
-    /// The filter of the list on screen: the browser's objects or the devices.
-    pub(crate) fn filter_text(&self) -> &str {
-        if self.screen == Screen::Capture {
-            return &self.capture.filter;
-        }
-        match self.shown_browser() {
-            Some(browser) => browser.objects.filter(),
-            None => self.devices.filter(),
         }
     }
 
@@ -591,13 +572,14 @@ impl App {
             Overlay::None if self.screen == Screen::Browse => match self.shown_browser_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
                     browser.objects.clear_filter();
+                    self.settle_objects();
                 }
                 _ => self.close_browser(out),
             },
             Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
             Overlay::None if !self.devices.filter().is_empty() => {
                 self.devices.clear_filter();
-                self.devices.settle();
+                self.settle_devices();
             }
             Overlay::None => self.flash = None,
         }
@@ -617,36 +599,6 @@ impl App {
             .map(WhoIsForm::from_spec)
             .unwrap_or_default();
         self.overlay = Overlay::WhoIs(form);
-    }
-
-    fn filter_key(&mut self, key: FilterKey) {
-        if self.screen == Screen::Capture {
-            return self.capture_filter_key(key);
-        }
-        let shown = self.screen == Screen::Browse;
-        if let Some(browser) = self.browser.as_deref_mut().filter(|_| shown) {
-            let objects = &mut browser.objects;
-            match key {
-                FilterKey::Char(ch) => objects.push_filter(ch),
-                FilterKey::Backspace => objects.pop_filter(),
-                FilterKey::Commit => self.filter_editing = false,
-                FilterKey::Clear => {
-                    objects.clear_filter();
-                    self.filter_editing = false;
-                }
-            }
-            return;
-        }
-        match key {
-            FilterKey::Char(ch) => self.devices.push_filter(ch),
-            FilterKey::Backspace => self.devices.pop_filter(),
-            FilterKey::Commit => self.filter_editing = false,
-            FilterKey::Clear => {
-                self.devices.clear_filter();
-                self.filter_editing = false;
-            }
-        }
-        self.devices.settle();
     }
 
     fn form_key(&mut self, key: FormKey, out: &mut Vec<Command>) {
@@ -861,7 +813,7 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
             Screen::Capture => app.capture_key(capture::CaptureKey::Move(movement), out),
             _ => match app.shown_browser_mut() {
                 Some(browser) => browser.move_selection(movement),
-                None => app.devices.move_selection(movement),
+                None => app.devices.move_selection(movement, &app.names),
             },
         },
         Action::Open => app.open(out),
@@ -873,11 +825,11 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
         Action::Refresh => app.refresh(out),
         Action::CycleSort => {
             app.devices.cycle_sort();
-            app.devices.settle();
+            app.settle_devices();
         }
         Action::ReverseSort => {
             app.devices.reverse();
-            app.devices.settle();
+            app.settle_devices();
         }
         Action::StartFilter => {
             if let Some(browser) = app.shown_browser_mut() {

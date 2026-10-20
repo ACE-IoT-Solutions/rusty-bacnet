@@ -21,7 +21,7 @@ use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{
-    ellipsize, sanitize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME, PENDING, WIDE_WIDTH,
+    ellipsize, name_marker, sanitize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME, WIDE_WIDTH,
 };
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
 use crate::tui::app::objects::{kebab, object_label, ListRow};
@@ -240,7 +240,7 @@ fn objects_pane(frame: &mut Frame, area: Rect, browser: &Browser, names: Names, 
                 let name = names.text(browser.device, Some(*object));
                 if named && !name.is_empty() {
                     let pad = " ".repeat(label.saturating_sub(text_width(&text)) + 2);
-                    let style = if name == PENDING {
+                    let style = if name_marker(name) {
                         theme.dim()
                     } else {
                         Style::new()

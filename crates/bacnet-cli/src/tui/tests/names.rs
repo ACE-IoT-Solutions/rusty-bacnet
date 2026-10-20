@@ -23,7 +23,7 @@ pub(super) fn device(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap()
 }
 
-fn named(name: &str) -> ReadName {
+pub(super) fn named(name: &str) -> ReadName {
     ReadName::Named(name.into())
 }
 
@@ -88,8 +88,13 @@ fn on_screen(app: &App) -> Vec<ObjectIdentifier> {
         .collect()
 }
 
-fn names(app: &mut App, device: u32, names: Vec<(ObjectIdentifier, ReadName)>) {
-    let result = BrowseResult::Names { device, names };
+pub(super) fn names(app: &mut App, device: u32, names: Vec<(ObjectIdentifier, ReadName)>) {
+    let address = app.device_address(device).to_string();
+    let result = BrowseResult::Names {
+        device,
+        address,
+        names,
+    };
     worker(app, WorkerEvent::Browse { req: 0, result });
 }
 
@@ -105,7 +110,7 @@ fn card(app: &mut App, req: ReqId) {
 
 /// A connected app browsing device 7, whose Object_List holds `count`
 /// analog inputs and whose card named it `Plant`.
-fn browsing(count: u32) -> App {
+pub(super) fn browsing(count: u32) -> App {
     let mut app = connected_app();
     worker(
         &mut app,
@@ -123,7 +128,7 @@ fn browsing(count: u32) -> App {
 }
 
 /// A connected app whose device table holds devices 1 to `count`.
-fn table(count: u32) -> App {
+pub(super) fn table(count: u32) -> App {
     let mut app = connected_app();
     for instance in 1..=count {
         let address = format!("10.0.0.{instance}:47808");
@@ -286,11 +291,11 @@ fn a_name_the_device_refused_is_not_asked_again() {
         7,
         vec![(ai(0), ReadName::Refused), (ai(1), named("Fan"))],
     );
-    assert_eq!(app.names.get(7, ai(0)), Some(&Name::Unavailable));
+    assert_eq!(app.name_of(7, ai(0)), Some(&Name::Unavailable));
     // A later failure doesn't lose a name.
     names(&mut app, 7, vec![(ai(1), ReadName::Refused)]);
     names(&mut app, 7, vec![(ai(1), ReadName::Unreachable)]);
-    assert_eq!(app.names.get(7, ai(1)), Some(&Name::Known("Fan".into())));
+    assert_eq!(app.name_of(7, ai(1)), Some(&Name::Known("Fan".into())));
     assert!(frame_asks(&mut app, 80, 24).is_empty(), "AI:2 is still out");
     names(&mut app, 7, vec![(ai(2), ReadName::Refused)]);
     press(&mut app, KeyCode::End);
@@ -328,7 +333,7 @@ fn a_timeout_is_asked_again_after_the_next_i_am() {
     assert_eq!(frame_asks(&mut app, 120, 40).len(), 2);
     names(&mut app, 2, vec![(device(2), ReadName::Unreachable)]);
     names(&mut app, 1, vec![(device(1), named("AHU-1"))]);
-    assert_eq!(app.names.get(2, device(2)), Some(&Name::Unreachable));
+    assert_eq!(app.name_of(2, device(2)), Some(&Name::Unreachable));
     assert!(frame_asks(&mut app, 120, 40).is_empty());
     let text = screen(&mut app, 120, 40);
     assert!(!text.contains('…') && !text.contains(" - "), "{text}");
@@ -345,6 +350,8 @@ fn a_timeout_is_asked_again_after_the_next_i_am() {
     let asked = name_asks(&frame_commands(&mut app, 120, 40));
     let again = NameAsk {
         device: 2,
+        address: "10.0.0.2:47808".into(),
+        max_apdu: Some(1476),
         objects: vec![device(2)],
         retry: true,
     };

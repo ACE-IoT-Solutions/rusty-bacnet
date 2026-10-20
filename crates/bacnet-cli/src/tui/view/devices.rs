@@ -2,11 +2,11 @@
 
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use super::columns::{self, Column};
-use super::{ellipsize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME};
+use super::{ellipsize, name_marker, text_width, Names, Theme, FULL_WIDTH, MIN_NAME};
 use crate::tui::app::devices::{age_label, segmentation_label, SortKey};
 use crate::tui::app::names::device_object;
 use crate::tui::app::{App, Link, OpState};
@@ -134,6 +134,8 @@ enum Field {
 /// The Name column (#1896) comes last: it takes the room the others leave,
 /// a long name ending in `…`, and is left out below [`MIN_NAME`] columns
 /// (at 80 columns with long addresses, say), when its names aren't asked for.
+/// Sorted by name, it always shows: the columns in [`GIVES_WAY`] are left
+/// out to make room for it.
 fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     let full = width >= FULL_WIDTH;
     let sorted = sorted_field(app.devices.sort().0);
@@ -174,12 +176,38 @@ fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     // Inside the borders.
     let room = usize::from(width.saturating_sub(2));
     columns::shrink(&mut columns, Field::Vendor, room, min_vendor);
+    if app.devices.sort().0 == SortKey::Name {
+        // The sorted column always shows: the others give way, rightmost
+        // first, then the Via column if there is still room for it.
+        let need = usize::from(columns::SPACING) + MIN_NAME.min(name.width);
+        while columns::total(&columns) + need > room {
+            let Some(at) = columns.iter().rposition(|c| GIVES_WAY.contains(&c.kind)) else {
+                break;
+            };
+            columns.remove(at);
+        }
+        columns::insert_narrowed(&mut columns, 2, name, room, MIN_NAME);
+        if routed {
+            columns::insert_if_room(&mut columns, 4, via, room);
+        }
+        return columns;
+    }
     if routed {
         columns::insert_if_room(&mut columns, 3, via, room);
     }
     columns::insert_narrowed(&mut columns, 2, name, room, MIN_NAME);
     columns
 }
+
+/// The columns left out, rightmost first, to make room for the Name
+/// column while the table is sorted by name.
+const GIVES_WAY: [Field; 5] = [
+    Field::Network,
+    Field::Vendor,
+    Field::Apdu,
+    Field::Segmentation,
+    Field::Seen,
+];
 
 /// One cell's text, before it is fitted to its column.
 fn cell(field: Field, row: &DeviceRow, app: &App, selected: bool) -> String {
@@ -224,15 +252,22 @@ fn cell_width(field: Field, row: &DeviceRow, app: &App) -> usize {
 }
 
 /// A row's cells, each fitted to its column: a vendor too wide for its
-/// column ends in `…`.
-fn cells(columns: &[Column<Field>], row: &DeviceRow, app: &App, selected: bool) -> Vec<String> {
+/// column ends in `…`, and a name marker (`…`, `?`) is dim.
+fn cells<'a>(
+    columns: &[Column<Field>],
+    row: &DeviceRow,
+    app: &App,
+    selected: bool,
+    theme: &Theme,
+) -> Vec<Cell<'a>> {
     columns
         .iter()
         .map(|column| {
             let text = cell(column.kind, row, app, selected);
             match column.kind {
-                Field::Vendor | Field::Name => ellipsize(&text, column.width),
-                _ => text,
+                Field::Name if name_marker(&text) => Cell::new(text).style(theme.dim()),
+                Field::Vendor | Field::Name => Cell::new(ellipsize(&text, column.width)),
+                _ => Cell::new(text),
             }
         })
         .collect()
@@ -268,7 +303,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .enumerate()
         .map(|(i, row)| {
             let is_selected = selected == Some(offset + i);
-            let line = Row::new(cells(&columns, row, app, is_selected));
+            let line = Row::new(cells(&columns, row, app, is_selected, theme));
             if is_selected {
                 line.style(theme.selected())
             } else {
@@ -286,6 +321,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn sorted_field(key: SortKey) -> Field {
     match key {
         SortKey::Instance => Field::Instance,
+        SortKey::Name => Field::Name,
         SortKey::Address => Field::Address,
         SortKey::Network => Field::Network,
         SortKey::Vendor => Field::Vendor,
