@@ -1,13 +1,15 @@
 //! The B/IP operating mode a transport lends the Network Port object.
 //!
-//! A B/IP port runs in NORMAL, FOREIGN or BBMD mode (Clause 12.56.21), and
-//! which Network Port properties exist depends on the mode (Table 12-71,
-//! footnotes 11 to 13, and the informative Table 12-72). The footnotes tie
-//! the BBMD rows to a port able to act as a BBMD; this stack reads that as
-//! a port configured as one, since a port's mode can't change while it is
-//! registered. The transport layer owns that state and the object
-//! layer serves it, and neither crate depends on the other, so the contract
-//! between them lives here.
+//! A B/IP or B/IPv6 port runs in NORMAL, FOREIGN or BBMD mode (Clause
+//! 12.56.21, 12.56.39: BACnet_IP_Mode or BACnet_IPv6_Mode), and the same
+//! types serve both: a host, BDT row or FDT entry holds either IP version.
+//! For either, which Network Port properties exist depends on the mode
+//! (Table 12-71, footnotes 11 to 13, and the informative Table 12-72). The
+//! footnotes tie the BBMD rows to a port able to act as a BBMD; this stack
+//! reads that as a port configured as one, since a port's mode can't change
+//! while it is registered. The transport layer owns that state and the
+//! object layer serves it, and neither crate depends on the other, so the
+//! contract between them lives here.
 //!
 //! A BBMD's tables change at run time, so they are lent as a live view,
 //! [`BbmdTables`], which the object reads on each property read. Nothing is
@@ -191,7 +193,8 @@ fn write_access_denied() -> Error {
     }
 }
 
-/// A B/IP port's mode, with what that mode's Network Port properties need.
+/// A B/IP or B/IPv6 port's mode, with what that mode's Network Port
+/// properties need.
 #[derive(Clone)]
 pub enum BipPortMode {
     /// Plain B/IP: the port relays no broadcasts and joins no BBMD.

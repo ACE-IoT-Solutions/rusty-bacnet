@@ -48,8 +48,8 @@ async fn bbmd_server_with(handler: bool) -> BACnetServer<BipTransport> {
 
 /// WriteProperty of `octets` to the port's `property`: the error class and
 /// code, if refused.
-pub(super) async fn wp(
-    server: &BACnetServer<BipTransport>,
+pub(super) async fn wp<T: TransportPort + 'static>(
+    server: &BACnetServer<T>,
     property: P,
     octets: Vec<u8>,
 ) -> Result<(), (ErrorClass, ErrorCode)> {
@@ -70,8 +70,8 @@ pub(super) async fn wp(
     }
 }
 
-pub(super) async fn reinitialize(
-    server: &BACnetServer<BipTransport>,
+pub(super) async fn reinitialize<T: TransportPort + 'static>(
+    server: &BACnetServer<T>,
     state: ReinitializedState,
 ) -> Apdu {
     let mut request = BytesMut::new();

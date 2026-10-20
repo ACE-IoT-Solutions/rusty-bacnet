@@ -14,8 +14,12 @@ use crate::tap::{FrameTap, TapDirection, TapPeer};
 use crate::udp_metadata::{DestinationReceiver, IpVersion, ReceivedDatagram};
 use bacnet_types::data_link::DataLink;
 
+/// Every task that owns the socket owns it through one `Arc`, so the
+/// registered Network Port's lease lives as long as the last of them. Rust
+/// drops fields in declaration order: the socket closes before the lease.
 pub(super) struct Bip6Socket {
     udp: UdpSocket,
+    _network_port_lease: Option<std::sync::Arc<()>>,
     receiver: DestinationReceiver,
     pub selection: Option<SelectedLink>,
     sender: Option<SelectedSender>,
@@ -79,6 +83,7 @@ impl Bip6Socket {
         };
         Ok(Self {
             udp: UdpSocket::from_std(socket.into())?,
+            _network_port_lease: None,
             receiver,
             selection,
             sender,
@@ -89,6 +94,15 @@ impl Bip6Socket {
     /// This socket, reporting its datagrams to `tap`.
     pub fn tapped(self, tap: FrameTap) -> Self {
         Self { tap, ..self }
+    }
+
+    /// This socket, keeping a registered Network Port's lease while it
+    /// lives.
+    pub fn leased(self, lease: Option<std::sync::Arc<()>>) -> Self {
+        Self {
+            _network_port_lease: lease,
+            ..self
+        }
     }
 
     pub fn local_address(&self) -> io::Result<SocketAddrV6> {
@@ -175,17 +189,23 @@ fn foreign_bind_address(
     if !requested.is_unspecified() {
         return Ok(SocketAddrV6::new(requested, port, 0, 0));
     }
-    // A UDP connect selects a route/source without sending a packet. Bind the
-    // production socket to that exact source, so subsequent registration and
-    // DBTN cannot silently advertise one address while using another.
+    // Bind the production socket to the route's exact source, so subsequent
+    // registration and DBTN cannot silently advertise one address while
+    // using another.
+    route_source(bbmd).map(|source| SocketAddrV6::new(source, port, 0, 0))
+}
+
+/// The source address this host's routes would send from to reach `bbmd`.
+/// A UDP connect selects a route and source without sending a packet, so
+/// this is a local, synchronous probe.
+pub(super) fn route_source(bbmd: SocketAddrV6) -> io::Result<Ipv6Addr> {
     let probe = std::net::UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))?;
     probe.connect(bbmd)?;
     match probe.local_addr()? {
-        SocketAddr::V6(mut address)
+        SocketAddr::V6(address)
             if !address.ip().is_unspecified() && !address.ip().is_multicast() =>
         {
-            address.set_port(port);
-            Ok(address)
+            Ok(*address.ip())
         }
         _ => Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,

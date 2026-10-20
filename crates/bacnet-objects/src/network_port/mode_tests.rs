@@ -271,7 +271,7 @@ fn a_bbmd_without_tables_is_refused_and_a_new_owner_starts_normal() {
             BipPortMode::Bbmd { tables: None },
         )
         .is_err());
-    assert_eq!(db.registered_bip_port_internal(), None);
+    assert_eq!(db.registered_port_internal(), None);
     assert_eq!(
         read(&db, P::BACNET_IP_MODE).unwrap(),
         PropertyValue::Enumerated(0)

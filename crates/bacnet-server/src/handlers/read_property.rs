@@ -206,7 +206,7 @@ pub(crate) fn resolve_read_target(
 ) -> ObjectIdentifier {
     if oid.object_type() == ObjectType::NETWORK_PORT && oid.instance_number() == 4194303 {
         return registered_port
-            .filter(|selected| Some(*selected) == db.registered_bip_port_internal())
+            .filter(|selected| Some(*selected) == db.registered_port_internal())
             .unwrap_or(*oid);
     }
     if is_device_wildcard(oid) {
