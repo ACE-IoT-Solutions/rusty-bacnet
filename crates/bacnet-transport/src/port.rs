@@ -397,8 +397,9 @@ pub trait TransportPort: Send + Sync {
     /// Explicit capability for registration as one IPv6 Network Port, with
     /// the B/IPv6 mode the port reports (Clause 12.56.39): the B/IPv6
     /// counterpart of [`bip_port`](Self::bip_port), under the same
-    /// contract. A transport reports at most one of the two. The default
-    /// refuses registration.
+    /// contract. A transport should report at most one of the two; when
+    /// one reports both, registration takes the B/IP port and ignores this
+    /// one. The default refuses registration.
     fn bip6_port(&self) -> Option<Bip6Port> {
         None
     }

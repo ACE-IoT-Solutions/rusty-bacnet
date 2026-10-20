@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use bacnet_types::bip_port::BipPortMode;
 use bacnet_types::constructed::BACnetHostNPort;
+use bacnet_types::enums::ErrorCode;
+use bacnet_types::error::Error;
 
 use super::*;
 use crate::port::TransportPort;
@@ -35,7 +37,7 @@ fn an_unstarted_transport_reports_its_configuration() {
 }
 
 #[test]
-fn a_foreign_device_reports_its_bbmd_and_lifetime_read_only() {
+fn a_foreign_device_lends_a_registration_that_takes_changes_while_running() {
     let mut transport = Bip6Transport::new(INTERFACE, 47809, Some(1234));
     let bbmd = Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 0xBB);
     transport.register_as_foreign_device(Bip6ForeignDeviceConfig {
@@ -51,9 +53,19 @@ fn a_foreign_device_reports_its_bbmd_and_lifetime_read_only() {
         BACnetHostNPort::from_socket_addr(SocketAddrV6::new(bbmd, 47810, 0, 0).into())
     );
     assert_eq!(registration.subscription_lifetime(), 300);
-    // The transport can't move a registration while it runs.
-    assert!(!registration.can_change());
-    assert!(registration.check(&Default::default()).is_err());
+    assert!(registration.can_change());
+    // Not running yet: nothing knows the device's own address.
+    let error = registration.check(&Default::default()).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::Protocol {
+                code: ErrorCode::WRITE_ACCESS_DENIED,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]

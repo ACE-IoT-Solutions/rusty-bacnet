@@ -15,8 +15,13 @@ const SITE_LOCAL_GROUP: [u8; 16] = [0xFF, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 /// describes an observed interface or route.
 ///
 /// The object serves this as a port whose addresses are configured by hand:
-/// it lists no IPv6_Auto_Addressing_Enable, DHCPv6 or IPv6_Zone_Index rows,
-/// and every row is read-only over BACnet.
+/// it lists no IPv6_Auto_Addressing_Enable (Table 12-71 footnote 16) or
+/// IPv6_Zone_Index (footnote 17) row, nor the optional DHCPv6 rows, and
+/// every row is read-only over BACnet.
+///
+/// `vmac`, and the UDP port the multicast row carries, are placeholders
+/// until a registered owner publishes the VMAC it uses and the port it is
+/// bound to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bip6PortConfig {
     /// Caller-configured number; zero means unknown, 65535 is invalid.
@@ -66,8 +71,12 @@ impl Bip6PortConfig {
     pub(super) fn validate(&self, instance: u32) -> Result<(), Error> {
         // The flat application profile's local Port ID policy, as for B/IP;
         // a prefix length is 1 to 128 (Clause 12.56.41); a broadcast group
-        // is an IPv6 multicast address (Annex U.4).
+        // is an IPv6 multicast address (Annex U.4); an IPv4-mapped address
+        // is an IPv4 port, which `new_bip` describes.
         if !(1..=255).contains(&instance)
+            || std::net::Ipv6Addr::from(self.ip_address)
+                .to_ipv4_mapped()
+                .is_some()
             || self.network_number == u16::MAX
             || self.apdu_length < 50
             || self.dns_servers.is_empty()
@@ -92,7 +101,7 @@ impl Bip6PortConfig {
 /// the address and UDP port it is bound to, the VMAC it uses and the group
 /// it broadcasts to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Bip6Bind {
+pub(crate) struct Bip6Bind {
     /// The bound IPv6 address, most significant octet first.
     pub ip: [u8; 16],
     /// The bound UDP port, never zero.

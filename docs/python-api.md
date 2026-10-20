@@ -3896,7 +3896,10 @@ is its object instance, restricted to 1–255; UDP zero is independently allowed
 The constructor accepts keyword-only `ip_address`, `udp_port`, `network_number`,
 `apdu_length`, `subnet_mask`, `default_gateway`, and `dns_servers`. Defaults use
 zero addresses/mask/gateway and one zero DNS address for unavailable configuration;
-an explicitly empty DNS list is invalid. Addresses must be IPv4 strings.
+an explicitly empty DNS list is invalid. Addresses must be IPv4 strings. A malformed
+address raises `ValueError`; a value outside these ranges raises
+`BacnetProtocolError` (VALUE_OUT_OF_RANGE), a number too large for its type
+`OverflowError`, and a call after `start()` `RuntimeError`.
 Network numbers range from 0 to 65534; zero has UNKNOWN quality, and explicitly
 configured nonzero values have CONFIGURED quality. APDU_Length (399) is any
 unsigned value at least 50, independent of Device property62's discrete limits.
@@ -3922,11 +3925,16 @@ It takes keyword-only `ip_address`, `udp_port`, `network_number`, `apdu_length`,
 `prefix_length` (1–128, default 64), `default_gateway`, `dns_servers`,
 `multicast_address` (an IPv6 multicast group, default `ff05::bac0`) and `vmac`
 (three octets, default zero). Addresses must be IPv6 strings; `::` means unknown.
+A malformed address or a `vmac` of another length raises `ValueError`; a value
+outside the ranges above, a group that isn't multicast or an IPv4-mapped
+`ip_address` raises `BacnetProtocolError` (VALUE_OUT_OF_RANGE), a number too large
+for its type `OverflowError`, and a call after `start()` `RuntimeError`.
 The object serves BACnet_IPv6_Mode, IPv6_Address, IPv6_Prefix_Length,
 BACnet_IPv6_UDP_Port, IPv6_Default_Gateway, BACnet_IPv6_Multicast_Address (the
 group followed by the UDP port) and IPv6_DNS_Server, all read-only, with the VMAC
 as MAC_Address, and none of the IPv4 rows. With `transport="ipv6"`,
-`registered_network_port=1` and a concrete `ipv6_interface`, start checks the
+`registered_network_port=1` and a concrete `ipv6_interface` (not link-local or
+IPv4-mapped), start checks the
 object's address and UDP port against the transport's, then publishes the bound
 port and the VMAC the server uses (its device instance). The Python B/IPv6 server
 runs in normal mode only, so BACnet_IPv6_Mode reads 0.

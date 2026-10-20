@@ -55,6 +55,7 @@ pub const MAX_VMAC_RETRIES: u32 = 3;
 
 mod addressing;
 mod collision_probe;
+mod foreign_target;
 mod frame;
 pub use frame::{bvll6_error, decode_bvll6, encode_bvll6};
 mod ingress;
@@ -82,6 +83,8 @@ pub use vmac_table::{
     VMAC_TEXT_PREFIX,
 };
 
+#[cfg(test)]
+mod foreign_retarget_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]

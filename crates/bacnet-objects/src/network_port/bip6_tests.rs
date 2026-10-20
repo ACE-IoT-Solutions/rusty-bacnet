@@ -230,15 +230,31 @@ fn registration_publishes_the_bound_port_vmac_and_group() {
     // Port zero, another address and a B/IP bind can't be published.
     for refused in [Bip6Bind { udp: 0, ..bind }, Bip6Bind { ip: ip(6), ..bind }] {
         assert!(db
-            .publish_bip6_port_internal(oid(), refused, 1476, BipPortMode::Normal)
+            .publish_bip6_port_internal(
+                oid(),
+                refused.ip,
+                refused.udp,
+                refused.vmac,
+                refused.multicast,
+                1476,
+                BipPortMode::Normal
+            )
             .is_err());
     }
     assert!(db
         .publish_bip_port_internal(oid(), [127, 0, 0, 1], 47809, 1476, BipPortMode::Normal)
         .is_err());
-    db.publish_bip6_port_internal(oid(), bind, 1400, BipPortMode::Normal)
-        .unwrap();
-    assert_eq!(db.registered_bip_port_internal(), Some(oid()));
+    db.publish_bip6_port_internal(
+        oid(),
+        bind.ip,
+        bind.udp,
+        bind.vmac,
+        bind.multicast,
+        1400,
+        BipPortMode::Normal,
+    )
+    .unwrap();
+    assert_eq!(db.registered_port_internal(), Some(oid()));
     let object = db.get(&oid()).unwrap();
     assert_eq!(read(object, P::MAC_ADDRESS), octets(&[0x00, 0x04, 0xD2]));
     assert_eq!(
@@ -260,10 +276,18 @@ fn registration_publishes_the_bound_port_vmac_and_group() {
     assert_eq!(read(object, P::NETWORK_NUMBER), PropertyValue::Unsigned(12));
     // Published once only.
     assert!(db
-        .publish_bip6_port_internal(oid(), bind, 1476, BipPortMode::Normal)
+        .publish_bip6_port_internal(
+            oid(),
+            bind.ip,
+            bind.udp,
+            bind.vmac,
+            bind.multicast,
+            1476,
+            BipPortMode::Normal
+        )
         .is_err());
     drop(lease);
-    assert_eq!(db.registered_bip_port_internal(), None);
+    assert_eq!(db.registered_port_internal(), None);
 }
 
 #[test]

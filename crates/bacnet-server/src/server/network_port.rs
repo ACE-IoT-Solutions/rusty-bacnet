@@ -82,10 +82,18 @@ fn prepare_bip6<T: TransportPort>(
         .ok_or_else(|| Error::Encoding("registered port requires B/IP or B/IPv6".into()))?
         .endpoint;
     let ip = *address.ip();
-    if ip.is_unspecified() || ip.is_multicast() {
-        return Err(Error::Encoding(
-            "registered B/IPv6 requires a concrete unicast interface".into(),
-        ));
+    let refused = if ip.is_unspecified() || ip.is_multicast() {
+        Some("registered B/IPv6 requires a concrete unicast interface")
+    } else if ip.to_ipv4_mapped().is_some() {
+        Some("registered B/IPv6 refuses an IPv4-mapped address: register IPv4 as B/IP")
+    } else if ip.is_unicast_link_local() {
+        // A link-local address needs IPv6_Zone_Index, which isn't modeled.
+        Some("registered B/IPv6 refuses a link-local address: no IPv6_Zone_Index is modeled")
+    } else {
+        None
+    };
+    if let Some(message) = refused {
+        return Err(Error::Encoding(message.into()));
     }
     let (_, lease) = db.reserve_bip6_port_internal(oid, ip.octets(), address.port())?;
     transport.retain_network_port_lease_internal(lease)
@@ -119,12 +127,10 @@ pub(super) fn publish<T: TransportPort + 'static>(
             .ok_or_else(|| Error::Encoding("started B/IPv6 port reports no VMAC".into()))?;
         db.publish_bip6_port_internal(
             oid,
-            bacnet_objects::network_port::Bip6Bind {
-                ip: port.endpoint.ip().octets(),
-                udp: port.endpoint.port(),
-                vmac,
-                multicast: port.multicast_group.octets(),
-            },
+            port.endpoint.ip().octets(),
+            port.endpoint.port(),
+            vmac,
+            port.multicast_group.octets(),
             capacity,
             port.mode,
         )?;

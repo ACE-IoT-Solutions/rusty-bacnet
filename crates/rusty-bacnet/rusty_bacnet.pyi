@@ -4898,7 +4898,18 @@ class BACnetServer:
         preloaded records.
         """
         ...
-    def add_bip_network_port(self, instance: int, name: str, *, ip_address: str = "0.0.0.0", udp_port: int = 47808, network_number: int = 0, apdu_length: int = 1476, subnet_mask: str = "0.0.0.0", default_gateway: str = "0.0.0.0", dns_servers: Optional[List[str]] = None) -> None: ...
+    def add_bip_network_port(self, instance: int, name: str, *, ip_address: str = "0.0.0.0", udp_port: int = 47808, network_number: int = 0, apdu_length: int = 1476, subnet_mask: str = "0.0.0.0", default_gateway: str = "0.0.0.0", dns_servers: Optional[List[str]] = None) -> None:
+        """Add a configured, unbound IPV4 (B/IP) Network Port snapshot.
+
+        Every configuration row is read-only and nothing binds a socket.
+        Raises ValueError for an address that isn't IPv4 (``ip_address``,
+        ``subnet_mask``, ``default_gateway`` or a DNS server);
+        BacnetProtocolError for an instance outside 1..255, a
+        ``network_number`` of 65535, an ``apdu_length`` under 50 or an empty
+        ``dns_servers``; OverflowError for a number too large for its type;
+        RuntimeError once the server has started.
+        """
+        ...
     def add_bip6_network_port(self, instance: int, name: str, *, ip_address: str = "::", udp_port: int = 47808, network_number: int = 0, apdu_length: int = 1476, prefix_length: int = 64, default_gateway: str = "::", dns_servers: Optional[List[str]] = None, multicast_address: str = "ff05::bac0", vmac: Optional[bytes] = None) -> None:
         """Add a configured, unbound IPV6 (B/IPv6) Network Port snapshot.
 
@@ -4906,6 +4917,13 @@ class BACnetServer:
         read-only and nothing binds a socket. ``vmac`` is the 3-octet
         MAC_Address until a registered ``transport="ipv6"`` server publishes
         the VMAC it uses; ``multicast_address`` is the broadcast group.
+        Raises ValueError for an address that isn't IPv6 or a ``vmac`` that
+        isn't 3 octets; BacnetProtocolError for an instance outside 1..255,
+        a ``network_number`` of 65535, an ``apdu_length`` under 50, an empty
+        ``dns_servers``, a ``prefix_length`` outside 1..128, a
+        ``multicast_address`` that isn't multicast or an IPv4-mapped
+        ``ip_address``; OverflowError for a number too large for its type;
+        RuntimeError once the server has started.
         """
         ...
 

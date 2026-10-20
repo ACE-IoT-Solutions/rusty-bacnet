@@ -323,9 +323,19 @@ async fn bbmd_mode_serves_ipv6_tables_and_activates_a_written_bdt() {
     );
 }
 
+/// The message a start that should fail failed with.
+fn refusal(started: Result<BACnetServer<TestTransport>, Error>) -> String {
+    match started {
+        Err(Error::Encoding(message)) => message,
+        Err(other) => panic!("an Encoding refusal: {other:?}"),
+        Ok(_) => panic!("the start should fail"),
+    }
+}
+
 /// Registration refuses a B/IPv6 link whose object or address doesn't fit:
-/// an IPV4 object, the unspecified or a multicast address, another address,
-/// and a link that is neither B/IP nor B/IPv6.
+/// an IPV4 object; the unspecified, a multicast, an IPv4-mapped or a
+/// link-local address; another address; and a B/IP link for the IPV6
+/// object.
 #[tokio::test]
 async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
     let mut ipv4 = ObjectDatabase::new();
@@ -333,14 +343,32 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
         NetworkPortObject::new_bip(1, "Port", BipPortConfig::default()).unwrap(),
     ))
     .unwrap();
-    let refused = start_with(bind(BipPortMode::Normal), ipv4, false).await;
-    assert!(refused.is_err());
-    // The unspecified and a multicast address are refused even when the
-    // object declares them; another address than the object's is refused.
-    for (declared, ip) in [
-        (Ipv6Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED),
-        (GROUP, GROUP),
-        (PORT_IP, v6(6)),
+    assert_eq!(
+        refusal(start_with(bind(BipPortMode::Normal), ipv4, false).await),
+        "registration requires an IPV6 port"
+    );
+    // These are refused even when the object declares the same address.
+    let concrete = "registered B/IPv6 requires a concrete unicast interface";
+    let mapped: Ipv6Addr = "::ffff:192.0.2.1".parse().unwrap();
+    let link_local: Ipv6Addr = "fe80::5".parse().unwrap();
+    for (declared, ip, expected) in [
+        (Ipv6Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED, concrete),
+        (GROUP, GROUP, concrete),
+        (
+            PORT_IP,
+            mapped,
+            "registered B/IPv6 refuses an IPv4-mapped address: register IPv4 as B/IP",
+        ),
+        (
+            link_local,
+            link_local,
+            "registered B/IPv6 refuses a link-local address: no IPv6_Zone_Index is modeled",
+        ),
+        (
+            PORT_IP,
+            v6(6),
+            "Network Port configuration differs from transport interface/UDP",
+        ),
     ] {
         let mut db = ObjectDatabase::new();
         let config = Bip6PortConfig {
@@ -355,9 +383,20 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
             endpoint: SocketAddrV6::new(ip, UDP, 0, 0),
             ..bind(BipPortMode::Normal)
         };
-        let refused = start_with(port, db, false).await;
-        assert!(refused.is_err(), "{ip}");
+        assert_eq!(refusal(start_with(port, db, false).await), expected, "{ip}");
     }
+    // An IPv4-mapped address can't be declared either.
+    let mapped_config = Bip6PortConfig {
+        ip_address: mapped.octets(),
+        ..config()
+    };
+    assert!(matches!(
+        NetworkPortObject::new_bip6(1, "Port", mapped_config),
+        Err(Error::Protocol {
+            code: ErrorCode::VALUE_OUT_OF_RANGE,
+            ..
+        })
+    ));
     // A B/IP link can't register the B/IPv6 object either.
     let config = ServerConfig {
         registered_network_port: Some(port_oid()),
@@ -369,7 +408,8 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
             mode: BipPortMode::Normal,
         })
         .build();
-    assert!(BACnetServer::start(config, database(), transport)
-        .await
-        .is_err());
+    assert_eq!(
+        refusal(BACnetServer::start(config, database(), transport).await),
+        "registration requires an IPV4 port"
+    );
 }

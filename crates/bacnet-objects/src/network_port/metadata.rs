@@ -38,9 +38,11 @@ const BIP: &[PropertyMetadata] = &[
 // Table 12-71 footnotes 14 and 15, and Table 12-72's IPV6 rows: a B/IPv6
 // application port has its mode, address, prefix length, UDP port, gateway,
 // multicast group and DNS servers. They are read-only, as the B/IP rows
-// are: this object has no activation owner for its addresses. The optional
-// automatic-addressing, DHCPv6 and zone-index rows (footnotes 16 and 17)
-// are left out: the port's address is configured, not assigned by it.
+// are: this object has no activation owner for its addresses. Left out:
+// IPv6_Auto_Addressing_Enable (footnote 16: only for a port that assigns
+// its own address, which this one doesn't), IPv6_Zone_Index (footnote 17:
+// only for a node with several link-local addresses; registration refuses
+// link-local), and the DHCPv6 rows, which are plain optional.
 const BIP6: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::BACNET_IPV6_MODE, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::IPV6_ADDRESS, RequiredRead, None, ReadOnly),

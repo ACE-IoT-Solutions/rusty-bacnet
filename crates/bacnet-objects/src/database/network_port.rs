@@ -42,11 +42,7 @@ impl ObjectDatabase {
     }
 
     /// Snapshot only the concrete built-in B/IPv6 object.
-    #[doc(hidden)]
-    pub fn configured_bip6_port_internal(
-        &mut self,
-        oid: &ObjectIdentifier,
-    ) -> Option<Bip6PortConfig> {
+    fn configured_bip6_port_internal(&mut self, oid: &ObjectIdentifier) -> Option<Bip6PortConfig> {
         self.builtin_network_port_mut(oid)?
             .bip6_configuration_internal()
             .cloned()
@@ -146,17 +142,28 @@ impl ObjectDatabase {
         self.publish_port(oid, PortBind::V4(ip, udp), capacity, mode)
     }
 
-    /// Reconcile one actual B/IPv6 bind, VMAC, group and mode, as
+    /// Reconcile one actual B/IPv6 bind (address, UDP port), the VMAC it
+    /// uses, the multicast group it broadcasts to and its mode, as
     /// [`publish_bip_port_internal`](Self::publish_bip_port_internal) does
     /// for B/IP.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)] // one bind, as the B/IP call takes it
     pub fn publish_bip6_port_internal(
         &mut self,
         oid: ObjectIdentifier,
-        bind: Bip6Bind,
+        ip: [u8; 16],
+        udp: u16,
+        vmac: [u8; 3],
+        multicast: [u8; 16],
         capacity: u32,
         mode: BipPortMode,
     ) -> Result<(), Error> {
+        let bind = Bip6Bind {
+            ip,
+            udp,
+            vmac,
+            multicast,
+        };
         self.publish_port(oid, PortBind::V6(bind), capacity, mode)
     }
 
@@ -197,7 +204,7 @@ impl ObjectDatabase {
 
     /// Explicit published receiving port, never a selection by database order.
     #[doc(hidden)]
-    pub fn registered_bip_port_internal(&self) -> Option<ObjectIdentifier> {
+    pub fn registered_port_internal(&self) -> Option<ObjectIdentifier> {
         self.network_port
             .as_ref()
             .filter(|port| port.published && port.lease.strong_count() != 0)
@@ -212,7 +219,7 @@ impl ObjectDatabase {
         oid: ObjectIdentifier,
         announcement: Option<(u16, u8)>,
     ) -> Option<bacnet_types::network_number::NetworkNumber> {
-        if self.registered_bip_port_internal() != Some(oid) {
+        if self.registered_port_internal() != Some(oid) {
             return None;
         }
         Some(

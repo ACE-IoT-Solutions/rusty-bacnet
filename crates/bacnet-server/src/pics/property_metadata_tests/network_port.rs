@@ -339,7 +339,7 @@ fn pics_lists_the_pending_rows_writable_only_when_their_view_can_change() {
 /// own rows, as for B/IP.
 #[test]
 fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
-    use bacnet_objects::network_port::{Bip6Bind, Bip6PortConfig};
+    use bacnet_objects::network_port::Bip6PortConfig;
     use bacnet_types::bip_port::BipPortMode;
     use bacnet_types::constructed::BACnetHostNPort;
     let ip = std::net::Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 5);
@@ -375,10 +375,25 @@ fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
     let bbmd = BipPortMode::Bbmd {
         tables: Some(std::sync::Arc::new(NoTables)),
     };
-    for (mode, added) in [
-        (BipPortMode::Normal, &[][..]),
+    // A transport whose foreign registration takes changes, behind a
+    // ReinitializeDevice handler, lists the two FOREIGN rows writable, as
+    // Bip6Transport's does (Clause 12.56.37, 12.56.38).
+    let movable = BipPortMode::Foreign {
+        registration: std::sync::Arc::new(Views(true)),
+    };
+    for (mode, activation, added) in [
+        (BipPortMode::Normal, false, &[][..]),
+        (
+            movable,
+            true,
+            &[
+                (P::FD_BBMD_ADDRESS, false, true),
+                (P::FD_SUBSCRIPTION_LIFETIME, false, true),
+            ][..],
+        ),
         (
             foreign,
+            false,
             &[
                 (P::FD_BBMD_ADDRESS, false, false),
                 (P::FD_SUBSCRIPTION_LIFETIME, false, false),
@@ -386,6 +401,7 @@ fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
         ),
         (
             bbmd,
+            false,
             &[
                 (P::BBMD_BROADCAST_DISTRIBUTION_TABLE, false, false),
                 (P::BBMD_ACCEPT_FD_REGISTRATIONS, false, false),
@@ -406,13 +422,17 @@ fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
         let (_, _lease) = db
             .reserve_bip6_port_internal(oid, ip.octets(), 47808)
             .unwrap();
-        let bind = Bip6Bind {
-            ip: ip.octets(),
-            udp: 47808,
-            vmac: [0, 0, 1],
-            multicast: config.multicast_address,
-        };
-        db.publish_bip6_port_internal(oid, bind, 1476, mode)
+        db.publish_bip6_port_internal(
+            oid,
+            ip.octets(),
+            47808,
+            [0, 0, 1],
+            config.multicast_address,
+            1476,
+            mode,
+        )
+        .unwrap();
+        db.set_network_port_activation_internal(oid, activation)
             .unwrap();
         let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
         let rows: Vec<_> = pics.supported_object_types[0]
