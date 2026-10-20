@@ -135,6 +135,19 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
         Ok(())
     }
 
+    /// Wait until a request could go at once, without taking the slot,
+    /// unless the job was stopped (see [`RateCap::wait_free`]).
+    pub(super) async fn free_turn(&self) -> Result<(), Halt> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(Halt::Cancelled);
+        }
+        self.rate.wait_free().await;
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(Halt::Cancelled);
+        }
+        Ok(())
+    }
+
     /// The Device object.
     pub(crate) fn device_object(&self) -> Result<ObjectIdentifier, Halt> {
         ObjectIdentifier::new(ObjectType::DEVICE, self.device).map_err(Halt::Device)

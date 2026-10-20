@@ -239,7 +239,7 @@ fn objects_pane(frame: &mut Frame, area: Rect, browser: &Browser, names: Names, 
                 let mut spans = vec![Span::raw(format!("{marker}{text}"))];
                 let name = names.text(browser.device, Some(*object));
                 if named && !name.is_empty() {
-                    let pad = " ".repeat(label - text_width(&text) + 2);
+                    let pad = " ".repeat(label.saturating_sub(text_width(&text)) + 2);
                     let style = if name == PENDING {
                         theme.dim()
                     } else {

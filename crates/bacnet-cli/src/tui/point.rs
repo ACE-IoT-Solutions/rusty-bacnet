@@ -16,11 +16,32 @@ pub(crate) enum BrowseRead {
     Device,
     /// One object's properties.
     Object(ObjectIdentifier),
-    /// The Object_Name of each of these objects, for the rows on screen
-    /// (#1896). It replaces the names the device was last asked for, so
-    /// rows scrolled off are no longer read; names already read or being
-    /// read are not read again.
-    Names(Vec<ObjectIdentifier>),
+}
+
+/// One device's part of a name request (#1896): the objects on screen
+/// without a name. It replaces what the device was last asked for, so rows
+/// scrolled off are no longer read (empty withdraws them all); names
+/// already read or being read are not read again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NameAsk {
+    /// The device.
+    pub(crate) device: u32,
+    /// The objects, in the order the screen shows them.
+    pub(crate) objects: Vec<ObjectIdentifier>,
+    /// The device answered again after a timeout: names it didn't answer
+    /// for may be read again.
+    pub(crate) retry: bool,
+}
+
+/// How one name read went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadName {
+    /// The object's name.
+    Named(String),
+    /// The device answered without one (an error, a reject, not a string).
+    Refused,
+    /// The device didn't answer, or the read was given up with it.
+    Unreachable,
 }
 
 /// How a property list was read.
@@ -171,13 +192,12 @@ pub(crate) enum BrowseResult {
     },
     /// One object's properties.
     Object(Box<ObjectView>),
-    /// Object names read for [`BrowseRead::Names`]: `None` where the
-    /// device couldn't give one, which isn't asked again this session.
+    /// Object names read for a [`NameAsk`].
     Names {
         /// The device read.
         device: u32,
-        /// Each object and its name.
-        names: Vec<(ObjectIdentifier, Option<String>)>,
+        /// Each object and how its read went.
+        names: Vec<(ObjectIdentifier, ReadName)>,
     },
     /// The request failed.
     Failed(String),

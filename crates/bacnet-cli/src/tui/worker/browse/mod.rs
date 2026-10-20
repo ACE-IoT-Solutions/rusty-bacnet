@@ -34,7 +34,7 @@ use self::names::NameQueue;
 use self::read::{Halt, Reader, Wanted};
 use super::EventSink;
 use crate::tui::message::{Command, WorkerEvent};
-use crate::tui::point::{BrowseRead, BrowseResult, ReqId};
+use crate::tui::point::{BrowseRead, BrowseResult, NameAsk, ReqId};
 
 /// Default `--max-rate`: confirmed requests a second across all devices.
 pub(crate) const DEFAULT_MAX_RATE: u32 = 20;
@@ -99,11 +99,20 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     loop {
         tokio::select! {
             command = commands.recv() => match command {
-                Some(Command::Browse { req, device, read: BrowseRead::Names(objects) }) => {
-                    let queue = queues.entry(device).or_default();
-                    let waiting = queue.lock().unwrap_or_else(PoisonError::into_inner).want(req, objects);
-                    if let Some(started) = waiting.then(|| scheduler.submit_names(device)).flatten() {
-                        jobs.push(start(started, &no_rpm, &queues));
+                Some(Command::Names { req, asks }) => {
+                    for NameAsk { device, objects, retry } in asks {
+                        queues.entry(device).or_default();
+                        let waiting = with_queue(&queues, device, |queue| {
+                            if retry {
+                                queue.retry();
+                            }
+                            queue.want(req, objects)
+                        });
+                        if waiting == Some(true) {
+                            if let Some(started) = scheduler.submit_names(device) {
+                                jobs.push(start(started, &no_rpm, &queues));
+                            }
+                        }
                     }
                 }
                 Some(Command::Browse { req, device, read }) => {
@@ -167,8 +176,6 @@ async fn job<T: TransportPort + 'static>(
     let outcome = match read {
         BrowseRead::Device => read_device(&mut reader, sink, req).await,
         BrowseRead::Object(object) => read_object(&mut reader, sink, req, object).await,
-        // Taken by the loop, into the name queue.
-        BrowseRead::Names(_) => Ok(()),
     };
     match outcome {
         Ok(()) | Err(Halt::Cancelled) => {}

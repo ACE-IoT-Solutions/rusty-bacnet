@@ -127,7 +127,7 @@ async fn run(
                     Command::WhoIs { op, .. } | Command::Cancel { op } => {
                         forward_operation(active.as_ref(), command, op, generation, &sink).await;
                     }
-                    Command::Browse { req, .. } => {
+                    Command::Browse { req, .. } | Command::Names { req, .. } => {
                         forward_browse(active.as_ref(), command, req, generation, &sink).await;
                     }
                     Command::Watch(watch) => {

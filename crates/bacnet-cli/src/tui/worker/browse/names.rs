@@ -4,15 +4,18 @@
 //! name; that set replaces the device's [`NameQueue`], so a row scrolled
 //! off before its turn is never read. A name job (the [`Scheduler`]'s
 //! lowest priority, under the same per-device gate and [`RateCap`] as
-//! every other read) takes a few names at a time from the queue, reads
-//! them with one ReadPropertyMultiple (Clause 15.7) or, from a device that
-//! refused it, one ReadProperty each (Clause 15.5), and reports them.
+//! every other read) waits for a free slot in the cap before it takes a
+//! batch from the queue, so a row withdrawn while it waited costs neither
+//! a request nor a slot. It reads the batch with one ReadPropertyMultiple
+//! (Clause 15.7) or, from a device that refused it, one ReadProperty each
+//! (Clause 15.5), and reports it.
 //!
 //! The queue remembers what is being read and what was answered, so a set
 //! the UI sends before an answer reaches it doesn't read a name twice. A
-//! name the device can't give is reported as `None`, which the UI keeps
-//! for the session instead of asking again. A device that stops answering
-//! ends the job with every name it still held reported that way.
+//! name the device refused is not read again until the device is read
+//! afresh. A device that stops answering ends the job, and every name it
+//! held is reported unreachable; those are read again once the UI says the
+//! device answered (an I-Am, [`NameQueue::retry`]).
 //!
 //! [`Scheduler`]: super::limits::Scheduler
 //! [`RateCap`]: super::limits::RateCap
@@ -27,15 +30,15 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use super::read::{rpm_failure, unreachable, Halt, Reader, RpmFailure};
 use crate::tui::format::name_text;
-use crate::tui::point::ReqId;
+use crate::tui::point::{ReadName, ReqId};
 
 /// Names one ReadPropertyMultiple asks for. Small enough that the answer
 /// usually fits an unsegmented APDU; when it doesn't, that batch is read
 /// one name at a time.
 pub(crate) const NAMES_PER_RPM: usize = 8;
 
-/// One object's name as read: `None` when the device couldn't give it.
-pub(crate) type NameRead = (ObjectIdentifier, Option<String>);
+/// One object and how its name read went.
+pub(crate) type NameRead = (ObjectIdentifier, ReadName);
 
 /// One device's names still to read.
 #[derive(Debug, Default)]
@@ -49,8 +52,10 @@ pub(crate) struct NameQueue {
     /// Those of `in_flight` the UI still wants: a stopped batch puts them
     /// back in the queue.
     keep: Vec<ObjectIdentifier>,
-    /// Names answered this session, read or not.
+    /// Names read or refused this session.
     answered: HashSet<ObjectIdentifier>,
+    /// Names the device didn't answer for, until it answers again.
+    unreachable: HashSet<ObjectIdentifier>,
 }
 
 impl NameQueue {
@@ -59,10 +64,16 @@ impl NameQueue {
     pub(crate) fn want(&mut self, req: ReqId, objects: Vec<ObjectIdentifier>) -> bool {
         self.req = req;
         self.wanted.clear();
-        self.keep.retain(|object| objects.contains(object));
+        self.keep = self
+            .in_flight
+            .iter()
+            .copied()
+            .filter(|object| objects.contains(object))
+            .collect();
         for object in objects {
             if !self.in_flight.contains(&object)
                 && !self.answered.contains(&object)
+                && !self.unreachable.contains(&object)
                 && !self.wanted.contains(&object)
             {
                 self.wanted.push_back(object);
@@ -76,10 +87,16 @@ impl NameQueue {
         !self.wanted.is_empty()
     }
 
-    /// Forget what was answered, so names the device couldn't give may be
-    /// asked for again (the device is being read afresh).
+    /// The device answered again: names it didn't answer for may be read.
+    pub(crate) fn retry(&mut self) {
+        self.unreachable.clear();
+    }
+
+    /// Forget every answer, so names the device refused may be asked for
+    /// again (the device is being read afresh).
     pub(crate) fn forget(&mut self) {
         self.answered.clear();
+        self.unreachable.clear();
     }
 
     /// The next batch of up to `count`, now in flight.
@@ -90,29 +107,53 @@ impl NameQueue {
         (self.req, self.in_flight.clone())
     }
 
+    /// True while the UI still wants `object` of the batch in flight.
+    fn still_wanted(&self, object: ObjectIdentifier) -> bool {
+        self.keep.contains(&object)
+    }
+
+    fn record(&mut self, read: &[NameRead]) {
+        for (object, outcome) in read {
+            match outcome {
+                ReadName::Unreachable => self.unreachable.insert(*object),
+                _ => self.answered.insert(*object),
+            };
+        }
+    }
+
+    fn known(&self, object: &ObjectIdentifier) -> bool {
+        self.answered.contains(object) || self.unreachable.contains(object)
+    }
+
     /// The batch in flight ended with `read` answered. The rest of it goes
     /// back to the front of the queue if the UI still wants it.
     fn settle(&mut self, read: &[NameRead]) {
+        self.record(read);
         self.in_flight.clear();
-        self.answered.extend(read.iter().map(|(object, _)| *object));
         for object in std::mem::take(&mut self.keep).into_iter().rev() {
-            if !self.answered.contains(&object) && !self.wanted.contains(&object) {
+            if !self.known(&object) && !self.wanted.contains(&object) {
                 self.wanted.push_front(object);
             }
         }
     }
 
-    /// Everything still held, given up on: the batch in flight not yet
-    /// answered and the whole queue.
-    fn abandon(&mut self) -> Vec<ObjectIdentifier> {
+    /// The device stopped answering after `read`: everything else held,
+    /// the batch in flight and the whole queue, is given up on as
+    /// unreachable and returned.
+    fn abandon(&mut self, read: &[NameRead]) -> Vec<ObjectIdentifier> {
+        self.record(read);
         self.keep.clear();
-        let mut left: Vec<ObjectIdentifier> = std::mem::take(&mut self.in_flight)
+        let held: Vec<ObjectIdentifier> = std::mem::take(&mut self.in_flight)
             .into_iter()
             .chain(self.wanted.drain(..))
-            .filter(|object| !self.answered.contains(object))
             .collect();
-        left.dedup();
-        self.answered.extend(left.iter().copied());
+        let mut left: Vec<ObjectIdentifier> = Vec::new();
+        for object in held {
+            if !self.known(&object) && !left.contains(&object) {
+                left.push(object);
+            }
+        }
+        self.unreachable.extend(left.iter().copied());
         left
     }
 }
@@ -123,7 +164,7 @@ fn lock(queue: &Mutex<NameQueue>) -> std::sync::MutexGuard<'_, NameQueue> {
 
 /// Read names from `queue` until it is empty or the job is stopped,
 /// handing each batch to `report` as it is answered. The lock is held only
-/// to take and settle a batch, never across a request.
+/// to take and settle a batch, never across a request or a wait.
 pub(crate) async fn read_names<T, F, R>(
     reader: &mut Reader<'_, T>,
     queue: &Mutex<NameQueue>,
@@ -134,23 +175,29 @@ pub(crate) async fn read_names<T, F, R>(
     R: std::future::Future<Output = ()>,
 {
     loop {
+        if !lock(queue).waiting() {
+            return;
+        }
+        // A free slot first, then the batch.
+        if reader.free_turn().await.is_err() {
+            return;
+        }
         let per_batch = if reader.rpm { NAMES_PER_RPM } else { 1 };
         let (req, batch) = lock(queue).take(per_batch);
         if batch.is_empty() {
             return;
         }
-        let (mut read, halt) = read_batch(reader, &batch).await;
+        let (mut read, halt) = read_batch(reader, queue, &batch).await;
         let stopped = halt.is_some();
         match halt {
             None | Some(Halt::Cancelled) => lock(queue).settle(&read),
             Some(Halt::Device(error)) => {
                 tracing::info!(
-                    "device {}: names not read ({error}); not asking it again this session",
+                    "device {}: names not read ({error}); asking again when it next answers",
                     reader.device
                 );
-                let mut queue = lock(queue);
-                queue.settle(&read);
-                read.extend(queue.abandon().into_iter().map(|object| (object, None)));
+                let left = lock(queue).abandon(&read);
+                read.extend(left.into_iter().map(|o| (o, ReadName::Unreachable)));
             }
         }
         if !read.is_empty() {
@@ -163,11 +210,12 @@ pub(crate) async fn read_names<T, F, R>(
 }
 
 /// One batch: by RPM when the device takes it and the batch has more than
-/// one name, else by ReadProperty each. Returns what was answered, and why
-/// the batch stopped early: the job was stopped, or the device isn't
-/// answering.
+/// one name, else by ReadProperty each, skipping names the UI withdrew
+/// meanwhile. Returns what was answered, and why the batch stopped early:
+/// the job was stopped, or the device isn't answering.
 async fn read_batch<T: TransportPort + 'static>(
     reader: &mut Reader<'_, T>,
+    queue: &Mutex<NameQueue>,
     batch: &[ObjectIdentifier],
 ) -> (Vec<NameRead>, Option<Halt>) {
     if reader.rpm && batch.len() > 1 {
@@ -193,19 +241,27 @@ async fn read_batch<T: TransportPort + 'static>(
     }
     let mut read = Vec::with_capacity(batch.len());
     for &object in batch {
+        if !lock(queue).still_wanted(object) {
+            continue;
+        }
         match reader
             .rp(object, PropertyIdentifier::OBJECT_NAME, None)
             .await
         {
-            Ok(data) => read.push((object, name_text(&data))),
+            Ok(data) => read.push((object, named(name_text(&data)))),
             Err(Halt::Device(error)) if unreachable(&error) => {
                 return (read, Some(Halt::Device(error)))
             }
-            Err(Halt::Device(_)) => read.push((object, None)),
+            Err(Halt::Device(_)) => read.push((object, ReadName::Refused)),
             Err(Halt::Cancelled) => return (read, Some(Halt::Cancelled)),
         }
     }
     (read, None)
+}
+
+/// A decoded name, or a refusal when the answer wasn't one string.
+fn named(name: Option<String>) -> ReadName {
+    name.map_or(ReadName::Refused, ReadName::Named)
 }
 
 /// Object_Name of every object in `batch` with one RPM. An object the
@@ -241,7 +297,7 @@ async fn rpm_names<T: TransportPort + 'static>(
                 .find(|element| element.property_identifier == PropertyIdentifier::OBJECT_NAME)
                 .and_then(|element| element.property_value.as_deref())
                 .and_then(name_text);
-            (object, name)
+            (object, named(name))
         })
         .collect())
 }
@@ -256,6 +312,10 @@ mod tests {
         ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
     }
 
+    fn one(name: &str) -> ReadName {
+        ReadName::Named(name.into())
+    }
+
     /// A new set replaces the old one, skipping what is in flight or was
     /// answered; a stopped batch goes back to the front while still wanted.
     #[test]
@@ -268,16 +328,48 @@ mod tests {
         // is new, and 4-10 went.
         assert!(queue.want(2, vec![ai(1), ai(2), ai(20)]));
         assert_eq!(queue.wanted, [ai(20)]);
+        assert!(!queue.still_wanted(ai(3)));
         // Stopped after 1 was read: 2 returns to the front, 3 doesn't.
-        queue.settle(&[(ai(1), Some("one".into()))]);
+        queue.settle(&[(ai(1), one("one"))]);
         assert_eq!(queue.wanted, [ai(2), ai(20)]);
         assert!(!queue.want(3, vec![ai(1)]), "answered already");
-        // A device that stops answering gives up on everything held.
+        // A device that stops answering gives up on everything held, as
+        // unreachable: read again only after `retry`.
         queue.want(4, vec![ai(5), ai(6)]);
         queue.take(1);
-        assert_eq!(queue.abandon(), [ai(5), ai(6)]);
+        assert_eq!(queue.abandon(&[]), [ai(5), ai(6)]);
         assert!(!queue.want(5, vec![ai(5), ai(6)]));
+        queue.retry();
+        assert!(
+            queue.want(6, vec![ai(5)]),
+            "asked again after the device answered"
+        );
+        // A refusal stays until the device is read afresh.
+        queue.take(1);
+        queue.settle(&[(ai(5), ReadName::Refused)]);
+        queue.retry();
+        assert!(!queue.want(7, vec![ai(5)]));
         queue.forget();
-        assert!(queue.want(6, vec![ai(5)]), "asked again after forget");
+        assert!(queue.want(8, vec![ai(5)]));
+    }
+
+    /// A name withdrawn while in flight and then asked for again is still
+    /// wanted: a stopped batch puts it back, and a device that stops
+    /// answering reports it.
+    #[test]
+    fn a_name_asked_again_while_in_flight_is_not_lost() {
+        for stopped_by_timeout in [false, true] {
+            let mut queue = NameQueue::default();
+            queue.want(1, vec![ai(1)]);
+            queue.take(1);
+            assert!(!queue.want(2, Vec::new()));
+            assert!(!queue.want(3, vec![ai(1)]), "in flight");
+            if stopped_by_timeout {
+                assert_eq!(queue.abandon(&[]), [ai(1)]);
+            } else {
+                queue.settle(&[]);
+                assert_eq!(queue.wanted, [ai(1)]);
+            }
+        }
     }
 }

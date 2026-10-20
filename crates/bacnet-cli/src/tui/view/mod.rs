@@ -237,7 +237,9 @@ impl<'a> Names<'a> {
 
     /// `object`'s name on `device` as a cell shows it: the name (already
     /// free of control characters), `…` while it is being asked for, `-`
-    /// when the device couldn't give it, and nothing when no one asks.
+    /// when the device refused it, and nothing when no one is asking for
+    /// it: the device didn't answer (until its next I-Am), or nothing can
+    /// be asked.
     pub(super) fn text(
         &self,
         device: u32,
@@ -246,6 +248,7 @@ impl<'a> Names<'a> {
         match object.and_then(|object| self.cache.get(device, object)) {
             Some(Name::Known(name)) => name,
             Some(Name::Unavailable) => "-",
+            Some(Name::Unreachable) => "",
             None if self.live => PENDING,
             None => "",
         }

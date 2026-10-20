@@ -1,48 +1,53 @@
 //! Object and device names (#1896): only the rows on screen are asked
-//! for, once, and names that came free cost nothing. The asks come from
-//! synthetic frames and worker events; the reads run against the lab
-//! device through the browser's per-device gate and the rate cap.
+//! for, once, in one command a tick, and names that came free cost
+//! nothing. The asks come from synthetic frames and worker events;
+//! `names_site` runs the reads against the lab device.
 
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 use ratatui::crossterm::event::KeyCode;
 
-use super::site::{ClientLimits, Quirks, Server, Site};
 use super::*;
 use crate::tui::app::names::Name;
 use crate::tui::app::objects::ListRow;
 use crate::tui::app::watch::Screen;
 use crate::tui::network::discovery::{DiscoveryEvent, FoundRow};
-use crate::tui::point::{BrowseRead, BrowseResult, DeviceCard, ReqId};
+use crate::tui::point::{BrowseRead, BrowseResult, DeviceCard, NameAsk, ReadName, ReqId};
 use crate::tui::watched::WatchEvent;
-use crate::tui::worker::browse::names::NAMES_PER_RPM;
-use crate::tui::worker::session::SessionOptions;
 
-fn ai(instance: u32) -> ObjectIdentifier {
+pub(super) fn ai(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
 }
 
-fn device(instance: u32) -> ObjectIdentifier {
+pub(super) fn device(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap()
 }
 
-/// The name asks among `commands`: each device and what it is asked for.
-fn asks(commands: &[Command]) -> Vec<(u32, Vec<ObjectIdentifier>)> {
+fn named(name: &str) -> ReadName {
+    ReadName::Named(name.into())
+}
+
+/// The name asks among `commands`, as one list.
+fn name_asks(commands: &[Command]) -> Vec<NameAsk> {
     commands
         .iter()
-        .filter_map(|command| match command {
-            Command::Browse {
-                device,
-                read: BrowseRead::Names(objects),
-                ..
-            } => Some((*device, objects.clone())),
-            _ => None,
+        .flat_map(|command| match command {
+            Command::Names { asks, .. } => asks.clone(),
+            _ => Vec::new(),
         })
         .collect()
 }
 
+/// The name asks among `commands`: each device and what it is asked for.
+pub(super) fn asks(commands: &[Command]) -> Vec<(u32, Vec<ObjectIdentifier>)> {
+    name_asks(commands)
+        .into_iter()
+        .map(|ask| (ask.device, ask.objects))
+        .collect()
+}
+
 /// Draw a frame and tick: the commands for what it showed.
-fn frame_commands(app: &mut App, width: u16, height: u16) -> Vec<Command> {
+pub(super) fn frame_commands(app: &mut App, width: u16, height: u16) -> Vec<Command> {
     render(app, width, height);
     let now = app.now;
     update(
@@ -63,8 +68,8 @@ fn frame_asks(app: &mut App, width: u16, height: u16) -> Vec<(u32, Vec<ObjectIde
 /// The request id of the one command among `commands`.
 fn req_of(commands: &[Command]) -> ReqId {
     match commands {
-        [Command::Browse { req, .. }] => *req,
-        other => panic!("one ask: {other:?}"),
+        [Command::Names { req, .. } | Command::Browse { req, .. }] => *req,
+        other => panic!("one command: {other:?}"),
     }
 }
 
@@ -83,9 +88,19 @@ fn on_screen(app: &App) -> Vec<ObjectIdentifier> {
         .collect()
 }
 
-fn names(app: &mut App, device: u32, names: Vec<(ObjectIdentifier, Option<String>)>) {
+fn names(app: &mut App, device: u32, names: Vec<(ObjectIdentifier, ReadName)>) {
     let result = BrowseResult::Names { device, names };
     worker(app, WorkerEvent::Browse { req: 0, result });
+}
+
+/// Deliver device 7's card for request `req`.
+fn card(app: &mut App, req: ReqId) {
+    let card = DeviceCard {
+        name: Some("Plant".into()),
+        ..DeviceCard::default()
+    };
+    let result = BrowseResult::Card(card);
+    worker(app, WorkerEvent::Browse { req, result });
 }
 
 /// A connected app browsing device 7, whose Object_List holds `count`
@@ -96,21 +111,27 @@ fn browsing(count: u32) -> App {
         &mut app,
         WorkerEvent::Discovered(row(7, "10.0.0.7:47808", 260, 0)),
     );
-    let [Command::Browse { req, .. }] = press(&mut app, KeyCode::Enter)[..] else {
-        panic!("expected the device read");
-    };
-    let card = DeviceCard {
-        name: Some("Plant".into()),
-        ..DeviceCard::default()
-    };
-    let result = BrowseResult::Card(card);
-    worker(&mut app, WorkerEvent::Browse { req, result });
+    let req = req_of(&press(&mut app, KeyCode::Enter));
+    card(&mut app, req);
     let result = BrowseResult::Objects {
         objects: (0..count).map(ai).collect(),
         indexed: false,
         stopped: None,
     };
     worker(&mut app, WorkerEvent::Browse { req, result });
+    app
+}
+
+/// A connected app whose device table holds devices 1 to `count`.
+fn table(count: u32) -> App {
+    let mut app = connected_app();
+    for instance in 1..=count {
+        let address = format!("10.0.0.{instance}:47808");
+        worker(
+            &mut app,
+            WorkerEvent::Discovered(row(instance, &address, 260, 0)),
+        );
+    }
     app
 }
 
@@ -127,7 +148,12 @@ fn only_the_rows_on_screen_are_asked_for() {
     // Names arriving for some of them change nothing either.
     let half: Vec<_> = shown[..shown.len() / 2]
         .iter()
-        .map(|object| (*object, Some(format!("Point {}", object.instance_number()))))
+        .map(|object| {
+            (
+                *object,
+                named(&format!("Point {}", object.instance_number())),
+            )
+        })
         .collect();
     names(&mut app, 7, half);
     assert!(frame_asks(&mut app, 80, 24).is_empty());
@@ -157,6 +183,36 @@ fn scrolling_replaces_the_ask_and_closing_stops_it() {
     assert_eq!(app.screen, Screen::Main);
     assert_eq!(frame_asks(&mut app, 80, 24), [(7, Vec::new())]);
     assert!(frame_asks(&mut app, 80, 24).is_empty());
+}
+
+/// Every device's ask goes in one command a tick, however many devices
+/// the screen shows, so the worker's 16-command queues never fill.
+#[test]
+fn one_command_carries_every_device() {
+    let mut app = table(40);
+    let commands = frame_commands(&mut app, 200, 50);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    let asked = asks(&commands);
+    assert!(asked.len() > 16, "{}", asked.len());
+    assert!(asked.iter().all(|(on, objects)| *objects == [device(*on)]));
+}
+
+/// The same rows in another order are not asked for again: sorting by
+/// last seen reorders the table on every I-Am.
+#[test]
+fn reordered_rows_are_not_asked_again() {
+    let mut app = table(5);
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Char('s'));
+    }
+    assert_eq!(frame_asks(&mut app, 120, 40).len(), 5);
+    for (instance, seen) in [(1, 9), (3, 7), (5, 8)] {
+        let address = format!("10.0.0.{instance}:47808");
+        let row = row(instance, &address, 260, seen);
+        worker(&mut app, WorkerEvent::Updated(row));
+    }
+    assert_eq!(visible(&mut app)[..3], [1, 5, 3]);
+    assert!(frame_asks(&mut app, 120, 40).is_empty());
 }
 
 /// Names that came free (the card, a watch row's first read, an I-Have)
@@ -215,11 +271,11 @@ fn names_that_came_free_are_not_asked_for() {
     assert!(text.contains("Plant") && text.contains("AHU-8"), "{text}");
 }
 
-/// A name the device couldn't give is shown as such and not asked for
-/// again, even after scrolling away and back, until `r` reads the device
-/// afresh.
+/// A name the device refused shows `-` and isn't asked for again, even
+/// after scrolling away and back, until the device is read afresh: `r`,
+/// once the worker took it (its card arrives), not when it was refused.
 #[test]
-fn a_name_the_device_cant_give_is_not_asked_again() {
+fn a_name_the_device_refused_is_not_asked_again() {
     let mut app = browsing(3);
     assert_eq!(
         frame_asks(&mut app, 80, 24),
@@ -228,20 +284,21 @@ fn a_name_the_device_cant_give_is_not_asked_again() {
     names(
         &mut app,
         7,
-        vec![(ai(0), None), (ai(1), Some("Fan".into()))],
+        vec![(ai(0), ReadName::Refused), (ai(1), named("Fan"))],
     );
     assert_eq!(app.names.get(7, ai(0)), Some(&Name::Unavailable));
     // A later failure doesn't lose a name.
-    names(&mut app, 7, vec![(ai(1), None)]);
+    names(&mut app, 7, vec![(ai(1), ReadName::Refused)]);
+    names(&mut app, 7, vec![(ai(1), ReadName::Unreachable)]);
     assert_eq!(app.names.get(7, ai(1)), Some(&Name::Known("Fan".into())));
     assert!(frame_asks(&mut app, 80, 24).is_empty(), "AI:2 is still out");
-    names(&mut app, 7, vec![(ai(2), None)]);
+    names(&mut app, 7, vec![(ai(2), ReadName::Refused)]);
     press(&mut app, KeyCode::End);
     press(&mut app, KeyCode::Home);
     assert!(frame_asks(&mut app, 80, 24).is_empty());
     let text = screen(&mut app, 80, 24);
     assert!(text.contains("analog-input 0  -"), "{text}");
-    // `r` on the object list reads the device again, names included.
+    // `r` that the worker never took changes nothing.
     let refresh = press(&mut app, KeyCode::Char('r'));
     assert!(matches!(
         refresh.as_slice(),
@@ -250,18 +307,62 @@ fn a_name_the_device_cant_give_is_not_asked_again() {
             ..
         }]
     ));
+    let link = app.link.clone();
+    app.command_rejected(refresh[0].clone(), link, "full".into());
+    assert!(frame_asks(&mut app, 80, 24).is_empty());
+    // Taken, its card arrives, and the refused names are asked again.
+    let req = req_of(&press(&mut app, KeyCode::Char('r')));
+    assert!(
+        frame_asks(&mut app, 80, 24).is_empty(),
+        "not before the card"
+    );
+    card(&mut app, req);
     assert_eq!(frame_asks(&mut app, 80, 24), [(7, vec![ai(0), ai(2)])]);
 }
 
+/// A timeout leaves the name blank, not refused, and the device's next
+/// I-Am asks for it again, telling the worker to read it.
+#[test]
+fn a_timeout_is_asked_again_after_the_next_i_am() {
+    let mut app = table(2);
+    assert_eq!(frame_asks(&mut app, 120, 40).len(), 2);
+    names(&mut app, 2, vec![(device(2), ReadName::Unreachable)]);
+    names(&mut app, 1, vec![(device(1), named("AHU-1"))]);
+    assert_eq!(app.names.get(2, device(2)), Some(&Name::Unreachable));
+    assert!(frame_asks(&mut app, 120, 40).is_empty());
+    let text = screen(&mut app, 120, 40);
+    assert!(!text.contains('…') && !text.contains(" - "), "{text}");
+    // Device 1's I-Am changes nothing; device 2's asks again.
+    worker(
+        &mut app,
+        WorkerEvent::Updated(row(1, "10.0.0.1:47808", 260, 5)),
+    );
+    assert!(frame_asks(&mut app, 120, 40).is_empty());
+    worker(
+        &mut app,
+        WorkerEvent::Updated(row(2, "10.0.0.2:47808", 260, 5)),
+    );
+    let asked = name_asks(&frame_commands(&mut app, 120, 40));
+    let again = NameAsk {
+        device: 2,
+        objects: vec![device(2)],
+        retry: true,
+    };
+    assert_eq!(asked, [again]);
+    names(&mut app, 2, vec![(device(2), named("AHU-2"))]);
+    assert!(screen(&mut app, 120, 40).contains("AHU-2"));
+}
+
 /// An ask the worker never took (a full queue, no session) is asked again
-/// on the next frame, without a notice.
+/// on the next frame, without a notice; so is a withdrawal, and a retry
+/// keeps its flag.
 #[test]
 fn an_ask_that_was_not_taken_is_asked_again() {
     let mut app = browsing(2);
     let commands = frame_commands(&mut app, 80, 24);
     req_of(&commands);
     let link = app.link.clone();
-    app.command_rejected(commands[0].clone(), link, "full".into());
+    app.command_rejected(commands[0].clone(), link.clone(), "full".into());
     assert!(app.flash.is_none(), "no notice for a background read");
     let again = frame_commands(&mut app, 80, 24);
     assert_eq!(asks(&again), [(7, vec![ai(0), ai(1)])]);
@@ -270,6 +371,13 @@ fn an_ask_that_was_not_taken_is_asked_again() {
     let result = BrowseResult::Failed("no active connection".into());
     worker(&mut app, WorkerEvent::Browse { req, result });
     assert_eq!(frame_asks(&mut app, 80, 24), [(7, vec![ai(0), ai(1)])]);
+    // A refused withdrawal is sent again too.
+    press(&mut app, KeyCode::Esc);
+    let withdraw = frame_commands(&mut app, 80, 24);
+    assert_eq!(asks(&withdraw), [(7, Vec::new())]);
+    app.command_rejected(withdraw[0].clone(), link, "full".into());
+    assert_eq!(frame_asks(&mut app, 80, 24), [(7, Vec::new())]);
+    assert!(frame_asks(&mut app, 80, 24).is_empty());
 }
 
 /// The device table: a Name column at 80 columns that a long name fits
@@ -283,7 +391,7 @@ fn the_device_table_fits_its_name_column() {
         WorkerEvent::Discovered(row(1001, "10.0.0.2:47808", 260, 0)),
     );
     let long = "Air handler 1 supply fan and economizer, level 3 mechanical room";
-    names(&mut app, 1001, vec![(device(1001), Some(long.into()))]);
+    names(&mut app, 1001, vec![(device(1001), named(long))]);
     let text = screen(&mut app, 80, 24);
     assert!(text.contains("Air handler 1 supply"), "{text}");
     assert!(!text.contains(long) && text.contains('…'), "{text}");
@@ -314,8 +422,8 @@ fn the_object_list_shows_names_at_every_width() {
         &mut app,
         7,
         vec![
-            (ai(0), Some("Zone\u{1b}[2J Temp".into())),
-            (ai(1), Some("x".repeat(120))),
+            (ai(0), named("Zone\u{1b}[2J Temp")),
+            (ai(1), named(&"x".repeat(120))),
         ],
     );
     for (w, h) in [(80, 24), (200, 50)] {
@@ -340,181 +448,4 @@ fn a_passive_session_asks_nothing() {
         WorkerEvent::Discovered(row(1001, "10.0.0.2:47808", 260, 0)),
     );
     assert!(frame_asks(&mut app, 120, 40).is_empty());
-}
-
-const LAB: u32 = 100;
-const LAB_MAC: [u8; 6] = [10, 0, 0, 100, 0xBA, 0xC0];
-const RP: u8 = 12;
-const RPM: u8 = 14;
-
-/// Ask for the names on screen, as the UI loop does, and apply results
-/// until every one is known.
-async fn read_names(site: &mut Site) -> Vec<ObjectIdentifier> {
-    let commands = frame_commands(&mut site.app, 200, 50);
-    let asked: Vec<_> = asks(&commands).into_iter().flat_map(|(_, o)| o).collect();
-    site.send(commands).await;
-    known(site, asked.clone()).await;
-    asked
-}
-
-/// Apply results until every one of `objects` on the lab device is known.
-async fn known(site: &mut Site, objects: Vec<ObjectIdentifier>) {
-    site.pump_until(move |app| objects.iter().all(|o| app.names.get(LAB, *o).is_some()))
-        .await;
-}
-
-/// The services of the requests to the lab device since the `from`th.
-fn services_since(site: &Site, from: usize) -> Vec<u8> {
-    site.hub.requests_to(&LAB_MAC)[from..]
-        .iter()
-        .map(|(service, _)| *service)
-        .collect()
-}
-
-/// The lab device's names come by ReadPropertyMultiple, a few objects a
-/// request, one request outstanding at a time and each after its slot in
-/// the rate cap. The device's own name came with its card.
-#[tokio::test(start_paused = true)]
-async fn names_are_read_through_the_gate_and_the_rate_cap() {
-    let options = SessionOptions {
-        max_rate: 4,
-        ..SessionOptions::default()
-    };
-    let servers = vec![Server::lab(100, LAB)];
-    let mut site = Site::start_with_options(servers, ClientLimits::default(), options).await;
-    super::browser::open_device(&mut site).await;
-    let before = site.hub.requests_to(&LAB_MAC).len();
-    let asked = read_names(&mut site).await;
-    assert_eq!(asked.len(), 10, "every object but the device: {asked:?}");
-    let ao1 = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
-    assert_eq!(
-        site.app.names.get(LAB, ao1),
-        Some(&Name::Known("Damper".into()))
-    );
-    let rpms = asked.len().div_ceil(NAMES_PER_RPM);
-    assert_eq!(services_since(&site, before), vec![RPM; rpms]);
-    assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
-    let requests = site.hub.requests_to(&LAB_MAC);
-    for pair in requests.windows(2) {
-        let gap = pair[1].1 - pair[0].1;
-        assert!(gap >= std::time::Duration::from_millis(250), "{gap:?}");
-    }
-    // Nothing is read twice.
-    assert!(read_names(&mut site).await.is_empty());
-    assert_eq!(site.hub.requests_to(&LAB_MAC).len(), requests.len());
-    site.stop().await;
-}
-
-/// Without a rate cap, name reads still share the device's gate with an
-/// object read asked at the same moment: one request outstanding at a
-/// time, the object read first, and the names after it.
-#[tokio::test(start_paused = true)]
-async fn names_and_an_object_read_take_turns_at_the_device() {
-    let options = SessionOptions {
-        max_rate: 0,
-        ..SessionOptions::default()
-    };
-    let servers = vec![Server::lab(100, LAB)];
-    let mut site = Site::start_with_options(servers, ClientLimits::default(), options).await;
-    super::browser::open_device(&mut site).await;
-    // The object read goes first, so the names wait for it.
-    let mut commands = press(&mut site.app, KeyCode::Enter);
-    let names = frame_commands(&mut site.app, 200, 50);
-    let asked: Vec<_> = asks(&names).into_iter().flat_map(|(_, o)| o).collect();
-    assert!(!asked.is_empty());
-    commands.extend(names);
-    site.send(commands).await;
-    known(&mut site, asked).await;
-    site.pump_until(|app| {
-        let browser = app.browser.as_ref().unwrap();
-        matches!(browser.view, crate::tui::app::browser::ViewState::Ready(_))
-    })
-    .await;
-    assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
-    site.stop().await;
-}
-
-/// A device that refuses RPM gives its names one ReadProperty each.
-#[tokio::test(start_paused = true)]
-async fn names_fall_back_to_read_property() {
-    let server = Server {
-        quirks: Quirks {
-            refuse_rpm: true,
-            ..Quirks::default()
-        },
-        ..Server::lab(100, LAB)
-    };
-    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
-    super::browser::open_device(&mut site).await;
-    let before = site.hub.requests_to(&LAB_MAC).len();
-    let asked = read_names(&mut site).await;
-    assert_eq!(services_since(&site, before), vec![RP; asked.len()]);
-    for object in &asked {
-        let name = site.app.names.get(LAB, *object);
-        assert!(matches!(name, Some(Name::Known(_))), "{object}: {name:?}");
-    }
-    site.stop().await;
-}
-
-/// The command a frame showing `objects` of the lab device would send.
-fn ask(req: ReqId, objects: &[ObjectIdentifier]) -> Command {
-    Command::Browse {
-        req,
-        device: LAB,
-        read: BrowseRead::Names(objects.to_vec()),
-    }
-}
-
-/// A device that won't give names: one RPM fails as a whole, each object
-/// then says so alone, and the names are kept as unavailable; the worker
-/// doesn't read them again even when asked.
-#[tokio::test(start_paused = true)]
-async fn names_a_device_wont_give_are_read_once() {
-    let server = Server {
-        quirks: Quirks {
-            refuse_object_name: true,
-            ..Quirks::default()
-        },
-        ..Server::lab(100, LAB)
-    };
-    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
-    site.who_is("", 1).await;
-    let objects = [ai(1), ai(2)];
-    site.send(vec![ask(1_000, &objects)]).await;
-    known(&mut site, objects.to_vec()).await;
-    assert_eq!(services_since(&site, 0), [RPM, RP, RP]);
-    for object in &objects {
-        assert_eq!(site.app.names.get(LAB, *object), Some(&Name::Unavailable));
-    }
-    site.send(vec![ask(1_001, &objects)]).await;
-    site.run_for(std::time::Duration::from_secs(5)).await;
-    assert_eq!(services_since(&site, 0).len(), 3, "not read again");
-    site.stop().await;
-}
-
-/// A device that stops answering times out once, and every name still
-/// asked for is given up on rather than read into more timeouts.
-#[tokio::test(start_paused = true)]
-async fn a_silent_device_times_out_once_for_all_its_names() {
-    let server = Server {
-        quirks: Quirks {
-            silent: true,
-            ..Quirks::default()
-        },
-        ..Server::lab(100, LAB)
-    };
-    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
-    site.who_is("", 1).await;
-    let objects: Vec<_> = (1..=20).map(ai).collect();
-    site.send(vec![ask(1_000, &objects)]).await;
-    known(&mut site, objects.clone()).await;
-    let services = services_since(&site, 0);
-    assert!(
-        !services.is_empty() && services.len() <= 4 && services.iter().all(|s| *s == RPM),
-        "one RPM and its retries: {services:?}"
-    );
-    for object in &objects {
-        assert_eq!(site.app.names.get(LAB, *object), Some(&Name::Unavailable));
-    }
-    site.stop().await;
 }

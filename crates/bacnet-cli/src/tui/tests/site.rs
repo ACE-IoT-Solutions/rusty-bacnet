@@ -69,6 +69,9 @@ pub(super) struct Quirks {
     /// Fail any ReadProperty or ReadPropertyMultiple that asks for
     /// Object_Name the same way, as a device that won't give names.
     pub(super) refuse_object_name: bool,
+    /// Swallow this many confirmed requests, retries included, then
+    /// answer: a device that was away for a while.
+    pub(super) swallow_first: u8,
 }
 
 struct Port {
@@ -206,6 +209,10 @@ impl HubPort {
                     ]
                     .contains(&service);
                     if port.quirks.silent || (write && port.quirks.swallow_writes) {
+                        return;
+                    }
+                    if port.quirks.swallow_first > 0 {
+                        port.quirks.swallow_first -= 1;
                         return;
                     }
                     if service == ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw() {

@@ -71,6 +71,23 @@ impl RateCap {
         }
     }
 
+    /// Wait until a request could go at once, without reserving a slot: a
+    /// caller that decides only then what to send (the name reads) spends
+    /// no slot on work withdrawn while it waited.
+    pub(crate) async fn wait_free(&self) {
+        loop {
+            let next = self
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .next;
+            match next {
+                Some(at) if at > Instant::now() => tokio::time::sleep_until(at).await,
+                _ => return,
+            }
+        }
+    }
+
     /// Requests whose slot fell in the meter's window up to now.
     pub(crate) fn recent(&self) -> usize {
         let now = Instant::now();
@@ -342,5 +359,20 @@ mod tests {
             none.acquire().await;
         }
         assert_eq!(Instant::now(), before);
+    }
+
+    /// Waiting for a free slot reserves none: the next request still goes
+    /// as soon as it would have.
+    #[tokio::test(start_paused = true)]
+    async fn waiting_for_a_free_slot_takes_none() {
+        let cap = RateCap::new(4);
+        let start = Instant::now();
+        cap.acquire().await;
+        cap.wait_free().await;
+        assert_eq!(Instant::now() - start, Duration::from_millis(250));
+        cap.wait_free().await;
+        cap.acquire().await;
+        assert_eq!(Instant::now() - start, Duration::from_millis(250));
+        assert_eq!(cap.recent(), 2);
     }
 }

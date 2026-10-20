@@ -166,20 +166,29 @@ What M0 draws (80x24):
   its label. Names that arrive anyway are used first and cost no request: the
   device card, an object read in the browser, a watch row's first read, and
   every I-Have. For the rest, each tick asks for the rows the last frame
-  showed without a name, and only those, never the whole Object_List. The
-  ask replaces the device's previous one in the browser worker, so a row
-  scrolled off before its turn is not read. The reads are name jobs in the
-  browser's per-device scheduler, the lowest priority (any other read stops
-  one, and it resumes after), each request after its slot in the shared
-  `--max-rate` cap: one RPM for up to eight names, or one ReadProperty each
-  from a device that refused RPM. A name the device can't give shows `-` and
-  isn't asked for again this session, until `r` reads the device afresh; a
-  device that stops answering gives up every name it was asked for after one
-  timeout. A name still being read shows `…`. Names keep at most 128
-  characters, with control characters as spaces. The Name column takes the
-  room the other columns leave, a long name ending in `…`, and is left out
-  (and its names not asked for) with fewer than eight columns to spare; the
-  object list does the same with the room after the longest label.
+  showed without a name, and only those, never the whole Object_List. One
+  command carries every device's ask, so a tick never crowds user commands
+  out of the worker's queues, and a tick showing the same rows in any order
+  sends nothing. Each device's ask replaces its previous one in the browser
+  worker, so a row scrolled off before its turn is not read.
+- Name reads share `--max-rate` with every other request; they are the
+  lowest priority only within a device, as jobs in the browser's per-device
+  scheduler (any other read of that device stops one between requests, and
+  it resumes after). A name job waits until the cap has a slot free before
+  it takes a batch from the queue, so a row withdrawn while it waited costs
+  neither a request nor a slot. A batch is one RPM for up to eight names, or
+  one ReadProperty each from a device that refused RPM.
+- A name still being read shows `…`. A name the device refused (an error, a
+  reject, an answer that isn't a string) shows `-` and isn't asked for again
+  until the device is read afresh: its card arrives after `r` or after
+  opening it, not when the `r` is sent. A device that stops answering gives
+  up every name it was asked for after one timeout; those names are left
+  blank, not marked refused, and asked for again when the device's next I-Am
+  arrives. Names keep at most 128 characters, with control characters as
+  spaces. The Name column takes the room the other columns leave, a long
+  name ending in `…`, and is left out (and its names not asked for) with
+  fewer than eight columns to spare; the object list does the same with the
+  room after the longest label.
 
 ### 4.2 Screens
 

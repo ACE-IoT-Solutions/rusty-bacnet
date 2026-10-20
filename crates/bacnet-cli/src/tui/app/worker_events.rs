@@ -3,7 +3,7 @@
 //! handling.
 
 use super::*;
-use crate::tui::point::{BrowseRead, BrowseResult, ReqId};
+use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::watched::WatchEvent;
 
 impl App {
@@ -16,12 +16,7 @@ impl App {
             return;
         }
         // A name request is asked again on the next tick, without a notice.
-        if let Command::Browse {
-            req,
-            read: BrowseRead::Names(_),
-            ..
-        } = command
-        {
+        if let Command::Names { req, .. } = command {
             self.names.refused(req);
             return;
         }
@@ -61,8 +56,11 @@ impl App {
     }
 
     /// A browser result: names go to the cache, from a name read or with
-    /// the card or an object read; the rest to the browser.
+    /// the card or an object read; the rest to the browser. A card means
+    /// the worker took the device read, which forgot the device's failed
+    /// names, so the cache forgets them too.
     fn browse_result(&mut self, req: ReqId, result: BrowseResult) {
+        let card = matches!(result, BrowseResult::Card(_));
         let free = match &result {
             BrowseResult::Names { device, names } => {
                 for (object, name) in names {
@@ -81,9 +79,12 @@ impl App {
         let device = browser.device;
         // Only a result for this browser's device says whose name it is.
         if browser.apply(req, result) {
+            if card {
+                self.names.forget_failures(device);
+            }
             if let Some((object, name)) = free {
                 if let Some(object) = object.or_else(|| names::device_object(device)) {
-                    self.names.learn(device, object, Some(name));
+                    self.names.learn_name(device, object, name);
                 }
             }
         }
@@ -144,6 +145,7 @@ impl App {
                 if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
                     op.replies += usize::from(op.spec.wants(row.instance));
                 }
+                self.names.answered(row.instance);
                 self.devices.upsert(row);
                 self.resolve_capture_devices();
             }
@@ -181,7 +183,7 @@ impl App {
                         .map(|r| r.point);
                     if let Some(point) = point {
                         self.names
-                            .learn(point.device, point.object, Some(name.clone()));
+                            .learn_name(point.device, point.object, name.clone());
                     }
                 }
                 if let Some(text) = self.watch.apply(event) {

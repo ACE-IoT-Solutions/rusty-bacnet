@@ -312,12 +312,11 @@ impl App {
                 BrowseRead::Device
             }
         };
-        let device = browser.device;
-        if read == BrowseRead::Device {
-            // Names the device couldn't give are asked for again.
-            self.names.forget_unavailable(device);
-        }
-        out.push(Command::Browse { req, device, read });
+        out.push(Command::Browse {
+            req,
+            device: browser.device,
+            read,
+        });
     }
 
     /// Leave the browser for the device table, stopping its reads.

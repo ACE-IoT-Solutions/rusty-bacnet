@@ -97,7 +97,7 @@ impl App {
             DiscoveryEvent::IHave(row) => {
                 // Every I-Have names an object, asked for or not.
                 self.names
-                    .learn(row.device, row.object, Some(row.name.clone()));
+                    .learn_name(row.device, row.object, row.name.clone());
                 if let Some(search) = &mut self.who_has {
                     search.accept(row);
                 }
