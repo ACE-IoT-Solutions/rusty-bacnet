@@ -108,7 +108,10 @@ async fn direct_response_held_read_replacement_has_no_address_fallback() {
 /// A's request is held behind the database lock while B, another CA-valid
 /// leaf claiming the same VMAC and UUID, replaces A. A's reply, whatever it
 /// is, must reach neither B's socket nor address-based egress (#524).
-async fn held_reply_never_reaches_replacement(request_a: Apdu) {
+/// `refused` is the warning the server logs when it builds A's reply and the
+/// original connection refuses it, which shows the reply was reached.
+async fn held_reply_never_reaches_replacement(request_a: Apdu, long_value: bool, refused: &str) {
+    let (spy, _guard) = super::warn_spy::WarnSpy::install();
     let ca = TestCa::new();
     let mut f = Fixture::new(
         &ca,
@@ -116,20 +119,22 @@ async fn held_reply_never_reaches_replacement(request_a: Apdu) {
         database(Arc::new(AtomicUsize::new(0))),
     )
     .await;
-    // A present value too long for a 50-octet APDU, for the Abort case.
-    f.server
-        .db
-        .write()
-        .await
-        .get_mut(&csv_oid())
-        .unwrap()
-        .write_property(
-            PropertyIdentifier::PRESENT_VALUE,
-            None,
-            PropertyValue::CharacterString("x".repeat(200)),
-            None,
-        )
-        .unwrap();
+    if long_value {
+        // Too long for a 50-octet APDU, for the Abort case.
+        f.server
+            .db
+            .write()
+            .await
+            .get_mut(&csv_oid())
+            .unwrap()
+            .write_property(
+                PropertyIdentifier::PRESENT_VALUE,
+                None,
+                PropertyValue::CharacterString("x".repeat(200)),
+                None,
+            )
+            .unwrap();
+    }
     let mut a = f.peer(ca.tls("a")).await;
     let envelope = f.capture(&mut a, &request_a).await;
     let db = f.server.db.clone();
@@ -144,6 +149,14 @@ async fn held_reply_never_reaches_replacement(request_a: Apdu) {
     assert!(
         f.responses.try_recv().is_err(),
         "retired A reply reached address-based egress"
+    );
+    let warnings = spy.warnings();
+    assert!(
+        warnings.iter().any(|warning| warning.message == refused
+            && warning
+                .error
+                .contains("original direct response connection unavailable")),
+        "A's reply was never built and refused: {warnings:?}"
     );
     // B's first application frame answers B, never A's held transaction.
     f.feed(b_request).await;
@@ -160,11 +173,11 @@ async fn direct_response_held_error_never_reaches_a_replacement() {
         property_array_index: None,
     }
     .encode(&mut missing);
-    held_reply_never_reaches_replacement(confirmed(
-        ConfirmedServiceChoice::READ_PROPERTY,
-        41,
-        missing.freeze(),
-    ))
+    held_reply_never_reaches_replacement(
+        confirmed(ConfirmedServiceChoice::READ_PROPERTY, 41, missing.freeze()),
+        false,
+        "Failed to send response",
+    )
     .await;
 }
 
@@ -184,7 +197,12 @@ async fn direct_response_held_abort_never_reaches_a_replacement() {
     };
     // Too small for the reply, with no segmentation: SEGMENTATION_NOT_SUPPORTED.
     request.max_apdu_length = 50;
-    held_reply_never_reaches_replacement(Apdu::ConfirmedRequest(request)).await;
+    held_reply_never_reaches_replacement(
+        Apdu::ConfirmedRequest(request),
+        true,
+        "Failed to send Abort for segmentation-not-supported",
+    )
+    .await;
 }
 
 #[tokio::test]

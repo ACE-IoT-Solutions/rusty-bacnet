@@ -98,7 +98,8 @@ impl DirectScIdentity {
         self.incarnation
     }
 
-    /// The leaf certificate's principal, without the connection incarnation.
+    /// This hop's leaf-certificate principal, without the connection
+    /// incarnation. For a routed request it is the forwarding router's.
     pub fn principal(self) -> ScPrincipal {
         ScPrincipal::from_leaf_sha256(self.leaf_sha256)
     }
@@ -194,8 +195,10 @@ impl TransportProvenance {
         }
     }
 
-    /// The verified direct-SC leaf certificate's principal; `None` for every
-    /// other ingress, a hub's relayed origins and its own channel included.
+    /// The immediate direct-SC hop's leaf-certificate principal: for a routed
+    /// request, the router that forwarded it. `None` for every other ingress,
+    /// a hub's relayed origins and its own channel included. The server's
+    /// policy contexts withhold it from `principal()` for routed requests.
     pub fn principal(self) -> Option<ScPrincipal> {
         self.direct_sc_identity().map(DirectScIdentity::principal)
     }

@@ -108,6 +108,11 @@ It is `None` for:
   connection: that connection authenticates the router that forwarded it, not the
   device behind it.
 
+So `principal()` means the direct SC peer that sent the NPDU without an SNET. A
+router that doesn't follow the standard, or an application gateway that
+re-originates requests, shows its own principal for what it relays, so trust a
+principal as far as everything its holder may relay.
+
 `forwarding_peer_principal()` returns the principal of the direct peer that
 handed the request over, a router included. A policy that trusts a router with
 everything it forwards can allow on it; that trusts every claimed origin behind

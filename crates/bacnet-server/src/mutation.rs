@@ -218,7 +218,9 @@ impl MutationAuthorizationContext {
         self.provenance.principal()
     }
 
-    /// Original verified direct-SC leaf and incarnation; absent on other ingress.
+    /// The immediate direct-SC hop's verified leaf and connection incarnation:
+    /// for a routed request, the router that forwarded it. Absent off a
+    /// verified direct SC connection. Separate from claimed addresses.
     pub fn direct_sc_identity(&self) -> Option<bacnet_transport::port::DirectScIdentity> {
         self.provenance.direct_sc_identity()
     }

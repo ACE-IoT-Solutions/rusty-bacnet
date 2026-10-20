@@ -107,9 +107,14 @@ pub type EndpointReinitializeAudit = Arc<
 ///
 /// The addresses are claims, not an authenticated operator. For routed
 /// traffic `source_mac` is the last router, so restrict routed requesters by
-/// `source_network`; only [`principal`](Self::principal) and
-/// [`direct_sc_identity`](Self::direct_sc_identity) are verified. Neither the
-/// mutation policy nor the [`ServerPolicy`](crate::ServerPolicy) sees this service, so a handler that serves only some peers checks them here.
+/// `source_network`. Only the certificate accessors are verified:
+/// [`principal`](Self::principal) names the direct SC peer that sent the
+/// request itself, and is `None` for a routed one;
+/// [`forwarding_peer_principal`](Self::forwarding_peer_principal) and
+/// [`direct_sc_identity`](Self::direct_sc_identity) name the immediate hop,
+/// a router included. Neither the mutation policy nor the
+/// [`ServerPolicy`](crate::ServerPolicy) sees this service, so a handler that
+/// serves only some peers checks them here.
 ///
 /// The server builds the context; [`new`](Self::new) lets a test build one
 /// to call a handler directly.
@@ -256,7 +261,9 @@ impl ReinitializeContext {
         self.provenance.principal()
     }
 
-    /// Original verified direct-SC leaf and incarnation, separate from claims.
+    /// The immediate direct-SC hop's verified leaf and connection incarnation:
+    /// for a routed request, the router that forwarded it. Absent off a
+    /// verified direct SC connection. Separate from claimed addresses.
     pub fn direct_sc_identity(&self) -> Option<DirectScIdentity> {
         self.provenance.direct_sc_identity()
     }

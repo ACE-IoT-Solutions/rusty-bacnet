@@ -36,6 +36,11 @@
 //! everything it forwards. A source VMAC, UUID or routed SNET/SADR is a
 //! claim, never a principal.
 //!
+//! So `principal()` means the direct SC peer that sent the NPDU without an
+//! SNET. A router that doesn't follow the standard, or an application
+//! gateway that re-originates requests, shows its own principal for what it
+//! relays: trust a principal as far as everything its holder may relay.
+//!
 //! SC mutual TLS authenticates a connection; it doesn't authorize a
 //! service. Without a policy, any peer a CA admits may use every service
 //! the server's defaults allow.
@@ -125,8 +130,9 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// allowed without being decoded for authorization first, and counted as
     /// allowed before the handler runs, exactly as with no policy. A policy
     /// that only decides LifeSafetyOperation or Audit receipt returns `false`
-    /// so that mutations keep that path. It is read once per decision and
-    /// should not change.
+    /// so that mutations keep that path. The server may read it more than
+    /// once for one request, so it must give the same answer for the
+    /// policy's lifetime.
     fn decides_mutations(&self) -> bool {
         true
     }
