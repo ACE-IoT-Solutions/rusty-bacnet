@@ -192,6 +192,9 @@ impl BACnetObject for NetworkPortObject {
                 if property == config.mode_property() {
                     return Ok(PropertyValue::Enumerated(self.mode.ip_mode().to_raw()));
                 }
+                if pending::nat_row(property) && !self.serves_nat() {
+                    return Err(common::unknown_property_error());
+                }
                 config
                     .read(property, array_index)
                     .or_else(|| self.pending_value(property))
@@ -255,6 +258,8 @@ mod bip6_tests;
 mod foreign_pending_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod nat_pending_tests;
 #[cfg(test)]
 mod pending_tests;
 #[cfg(test)]

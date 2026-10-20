@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A directory of its own under the system's temporary directory, removed
 /// with everything in it when dropped.
-struct TempDir(PathBuf);
+pub(super) struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let path = std::env::temp_dir().join(format!(
             "rusty-bacnet-{label}-{}-{}",
@@ -26,7 +26,7 @@ impl TempDir {
         Self(path)
     }
 
-    fn file(&self, name: &str) -> PathBuf {
+    pub(super) fn file(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
 }
@@ -37,7 +37,7 @@ impl Drop for TempDir {
     }
 }
 
-fn row(ip: [u8; 4], port: u16) -> BACnetBDTEntry {
+pub(super) fn row(ip: [u8; 4], port: u16) -> BACnetBDTEntry {
     BACnetBDTEntry {
         bbmd_address: BACnetHostNPort::from_socket_addr(SocketAddrV4::new(ip.into(), port).into()),
         broadcast_mask: Some([0xFF; 4]),
@@ -54,7 +54,7 @@ async fn bbmd_at(path: &Path) -> BipTransport {
     transport
 }
 
-fn tables(transport: &BipTransport) -> Arc<dyn BbmdTables> {
+pub(super) fn tables(transport: &BipTransport) -> Arc<dyn BbmdTables> {
     match transport.bip_port().unwrap().mode {
         BipPortMode::Bbmd {
             tables: Some(tables),
@@ -65,7 +65,7 @@ fn tables(transport: &BipTransport) -> Arc<dyn BbmdTables> {
 
 /// Wait until `count` saves of `transport`'s file have finished: they run
 /// on blocking threads once the activation returns.
-async fn saved(transport: &BipTransport, count: u64) {
+pub(super) async fn saved(transport: &BipTransport, count: u64) {
     let file = Arc::clone(transport.bdt_file.as_ref().unwrap());
     tokio::time::timeout(Duration::from_secs(10), async {
         while file.finished() < count {
@@ -131,6 +131,7 @@ async fn an_activated_bdt_is_saved_and_a_restart_loads_it() {
         },
     ];
     bbmd::encode_bdt_entries(&rows, &mut expected);
+    // Rows only: no activation has set the NAT rows (#940).
     assert_eq!(fs::read(&path).unwrap(), expected.to_vec());
     assert!(
         temporaries(&dir).is_empty(),
@@ -186,7 +187,7 @@ async fn a_shorter_bdt_replaces_the_file_whole() {
     saved(&transport, 2).await;
     let short = fs::read(&path).unwrap();
     assert!(short.len() < long);
-    let saved = BbmdState::decode_bdt(&short).unwrap();
+    let saved = crate::bbmd::decode_file(&short).unwrap().0;
     assert!(saved.iter().any(|entry| entry.ip == [10, 0, 0, 4]));
     assert!(!saved.iter().any(|entry| entry.ip == [10, 0, 0, 2]));
     transport.stop().await.unwrap();
@@ -205,7 +206,9 @@ async fn racing_saves_leave_the_newest_table() {
             .unwrap();
     }
     saved(&transport, 20).await;
-    let rows = BbmdState::decode_bdt(&fs::read(&path).unwrap()).unwrap();
+    let rows = crate::bbmd::decode_file(&fs::read(&path).unwrap())
+        .unwrap()
+        .0;
     assert!(
         rows.iter().any(|entry| entry.ip == [10, 0, 1, 20]),
         "{rows:?}"

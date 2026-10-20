@@ -2490,7 +2490,8 @@ every registration), the Delete-FDT-Entry ACL (empty denies every source), the
 persisted-BDT path, the `FanoutPolicy` and `alone_on_subnet` (true for a BBMD
 that is the only device of its B/IP network on its subnet, as behind a NAT
 router: it then skips the local rebroadcast of forwarded and distributed
-broadcasts; false by default). `BipTransport::set_mode` maps a mode
+broadcasts; false by default) and `nat`, for a BBMD behind a NAT router
+([below](#a-bbmd-behind-a-nat-router)). `BipTransport::set_mode` maps a mode
 onto those setters and replaces whatever was set up before; the setters remain
 for code that builds a transport by hand, and `start()` still refuses a
 transport set up as both.
@@ -2553,6 +2554,97 @@ endpoint keeps its transport out of reach, so the builder takes a
 `BipTransport::bvlc_client_status()` handle first; take one yourself before
 handing a transport to another owner. A registered Network Port reports the
 mode in `BACnet_IP_Mode`.
+
+### A BBMD behind a NAT router
+
+Sites on private address ranges can join one B/IP network across the
+internet through NAT routers (Annex J.7.5, #940). Each site exposes one
+device, a BBMD (usually a BBMD and router in one), whose router port-forwards
+a public UDP port to it; every other device at the site sits on its own
+BACnet network behind that router-BBMD. The stack can't check that layout,
+so set it up that way.
+
+Give the BBMD its router's public address and port, its global address, in
+`BbmdOptions::nat` (or `BipTransport::set_bbmd_nat_traversal`). The address is
+configuration: nothing discovers it, and no host names are taken. With it:
+
+- The BBMD runs under the global address. Its BDT must list that address as
+  its own row, and every row must have the all-ones mask, since a directed
+  broadcast can't cross a NAT router (two-hop only). `start()` fails with an
+  error that says which rule a BDT breaks; a written BDT that breaks one is
+  refused at activation. An empty BDT is taken: a BBMD with no peers that
+  serves only foreign devices. No private own row is added. `BbmdState::own_address()` is the
+  global address; `local_address()` stays the socket's.
+- The Forwarded-NPDUs the BBMD builds name the global address as the
+  originating device: its own broadcasts and those from devices on its
+  subnet. Remote devices answer that address, which the router forwards to
+  the BBMD. A Forwarded-NPDU it receives keeps its originating address on
+  the way to its foreign devices and its subnet.
+- A registered foreign device's Distribute-Broadcast-To-Network goes on
+  with the global address as its origin when the device registered from a
+  private address, RFC 1918 or a range in `NatTraversal::private_ranges` (at
+  most four), since other sites couldn't answer it there. One that
+  registered from a public address keeps its own.
+- `alone_on_subnet` is usually true behind NAT and composes as before: the
+  forwarded and distributed broadcasts skip the private subnet.
+- The socket, its subnet mask lookup and its echo filter stay on the private
+  side, and a restart of a `0.0.0.0` BBMD keeps the global row. Because
+  the own address is the global one, the subnet mask doesn't decide the
+  local rebroadcast of a peer's forward behind NAT: a peer is never taken
+  to be on the BBMD's subnet.
+- Turning NAT off (`set_nat_traversal(None)`, or BACnet_IP_NAT_Traversal
+  FALSE activated) drops the BDT row of the old global address, which no
+  longer names this BBMD, and adds the local own row as usual. The row is
+  dropped from a BDT written in the same activation too.
+- `NatTraversal` is `#[non_exhaustive]`: build it with `NatTraversal::new`
+  and `with_private_range`. The Rust API takes a loopback global address,
+  for tests on one host; a Network Port write and Python refuse one.
+
+```rust
+use std::net::{Ipv4Addr, SocketAddrV4};
+
+use bacnet_transport::bbmd::{BdtEntry, NatTraversal};
+use bacnet_transport::bip::{BbmdOptions, BipMode};
+
+let global = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 1), 47809);
+let other_site = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 2), 47809);
+let two_hop = |address: SocketAddrV4| BdtEntry {
+    ip: address.ip().octets(),
+    port: address.port(),
+    broadcast_mask: [255; 4],
+};
+let mode = BipMode::Bbmd(BbmdOptions {
+    // Both sites' public addresses, this one's included.
+    bdt: vec![two_hop(global), two_hop(other_site)],
+    alone_on_subnet: true,
+    nat: Some(NatTraversal::new(global)),
+    ..BbmdOptions::default()
+});
+```
+
+A foreign device behind NAT needs no NAT setting: its BBMD records it under
+the router's address, and the device only has to register often enough to
+keep the router's UDP mapping open. Set `ForeignDeviceConfig::renewal_interval`
+below the router's mapping timeout, 30 s or less for many routers, and keep
+the TTL long; any interval from 100 ms up is taken.
+
+Such a device hears only what comes back through its own BBMD. A router that
+forwards nothing inbound drops a unicast reply that another site sends it
+directly, such as an I-Am answering its Who-Is: servers answer a Who-Is with a
+directed I-Am by default (`DiscoveryPolicy::prefer_directed_responses`). To
+reach a foreign device behind such a router, have the remote devices answer
+with a broadcast I-Am (set that field to false), which travels back through the
+BBMDs, or give the device a port forward of its own.
+
+The registered Network Port serves the setting as BACnet_IP_NAT_Traversal and
+BACnet_IP_Global_Address; see
+[Registered B/IP Network Port](#registered-bip-network-port).
+
+**Security:** prefer BACnet/SC (Annex AB) for linking sites across the
+internet. A BBMD reachable from the internet answers anyone who can send it a
+datagram; it relies on the Delete-FDT-Entry ACL, the foreign-device policy
+(an allowed-source list, quotas and rate limits), the FDT caps and the fan-out
+budgets that bound broadcast amplification, and B/IP has no authentication.
 
 ### bacnet-bip-core (firmware)
 
@@ -8346,7 +8438,7 @@ A transport reports its registration capability through `TransportPort::bip_port
 - **BBMD** adds BBMD_Broadcast_Distribution_Table and BBMD_Foreign_Device_Table (BACnetLISTs of `BACnetBDTEntry` and `BACnetFDTEntry`) and BBMD_Accept_FD_Registrations. The object holds the transport's own BBMD state through the `bacnet_types::bip_port::BbmdTables` view and reads it on every property read, so a BDT change, a new or expired registration, or a policy change made through `BipTransport::bbmd_state()` shows on the next read. FDT entries carry each registrant's time to live and the seconds it has left, grace period included; an entry past its time no longer appears even before the purge task removes it. The BDT includes the BBMD's own row.
 - **NORMAL** has none of them: reading one answers UNKNOWN_PROPERTY.
 
-In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked against the transport's BDT policy at once, through `BbmdTables::check_broadcast_distribution_table`: a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. NAT traversal (BACnet_IP_NAT_Traversal, BACnet_IP_Global_Address) and B/IP multicast (BACnet_IP_Multicast_Address) are not modeled yet.
+In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked on its own against the transport's BDT policy at once, through `BbmdTables::check_value` (whose default checks it with `check_broadcast_distribution_table`; `BipTransport`'s view checks the rows itself and leaves the NAT rules for activation, below): a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. On an IPv4 BBMD port the transport can run behind a NAT router, so the port also serves BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clauses 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10, #940): FALSE and the unset address (no host, port 0) until NAT is configured. Both are writable the same way, since this stack never discovers the global address, and the three NAT-related rows can be written in any order. A write is checked on its own (`BbmdTables::check_value`): a BDT against the row policy, a global address as an IPv4 unicast host and nonzero port (not the unspecified, broadcast, a multicast or a loopback address), or the unset sentinel; a host name, an IPv6 host or anything else answers PROPERTY / VALUE_OUT_OF_RANGE. The rules that tie them together are checked at ReinitializeDevice, before the handler runs (`BbmdTables::check`): behind NAT a BDT with rows must list the global address, every row must be two-hop, and NAT needs a global address; a set that breaks them answers PROPERTY / INVALID_CONFIGURATION_DATA and stays pending. So moving the global address while NAT is on takes a new address and a BDT that lists it, activated together (`Tables::set_nat_and_bdt` in the core). Turning NAT off drops the BDT row of the old global address, from a BDT written in the same activation too, and adds the local own row. The private ranges are configuration only. With a persisted-BDT file, an activation that changed BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address saves the NAT setting (on or off, and the global address) with the BDT, and every later save carries it, as does every save after a start that loaded a file holding one; a restart loads the three together, and the saved setting wins over the configured one, as the saved BDT does, with a warning when the two differ. Until then a BDT-only activation saves the rows alone, so a NAT setting changed in the configuration still applies at the next start. A pending set that's invalid as a whole (NAT on with no global address, or with a BDT that doesn't list it or has a one-hop row) makes every ReinitializeDevice ACTIVATE_CHANGES and WARMSTART on the device answer PROPERTY / INVALID_CONFIGURATION_DATA until it's fixed, since the check covers all pending Network Port values. To clear it, write BACnet_IP_NAT_Traversal FALSE, or write back the BDT and global address the BBMD runs with (a Read-BDT still answers with the BDT in use), or a pair that fits together, then activate. B/IP multicast (BACnet_IP_Multicast_Address) is not modeled yet.
 
 ### Registered B/IPv6 Network Port
 
@@ -8465,7 +8557,8 @@ database. Mixed RPM succeeds with inline UNKNOWN_OBJECT for an unavailable port
 when another property is accessible. Successful target Audit uses the same
 concrete object and preserves per-target records. Endpoint responder RPM remains
 unsupported. Same-device multiport/router generations, rebind, pending activation
-(and with it writes to the BBMD and foreign-device rows), NAT traversal, B/IP
+(and with it writes to the BBMD and foreign-device rows, the NAT rows
+included), B/IP
 multicast, DHCP and full Network Port conformance remain outside this profile.
 A B/IPv6 port registers under the same contract; see
 [Registered B/IPv6 Network Port](#registered-bipv6-network-port).

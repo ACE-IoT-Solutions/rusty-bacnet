@@ -35,7 +35,7 @@ Inspect the selected binary or wheel and its release build configuration. Do not
 
 There is no browser-based BACnet transport promised by this site. The unsupported WASM surfaces were withdrawn. A demo or a codec is not a complete browser network interface.
 
-The README does not claim Annex J NAT traversal or IPv4 BACnet/IP multicast. A BBMD setup guide must not accidentally imply either. One working MS/TP example is not a timing qualification, and the presence of segmentation code elsewhere does not automatically qualify end-to-end segmented MS/TP.
+The README does not claim IPv4 BACnet/IP multicast, and a BBMD setup guide must not imply it. A BBMD behind a NAT router (Annex J.7.5) is supported at a global address you configure: nothing discovers it, the NAT router must port-forward the BACnet/IP port to the BBMD, and each site exposes that one router-BBMD. The automated evidence is a loopback NAT emulation; a real router topology is a manual check (`examples/docker/nat`). For linking sites across the internet, prefer BACnet/SC: an internet-facing BBMD has no authentication, only its access lists, quotas and rate limits. One working MS/TP example is not a timing qualification, and the presence of segmentation code elsewhere does not automatically qualify end-to-end segmented MS/TP.
 
 ## Understand the evidence labels
 
