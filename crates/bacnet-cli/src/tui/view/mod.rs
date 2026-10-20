@@ -30,7 +30,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::names::{Name, NameCache};
+use super::app::names::Name;
+
 use super::app::watch::Screen;
 use super::app::{App, Link, Overlay};
 
@@ -221,7 +222,7 @@ pub(super) const MIN_NAME: usize = 8;
 /// The session's names as the tables show them.
 #[derive(Clone, Copy)]
 pub(super) struct Names<'a> {
-    cache: &'a NameCache,
+    app: &'a App,
     /// Names not yet known are being asked for.
     live: bool,
 }
@@ -230,25 +231,25 @@ impl<'a> Names<'a> {
     /// The app's names.
     pub(super) fn of(app: &'a App) -> Self {
         Self {
-            cache: &app.names,
+            app,
             live: app.names_live(),
         }
     }
 
-    /// `object`'s name on `device` as a cell shows it: the name (already
-    /// free of control characters), `…` while it is being asked for, `-`
-    /// when the device refused it, and nothing when no one is asking for
-    /// it: the device didn't answer (until its next I-Am), or nothing can
-    /// be asked.
+    /// `object`'s name on `device` (at the address the device table
+    /// shows) as a cell shows it: the name (already free of control
+    /// characters), `…` while it is being asked for, `-` when the device
+    /// refused it, `?` when it didn't answer (until its next I-Am), and
+    /// nothing when nothing can be asked.
     pub(super) fn text(
         &self,
         device: u32,
         object: Option<bacnet_types::primitives::ObjectIdentifier>,
     ) -> &'a str {
-        match object.and_then(|object| self.cache.get(device, object)) {
+        match object.and_then(|object| self.app.name_of(device, object)) {
             Some(Name::Known(name)) => name,
             Some(Name::Unavailable) => "-",
-            Some(Name::Unreachable) => "",
+            Some(Name::Unreachable) => UNREAD,
             None if self.live => PENDING,
             None => "",
         }
@@ -257,6 +258,15 @@ impl<'a> Names<'a> {
 
 /// A name cell while the name is being asked for.
 pub(super) const PENDING: &str = "…";
+
+/// A name cell when the device didn't answer for it (#1931); drawn dim,
+/// like [`PENDING`], so it stands apart from a name.
+pub(super) const UNREAD: &str = "?";
+
+/// True for the name cells drawn dim: a marker, not a name.
+pub(super) fn name_marker(text: &str) -> bool {
+    text == PENDING || text == UNREAD
+}
 
 /// Display width of `text`.
 pub(super) fn text_width(text: &str) -> usize {

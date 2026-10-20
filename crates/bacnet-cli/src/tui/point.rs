@@ -26,6 +26,9 @@ pub(crate) enum BrowseRead {
 pub(crate) struct NameAsk {
     /// The device.
     pub(crate) device: u32,
+    /// Its address as the device table shows it, echoed in the results so
+    /// each name is filed under the device it was asked about (#1931).
+    pub(crate) address: String,
     /// The objects, in the order the screen shows them.
     pub(crate) objects: Vec<ObjectIdentifier>,
     /// The device answered again after a timeout: names it didn't answer
@@ -196,6 +199,8 @@ pub(crate) enum BrowseResult {
     Names {
         /// The device read.
         device: u32,
+        /// The address the names were asked under.
+        address: String,
         /// Each object and how its read went.
         names: Vec<(ObjectIdentifier, ReadName)>,
     },

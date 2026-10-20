@@ -177,14 +177,24 @@ What M0 draws (80x24):
   it resumes after). A name job waits until the cap has a slot free before
   it takes a batch from the queue, so a row withdrawn while it waited costs
   neither a request nor a slot. A batch is one RPM for up to eight names, or
-  one ReadProperty each from a device that refused RPM.
+  one ReadProperty each from a device that refused RPM. Since a name job
+  books no slot until one is free, a cap that watch polling keeps saturated
+  can hold name reads back indefinitely; the watch list comes first.
+- The session keeps at most 4,096 names, forgetting the least recently used;
+  the rows on screen count as used on every tick (#1931). A name is filed
+  under the device's instance and address, so two devices that claim the
+  same instance keep their own names, and the table shows the name of the
+  one the client kept. The browser worker remembers at most 256 answers a
+  device and reports a remembered one again, without a request, when it is
+  asked for again; a row withdrawn while its batch is out is neither read
+  nor reported unreachable.
 - A name still being read shows `…`. A name the device refused (an error, a
   reject, an answer that isn't a string) shows `-` and isn't asked for again
   until the device is read afresh: its card arrives after `r` or after
   opening it, not when the `r` is sent. A device that stops answering gives
-  up every name it was asked for after one timeout; those names are left
-  blank, not marked refused, and asked for again when the device's next I-Am
-  arrives. Names keep at most 128 characters, with control characters as
+  up every name it was asked for after one timeout; those names show a dim
+  `?` (a row nobody asked about stays blank), and are asked for again when
+  the device's next I-Am arrives. Names keep at most 128 characters, with control characters as
   spaces. The Name column takes the room the other columns leave, a long
   name ending in `…`, and is left out (and its names not asked for) with
   fewer than eight columns to spare; the object list does the same with the

@@ -42,7 +42,7 @@ async fn read_names(site: &mut Site) -> Vec<ObjectIdentifier> {
 
 /// Apply results until every one of `objects` on the lab device is known.
 async fn known(site: &mut Site, objects: Vec<ObjectIdentifier>) {
-    site.pump_until(move |app| objects.iter().all(|o| app.names.get(LAB, *o).is_some()))
+    site.pump_until(move |app| objects.iter().all(|o| app.name_of(LAB, *o).is_some()))
         .await;
 }
 
@@ -58,6 +58,7 @@ fn services_since(site: &Site, from: usize) -> Vec<u8> {
 fn ask(req: ReqId, objects: &[ObjectIdentifier]) -> Command {
     let asks = vec![NameAsk {
         device: LAB,
+        address: "10.0.0.100:47808".into(),
         objects: objects.to_vec(),
         retry: false,
     }];
@@ -84,7 +85,7 @@ async fn names_are_read_through_the_gate_and_the_rate_cap() {
     assert_eq!(asked.len(), 10, "every object but the device: {asked:?}");
     let ao1 = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     assert_eq!(
-        site.app.names.get(LAB, ao1),
+        site.app.name_of(LAB, ao1),
         Some(&Name::Known("Damper".into()))
     );
     let rpms = asked.len().div_ceil(NAMES_PER_RPM);
@@ -158,7 +159,7 @@ async fn names_and_an_object_read_take_turns_at_the_device() {
         site.app.browser.as_ref().unwrap().view,
         ViewState::Ready(_)
     ));
-    assert!(asked.iter().all(|o| site.app.names.get(LAB, *o).is_some()));
+    assert!(asked.iter().all(|o| site.app.name_of(LAB, *o).is_some()));
     assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
     site.stop().await;
 }
@@ -179,7 +180,7 @@ async fn an_object_read_stops_the_names_and_they_resume() {
     site.run_for(Duration::from_millis(1_100)).await;
     let read = asked
         .iter()
-        .filter(|o| site.app.names.get(LAB, **o).is_some())
+        .filter(|o| site.app.name_of(LAB, **o).is_some())
         .count();
     assert!(read > 0 && read < asked.len(), "{read} of {}", asked.len());
     site.press(KeyCode::Enter).await;
@@ -189,7 +190,7 @@ async fn an_object_read_stops_the_names_and_they_resume() {
         seen[0] == "object" || seen[..2] == ["name", "object"],
         "{seen:?}"
     );
-    assert!(asked.iter().all(|o| site.app.names.get(LAB, *o).is_some()));
+    assert!(asked.iter().all(|o| site.app.name_of(LAB, *o).is_some()));
     assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
     site.stop().await;
 }
@@ -207,7 +208,7 @@ async fn names_fall_back_to_read_property() {
     let asked = read_names(&mut site).await;
     assert_eq!(services_since(&site, before), vec![RP; asked.len()]);
     for object in &asked {
-        let name = site.app.names.get(LAB, *object);
+        let name = site.app.name_of(LAB, *object);
         assert!(matches!(name, Some(Name::Known(_))), "{object}: {name:?}");
     }
     site.stop().await;
@@ -229,7 +230,7 @@ async fn names_a_device_wont_give_are_read_once() {
     known(&mut site, objects.to_vec()).await;
     assert_eq!(services_since(&site, 0), [RPM, RP, RP]);
     for object in &objects {
-        assert_eq!(site.app.names.get(LAB, *object), Some(&Name::Unavailable));
+        assert_eq!(site.app.name_of(LAB, *object), Some(&Name::Unavailable));
     }
     site.send(vec![ask(1_001, &objects)]).await;
     site.run_for(Duration::from_secs(5)).await;
@@ -257,7 +258,7 @@ async fn a_silent_device_times_out_once_for_all_its_names() {
         "one RPM and its retries: {services:?}"
     );
     for object in &objects {
-        assert_eq!(site.app.names.get(LAB, *object), Some(&Name::Unreachable));
+        assert_eq!(site.app.name_of(LAB, *object), Some(&Name::Unreachable));
     }
     site.stop().await;
 }
@@ -277,18 +278,17 @@ async fn a_name_that_timed_out_is_read_after_the_next_i_am() {
     let commands = frame_commands(&mut site.app, 120, 40);
     assert_eq!(asks(&commands), [(LAB, vec![me])]);
     site.send(commands).await;
-    site.pump_until(|app| app.names.get(LAB, me).is_some())
-        .await;
-    assert_eq!(site.app.names.get(LAB, me), Some(&Name::Unreachable));
+    site.pump_until(|app| app.name_of(LAB, me).is_some()).await;
+    assert_eq!(site.app.name_of(LAB, me), Some(&Name::Unreachable));
     assert!(frame_commands(&mut site.app, 120, 40).is_empty());
     site.who_is("", 1).await;
     let commands = frame_commands(&mut site.app, 120, 40);
     assert_eq!(asks(&commands), [(LAB, vec![me])]);
     site.send(commands).await;
-    site.pump_until(|app| matches!(app.names.get(LAB, me), Some(Name::Known(_))))
+    site.pump_until(|app| matches!(app.name_of(LAB, me), Some(Name::Known(_))))
         .await;
     assert_eq!(
-        site.app.names.get(LAB, me),
+        site.app.name_of(LAB, me),
         Some(&Name::Known("Lab device 100".into()))
     );
     site.stop().await;
@@ -334,7 +334,7 @@ async fn rows_scrolled_past_are_not_read() {
     for &(octet, instance) in &devices {
         let requests = site.hub.requests_to(&mac(octet)).len();
         if shown.contains(&instance) {
-            let name = site.app.names.get(instance, super::names::device(instance));
+            let name = site.app.name_of(instance, super::names::device(instance));
             assert!(matches!(name, Some(Name::Known(_))), "{instance}: {name:?}");
         } else {
             read_off_screen += requests;
@@ -345,5 +345,29 @@ async fn rows_scrolled_past_are_not_read() {
         "{read_off_screen} requests to rows scrolled past"
     );
     assert!(first.len() > 10);
+    site.stop().await;
+}
+
+/// Rows withdrawn while their batch waits on a silent device are not
+/// reported unreachable when it times out; only the row still on screen
+/// is (#1931).
+#[tokio::test(start_paused = true)]
+async fn withdrawn_rows_are_not_reported_unreachable() {
+    let server = lab(Quirks {
+        silent: true,
+        ..Quirks::default()
+    });
+    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
+    site.who_is("", 1).await;
+    let objects: Vec<_> = (1..=20).map(ai).collect();
+    site.send(vec![ask(1_000, &objects)]).await;
+    site.run_for(Duration::from_millis(10)).await;
+    site.send(vec![ask(1_001, &[ai(1)])]).await;
+    known(&mut site, vec![ai(1)]).await;
+    site.run_for(Duration::from_secs(10)).await;
+    assert_eq!(site.app.name_of(LAB, ai(1)), Some(&Name::Unreachable));
+    for object in &objects[1..] {
+        assert_eq!(site.app.name_of(LAB, *object), None, "{object}");
+    }
     site.stop().await;
 }

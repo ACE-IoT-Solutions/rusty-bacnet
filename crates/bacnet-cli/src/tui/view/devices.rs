@@ -2,11 +2,11 @@
 
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use super::columns::{self, Column};
-use super::{ellipsize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME};
+use super::{ellipsize, name_marker, text_width, Names, Theme, FULL_WIDTH, MIN_NAME};
 use crate::tui::app::devices::{age_label, segmentation_label, SortKey};
 use crate::tui::app::names::device_object;
 use crate::tui::app::{App, Link, OpState};
@@ -224,15 +224,22 @@ fn cell_width(field: Field, row: &DeviceRow, app: &App) -> usize {
 }
 
 /// A row's cells, each fitted to its column: a vendor too wide for its
-/// column ends in `…`.
-fn cells(columns: &[Column<Field>], row: &DeviceRow, app: &App, selected: bool) -> Vec<String> {
+/// column ends in `…`, and a name marker (`…`, `?`) is dim.
+fn cells<'a>(
+    columns: &[Column<Field>],
+    row: &DeviceRow,
+    app: &App,
+    selected: bool,
+    theme: &Theme,
+) -> Vec<Cell<'a>> {
     columns
         .iter()
         .map(|column| {
             let text = cell(column.kind, row, app, selected);
             match column.kind {
-                Field::Vendor | Field::Name => ellipsize(&text, column.width),
-                _ => text,
+                Field::Name if name_marker(&text) => Cell::new(text).style(theme.dim()),
+                Field::Vendor | Field::Name => Cell::new(ellipsize(&text, column.width)),
+                _ => Cell::new(text),
             }
         })
         .collect()
@@ -268,7 +275,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .enumerate()
         .map(|(i, row)| {
             let is_selected = selected == Some(offset + i);
-            let line = Row::new(cells(&columns, row, app, is_selected));
+            let line = Row::new(cells(&columns, row, app, is_selected, theme));
             if is_selected {
                 line.style(theme.selected())
             } else {

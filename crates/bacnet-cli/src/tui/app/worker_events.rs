@@ -62,9 +62,13 @@ impl App {
     fn browse_result(&mut self, req: ReqId, result: BrowseResult) {
         let card = matches!(result, BrowseResult::Card(_));
         let free = match &result {
-            BrowseResult::Names { device, names } => {
+            BrowseResult::Names {
+                device,
+                address,
+                names,
+            } => {
                 for (object, name) in names {
-                    self.names.learn(*device, *object, name.clone());
+                    self.names.learn(*device, address, *object, name.clone());
                 }
                 return;
             }
@@ -79,12 +83,16 @@ impl App {
         let device = browser.device;
         // Only a result for this browser's device says whose name it is.
         if browser.apply(req, result) {
+            let address = self
+                .devices
+                .get(device)
+                .map_or("", |row| row.address.as_str());
             if card {
-                self.names.forget_failures(device);
+                self.names.forget_failures(device, address);
             }
             if let Some((object, name)) = free {
                 if let Some(object) = object.or_else(|| names::device_object(device)) {
-                    self.names.learn_name(device, object, name);
+                    self.names.learn_name(device, address, object, name);
                 }
             }
         }
@@ -145,7 +153,7 @@ impl App {
                 if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
                     op.replies += usize::from(op.spec.wants(row.instance));
                 }
-                self.names.answered(row.instance);
+                self.names.answered(row.instance, &row.address);
                 self.devices.upsert(row);
                 self.resolve_capture_devices();
             }
@@ -182,8 +190,12 @@ impl App {
                         .find(|r| r.id == *row)
                         .map(|r| r.point);
                     if let Some(point) = point {
+                        let address = self
+                            .devices
+                            .get(point.device)
+                            .map_or("", |r| r.address.as_str());
                         self.names
-                            .learn_name(point.device, point.object, name.clone());
+                            .learn_name(point.device, address, point.object, name.clone());
                     }
                 }
                 if let Some(text) = self.watch.apply(event) {

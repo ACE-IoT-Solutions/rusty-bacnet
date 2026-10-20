@@ -77,6 +77,20 @@ fn with_queue<R>(queues: &Queues, device: u32, f: impl FnOnce(&mut NameQueue) ->
     Some(f(&mut queue.lock().unwrap_or_else(PoisonError::into_inner)))
 }
 
+/// Name queues kept before idle ones are dropped (#1931). An idle queue
+/// holds only remembered answers; a device asked again gets a fresh one.
+const MAX_QUEUES: usize = 256;
+
+/// Past [`MAX_QUEUES`], drop the queues no job holds and nothing waits in.
+fn prune(queues: &mut Queues) {
+    if queues.len() > MAX_QUEUES {
+        queues.retain(|_, queue| {
+            Arc::strong_count(queue) > 1
+                || !queue.lock().unwrap_or_else(PoisonError::into_inner).idle()
+        });
+    }
+}
+
 /// Serve browse commands until `commands` closes, every request after a
 /// slot from `rate`, the cap the watch list shares. Dropping the returned
 /// future drops every job, and with it any request still outstanding.
@@ -100,13 +114,13 @@ pub(crate) async fn run<T: TransportPort + 'static>(
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Names { req, asks }) => {
-                    for NameAsk { device, objects, retry } in asks {
+                    for NameAsk { device, address, objects, retry } in asks {
                         queues.entry(device).or_default();
                         let waiting = with_queue(&queues, device, |queue| {
                             if retry {
                                 queue.retry();
                             }
-                            queue.want(req, objects)
+                            queue.want(req, address, objects)
                         });
                         if waiting == Some(true) {
                             if let Some(started) = scheduler.submit_names(device) {
@@ -114,6 +128,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                             }
                         }
                     }
+                    prune(&mut queues);
                 }
                 Some(Command::Browse { req, device, read }) => {
                     // A fresh read of the device may ask again for names
@@ -165,7 +180,17 @@ async fn job<T: TransportPort + 'static>(
     let (req, read) = match task {
         Task::Read(Job { req, read }) => (req, read),
         Task::Names => {
-            let report = |req, names| deliver(sink, req, BrowseResult::Names { device, names });
+            let report = |req, address, names| {
+                deliver(
+                    sink,
+                    req,
+                    BrowseResult::Names {
+                        device,
+                        address,
+                        names,
+                    },
+                )
+            };
             names::read_names(&mut reader, &queue, report).await;
             return Done {
                 device,
