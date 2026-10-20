@@ -1,20 +1,26 @@
 """The stack's tracing events reach Python's ``logging`` (#1724).
 
 Events go to ``rusty_bacnet.<target>``, the Rust module path with dots. The
-bridge reads the logging levels at import and on ``refresh_logging()``, so
-a lower level takes effect only after a refresh. Records arrive from a
-forwarder thread, so each test waits for them.
+bridge reads the logging levels at import, when a client, server, hub or
+endpoint starts, and on ``refresh_logging()``; a lower level set after that
+takes effect only at the next of them. Records arrive from a forwarder
+thread, so each test waits for them.
 
 The datagrams are sent to a running server's B/IP port:
 
-- an NPDU with protocol version 2 is dropped with a warning
-  (``Dropping an inbound NPDU``);
+- an NPDU with protocol version 2 is dropped: the first drop warns
+  (``Dropping an inbound NPDU``), and later ones, until the warning
+  interval has passed, log at debug;
 - an NPDU for a remote network is dropped at debug by a node that doesn't
   route (``Discarding routed message``).
 """
 import asyncio
 import logging
+import os
 import socket
+import subprocess
+import sys
+import textwrap
 import unittest
 
 import rusty_bacnet
@@ -30,21 +36,49 @@ LOGGER = "rusty_bacnet.bacnet_network"
 WARNING_TEXT = "Dropping an inbound NPDU"
 DEBUG_TEXT = "Discarding routed message"
 
+# A child process: a server on loopback, sent the given datagrams, after
+# the given logging setup. Shared by the subprocess tests.
+CHILD = textwrap.dedent("""
+    import asyncio, logging, socket, sys, threading, time
+    import rusty_bacnet
+    from rusty_bacnet import BACnetServer
+
+    def make_server():
+        return BACnetServer(device_instance=1725, device_name="child",
+                            interface="127.0.0.1", port=0,
+                            broadcast_address="127.0.0.1")
+
+    async def send(server, datagram):
+        host, port = (await server.local_address()).rsplit(":", 1)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(datagram, (host, int(port)))
+""")
+
+
+def run_child(body: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", CHILD + textwrap.dedent(body)],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONWARNINGS": "ignore"},
+    )
+
+
+def make_server(instance: int = 1724) -> BACnetServer:
+    return BACnetServer(
+        device_instance=instance,
+        device_name="Logging Bridge Test",
+        interface="127.0.0.1",
+        port=0,
+        broadcast_address="127.0.0.1",
+    )
+
 
 class LoggingBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        # Whatever an earlier test set, start from the configured levels.
-        rusty_bacnet.refresh_logging()
-        self.server = BACnetServer(
-            device_instance=1724,
-            device_name="Logging Bridge Test",
-            interface="127.0.0.1",
-            port=0,
-            broadcast_address="127.0.0.1",
-        )
+        # Starting the server reads the levels, whatever an earlier test set.
+        self.server = make_server()
         await self.server.start()
-        host, port = (await self.server.local_address()).rsplit(":", 1)
-        self.address = (host, int(port))
+        self.address = await self.address_of(self.server)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(("127.0.0.1", 0))
 
@@ -53,8 +87,13 @@ class LoggingBridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.server.stop()
         rusty_bacnet.refresh_logging()
 
-    def send(self, datagram: bytes) -> None:
-        self.socket.sendto(datagram, self.address)
+    @staticmethod
+    async def address_of(server: BACnetServer) -> tuple[str, int]:
+        host, port = (await server.local_address()).rsplit(":", 1)
+        return host, int(port)
+
+    def send(self, datagram: bytes, address: tuple[str, int] | None = None) -> None:
+        self.socket.sendto(datagram, address or self.address)
 
     async def wait_for(self, records: list, text: str) -> logging.LogRecord:
         for _ in range(500):
@@ -74,8 +113,10 @@ class LoggingBridgeTests(unittest.IsolatedAsyncioTestCase):
             "rusty_bacnet.").replace(".", "::"))
         # The event's fields are in the message and on the record.
         self.assertIn("discard", record.bacnet_fields)
+        self.assertEqual(record.bacnet_fields["dropped"], 1)
         self.assertIn(" discard=", record.getMessage())
         self.assertTrue(record.pathname.endswith(".rs"), record.pathname)
+        self.assertIsNone(record.funcName)
 
     async def test_a_lower_level_takes_effect_after_refresh_logging(self) -> None:
         with self.assertLogs(LOGGER, "DEBUG") as captured:
@@ -94,6 +135,18 @@ class LoggingBridgeTests(unittest.IsolatedAsyncioTestCase):
             record = await self.wait_for(captured.records, DEBUG_TEXT)
         self.assertEqual(record.levelno, logging.DEBUG)
 
+    async def test_a_start_reads_the_levels(self) -> None:
+        with self.assertLogs(LOGGER, "DEBUG") as captured:
+            # No refresh_logging(): starting a server reads the levels.
+            server = make_server(1726)
+            await server.start()
+            try:
+                self.send(ROUTED, await self.address_of(server))
+                record = await self.wait_for(captured.records, DEBUG_TEXT)
+            finally:
+                await server.stop()
+        self.assertEqual(record.levelno, logging.DEBUG)
+
     async def test_a_handler_may_call_back_into_rusty_bacnet(self) -> None:
         calls = []
 
@@ -106,19 +159,77 @@ class LoggingBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         # assertLogs puts the logger's own handlers back when it ends,
         # which removes this one.
-        with self.assertLogs(LOGGER, "WARNING") as captured:
+        with self.assertLogs(LOGGER, "DEBUG") as captured:
+            rusty_bacnet.refresh_logging()
             logging.getLogger(LOGGER).addHandler(CallBack())
             self.send(BAD_VERSION)
             await self.wait_for(captured.records, WARNING_TEXT)
+            # Throttled: this one logs at debug.
             self.send(BAD_VERSION)
             for _ in range(500):
-                if len(calls) >= 2:
+                if sum(WARNING_TEXT in call for call in calls) >= 2:
                     break
                 await asyncio.sleep(0.01)
-        self.assertEqual(len(calls), 2, calls)
+        self.assertEqual(sum(WARNING_TEXT in call for call in calls), 2, calls)
 
     def test_trace_has_a_level_name(self) -> None:
         self.assertEqual(logging.getLevelName(5), "TRACE")
+
+    def test_the_package_logger_has_a_null_handler(self) -> None:
+        handlers = logging.getLogger("rusty_bacnet").handlers
+        self.assertTrue(any(isinstance(h, logging.NullHandler) for h in handlers))
+
+
+class LoggingBridgeProcessTests(unittest.TestCase):
+    def test_an_unconfigured_app_prints_nothing(self) -> None:
+        # Without the NullHandler, logging's last resort prints the warning.
+        child = run_child("""
+            async def main():
+                server = make_server()
+                await server.start()
+                await send(server, bytes([0x81, 0x0A, 0x00, 0x06, 0x02, 0x00]))
+                await asyncio.sleep(0.5)
+                await server.stop()
+            asyncio.run(main())
+            print("done")
+        """)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(child.stdout.strip(), "done")
+        self.assertNotIn(WARNING_TEXT, child.stderr)
+
+    def test_records_queued_before_exit_are_delivered(self) -> None:
+        # The first record holds the forwarder in its handler; the second is
+        # queued behind it as the program ends. The exit hook waits for it.
+        child = run_child("""
+            busy = threading.Event()
+
+            class Slow(logging.Handler):
+                def emit(self, record):
+                    print(record.levelname, record.getMessage(), flush=True)
+                    dropped = "Dropping an inbound NPDU" in record.getMessage()
+                    if dropped and not busy.is_set():
+                        busy.set()
+                        time.sleep(1.0)
+
+            # After import, before start, with no refresh_logging().
+            logging.basicConfig(level=logging.DEBUG, handlers=[Slow()])
+
+            async def main():
+                server = make_server()
+                await server.start()
+                await send(server, bytes([0x81, 0x0A, 0x00, 0x06, 0x02, 0x00]))
+                while not busy.is_set():
+                    await asyncio.sleep(0.01)
+                # Throttled, so at debug; queued while the handler sleeps.
+                await send(server, bytes([0x81, 0x0A, 0x00, 0x06, 0x02, 0x00]))
+                await asyncio.sleep(0.3)
+            asyncio.run(main())
+        """)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        lines = [line for line in child.stdout.splitlines() if WARNING_TEXT in line]
+        self.assertEqual(len(lines), 2, child.stdout)
+        self.assertTrue(lines[0].startswith("WARNING"), lines)
+        self.assertTrue(lines[1].startswith("DEBUG"), lines)
 
 
 if __name__ == "__main__":

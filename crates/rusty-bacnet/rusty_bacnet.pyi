@@ -2051,16 +2051,26 @@ def list_serial_ports() -> list[str]:
     ...
 
 def refresh_logging() -> None:
-    """Read the ``logging`` levels again, so that a level lowered since import
-    (or the last call) forwards the stack's events it now allows.
+    """Read the ``logging`` levels again, so that a level lowered since the
+    last read forwards the stack's events it now allows.
 
     The stack's log events go to the logger ``rusty_bacnet.<module path>``,
-    ``rusty_bacnet.bacnet_transport.bip`` for ``bacnet_transport::bip``, with
-    TRACE at level 5. The bridge decides from a copy of the levels, taken at
-    import and by this function, which events to forward, so a disabled
-    level never takes the GIL. Raised levels filter at delivery as well.
-    Records arrive from a background thread, shortly after the event, and
-    carry the event's fields as ``record.bacnet_fields``.
+    ``rusty_bacnet.bacnet_transport.bip`` for ``bacnet_transport::bip``; only
+    the crate-level names (``rusty_bacnet.bacnet_transport`` and so on) are
+    stable. TRACE goes out at level 5, which importing ``rusty_bacnet`` names
+    ``TRACE``. The package logger has a ``NullHandler``, so nothing prints
+    until the application configures logging.
+
+    The bridge decides which events to forward from a copy of the levels,
+    taken at import, whenever a client, server, hub or endpoint starts, and
+    by this function, so a disabled level never takes the GIL. Raised levels
+    filter at delivery as well.
+
+    Records arrive from one background thread, in order, shortly after the
+    event, and carry the event's fields as ``record.bacnet_fields``. Past
+    4,096 waiting records, newer ones are dropped and a warning on
+    ``rusty_bacnet`` counts them. At exit, records already queued are
+    delivered first (waiting up to two seconds).
     """
     ...
 

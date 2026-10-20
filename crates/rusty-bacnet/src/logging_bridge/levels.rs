@@ -9,7 +9,8 @@
 //! the first level set on it or on an ancestor, else the root's.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, PoisonError, RwLock};
 
 use pyo3::intern;
 use pyo3::prelude::*;
@@ -167,19 +168,34 @@ impl Levels {
     }
 }
 
-/// The snapshot binding threads read. Writers hold the GIL but readers never
-/// take it, so the lock is never held while waiting for the GIL.
-static CURRENT: LazyLock<RwLock<Levels>> = LazyLock::new(RwLock::default);
+/// The snapshot binding threads read, with the generation of the read that
+/// made it. Nothing calls into Python, or waits for the GIL, while holding
+/// the lock, in either direction.
+static CURRENT: LazyLock<RwLock<(u64, Levels)>> = LazyLock::new(RwLock::default);
 
-/// The current snapshot.
-pub(crate) fn current() -> RwLockReadGuard<'static, Levels> {
-    CURRENT.read().unwrap_or_else(PoisonError::into_inner)
+/// Numbers the reads, so that [`store`] keeps the latest.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// A number for a read about to start, above every earlier one.
+pub(crate) fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::Relaxed) + 1
 }
 
-/// Replace the snapshot. Callsites keep their cached answer until the
+/// Run `f` on the current snapshot.
+pub(crate) fn with_current<R>(f: impl FnOnce(&Levels) -> R) -> R {
+    f(&CURRENT.read().unwrap_or_else(PoisonError::into_inner).1)
+}
+
+/// Replace the snapshot with `levels`, read as `generation`, unless a read
+/// that started later already stored its own: two refreshes that overlap
+/// (on free-threaded Python, or when one releases the GIL mid-read) leave
+/// the later read's levels. Callsites keep their cached answer until the
 /// caller rebuilds the interest cache.
-pub(crate) fn store(levels: Levels) {
-    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = levels;
+pub(crate) fn store(generation: u64, levels: Levels) {
+    let mut current = CURRENT.write().unwrap_or_else(PoisonError::into_inner);
+    if generation > current.0 {
+        *current = (generation, levels);
+    }
 }
 
 /// Name level 5 `TRACE` in `logging`, unless something named it already.

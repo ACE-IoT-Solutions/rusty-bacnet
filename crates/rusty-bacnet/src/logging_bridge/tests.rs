@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use pyo3::types::PyDict;
 
 use super::levels::{logger_name, Levels, LoggerLevel, TRACE_LEVEL};
+use super::record::{message_text, Value};
 use super::*;
 
 fn snapshot(root: i32, disable: i32, loggers: &[(&str, i32, bool)]) -> Levels {
@@ -340,4 +341,116 @@ fn a_disabled_level_costs_a_load_not_the_gil() {
     // that took the GIL, costs far more.
     assert!(below_hint < 1_000.0, "{below_hint} ns");
     assert!(interest < 1_000.0, "{interest} ns");
+}
+
+#[test]
+fn of_two_overlapping_refreshes_the_later_read_wins() {
+    let (earlier, later) = (levels::next_generation(), levels::next_generation());
+    levels::store(later, snapshot(10, 0, &[]));
+    // The earlier read finishes last, and is not stored.
+    levels::store(earlier, snapshot(40, 0, &[]));
+    assert_eq!(levels::with_current(|levels| levels.root), 10);
+}
+
+fn held(handler: &Py<PyAny>) -> Vec<Py<PyAny>> {
+    Python::attach(|py| {
+        handler
+            .bind(py)
+            .getattr("records")
+            .unwrap()
+            .extract()
+            .unwrap()
+    })
+}
+
+#[test]
+fn a_flush_delivers_everything_queued_before_it() {
+    installed();
+    let handler = Python::attach(|py| {
+        let handler = capture(py, "flush_test", "DEBUG");
+        refresh_logging(py).unwrap();
+        handler
+    });
+    for i in 0..100 {
+        tracing::warn!(target: "flush_test", i, "queued");
+    }
+    assert!(Python::attach(|py| deliver::flush(
+        py,
+        Duration::from_secs(10)
+    )));
+    // No waiting: the flush answered after the last of them.
+    assert_eq!(held(&handler).len(), 100);
+}
+
+#[test]
+fn records_dropped_on_a_full_queue_are_reported() {
+    installed();
+    let (_flood, package) = Python::attach(|py| {
+        // The flood stays on its own logger; the report goes to the
+        // package logger.
+        let flood = capture(py, "flood_test", "WARNING");
+        let package = capture(py, "", "WARNING");
+        refresh_logging(py).unwrap();
+        (flood, package)
+    });
+    // The forwarder can't take the GIL while this thread holds it, so the
+    // queue fills and the rest are dropped.
+    let flood = u32::try_from(QUEUE).unwrap() + 1_000;
+    Python::attach(|_| {
+        for i in 0..flood {
+            tracing::warn!(target: "flood_test", i, "flood");
+        }
+    });
+    assert!(Python::attach(|py| deliver::flush(
+        py,
+        Duration::from_secs(30)
+    )));
+    let report = held(&package)
+        .into_iter()
+        .find(|record| attr::<String>(record, "msg").contains("were dropped"))
+        .expect("a drop report");
+    let dropped: u64 = Python::attach(|py| {
+        report
+            .bind(py)
+            .getattr("args")
+            .unwrap()
+            .get_item(0)
+            .unwrap()
+            .extract()
+            .unwrap()
+    });
+    // The forwarder may have taken a batch before it blocked.
+    assert!(
+        (1_000 - BATCH as u64..=1_000).contains(&dropped),
+        "{dropped}"
+    );
+}
+
+#[test]
+fn unreadable_levels_fall_back_to_the_defaults_with_a_warning() {
+    Python::initialize();
+    Python::attach(|py| {
+        let scope = PyDict::new(py);
+        let run = |code: &std::ffi::CStr| py.run(code, Some(&scope), None).unwrap();
+        run(c"import logging, warnings
+saved = logging.root.level
+logging.root.level = 'not a level'
+caught = warnings.catch_warnings(record=True)
+seen = caught.__enter__()
+warnings.simplefilter('always')
+");
+        let levels = read_or_default(py);
+        run(c"caught.__exit__(None, None, None)
+logging.root.level = saved
+");
+        assert_eq!(levels, Levels::default());
+        let seen = scope.get_item("seen").unwrap().unwrap();
+        assert_eq!(seen.len().unwrap(), 1);
+        let message = seen.get_item(0).unwrap().getattr("message").unwrap();
+        let message = message.str().unwrap().to_string();
+        assert!(
+            message.contains("reading the logging levels failed"),
+            "{message}"
+        );
+    });
 }

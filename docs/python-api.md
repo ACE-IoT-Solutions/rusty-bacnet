@@ -4502,18 +4502,30 @@ addr = await server.local_address()  # "0.0.0.0:47808"
 
 ## Logging
 
-The stack's log events go to Python's `logging` (#1724). An event from the
-Rust module `bacnet_transport::bip::ingress` goes to the logger
-`rusty_bacnet.bacnet_transport.bip.ingress`, so you can set a level for the
-whole package (`rusty_bacnet`), a crate (`rusty_bacnet.bacnet_network`) or a
-module. Levels map as you'd expect: ERROR, WARNING, INFO and DEBUG, plus TRACE
-at level 5, which importing `rusty_bacnet` names `TRACE` in `logging`.
+The stack's log events go to Python's `logging` (#1724), under loggers named
+`rusty_bacnet.` plus the Rust module path with dots: an event from
+`bacnet_transport::bip::ingress` goes to
+`rusty_bacnet.bacnet_transport.bip.ingress`. Set a level for the whole
+package (`rusty_bacnet`) or for one crate's logger. The crate-level names are
+stable:
 
-With no logging configured, Python's root logger takes WARNING and above and
-its fallback handler prints them to stderr, so the stack's warnings (BBMD and
-foreign-device trouble, SC reconnect causes, the throttled drop warnings)
-show up there. Configure `logging` as usual to send them elsewhere or turn
-them off.
+| Logger | What logs there |
+|--------|-----------------|
+| `rusty_bacnet.bacnet_transport` | B/IP, B/IPv6, BACnet/SC (node and hub) and MS/TP transports, BBMD and foreign devices |
+| `rusty_bacnet.bacnet_network` | Network layer and router |
+| `rusty_bacnet.bacnet_client` | Client |
+| `rusty_bacnet.bacnet_server` | Server: dispatch, COV, events, schedules, persistence |
+| `rusty_bacnet.bacnet_objects` | Objects |
+| `rusty_bacnet.bacnet_encoding` | Encoding and segmentation |
+| `rusty_bacnet.bacnet_endpoint` | Shared endpoints |
+
+The names below a crate follow its module layout and may change between
+releases. Levels map as you'd expect: ERROR, WARNING, INFO and DEBUG, plus
+TRACE at level 5, which importing `rusty_bacnet` names `TRACE` in `logging`.
+
+`rusty_bacnet` adds a `NullHandler` to its package logger, as libraries do,
+so an application that configures no logging prints nothing. Once you
+configure logging, records propagate to your handlers as usual:
 
 ```python
 import logging
@@ -4521,16 +4533,22 @@ import rusty_bacnet
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("rusty_bacnet.bacnet_transport").setLevel(logging.DEBUG)
-rusty_bacnet.refresh_logging()  # pick up the levels set since import
+# A client, server, hub or endpoint started from here on reads these levels.
 ```
 
-### `refresh_logging()`
+If you configure logging with `logging.config.dictConfig`, pass
+`"disable_existing_loggers": False`: `rusty_bacnet`'s package logger exists
+from import on, so the default (`True`) would disable it.
 
-The bridge reads the logging levels when `rusty_bacnet` is imported, and
-decides from that copy which events to forward, so an event your
-configuration doesn't want costs the stack one atomic load and never takes
-the GIL. After you lower a level (to see more), call
-`rusty_bacnet.refresh_logging()`; until then the events it newly allows are
+### When levels are read: `refresh_logging()`
+
+The bridge decides which events to forward from a copy of the logging
+levels, so an event your configuration doesn't want costs the stack one
+atomic load and never takes the GIL. It reads the levels at import and
+whenever a client, server, hub or endpoint starts (`start()` or `async
+with`), so the usual order (import, configure logging, start) just works.
+If you lower a level later (to see more), call
+`rusty_bacnet.refresh_logging()`; until then, the events it newly allows are
 not forwarded. Raising a level, `Logger.disabled` and `logging.disable()`
 also filter at delivery, so they work at once, but a refresh makes the
 skipped events free again.
@@ -4538,20 +4556,27 @@ skipped events free again.
 ### Records
 
 - The message is the event's message followed by its fields as `key=value`
-  (`Dropping an inbound NPDU discard=Malformed(Version)`).
+  (`Dropping an inbound NPDU (drops since the last warning)
+  discard=Malformed(Version) dropped=1`). Values go in unquoted, even with
+  spaces in them: read `record.bacnet_fields` for structure.
 - `record.bacnet_fields` holds the fields as a dict, with integers, floats
   and booleans as Python values and anything else as text;
   `record.bacnet_target` is the Rust target (`bacnet_network::layer::receive`).
-- `pathname` and `lineno` name the Rust source line, and `created` is when
-  the event happened.
+- `pathname` and `lineno` name the Rust source line; `created`, `msecs` and
+  `relativeCreated` are when the event happened. `funcName` is None, and
+  `threadName` is the forwarder thread's, not the thread that logged.
 
 Records are delivered by one background thread, in order, shortly after the
 event: a handler runs on that thread, not on your event loop's, and may call
-back into `rusty_bacnet`. If more than 4,096 records are waiting, newer ones
-are dropped, and the next delivery logs a warning on `rusty_bacnet` saying
-how many. Once the interpreter starts exiting, pending records are dropped.
-A handler that needs the records at once, such as a test's `assertLogs`,
-waits for them to arrive.
+back into `rusty_bacnet`. A handler that needs the records at once, such as
+a test's `assertLogs`, waits for them to arrive. If more than 4,096 records
+are waiting, newer ones are dropped, and a warning on `rusty_bacnet` says
+how many.
+
+At exit, an `atexit` hook waits (up to two seconds) for the records already
+queued to be delivered; records logged after that are dropped. The bindings
+aren't fork-safe: a forked child has no forwarder thread, so it forwards
+nothing.
 
 ---
 
