@@ -36,6 +36,8 @@ fn a_bbmd_with_an_interface_lends_its_group() {
     bbmd.enable_bbmd(Vec::new());
     let view = bbmd.bip_port().unwrap().multicast.expect("lent");
     assert_eq!(view.group(), [0; 4], "off");
+    // Read-only before start too, so the PICS and writes agree.
+    assert!(!view.can_change());
     bbmd.set_multicast(Some(group(47809))).unwrap();
     assert_eq!(view.group(), GROUP.octets());
     assert!(matches!(
@@ -234,4 +236,77 @@ async fn a_group_bbmd_joins_members_a_plain_peer_and_a_foreign_device() {
         let mut transport = node.transport;
         transport.stop().await.unwrap();
     }
+}
+
+/// A BDT peer at the BBMD's own port on its own IP subnet is outside J.8.1
+/// for a group BBMD, and start warns about it; a plain BBMD, or one whose
+/// mask isn't known, says nothing.
+#[test]
+fn start_warns_about_a_peer_on_the_group_bbmds_subnet() {
+    let mut state = BbmdState::new([192, 0, 2, 10], 47808);
+    let peer = |ip: [u8; 4], port| BdtEntry {
+        ip,
+        port,
+        broadcast_mask: TWO_HOP,
+    };
+    state
+        .set_bdt(vec![
+            peer([192, 0, 2, 20], 47808),
+            peer([192, 0, 2, 30], 47809),
+            peer([198, 51, 100, 1], 47808),
+        ])
+        .unwrap();
+    let mask = Some(Ipv4Addr::new(255, 255, 255, 0));
+    assert_eq!(warn_about_peers_on_the_group_subnet(&state, mask), 0);
+    state.set_serves_group(true).unwrap();
+    assert_eq!(warn_about_peers_on_the_group_subnet(&state, mask), 1);
+    assert_eq!(warn_about_peers_on_the_group_subnet(&state, None), 0);
+}
+
+/// A persisted BDT whose own row is one-hop is invalid for a group BBMD:
+/// start falls back to the configured BDT, as for any invalid file.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[tokio::test]
+async fn a_persisted_one_hop_own_row_falls_back_to_the_configured_bdt() {
+    let (own_port, group_port) = (free_port(), free_port());
+    let path = std::env::temp_dir().join(format!(
+        "rusty-bacnet-group-bbmd-{}-{own_port}.bdt",
+        std::process::id()
+    ));
+    let mut wire = bytes::BytesMut::new();
+    bbmd::encode_bdt_entries(&[row(own_port, [255, 0, 0, 0])], &mut wire);
+    std::fs::write(&path, &wire).unwrap();
+
+    let peer = row(47900, TWO_HOP);
+    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::LOCALHOST);
+    bbmd.set_multicast(Some(group(group_port))).unwrap();
+    bbmd.enable_bbmd(vec![row(own_port, TWO_HOP), peer.clone()]);
+    bbmd.set_bdt_persist_path(path.clone());
+    let started = bbmd.start().await;
+    let _ = std::fs::remove_file(&path);
+    let _rx = started.expect("the configured BDT is used");
+    let bdt = bbmd::lock(bbmd.bbmd_state().unwrap()).bdt();
+    assert_eq!(bdt, [row(own_port, TWO_HOP), peer]);
+    bbmd.stop().await.unwrap();
+}
+
+/// A one-hop own row set while the group was off is refused when a later
+/// start adds the group.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[tokio::test]
+async fn a_start_that_adds_a_group_refuses_a_one_hop_own_row() {
+    let (own_port, group_port) = (free_port(), free_port());
+    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::LOCALHOST);
+    bbmd.enable_bbmd(Vec::new());
+    let _rx = bbmd.start().await.unwrap();
+    let state = Arc::clone(bbmd.bbmd_state().unwrap());
+    bbmd::lock(&state)
+        .set_bdt(vec![row(own_port, [255, 0, 0, 0])])
+        .unwrap();
+    bbmd.stop().await.unwrap();
+
+    bbmd.set_multicast(Some(group(group_port))).unwrap();
+    let error = bbmd.start().await.unwrap_err();
+    assert!(error.to_string().contains("all-ones"), "{error}");
+    assert!(!bbmd::lock(&state).serves_group());
 }

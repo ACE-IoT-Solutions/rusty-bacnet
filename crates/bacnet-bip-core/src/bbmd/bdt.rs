@@ -121,7 +121,9 @@ pub enum BdtError {
     /// an own row with a mask other than [`TWO_HOP_MASK`]: the peers must
     /// send this BBMD the network's broadcasts itself, for it to pass them
     /// on to the group, rather than to its IP subnet's directed broadcast
-    /// address (Annex J.8.3).
+    /// address. Annex J.8.3 gives the reason: a member on that subnet would
+    /// otherwise get each such broadcast twice, once by the directed
+    /// broadcast and once through the group.
     OneHopForGroup {
         /// The row.
         entry: BdtEntry,

@@ -166,6 +166,13 @@ impl<'t, const B: usize, const F: usize> BbmdPort<'t, B, F> {
         rules: &mut impl Rules,
         out: &mut impl Datagrams,
     ) -> Ingress<'d> {
+        // The group rule was set from the link in `new`; a caller that
+        // changed it through `tables_mut` broke the pairing.
+        debug_assert_eq!(
+            self.tables.bdt.serves_group(),
+            link.subnet.is_group(),
+            "the BDT's group rule no longer matches the link"
+        );
         let cx = Context::new(now, F);
         let (source, npdu) = match share {
             ForBbmd::OriginalBroadcast(delivery) => {

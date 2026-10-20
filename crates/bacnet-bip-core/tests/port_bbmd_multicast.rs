@@ -145,8 +145,9 @@ fn a_broadcast_from_the_group_goes_to_the_bdt_and_the_fdt() {
 }
 
 /// J.8.3: a peer's Forwarded-NPDU goes to the group and the foreign
-/// devices, even from a peer on the BBMD's own IP subnet: that peer's own
-/// broadcasts reach the subnet, not the group.
+/// devices. A plain peer on the BBMD's own IP subnet is outside the
+/// standard (J.8.1); its forwards still reach the group, the one direction
+/// that topology is tolerated in.
 #[test]
 fn a_peers_forward_goes_to_the_group_and_the_fdt() {
     let payload = wire(Bvll::ForwardedNpdu {
@@ -351,4 +352,44 @@ fn a_group_and_nat_traversal_compose() {
         &mut socket,
     );
     assert_eq!(forwarded_to(&socket.take(), REMOTE), [GROUP]);
+}
+
+/// A peer's Forwarded-NPDU that came through the group (J.4.5): the group
+/// heard it already, so it goes to the foreign devices only, never back to
+/// the group, which would loop it.
+#[test]
+fn a_forward_from_the_group_never_goes_back_to_it() {
+    with_port(group_link(), |port, socket| {
+        let payload = wire(Bvll::ForwardedNpdu {
+            origin: REMOTE,
+            npdu: NPDU,
+        });
+        let ingress = port.receive(
+            &datagram(&payload, BBMD, TO_GROUP),
+            T0,
+            &mut Permissive,
+            socket,
+        );
+        assert!(matches!(ingress, Ingress::Npdu(_)), "{ingress:?}");
+        assert_eq!(forwarded_to(&socket.take(), REMOTE), [FD1, FD2]);
+    });
+}
+
+/// The port checks, in debug builds, that the BDT's group rule still
+/// matches its link: a caller that turned it off through `tables_mut`
+/// broke the pairing `new` made.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "group rule")]
+fn a_group_rule_that_drifts_from_the_link_is_caught() {
+    with_port(group_link(), |port, socket| {
+        port.tables_mut().bdt.set_serves_group(false).unwrap();
+        let payload = wire(Bvll::OriginalBroadcastNpdu(NPDU));
+        port.receive(
+            &datagram(&payload, MEMBER, TO_GROUP),
+            T0,
+            &mut Permissive,
+            socket,
+        );
+    });
 }

@@ -29,7 +29,8 @@
 //! | Rule | Clause | Test |
 //! | --- | --- | --- |
 //! | An Original-Broadcast-NPDU that came through the group goes to the other BDT entries and the foreign devices | J.8.3, J.4.5 | `a_broadcast_from_the_group_goes_to_the_bdt_and_the_fdt` |
-//! | A peer's Forwarded-NPDU goes to the group and the foreign devices, whatever the peer's IP subnet (the subnet's mask isn't used) | J.8.3 | `a_peers_forward_goes_to_the_group_and_the_fdt` |
+//! | A peer's Forwarded-NPDU goes to the group and the foreign devices (the subnet's mask isn't used, so a plain peer on the BBMD's IP subnet, which J.8.1 rules out, is tolerated in this direction only) | J.8.3 | `a_peers_forward_goes_to_the_group_and_the_fdt` |
+//! | A Forwarded-NPDU that came through the group goes to the foreign devices only, never back to the group | J.4.5, J.8.3 | `a_forward_from_the_group_never_goes_back_to_it` |
 //! | A foreign device's Distribute-Broadcast-To-Network goes to the group, the BDT and every other foreign device | J.8.3 | `a_foreign_devices_broadcast_goes_to_the_group_the_bdt_and_the_other_devices` |
 //! | The BBMD's own broadcast goes to the group, then to the BDT and the foreign devices | J.8.2, J.4.5 | `the_bbmds_own_broadcast_goes_to_the_group_then_the_bdt_and_fdt` |
 //! | Its own BDT row has the all-ones mask, so peers send it the network's broadcasts by unicast ([`Bdt::set_serves_group`], [`BdtError::OneHopForGroup`]) | J.8.3 | `a_bbmd_that_serves_a_group_needs_a_two_hop_own_row` |

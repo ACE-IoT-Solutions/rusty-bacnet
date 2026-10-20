@@ -545,7 +545,6 @@ impl BbmdState {
 
     /// The mask of the subnet this BBMD's own address is on, as the host
     /// reported it at start; `None` when it didn't.
-    #[cfg(test)]
     pub(crate) fn subnet_mask(&self) -> Option<Ipv4Addr> {
         self.subnet_mask
     }

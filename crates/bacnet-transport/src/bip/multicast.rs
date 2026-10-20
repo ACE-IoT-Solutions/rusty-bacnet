@@ -60,10 +60,11 @@
 //! joined before the link changes (the primary socket's multicast send
 //! options may be set first), then the link moves to the group and the
 //! receive loop takes the listener in place of the old one. A later start
-//! uses the group activated last. A BBMD serves the row read-only: its
-//! group and its own BDT row go together under the all-ones rule, and the
-//! Network Port activates its BBMD rows and its group through separate
-//! views, so a joint change could take effect half way.
+//! uses the group activated last. A BBMD serves the row read-only, started
+//! or not: its group and its own BDT row go together under the all-ones
+//! rule, and the Network Port activates its BBMD rows and its group through
+//! separate views, so a joint change could take effect half way (one
+//! activation for both is #1963).
 //!
 //! Lock order: the object database (held by the caller), then the
 //! control's lock, then the node's. No lock here is held across an await.
@@ -355,6 +356,10 @@ pub(crate) struct MulticastControl {
     /// The transport's configured port, 0 when the OS picks it: a group at
     /// a picked port couldn't share it with the other members.
     configured_port: u16,
+    /// The transport is a BBMD, configured or started: its group is
+    /// read-only, running or not (module docs). The transport sets it each
+    /// time it lends the view.
+    bbmd: std::sync::atomic::AtomicBool,
     /// Makes the next listener an activation opens fail, for tests. Not on
     /// Windows, which opens no listener.
     #[cfg(all(test, not(windows)))]
@@ -372,6 +377,7 @@ impl MulticastControl {
             }),
             interface,
             configured_port,
+            bbmd: Default::default(),
             #[cfg(all(test, not(windows)))]
             fail_next_listener: Default::default(),
         }
@@ -399,6 +405,11 @@ impl MulticastControl {
             state.port = multicast.port;
         }
         state.config = multicast;
+    }
+
+    /// Say whether the transport is a BBMD, configured or started.
+    pub(super) fn set_bbmd(&self, bbmd: bool) {
+        self.bbmd.store(bbmd, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Hand the control the running transport, for activations.
@@ -599,13 +610,14 @@ impl IpMulticast for MulticastControl {
         Ok(())
     }
 
-    /// Not for a running BBMD (module docs).
+    /// Not for a BBMD, running or not (module docs).
     fn can_change(&self) -> bool {
-        !self
-            .lock()
-            .running
-            .as_ref()
-            .is_some_and(|running| running.bbmd)
+        !self.bbmd.load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .lock()
+                .running
+                .as_ref()
+                .is_some_and(|running| running.bbmd)
     }
 }
 

@@ -102,7 +102,8 @@ const NAT: &[PropertyMetadata] = &[
 // deviation, as for the BBMD rows (#1578), since without one a written
 // group could never take effect. The PICS draft shows it read-only then,
 // and for a BBMD that serves a group, whose group the B/IP transport keeps
-// fixed (Annex J.8.3 ties it to the BBMD's own BDT row).
+// fixed (Annex J.8.3 ties it to the BBMD's own BDT row; one activation for
+// both is #1963).
 const MULTICAST: &[PropertyMetadata] = &[PropertyMetadata::new(
     P::BACNET_IP_MULTICAST_ADDRESS,
     RequiredRead,

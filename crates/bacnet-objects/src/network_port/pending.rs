@@ -215,7 +215,7 @@ impl NetworkPortObject {
         // the order below can't leave one half applied and the other
         // refused. A BBMD that serves a group (#941) lends it read-only,
         // since its own BDT row and its group go together (Annex J.8.3):
-        // making it writable needs one activation for both.
+        // making it writable needs one activation for both (#1963).
         debug_assert!(
             self.pending.is_empty() || !self.multicast.is_pending(),
             "mode values and a multicast group pending together"

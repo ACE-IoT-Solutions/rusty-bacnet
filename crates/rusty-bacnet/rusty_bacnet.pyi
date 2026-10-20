@@ -2187,9 +2187,10 @@ class Multicast:
     registered Network Port serves the group as BACnet_IP_Multicast_Address
     (0.0.0.0 when off), writable when the server answers ReinitializeDevice
     and isn't a BBMD; a group changed that way lasts until the process
-    exits, and isn't saved. Two ``Multicast`` values with the same settings compare and hash
-    equal. Invalid values raise ValueError, or OverflowError for an integer
-    out of range. Windows multicast is untested.
+    exits, and isn't saved. Two ``Multicast`` values with the same settings
+    compare and hash equal. Invalid values raise ValueError, or
+    OverflowError for an integer out of range. Windows multicast is
+    untested.
     """
 
     def __init__(self, group: str, *, ttl: int = 1, port: Optional[int] = None) -> None: ...

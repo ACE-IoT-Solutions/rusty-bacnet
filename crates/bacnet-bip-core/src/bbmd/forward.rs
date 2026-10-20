@@ -367,9 +367,13 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     ///
     /// For a BBMD that serves a B/IP-M group ([`LocalSubnet::is_group`])
     /// the subnet's broadcast address is the group, and the subnet's mask
-    /// isn't used: a peer on the BBMD's IP subnet reaches it with its own
-    /// broadcasts, but no group member takes those (Annex J.8.1), so its
-    /// forwards go to the group too (Annex J.8.3).
+    /// isn't used, so every peer's forward goes to the group (Annex J.8.3).
+    /// A plain peer BBMD on the group BBMD's own IP subnet is outside the
+    /// standard, since B/IP-M and plain devices don't share a subnet (Annex
+    /// J.8.1), and is tolerated in one direction only: its forwards still
+    /// reach the group, but it takes this BBMD's forwards as already heard
+    /// on its subnet (J.4.5) and doesn't rebroadcast them there. The hosted
+    /// transport warns about such a peer at start.
     pub fn forwarded_npdu<'o>(
         &self,
         cx: &Context,

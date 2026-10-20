@@ -192,8 +192,8 @@ pub enum PortError {
         available: usize,
     },
     /// A [`BbmdPort`] whose link serves a B/IP-M group was lent tables
-    /// whose own BDT row isn't two-hop
-    /// ([`BdtError::OneHopForGroup`]).
+    /// whose own BDT row isn't two-hop: the error is always
+    /// [`BdtError::OneHopForGroup`].
     Bdt(BdtError),
 }
 
