@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
-use bacnet_server::server::BACnetServer;
+use bacnet_server::server::{BACnetServer, DiscoveryPolicy};
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal};
 use bacnet_transport::bip::BipTransport;
 use clap::Parser;
@@ -46,6 +46,14 @@ struct Args {
     /// The BBMD is the only device of its B/IP network on its subnet.
     #[arg(long)]
     alone_on_subnet: bool,
+
+    /// Answer a Who-Is with a broadcast I-Am, which the BBMDs carry to
+    /// every foreign device, not a unicast one to the asker. When the
+    /// asker sits behind a router with no port forward, only its own BBMD
+    /// can get datagrams to it, so a unicast I-Am from another site is
+    /// dropped on the way.
+    #[arg(long)]
+    broadcast_i_am: bool,
 }
 
 fn parse_bdt_entry(spec: &str) -> Result<BdtEntry, Box<dyn std::error::Error>> {
@@ -110,6 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?)
         .transport(transport)
         .database(db)
+        .discovery_policy(DiscoveryPolicy {
+            prefer_directed_responses: !args.broadcast_i_am,
+            ..DiscoveryPolicy::default()
+        })
         .build()
         .await?;
 

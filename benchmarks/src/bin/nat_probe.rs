@@ -68,16 +68,52 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     for device in client.discovered_devices().await {
         println!(
-            "I-Am from device {} at {:02x?}",
+            "I-Am from device {} at {}",
             device.object_identifier.instance_number(),
-            device.mac_address.as_slice()
+            mac_text(device.mac_address.as_slice())
         );
     }
     if missing.is_empty() {
         println!("nat-probe: every expected device answered");
-        Ok(ExitCode::SUCCESS)
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Name the hop that failed: registration first, then the I-Ams.
+    let registration = client
+        .transport()
+        .bvlc_client_snapshot()
+        .foreign_registration;
+    if registration.registered {
+        eprintln!(
+            "nat-probe: hop 1 ok: registered with the BBMD at {}",
+            args.bbmd
+        );
+        eprintln!(
+            "nat-probe: no I-Am from {missing:?}: the Who-Is didn't reach that \
+             device through the BBMDs (check the BDTs and the routers' port \
+             forwards), or its I-Am didn't come back (a unicast I-Am from \
+             another site is dropped by a router that forwards nothing; a \
+             broadcast one comes back through the BBMDs)"
+        );
     } else {
+        eprintln!(
+            "nat-probe: hop 1 failed: not registered with the BBMD at {} \
+             after {} attempts ({} refused): the BBMD or its router's port \
+             forward isn't reachable, or the answers go around the router",
+            args.bbmd, registration.attempts, registration.refused
+        );
         eprintln!("nat-probe: no answer from {missing:?}");
-        Ok(ExitCode::FAILURE)
+    }
+    Ok(ExitCode::FAILURE)
+}
+
+/// A 6-octet B/IP MAC as `ip:port`, anything else as hex.
+fn mac_text(mac: &[u8]) -> String {
+    match mac {
+        [a, b, c, d, high, low] => SocketAddrV4::new(
+            Ipv4Addr::new(*a, *b, *c, *d),
+            u16::from_be_bytes([*high, *low]),
+        )
+        .to_string(),
+        other => format!("{other:02x?}"),
     }
 }

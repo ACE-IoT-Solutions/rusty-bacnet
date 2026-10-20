@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"${compose[@]}" build
+"${compose[@]}" --profile probe build
 "${compose[@]}" up -d nat-a nat-b nat-c bbmd-a bbmd-b
 # Let the BBMDs bind before the probes register.
 sleep 3

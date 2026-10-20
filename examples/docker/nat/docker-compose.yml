@@ -9,6 +9,9 @@
 # it, and a fourth foreign device sits on the "internet" itself. Each
 # foreign device registers with site A's BBMD, broadcasts a Who-Is, and must
 # hear an I-Am from both BBMDs' devices (9001 at site A, 9002 at site B).
+# The devices broadcast their I-Am (--broadcast-i-am), so it reaches the
+# foreign devices through the BBMDs: a unicast one from site B would be
+# dropped by nat-c, which only lets in replies from site A's BBMD.
 #
 #   internet  198.18.0.0/24    nat-a .11, nat-b .12, nat-c .13, probe .50
 #   site-a    192.168.10.0/24  nat-a .1, bbmd-a .10
@@ -20,6 +23,9 @@
 # network's Docker gateway is .254, leaving .1 to the site's NAT router.
 #
 # Run it with ./run.sh (it builds, starts, probes and tears down).
+
+x-no-masquerade: &no-masquerade
+  com.docker.network.bridge.enable_ip_masquerade: "false"
 
 x-image: &image
   build:
@@ -80,6 +86,7 @@ services:
       - --bdt=198.18.0.11:47809,198.18.0.12:47809
       - --nat-global=198.18.0.11:47809
       - --alone-on-subnet
+      - --broadcast-i-am
       - --device-instance=9001
     networks:
       site-a: { ipv4_address: 192.168.10.10 }
@@ -99,6 +106,7 @@ services:
       - --bdt=198.18.0.11:47809,198.18.0.12:47809
       - --nat-global=198.18.0.12:47809
       - --alone-on-subnet
+      - --broadcast-i-am
       - --device-instance=9002
     networks:
       site-b: { ipv4_address: 192.168.20.10 }
@@ -133,11 +141,18 @@ services:
       site-c: { ipv4_address: 192.168.30.10 }
 
 networks:
+  # Docker masquerades traffic that crosses its bridges by default, so a
+  # BBMD would see the Docker gateway (.254) as every peer's source and
+  # answer it around the NAT router. Off here: only the routers translate.
   internet:
     ipam: { config: [{ subnet: 198.18.0.0/24, gateway: 198.18.0.254 }] }
+    driver_opts: *no-masquerade
   site-a:
     ipam: { config: [{ subnet: 192.168.10.0/24, gateway: 192.168.10.254 }] }
+    driver_opts: *no-masquerade
   site-b:
     ipam: { config: [{ subnet: 192.168.20.0/24, gateway: 192.168.20.254 }] }
+    driver_opts: *no-masquerade
   site-c:
     ipam: { config: [{ subnet: 192.168.30.0/24, gateway: 192.168.30.254 }] }
+    driver_opts: *no-masquerade
