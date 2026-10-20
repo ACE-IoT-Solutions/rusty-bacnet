@@ -134,7 +134,7 @@ impl Browser {
                     };
                 }
                 BrowseResult::Failed(error) => self.list = ListState::Failed(error),
-                BrowseResult::Object(_) => return false,
+                BrowseResult::Object(_) | BrowseResult::Names { .. } => return false,
             }
             return true;
         }
@@ -347,6 +347,7 @@ mod tests {
             health: Default::default(),
             priority: None,
             via: ReadVia::Rpm,
+            name: None,
         }))
     }
 

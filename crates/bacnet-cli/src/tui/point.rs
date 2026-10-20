@@ -18,6 +18,32 @@ pub(crate) enum BrowseRead {
     Object(ObjectIdentifier),
 }
 
+/// One device's part of a name request (#1896): the objects on screen
+/// without a name. It replaces what the device was last asked for, so rows
+/// scrolled off are no longer read (empty withdraws them all); names
+/// already read or being read are not read again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NameAsk {
+    /// The device.
+    pub(crate) device: u32,
+    /// The objects, in the order the screen shows them.
+    pub(crate) objects: Vec<ObjectIdentifier>,
+    /// The device answered again after a timeout: names it didn't answer
+    /// for may be read again.
+    pub(crate) retry: bool,
+}
+
+/// How one name read went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadName {
+    /// The object's name.
+    Named(String),
+    /// The device answered without one (an error, a reject, not a string).
+    Refused,
+    /// The device didn't answer, or the read was given up with it.
+    Unreachable,
+}
+
 /// How a property list was read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReadVia {
@@ -43,6 +69,8 @@ pub(crate) struct DeviceCard {
     pub(crate) rows: Vec<(&'static str, String)>,
     /// How the card was read.
     pub(crate) via: Option<ReadVia>,
+    /// The device's Object_Name, when it was read.
+    pub(crate) name: Option<String>,
 }
 
 /// The health columns of Clause 12's common status properties, shown as
@@ -125,6 +153,8 @@ pub(crate) struct ObjectView {
     pub(crate) priority: Option<PriorityView>,
     /// How the properties were read.
     pub(crate) via: ReadVia,
+    /// Its Object_Name, when it was read.
+    pub(crate) name: Option<String>,
 }
 
 impl ObjectView {
@@ -162,6 +192,13 @@ pub(crate) enum BrowseResult {
     },
     /// One object's properties.
     Object(Box<ObjectView>),
+    /// Object names read for a [`NameAsk`].
+    Names {
+        /// The device read.
+        device: u32,
+        /// Each object and how its read went.
+        names: Vec<(ObjectIdentifier, ReadName)>,
+    },
     /// The request failed.
     Failed(String),
 }

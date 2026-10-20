@@ -123,11 +123,25 @@ pub(crate) struct Reader<'a, T: TransportPort + 'static> {
 }
 
 impl<T: TransportPort + 'static> Reader<'_, T> {
-    async fn turn(&self) -> Result<(), Halt> {
+    /// Wait for this request's slot, unless the job was stopped.
+    pub(super) async fn turn(&self) -> Result<(), Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
         self.rate.acquire().await;
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(Halt::Cancelled);
+        }
+        Ok(())
+    }
+
+    /// Wait until a request could go at once, without taking the slot,
+    /// unless the job was stopped (see [`RateCap::wait_free`]).
+    pub(super) async fn free_turn(&self) -> Result<(), Halt> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(Halt::Cancelled);
+        }
+        self.rate.wait_free().await;
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }

@@ -51,6 +51,7 @@ pub(crate) fn transmits(command: &Command) -> bool {
         command,
         Command::WhoIs { .. }
             | Command::Browse { .. }
+            | Command::Names { .. }
             | Command::Watch(_)
             | Command::Safety(_)
             | Command::Network(_)
@@ -67,7 +68,7 @@ pub(crate) async fn refuse(sink: &EventSink, command: Command) {
             op,
             outcome: OpOutcome::Failed(reason),
         },
-        Command::Browse { req, .. } => WorkerEvent::Browse {
+        Command::Browse { req, .. } | Command::Names { req, .. } => WorkerEvent::Browse {
             req,
             result: BrowseResult::Failed(reason),
         },

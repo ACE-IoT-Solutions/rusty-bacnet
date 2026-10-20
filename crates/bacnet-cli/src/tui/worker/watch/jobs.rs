@@ -139,7 +139,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         }
     }
     let name = match &read {
-        Ok((rows, _)) => sample::name(rows),
+        Ok((rows, _)) => crate::tui::format::object_name(rows),
         Err(_) => None,
     };
     let first = match &read {

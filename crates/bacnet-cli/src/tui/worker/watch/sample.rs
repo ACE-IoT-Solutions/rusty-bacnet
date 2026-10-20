@@ -129,23 +129,6 @@ fn flags(data: &[u8]) -> Option<Health> {
     })
 }
 
-/// The Object_Name among properties as read, with each control character
-/// as a space so a device's text can't break the row; `None` when the
-/// device answered it with an error or left it out.
-pub(crate) fn name(rows: &[RawRow]) -> Option<String> {
-    let (_, value) = rows
-        .iter()
-        .find(|(p, _)| *p == PropertyIdentifier::OBJECT_NAME)?;
-    match decode_all(value.as_deref().ok()?)?.as_slice() {
-        [PropertyValue::CharacterString(text)] => Some(
-            text.chars()
-                .map(|ch| if ch.is_control() { ' ' } else { ch })
-                .collect(),
-        ),
-        _ => None,
-    }
-}
-
 /// A reading of `property` from properties as read. `None` when the read
 /// didn't return it at all.
 pub(crate) fn from_rows(property: PropertyIdentifier, rows: &[RawRow]) -> Option<Reading> {
@@ -238,24 +221,6 @@ mod tests {
         let description = point(ObjectType::ANALOG_INPUT, PropertyIdentifier::DESCRIPTION);
         let (sample, _) = RowFormat::default().sample(&description, reading);
         assert_eq!((sample.number, sample.flags), (None, None));
-    }
-
-    #[test]
-    fn the_name_is_the_object_name_with_its_control_characters_as_spaces() {
-        let named = vec![(
-            PropertyIdentifier::OBJECT_NAME,
-            Ok(encoded(&PropertyValue::CharacterString(
-                "Zone\nTemp\u{1b}".into(),
-            ))),
-        )];
-        assert_eq!(name(&named).as_deref(), Some("Zone Temp "));
-        // An error for the name alone, or no name at all: no name.
-        let refused = vec![(
-            PropertyIdentifier::OBJECT_NAME,
-            Err("property:unknown-property".into()),
-        )];
-        assert_eq!(name(&refused), None);
-        assert_eq!(name(&[]), None);
     }
 
     #[test]

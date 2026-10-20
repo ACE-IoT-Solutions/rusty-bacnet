@@ -13,7 +13,7 @@ Enter on a row of the device table opens the browser. It reads the device and li
 ## Three panes
 
 - **The device card**, top left: name, vendor and vendor ID, model, firmware and application software versions, protocol version and revision, how many services and object types it supports, Max APDU, segmentation and Database_Revision.
-- **The object list**, bottom left: the device's Object_List, grouped by object type with a count per type.
+- **The object list**, bottom left: the device's Object_List, grouped by object type with a count per type, and each object's name after its label. Names are read only for the objects on screen, never for the whole list, and kept for the session: scrolling reads the names of the rows that come into view, `…` marks a name still being read and `-` one the device refused; a name left blank timed out, and is asked for again when the device next sends an I-Am. `r` on the card or the list reads the device again, and asks again for the names it refused.
 - **The properties**, on the right: the selected object's properties, once you read it.
 
 From 120 columns wide the panes sit side by side. Below that only the focused pane is shown, with a bar naming the panes, and Tab moves to the next one. The focused pane has a coloured border. Tab and Shift-Tab change the focus at any width.

@@ -277,6 +277,36 @@ fn list(texts: Vec<String>, separator: &str) -> String {
     }
 }
 
+/// Longest name kept, in characters; a device's longer name is cut.
+pub(crate) const MAX_NAME_CHARS: usize = 128;
+
+/// The Object_Name among properties as read; `None` when the device
+/// answered it with an error or left it out. See [`name_text`].
+pub(crate) fn object_name(rows: &[RawRow]) -> Option<String> {
+    let (_, value) = rows
+        .iter()
+        .find(|(p, _)| *p == PropertyIdentifier::OBJECT_NAME)?;
+    name_text(value.as_deref().ok()?)
+}
+
+/// An encoded Object_Name as text (see [`clean_name`]); `None` unless it
+/// is one character string.
+pub(crate) fn name_text(data: &[u8]) -> Option<String> {
+    match decode_all(data)?.as_slice() {
+        [PropertyValue::CharacterString(text)] => Some(clean_name(text)),
+        _ => None,
+    }
+}
+
+/// A device's name for display: each control character as a space, so it
+/// can't move the cursor or break a row, and at most [`MAX_NAME_CHARS`].
+pub(crate) fn clean_name(text: &str) -> String {
+    text.chars()
+        .take(MAX_NAME_CHARS)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
 /// The Units among properties as read.
 pub(crate) fn units(rows: &[RawRow]) -> Option<EngineeringUnits> {
     let (_, value) = rows.iter().find(|(p, _)| *p == PropertyIdentifier::UNITS)?;

@@ -12,6 +12,7 @@ pub(crate) mod connection;
 pub(crate) mod devices;
 pub(crate) mod monitor;
 pub(crate) mod mstp;
+pub(crate) mod names;
 pub(crate) mod network;
 pub(crate) mod objects;
 pub(crate) mod picker;
@@ -305,6 +306,8 @@ pub(crate) struct App {
     pub(crate) capture: capture::CaptureState,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
+    /// Object and device names learned this session (#1896).
+    pub(crate) names: names::NameCache,
     /// The screen in the body.
     pub(crate) screen: Screen,
     next_req: super::point::ReqId,
@@ -375,6 +378,7 @@ impl App {
             monitor: None,
             capture: capture::CaptureState::default(),
             who_has: None,
+            names: names::NameCache::default(),
             screen: Screen::Main,
             next_req: 0,
             duplicates: Duplicates::default(),
@@ -709,6 +713,7 @@ impl App {
         self.sc = sc::ScState::default();
         self.mstp = mstp::MstpState::default();
         self.who_has = None;
+        self.names = names::NameCache::default();
         // Captured frames stay; the session's tap went with it.
         self.capture.sources.retain(|(_, session)| !session);
         // A new session starts read-only; its worker reports the policy
@@ -798,6 +803,7 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
         } => {
             app.tick(now, dropped, log_generation);
             app.safety_tick(out);
+            app.ask_names(out);
         }
         Action::Resize => {}
         Action::Quit => app.request_quit(),

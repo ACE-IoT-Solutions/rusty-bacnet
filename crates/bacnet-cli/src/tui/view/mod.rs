@@ -30,6 +30,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
+use super::app::names::{Name, NameCache};
 use super::app::watch::Screen;
 use super::app::{App, Link, Overlay};
 
@@ -48,6 +49,11 @@ pub(crate) const FULL_HEIGHT: u16 = 40;
 pub(crate) fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let theme = Theme { color: app.color };
+    // The tables that draw with names say so; a table not drawn asks for none.
+    app.devices.named.set(false);
+    if let Some(browser) = &app.browser {
+        browser.objects.named.set(false);
+    }
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         too_small(frame, area, &theme);
         return;
@@ -81,7 +87,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         _ if app.screen == Screen::Sc => sc::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Mstp => mstp::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Capture => capture::draw(frame, body, app, &theme),
-        Some(open) if app.screen == Screen::Browse => browser::draw(frame, body, open, &theme),
+        Some(open) if app.screen == Screen::Browse => {
+            browser::draw(frame, body, open, Names::of(app), &theme)
+        }
         _ => who_has::devices(frame, body, app, &theme),
     }
     if app.show_log {
@@ -205,6 +213,50 @@ pub(super) fn sanitize(text: &str) -> String {
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect()
 }
+
+/// Narrowest a name column is drawn; with less room it is left out, and
+/// its names aren't asked for (#1896).
+pub(super) const MIN_NAME: usize = 8;
+
+/// The session's names as the tables show them.
+#[derive(Clone, Copy)]
+pub(super) struct Names<'a> {
+    cache: &'a NameCache,
+    /// Names not yet known are being asked for.
+    live: bool,
+}
+
+impl<'a> Names<'a> {
+    /// The app's names.
+    pub(super) fn of(app: &'a App) -> Self {
+        Self {
+            cache: &app.names,
+            live: app.names_live(),
+        }
+    }
+
+    /// `object`'s name on `device` as a cell shows it: the name (already
+    /// free of control characters), `…` while it is being asked for, `-`
+    /// when the device refused it, and nothing when no one is asking for
+    /// it: the device didn't answer (until its next I-Am), or nothing can
+    /// be asked.
+    pub(super) fn text(
+        &self,
+        device: u32,
+        object: Option<bacnet_types::primitives::ObjectIdentifier>,
+    ) -> &'a str {
+        match object.and_then(|object| self.cache.get(device, object)) {
+            Some(Name::Known(name)) => name,
+            Some(Name::Unavailable) => "-",
+            Some(Name::Unreachable) => "",
+            None if self.live => PENDING,
+            None => "",
+        }
+    }
+}
+
+/// A name cell while the name is being asked for.
+pub(super) const PENDING: &str = "…";
 
 /// Display width of `text`.
 pub(super) fn text_width(text: &str) -> usize {

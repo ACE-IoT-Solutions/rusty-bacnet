@@ -145,6 +145,14 @@ pub(crate) enum Command {
         /// What to read.
         read: BrowseRead,
     },
+    /// Object names for the rows on screen, every device's in one command
+    /// so a tick never fills the queue (#1896).
+    Names {
+        /// Request id, echoed in a refusal.
+        req: ReqId,
+        /// Each device whose ask changed.
+        asks: Vec<super::point::NameAsk>,
+    },
     /// Stop reading `device`: drop its queued reads and end the running one
     /// after its outstanding request.
     StopBrowse {

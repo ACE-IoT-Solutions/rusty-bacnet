@@ -82,6 +82,9 @@ pub(crate) struct DeviceTable {
     pub(crate) offset: Cell<usize>,
     /// Rows that fit on screen in the last frame; PgUp and PgDn move this far.
     pub(crate) page: Cell<usize>,
+    /// The last frame drew the table with its Name column, so the names
+    /// of the rows it showed are asked for (#1896).
+    pub(crate) named: Cell<bool>,
 }
 
 impl Default for DeviceTable {
@@ -97,6 +100,7 @@ impl Default for DeviceTable {
             stale: false,
             offset: Cell::new(0),
             page: Cell::new(10),
+            named: Cell::new(false),
         }
     }
 }

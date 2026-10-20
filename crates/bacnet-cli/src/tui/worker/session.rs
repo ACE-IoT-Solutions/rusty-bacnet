@@ -451,13 +451,13 @@ async fn serve_with<T: TransportPort + 'static>(
                                 sink.deliver(WorkerEvent::OpFinished { op, outcome: OpOutcome::Cancelled }).await;
                             }
                         }
-                        Some(command @ (Command::Browse { .. } | Command::StopBrowse { .. })) => {
+                        Some(command @ (Command::Browse { .. } | Command::Names { .. } | Command::StopBrowse { .. })) => {
                             if let Err(refused) = browse.try_send(command) {
                                 let refused = refused.into_inner();
                                 if let Command::StopBrowse { device } = refused {
                                     tracing::debug!("browser busy; dropped the stop for device {device}");
                                 }
-                                if let Command::Browse { req, .. } = refused {
+                                if let Command::Browse { req, .. } | Command::Names { req, .. } = refused {
                                     let result = BrowseResult::Failed("the browser is busy; try again".into());
                                     sink.deliver(WorkerEvent::Browse { req, result }).await;
                                 }
