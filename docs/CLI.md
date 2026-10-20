@@ -445,8 +445,8 @@ known, and a second Enter sends it. The table shows instance, address,
 network, vendor ID, max APDU, segmentation and time since the last I-Am. A
 routed device's address is its station in the CLI's target syntax,
 `NET:0xMAC` (`2:0x7F000001C335`, or `2:0x05` for an MS/TP station), which
-the one-shot commands take back as a target. The router it answered through
-is in a `Via` column when the whole column fits, and otherwise left out. Each
+the one-shot commands and the command bar take back as a target. The router
+it answered through is in a `Via` column when the whole column fits, and otherwise left out. Each
 column is as wide as its header or its widest cell, so a wide terminal leaves
 the spare room at the right; instance and address are never cut. The filter
 also matches the router. When two addresses answer for the same instance, a
@@ -497,7 +497,10 @@ go through a write session (below).
 
 **Watch list.** `a` on an object in the browser watches its Present_Value;
 `:watch 1234 ai:1 [property]` on the command bar watches any property of a
-device in the table (`dnet:1234` for a routed one). `3` shows the list: device
+device in the table, named by its instance, as `dnet:1234` for a routed one,
+or by the routed station the table shows, `2:0x05`. A network typed that the
+table disagrees with is replaced by the table's, and the footer says so
+("2001 is on network 2, not 3"). `3` shows the list: device
 (`2:1234` when routed), object, the object's name, property, value, units,
 status flags, source, the age of the last value and a sparkline. Columns fit
 their content and the device and object are never cut. Below 120 columns the
@@ -772,6 +775,12 @@ relinquish. `:writem DEVICE OBJECT PROPERTY VALUE[@P] ...` sends several writes
 to one device as one WritePropertyMultiple; each property may appear only once
 in a batch, because a failed batch names the failing write without its
 priority.
+
+The command bar splits its line into words itself. Single or double quotes
+group words, and a backslash makes the quote, space or backslash after it
+plain text; a quote left open is an error. A quoted VALUE is a
+CharacterString, with any priority after the closing quote:
+`:writem 1001 av:1 description "two words"` or `... "Zone 2"@12`.
 
 Before every write the TUI reads the object's priority array, Present_Value,
 Relinquish_Default and Out_Of_Service, then shows a preview: the old and new

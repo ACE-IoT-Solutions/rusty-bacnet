@@ -151,6 +151,11 @@ impl DeviceTable {
         self.rows.get(&instance)
     }
 
+    /// Every row, filtered or not, in no order.
+    pub(crate) fn rows(&self) -> impl Iterator<Item = &DeviceRow> + '_ {
+        self.rows.values()
+    }
+
     /// Current sort column and direction.
     pub(crate) fn sort(&self) -> (SortKey, bool) {
         (self.sort, self.descending)

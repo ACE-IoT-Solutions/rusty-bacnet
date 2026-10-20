@@ -220,7 +220,7 @@ The arm dialog, the write and relinquish forms, the previews, the ledger and the
 
 | Command | What it does |
 |---|---|
-| `watch DEVICE OBJECT [PROPERTY]` | Watch a property; `w` is short for it. DEVICE is an instance from the device table, or `DNET:instance` for a routed one. PROPERTY defaults to Present_Value |
+| `watch DEVICE OBJECT [PROPERTY]` | Watch a property; `w` is short for it. DEVICE is a device from the device table: its instance, `DNET:instance` for a routed one, or the routed station the table shows, such as `2:0x05`. PROPERTY defaults to Present_Value |
 | `csv on` | Log every watched value to a CSV file in the profile's workspace |
 | `csv off` | Stop logging |
 | `writem DEVICE OBJECT PROPERTY VALUE[@P] ...` | Several writes to one device in one WritePropertyMultiple, previewed and confirmed at T2 or above; needs an armed session |
@@ -230,6 +230,8 @@ The arm dialog, the write and relinquish forms, the previews, the ledger and the
 | `mstp rotation MS` | Monitor: flag token rotations longer than this |
 | `mstp hold MS` | Monitor: flag token holds longer than this |
 | `mstp listen SECS` | Monitor: how long the safe join listens before it proposes |
+
+Single or double quotes group words, as in `find "Zone  Temp"`, and a backslash makes a following quote, space or backslash plain text. A quote left open shows an error instead of running the line. In `writem`, a quoted value is a character string.
 
 ## Flags
 
