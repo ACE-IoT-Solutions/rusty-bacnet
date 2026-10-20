@@ -22,6 +22,7 @@ use crate::log_buffer::{
     log_buffer_read_denied, LogBufferRecords, LogRecordBuffer, LogRecordIdentity,
 };
 use crate::log_lifecycle::LogLifecycle;
+use crate::log_persistence::store::{DurableLog, LogStore};
 use crate::log_reporting::{impl_buffer_ready_reporting, BufferReadyReporting};
 use crate::log_window::LogWindow;
 use crate::traits::BACnetObject;
@@ -49,6 +50,8 @@ pub struct TrendLogMultipleObject {
     reporting: BufferReadyReporting,
     reliability: Reliability,
     clock: Option<Arc<dyn ClockReader>>,
+    /// The storage the log commits to, when built with `with_persistence`.
+    store: Option<LogStore<BACnetLogMultipleRecord>>,
 }
 
 impl TrendLogMultipleObject {
@@ -70,6 +73,7 @@ impl TrendLogMultipleObject {
             reporting: BufferReadyReporting::default(),
             reliability: Reliability::NO_FAULT_DETECTED,
             clock: None,
+            store: None,
         })
     }
 
@@ -84,8 +88,10 @@ impl TrendLogMultipleObject {
     /// ignored (Enable FALSE, or outside the window): the acquisition was
     /// made.
     pub fn add_record(&mut self, record: BACnetLogMultipleRecord) -> Result<(), Error> {
+        self.settle_interruption(Some((record.date, record.time)));
         self.lifecycle().try_add_ordinary(record)?;
         self.acquisition.acquired();
+        self.commit_if_counted();
         Ok(())
     }
 
@@ -197,9 +203,16 @@ impl TrendLogMultipleObject {
 
     /// Append a LOG_INTERRUPTED status record, as
     /// [`TrendLogObject::record_interruption`](super::TrendLogObject::record_interruption)
-    /// does, after restoring the log on a restart (#1537).
+    /// does, after restoring the log on a restart (#1537). A log reopened
+    /// from storage appends this record itself; calling this first takes its
+    /// place.
     pub fn record_interruption(&mut self, date: Date, time: Time) -> Result<(), Error> {
-        self.lifecycle().record_interruption((date, time))
+        self.lifecycle().record_interruption((date, time))?;
+        if let Some(store) = &mut self.store {
+            store.interruption_recorded();
+        }
+        self.commit_if_counted();
+        Ok(())
     }
 
     /// Clear the buffer.
@@ -460,6 +473,16 @@ impl BACnetObject for TrendLogMultipleObject {
 
     fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
         self.clock = clock;
+        self.settle_interruption(None);
+    }
+
+    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.store.is_some().then_some(self as _)
+    }
+
+    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+        self.commit_if_interval(now);
+        false
     }
 
     fn log_record_identities_internal(&self) -> Option<Vec<LogRecordIdentity>> {
@@ -475,8 +498,14 @@ impl BACnetObject for TrendLogMultipleObject {
     }
 
     fn refresh_log_window_internal(&mut self) -> bool {
-        self.lifecycle().refresh_window()
+        self.settle_interruption(None);
+        let recorded = self.lifecycle().refresh_window();
+        self.commit_if_counted();
+        recorded
     }
 
     impl_buffer_ready_reporting!(reporting, log_buffer);
 }
+
+#[path = "multiple_durable.rs"]
+mod durable;

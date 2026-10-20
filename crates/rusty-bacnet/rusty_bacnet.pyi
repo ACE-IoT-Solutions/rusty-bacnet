@@ -4164,6 +4164,7 @@ class BACnetServer:
         stop_time: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None,
         align_intervals: bool | None = None,
         interval_offset: int | None = None,
+        storage_path: Optional[str] = None,
         total_record_count: int = 0,
     ) -> None:
         """Add a Trend Log (Clause 12.25) that the server polls, triggers or
@@ -4205,6 +4206,11 @@ class BACnetServer:
         4294967294, records number 4294967295, then 1, 2 and on, which lets
         a reader's handling of the wrap be tested. Out of range raises
         OverflowError.
+
+        ``storage_path`` keeps the log in files, as on
+        ``add_trend_log_multiple``. ``client_cov_increment`` and
+        ``cov_resubscription_interval`` aren't saved: they apply on every
+        start, reopened or not.
         """
         ...
     def add_trend_log_multiple(
@@ -4226,6 +4232,7 @@ class BACnetServer:
         stop_time: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None,
         align_intervals: bool | None = None,
         interval_offset: int | None = None,
+        storage_path: Optional[str] = None,
         total_record_count: int = 0,
     ) -> None:
         """Add a Trend Log Multiple (Clause 12.30) that the server polls or
@@ -4263,6 +4270,24 @@ class BACnetServer:
 
         ``total_record_count`` seeds Total_Record_Count as on
         ``add_trend_log``.
+
+        ``storage_path`` keeps the log in ``<storage_path>.slot0`` and
+        ``.slot1``. It is a ``str``; a ``pathlib.Path`` raises TypeError. The
+        log commits a snapshot every 100 records or, while it changes, once a
+        minute, and once more at ``stop()``, so a power loss costs at most
+        about a minute of records; a failed commit is retried. A log reopened
+        from those files serves its saved records, Total_Record_Count,
+        BUFFER_READY counts and Notification_Threshold, Enable,
+        Stop_When_Full and every setting a peer can write, and appends one
+        LOG_INTERRUPTED record to mark the restart (none when it reopens full
+        and stopped); the saved state wins over the keyword arguments.
+        ``buffer_size`` wins over the saved Buffer_Size: a smaller one keeps
+        the newest records. A durable Trend Log Multiple holds at most 15849
+        records (178437 for an Event Log, 828302 for a Trend Log); a larger
+        ``buffer_size``, or a file pair that can't be read or holds another
+        object's state, raises BacnetError. To tell whether a log will
+        reopen, check whether either slot file exists before the call. The
+        files outlive the log: one added again on them reopens.
         """
         ...
     def add_event_log(
@@ -4272,6 +4297,7 @@ class BACnetServer:
         buffer_size: int = 100,
         log_received_notifications: bool = False,
         *,
+        storage_path: Optional[str] = None,
         total_record_count: int = 0,
     ) -> None:
         """Register an Event Log of ``buffer_size`` records before start().
@@ -4290,6 +4316,10 @@ class BACnetServer:
 
         ``total_record_count`` seeds Total_Record_Count as on
         ``add_trend_log``; BUFFER_READY counts from the seeded value.
+
+        ``storage_path`` keeps the log in files, as on
+        ``add_trend_log_multiple``. ``log_received_notifications`` isn't
+        saved and applies on every start.
         """
         ...
     def add_audit_log(self, instance: int, name: str, storage_path: str, buffer_size: int = 100) -> None: ...
