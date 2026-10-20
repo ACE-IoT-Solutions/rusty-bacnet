@@ -240,14 +240,18 @@ impl Probe {
 }
 
 /// Helpers every check gets: `block_until` blocks the calling thread, and
-/// so the loop, with the GIL released, until `done()` or a deadline.
+/// so the loop, with the GIL released, until `done()` or a deadline;
+/// `state()` is the probe's counters, for assertion messages.
 const PRELUDE: &str = r#"
-import asyncio, sys, time
+import asyncio, sys, threading, time
+def state():
+    return dict(trace=probe.trace, queued=probe.queued, in_flight=probe.in_flight,
+                missed=probe.missed)
 def block_until(done, what):
     deadline = time.monotonic() + 10
     while not done():
         if time.monotonic() > deadline:
-            raise AssertionError("timed out waiting for " + what)
+            raise AssertionError("timed out waiting for " + what + ": " + repr(state()))
         time.sleep(0.001)
 def trace(**expected):
     paths = dict(before_delivery=0, on_loop=0, closed_loop=0, delivered=0)
@@ -351,10 +355,26 @@ asyncio.run(main())
 /// Cancelled before the binding thread could take the GIL to deliver: the
 /// first read finds its future done and puts its item back. The second
 /// read waited behind it, so nothing is lost and the order holds.
+///
+/// The binding thread counts a `set_result` callback as queued only once
+/// `call_soon_threadsafe` returns, and that call writes the loop's
+/// self-pipe with the GIL released: the loop can run the callback, and the
+/// awaiting coroutine read the count, before the binding thread counts it.
+/// Windows' Proactor loop did (a flake on `assert probe.queued == 2`), so
+/// this check forces that order on every platform and waits for the count.
 #[test]
 fn reads_cancelled_before_delivery_lose_nothing() {
     run(cr#"
 async def main():
+    loop = asyncio.get_running_loop()
+    call_soon_threadsafe = loop.call_soon_threadsafe
+    def callback_runs_first(callback, future, *args):
+        # Return to the binding thread only once the loop has run the
+        # callback and set the result.
+        call_soon_threadsafe(callback, future, *args)
+        if threading.current_thread() is not threading.main_thread():
+            block_until(future.done, "the set_result callback to run")
+    loop.call_soon_threadsafe = callback_runs_first
     interval = sys.getswitchinterval()
     first, second = probe.next(), probe.next()
     await asyncio.sleep(0)
@@ -366,23 +386,28 @@ async def main():
         # so its delivery is left waiting for the GIL.
         deadline = time.monotonic() + 10
         while probe.in_flight != 1:
-            assert time.monotonic() < deadline, "the first read never armed"
+            assert time.monotonic() < deadline, ("the first read never armed", state())
         first.cancel()
         second.cancel()
     finally:
         sys.setswitchinterval(interval)
-    assert await asyncio.wait_for(probe.next(), 5) == 1
-    assert await asyncio.wait_for(probe.next(), 5) == 2
+    got = await asyncio.wait_for(probe.next(), 5)
+    assert got == 1, (got, state())
+    got = await asyncio.wait_for(probe.next(), 5)
+    assert got == 2, (got, state())
+    # Both results are set; the binding threads count their callbacks after.
+    block_until(lambda: probe.queued == 2, "both set_result callbacks to be counted")
     # The first read's delivery took this path. The second read, cancelled
     # but not yet aborted when the item came back, may take it too and put
     # it back again; either way it is the only path besides the deliveries.
     paths = probe.trace
-    assert paths["before_delivery"] in (1, 2), paths
-    assert paths == trace(before_delivery=paths["before_delivery"], delivered=2), paths
-    assert probe.queued == 2
-    assert probe.missed == 0
+    assert paths["before_delivery"] in (1, 2), state()
+    assert paths == trace(before_delivery=paths["before_delivery"], delivered=2), state()
+    assert probe.queued == 2 and probe.in_flight == 0, state()
+    assert probe.missed == 0, state()
     probe.send(3)
-    assert await asyncio.wait_for(probe.next(), 5) == 3
+    got = await asyncio.wait_for(probe.next(), 5)
+    assert got == 3, (got, state())
 asyncio.run(main())
 "#);
 }
