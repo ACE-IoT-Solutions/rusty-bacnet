@@ -25,6 +25,7 @@ pyo3.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 bytes = { workspace = true, features = ["std"] }
 tokio-rustls.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

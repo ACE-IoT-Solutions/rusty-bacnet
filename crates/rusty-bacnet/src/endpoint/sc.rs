@@ -370,6 +370,7 @@ impl PyScEndpoint {
 
     /// Start after lifecycle admission. A second explicit start fails.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
         config.reinitialize.bind_event_loop(py)?;
@@ -393,6 +394,7 @@ impl PyScEndpoint {
 
     /// Start on context entry, or reuse the already running session.
     fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         let self_ref = slf.clone().unbind();
         let (lifecycle, config) = {
             let borrowed = slf.borrow();

@@ -5,6 +5,7 @@ use bacnet_transport::port::TransportPort;
 impl BACnetServer {
     /// Start the server. It will begin responding to BACnet requests.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         // Validate the selected sink before TLS/serial/network preparation or
         // ownership transfer. Keep registration stable until it is drained.
         let mut pending = self.lock_pending()?;

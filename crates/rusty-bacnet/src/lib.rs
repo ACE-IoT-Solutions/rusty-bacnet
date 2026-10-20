@@ -18,6 +18,7 @@ mod group_members;
 mod hub;
 mod hub_bindings;
 mod log_records;
+mod logging_bridge;
 mod mstp_py;
 mod object_audit_policy;
 mod object_options;
@@ -47,8 +48,13 @@ async fn unit_result(
 /// The `rusty_bacnet` Python module.
 #[pymodule]
 fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // `logging` first, so that its atexit shutdown runs after the gate's hook.
+    logging_bridge::import_logging(m.py())?;
     // Keep binding threads out of the interpreter once it starts exiting (#1002).
     py_async::register(m)?;
+    // Forward the stack's tracing events to `logging` (#1724), and flush them
+    // at exit before the gate closes.
+    logging_bridge::register(m)?;
 
     // Register exception types
     errors::register(m)?;
