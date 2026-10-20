@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use bacnet_types::bip_port::{BbmdChanges, BbmdTables};
-use bacnet_types::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
+use bacnet_types::constructed::{
+    BACnetBDTEntry, BACnetFDTEntry, BACnetHostAddress, BACnetHostNPort,
+};
 use bacnet_types::error::Error;
 
 use super::persist::BdtFile;
@@ -39,6 +41,18 @@ impl BbmdState {
                 broadcast_mask: Some(row.mask.octets()),
             })
             .collect()
+    }
+
+    /// [`Self::global_address`] as BACnet_IP_Global_Address: the `None`
+    /// host with port 0 when none is configured (Clause 12.56.33).
+    pub fn global_address_value(&self) -> BACnetHostNPort {
+        self.global_address().map_or(
+            BACnetHostNPort {
+                host: BACnetHostAddress::None,
+                port: 0,
+            },
+            |global| BACnetHostNPort::from_socket_addr(SocketAddr::V4(global)),
+        )
     }
 
     /// Whether a foreign device registration policy is set. Without one
@@ -92,25 +106,52 @@ impl BbmdTables for LiveTables {
         lock(&self.state).check_written_bdt(table)
     }
 
-    /// A new BDT is saved to the persisted-BDT file once it is in effect.
+    fn nat_traversal(&self) -> Option<bool> {
+        Some(lock(&self.state).nat_traversal())
+    }
+
+    fn global_address(&self) -> Option<BACnetHostNPort> {
+        Some(lock(&self.state).global_address_value())
+    }
+
+    fn check_value(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        lock(&self.state).check_value(changes)
+    }
+
+    fn check(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        lock(&self.state).check_changes(changes)
+    }
+
+    /// A new BDT or NAT setting is saved to the persisted-BDT file once it
+    /// is in effect (#940). The NAT setting goes with the rows only once it
+    /// is the network's to keep: after an activation that changed
+    /// NAT_Traversal or Global_Address, or when the file loaded at start
+    /// held one. A BDT-only activation otherwise writes the rows alone, so
+    /// a later change to the configured NAT setting still applies.
     /// Only the activation and taking the rows happen under the locks the
     /// caller and this view hold; the file is written on a thread of its
     /// own afterwards (`BdtFile::save_later`). A failed save is logged and counted and doesn't undo the
     /// activation.
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
-        let file = self
-            .file
-            .as_ref()
-            .filter(|_| changes.broadcast_distribution_table.is_some());
+        let file = self.file.as_ref().filter(|_| {
+            changes.broadcast_distribution_table.is_some()
+                || changes.nat_traversal.is_some()
+                || changes.global_address.is_some()
+        });
         let Some(file) = file else {
             return lock(&self.state).activate(changes);
         };
-        let (generation, rows) = {
+        let nat_changed = changes.nat_traversal.is_some() || changes.global_address.is_some();
+        let (generation, rows, nat) = {
             let mut state = lock(&self.state);
             state.activate(changes)?;
-            (file.next_generation(), state.configured_bdt())
+            (
+                file.next_generation(),
+                state.configured_bdt(),
+                state.nat_to_persist(nat_changed),
+            )
         };
-        file.save_later(generation, rows);
+        file.save_later(generation, rows, nat);
         Ok(())
     }
 

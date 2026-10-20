@@ -13,6 +13,10 @@
 //!   local subnet, the peer subnets and the other foreign devices.
 //! - [`Tables::own_broadcast`]: a broadcast this BBMD's own device sends.
 //!
+//! A BBMD behind a NAT router ([`Tables::set_nat`], Annex J.7.5) runs under
+//! its global address, and names it as the origin of the Forwarded-NPDUs it
+//! builds ([`Nat`]).
+//!
 //! Each writes its destinations into storage the caller passes and returns
 //! the Forwarded-NPDU to send them ([`Distribution`]), or, for a received
 //! Forwarded-NPDU, which goes on unchanged, only where ([`Fanout`]). The tables read and
@@ -73,6 +77,7 @@
 mod bdt;
 mod fdt;
 mod forward;
+mod nat;
 mod serve;
 
 pub use bdt::{
@@ -85,4 +90,5 @@ pub use fdt::{
 pub use forward::{
     Context, DistributeRefusal, Distribution, Fanout, ForwardRefusal, Tables, Target, Via,
 };
+pub use nat::{is_rfc1918, Nat, NatError, PrivateRange, MAX_PRIVATE_RANGES};
 pub use serve::{Answer, DeleteRefusal, Request, Rules, Served};

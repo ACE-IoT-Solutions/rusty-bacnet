@@ -25,12 +25,15 @@ use crate::bvll::bvll_error;
 
 mod activation;
 mod forward;
+mod nat;
 mod persist;
 mod policy;
 mod serve;
 mod tables;
 pub(crate) use forward::Forward;
-pub(crate) use persist::BdtFile;
+use nat::NatSetting;
+pub use nat::{NatError, NatTraversal, PrivateRange};
+pub(crate) use persist::{decode_file, BdtFile, PersistedNat};
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use serve::Reply;
@@ -262,8 +265,13 @@ fn table_too_long(label: &'static str, count: usize, max: usize) -> Error {
 pub struct BbmdState {
     /// Maps the host clock onto the core's.
     clock: HostClock,
-    /// Both tables. The BDT holds this BBMD's own B/IP address.
+    /// Both tables. The BDT holds this BBMD's own B/IP address: the global
+    /// one behind a NAT router, the local one otherwise.
     tables: Tables,
+    /// The B/IP address of this BBMD's socket on its own subnet.
+    local: SocketAddrV4,
+    /// Whether it runs behind a NAT router, and how it is reached there.
+    nat: NatSetting,
     /// The mask of the subnet this BBMD's own address is on, when the host
     /// reports it: a peer's Forwarded-NPDU sent from that subnet at this
     /// BBMD's own port isn't broadcast on it again (Annex J.4.5).
@@ -291,6 +299,8 @@ impl BbmdState {
         Self {
             clock: HostClock::centred(Instant::now()),
             tables: Tables::new(address(local_ip, local_port)),
+            local: address(local_ip, local_port),
+            nat: NatSetting::default(),
             subnet_mask: None,
             alone_on_subnet: false,
             management_acl: Vec::new(),
@@ -321,11 +331,18 @@ impl BbmdState {
         self.counters
     }
 
-    /// This BBMD's own B/IP address (IP and UDP port): the one given to
-    /// [`Self::new`], or the one a restart of a `0.0.0.0`-bound transport chose.
-    pub fn local_address(&self) -> ([u8; 4], u16) {
-        let own = self.tables.bdt.own_address();
-        (own.ip().octets(), own.port())
+    /// This BBMD's B/IP address (IP and UDP port) on its own subnet: the
+    /// one given to [`Self::new`], or the one a restart of a `0.0.0.0`-bound
+    /// transport chose. Behind a NAT router the BDT knows it by its global
+    /// address instead ([`Self::own_address`]).
+    pub fn local_address(&self) -> SocketAddrV4 {
+        self.local
+    }
+
+    /// [`Self::local_address`] as the octets and port the tests compare.
+    #[cfg(test)]
+    pub(crate) fn local_pair(&self) -> ([u8; 4], u16) {
+        (self.local.ip().octets(), self.local.port())
     }
 
     /// Change this BBMD's own B/IP address, keeping the BDT and FDT. Only the
@@ -335,11 +352,15 @@ impl BbmdState {
     /// the new one. A row the BDT lists explicitly stays, and becomes an
     /// ordinary peer row once it no longer matches. Returns `Error::Encoding`,
     /// changing nothing, when the new self row would overflow the BDT.
+    /// Behind a NAT router the BDT's own row is the global address, which
+    /// stays.
     pub(crate) fn set_local_address(&mut self, ip: [u8; 4], port: u16) -> Result<(), Error> {
-        self.tables
-            .bdt
-            .set_own_address(address(ip, port))
-            .map_err(bdt_error)
+        let local = address(ip, port);
+        if !self.nat.enabled {
+            self.tables.bdt.set_own_address(local).map_err(bdt_error)?;
+        }
+        self.local = local;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -611,6 +632,9 @@ mod activation_tests;
 
 #[cfg(test)]
 mod foreign_device_tests;
+
+#[cfg(test)]
+mod nat_tests;
 
 #[cfg(test)]
 mod run_tests;

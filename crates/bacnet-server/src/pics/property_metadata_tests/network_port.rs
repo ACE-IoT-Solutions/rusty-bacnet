@@ -451,3 +451,80 @@ fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
         }
     }
 }
+
+/// A BBMD whose transport can run behind a NAT router, and takes written
+/// values or doesn't.
+struct NatViews(bool);
+impl bacnet_types::bip_port::BbmdTables for NatViews {
+    fn broadcast_distribution_table(&self) -> Vec<bacnet_types::constructed::BACnetBDTEntry> {
+        Vec::new()
+    }
+    fn accepts_foreign_device_registrations(&self) -> bool {
+        false
+    }
+    fn foreign_device_table(&self) -> Vec<bacnet_types::constructed::BACnetFDTEntry> {
+        Vec::new()
+    }
+    fn nat_traversal(&self) -> Option<bool> {
+        Some(false)
+    }
+    fn global_address(&self) -> Option<bacnet_types::constructed::BACnetHostNPort> {
+        Some(bacnet_types::constructed::BACnetHostNPort {
+            host: bacnet_types::constructed::BACnetHostAddress::None,
+            port: 0,
+        })
+    }
+    fn can_change(&self) -> bool {
+        self.0
+    }
+}
+
+/// The PICS draft for an IPv4 BBMD port that can run behind NAT lists
+/// BACnet_IP_NAT_Traversal as required and BACnet_IP_Global_Address as
+/// optional (Table 12-71, footnotes 9 and 10), both writable when the server
+/// activates changes and the transport takes them (Clause 12.56.32,
+/// 12.56.33, #940).
+#[test]
+fn pics_lists_the_nat_rows_of_a_nat_capable_ipv4_bbmd() {
+    use bacnet_types::bip_port::BipPortMode;
+    use std::sync::Arc;
+    for (can_change, activation) in [(false, false), (true, false), (true, true)] {
+        let writable = can_change && activation;
+        let oid = ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1).unwrap();
+        let mut db = ObjectDatabase::new();
+        let config = bacnet_objects::network_port::BipPortConfig {
+            ip_address: [127, 0, 0, 1],
+            ..Default::default()
+        };
+        db.add(Box::new(
+            NetworkPortObject::new_bip(1, "NP-1", config).unwrap(),
+        ))
+        .unwrap();
+        let (_, _lease) = db
+            .reserve_bip_port_internal(oid, [127, 0, 0, 1], 47808)
+            .unwrap();
+        let mode = BipPortMode::Bbmd {
+            tables: Some(Arc::new(NatViews(can_change))),
+        };
+        db.publish_bip_port_internal(oid, [127, 0, 0, 1], 47808, 1476, mode)
+            .unwrap();
+        db.set_network_port_activation_internal(oid, activation)
+            .unwrap();
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let listed = &pics.supported_object_types[0].supported_properties;
+        for (property, optional) in [
+            (P::BACNET_IP_NAT_TRAVERSAL, false),
+            (P::BACNET_IP_GLOBAL_ADDRESS, true),
+        ] {
+            let row = listed
+                .iter()
+                .find(|row| row.property_id == property)
+                .unwrap_or_else(|| panic!("{property} listed"));
+            assert_eq!(
+                (row.access.optional, row.access.writable),
+                (optional, writable),
+                "{property}, can_change {can_change}, activation {activation}"
+            );
+        }
+    }
+}

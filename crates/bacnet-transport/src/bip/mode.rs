@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use super::{BipTransport, FanoutPolicy, ForeignDeviceConfig};
-use crate::bbmd::{BdtEntry, ForeignDevicePolicy};
+use crate::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal};
 
 /// How a B/IP node takes part in its network (Annex J).
 ///
@@ -30,6 +30,9 @@ use crate::bbmd::{BdtEntry, ForeignDevicePolicy};
 /// });
 /// # let _ = (foreign, bbmd);
 /// ```
+// A mode is built once, when a transport is configured, so the BBMD
+// variant's size costs nothing worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Default)]
 pub enum BipMode {
     /// A node whose broadcasts reach its own subnet only. The default.
@@ -72,9 +75,37 @@ pub struct BbmdOptions {
     /// rebroadcast of forwarded and distributed broadcasts. Off by default;
     /// see [`BipTransport::set_bbmd_alone_on_subnet`].
     pub alone_on_subnet: bool,
+    /// How it is reached through a NAT router, when it sits behind one
+    /// (Annex J.7.5): its global address and any extra private ranges. The
+    /// BDT must then list the global address as this BBMD's own row, with
+    /// every mask all ones, or `start()` fails. `None` by default; see
+    /// [`BipTransport::set_bbmd_nat_traversal`].
+    pub nat: Option<NatTraversal>,
 }
 
 impl BipTransport {
+    /// Run this BBMD behind a NAT router, reached at `nat`'s global address,
+    /// or, with `None`, not (Annex J.7.5). The router must port-forward the
+    /// global address's UDP port to this transport's socket. The BDT then
+    /// names this BBMD by the global address: it must list it, and every row
+    /// must have an all-ones mask (two-hop), or `start()` fails. The
+    /// Forwarded-NPDUs the BBMD builds carry the global address as their
+    /// origin, except a public foreign device's broadcast, which keeps its
+    /// own; one it passes on keeps the origin it came with. The socket, its
+    /// subnet and its echo filter stay on the private side. The registered
+    /// Network Port serves the setting as BACnet_IP_NAT_Traversal and
+    /// BACnet_IP_Global_Address, which a ReinitializeDevice can change.
+    /// Must be called after `enable_bbmd()` and before `start()`.
+    pub fn set_bbmd_nat_traversal(&mut self, nat: Option<NatTraversal>) {
+        if let Some(config) = &mut self.bbmd_config {
+            config.nat = nat;
+        } else if nat.is_some() {
+            tracing::warn!(
+                "set_bbmd_nat_traversal called before enable_bbmd(); setting will be ignored"
+            );
+        }
+    }
+
     /// The persisted-BDT file's path, if one is set.
     #[cfg(test)]
     pub(super) fn bdt_persist_path(&self) -> Option<&std::path::Path> {
@@ -110,6 +141,7 @@ impl BipTransport {
                 bdt_persist_path,
                 fanout_policy,
                 alone_on_subnet,
+                nat,
             }) => {
                 self.enable_bbmd(bdt);
                 if let Some(policy) = foreign_device_policy {
@@ -121,6 +153,7 @@ impl BipTransport {
                 }
                 self.set_fanout_policy(fanout_policy);
                 self.set_bbmd_alone_on_subnet(alone_on_subnet);
+                self.set_bbmd_nat_traversal(nat);
             }
         }
     }

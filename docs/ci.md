@@ -792,6 +792,24 @@ bash scripts/emu/emulate-firmware.sh --suggest           # stack budgets as the 
   and about 15 s warm, the twenty-six QEMU runs under a second each.
   Building the Docker image the first time adds about 30 s.
 
+### NAT topology (manual)
+
+`examples/docker/nat/run.sh` checks B/IP across real NAT routers (Annex
+J.7.5, #940, #942): two BBMD sites, each behind an iptables router that
+port-forwards UDP 47809, after the two-site example of the annex; a foreign
+device on the "internet" network; and one behind a router that forwards
+nothing. Each foreign device must hear both sites' devices answer its
+Who-Is. The tests' loopback NAT shim
+(`crates/bacnet-transport/tests/bip_nat`) covers the same rules on every
+CI run; this is the check against a kernel's NAT.
+
+- **Locally:** `bash examples/docker/nat/run.sh` (Docker with Compose v2;
+  Linux, or Docker Desktop). It builds the image, probes, prints the BBMD
+  logs on a failure and tears everything down.
+- **On GitHub:** `.github/workflows/nat-docker.yml`, `workflow_dispatch`
+  only, like the emulation check. Its job is named "NAT (manual): ...", so
+  it never stands in for CI OK or Native OK.
+
 ### Runner
 
 Every Linux job runs on GitHub's `ubuntu-24.04` hosted runner, an x86_64 VM
