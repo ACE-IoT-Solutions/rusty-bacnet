@@ -1,6 +1,61 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+/// Items for the targets whose libc has `getifaddrs`: the one walk over it
+/// (`ifaddrs`, #1884) and its callers.
+macro_rules! with_getifaddrs {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "l4re",
+                target_os = "android",
+                target_os = "emscripten",
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "dragonfly",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "solaris",
+                target_os = "illumos",
+                target_os = "haiku",
+                target_os = "nto",
+                target_os = "hurd",
+                target_os = "fuchsia",
+            ))]
+            $item
+        )*
+    };
+}
+
+/// Items for the targets with no interface list: neither `getifaddrs` nor
+/// Windows.
+macro_rules! without_interface_list {
+    ($($item:item)*) => {
+        $(
+            #[cfg(not(any(
+                windows,
+                target_os = "linux",
+                target_os = "l4re",
+                target_os = "android",
+                target_os = "emscripten",
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "dragonfly",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "solaris",
+                target_os = "illumos",
+                target_os = "haiku",
+                target_os = "nto",
+                target_os = "hurd",
+                target_os = "fuchsia",
+            )))]
+            $item
+        )*
+    };
+}
+
 pub mod any;
 pub mod bbmd;
 pub mod bip;
@@ -12,6 +67,9 @@ mod direct_response;
 #[cfg(feature = "ethernet")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ethernet")))]
 pub mod ethernet;
+with_getifaddrs! {
+    mod ifaddrs;
+}
 mod local_addresses;
 pub mod loopback;
 pub mod mstp;
