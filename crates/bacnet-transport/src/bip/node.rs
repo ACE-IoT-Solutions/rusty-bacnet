@@ -30,6 +30,7 @@ use bacnet_bip_core::node::{
     NodeCounters, Policy, RegistrationEvent, Response, SendRefusal,
 };
 use bacnet_bip_core::Instant as CoreInstant;
+use bacnet_bip_core::LocalSubnet;
 use bacnet_time::HostClock;
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
@@ -229,7 +230,8 @@ impl NodeState {
 /// paths, its driver task and the requests in flight.
 pub(super) struct NodeHandle {
     /// A copy of the node's link, for the receive and send decisions. Only
-    /// [`retarget`](Self::retarget) writes it, under the node lock, after
+    /// [`retarget`](Self::retarget) and [`set_subnet`](Self::set_subnet)
+    /// write it, under the node lock, after
     /// the node's own copy changed: lock order is the node lock, then this.
     link: RwLock<Link>,
     clock: HostClock,
@@ -326,6 +328,20 @@ impl NodeHandle {
             state.refusal_warned = false;
             *self.link.write().unwrap_or_else(PoisonError::into_inner) = *state.node.link();
             info!(bbmd = %foreign.bbmd, ttl = foreign.ttl, "B/IP foreign device moved to a new BBMD registration");
+            Ok(())
+        })
+    }
+
+    /// Send broadcasts to `subnet` and take them from it from now on
+    /// ([`Node::set_subnet`]): a B/IP-M node joining, changing or leaving its
+    /// group (#941). A stopped node changes nothing.
+    pub(super) fn set_subnet(&self, subnet: LocalSubnet) -> Result<(), Error> {
+        self.with(|state, _| {
+            if state.stopped {
+                return Ok(());
+            }
+            state.node.set_subnet(subnet).map_err(config_error)?;
+            *self.link.write().unwrap_or_else(PoisonError::into_inner) = *state.node.link();
             Ok(())
         })
     }

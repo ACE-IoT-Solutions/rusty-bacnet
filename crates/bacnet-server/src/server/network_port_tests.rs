@@ -14,6 +14,8 @@ mod network_port_bip_mode_tests;
 mod network_port_foreign_activation_tests;
 #[path = "network_port_mode_tests.rs"]
 mod network_port_mode_tests;
+#[path = "network_port_multicast_tests.rs"]
+mod network_port_multicast_tests;
 #[path = "network_port_nat_tests.rs"]
 mod network_port_nat_tests;
 #[path = "sc_network_number_tests.rs"]

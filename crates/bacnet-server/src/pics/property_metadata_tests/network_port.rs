@@ -528,3 +528,69 @@ fn pics_lists_the_nat_rows_of_a_nat_capable_ipv4_bbmd() {
         }
     }
 }
+
+/// A transport's B/IP multicast group that takes written values, or
+/// doesn't.
+struct Group(bool);
+impl bacnet_types::bip_port::IpMulticast for Group {
+    fn group(&self) -> [u8; 4] {
+        [0; 4]
+    }
+    fn can_change(&self) -> bool {
+        self.0
+    }
+}
+
+/// The PICS draft for an IPv4 port that can use B/IP multicast lists
+/// BACnet_IP_Multicast_Address as required (Table 12-71, footnote 7),
+/// writable when the server activates changes and the transport takes them
+/// (Clause 12.56.26, #941); a port that can't doesn't list it.
+#[test]
+fn pics_lists_the_multicast_row_of_a_port_that_can_use_multicast() {
+    use bacnet_types::bip_port::BipPortMode;
+    use std::sync::Arc;
+    for (lent, can_change, activation) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let oid = ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1).unwrap();
+        let mut db = ObjectDatabase::new();
+        let config = bacnet_objects::network_port::BipPortConfig {
+            ip_address: [127, 0, 0, 1],
+            ..Default::default()
+        };
+        db.add(Box::new(
+            NetworkPortObject::new_bip(1, "NP-1", config).unwrap(),
+        ))
+        .unwrap();
+        let (_, _lease) = db
+            .reserve_bip_port_internal(oid, [127, 0, 0, 1], 47808)
+            .unwrap();
+        db.publish_bip_port_internal(oid, [127, 0, 0, 1], 47808, 1476, BipPortMode::Normal)
+            .unwrap();
+        let view = lent
+            .then(|| Arc::new(Group(can_change)) as Arc<dyn bacnet_types::bip_port::IpMulticast>);
+        db.set_network_port_multicast_internal(oid, view).unwrap();
+        db.set_network_port_activation_internal(oid, activation)
+            .unwrap();
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let row = pics.supported_object_types[0]
+            .supported_properties
+            .iter()
+            .find(|row| row.property_id == P::BACNET_IP_MULTICAST_ADDRESS);
+        let case = format!("lent {lent}, can_change {can_change}, activation {activation}");
+        match row {
+            Some(row) => {
+                assert!(lent, "{case}");
+                assert_eq!(
+                    (row.access.optional, row.access.writable),
+                    (false, can_change && activation),
+                    "{case}"
+                );
+            }
+            None => assert!(!lent, "{case}"),
+        }
+    }
+}

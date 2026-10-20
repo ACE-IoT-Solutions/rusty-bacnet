@@ -34,7 +34,7 @@ use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordi
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
 use bacnet_services::cov::COVNotificationRequest;
-use bacnet_transport::bip::{BipMode, BipTransport};
+use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::{TransportPort, TransportProvenance};
@@ -281,9 +281,37 @@ pub struct BipClientBuilder {
     config: ClientConfig,
     options: ClientOptions,
     mode: BipMode,
+    multicast: Option<BipMulticast>,
 }
 
 impl BipClientBuilder {
+    /// Make the client a B/IP-M node in `multicast`'s group (Annex J.8), or,
+    /// with `None` (the default), not: its broadcasts, Who-Is among them,
+    /// go to the group, and it takes broadcasts only from the group. Needs
+    /// an explicit [`interface`](Self::interface), and a nonzero
+    /// [`port`](Self::port) unless the group has its own. A multicast TTL of
+    /// 1, the default, keeps the group's traffic on the local network. See
+    /// [`BipTransport::set_multicast`]; `build()` fails on what it refuses.
+    ///
+    /// ```no_run
+    /// use bacnet_client::client::BACnetClient;
+    /// use bacnet_transport::bip::BipMulticast;
+    /// use std::net::Ipv4Addr;
+    /// # async fn example() -> Result<(), bacnet_types::error::Error> {
+    /// let group = BipMulticast::new(Ipv4Addr::new(239, 255, 66, 1))?;
+    /// let mut client = BACnetClient::bip_builder()
+    ///     .interface(Ipv4Addr::new(192, 0, 2, 20))
+    ///     .multicast(Some(group))
+    ///     .build()
+    ///     .await?;
+    /// client.stop().await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
+        self.multicast = multicast;
+        self
+    }
+
     /// Set the B/IP mode: a normal node (the default), a foreign device or
     /// a BBMD (#938). `build()` starts the client locally; a foreign device
     /// doesn't wait for its BBMD to accept the registration. Poll
@@ -550,6 +578,7 @@ impl BACnetClient<BipTransport> {
             config: ClientConfig::default(),
             options: ClientOptions::default(),
             mode: BipMode::Normal,
+            multicast: None,
         }
     }
 }

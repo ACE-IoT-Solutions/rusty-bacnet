@@ -340,6 +340,20 @@ impl BipServerBuilder {
         self
     }
 
+    /// Make the server a B/IP-M node in `multicast`'s group (Annex J.8), or,
+    /// with `None` (the default), not: its broadcasts go to the group, and
+    /// it takes broadcasts only from the group. Needs an explicit
+    /// [`interface`](Self::interface), and a nonzero [`port`](Self::port)
+    /// unless the group has its own; `build()` fails on what
+    /// [`BipTransport::set_multicast`](bacnet_transport::bip::BipTransport::set_multicast)
+    /// refuses. A registered Network Port serves the group as
+    /// `BACnet_IP_Multicast_Address`, writable when the server answers
+    /// ReinitializeDevice (#941).
+    pub fn multicast(mut self, multicast: Option<bacnet_transport::bip::BipMulticast>) -> Self {
+        self.multicast = multicast;
+        self
+    }
+
     /// Bind the interface address itself, so devices on other addresses of
     /// this host can share the port, each getting only its own unicast
     /// (#1538). Off by default, which binds `0.0.0.0`. Needs an explicit

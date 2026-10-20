@@ -406,6 +406,7 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
         .bip_port(BipPort {
             endpoint: SocketAddrV4::new([127, 0, 0, 1].into(), UDP),
             mode: BipPortMode::Normal,
+            multicast: None,
         })
         .build();
     assert_eq!(

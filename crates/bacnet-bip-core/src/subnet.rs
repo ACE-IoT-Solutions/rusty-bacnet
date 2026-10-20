@@ -18,7 +18,10 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 pub struct LocalSubnet {
     /// Where a broadcast to the network's devices goes: the subnet's
     /// directed broadcast address (or 255.255.255.255) at the B/IP
-    /// network's UDP port (Annex J.1.2).
+    /// network's UDP port (Annex J.1.2). For a B/IP-M node it is the
+    /// multicast group and its port instead (Annex J.8.1): the group acts
+    /// as the node's subnet, and broadcasts go to it and come from it
+    /// alone ([`Addressed::classify`](crate::node::Addressed::classify)).
     pub broadcast: SocketAddrV4,
     /// The mask of the subnet the node's own B/IP address is on, when the
     /// caller knows it. With it, a BBMD doesn't broadcast a peer's

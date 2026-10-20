@@ -59,6 +59,7 @@ impl NetworkPortObject {
             NetworkNumber::configured(config.network_number()).expect("validated Network Number");
         self.mode = bip_mode::LiveMode::Normal;
         self.pending = Default::default();
+        self.multicast = Default::default();
         self.activation = false;
         self.binding = Arc::downgrade(lease);
         Ok(())
@@ -97,7 +98,18 @@ impl NetworkPortObject {
         self.ip = Some(config);
         self.mode = mode;
         self.pending = Default::default();
+        self.multicast.clear_pending();
         Ok(())
+    }
+
+    /// Lend the B/IP multicast group of the owner that published, or none
+    /// for a transport that can't use multicast. Any written group is
+    /// dropped.
+    pub(crate) fn set_multicast_internal(
+        &mut self,
+        view: Option<Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+    ) {
+        self.multicast = super::multicast::Multicast::lent(view);
     }
 }
 

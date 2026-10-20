@@ -16,28 +16,32 @@ use crate::Arrival;
 /// It is a plain record, and closed on purpose: the receive rules ask a
 /// destination two questions, whether it was this node alone and whether
 /// it reached every node on the subnet (Annex J.2.11, J.2.12, J.4.1). Any
-/// other kind of destination answers the same two, B/IP multicast (#941)
-/// included, whose group address would stand in for the broadcast one.
+/// other kind of destination answers the same two: for a B/IP-M node
+/// (Annex J.8, #941) the group address stands in for the broadcast one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Addressed {
     /// Sent to this node's own unicast address.
     pub node: bool,
-    /// Sent to the subnet's broadcast address or 255.255.255.255.
+    /// Sent to the subnet's broadcast address or 255.255.255.255, or for a
+    /// B/IP-M node to its multicast group.
     pub broadcast: bool,
 }
 
 /// The addresses a destination is judged against.
 ///
-/// It is `#[non_exhaustive]`, since B/IP multicast (#941) would add the
-/// group address: outside this crate, build it with
-/// [`LocalAddresses::new`] and set [`wildcard`](Self::wildcard) for a
-/// socket bound to the wildcard address.
+/// It is `#[non_exhaustive]`, so a new kind of address isn't a breaking
+/// change: outside this crate, build it with [`LocalAddresses::new`] and
+/// set [`wildcard`](Self::wildcard) for a socket bound to the wildcard
+/// address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LocalAddresses<'a> {
     /// The IP address of the node's own B/IP address.
     pub own: Ipv4Addr,
-    /// The subnet's broadcast IP address.
+    /// The subnet's broadcast IP address, or a B/IP-M node's multicast
+    /// group (Annex J.8): the link's [`LocalSubnet::broadcast`](crate::LocalSubnet::broadcast).
+    /// A group here makes the group the only broadcast destination: see
+    /// [`Addressed::classify`].
     pub broadcast: Ipv4Addr,
     /// For a socket bound to the wildcard address, the host's own unicast
     /// addresses: unicast to any of them is the node's. `None` for a socket
@@ -63,13 +67,22 @@ impl Addressed {
     /// reports it, whether the OS delivered it to a group (`os_group`). The
     /// OS's word overrides the address: a group delivery is never unicast
     /// to the node, and a reported unicast never a broadcast.
+    ///
+    /// When the broadcast address is a multicast group, the node is a
+    /// B/IP-M member (Annex J.8): the group is its only broadcast
+    /// destination, and 255.255.255.255 or a subnet's directed broadcast
+    /// is neither broadcast nor unicast to it. Members and plain B/IP
+    /// devices don't share a subnet (Annex J.8.1), so a subnet broadcast
+    /// isn't this network's, and taking it as well could deliver one
+    /// broadcast twice.
     #[must_use]
     pub fn classify(
         destination: Ipv4Addr,
         os_group: Option<bool>,
         local: &LocalAddresses<'_>,
     ) -> Self {
-        let to_broadcast = destination == local.broadcast || destination.is_broadcast();
+        let to_broadcast = destination == local.broadcast
+            || (destination.is_broadcast() && !local.broadcast.is_multicast());
         let node = match local.wildcard {
             Some(own_ips) => {
                 !to_broadcast && !destination.is_multicast() && own_ips.contains(&destination)

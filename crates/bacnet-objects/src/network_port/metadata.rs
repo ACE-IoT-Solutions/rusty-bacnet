@@ -93,6 +93,18 @@ const NAT: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::BACNET_IP_NAT_TRAVERSAL, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::BACNET_IP_GLOBAL_ADDRESS, Optional, None, ReadOnly),
 ];
+// Table 12-71 footnote 7 (IPV4 only): a port that supports B/IP multicast
+// (Annex J.8) has BACnet_IP_Multicast_Address, in any mode, so an IPv4 port
+// whose transport lends its group serves it, as 0.0.0.0 while off. Clause
+// 12.56.26 makes it writable whenever present, a write waiting for a
+// ReinitializeDevice as the mode rows' do (#941). It is listed read-only
+// here and becomes writable only for an owner that activates changes.
+const MULTICAST: &[PropertyMetadata] = &[PropertyMetadata::new(
+    P::BACNET_IP_MULTICAST_ADDRESS,
+    RequiredRead,
+    None,
+    ReadOnly,
+)];
 // Table 12-71 footnote 13 and Table 12-72: FOREIGN mode has these, for
 // either IP version. Clauses
 // 12.56.37 and 12.56.38 make them writable, with a write waiting for a
@@ -114,10 +126,16 @@ pub(super) fn for_object(object: &NetworkPortObject) -> Cow<'_, [PropertyMetadat
             _ => &[],
         };
         let nat: &[PropertyMetadata] = if object.serves_nat() { NAT } else { &[] };
+        let multicast: &[PropertyMetadata] = if object.serves_multicast() {
+            MULTICAST
+        } else {
+            &[]
+        };
         Cow::Owned(
             COMMON
                 .iter()
                 .chain(profile)
+                .chain(multicast)
                 .chain(nat)
                 .chain(mode)
                 .copied()
@@ -133,6 +151,11 @@ pub(super) fn for_object(object: &NetworkPortObject) -> Cow<'_, [PropertyMetadat
                     }
                     if object.activates_changes()
                         && super::pending::writable_pending_row(row.property_identifier)
+                    {
+                        row.write_capability = Always;
+                    }
+                    if row.property_identifier == P::BACNET_IP_MULTICAST_ADDRESS
+                        && object.activates_multicast()
                     {
                         row.write_capability = Always;
                     }

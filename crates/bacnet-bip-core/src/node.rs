@@ -91,7 +91,9 @@
 //! | A BBMD answers Distribute-Broadcast-To-Network with its NAK when the sender isn't registered, and also when forwarding fails; that NAK from the device's own BBMD is taken as a hint to register again, at most once per response timeout, when retries back off | J.4.5 | `node_registration.rs` `distribute_nak_pulls_the_renewal_forward`, `at_renewal_takes_no_hint_from_a_distribute_nak` |
 //! | A recommendation, not an obligation: behind NAT, a foreign device registers often enough to keep the router's mapping open, whatever its time-to-live | J.7.5 (e) | `node_registration.rs` `renewal_is_independent_of_ttl` |
 //! | A function the annex doesn't define, 0x0C among them (its clause is deleted), is dropped unanswered | J.2.13 | `node_receive.rs` `unknown_functions_are_dropped_unanswered` |
-//! | B/IP multicast (a group address in place of the broadcast address) | J.8 | Not supported here (#941); the broadcast address is configuration |
+//! | A B/IP-M node sends its broadcasts to its multicast group, which stands in for the subnet's broadcast address, and directed messages by unicast as before | J.8.1, J.8.2 | `node_multicast.rs` `a_member_broadcasts_to_the_group_and_never_unicasts_there` |
+//! | A B/IP-M node takes Original-Broadcast-NPDU and Forwarded-NPDU from its group, and not from the subnet's broadcast address: members and plain devices don't share a subnet, so that broadcast belongs to another network | J.8.1 | `node_multicast.rs` `a_member_takes_broadcast_functions_from_the_group_and_unicast_ones_only_by_unicast` |
+//! | A BBMD that serves a group (J.8.3) | J.8.3 | Not yet (#941): [`Mode::Bbmd`] uses the subnet's broadcast address |
 //!
 //! Local rules, beyond the annex:
 //!

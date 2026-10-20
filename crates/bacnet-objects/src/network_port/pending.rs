@@ -174,6 +174,7 @@ impl NetworkPortObject {
     /// Whether the pending values would still be taken, changing nothing:
     /// the check a ReinitializeDevice makes before its handler runs.
     pub fn check_pending_changes(&self) -> Result<(), Error> {
+        self.check_multicast()?;
         if self.pending.is_empty() {
             return Ok(());
         }
@@ -186,7 +187,7 @@ impl NetworkPortObject {
 
     /// Whether written values wait for activation: Changes_Pending.
     pub(super) fn changes_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || self.multicast.is_pending()
     }
 
     /// Whether written values can be activated, so the pending-activation
@@ -201,11 +202,23 @@ impl NetworkPortObject {
     /// 12.56.13), and clear Changes_Pending. Whether there were any.
     ///
     /// The transport takes all of them or none: when it refuses, the error
-    /// comes back and they stay pending.
+    /// comes back and they stay pending. Every waiting value is checked
+    /// first, so a refused multicast group leaves the mode's values waiting
+    /// too; the mode's values then take effect, and the group last.
     pub fn activate_changes(&mut self) -> Result<bool, Error> {
-        if self.pending.is_empty() {
+        if !self.changes_pending() {
             return Ok(false);
         }
+        self.check_pending_changes()?;
+        if !self.pending.is_empty() {
+            self.activate_mode_changes()?;
+        }
+        self.activate_multicast()?;
+        Ok(true)
+    }
+
+    /// Put the mode's waiting values into effect, and clear them.
+    fn activate_mode_changes(&mut self) -> Result<(), Error> {
         match &self.mode {
             LiveMode::Bbmd(tables) => tables.activate(&self.pending.bbmd)?,
             LiveMode::Foreign(registration) => registration.activate(&self.pending.foreign)?,
@@ -213,7 +226,7 @@ impl NetworkPortObject {
             LiveMode::Normal => return Err(common::write_access_denied_error()),
         }
         self.pending = Pending::default();
-        Ok(true)
+        Ok(())
     }
 }
 

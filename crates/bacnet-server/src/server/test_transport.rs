@@ -568,6 +568,7 @@ impl TestTransportBuilder {
         self.bip_port(BipPort {
             endpoint,
             mode: BipPortMode::Normal,
+            multicast: None,
         })
     }
 

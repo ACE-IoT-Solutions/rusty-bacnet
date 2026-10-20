@@ -83,6 +83,7 @@ async fn start(mode: BipPortMode) -> BACnetServer<TestTransport> {
         .bip_port(BipPort {
             endpoint: SocketAddrV4::new(PORT_IP.into(), UDP),
             mode,
+            multicast: None,
         })
         .build();
     let config = ServerConfig {

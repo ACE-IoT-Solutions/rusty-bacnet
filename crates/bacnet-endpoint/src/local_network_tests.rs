@@ -95,6 +95,7 @@ impl TransportPort for Capture {
         Some(bacnet_transport::port::BipPort {
             endpoint: host(SELF),
             mode: bacnet_types::bip_port::BipPortMode::Normal,
+            multicast: None,
         })
     }
     fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {

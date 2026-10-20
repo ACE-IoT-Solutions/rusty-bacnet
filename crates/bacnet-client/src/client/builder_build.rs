@@ -3,7 +3,7 @@ use super::*;
 use bacnet_transport::{any::AnyTransport, mstp::SerialPort};
 
 impl BipClientBuilder {
-    fn prepare(self) -> (ClientConfig, BipTransport, ClientOptions) {
+    fn prepare(self) -> Result<(ClientConfig, BipTransport, ClientOptions), Error> {
         let mut transport = BipTransport::new(
             self.config.interface,
             self.config.port,
@@ -11,13 +11,14 @@ impl BipClientBuilder {
         );
         transport.set_share_port_by_address(self.config.share_port_by_address);
         transport.set_mode(self.mode);
-        (self.config, transport, self.options)
+        transport.set_multicast(self.multicast)?;
+        Ok((self.config, transport, self.options))
     }
 
     /// Build and start the client, constructing a BipTransport from the config.
     pub async fn build(self) -> Result<BACnetClient<BipTransport>, Error> {
         Box::pin(async move {
-            let (config, transport, options) = self.prepare();
+            let (config, transport, options) = self.prepare()?;
             Box::pin(BACnetClient::start_with_options(config, transport, options)).await
         })
         .await
@@ -42,7 +43,7 @@ impl BipClientBuilder {
     /// ```
     pub async fn build_any<S: SerialPort>(self) -> Result<BACnetClient<AnyTransport<S>>, Error> {
         Box::pin(async move {
-            let (config, transport, options) = self.prepare();
+            let (config, transport, options) = self.prepare()?;
             Box::pin(BACnetClient::start_with_options(
                 config,
                 transport.into(),

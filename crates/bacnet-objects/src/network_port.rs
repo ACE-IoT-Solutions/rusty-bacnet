@@ -9,7 +9,8 @@
 //! mode's properties, read live from the transport (see `bip_mode`), for
 //! either IP version. A BBMD's BDT and registration setting, and a foreign
 //! device's BBMD and time-to-live, are writable when the transport can
-//! change them, and wait for activation (`pending`).
+//! change them, and wait for activation (`pending`), as is a B/IP port's
+//! multicast group (`multicast`).
 //! Other snapshots expose only the common application rows;
 //! they do not claim a complete transport-specific SC, Ethernet or MS/TP profile.
 
@@ -27,6 +28,7 @@ mod bip_config;
 mod bip_mode;
 mod ip_config;
 mod metadata;
+mod multicast;
 mod pending;
 mod registration;
 use bacnet_types::network_number::NetworkNumber;
@@ -59,6 +61,8 @@ pub struct NetworkPortObject {
     /// Whether the owner activates written values on ReinitializeDevice;
     /// without it the pending-activation rows refuse writes.
     activation: bool,
+    /// The B/IP multicast group the owner lends, and a written one waiting.
+    multicast: multicast::Multicast,
     binding: std::sync::Weak<()>,
 }
 
@@ -104,6 +108,7 @@ impl NetworkPortObject {
             mode: Default::default(),
             pending: Default::default(),
             activation: false,
+            multicast: Default::default(),
             binding: std::sync::Weak::new(),
         })
     }
@@ -142,6 +147,7 @@ impl NetworkPortObject {
             mode: Default::default(),
             pending: Default::default(),
             activation: false,
+            multicast: Default::default(),
             binding: std::sync::Weak::new(),
         })
     }
@@ -195,6 +201,9 @@ impl BACnetObject for NetworkPortObject {
                 if pending::nat_row(property) && !self.serves_nat() {
                     return Err(common::unknown_property_error());
                 }
+                if let Some(result) = self.read_multicast(property) {
+                    return result;
+                }
                 config
                     .read(property, array_index)
                     .or_else(|| self.pending_value(property))
@@ -223,6 +232,9 @@ impl BACnetObject for NetworkPortObject {
             return result;
         }
         if let Some(result) = self.write_pending(property, array_index, &value) {
+            return result;
+        }
+        if let Some(result) = self.write_multicast(property, array_index, &value) {
             return result;
         }
         // Other configuration writes would need an activation owner (12.56)
@@ -258,6 +270,8 @@ mod bip6_tests;
 mod foreign_pending_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod multicast_tests;
 #[cfg(test)]
 mod nat_pending_tests;
 #[cfg(test)]

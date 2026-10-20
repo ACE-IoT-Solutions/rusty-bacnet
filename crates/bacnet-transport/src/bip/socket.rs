@@ -48,6 +48,11 @@
 //!   what arrived on the transport's own (the index from `IP_PKTINFO` on
 //!   Linux, `IP_RECVIF` on macOS and the BSDs). A listener that fails is
 //!   closed, and unicast goes on.
+//!
+//! A B/IP-M node (#941) binds the wildcard way, never per address, and adds
+//! one receive-only listener on its multicast group instead of broadcast
+//! listeners (on Windows the primary socket joins the group): see
+//! multicast.rs.
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -78,6 +83,11 @@ pub(super) enum SocketRole {
     /// A receive-only broadcast listener beside an [`Address`](Self::Address)
     /// socket. Not used on Windows.
     BroadcastListener,
+    /// A receive-only B/IP-M listener on its multicast group's address and
+    /// port (multicast.rs, #941), which every member on the host binds too.
+    /// Not used on Windows.
+    #[cfg_attr(windows, allow(dead_code))]
+    GroupListener,
 }
 
 /// An unbound UDP socket set up for `role`.
@@ -96,7 +106,7 @@ pub(super) fn udp_socket(role: SocketRole) -> io::Result<socket2::Socket> {
         SocketRole::Address => {}
         #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
         SocketRole::Address => socket.set_reuse_address(true)?,
-        SocketRole::BroadcastListener => {
+        SocketRole::BroadcastListener | SocketRole::GroupListener => {
             socket.set_reuse_address(true)?;
             #[cfg(any(
                 target_vendor = "apple",
@@ -127,6 +137,8 @@ pub(super) struct BindPlan {
     /// What the host reports about the interface, looked up for
     /// per-address mode only.
     pub(super) local: Option<LocalInterface>,
+    /// A B/IP-M node's group (multicast.rs, #941).
+    pub(super) multicast: Option<super::BipMulticast>,
 }
 
 /// The sockets one start binds: the one every send leaves from, and in
@@ -184,6 +196,7 @@ impl super::BipTransport {
             by_address: self.share_port_by_address,
             broadcast: self.broadcast_address,
             local: None,
+            multicast: self.multicast.config(),
         }
     }
 }
@@ -263,8 +276,20 @@ pub(super) fn bind(plan: BindPlan) -> io::Result<BoundSockets> {
             SocketRole::PrivateWildcard
         };
         let primary = bound(role, Ipv4Addr::UNSPECIFIED)?;
-        let listeners = Vec::new();
+        let mut listeners = Vec::new();
+        if let Some(multicast) = plan.multicast {
+            join_group(&plan, &primary, multicast, &mut listeners)?;
+        }
         return Ok(BoundSockets { primary, listeners });
+    }
+    if plan.multicast.is_some() {
+        // A member takes no subnet broadcasts, which per-address mode's
+        // listeners are for, and its group needs a listener of its own.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a B/IP multicast node can't also share its port by address; give each node on \
+             the host its own port and the group a shared one",
+        ));
     }
     if plan.interface.is_unspecified() || !plan.share_port {
         return Err(io::Error::new(
@@ -286,6 +311,32 @@ pub(super) fn bind(plan: BindPlan) -> io::Result<BoundSockets> {
         listeners.push(listener);
     }
     Ok(BoundSockets { primary, listeners })
+}
+
+/// Set up a B/IP-M node's group (multicast.rs): the primary socket sends
+/// to it from the interface, and a listener joined to it takes its
+/// broadcasts, or on Windows the primary joins it itself.
+fn join_group(
+    plan: &BindPlan,
+    primary: &socket2::Socket,
+    multicast: super::BipMulticast,
+    listeners: &mut Vec<socket2::Socket>,
+) -> io::Result<()> {
+    // `set_multicast` and the start checked the group against the interface
+    // and port.
+    let interface = plan.interface;
+    super::multicast::configure_sender(primary.into(), interface, multicast.ttl())?;
+    #[cfg(not(windows))]
+    listeners.push(super::multicast::group_listener(
+        multicast.endpoint(plan.port),
+        interface,
+    )?);
+    #[cfg(windows)]
+    {
+        let _ = listeners;
+        primary.join_multicast_v4(&multicast.group(), &interface)?;
+    }
+    Ok(())
 }
 
 /// Where per-address mode's broadcast listeners bind: on Linux the
