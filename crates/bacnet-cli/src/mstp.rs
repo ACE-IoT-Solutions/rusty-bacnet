@@ -352,30 +352,99 @@ pub(crate) async fn build_client(
     build_client_on(serial, mstp, args.timeout_ms, args.min_interval_ms, mode).await
 }
 
+/// The platform whose port names [`choose_ports`] reads.
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]
-/// How likely a port name is the one to pick, lower first: a stable Linux
-/// name under `/dev/serial/by-id`, a macOS call-out device (`/dev/cu.*`,
-/// which opens without waiting for carrier, unlike `/dev/tty.*`) or a
-/// Windows `COMn`; then the rest, and macOS dial-in devices last.
-fn rank(name: &str) -> (u8, u32) {
-    if name.starts_with("/dev/serial/by-id/") || name.starts_with("/dev/cu.") {
-        (0, 0)
-    } else if let Some(number) = name.strip_prefix("COM").and_then(|n| n.parse::<u32>().ok()) {
-        (0, number)
-    } else if name.starts_with("/dev/tty.") {
-        (2, 0)
-    } else {
-        (1, 0)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Platform {
+    /// macOS: a call-out (`/dev/cu.*`) and a dial-in (`/dev/tty.*`) device
+    /// for every port.
+    MacOs,
+    /// Linux: kernel names, and stable ones under `/dev/serial/by-id`.
+    Linux,
+    /// Windows: `COMn`.
+    Windows,
+    /// Anything else: listed as reported.
+    Other,
+}
+
+impl Platform {
+    /// The platform this build runs on.
+    #[cfg_attr(not(feature = "serial"), allow(dead_code))]
+    pub(crate) const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "linux") {
+            Self::Linux
+        } else if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Other
+        }
     }
 }
 
+/// A port as the system lists it, for [`choose_ports`].
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]
-/// `names` without repeats, preferred names first (see [`rank`]), and
-/// otherwise in the order given.
-pub(crate) fn order_ports(names: Vec<String>) -> Vec<String> {
-    let mut names = dedup(names);
-    names.sort_by_key(|name| rank(name));
-    names
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Listed {
+    /// Its name.
+    pub(crate) name: String,
+    /// Whether the system reports it as a USB device.
+    pub(crate) usb: bool,
+    /// Whether the system reports it as a Bluetooth service.
+    pub(crate) bluetooth: bool,
+}
+
+/// Names of macOS ports that are never an RS-485 line: the Bluetooth
+/// services and the debug console every Mac lists. Matched without case.
+const MACOS_SYSTEM_PORTS: [&str; 3] = ["bluetooth", "blth", "debug-console"];
+
+/// The ports to offer for `listed` on `platform`, without repeats, the
+/// likeliest first, each group in the order listed.
+///
+/// - macOS: only call-out devices (`/dev/cu.*`, which open without waiting
+///   for carrier; each has a dial-in `/dev/tty.*` twin), without Bluetooth
+///   services or the debug console; USB adapters first.
+/// - Linux: the stable `/dev/serial/by-id` names, then USB adapters
+///   (`ttyUSB*`, `ttyACM*` or reported as USB), then the rest.
+/// - Windows: USB adapters, then the rest, each by COM number.
+#[cfg_attr(not(feature = "serial"), allow(dead_code))]
+pub(crate) fn choose_ports(listed: Vec<Listed>, platform: Platform) -> Vec<String> {
+    let mut ports: Vec<Listed> = listed
+        .into_iter()
+        .filter(|port| platform != Platform::MacOs || offered_on_macos(port))
+        .collect();
+    ports.sort_by_key(|port| rank(port, platform));
+    dedup(ports.into_iter().map(|port| port.name).collect())
+}
+
+/// Whether a macOS port is one to offer: a call-out device that isn't a
+/// Bluetooth service or the debug console.
+fn offered_on_macos(port: &Listed) -> bool {
+    let lower = port.name.to_ascii_lowercase();
+    port.name.starts_with("/dev/cu.")
+        && !port.bluetooth
+        && !MACOS_SYSTEM_PORTS.iter().any(|name| lower.contains(name))
+}
+
+/// How likely a port is the one to pick on `platform`, lower first.
+fn rank(port: &Listed, platform: Platform) -> (u8, u32) {
+    let name = port.name.as_str();
+    match platform {
+        Platform::MacOs => (u8::from(!port.usb), 0),
+        Platform::Linux if name.starts_with("/dev/serial/by-id/") => (0, 0),
+        Platform::Linux
+            if port.usb || name.starts_with("/dev/ttyUSB") || name.starts_with("/dev/ttyACM") =>
+        {
+            (1, 0)
+        }
+        Platform::Linux => (2, 0),
+        Platform::Windows => {
+            let number = name.strip_prefix("COM").and_then(|n| n.parse().ok());
+            (u8::from(!port.usb), number.unwrap_or(u32::MAX))
+        }
+        Platform::Other => (0, 0),
+    }
 }
 
 #[cfg_attr(not(feature = "serial"), allow(dead_code))]
@@ -388,12 +457,13 @@ pub(crate) fn dedup(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// The serial ports the operating system reports, in [`order_ports`]'s
-/// order. On Linux the stable `/dev/serial/by-id` names come first; the
-/// kernel names they point to are still listed.
+/// The serial ports the operating system reports, as [`choose_ports`]
+/// offers them on this platform. On Linux the stable `/dev/serial/by-id`
+/// names come first; the kernel names they point to are still listed.
 #[cfg(feature = "serial")]
 pub(crate) fn list_ports() -> Result<Vec<String>, String> {
-    let mut names = Vec::new();
+    use bacnet_transport::mstp_serial::{available_port_infos, PortKind};
+    let mut listed = Vec::new();
     #[cfg(target_os = "linux")]
     if let Ok(entries) = std::fs::read_dir("/dev/serial/by-id") {
         let mut by_id: Vec<String> = entries
@@ -401,10 +471,19 @@ pub(crate) fn list_ports() -> Result<Vec<String>, String> {
             .map(|entry| entry.path().to_string_lossy().into_owned())
             .collect();
         by_id.sort();
-        names.extend(by_id);
+        listed.extend(by_id.into_iter().map(|name| Listed {
+            name,
+            usb: false,
+            bluetooth: false,
+        }));
     }
-    names.extend(bacnet_transport::mstp_serial::available_ports().map_err(|e| e.to_string())?);
-    Ok(order_ports(names))
+    let ports = available_port_infos().map_err(|e| e.to_string())?;
+    listed.extend(ports.into_iter().map(|port| Listed {
+        usb: port.kind == PortKind::Usb,
+        bluetooth: port.kind == PortKind::Bluetooth,
+        name: port.name,
+    }));
+    Ok(choose_ports(listed, Platform::current()))
 }
 
 /// Without the `serial` feature there is nothing to list ports with.

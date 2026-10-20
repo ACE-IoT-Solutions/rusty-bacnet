@@ -603,24 +603,34 @@ names), the next station and the one it polls, and a warning when it believes
 it is the only master. Beside it are the transport's counters, read once a
 second: frames received and sent, NPDUs delivered, tokens passed, retried and
 regenerated, invalid and aborted frames, reply timeouts, postponed and late
-replies, deadline misses, frames from another station with this MAC, queue
-refusals and serial errors. `z` counts from now (the transport keeps its totals;
-the screen shows the change since), and Space pauses the screen or follows the
-counters again. The frame view is a later screen (#971).
+replies, frames from another station with this MAC, queue refusals, serial
+errors, and how late the station's timers fired: the count 5 ms or more late
+(the transport's threshold), the largest lateness and, where the pane is tall
+enough, how many fell in each lateness band (under 1 ms, 1-2, 2-5, 5-10, 10-25
+and 25 ms or more). A Tokio timer fires up to about 2 ms late by its own
+rounding, so the first two bands are ordinary. `z` counts from now (the
+transport keeps its totals; the screen shows the change since), and Space
+pauses the screen or follows the counters again. After `z` the largest
+lateness is exact once a later one comes; until then it shows a bound, `<N ms`
+(the top of the highest band that moved) or `≤N ms` (the largest before). The
+frame view is a later screen (#971).
 
 #### MS/TP monitor and safe join
 
 `bacnet tui --mstp-monitor PORT` opens the port to listen only and runs at the
 `PASSIVE` level: no client is built, the port's write side is dropped as it
 opens, and the status bar reads `listen only`. The MS/TP screen (`6`, shown
-first) has four views, Tab to change:
+first) opens with a summary (port, baud rate, uptime, stations heard, timestamp
+resolution), which goes on to a second line on a narrow terminal rather than
+being cut, and has four views, Tab to change:
 
 - **Stations**: a map of every address, masters 0 to 127 and slaves 128 to
   254, each marked `M` master (passes the token or polls), `S` slave (only
   answers), `R` router (sends routed or network-layer messages) or `x` silent
   (heard before, or sent requests, but quiet for 10 s); then a row per station
   with its role in words, the device instance once its I-Am is seen, its frames
-  and when it was last heard.
+  and when it was last heard. From 160 columns the map and the table sit side
+  by side; a table with more stations than rows ends with `+N more`.
 - **Token ring**: the successor chain, the rotation time (shortest, mean and
   longest, with a sparkline of recent rotations), and per master the tokens it
   got, how long it held each, the frames it sent per token, token retries and
@@ -1329,10 +1339,13 @@ The JSON from a read is the same on every transport:
 
 A station is addressed as `mstp:N` (or `mstp:0xNN`). A station behind a
 router is still `DNET:0xMAC`, as on any other transport. `mstp-ports` opens no
-port and needs no `--mstp`. Its order puts the likely choice first: the stable
-names under `/dev/serial/by-id/` on Linux, the call-out devices (`/dev/cu.*`)
-on macOS, which open without waiting for a carrier signal the way `/dev/tty.*`
-does, and `COMn` in number order on Windows.
+port and needs no `--mstp`. It puts the likely choice first. On Linux it lists
+the stable names under `/dev/serial/by-id/`, then USB adapters (`ttyUSB*`,
+`ttyACM*`), then the rest. On macOS it lists only the call-out devices
+(`/dev/cu.*`), which open without waiting for a carrier signal the way their
+`/dev/tty.*` twins do, leaves out Bluetooth ports and the debug console, and
+puts USB adapters first. On Windows it lists USB adapters first, each group in
+`COMn` number order.
 
 Flag mistakes are usage errors: the CLI exits with status 2 before opening the
 port and prints nothing on stdout, and the message on stderr names the values

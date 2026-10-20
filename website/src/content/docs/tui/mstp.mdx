@@ -34,7 +34,7 @@ A map of every address: masters 0 to 127 and slaves 128 to 254. Each address is 
 | `x` | Silent: heard before, or sent requests, but quiet for 10 s |
 | `.` | Nothing heard |
 
-Below the map is a row per station: its role, its device instance once its I-Am is seen, how many frames it sent, and when it was last heard.
+Below the map is a row per station: its role, its device instance once its I-Am is seen, how many frames it sent, and when it was last heard. From 160 columns the map and the table sit side by side. When the stations don't all fit, the table's last row says how many more there are (`+N more`).
 
 ### Token ring
 
@@ -92,13 +92,13 @@ As a participant, the MS/TP screen shows this station and its counters:
 ![The MS/TP screen as a participant: this station's token state and the transport counters.](../../../assets/tui/mstp-participant.webp)
 
 - **This station:** port, MAC, baud, Max_Master and Max_Info_Frames; whether it holds the token; the master state machine's state; the next station and the one it is polling; and a warning when it believes it is the only master.
-- **Counters,** read once a second: frames received and sent, NPDUs delivered, tokens passed, retried and regenerated, invalid and aborted frames, reply timeouts, postponed and late replies, deadline misses, frames from another station with this MAC, transmit-queue refusals and serial errors.
+- **Counters,** read once a second: frames received and sent, NPDUs delivered, tokens passed, retried and regenerated, invalid and aborted frames, reply timeouts, postponed and late replies, frames from another station with this MAC, transmit-queue refusals, serial errors, and timer lateness: how many timers fired 5 ms or more late, the largest lateness and, in a tall enough pane, the count in each band from under 1 ms to 25 ms or more. Tokio's timer alone fires up to about 2 ms late, so the first two bands are ordinary.
 
 `z` counts from now (the transport keeps its totals; the screen shows the change since), and Space pauses or follows. Devices on the trunk are discovered, browsed and written as on any transport, at `mstp:N` addresses.
 
 ## Serial adapters
 
-`bacnet mstp-ports` lists the ports without opening any. Its order puts the likely choice first.
+`bacnet mstp-ports` lists the ports without opening any, and the join dialog offers the same list. Its order puts the likely choice first: USB adapters before other ports. On macOS it leaves out the `tty.` twin of each port, Bluetooth ports and the debug console.
 
 | Platform | Port names | Notes |
 |---|---|---|

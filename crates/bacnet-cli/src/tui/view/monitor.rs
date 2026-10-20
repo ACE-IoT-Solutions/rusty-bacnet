@@ -1,7 +1,12 @@
-//! The MS/TP monitor screen (#970): a summary line, the tab bar, and one
-//! of four views: the station grid, the token ring, findings with the join
-//! wizard, and error counters. Roles, warnings and the selected tab are
-//! marked by text as well as colour.
+//! The MS/TP monitor screen (#970): a summary, the tab bar, and one of four
+//! views: the station grid, the token ring, findings with the join wizard,
+//! and error counters. Roles, warnings and the selected tab are marked by
+//! text as well as colour.
+//!
+//! The summary wraps between its items where a line can't hold them all
+//! (#1893). The station view stacks the address map over the station table,
+//! and from [`WIDE_WIDTH`] columns, where both fit, puts them side by side.
+//! A view that can't show all its rows ends with `+N more`.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -12,8 +17,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
+use super::columns::{self, Column};
 use super::watch::sparkline;
-use super::Theme;
+use super::{ellipsize, more, text_width, Theme, WIDE_WIDTH};
 use crate::tui::app::monitor::{MonitorState, MonitorTab, Wizard};
 use crate::tui::monitor::analysis::{self, millis, Role, Severity};
 use crate::tui::monitor::MonitorSample;
@@ -26,14 +32,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, monitor: &MonitorState, theme:
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [summary, tabs, body] = Layout::vertical([
-        Constraint::Length(1),
+    let sample = monitor.shown.as_deref();
+    let summary = summary_lines(monitor, sample, usize::from(inner.width));
+    let [summary_area, tabs, body] = Layout::vertical([
+        Constraint::Length(summary.len() as u16),
         Constraint::Length(1),
         Constraint::Min(1),
     ])
     .areas(inner);
-    let sample = monitor.shown.as_deref();
-    frame.render_widget(Paragraph::new(summary_line(monitor, sample)), summary);
+    frame.render_widget(Paragraph::new(summary), summary_area);
     frame.render_widget(Paragraph::new(tab_bar(monitor, theme)), tabs);
     let Some(sample) = sample else {
         let text = "Listening; the first reading comes within a second.";
@@ -41,35 +48,51 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, monitor: &MonitorState, theme:
         return;
     };
     let lines = match monitor.tab {
-        MonitorTab::Stations => stations(sample, usize::from(body.width)),
+        MonitorTab::Stations => return draw_stations(frame, body, sample, theme),
         MonitorTab::Ring => ring(monitor, sample, usize::from(body.width), theme),
         MonitorTab::Findings => findings(monitor, sample, theme),
         MonitorTab::Errors => errors(monitor, sample, theme),
     };
-    let wrap = matches!(monitor.tab, MonitorTab::Findings | MonitorTab::Errors);
-    let paragraph = Paragraph::new(lines);
-    let paragraph = if wrap {
-        paragraph.wrap(Wrap { trim: false })
+    let paragraph = if matches!(monitor.tab, MonitorTab::Findings | MonitorTab::Errors) {
+        Paragraph::new(lines).wrap(Wrap { trim: false })
     } else {
-        paragraph
+        Paragraph::new(more(lines, body.height, theme))
     };
     frame.render_widget(paragraph, body);
 }
 
-fn summary_line(monitor: &MonitorState, sample: Option<&MonitorSample>) -> Line<'static> {
-    let mut text = format!("{}  {} baud", monitor.port, monitor.baud);
+/// The summary's items, packed into lines `width` columns wide: an item
+/// goes on the next line rather than being cut, and only an item wider
+/// than a whole line is cut.
+fn summary_lines(
+    monitor: &MonitorState,
+    sample: Option<&MonitorSample>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut items = vec![monitor.port.clone(), format!("{} baud", monitor.baud)];
     if let Some(sample) = sample {
         let stations = sample.stats.present_stations().count();
-        text.push_str(&format!(
-            "  up {} s  {stations} stations  timestamps ±{}",
-            sample.elapsed.as_secs(),
-            millis(sample.stats.timing.resolution)
-        ));
+        items.extend([
+            format!("up {} s", sample.elapsed.as_secs()),
+            format!("{stations} stations"),
+            format!("timestamps ±{}", millis(sample.stats.timing.resolution)),
+        ]);
     }
     if monitor.paused {
-        text.push_str("  PAUSED");
+        items.push("PAUSED".into());
     }
-    Line::raw(text)
+    let mut lines: Vec<String> = Vec::new();
+    for item in items {
+        let item = ellipsize(&item, width);
+        match lines.last_mut() {
+            Some(line) if text_width(line) + 2 + text_width(&item) <= width => {
+                line.push_str("  ");
+                line.push_str(&item);
+            }
+            _ => lines.push(item),
+        }
+    }
+    lines.into_iter().map(Line::raw).collect()
 }
 
 fn tab_bar(monitor: &MonitorState, theme: &Theme) -> Line<'static> {
@@ -93,12 +116,117 @@ fn tab_bar(monitor: &MonitorState, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The address map, 64 addresses a row where they fit and 32 otherwise,
-/// then a row per station.
-fn stations(sample: &MonitorSample, width: usize) -> Vec<Line<'static>> {
+/// The address map's width with 64 addresses a row: a label, a range and
+/// the addresses.
+const WIDE_MAP: u16 = 16 + 64;
+/// The room kept between the map and the table side by side.
+const PANE_GAP: u16 = 3;
+
+/// The station view: the address map over the station table, or beside it
+/// from [`WIDE_WIDTH`] columns when the table fits next to a full-width
+/// map. The table ends with `+N more` when its stations don't all fit.
+fn draw_stations(frame: &mut Frame, area: Rect, sample: &MonitorSample, theme: &Theme) {
     let rows = analysis::stations(sample);
+    let table = station_table(sample, &rows);
+    let table_width = table.iter().map(Line::width).max().unwrap_or(0) as u16;
+    if area.width >= WIDE_WIDTH && WIDE_MAP + PANE_GAP + table_width <= area.width {
+        let [map_area, _, table_area] = Layout::horizontal([
+            Constraint::Length(WIDE_MAP),
+            Constraint::Length(PANE_GAP),
+            Constraint::Min(1),
+        ])
+        .areas(area);
+        let map = station_map(&rows, usize::from(map_area.width));
+        frame.render_widget(Paragraph::new(more(map, map_area.height, theme)), map_area);
+        let table = more(table, table_area.height, theme);
+        frame.render_widget(Paragraph::new(table), table_area);
+        return;
+    }
+    let mut lines = station_map(&rows, usize::from(area.width));
+    lines.push(Line::raw(""));
+    lines.extend(table);
+    frame.render_widget(Paragraph::new(more(lines, area.height, theme)), area);
+}
+
+/// The station table's columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StationColumn {
+    /// The station's MAC.
+    Mac,
+    /// Master, slave or router.
+    Role,
+    /// Its device instance, once heard.
+    Device,
+    /// Valid frames it sent.
+    Frames,
+    /// How long ago it last sent one.
+    Heard,
+}
+
+/// The station table: a header and a row per station, each column as wide
+/// as its widest cell.
+fn station_table(sample: &MonitorSample, rows: &[analysis::StationRow]) -> Vec<Line<'static>> {
+    use StationColumn as C;
+    if rows.is_empty() {
+        return vec![Line::raw("No station heard yet.")];
+    }
+    let now = sample.stats.last_activity.unwrap_or_default();
+    let cells: Vec<[String; 5]> = rows
+        .iter()
+        .map(|row| {
+            [
+                row.mac.to_string(),
+                row.role.label().to_string(),
+                row.device.map_or_else(|| "-".into(), |d| d.to_string()),
+                row.frames.to_string(),
+                row.last_seen.map_or_else(
+                    || "never".into(),
+                    |seen| format!("{} ago", millis(now.saturating_sub(seen))),
+                ),
+            ]
+        })
+        .collect();
+    let mut columns = [
+        Column::new(C::Mac, "MAC"),
+        Column::new(C::Role, "Role"),
+        Column::new(C::Device, "Device"),
+        Column::new(C::Frames, "Frames"),
+        Column::new(C::Heard, "Last heard"),
+    ];
+    for row in &cells {
+        for (column, cell) in columns.iter_mut().zip(row) {
+            column.fit(text_width(cell));
+        }
+    }
+    let line = |cells: &[String]| {
+        let text = columns
+            .iter()
+            .zip(cells)
+            .map(|(column, cell)| {
+                let pad = column.width.saturating_sub(text_width(cell));
+                match column.kind {
+                    C::Role | C::Heard => format!("{cell}{:pad$}", ""),
+                    _ => format!("{:pad$}{cell}", ""),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        Line::raw(text.trim_end().to_string())
+    };
+    let mut lines = vec![line(&columns::headers(&columns))];
+    lines.extend(cells.iter().map(|row| line(row)));
+    lines
+}
+
+/// The address map, 64 addresses a row where they fit and 32 otherwise,
+/// and its legend.
+fn station_map(rows: &[analysis::StationRow], width: usize) -> Vec<Line<'static>> {
     let role = |mac: u8| rows.iter().find(|row| row.mac == mac).map(|row| row.role);
-    let per: u8 = if width >= 16 + 64 { 64 } else { 32 };
+    let per: u8 = if width >= usize::from(WIDE_MAP) {
+        64
+    } else {
+        32
+    };
     let mut lines = Vec::new();
     for (label, first, last) in [("Masters", 0u8, 127u8), ("Slaves", 128, 254)] {
         let mut start = first;
@@ -115,31 +243,9 @@ fn stations(sample: &MonitorSample, width: usize) -> Vec<Line<'static>> {
             start = end + 1;
         }
     }
-    lines.extend([
-        Line::raw("M master  S slave  R router  x silent  . nothing heard"),
-        Line::raw(""),
-        Line::raw(format!(
-            "{:>4}  {:<7} {:>8} {:>8}  {}",
-            "MAC", "Role", "Device", "Frames", "Last heard"
-        )),
-    ]);
-    let now = sample.stats.last_activity.unwrap_or_default();
-    for row in &rows {
-        let device = row.device.map_or_else(|| "-".into(), |d| d.to_string());
-        let heard = row.last_seen.map_or_else(
-            || "never".into(),
-            |seen| format!("{} ago", millis(now.saturating_sub(seen))),
-        );
-        lines.push(Line::raw(format!(
-            "{:>4}  {:<7} {device:>8} {:>8}  {heard}",
-            row.mac,
-            row.role.label(),
-            row.frames
-        )));
-    }
-    if rows.is_empty() {
-        lines.push(Line::raw("No station heard yet."));
-    }
+    lines.push(Line::raw(
+        "M master  S slave  R router  x silent  . nothing heard",
+    ));
     lines
 }
 

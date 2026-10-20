@@ -188,7 +188,7 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     assert_eq!(header.frame_type, FrameType::REPLY_POSTPONED);
     assert_eq!(header.destination, 7);
     assert!(core.counters().state_transitions > 0);
-    assert_eq!(core.counters().deadline_misses, 0);
+    assert_eq!(core.counters().late_deadlines, 0);
     assert_eq!(core.counters().late_replies, 0);
 
     let mut rx = [0; 1024];
@@ -301,7 +301,7 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
         core.complete_request(request, ReplyDecision::Postponed, ms(303)),
         Err(RequestError::NoPending)
     );
-    assert!(core.counters().deadline_misses > 0);
+    assert!(core.counters().late_deadlines > 0);
     assert_eq!(core.counters().expired_requests, 1);
 
     let mut rx = [0; 1024];
@@ -360,7 +360,7 @@ fn deferred_application_reply_is_not_dispatched_after_its_deadline() {
     core.on_deadline(ms(300));
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.poll_action(), Action::Idle);
-    assert!(core.counters().deadline_misses > 0);
+    assert!(core.counters().late_deadlines > 0);
     assert_eq!(core.counters().expired_requests, 1);
 }
 

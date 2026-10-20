@@ -5,7 +5,7 @@
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
     Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    ReceiveError, ReplyDecision, RequestId, TransmitError, TransmitId, LATE_DEADLINE,
+    ReceiveError, ReplyDecision, RequestId, TransmitError, TransmitId, DEFAULT_LATE_DEADLINE,
 };
 
 type Queues = FixedQueues<4, 4>;
@@ -85,7 +85,7 @@ fn decision_deadline_leaves_the_transmit_margin() {
     let counters = core.counters();
     assert_eq!(
         (
-            counters.deadline_misses,
+            counters.late_deadlines,
             counters.late_replies,
             counters.frames_transmitted
         ),
@@ -109,7 +109,8 @@ fn decision_deadline_leaves_the_transmit_margin() {
 
 #[test]
 fn deadline_call_one_microsecond_late_still_sends_postponed() {
-    // Lateness under LATE_DEADLINE is ordinary tick jitter: sent, not counted.
+    // Lateness under the default late_deadline (1 ms) is ordinary tick
+    // jitter: sent, and in the histogram's first bucket, but not counted late.
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = MasterCore::from_parts(
@@ -125,10 +126,13 @@ fn deadline_call_one_microsecond_late_still_sends_postponed() {
     core.on_deadline(late);
     let id = take_postponed(&mut core);
     core.on_transmit_started(id, late).unwrap();
-    assert_eq!(core.counters().deadline_misses, 0);
+    assert_eq!(core.counters().late_deadlines, 0);
     assert_eq!(core.counters().late_replies, 0);
+    let lateness = core.counters().deadline_lateness;
+    assert_eq!(lateness.buckets, [1, 0, 0, 0, 0, 0]);
+    assert_eq!(lateness.max, Duration::from_micros(1));
 
-    // At LATE_DEADLINE it is counted as a miss, and still answered.
+    // At DEFAULT_LATE_DEADLINE it is counted late, and still answered.
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = MasterCore::from_parts(
@@ -140,12 +144,16 @@ fn deadline_call_one_microsecond_late_still_sends_postponed() {
     )
     .unwrap();
     receive_request(&mut core);
-    let late = DECIDE_BY + LATE_DEADLINE;
+    let late = DECIDE_BY + DEFAULT_LATE_DEADLINE;
     core.on_deadline(late);
     let id = take_postponed(&mut core);
     core.on_transmit_started(id, late).unwrap();
-    assert_eq!(core.counters().deadline_misses, 1);
+    assert_eq!(core.counters().late_deadlines, 1);
     assert_eq!(core.counters().late_replies, 0);
+    assert_eq!(
+        core.counters().deadline_lateness.buckets,
+        [0, 1, 0, 0, 0, 0]
+    );
 
     // A deadline call even past T_reply_delay still answers, and the late
     // start is counted too.
@@ -164,7 +172,7 @@ fn deadline_call_one_microsecond_late_still_sends_postponed() {
     core.on_deadline(late);
     let id = take_postponed(&mut core);
     core.on_transmit_started(id, late).unwrap();
-    assert_eq!(core.counters().deadline_misses, 1);
+    assert_eq!(core.counters().late_deadlines, 1);
     assert_eq!(core.counters().late_replies, 1);
     assert_eq!(core.counters().expired_requests, 0);
 }
@@ -318,4 +326,33 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
         (reply.frame_type, reply.destination),
         (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7)
     );
+}
+
+/// The late count follows the configured threshold, not a fixed one: a
+/// deadline serviced at the threshold or later counts, one serviced sooner
+/// doesn't, and the histogram counts both the same way whatever the
+/// threshold.
+#[test]
+fn the_late_count_follows_the_configured_threshold() {
+    let mut config = config();
+    config.late_deadline = Duration::from_millis(5);
+    for (lateness, late, bucket) in [
+        (Duration::from_micros(4_999), 0, 2),
+        (Duration::from_millis(5), 1, 3),
+        (Duration::from_millis(30), 1, 5),
+    ] {
+        let mut rx = [0; 64];
+        let mut actions = Actions::new();
+        let mut core =
+            MasterCore::from_parts(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO)
+                .unwrap();
+        receive_request(&mut core);
+        core.on_deadline(DECIDE_BY + lateness);
+        let counters = core.counters();
+        assert_eq!(counters.late_deadlines, late, "{lateness:?}");
+        let mut buckets = [0; 6];
+        buckets[bucket] = 1;
+        assert_eq!(counters.deadline_lateness.buckets, buckets, "{lateness:?}");
+        assert_eq!(counters.deadline_lateness.max, lateness);
+    }
 }

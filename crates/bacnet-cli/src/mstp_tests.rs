@@ -355,31 +355,89 @@ fn settings_from_elsewhere_are_checked_too() {
     }
 }
 
+/// A listing of `(name, usb, bluetooth)`.
+fn listing(ports: &[(&str, bool, bool)]) -> Vec<Listed> {
+    ports
+        .iter()
+        .map(|&(name, usb, bluetooth)| Listed {
+            name: name.to_string(),
+            usb,
+            bluetooth,
+        })
+        .collect()
+}
+
+/// macOS offers call-out devices only, without the Bluetooth services or
+/// the debug console, USB adapters first, each group as listed.
 #[test]
-fn ports_are_listed_preferred_first_without_repeats() {
-    let ordered = order_ports(
-        [
-            "/dev/tty.usbserial-1",
-            "/dev/ttyUSB0",
-            "COM10",
-            "/dev/cu.usbserial-1",
-            "/dev/serial/by-id/usb-FTDI-if00",
-            "COM3",
-            "/dev/ttyUSB0",
-        ]
-        .map(String::from)
-        .to_vec(),
-    );
+fn macos_offers_call_out_usb_adapters_first() {
+    let listed = listing(&[
+        ("/dev/cu.debug-console", false, false),
+        ("/dev/tty.debug-console", false, false),
+        ("/dev/cu.Bluetooth-Incoming-Port", false, false),
+        ("/dev/tty.Bluetooth-Incoming-Port", false, false),
+        ("/dev/cu.Headphones-BLTH", false, false),
+        ("/dev/cu.SomeSpeaker", false, true),
+        ("/dev/cu.wlan-debug", false, false),
+        ("/dev/tty.usbserial-A10K", true, false),
+        ("/dev/cu.usbserial-A10K", true, false),
+        ("/dev/tty.usbmodem1101", true, false),
+        ("/dev/cu.usbmodem1101", true, false),
+        ("/dev/cu.usbserial-A10K", true, false),
+    ]);
     assert_eq!(
-        ordered,
+        choose_ports(listed, Platform::MacOs),
         [
-            "/dev/cu.usbserial-1",
-            "/dev/serial/by-id/usb-FTDI-if00",
-            "COM3",
-            "COM10",
-            "/dev/ttyUSB0",
-            "/dev/tty.usbserial-1",
+            "/dev/cu.usbserial-A10K",
+            "/dev/cu.usbmodem1101",
+            "/dev/cu.wlan-debug",
         ]
+    );
+}
+
+/// Linux keeps every port: the stable by-id names, then USB adapters by
+/// name or kind, then the rest, each group as listed.
+#[test]
+fn linux_offers_by_id_then_usb_adapters() {
+    let listed = listing(&[
+        ("/dev/ttyS0", false, false),
+        ("/dev/ttyAMA0", false, false),
+        ("/dev/ttyACM0", false, false),
+        ("/dev/serial/by-id/usb-FTDI-if00", false, false),
+        ("/dev/ttyUSB0", true, false),
+        ("/dev/ttyXR0", true, false),
+        ("/dev/rfcomm0", false, true),
+        ("/dev/ttyUSB0", true, false),
+    ]);
+    assert_eq!(
+        choose_ports(listed, Platform::Linux),
+        [
+            "/dev/serial/by-id/usb-FTDI-if00",
+            "/dev/ttyACM0",
+            "/dev/ttyUSB0",
+            "/dev/ttyXR0",
+            "/dev/ttyS0",
+            "/dev/ttyAMA0",
+            "/dev/rfcomm0",
+        ]
+    );
+}
+
+/// Windows: USB adapters first, then the rest, each by COM number; a name
+/// that isn't `COMn` comes last in its group.
+#[test]
+fn windows_offers_usb_adapters_first_by_number() {
+    let listed = listing(&[
+        ("COM1", false, false),
+        ("COM10", true, false),
+        ("COM3", true, false),
+        ("COM4", false, true),
+        ("COM2", false, false),
+        (r"\\.\CNCA0", false, false),
+    ]);
+    assert_eq!(
+        choose_ports(listed, Platform::Windows),
+        ["COM3", "COM10", "COM1", "COM2", "COM4", r"\\.\CNCA0"]
     );
 }
 
@@ -414,7 +472,15 @@ fn mstp_ports_prints_an_array_or_a_line_each_and_fails_on_stderr_only() {
 #[test]
 fn the_system_lists_its_ports() {
     match list_ports() {
-        Ok(ports) => assert_eq!(order_ports(ports.clone()), ports),
+        Ok(ports) => {
+            assert_eq!(dedup(ports.clone()), ports);
+            if Platform::current() == Platform::MacOs {
+                assert!(
+                    ports.iter().all(|port| port.starts_with("/dev/cu.")),
+                    "{ports:?}"
+                );
+            }
+        }
         // A container without sysfs can't be asked.
         Err(error) => assert!(error.contains("listing failed"), "{error}"),
     }

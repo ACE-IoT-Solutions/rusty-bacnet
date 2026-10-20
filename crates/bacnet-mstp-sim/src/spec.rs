@@ -31,8 +31,8 @@ pub struct AdapterSpec {
     pub deadline_lateness: Duration,
     /// Further lateness drawn per deadline, uniformly from zero to this, from
     /// the run's seeded generator, in whole microseconds: the granularity of
-    /// a tick-driven timer. Below the core's `LATE_DEADLINE` (1 ms) it is not
-    /// a miss. Without
+    /// a tick-driven timer. Below the core's `late_deadline` (1 ms by
+    /// default) it is not counted late. Without
     /// any, two masters that start in step can stay in step for ever.
     pub deadline_jitter: Duration,
 }
@@ -104,11 +104,12 @@ impl AdapterSpec {
         self.start_delay > Duration::ZERO || self.deadline_lateness > Duration::ZERO
     }
 
-    /// Whether the core may count this adapter's deadline service as late
-    /// (`LATE_DEADLINE`, 1 ms, or more).
+    /// Whether a core that counts a deadline late at `late_deadline` or
+    /// more ([`MstpCoreConfig::late_deadline`]) may count this adapter's
+    /// deadline service late.
     #[must_use]
-    pub fn may_miss_deadlines(&self) -> bool {
-        self.deadline_lateness + self.deadline_jitter >= Duration::from_millis(1)
+    pub fn may_miss_deadlines(&self, late_deadline: Duration) -> bool {
+        self.deadline_lateness + self.deadline_jitter >= late_deadline
     }
 }
 

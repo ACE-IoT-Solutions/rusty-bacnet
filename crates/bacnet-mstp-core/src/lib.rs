@@ -206,18 +206,17 @@ const _: () = assert!(
     "the MS/TP codec's extended-frame limit is bacnet-npdu's MAX_NPDU"
 );
 pub use config::{
-    ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig, MAX_FRAME_ABORT,
-    MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS,
-    N_POLL, N_RETRY_TOKEN, T_NO_TOKEN, T_SLOT,
+    ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig,
+    DEFAULT_LATE_DEADLINE, MAX_FRAME_ABORT, MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT,
+    MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS, N_POLL, N_RETRY_TOKEN, T_NO_TOKEN, T_SLOT,
 };
-pub use counters::{MstpCounters, QueueCounters};
+pub use counters::{LatenessHistogram, MstpCounters, QueueCounters, LATENESS_BUCKETS};
 pub use errors::{RequestError, TransmitError};
 #[cfg(feature = "alloc")]
 pub use queue::AllocQueues;
 pub use queue::{DequeuedNpdu, FixedQueues, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage};
 pub use state::{
-    MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,
-    MIN_RX_STORAGE,
+    MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, MIN_RX_STORAGE,
 };
 pub use storage::{ExtendedStorage, StandardStorage, Storage};
 

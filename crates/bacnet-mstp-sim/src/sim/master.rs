@@ -49,8 +49,8 @@ pub(crate) struct MasterNode {
     withdrawn: Option<PendingTx>,
     /// The octets the core handed over with the last confirmed start.
     started: Option<Vec<u8>>,
-    /// Deadline misses already accounted for.
-    misses_seen: u32,
+    /// Late deadlines already accounted for.
+    late_seen: u32,
     /// The master generated a token and has held it since: a collision with
     /// another master doing the same is the generation race.
     pub(super) generating: bool,
@@ -95,7 +95,7 @@ impl MasterNode {
             withdrawn: None,
             started: None,
             generating: false,
-            misses_seen: 0,
+            late_seen: 0,
             deliveries: Vec::new(),
             rejects: Vec::new(),
             spin: (Instant::ZERO, 0),
@@ -120,7 +120,7 @@ impl MasterNode {
             .expect("a valid master spec");
         self.deadline = core.next_deadline();
         self.fire_at = None;
-        self.misses_seen = 0;
+        self.late_seen = 0;
         self.core = Some(Box::new(core));
         self.pending = None;
         self.transmitting = None;
@@ -292,6 +292,7 @@ impl Sim {
         let after = core.state();
         let counters = core.counters();
         let deadline = core.next_deadline();
+        let late_deadline = core.config().late_deadline;
         if started.is_some() {
             master.started = started;
         }
@@ -317,7 +318,7 @@ impl Sim {
                 .host
                 .as_ref()
                 .is_some_and(|host| host.completion_reported == Some(self.now));
-        let punctual = !adapter.may_miss_deadlines() && !completion_exposed_timer;
+        let punctual = !adapter.may_miss_deadlines(late_deadline) && !completion_exposed_timer;
         if master.fire_at.is_none() {
             self.arm_deadline(node);
         }
@@ -412,13 +413,13 @@ impl Sim {
     }
 
     /// Counters that must not move: adapter errors, delivery drops and
-    /// frames from the station's own address ever, and deadline misses while
+    /// frames from the station's own address ever, and late deadlines while
     /// the adapter is punctual.
     fn check_counters(&mut self, node: usize, counters: &MstpCounters, punctual: bool) {
         let station = self.nodes[node].station;
         let master = self.master_mut(node).expect("a master");
-        let new_misses = counters.deadline_misses - master.misses_seen;
-        master.misses_seen = counters.deadline_misses;
+        let new_late = counters.late_deadlines - master.late_seen;
+        master.late_seen = counters.late_deadlines;
         let mut wrong = Vec::new();
         if counters.adapter_errors != 0 {
             wrong.push(format!("adapter_errors {}", counters.adapter_errors));
@@ -437,8 +438,8 @@ impl Sim {
                 counters.own_address_frames
             ));
         }
-        if punctual && new_misses != 0 {
-            wrong.push(format!("{new_misses} more deadline_misses"));
+        if punctual && new_late != 0 {
+            wrong.push(format!("{new_late} more late_deadlines"));
         }
         if !wrong.is_empty() {
             self.violation(

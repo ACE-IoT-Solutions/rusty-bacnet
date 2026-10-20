@@ -1901,7 +1901,7 @@ ingress drops, serial errors, echo mismatches, late answers) saturate at
 `u64::MAX`; `mac`
 carries the core's own counters (frames received and delivered, invalid
 frames, frame aborts, token rotations and retries, deferred starts, late and
-expired replies, deadline misses, receive errors and transmit aborts by
+expired replies, late deadlines and the deadline-lateness histogram, receive errors and transmit aborts by
 kind, and the queue counters) as `mstp::MstpCounters`: the transport takes
 them from the core after each event and adds them up, so they too saturate
 at `u64::MAX`. Loads are not a globally coherent snapshot. These are redacted

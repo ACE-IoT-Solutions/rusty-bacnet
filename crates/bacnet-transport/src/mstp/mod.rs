@@ -35,7 +35,7 @@ mod replies;
 mod totals;
 pub use bacnet_mstp_core::MasterState;
 pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot, MstpNodeState};
-pub use totals::{MstpCounters, QueueCounters};
+pub use totals::{LatenessHistogram, MstpCounters, QueueCounters};
 
 // ---------------------------------------------------------------------------
 // Serial port abstraction
@@ -239,6 +239,22 @@ impl DedicatedRuntime {
 /// It is [`bacnet_mstp_core::MAX_FRAME_ABORT`], in milliseconds.
 pub const HOST_FRAME_ABORT_MS: u64 = bacnet_mstp_core::MAX_FRAME_ABORT.as_millis();
 
+/// The lateness at which this transport's core counts a serviced deadline
+/// late ([`MstpCounters::late_deadlines`]): 5 ms, where the core's default
+/// is 1 ms.
+///
+/// A Tokio timer wakes about a millisecond late by construction, before the
+/// OS adds anything: it rounds each deadline up to its next millisecond tick
+/// and parks for whole ticks from the current one, floored, so its own
+/// rounding alone comes to up to 2 ms. Hosts measured for #1897 added up to
+/// about 3 ms more of wake-up jitter at the 99th percentile. At 1 ms nearly
+/// every timed wake counted, which said nothing about load. 5 ms clears
+/// both and is half of T_slot (10 ms, Clause 9.5.3), about where lateness
+/// starts to eat into a token-generation slot or a turnaround inside
+/// T_usage_delay. Every wake still counts in the lateness histogram
+/// ([`MstpCounters::deadline_lateness`]).
+pub const HOST_LATE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(5);
+
 /// [`MstpConfig::usage_timeout`]'s default: 35 ms, the longest T_usage_timeout
 /// Clause 9.5.3 allows ([`bacnet_mstp_core::MAX_USAGE_TIMEOUT`]).
 ///
@@ -419,6 +435,7 @@ impl MstpConfig {
         config.t_frame_abort = CoreDuration::from_millis(HOST_FRAME_ABORT_MS);
         config.t_usage_timeout = CoreDuration::saturating_from_core(self.usage_timeout);
         config.t_reply_timeout = CoreDuration::saturating_from_core(self.reply_timeout);
+        config.late_deadline = CoreDuration::saturating_from_core(HOST_LATE_DEADLINE);
         if self.extended_frames {
             config = config.with_extended_frames();
         }

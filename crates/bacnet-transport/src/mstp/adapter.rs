@@ -35,8 +35,10 @@
 //! (mapped onto Tokio time from the moment the transport started), the echo
 //! filter's next deadline and the first expiry in the deferred reply set
 //! (see below). It stamps [`MasterCore::on_deadline`] with the time it
-//! actually woke. A deadline serviced a millisecond or more late counts in
-//! the core's `deadline_misses`, published in
+//! actually woke. The core puts each deadline's lateness in its histogram,
+//! and counts it in `late_deadlines` from
+//! [`HOST_LATE_DEADLINE`](super::HOST_LATE_DEADLINE) (5 ms): Tokio's timer
+//! alone wakes up to 2 ms late. Both are published in
 //! [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
 //! Reads are served first when both are ready, and a deadline that is
 //! already due is serviced right after each read, so a port that is always

@@ -5,7 +5,9 @@
 //! preview, then `y`), as for a change the safety model rates the same
 //! (#964). One-shot commands take `--mstp` itself as the request.
 
-use bacnet_transport::mstp::MstpDiagnosticsSnapshot;
+use std::time::Duration;
+
+use bacnet_transport::mstp::{LatenessHistogram, MstpDiagnosticsSnapshot, HOST_LATE_DEADLINE};
 
 use super::{App, Link, Overlay, FLASH_FOR};
 use crate::mstp::MstpArgs;
@@ -90,21 +92,92 @@ impl MstpState {
 
     /// The counters shown: since the last clear, or since the start. A
     /// counter that saturated shows its total, which is all there is.
-    pub(crate) fn counters(&self) -> Option<Vec<(&'static str, u64)>> {
+    pub(crate) fn counters(&self) -> Option<Vec<(String, u64)>> {
         let now = self.shown?.counters;
         let base = self.baseline.unwrap_or_default();
         Some(
             rows(&now)
                 .into_iter()
                 .zip(rows(&base))
-                .map(|((label, value), (_, before))| (label, value.saturating_sub(before)))
+                .map(|((label, value), (_, before))| {
+                    (label.to_string(), value.saturating_sub(before))
+                })
+                .chain([(late_label(), late_timers(&now, &base))])
                 .collect(),
         )
     }
+
+    /// How late the station's timers fired, over the same span as
+    /// [`Self::counters`].
+    pub(crate) fn lateness(&self) -> Option<Lateness> {
+        let now = self.shown?.counters.mac.deadline_lateness;
+        let mut buckets = now.buckets;
+        let all_time: Duration = now.max.into();
+        let base = self.baseline.map(|base| base.mac.deadline_lateness);
+        if let Some(base) = base {
+            for (count, before) in buckets.iter_mut().zip(base.buckets) {
+                *count = count.saturating_sub(before);
+            }
+        }
+        // The highest band with a timed wake in the span shown.
+        let max = match (buckets.iter().rposition(|&count| count > 0), base) {
+            (None, _) => None,
+            (Some(_), None) => Some(LatenessMax::Exact(all_time)),
+            // The transport keeps only the largest ever: one larger than at
+            // the clear came since.
+            (Some(_), Some(base)) if now.max > base.max => Some(LatenessMax::Exact(all_time)),
+            // Otherwise the largest ever bounds those since, and so does the
+            // top of the highest band that moved, which may be tighter.
+            (Some(top), Some(_)) => Some(match LatenessHistogram::EDGES.get(top) {
+                Some(&edge) if edge <= all_time => LatenessMax::Below(edge),
+                _ => LatenessMax::AtMost(all_time),
+            }),
+        };
+        Some(Lateness { buckets, max })
+    }
 }
 
-/// The counters the screen lists, in its order.
-fn rows(c: &MstpDiagnosticsSnapshot) -> [(&'static str, u64); 16] {
+/// The timer lateness the screen shows: the transport's histogram since the
+/// last clear, or since joining.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Lateness {
+    /// Timed wakes in each of the core's lateness buckets: under 1 ms, 1 to
+    /// 2, 2 to 5, 5 to 10, 10 to 25, and 25 ms or more.
+    pub(crate) buckets: [u64; 6],
+    /// The largest lateness, `None` with no timed wake to show.
+    pub(crate) max: Option<LatenessMax>,
+}
+
+/// The largest timer lateness over the span shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LatenessMax {
+    /// The largest, exactly.
+    Exact(Duration),
+    /// No more than this: the largest since joining, which came before the
+    /// clear.
+    AtMost(Duration),
+    /// Less than this: the upper edge of the highest band that moved since
+    /// the clear, when that is below the largest since joining.
+    Below(Duration),
+}
+
+/// The bucket labels, in [`Lateness::buckets`]' order.
+pub(crate) const LATENESS_BANDS: [&str; 6] =
+    ["<1 ms", "1-2 ms", "2-5 ms", "5-10 ms", "10-25 ms", "≥25 ms"];
+
+/// The late-timer row's label, from the threshold the transport counts at.
+pub(crate) fn late_label() -> String {
+    format!("Late timers (≥{} ms)", HOST_LATE_DEADLINE.as_millis())
+}
+
+fn late_timers(now: &MstpDiagnosticsSnapshot, base: &MstpDiagnosticsSnapshot) -> u64 {
+    now.mac
+        .late_deadlines
+        .saturating_sub(base.mac.late_deadlines)
+}
+
+/// The counters the screen lists, in its order, the late-timer row last.
+fn rows(c: &MstpDiagnosticsSnapshot) -> [(&'static str, u64); 15] {
     let m = &c.mac;
     [
         ("Frames received", m.frames_received),
@@ -118,7 +191,6 @@ fn rows(c: &MstpDiagnosticsSnapshot) -> [(&'static str, u64); 16] {
         ("Reply timeouts", c.wait_for_reply_timeouts),
         ("Replies postponed", c.reply_postponed_tx),
         ("Late replies", m.late_replies),
-        ("Deadline misses", m.deadline_misses),
         ("Own-MAC frames", m.own_address_frames),
         ("TX queue full", c.outbound_queue_full),
         ("Serial read errors", c.serial_read_errors),
@@ -173,7 +245,7 @@ impl JoinDialog {
     /// the system lists, in `mstp-ports`' order.
     pub(crate) fn for_flags(settings: MstpArgs, listed: Vec<String>) -> Self {
         let mut ports = vec![settings.port.clone()];
-        ports.extend(crate::mstp::order_ports(listed));
+        ports.extend(listed);
         let ports = crate::mstp::dedup(ports);
         Self {
             settings,

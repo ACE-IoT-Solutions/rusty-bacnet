@@ -230,6 +230,22 @@ pub(super) fn ellipsize(text: &str, width: usize) -> String {
     out
 }
 
+/// `lines` in `height` rows: when they don't all fit, the last row shown
+/// says how many more there are (`+N more`).
+pub(super) fn more(
+    mut lines: Vec<Line<'static>>,
+    height: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let height = usize::from(height).max(1);
+    if lines.len() > height {
+        let hidden = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(Line::styled(format!("+{hidden} more"), theme.warn()));
+    }
+    lines
+}
+
 /// A `width` x `height` rectangle centred in `area`, clipped to it.
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     area.centered(

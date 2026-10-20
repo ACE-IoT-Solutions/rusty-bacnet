@@ -37,7 +37,10 @@ fn a_deadline_call_stamped_early_services_what_is_due_at_the_latest_time() {
     core.on_deadline(ms(100));
     assert_eq!(core.state(), MasterState::NoToken);
     // Serviced 100 ms late, at 600 ms rather than at the stamp.
-    assert_eq!(core.counters().deadline_misses, 1);
+    assert_eq!(core.counters().late_deadlines, 1);
+    let lateness = core.counters().deadline_lateness;
+    assert_eq!(lateness.buckets, [0, 0, 0, 0, 0, 1]);
+    assert_eq!(lateness.max, bacnet_mstp_core::Duration::from_millis(100));
 }
 
 /// `on_silence` stamped early drops a partial frame whose T_frame_abort the

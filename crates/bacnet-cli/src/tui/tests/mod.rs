@@ -55,6 +55,7 @@ mod inprocess;
 #[path = "../../../tests/support/lab.rs"]
 mod lab;
 mod load;
+mod mstp_layout;
 mod mstp_monitor;
 #[cfg(all(target_os = "linux", feature = "serial"))]
 mod mstp_monitor_pty;
