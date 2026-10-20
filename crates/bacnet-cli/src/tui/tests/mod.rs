@@ -74,6 +74,9 @@ mod names;
 mod names_site;
 mod network;
 mod network_frames;
+/// Reruns a test whose freed ephemeral port another process takes (#1877).
+#[path = "../../../../bacnet-endpoint/tests/support/port_retry.rs"]
+mod port_retry;
 mod profile_ui;
 #[cfg(feature = "sc-tls")]
 mod sc_hub;
@@ -168,7 +171,7 @@ pub(super) fn routed_row(
     vendor_id: u16,
     seen: u64,
 ) -> DeviceRow {
-    let address = crate::core::target::routed_station(network, station);
+    let address = crate::core::target::routed_station(network, station).expect("a station");
     let mut row = row(instance, &address, vendor_id, seen);
     row.network = Some(network);
     row.via = Some(router.into());

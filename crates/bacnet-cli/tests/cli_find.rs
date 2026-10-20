@@ -38,10 +38,12 @@ async fn bbmd() -> BACnetServer<BipTransport> {
         .unwrap()
 }
 
-async fn find(server: &BACnetServer<BipTransport>, name: &str) -> Value {
+/// `find` for `name`, given as the positional NAME, or with `--name`
+/// when `flag` is set (#1872).
+async fn find(server: &BACnetServer<BipTransport>, name: &str, flag: bool) -> Value {
     let mac = server.local_mac();
     let bbmd = format!("127.0.0.1:{}", u16::from_be_bytes([mac[4], mac[5]]));
-    let output = run([
+    let mut args = vec![
         "--interface",
         "127.0.0.1",
         "--port",
@@ -50,12 +52,12 @@ async fn find(server: &BACnetServer<BipTransport>, name: &str) -> Value {
         &bbmd,
         "--json",
         "find",
-        "--name",
-        name,
-        "--wait",
-        "2",
-    ])
-    .await;
+    ];
+    if flag {
+        args.push("--name");
+    }
+    args.extend([name, "--wait", "2"]);
+    let output = run(args).await;
     assert!(
         output.status.success(),
         "{}",
@@ -68,10 +70,10 @@ async fn find(server: &BACnetServer<BipTransport>, name: &str) -> Value {
 async fn find_prints_the_device_and_object_that_answer() {
     let mut server = bbmd().await;
     assert_eq!(
-        find(&server, "Supply Air Temp").await,
+        find(&server, "Supply Air Temp", false).await,
         json!([{ "device": INSTANCE, "object": "ANALOG_INPUT:7", "name": "Supply Air Temp" }])
     );
     // Nothing has this name: an empty array once the wait is over.
-    assert_eq!(find(&server, "Return Air Temp").await, json!([]));
+    assert_eq!(find(&server, "Return Air Temp", true).await, json!([]));
     server.stop().await.unwrap();
 }

@@ -133,14 +133,18 @@ async fn execute_command<T: TransportPort + 'static>(
                 commands::discover::discover(client, range, *wait, format).await?;
             }
         }
-        Command::Find { name, wait } => match name {
-            Some(n) => {
-                commands::discover::find_by_name(client, n, *wait, format).await?;
-            }
-            None => {
-                return Err("--name is required for find command".into());
-            }
-        },
+        Command::Find {
+            name,
+            name_flag,
+            wait,
+        } => {
+            // clap takes exactly one of the two.
+            let name = name
+                .as_ref()
+                .or(name_flag.as_ref())
+                .ok_or("find needs a NAME")?;
+            commands::discover::find_by_name(client, name, *wait, format).await?;
+        }
         Command::Read {
             target,
             object,

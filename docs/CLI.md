@@ -445,14 +445,14 @@ known, and a second Enter sends it. The table shows instance, address,
 network, vendor ID, max APDU, segmentation and time since the last I-Am. A
 routed device's address is its station in the CLI's target syntax,
 `NET:0xMAC` (`2:0x7F000001C335`, or `2:0x05` for an MS/TP station), which
-the one-shot commands take back as a target. The router it answered through
-is in a `Via` column when the whole column fits, and otherwise left out. Each
-column is as wide as its header or its widest cell, so a wide terminal leaves
-the spare room at the right; instance and address are never cut. The filter
-also matches the router. When two addresses answer for the same instance, a
-`DUPLICATE` banner names both (a routed one as `2:0x05 via ROUTER`). If the
-UI falls behind a burst of I-Am traffic, events are dropped rather than
-queued without limit; the status bar's `drop` counter shows how many, and the
+the one-shot commands and the command bar take back as a target. The router
+it answered through is in a `Via` column when the whole column fits, and
+otherwise left out. Each column is as wide as its header or its widest cell,
+so a wide terminal leaves the spare room at the right; instance and address
+are never cut. The filter also matches the router. When two addresses answer
+for the same instance, a `DUPLICATE` banner names both (a routed one as
+`2:0x05 via ROUTER`). If the UI falls behind a burst of I-Am traffic, events
+are dropped rather than queued without limit; the status bar's `drop` counter shows how many, and the
 table is refreshed from the client's discovery table afterwards.
 
 **Keys:**
@@ -497,7 +497,10 @@ go through a write session (below).
 
 **Watch list.** `a` on an object in the browser watches its Present_Value;
 `:watch 1234 ai:1 [property]` on the command bar watches any property of a
-device in the table (`dnet:1234` for a routed one). `3` shows the list: device
+device in the table, named by its instance, as `dnet:1234` for a routed one,
+or by the routed station the table shows, `2:0x05`. A network typed that the
+table disagrees with is replaced by the table's, and the footer says so
+("2001 is on network 2, not 3"). `3` shows the list: device
 (`2:1234` when routed), object, the object's name, property, value, units,
 status flags, source, the age of the last value and a sparkline. Columns fit
 their content and the device and object are never cut. Below 120 columns the
@@ -549,7 +552,9 @@ and its private one in its own) shows as two rows, one flagged with no entry
 for itself.
 
 **Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has for the
-object named NAME (the rest of the line, exactly as typed) and lists the
+object named NAME (the rest of the line, exactly as typed, apostrophes and
+runs of spaces included; a name that is one quoted word, `"Zone  Temp"`, is
+unwrapped, and `:find ""` closes the panel like `:find` alone) and lists the
 devices whose I-Have answers it in a panel below the device table: the
 device, the object as the browser labels it (`analog-input 3`), the object's
 name (cut with `…` when it doesn't fit, control characters shown as spaces),
@@ -773,6 +778,15 @@ to one device as one WritePropertyMultiple; each property may appear only once
 in a batch, because a failed batch names the failing write without its
 priority.
 
+The command bar splits its line into words itself (all but `:find`, which
+takes the rest of the line). Single or double quotes group words, and a
+backslash makes the quote, whitespace character or backslash after it plain
+text; a quote left open is an error. A quoted or escaped VALUE is a
+CharacterString, with any priority after the last quote or escape:
+`:writem 1001 av:1 description "two words"`, `... Zone\ 2` or
+`... "Zone 2"@12`. A quoted number, such as `'72.5'`, is a string too, so a
+numeric property refuses it.
+
 Before every write the TUI reads the object's priority array, Present_Value,
 Relinquish_Default and Out_Of_Service, then shows a preview: the old and new
 slot or property value, who holds the slot (empty, our earlier write, or
@@ -878,9 +892,12 @@ bacnet --foreign-bbmd 10.0.0.1 discover  # discover through the BBMD as a foreig
 | `--bbmd <ADDR>` | | Register once as a foreign device with this BBMD, for the global `--ttl`, before discovering (BIP only). The Who-Is still goes out as a local broadcast; `--foreign-bbmd` sends it through the BBMD |
 
 ```bash
-bacnet find --name "Zone Temp"           # find objects by name (WhoHas)
-bacnet find --name "Zone Temp" --wait 5  # wait 5 seconds for responses
+bacnet find "Zone Temp"           # find objects by name (WhoHas)
+bacnet find "Zone Temp" --wait 5  # wait 5 seconds for responses
 ```
+
+The name is one word: quote one with spaces. `--name "Zone Temp"` says the
+same; giving both, or neither, is a usage error (exit 2).
 
 `find` sends its Who-Has as a global broadcast, so routers pass it to every
 network, and prints every I-Have that answers within the wait, one row per device

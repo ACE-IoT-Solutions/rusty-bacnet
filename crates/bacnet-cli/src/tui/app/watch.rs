@@ -189,7 +189,8 @@ impl WatchList {
 impl App {
     /// Watch `point`: add its row and ask the worker to start it.
     /// The device table's network for the device wins over one typed, so
-    /// `2001` and `2:2001` are the same row.
+    /// `2001` and `2:2001` are the same row; a typed network the table
+    /// disagrees with is named in the notice (#1917).
     pub(super) fn watch_point(&mut self, mut point: Point, out: &mut Vec<Command>) {
         if !self.may_transmit() {
             return;
@@ -198,23 +199,29 @@ impl App {
             self.flash("Not connected.", FLASH_FOR);
             return;
         }
+        let mut moved = None;
         if let Some(device) = self.devices.get(point.device) {
+            if let Some(typed) = point.network.filter(|&n| device.network != Some(n)) {
+                let actual = match device.network {
+                    Some(network) => format!("network {network}"),
+                    None => "this network".into(),
+                };
+                moved = Some(format!("{} is on {actual}, not {typed}. ", point.device));
+            }
             point.network = device.network;
         }
-        match self.watch.add(point) {
+        let notice = match self.watch.add(point) {
             Ok(row) => {
                 out.push(Command::Watch(WatchCommand::Add { row, point }));
-                self.flash(
-                    format!(
-                        "Watching {} on device {}. Press 3 for the watch list.",
-                        object_label(point.object),
-                        point.device_label()
-                    ),
-                    FLASH_FOR,
-                );
+                format!(
+                    "Watching {} on device {}. Press 3 for the watch list.",
+                    object_label(point.object),
+                    point.device_label()
+                )
             }
-            Err(error) => self.flash(error, FLASH_FOR),
-        }
+            Err(error) => error,
+        };
+        self.flash(moved.unwrap_or_default() + &notice, FLASH_FOR);
     }
 
     /// `a` in the browser: watch the selected object's Present_Value.

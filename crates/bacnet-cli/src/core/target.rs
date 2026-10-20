@@ -342,16 +342,17 @@ impl AddressStyle {
     /// Where a device or a reply is, as the TUI's tables show it. For one
     /// a router passed on, from `routed` (its network and its MAC there):
     /// the routed station as [`routed_station`] writes it, and the router,
-    /// the link peer `mac`, in this style. Otherwise `mac` in this style
-    /// and no router.
+    /// the link peer `mac`, in this style. Otherwise, or when the routed
+    /// MAC is empty and so names no station, `mac` in this style and no
+    /// router.
     #[cfg(feature = "tui")]
     pub(crate) fn locate(
         self,
         mac: &[u8],
         routed: Option<(u16, &[u8])>,
     ) -> (String, Option<String>) {
-        match routed {
-            Some((network, station)) => (routed_station(network, station), Some(self.format(mac))),
+        match routed.and_then(|(network, station)| routed_station(network, station)) {
+            Some(station) => (station, Some(self.format(mac))),
             None => (self.format(mac), None),
         }
     }
@@ -360,17 +361,18 @@ impl AddressStyle {
 /// A routed station for display, `NET:0xMAC` with the MAC in upper-case
 /// hex (`2:0x7F000001C335`, an MS/TP station `2:0x05`): a station is
 /// written in the target syntax, so [`parse_target`] reads it back. An
-/// empty MAC, a broadcast on that network, is written `NET:*`, which is
-/// shown only (the capture's routed destinations) and is not a target.
-pub(crate) fn routed_station(network: u16, mac: &[u8]) -> String {
+/// empty MAC names no station (it is a broadcast on that network), so it
+/// has no target form and gives `None`; the capture, which shows routed
+/// broadcasts, writes those itself.
+pub(crate) fn routed_station(network: u16, mac: &[u8]) -> Option<String> {
     if mac.is_empty() {
-        return format!("{network}:*");
+        return None;
     }
     let mut out = format!("{network}:0x");
     for b in mac {
         out.push_str(&format!("{b:02X}"));
     }
-    out
+    Some(out)
 }
 
 /// Colon-separated lowercase hex.

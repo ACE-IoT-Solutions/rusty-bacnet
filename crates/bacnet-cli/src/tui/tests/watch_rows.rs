@@ -172,6 +172,65 @@ fn a_routed_device_is_one_row_however_it_is_typed() {
     assert_eq!(app.watch.rows()[0].point.device_label(), "2:2001");
 }
 
+/// A typed network the device table disagrees with is named in the
+/// notice, and the table's network is kept; a matching or omitted one
+/// says nothing about it (#1917).
+#[test]
+fn a_network_the_table_disagrees_with_is_named() {
+    let mut app = connected_app();
+    worker(
+        &mut app,
+        WorkerEvent::Discovered(routed_row(2001, (2, &[5]), "10.0.1.1:47808", 24, 0)),
+    );
+    worker(
+        &mut app,
+        WorkerEvent::Discovered(row(100, "10.0.0.9:47808", 1, 0)),
+    );
+    let flash = |app: &App| {
+        app.flash
+            .as_ref()
+            .map(|f| f.text.clone())
+            .unwrap_or_default()
+    };
+    command(&mut app, "watch 3:2001 ai:1");
+    assert!(
+        flash(&app).starts_with("2001 is on network 2, not 3. Watching"),
+        "{}",
+        flash(&app)
+    );
+    assert_eq!(app.watch.rows()[0].point.device_label(), "2:2001");
+    // The same point again: the note comes with the refusal.
+    command(&mut app, "watch 4:2001 ai:1");
+    assert_eq!(flash(&app), "2001 is on network 2, not 4. Already watched.");
+    // A local device typed with a network.
+    command(&mut app, "watch 5:100 ai:1");
+    assert!(
+        flash(&app).starts_with("100 is on this network, not 5. Watching"),
+        "{}",
+        flash(&app)
+    );
+    assert_eq!(app.watch.rows()[1].point.device_label(), "100");
+    // Matching, omitted, and routed-station forms add nothing.
+    for line in [
+        "watch 2:2001 ai:2",
+        "watch 2001 ai:3",
+        "watch 2:0x05 ai:4",
+        "watch 100 ai:5",
+    ] {
+        command(&mut app, line);
+        assert!(
+            flash(&app).starts_with("Watching"),
+            "{line}: {}",
+            flash(&app)
+        );
+    }
+    assert_eq!(app.watch.rows().len(), 6);
+    // A device the table doesn't have keeps the network typed.
+    command(&mut app, "watch 7:4000 ai:1");
+    assert!(flash(&app).starts_with("Watching"), "{}", flash(&app));
+    assert_eq!(app.watch.rows()[6].point.device_label(), "7:4000");
+}
+
 /// The lab device with `quirks`, discovered.
 async fn lab(quirks: Quirks) -> Site {
     let server = Server {
