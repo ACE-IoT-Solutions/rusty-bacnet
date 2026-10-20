@@ -28,11 +28,12 @@ async fn start_server(
         )
         .unwrap();
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             PropertyValue::Enumerated(1),
             Some(8),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
     let oid = object.object_identifier();
@@ -283,11 +284,12 @@ async fn terminal_cov_snapshot_survives_a_later_command_before_delivery() {
             let mut db = server.db.write().await;
             let object = db.get_mut(&oid).unwrap();
             object
-                .write_property(
+                .write_property_from(
                     PropertyIdentifier::PRESENT_VALUE,
                     None,
                     PropertyValue::Enumerated(operation),
                     Some(8),
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
             let deadline = object.next_monotonic_deadline_internal().unwrap();
@@ -298,11 +300,12 @@ async fn terminal_cov_snapshot_survives_a_later_command_before_delivery() {
             let mut db = server.db.write().await;
             db.get_mut(&oid)
                 .unwrap()
-                .write_property(
+                .write_property_from(
                     PropertyIdentifier::PRESENT_VALUE,
                     None,
                     PropertyValue::Enumerated(1),
                     Some(4),
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
         }
@@ -474,11 +477,12 @@ async fn a_snapshot_report_times_a_timestamped_field_only_with_its_own_value() {
             let mut db = server.db.write().await;
             let object = db.get_mut(&oid).unwrap();
             object
-                .write_property(
+                .write_property_from(
                     PropertyIdentifier::PRESENT_VALUE,
                     None,
                     PropertyValue::Enumerated(value),
                     Some(8),
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
             object.cov_snapshot_internal().unwrap()
