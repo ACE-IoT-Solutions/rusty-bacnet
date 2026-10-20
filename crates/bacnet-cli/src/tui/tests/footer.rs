@@ -202,7 +202,9 @@ fn a_failed_connection_shows_its_summary_and_the_recovery_keys() {
             error: Failure::of(&error),
         },
     );
-    let text = screen(&mut app, 80, 24);
+    // Wide enough for the whole OS message: Windows' text for error 2 is
+    // longer than Unix's, and 80 columns would cut the `(os error 2)`.
+    let text = screen(&mut app, 200, 50);
     let footer = footer_of(&mut app);
     assert!(
         footer.starts_with(" Connection failed: entity not found"),
