@@ -31,7 +31,6 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::app::names::Name;
-
 use super::app::watch::Screen;
 use super::app::{App, Link, Overlay};
 

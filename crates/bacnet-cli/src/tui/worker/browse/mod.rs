@@ -262,3 +262,41 @@ async fn read_object<T: TransportPort + 'static>(
     deliver(sink, req, BrowseResult::Object(Box::new(view))).await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bacnet_types::enums::ObjectType;
+
+    use super::*;
+
+    /// Past [`MAX_QUEUES`], idle queues go; one a job holds, or one with
+    /// names waiting, stays (#1931).
+    #[test]
+    fn idle_name_queues_past_the_cap_are_dropped() {
+        let mut queues = Queues::new();
+        for device in 0..u32::try_from(MAX_QUEUES).unwrap() {
+            queues.entry(device).or_default();
+        }
+        prune(&mut queues);
+        assert_eq!(queues.len(), MAX_QUEUES, "at the cap nothing goes");
+        let held = Arc::clone(queues.entry(10_000).or_default());
+        let object = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+        queues.entry(10_001).or_default();
+        with_queue(&queues, 10_001, |queue| {
+            queue.want(1, "10.0.0.1:47808".into(), None, vec![object])
+        });
+        prune(&mut queues);
+        let mut kept: Vec<u32> = queues.keys().copied().collect();
+        kept.sort_unstable();
+        assert_eq!(kept, [10_000, 10_001]);
+        drop(held);
+        with_queue(&queues, 10_001, |queue| {
+            queue.want(2, "10.0.0.1:47808".into(), None, Vec::new())
+        });
+        for device in 0..u32::try_from(MAX_QUEUES).unwrap() {
+            queues.entry(device).or_default();
+        }
+        prune(&mut queues);
+        assert!(queues.is_empty(), "{:?}", queues.keys());
+    }
+}

@@ -176,41 +176,50 @@ What M0 draws (80x24):
   scheduler (any other read of that device stops one between requests, and
   it resumes after). A name job waits until the cap has a slot free before
   it takes a batch from the queue, so a row withdrawn while it waited costs
-  neither a request nor a slot. A batch is one RPM, or one ReadProperty
-  each from a device that refused RPM. An RPM asks for as many names as
-  fit an unsegmented answer within both the device's
-  Max_APDU_Length_Accepted (from its I-Am) and the client's own limit,
-  allowing 142 octets a name (a 128-octet name and its encoding), from one
-  to sixteen: three for a 480-octet device, ten for a 1476-octet one
-  (#1930). A batch whose answer still won't fit (names in a wider
-  encoding) is read one name at a time. Since a name job
-  books no slot until one is free, a cap that watch polling keeps saturated
-  can hold name reads back indefinitely; the watch list comes first.
+  neither a request nor a slot. Since a name job books no slot until one
+  is free, a cap that watch polling keeps saturated can hold name reads
+  back indefinitely; the watch list comes first.
+- A batch is one RPM, or one ReadProperty each from a device that refused
+  RPM. An RPM asks for as many names as fit an unsegmented answer within
+  both the device's Max_APDU_Length_Accepted (from its I-Am) and the
+  client's own limit, allowing 142 octets a name (a 128-octet name and its
+  encoding), from one to sixteen: three for a 480-octet device, ten for a
+  1476-octet one (#1930). A batch whose answer still won't fit (names in a
+  wider encoding) is read one name at a time, and that device's later
+  batches ask for half as many names, down to one.
 - The session keeps at most 4,096 names, forgetting the least recently used;
   the rows on screen count as used on every tick (#1931). A name is filed
   under the device's instance and address, so two devices that claim the
   same instance keep their own names, and the table shows the name of the
-  one the client kept. The browser worker remembers at most 256 answers a
-  device and reports a remembered one again, without a request, when it is
-  asked for again; a row withdrawn while its batch is out is neither read
-  nor reported unreachable.
+  one the client kept; a batch read for one address that ends after the
+  queue moved to the other is reported under its own address and changes
+  nothing for the other. The browser worker remembers at most 256 answers
+  a device and reports a remembered one again, without a request, when it
+  is asked for again; a row withdrawn while its batch is out is neither
+  read nor reported unreachable.
+- The `/` filter and the Name sort use only the names in the cache and
+  never ask for one (#1929). On a site with more than 4,096 names an older
+  one may be forgotten, so the filter can miss it until its row is on
+  screen again, and the Name sort is approximate past 4,096 devices. Sorted
+  by name, the table always shows the Name column, leaving out the columns
+  at its right to make room.
 - A name still being read shows `…`. A name the device refused (an error, a
   reject, an answer that isn't a string) shows `-` and isn't asked for again
   until the device is read afresh: its card arrives after `r` or after
   opening it, not when the `r` is sent. A device that stops answering gives
   up every name it was asked for after one timeout; those names show a dim
   `?` (a row nobody asked about stays blank), and are asked for again when
-  the device's next I-Am arrives. Names keep at most 128 characters, with control characters as
-  spaces. The Name column takes the room the other columns leave, a long
-  name ending in `…`, and is left out (and its names not asked for) with
-  fewer than eight columns to spare; the object list does the same with the
-  room after the longest label.
+  the device's next I-Am arrives. Names keep at most 128 characters, with
+  control characters as spaces. The Name column takes the room the other
+  columns leave, a long name ending in `…`, and is left out (and its names
+  not asked for) with fewer than eight columns to spare; the object list
+  does the same with the room after the longest label.
 
 ### 4.2 Screens
 
 | Screen | Contents |
 |---|---|
-| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not read yet last) and filter (the filter matches the router and any name already read, and reads none, #1929); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network) |
+| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not known yet (unread, refused or unanswered) last) and filter (the filter matches the router and any name already read, and reads none, #1929); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network) |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with each object's name (#1896) and a filter that matches labels and names already read (#1929); property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD, and `:bbmd` alone goes back to ours. Write-BDT and Delete-FDT-Entry are later items |

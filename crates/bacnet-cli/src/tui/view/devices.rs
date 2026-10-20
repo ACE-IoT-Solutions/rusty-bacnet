@@ -134,6 +134,8 @@ enum Field {
 /// The Name column (#1896) comes last: it takes the room the others leave,
 /// a long name ending in `…`, and is left out below [`MIN_NAME`] columns
 /// (at 80 columns with long addresses, say), when its names aren't asked for.
+/// Sorted by name, it always shows: the columns in [`GIVES_WAY`] are left
+/// out to make room for it.
 fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     let full = width >= FULL_WIDTH;
     let sorted = sorted_field(app.devices.sort().0);
@@ -174,12 +176,38 @@ fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
     // Inside the borders.
     let room = usize::from(width.saturating_sub(2));
     columns::shrink(&mut columns, Field::Vendor, room, min_vendor);
+    if app.devices.sort().0 == SortKey::Name {
+        // The sorted column always shows: the others give way, rightmost
+        // first, then the Via column if there is still room for it.
+        let need = usize::from(columns::SPACING) + MIN_NAME.min(name.width);
+        while columns::total(&columns) + need > room {
+            let Some(at) = columns.iter().rposition(|c| GIVES_WAY.contains(&c.kind)) else {
+                break;
+            };
+            columns.remove(at);
+        }
+        columns::insert_narrowed(&mut columns, 2, name, room, MIN_NAME);
+        if routed {
+            columns::insert_if_room(&mut columns, 4, via, room);
+        }
+        return columns;
+    }
     if routed {
         columns::insert_if_room(&mut columns, 3, via, room);
     }
     columns::insert_narrowed(&mut columns, 2, name, room, MIN_NAME);
     columns
 }
+
+/// The columns left out, rightmost first, to make room for the Name
+/// column while the table is sorted by name.
+const GIVES_WAY: [Field; 5] = [
+    Field::Network,
+    Field::Vendor,
+    Field::Apdu,
+    Field::Segmentation,
+    Field::Seen,
+];
 
 /// One cell's text, before it is fitted to its column.
 fn cell(field: Field, row: &DeviceRow, app: &App, selected: bool) -> String {

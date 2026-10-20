@@ -409,6 +409,26 @@ async fn batches_are_sized_from_the_devices_max_apdu() {
     }
 }
 
+/// An RPM whose answer is too large to send reads that batch a name at a
+/// time, and later batches ask for half as many names.
+#[tokio::test(start_paused = true)]
+async fn a_too_large_answer_halves_the_next_batches() {
+    let server = lab(Quirks {
+        abort_first_rpm: true,
+        ..Quirks::default()
+    });
+    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
+    site.who_is("", 1).await;
+    let objects: Vec<_> = (1..=20).map(ai).collect();
+    site.send(vec![ask(1_000, &objects)]).await;
+    known(&mut site, objects).await;
+    let mut expected = vec![RPM];
+    expected.extend([RP; 10]);
+    expected.extend([RPM, RPM]);
+    assert_eq!(services_since(&site, 0), expected);
+    site.stop().await;
+}
+
 /// Rows withdrawn while their batch waits on a silent device are not
 /// reported unreachable when it times out; only the row still on screen
 /// is (#1931).

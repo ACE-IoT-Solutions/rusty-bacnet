@@ -84,9 +84,12 @@ pub(crate) struct NameCache {
     clock: u64,
     /// Per instance, how many of its entries are [`Name::Unreachable`].
     stalled: HashMap<u32, usize>,
-    /// Counts changes to known names, so a filter or a sort by name knows
-    /// to look again (#1929).
+    /// Counts changes to known names, so the object filter knows to look
+    /// again (#1929).
     changes: u64,
+    /// Counts changes to known Device object names only, so the device
+    /// table doesn't rebuild for every object name that arrives.
+    device_changes: u64,
     asked: BTreeMap<u32, Ask>,
 }
 
@@ -122,6 +125,20 @@ impl NameCache {
     /// Bumped whenever a known name is learned, changed or forgotten.
     pub(crate) fn changes(&self) -> u64 {
         self.changes
+    }
+
+    /// Bumped whenever a device's own name (its Device object's) is
+    /// learned, changed or forgotten.
+    pub(crate) fn device_changes(&self) -> u64 {
+        self.device_changes
+    }
+
+    /// Count a change to a known name of `object`.
+    fn changed(&mut self, object: ObjectIdentifier) {
+        self.changes += 1;
+        if object.object_type() == ObjectType::DEVICE {
+            self.device_changes += 1;
+        }
     }
 
     /// Names held.
@@ -208,7 +225,7 @@ impl NameCache {
             self.unstall(device);
         }
         if matches!(name, Name::Known(_)) || matches!(old, Some(Name::Known(_))) {
-            self.changes += 1;
+            self.changed(object);
         }
         while self.by_use.len() > MAX_NAMES {
             self.evict_oldest();
@@ -240,15 +257,15 @@ impl NameCache {
             self.names.remove(&key);
         }
         if let Some(entry) = entry {
-            self.forgotten(key.0, &entry.name);
+            self.forgotten(key, &entry.name);
         }
     }
 
-    /// Account for a forgotten entry of `device` holding `name`.
-    fn forgotten(&mut self, device: u32, name: &Name) {
+    /// Account for a forgotten entry of `key` holding `name`.
+    fn forgotten(&mut self, (device, object): (u32, ObjectIdentifier), name: &Name) {
         match name {
             Name::Unreachable => self.unstall(device),
-            Name::Known(_) => self.changes += 1,
+            Name::Known(_) => self.changed(object),
             Name::Unavailable => {}
         }
     }
@@ -277,7 +294,8 @@ impl NameCache {
                 self.names.remove(&key);
             }
             self.by_use.remove(&entry.used);
-            self.forgotten(device, &entry.name);
+            self.forgotten(key, &entry.name);
+
             any = true;
         }
         any
@@ -448,7 +466,6 @@ impl App {
                     address: address.to_string(),
                     max_apdu: row.map(|row| row.max_apdu),
                     objects: now.to_vec(),
-
                     retry,
                 });
             }

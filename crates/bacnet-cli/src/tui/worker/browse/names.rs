@@ -86,6 +86,9 @@ pub(crate) struct NameQueue {
     address: String,
     /// The device's Max_APDU_Length_Accepted, when the UI knows it.
     max_apdu: Option<u32>,
+    /// The most names an RPM may ask for, halved each time an answer was
+    /// too large to send (#1930 review); `None` until then.
+    rpm_cap: Option<usize>,
     /// Names to read, in the order the UI shows them.
     wanted: VecDeque<ObjectIdentifier>,
     /// Those of the batch being read that the UI still wants. A row
@@ -117,6 +120,7 @@ impl NameQueue {
         if address != self.address {
             self.forget();
             self.in_flight.clear();
+            self.rpm_cap = None;
             self.address = address;
         }
         self.req = req;
@@ -177,11 +181,19 @@ impl NameQueue {
     /// allows for the device and a client taking `client` octets.
     fn take_batch(&mut self, rpm: bool, client: u16) -> (ReqId, String, Vec<ObjectIdentifier>) {
         let count = if rpm {
-            names_per_rpm(self.max_apdu, client)
+            let fits = names_per_rpm(self.max_apdu, client);
+            self.rpm_cap.map_or(fits, |cap| fits.min(cap))
         } else {
             1
         };
         self.take(count)
+    }
+
+    /// An RPM for `asked` names had an answer too large to send: later
+    /// batches ask for half as many, at least one.
+    fn too_large(&mut self, asked: usize) {
+        let half = (asked / 2).max(1);
+        self.rpm_cap = Some(self.rpm_cap.map_or(half, |cap| cap.min(half)));
     }
 
     /// The next batch of up to `count`, now in flight, with the request
@@ -211,10 +223,15 @@ impl NameQueue {
         }
     }
 
-    /// The batch in flight ended with `read` answered. The rest of it, all
-    /// still wanted, goes back to the front of the queue; a row asked for
-    /// again while the batch was out, and answered by it, isn't read twice.
-    fn settle(&mut self, read: &[NameRead]) {
+    /// The batch taken under `address` ended with `read` answered. The
+    /// rest of it, all still wanted, goes back to the front of the queue;
+    /// a row asked for again while the batch was out, and answered by it,
+    /// isn't read twice. A batch for an address the queue has since left
+    /// changes nothing here: its answers are another device's.
+    fn settle(&mut self, address: &str, read: &[NameRead]) {
+        if address != self.address {
+            return;
+        }
         self.record(read);
         for object in std::mem::take(&mut self.in_flight).into_iter().rev() {
             if !self.answered.contains_key(&object) && !self.wanted.contains(&object) {
@@ -225,10 +242,15 @@ impl NameQueue {
         self.wanted.retain(|object| !answered.contains_key(object));
     }
 
-    /// The device stopped answering after `read`: everything else the UI
-    /// still wants, the batch in flight and the whole queue, is given up
-    /// on as unreachable and returned. Rows withdrawn meanwhile are not.
-    fn abandon(&mut self, read: &[NameRead]) -> Vec<ObjectIdentifier> {
+    /// The device at `address` stopped answering after `read`: everything
+    /// else the UI still wants of it, the batch in flight and the whole
+    /// queue, is given up on as unreachable and returned. Rows withdrawn
+    /// meanwhile are not, nor anything once the queue has moved to another
+    /// address.
+    fn abandon(&mut self, address: &str, read: &[NameRead]) -> Vec<ObjectIdentifier> {
+        if address != self.address {
+            return Vec::new();
+        }
         self.record(read);
         let held: Vec<ObjectIdentifier> = std::mem::take(&mut self.in_flight)
             .into_iter()
@@ -292,13 +314,13 @@ pub(crate) async fn read_names<T, F, R>(
         let (mut read, halt) = read_batch(reader, queue, &batch).await;
         let stopped = halt.is_some();
         match halt {
-            None | Some(Halt::Cancelled) => lock(queue).settle(&read),
+            None | Some(Halt::Cancelled) => lock(queue).settle(&address, &read),
             Some(Halt::Device(error)) => {
                 tracing::info!(
                     "device {}: names not read ({error}); asking again when it next answers",
                     reader.device
                 );
-                let left = lock(queue).abandon(&read);
+                let left = lock(queue).abandon(&address, &read);
                 read.extend(left.into_iter().map(|o| (o, ReadName::Unreachable)));
             }
         }
@@ -336,9 +358,12 @@ async fn read_batch<T: TransportPort + 'static>(
                 RpmFailure::Other if unreachable(&error) => {
                     return (Vec::new(), Some(Halt::Device(error)))
                 }
-                // Too large, or an error for the whole request that one
-                // object may have caused: each name on its own says which.
-                RpmFailure::TooLarge | RpmFailure::Other => {}
+                // Too large: later batches ask for fewer, and this one is
+                // read a name at a time.
+                RpmFailure::TooLarge => lock(queue).too_large(batch.len()),
+                // An error for the whole request that one object may have
+                // caused: each name on its own says which.
+                RpmFailure::Other => {}
             },
         }
     }
@@ -453,7 +478,7 @@ mod tests {
         let mut queue = NameQueue::default();
         queue.want(1, HERE.into(), Some(480), (1..=10).map(ai).collect());
         assert_eq!(queue.take_batch(true, 1476).2.len(), 3);
-        queue.settle(&[]);
+        queue.settle(HERE, &[]);
         assert_eq!(queue.take_batch(false, 1476).2.len(), 1);
     }
 
@@ -473,7 +498,7 @@ mod tests {
         assert_eq!(queue.wanted, [ai(20)]);
         assert!(!queue.still_wanted(ai(3)));
         // Stopped after 1 was read: 2 returns to the front, 3 doesn't.
-        queue.settle(&[(ai(1), one("one"))]);
+        queue.settle(HERE, &[(ai(1), one("one"))]);
         assert_eq!(queue.wanted, [ai(2), ai(20)]);
         // Answered already: reported again, not read.
         assert!(want(&mut queue, 3, vec![ai(1)]));
@@ -484,7 +509,7 @@ mod tests {
         // unreachable: read again only after `retry`.
         want(&mut queue, 4, vec![ai(5), ai(6)]);
         queue.take(1);
-        assert_eq!(queue.abandon(&[]), [ai(5), ai(6)]);
+        assert_eq!(queue.abandon(HERE, &[]), [ai(5), ai(6)]);
         want(&mut queue, 5, vec![ai(5), ai(6)]);
         assert!(queue.wanted.is_empty(), "replayed as unreachable");
         queue.take_replay();
@@ -496,7 +521,7 @@ mod tests {
         assert_eq!(queue.wanted, [ai(5)]);
         // A refusal stays until the device is read afresh.
         queue.take(1);
-        queue.settle(&[(ai(5), ReadName::Refused)]);
+        queue.settle(HERE, &[(ai(5), ReadName::Refused)]);
         queue.retry();
         want(&mut queue, 7, vec![ai(5)]);
         assert!(queue.wanted.is_empty());
@@ -518,9 +543,9 @@ mod tests {
             assert!(!want(&mut queue, 2, Vec::new()));
             assert!(want(&mut queue, 3, vec![ai(1)]), "wanted again");
             if stopped_by_timeout {
-                assert_eq!(queue.abandon(&[]), [ai(1)]);
+                assert_eq!(queue.abandon(HERE, &[]), [ai(1)]);
             } else {
-                queue.settle(&[]);
+                queue.settle(HERE, &[]);
                 assert_eq!(queue.wanted, [ai(1)]);
             }
         }
@@ -535,14 +560,14 @@ mod tests {
         queue.take(3);
         assert!(!want(&mut queue, 2, vec![ai(2)]));
         assert!(!queue.still_wanted(ai(1)) && queue.still_wanted(ai(2)));
-        assert_eq!(queue.abandon(&[]), [ai(2)]);
+        assert_eq!(queue.abandon(HERE, &[]), [ai(2)]);
         assert!(!queue.answered.contains_key(&ai(1)));
         assert!(!queue.answered.contains_key(&ai(3)));
         // And a batch that ends is put back only as far as still wanted.
         want(&mut queue, 3, vec![ai(4), ai(5)]);
         queue.take(2);
         want(&mut queue, 4, vec![ai(5)]);
-        queue.settle(&[]);
+        queue.settle(HERE, &[]);
         assert_eq!(queue.wanted, [ai(5)]);
     }
 
@@ -556,7 +581,7 @@ mod tests {
         for instance in 0..count {
             want(&mut queue, 1, vec![ai(instance)]);
             queue.take(1);
-            queue.settle(&[(ai(instance), one("n"))]);
+            queue.settle(HERE, &[(ai(instance), one("n"))]);
         }
         assert_eq!(queue.answered.len(), ANSWERS_KEPT);
         assert_eq!(queue.order.len(), ANSWERS_KEPT);
@@ -566,7 +591,6 @@ mod tests {
         // The same instance at another address: nothing is known there.
         queue.take_replay();
         queue.want(3, "10.0.9.7:47808".into(), None, vec![ai(count - 1)]);
-
         assert_eq!(queue.wanted, [ai(count - 1)]);
         assert!(queue.answered.is_empty());
         // An ask never takes more than MAX_WANTED rows.
@@ -575,5 +599,56 @@ mod tests {
             .collect();
         want(&mut queue, 4, many);
         assert_eq!(queue.wanted.len(), MAX_WANTED);
+    }
+
+    /// A batch taken for one address that ends after the queue moved to
+    /// another (two devices behind one instance) leaves the new device's
+    /// rows wanted and its memory empty, whether the batch was answered
+    /// or timed out.
+    #[test]
+    fn a_batch_for_an_old_address_changes_nothing() {
+        const THERE: &str = "10.0.9.7:47808";
+        for timed_out in [false, true] {
+            let mut queue = NameQueue::default();
+            want(&mut queue, 1, vec![ai(1), ai(2)]);
+            let (_, address, batch) = queue.take(2);
+            assert_eq!(address, HERE);
+            queue.want(2, THERE.into(), None, batch.clone());
+            assert_eq!(queue.wanted, [ai(1), ai(2)]);
+            if timed_out {
+                assert!(queue.abandon(&address, &[]).is_empty());
+            } else {
+                queue.settle(&address, &[(ai(1), one("there"))]);
+            }
+            assert_eq!(queue.wanted, [ai(1), ai(2)], "timed out: {timed_out}");
+            assert!(queue.answered.is_empty() && queue.order.is_empty());
+            assert!(queue.in_flight.is_empty());
+        }
+    }
+
+    /// An RPM whose answer was too large halves later batches, down to
+    /// one name; another address starts again from the full size.
+    #[test]
+    fn a_too_large_answer_halves_later_batches() {
+        let mut queue = NameQueue::default();
+        queue.want(1, HERE.into(), Some(1476), (1..=40).map(ai).collect());
+        let (_, _, batch) = queue.take_batch(true, 1476);
+        assert_eq!(batch.len(), 10);
+        queue.too_large(batch.len());
+        queue.settle(HERE, &[]);
+        assert_eq!(queue.take_batch(true, 1476).2.len(), 5);
+        queue.settle(HERE, &[]);
+        for asked in [5, 2, 1] {
+            queue.too_large(asked);
+        }
+        assert_eq!(queue.take_batch(true, 1476).2.len(), 1, "at least one");
+        queue.settle(HERE, &[]);
+        queue.want(
+            3,
+            "10.0.9.7:47808".into(),
+            Some(1476),
+            (1..=40).map(ai).collect(),
+        );
+        assert_eq!(queue.take_batch(true, 1476).2.len(), 10);
     }
 }

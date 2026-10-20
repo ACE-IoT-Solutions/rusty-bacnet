@@ -109,6 +109,7 @@ fn an_unread_name_shows_a_dim_marker() {
     names(&mut app, 1, vec![(device(1), named("AHU-1"))]);
     names(&mut app, 2, vec![(device(2), ReadName::Unreachable)]);
     assert_snapshot!("names_unread_120x40", screen(&mut app, 120, 40));
+    assert_snapshot!("names_unread_80x24", screen(&mut app, 80, 24));
     let terminal = render(&mut app, 120, 40);
     let buffer = terminal.backend().buffer();
     let area = buffer.area;

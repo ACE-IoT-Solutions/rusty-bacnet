@@ -91,7 +91,7 @@ pub(crate) struct DeviceTable {
     /// The last frame drew the table with its Name column, so the names
     /// of the rows it showed are asked for (#1896).
     pub(crate) named: Cell<bool>,
-    /// The name cache's [`changes`](NameCache::changes) when the visible
+    /// The name cache's [`device_changes`](NameCache::device_changes) when the visible
     /// order was built.
     names_seen: u64,
 }
@@ -213,11 +213,11 @@ impl DeviceTable {
     /// name did while the filter or the sort uses names.
     pub(crate) fn settle(&mut self, names: &NameCache) {
         let by_name = !self.filter.is_empty() || self.sort == SortKey::Name;
-        if !self.stale && !(by_name && names.changes() != self.names_seen) {
+        if !self.stale && !(by_name && names.device_changes() != self.names_seen) {
             return;
         }
         self.stale = false;
-        self.names_seen = names.changes();
+        self.names_seen = names.device_changes();
         let needle = self.filter.to_lowercase();
         let name = |row: &DeviceRow| {
             let object = device_object(row.instance)?;

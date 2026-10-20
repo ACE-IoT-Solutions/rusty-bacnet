@@ -48,8 +48,8 @@ If a burst of I-Am traffic outruns the UI, events are dropped rather than queued
 
 ### Sort and filter
 
-- `s` sorts by the next column: instance, address, network, vendor, last seen, then name, with names not read yet last either way. The sorted column is marked with `*` and the title says which. `S` reverses the order.
-- `/` filters the rows by instance, name, address, router, network or vendor as you type. It matches only the names already read, and reads none. Enter keeps the filter, and Esc clears it.
+- `s` sorts by the next column: instance, address, network, vendor, last seen, then name, where names not known yet (unread, refused or unanswered) sort last either way. The sorted column is marked with `*` and the title says which. `S` reverses the order.
+- `/` filters the rows by instance, name, address, router, network or vendor as you type. It matches only the names already read, and reads none; the TUI keeps the 4,096 names used most recently, so on a larger site an older name may have to be read again (by scrolling to it) before the filter finds it, and the name sort is approximate past 4,096 devices. Enter keeps the filter, and Esc clears it.
 - Arrows, `j` and `k`, PgUp and PgDn, Home and End (or `g` and `G`) move.
 
 ![The device table filtered to instances containing 100.](../../../assets/tui/discovery-filter.webp)

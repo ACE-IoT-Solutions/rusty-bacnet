@@ -9,6 +9,7 @@ use super::names::{ai, asks, browsing, device, frame_commands, named, names, tab
 use super::*;
 use crate::tui::app::devices::SortKey;
 use crate::tui::network::discovery::{DiscoveryEvent, FoundRow};
+use crate::tui::point::BrowseRead;
 
 /// An I-Have from device `instance` at 10.0.0.`instance` naming its
 /// Device object.
@@ -91,4 +92,69 @@ fn the_object_filter_matches_cached_names() {
     names(&mut app, 7, vec![(ai(4), named("Exhaust fan"))]);
     app.settle();
     assert_eq!(app.browser.as_ref().unwrap().objects.shown(), 2);
+    // Case folds beyond ASCII too.
+    names(&mut app, 7, vec![(ai(2), named("Lüfter Süd"))]);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "LÜFTER");
+    let objects = &app.browser.as_ref().unwrap().objects;
+    assert_eq!(objects.selected(), Some(ai(2)));
+    assert_eq!(objects.shown(), 1);
+}
+
+/// Object names don't touch the device table's order; a device's own
+/// name does, so only that rebuilds it.
+#[test]
+fn only_device_names_count_for_the_device_table() {
+    let mut app = browsing(3);
+    let before = app.names.device_changes();
+    names(&mut app, 7, vec![(ai(0), named("Fan"))]);
+    assert_eq!(app.names.device_changes(), before);
+    device_named(&mut app, 7, "Plant 2");
+    assert_eq!(app.names.device_changes(), before + 1);
+}
+
+/// Sorted by name, the Name column shows even at 80 columns with a long
+/// routed address, the columns at the right giving way, and the names
+/// on screen are asked for.
+#[test]
+fn sorted_by_name_the_name_column_always_shows() {
+    let mut app = connected_app();
+    let plain = row(1001, "10.0.0.2:47808", 260, 0);
+    worker(&mut app, WorkerEvent::Discovered(plain));
+    names(
+        &mut app,
+        1001,
+        vec![(device(1001), named("Air handler 1 supply fan"))],
+    );
+    let mut squeezed = row(4_194_302, "65534:0x7F000001C335BAC0DEADBEEF", 65_535, 0);
+    squeezed.network = Some(65_534);
+    squeezed.via = Some("192.168.100.254:47808".into());
+    worker(&mut app, WorkerEvent::Discovered(squeezed));
+    let first = asks(&frame_commands(&mut app, 80, 24));
+    assert!(first.is_empty(), "{first:?} {}", screen(&mut app, 80, 24));
+    assert!(!screen(&mut app, 80, 24).contains(" Name"));
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Char('s'));
+    }
+    let asked = asks(&frame_commands(&mut app, 80, 24));
+    assert_eq!(asked, [(4_194_302, vec![device(4_194_302)])]);
+    let text = screen(&mut app, 80, 24);
+    assert!(text.contains("Name*"), "{text}");
+    assert!(text.contains("65534:0x7F000001C335BAC0DEADBEEF"), "{text}");
+}
+
+/// Enter right after the Object_List arrives, with no frame drawn in
+/// between, reads the object the list selects.
+#[test]
+fn enter_before_a_frame_opens_the_selected_object() {
+    let mut app = browsing(3);
+    let commands = press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(
+            commands.as_slice(),
+            [Command::Browse { read: BrowseRead::Object(object), .. }] if *object == ai(0)
+        ),
+        "{commands:?}"
+    );
 }
