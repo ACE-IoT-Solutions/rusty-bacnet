@@ -9,7 +9,7 @@ expression: text
 "│ Vendor ID         260                      ││ object-name                         "Occupancy Schedule"               │"
 "│ Model             Bench-1                  ││ description                         ""                                 │"
 "│ Firmware          0.1.0                    ││ object-type                         schedule                           │"
-"│ Software          0.1.0                    ││ present-value                       0                                  │"
+"│ Software          0.1.0                    ││ present-value                       #                                  │"
 "│ Protocol version  1                        ││ schedule-default                    0                                  │"
 "│ Protocol revision 22                       ││ weekly-schedule                     [Mon 07:00 = 1, 18:00 = 0;         │"
 "│ Services          33 supported             ││                                     Tue 07:00 = 1, 18:00 = 0;          │"

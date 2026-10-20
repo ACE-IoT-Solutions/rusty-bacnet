@@ -490,6 +490,37 @@ async fn a_writem_batch_is_one_wpm_confirmed_with_y() {
     site.stop().await;
 }
 
+/// A quoted value keeps its space: the preview and the write carry the
+/// string `two words` (#1800).
+#[tokio::test(start_paused = true)]
+async fn a_quoted_writem_value_writes_the_string_with_its_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut site = lab(dir.path(), Safety::default(), Server::lab(100, LAB)).await;
+    arm(&mut site).await;
+    site.press(KeyCode::Char(':')).await;
+    type_text(&mut site.app, "writem 100 ao:1 description \"two words\"");
+    site.press(KeyCode::Enter).await;
+    previewed(&mut site).await;
+    let batch = preview(&site.app);
+    let shown = format!("{batch:?}");
+    assert!(shown.contains("two words"), "{shown}");
+    site.press(KeyCode::Char('y')).await;
+    finished(&mut site).await;
+    assert_eq!(outcomes(&site.app), [Outcome::Ack]);
+    let db = site.server(0).database().read().await;
+    let description = db
+        .get(&ao1())
+        .unwrap()
+        .read_property(PropertyIdentifier::DESCRIPTION, None)
+        .unwrap();
+    drop(db);
+    assert_eq!(
+        description,
+        PropertyValue::CharacterString("two words".into())
+    );
+    site.stop().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_write_in_flight_at_the_end_of_the_session_is_still_recorded() {
     let dir = tempfile::tempdir().unwrap();

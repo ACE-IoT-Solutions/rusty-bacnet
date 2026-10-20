@@ -260,6 +260,27 @@ pub(super) fn mask_open_object(app: &mut App) -> usize {
     count
 }
 
+/// The schedule's present value follows the server's wall clock: 1 from 07:00
+/// to 18:00 on weekdays, otherwise 0. Check it is one of the two, then mask
+/// it so the snapshot doesn't depend on the time of day.
+fn mask_schedule_value(app: &mut App) {
+    let browser = app.browser.as_mut().expect("a device is open");
+    let crate::tui::app::browser::ViewState::Ready(view) = &mut browser.view else {
+        panic!("no object is open");
+    };
+    let row = view
+        .properties
+        .iter_mut()
+        .find(|row| row.property == P::PRESENT_VALUE)
+        .expect("the schedule shows its present value");
+    let value = row.value.as_mut().expect("present value read");
+    assert!(
+        value == "0" || value == "1",
+        "schedule present value {value}"
+    );
+    *value = "#".to_string();
+}
+
 /// No property of any of these objects shows as raw octets.
 fn assert_decoded(text: &str) {
     assert!(!text.contains("[raw"), "{text}");
@@ -281,6 +302,9 @@ async fn the_browser_shows_constructed_and_state_values_decoded() {
         // AI:3's to-offnormal stamp is the server's wall clock, so it is
         // masked once found to be a date and time.
         let masked = mask_open_object(&mut site.app);
+        if name == "schedule" {
+            mask_schedule_value(&mut site.app);
+        }
         let text = screen(&mut site.app, 120, 40);
         assert_eq!(masked, usize::from(name == "ai3"), "{text}");
         assert_snapshot!(format!("values_{name}_120x40"), text);

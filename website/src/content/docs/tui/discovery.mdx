@@ -35,7 +35,7 @@ Ctrl-C cancels a Who-Is that is still listening.
 
 Each row is one device: its instance, name, address, network, vendor ID, Max APDU, segmentation, and how long ago its last I-Am arrived. The bottom border shows the latest request and how many replies it got.
 
-- **Address.** A local device shows its own address. A device behind a router shows its station in the CLI's target syntax, `NET:0xMAC`, such as `2:0x7F000001C335` (or `2:0x05` for an MS/TP station). A one-shot command takes that text back as its target, as in `bacnet read 2:0x05 ai:1 pv`.
+- **Address.** A local device shows its own address. A device behind a router shows its station in the CLI's target syntax, `NET:0xMAC`, such as `2:0x7F000001C335` (or `2:0x05` for an MS/TP station). A one-shot command takes that text back as its target, as in `bacnet read 2:0x05 ai:1 pv`, and so does the command bar, as in `:watch 2:0x05 ai:1`.
 - **Name.** The device's object name. Names are read only for the rows on screen, a few at a time within `--max-rate`, and kept for the session; a name the TUI already has, from the device's card in the browser or an I-Have, costs no request. `…` means the name is being read, and `-` that the device refused it. A name stays blank when the device didn't answer; it is asked for again when the device next answers a Who-Is. The column takes the room the others leave, a long name ending in `…`; on a narrow terminal with long addresses it is left out, and no names are read for it.
 - **Via.** The router a routed device was heard through, such as `127.0.0.1:53180`. The column appears only when the whole of it fits, so on a narrow terminal with long addresses it is left out.
 - **Network.** `local`, or the remote network number.
@@ -58,7 +58,7 @@ Enter on a row opens the [device browser](/rusty-bacnet/tui/browser/).
 
 ## Find an object by name
 
-`:find NAME` broadcasts a Who-Has for the object named NAME. The name is the rest of the line, exactly as typed, spaces included. Each device that answers with an I-Have is listed in a panel under the device table, with the object it named (`analog-input 3`, as the browser labels it), the object's name, and the address it answered from, written as the device table writes it. A name too long for the panel ends in `…`. When there is room, a Via column shows the router a routed answer came through. The name has the room first: the Via column is left out rather than a name cut to fit it. `:find` on its own closes the panel.
+`:find NAME` broadcasts a Who-Has for the object named NAME. The name is the rest of the line, exactly as typed, apostrophes and spaces included, so `:find Joe's office` needs no quotes. A name that is one quoted word, such as `:find "Zone  Temp"`, is unwrapped, and `:find ""` closes the panel like `:find` alone. Each device that answers with an I-Have is listed in a panel under the device table, with the object it named (`analog-input 3`, as the browser labels it), the object's name, and the address it answered from, written as the device table writes it. A name too long for the panel ends in `…`. When there is room, a Via column shows the router a routed answer came through. The name has the room first: the Via column is left out rather than a name cut to fit it. `:find` on its own closes the panel.
 
 ![A Who-Has panel below the device table, listing the device that has an object named Damper.](../../../assets/tui/discovery-who-has.webp)
 
@@ -69,7 +69,7 @@ A device on another BACnet network is reached through a router. To find one:
 - Send a Who-Is with the **remote network** scope and that network number, or a global Who-Is.
 - On the Network screen, the Networks tab (`4`, then Tab) asks every router which networks it reaches. See [Inspect BBMDs and routers](/rusty-bacnet/tui/network/#routers-and-networks).
 
-A routed device is browsed and watched like a local one. On the command bar, name it as `DNET:instance`, such as `:watch 2:2001 ai:1`.
+A routed device is browsed and watched like a local one. On the command bar, name it as `DNET:instance`, such as `:watch 2:2001 ai:1`, or by the station the table shows, such as `:watch 2:0x05 ai:1`. A station not in the table is an error: discover the device first.
 
 ## Across a subnet: foreign-device registration
 
