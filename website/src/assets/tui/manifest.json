@@ -380,7 +380,7 @@
    "source": "live",
    "command": "bacnet tui --profile sc-lab",
    "keys": "e",
-   "commit": "93125c060"
+   "commit": "bbdcdbd9f"
   },
   {
    "name": "sc-lint-warning",
