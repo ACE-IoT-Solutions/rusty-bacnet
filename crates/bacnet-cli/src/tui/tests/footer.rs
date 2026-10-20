@@ -167,6 +167,55 @@ fn a_wide_footer_shows_a_long_notice_in_full() {
     assert!(footer.starts_with(&format!(" {text}")), "{footer}");
     assert!(footer.trim_end().ends_with("? help  q quit"), "{footer}");
     assert!(!footer.contains("Esc back"), "{footer}");
+
+    // One too long to show whole even then is cut, and the way back stays:
+    // it gives way only when that shows the whole notice.
+    let text = long_notice(&mut app, 190);
+    let (_, footer) = chrome(&mut app, 200, 50);
+    assert!(!footer.contains(&text) && footer.contains('…'), "{footer}");
+    assert!(footer.contains("Esc back  ? help  q quit"), "{footer}");
+}
+
+/// The wide footer starts at exactly 160 columns: a notice that fits whole
+/// beside `? help` and `q quit` there (but not beside the way back too) is
+/// cut at 159.
+#[test]
+fn the_wide_footer_starts_at_160_columns() {
+    let mut app = foreign_app();
+    let text = long_notice(&mut app, 140);
+    let (_, footer) = chrome(&mut app, 160, 40);
+    assert!(footer.starts_with(&format!(" {text}")), "{footer}");
+    assert!(footer.trim_end().ends_with("? help  q quit"), "{footer}");
+    assert!(!footer.contains("Esc back"), "{footer}");
+    let (_, footer) = chrome(&mut app, 159, 40);
+    assert!(!footer.contains(&text) && footer.contains('…'), "{footer}");
+    assert!(footer.contains("Esc back  ? help  q quit"), "{footer}");
+}
+
+/// While the link has failed, its recovery key stays at any width, even
+/// where giving it up would show the whole summary.
+#[test]
+fn a_failed_link_keeps_its_recovery_key_on_a_wide_footer() {
+    let mut app = new_app(None);
+    let error = Error::Transport(std::io::Error::from_raw_os_error(2));
+    worker(
+        &mut app,
+        WorkerEvent::ConnectFailed {
+            error: Failure::of(&error),
+        },
+    );
+    // 150 characters: too long either way; 120: whole without `c retry`.
+    for len in [150, 120] {
+        if let Link::Failed(failure) = &mut app.link {
+            failure.summary = "s".repeat(len);
+        }
+        for (w, h) in [(160, 40), (200, 50)] {
+            let (_, footer) = chrome(&mut app, w, h);
+            assert!(footer.starts_with(" Connection failed: s"), "{footer}");
+            assert!(footer.contains("c retry"), "{len} at {w}: {footer}");
+            assert!(footer.trim_end().ends_with("? help  q quit"), "{footer}");
+        }
+    }
 }
 
 /// Every screen keeps `? help` and `q quit` at 80 columns; the Network

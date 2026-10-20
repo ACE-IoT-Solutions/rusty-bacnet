@@ -1,6 +1,6 @@
 ---
 section: Changed
 ---
-- **CLI:** from 160 columns a TUI footer notice shows in full, and the key
-  hints other than `? help` and `q quit` give way to it, the least used first
-  (#1927).
+- **CLI:** from 160 columns the TUI footer's key hints give way so a long
+  notice shows in full, keeping `? help`, `q quit` and a failed connection's
+  recovery key (#1927).

@@ -279,18 +279,26 @@ fn filter_title(app: &App) -> Option<String> {
     (!filter.is_empty()).then(|| format!(" filter: \"{filter}\" "))
 }
 
-/// The columns the table takes at its content width in a terminal `width`
-/// wide (#1915): its columns, or the text it shows when it has no row,
-/// and its top titles, inside its borders. The Who-Is status on the bottom
-/// border is left out, so a long error doesn't move the panes.
-pub(super) fn content_width(width: u16, app: &App) -> usize {
-    let body = if app.devices.visible_len() == 0 {
-        text_width(&empty_text(app))
-    } else {
-        columns::total(&columns(width, width >= FULL_WIDTH, app))
-    };
+/// The table's widths in a terminal `width` wide (#1915), borders
+/// included: `(least, content)`. Each covers its columns (or the text it
+/// shows when it has no row) and its top titles. `content` has every name
+/// read so far in full; `least` counts the Name column at [`MIN_NAME`]
+/// whatever names are known, so a layout chosen by it stays put as names
+/// are read or dropped. The Who-Is status on the bottom border is left
+/// out, so a long error doesn't move the panes either.
+pub(super) fn widths(width: u16, app: &App) -> (usize, usize) {
     let titles = text_width(&title(app)) + filter_title(app).map_or(0, |f| 1 + text_width(&f));
-    body.max(titles) + 2
+    if app.devices.visible_len() == 0 {
+        let both = text_width(&empty_text(app)).max(titles) + 2;
+        return (both, both);
+    }
+    let columns = columns(width, width >= FULL_WIDTH, app);
+    let content = columns::total(&columns);
+    let least = match columns.iter().find(|column| column.kind == Field::Name) {
+        Some(name) => content - name.width + MIN_NAME,
+        None => content,
+    };
+    (least.max(titles) + 2, content.max(titles) + 2)
 }
 
 pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, full: bool) {

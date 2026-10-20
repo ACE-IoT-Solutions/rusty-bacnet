@@ -191,7 +191,7 @@ const ENDS: Binding = keys(
 pub(crate) const GLOBAL: &[Binding] = &[
     keys(
         &[(KeyCode::Char('?'), Action::ToggleHelp)],
-        "This help; Up, Down, PgUp and PgDn scroll it",
+        "This help; the movement keys scroll it",
     ),
     keys(
         &[(KeyCode::Char('q'), Action::Quit)],

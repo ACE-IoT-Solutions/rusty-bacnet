@@ -5,7 +5,7 @@ expression: top
 " 1 2 3 [4 Network] 7 | BIP 10.0.0.1:47808 | up | READ-ONLY | drop 0      ? help "
 "┌ ┌ Help (? or Esc to close) ────────────────────────────────────────────────┐─┐"
 "│N│ Global                                                                   │ │"
-"│C│   ?                This help; Up, Down, PgUp and PgDn scroll it          │ │"
+"│C│   ?                This help; the movement keys scroll it                │ │"
 "│B│   q                Quit (asks first while writes are in effect)          │ │"
 "│ │   Ctrl-C           Close a dialog or cancel the request; twice quits     │ │"
 "│ │   L                Show or hide the log pane                             │ │"

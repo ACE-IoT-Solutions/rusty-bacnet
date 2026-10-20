@@ -473,7 +473,7 @@ table is refreshed from the client's discovery table afterwards.
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
-| `?` | Help: the global keys, this screen's, and the commands; Up, Down, PgUp and PgDn scroll it |
+| `?` | Help: the global keys, this screen's, and the commands; the movement keys scroll it |
 | `Ctrl-C` | Close a dialog or cancel the running Who-Is/connection attempt; press again within 2 s to quit |
 | `q` | Quit; with changes still in the ledger, the exit guard asks first |
 

@@ -18,6 +18,10 @@ use crate::tui::network::discovery::FoundRow;
 /// The most result rows the Who-Has panel takes room for.
 const PANEL_ROWS: usize = 6;
 
+/// The title's age as wide as it gets in practice: [`age_label`] counts
+/// hours past an hour, so four columns cover a search up to 41 days old.
+const WIDEST_AGE: &str = "100h";
+
 /// The Devices screen: the table, and the `:find` results below it or
 /// beside it.
 pub(super) fn devices(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -43,14 +47,17 @@ pub(super) fn devices(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 /// The device table's width when the panel goes beside it: from
 /// [`WIDE_WIDTH`] columns, when the table at its content width leaves the
-/// panel room for its own. The panel takes the rest.
+/// panel room for its own. The table's Name column counts at its least
+/// width there, so names being read don't move the panel; the table then
+/// takes its whole content width where the panel leaves room for it, and
+/// the panel the rest.
 fn beside(width: u16, app: &App, search: &WhoHasSearch) -> Option<u16> {
     if width < WIDE_WIDTH {
         return None;
     }
-    let table = super::devices::content_width(width, app);
-    let fits = table + content_width(search) <= usize::from(width);
-    fits.then_some(table as u16)
+    let (least, content) = super::devices::widths(width, app);
+    let room = usize::from(width).checked_sub(content_width(search))?;
+    (least <= room).then_some(content.min(room) as u16)
 }
 
 /// The panel's title: what was searched for, how many answered, when.
@@ -75,8 +82,8 @@ fn empty_text(search: &WhoHasSearch) -> String {
 
 /// The columns the panel takes at its content width, borders included:
 /// every name in full and its title, but not the Via column, which goes
-/// in only when the room is there. The age in the title is counted at its
-/// widest (`59s`), so the panes don't move as it counts.
+/// in only when the room is there. The age in the title is counted at
+/// [`WIDEST_AGE`], so the panes don't move as it counts.
 fn content_width(search: &WhoHasSearch) -> usize {
     let body = if search.found.is_empty() {
         text_width(&empty_text(search))
@@ -85,7 +92,7 @@ fn content_width(search: &WhoHasSearch) -> usize {
         columns.retain(|column| column.kind != Field::Via);
         columns::total(&columns)
     };
-    body.max(text_width(&title(search, "59s"))) + 2
+    body.max(text_width(&title(search, WIDEST_AGE))) + 2
 }
 
 /// The bordered panel of results in `area`.
@@ -198,4 +205,47 @@ fn columns(width: u16, full: bool, found: &[FoundRow]) -> Vec<Column<Field>> {
     }
     columns::shrink(&mut columns, Field::Name, room, MIN_NAME);
     columns
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_types::enums::ObjectType;
+    use bacnet_types::primitives::ObjectIdentifier;
+
+    use super::*;
+    use crate::tui::message::WorkerEvent;
+    use crate::tui::tests::{connected_app, row, worker};
+
+    /// The panel goes beside the table when their widths add up to exactly
+    /// the terminal's, and below it one column short of that.
+    #[test]
+    fn beside_needs_exactly_both_widths() {
+        let mut app = connected_app();
+        for (instance, address) in [(1001, "10.0.1.21:47808"), (1002, "10.0.1.22:47808")] {
+            worker(
+                &mut app,
+                WorkerEvent::Discovered(row(instance, address, 260, 2)),
+            );
+        }
+        app.settle();
+        let name = "Building 4 East Wing AHU-07 Supply Air Temp Setpoint";
+        let search = WhoHasSearch {
+            name: name.into(),
+            sent: app.now,
+            found: vec![FoundRow {
+                device: 1001,
+                object: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 3).unwrap(),
+                name: name.into(),
+                address: "10.0.1.21:47808".into(),
+                via: None,
+                network: None,
+            }],
+            failed: None,
+        };
+        let (least, _) = crate::tui::view::devices::widths(200, &app);
+        let need = (least + content_width(&search)) as u16;
+        assert!(need >= WIDE_WIDTH, "{need}");
+        assert!(beside(need, &app, &search).is_some());
+        assert_eq!(beside(need - 1, &app, &search), None);
+    }
 }

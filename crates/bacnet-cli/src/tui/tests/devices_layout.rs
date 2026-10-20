@@ -293,6 +293,28 @@ fn who_has_sits_beside_the_table_where_both_fit() {
     assert!(title_row(&wide).contains("Devices (1 of 4)"), "{wide}");
 }
 
+/// Names read for the device table don't move the panel: the table's
+/// Name column counts at its least width when the layout is chosen, so
+/// the panel stays beside and the names take the room it leaves.
+#[test]
+fn reading_names_keeps_the_panel_beside_the_table() {
+    use super::names::{device, named, names};
+    let mut app = who_has_for("Damper");
+    assert!(title_row(&screen(&mut app, 200, 50)).contains("Devices"));
+    let long = "Air handler 1 supply fan and economizer, level 3 mechanical room";
+    for instance in [1001, 2001, 3005, 4_194_302] {
+        names(&mut app, instance, vec![(device(instance), named(long))]);
+    }
+    let frame = screen(&mut app, 200, 50);
+    assert!(title_row(&frame).contains("Devices (4)"), "{frame}");
+    assert!(
+        frame.contains("Air handler"),
+        "names show, cut to fit:\n{frame}"
+    );
+    assert!(!frame.contains(long), "{frame}");
+    assert!(panel(&frame).contains("Damper"), "{frame}");
+}
+
 /// The results panel: from its title to the end of the frame.
 fn panel(frame: &str) -> &str {
     &frame[frame.find("Who-Has").unwrap()..]
