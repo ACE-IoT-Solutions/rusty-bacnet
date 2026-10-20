@@ -91,6 +91,23 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "SECS")]
     pub(crate) renewal: Option<u64>,
 
+    /// Join this IPv4 multicast group (class D) as a B/IP-M node (Annex
+    /// J.8): broadcasts such as discover go to the group, and only the
+    /// group's broadcasts are taken. Needs --interface. BACnet/IP only.
+    #[arg(long, global = true, value_name = "GROUP", value_parser = crate::multicast::parse_group_arg)]
+    pub(crate) bip_multicast: Option<std::net::Ipv4Addr>,
+
+    /// Multicast TTL for --bip-multicast, 1 to 255 (default 1, the local
+    /// network only); raise it for a group that spans IP routers.
+    #[arg(
+        long,
+        global = true,
+        value_name = "TTL",
+        default_value_t = 1,
+        value_parser = clap::value_parser!(u8).range(1..)
+    )]
+    pub(crate) bip_multicast_ttl: u8,
+
     /// Use BACnet/IPv6 transport.
     #[arg(long, global = true)]
     pub(crate) ipv6: bool,

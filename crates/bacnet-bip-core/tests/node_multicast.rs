@@ -14,7 +14,7 @@ use node_support::*;
 
 const NPDU: &[u8] = &[0x01, 0x00, 0x10, 0x08];
 
-/// The group the node is a member of, at the network's port.
+/// The node's multicast group, at the network's port.
 const GROUP: core::net::SocketAddrV4 = addr(239, 255, 0, 47, PORT);
 
 /// A member of [`GROUP`].

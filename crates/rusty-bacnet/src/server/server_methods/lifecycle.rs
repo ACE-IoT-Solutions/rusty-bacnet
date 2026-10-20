@@ -89,6 +89,7 @@ impl BACnetServer {
         let broadcast_str = self.broadcast_address.clone();
         let share_port_by_address = self.share_port_by_address;
         let bip_mode = self.bip_mode.clone();
+        let multicast = self.multicast;
         let sc_hub = self.sc_hub.clone();
         let sc_vmac = self.sc_vmac.clone();
         let sc_device_uuid = self.sc_device_uuid;
@@ -146,6 +147,8 @@ impl BACnetServer {
                         let mut bip = BipTransport::new(interface, port, broadcast);
                         bip.set_share_port_by_address(share_port_by_address);
                         bip.set_mode(bip_mode);
+                        bip.set_multicast(multicast)
+                            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
                         Some(AnyTransport::Bip(Box::new(bip)))
                     }
                     "ipv6" => {

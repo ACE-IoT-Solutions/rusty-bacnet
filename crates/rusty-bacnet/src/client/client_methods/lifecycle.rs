@@ -35,6 +35,7 @@ impl BACnetClient {
         ipv6_device_instance=None,
         bbmd=None,
         foreign_device=None,
+        multicast=None,
         reconnect=None,
         sc_npdu_per_origin_limit=None,
         sc_failover_hub=None,
@@ -71,6 +72,7 @@ impl BACnetClient {
         ipv6_device_instance: Option<u32>,
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
+        multicast: Option<PyRef<'_, crate::bip_options::PyMulticast>>,
         reconnect: Option<PyRef<'_, crate::sc_reconnect::PyScReconnect>>,
         sc_npdu_per_origin_limit: Option<usize>,
         sc_failover_hub: Option<String>,
@@ -90,6 +92,8 @@ impl BACnetClient {
         )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
         let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
+        let multicast =
+            crate::bip_options::bip_multicast(transport, interface, &bip_mode, multicast)?;
         let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
         if transport == "sc" {
             crate::tls::required_sc_credentials(
@@ -109,6 +113,7 @@ impl BACnetClient {
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
             bip_mode,
+            multicast,
             apdu_timeout_ms,
             sc_hub,
             sc_vmac,
@@ -153,6 +158,7 @@ impl BACnetClient {
         let broadcast_str = slf.borrow().broadcast_address.clone();
         let share_port_by_address = slf.borrow().share_port_by_address;
         let bip_mode = slf.borrow().bip_mode.clone();
+        let multicast = slf.borrow().multicast;
         let timeout_ms = slf.borrow().apdu_timeout_ms;
         let sc_hub = slf.borrow().sc_hub.clone();
         let sc_vmac = slf.borrow().sc_vmac.clone();
@@ -188,6 +194,7 @@ impl BACnetClient {
                             .broadcast_address(broadcast)
                             .share_port_by_address(share_port_by_address)
                             .mode(bip_mode)
+                            .multicast(multicast)
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
                             .build_any::<crate::mstp_py::PySerial>(),

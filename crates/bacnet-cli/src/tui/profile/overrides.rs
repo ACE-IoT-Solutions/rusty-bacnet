@@ -35,6 +35,8 @@ struct BipOverrides {
     bbmd: Option<SocketAddrV4>,
     ttl: Option<u16>,
     renewal_secs: Option<u64>,
+    multicast: Option<Ipv4Addr>,
+    multicast_ttl: Option<u8>,
 }
 
 /// Flags that only an SC profile takes. `--sc` itself only says which
@@ -89,6 +91,8 @@ impl Overrides {
                 bbmd: cli.foreign_bbmd.filter(|_| has("foreign_bbmd")),
                 ttl: has("ttl").then_some(cli.ttl),
                 renewal_secs: cli.renewal.filter(|_| has("renewal")),
+                multicast: cli.bip_multicast.filter(|_| has("bip_multicast")),
+                multicast_ttl: has("bip_multicast_ttl").then_some(cli.bip_multicast_ttl),
             },
             sc: ScOverrides {
                 sc: has("sc") && cli.sc,
@@ -159,6 +163,10 @@ impl Overrides {
                 if let Some(v) = o.renewal_secs {
                     b.renewal_secs = Some(v);
                 }
+                if let Some(v) = o.multicast {
+                    b.multicast = Some(v);
+                }
+                set(&mut b.multicast_ttl, o.multicast_ttl);
             }
             Transport::Sc => {
                 if self.bip != BipOverrides::default() {
@@ -219,6 +227,8 @@ pub(crate) fn has_transport_flags(cli: &Cli) -> bool {
                 | "foreign_bbmd"
                 | "ttl"
                 | "renewal"
+                | "bip_multicast"
+                | "bip_multicast_ttl"
                 | "ipv6"
                 | "ipv6_interface"
                 | "device_instance"

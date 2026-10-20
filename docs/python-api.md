@@ -722,6 +722,35 @@ and `last_result` when the response to that attempt matters. A positive
 to the requested TTL, because the lease begins at a send rather than at the
 status read.
 
+### B/IP multicast
+
+`BACnetClient`, `BACnetServer` and `BipEndpoint` take `multicast=` (B/IP
+only, #941): a `Multicast(group, *, ttl=1, port=None)` makes the owner a
+B/IP-M node (Annex J.8). Its broadcasts, Who-Is and I-Am among them, go to
+the group, and it takes broadcasts only from the group, never a subnet
+broadcast; directed messages stay unicast. `group` must be a class D
+address. `ttl` (1 to 255) is the multicast TTL: the default 1 keeps the
+group on the local network, so raise it for a group that spans IP routers.
+`port` is the group's UDP port, by default the owner's own; several owners
+on one host at one address need their own ports and a shared group port.
+
+```python
+from rusty_bacnet import BACnetClient, Multicast
+
+group = Multicast("239.255.66.1", ttl=2)
+async with BACnetClient(interface="192.0.2.20", multicast=group) as client:
+    await client.who_is()
+```
+
+The constructor raises ValueError for a bad group or TTL (OverflowError for
+an integer out of range), for `interface="0.0.0.0"` (the group is joined on
+the interface, which must be explicit), on another transport, and with
+`bbmd=` or `foreign_device=`. A registered Network Port serves the group as
+BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the owner
+answers ReinitializeDevice; activation moves the running owner to the new
+group. Windows multicast is untested. See
+[B/IP multicast](rust-api.md#bip-multicast-bip-m) for the Rust side.
+
 ### BBMD management
 
 Five `BACnetClient` methods manage a BBMD by hand (#1841). Each sends one

@@ -513,9 +513,8 @@ impl super::BipTransport {
     }
 
     /// Whether this transport can be a B/IP-M member, so it lends its group
-    /// to the Network Port: an explicit interface, a plain node (not a BBMD
-    /// or a foreign device), not sharing its port by address, and a port
-    /// for the group.
+    /// to the Network Port: an explicit interface, NORMAL mode, not sharing
+    /// its port by address, and a port for the group.
     pub(super) fn supports_multicast(&self) -> bool {
         let group_port = self.multicast.config().and_then(|group| group.port);
         !self.interface.is_unspecified()
@@ -526,7 +525,7 @@ impl super::BipTransport {
             && (self.multicast.configured_port != 0 || group_port.is_some())
     }
 
-    /// Where this link's broadcasts go: the B/IP-M group and its port, or
+    /// Where this link's broadcasts go: the multicast group at its port, or
     /// the configured broadcast address at the link's port.
     pub(super) fn broadcast_endpoint(&self) -> SocketAddrV4 {
         match self.multicast.config() {

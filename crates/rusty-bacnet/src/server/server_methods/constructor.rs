@@ -68,6 +68,7 @@ impl BACnetServer {
         apdu_segment_timeout_ms=5000,
         bbmd=None,
         foreign_device=None,
+        multicast=None,
         sc_npdu_per_origin_limit=None,
         on_reinitialize=None,
         after_reinitialize=None
@@ -136,6 +137,7 @@ impl BACnetServer {
         apdu_segment_timeout_ms: u64,
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
+        multicast: Option<PyRef<'_, crate::bip_options::PyMulticast>>,
         sc_npdu_per_origin_limit: Option<usize>,
         on_reinitialize: Option<&Bound<'_, PyAny>>,
         after_reinitialize: Option<&Bound<'_, PyAny>>,
@@ -148,6 +150,8 @@ impl BACnetServer {
         )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
         let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
+        let multicast =
+            crate::bip_options::bip_multicast(transport, interface, &bip_mode, multicast)?;
         super::constructor_budgets::registered_network_port(registered_network_port, transport)?;
         let mutation_policy = super::constructor_budgets::mutation_policy(mutation_policy)?;
         let super::constructor_budgets::DccConfiguration {
@@ -217,6 +221,7 @@ impl BACnetServer {
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
             bip_mode,
+            multicast,
             registered_network_port,
             sc_hub,
             sc_vmac,

@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::bip::{BipMode, BipTransport, ForeignDeviceConfig};
+use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport, ForeignDeviceConfig};
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_types::error::Error;
 
@@ -37,6 +37,8 @@ pub struct TransportArgs {
     pub device_instance: Option<u32>,
     /// `--foreign-bbmd`, with `--ttl` and `--renewal` (#938).
     pub foreign_device: Option<ForeignDeviceConfig>,
+    /// `--bip-multicast` and `--bip-multicast-ttl` (#941).
+    pub multicast: Option<BipMulticast>,
     /// `--mstp` and its settings (#969).
     pub mstp: Option<crate::mstp::MstpArgs>,
 }
@@ -62,6 +64,7 @@ impl TransportArgs {
                 "--foreign-bbmd requires BACnet/IP transport (do not use --sc or --ipv6)".into(),
             );
         }
+        let multicast = crate::multicast::from_cli(cli, interface)?;
         if let (Some(failover), Some(primary)) = (&cli.sc_failover_url, &cli.sc_url) {
             if same_hub_url(failover, primary) {
                 return Err("--sc-failover-url must differ from --sc-url".into());
@@ -90,6 +93,7 @@ impl TransportArgs {
             ipv6_interface,
             device_instance: cli.device_instance,
             foreign_device: crate::foreign::config(cli.foreign_bbmd, cli.ttl, cli.renewal),
+            multicast,
             mstp: crate::mstp::MstpArgs::from_cli(cli)?,
         })
     }
@@ -158,6 +162,7 @@ pub async fn build_bip_client(args: &TransportArgs) -> Result<BACnetClient<BipTr
                 .clone()
                 .map_or(BipMode::Normal, BipMode::Foreign),
         )
+        .multicast(args.multicast)
         .build()
         .await
 }
@@ -376,6 +381,7 @@ mod tests {
             ipv6_interface: None,
             device_instance: None,
             foreign_device: None,
+            multicast: None,
             mstp: None,
         }
     }

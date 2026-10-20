@@ -55,6 +55,8 @@ pub(super) fn validate(matches: &ArgMatches) -> Result<(), clap::Error> {
         ("timeout", "--timeout"),
         ("min_interval_ms", "--min-interval-ms"),
         ("foreign_bbmd", "--foreign-bbmd"),
+        ("bip_multicast", "--bip-multicast"),
+        ("bip_multicast_ttl", "--bip-multicast-ttl"),
         ("ttl", "--ttl"),
         ("renewal", "--renewal"),
         ("ipv6", "--ipv6"),

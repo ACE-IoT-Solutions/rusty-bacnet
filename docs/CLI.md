@@ -52,6 +52,8 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--foreign-bbmd <ADDR>` | | Run as a foreign device registered with this BBMD (`ip` or `ip:port`), so broadcasts reach its network; BACnet/IP only. See [Foreign-device mode](#foreign-device-mode) |
 | `--ttl <N>` | `300` | Time-to-live in seconds of a foreign-device registration, for `--foreign-bbmd`, `register` and `discover --bbmd` |
 | `--renewal <SECS>` | half the TTL | Seconds between `--foreign-bbmd` registrations, less than `--ttl` |
+| `--bip-multicast <GROUP>` | | Join this IPv4 multicast group (class D) as a B/IP-M node: broadcasts go to the group and only the group's are taken. Needs `--interface`; BACnet/IP only, not with `--foreign-bbmd`. See [Multicast mode](#multicast-mode) |
+| `--bip-multicast-ttl <TTL>` | `1` | Multicast TTL for `--bip-multicast`, 1 to 255; raise it for a group that spans IP routers |
 | `--ipv6` | | Use BACnet/IPv6 transport |
 | `--ipv6-interface <IP>` | | IPv6 interface address |
 | `--device-instance <N>` | | Device instance whose VMAC the CLI uses on `--ipv6`; needed where the link has no multicast, such as Linux loopback |
@@ -1263,6 +1265,21 @@ on stays open; the TTL can stay long. While the transport manages the
 registration, `register` and `unregister` to that BBMD are refused; use
 another BBMD or a normal-mode CLI. With `--foreign-bbmd`, log lines go to
 stderr so they can't corrupt JSON output.
+
+#### Multicast mode
+
+With `--bip-multicast GROUP`, the CLI's transport joins that IPv4 multicast
+group on `--interface` as a B/IP-M node (Annex J.8, #941): `discover` sends
+its Who-Is to the group, and only broadcasts sent to the group are taken,
+not the subnet's. The interface must be explicit. The multicast TTL is 1 by
+default, which keeps the group on the local network; raise it with
+`--bip-multicast-ttl` when routers forward the group between subnets. A
+named TUI profile keeps the same settings as `multicast` and `multicast_ttl`
+in its `[bip]` table.
+
+```bash
+bacnet --interface 192.0.2.20 --bip-multicast 239.255.66.1 discover
+```
 
 ### Packet Capture
 
