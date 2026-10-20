@@ -6,9 +6,9 @@
 //!   into the word; the other kind of quote is plain text inside them.
 //!   Quoted and unquoted parts next to each other make one word, so
 //!   `"a"'b'c` is `abc`, and `""` is an empty word.
-//! - A backslash, inside quotes or out, makes the quote, space or backslash
-//!   after it plain text. Before anything else, or at the end of the line,
-//!   it is a backslash.
+//! - A backslash, inside quotes or out, makes the quote, whitespace
+//!   character or backslash after it plain text. Before anything else, or
+//!   at the end of the line, it is a backslash.
 //! - A quote left open is an error, not a guess.
 
 /// One word of a command line.
@@ -16,10 +16,10 @@
 pub(crate) struct Word {
     /// The word with its quotes and escapes taken out.
     pub(crate) text: String,
-    /// When part of the word was quoted, where in `text` the last quoted
-    /// part ends: a quoted value is a CharacterString, and an `@P` after
-    /// this point is its priority.
-    pub(crate) quoted_to: Option<usize>,
+    /// When part of the word was quoted or escaped, where in `text` the
+    /// last such part ends: a quoted or escaped value is a CharacterString,
+    /// and an `@P` after this point is its priority.
+    pub(crate) literal_to: Option<usize>,
 }
 
 /// Split `line` into words, or say which quote is left open.
@@ -31,12 +31,13 @@ pub(crate) fn split(line: &str) -> Result<Vec<Word>, String> {
     while let Some(ch) = chars.next() {
         let current = word.get_or_insert_with(|| Word {
             text: String::new(),
-            quoted_to: None,
+            literal_to: None,
         });
         match ch {
             '\\' => match chars.peek() {
-                Some(&next @ ('\'' | '"' | ' ' | '\\')) => {
+                Some(&next) if matches!(next, '\'' | '"' | '\\') || next.is_whitespace() => {
                     current.text.push(next);
+                    current.literal_to = Some(current.text.len());
                     chars.next();
                 }
                 _ => current.text.push('\\'),
@@ -44,14 +45,14 @@ pub(crate) fn split(line: &str) -> Result<Vec<Word>, String> {
             '\'' | '"' if quote.is_none() => quote = Some(ch),
             _ if quote == Some(ch) => {
                 quote = None;
-                current.quoted_to = Some(current.text.len());
+                current.literal_to = Some(current.text.len());
             }
             _ if quote.is_none() && ch.is_whitespace() => {
                 // `word` was just made for this character: drop it unless
                 // it held something before.
                 let ended = word
                     .take()
-                    .filter(|w| !w.text.is_empty() || w.quoted_to.is_some());
+                    .filter(|w| !w.text.is_empty() || w.literal_to.is_some());
                 words.extend(ended);
             }
             _ => current.text.push(ch),
@@ -62,7 +63,7 @@ pub(crate) fn split(line: &str) -> Result<Vec<Word>, String> {
             "unclosed {open} quote: close it, or write \\{open} for the character"
         ));
     }
-    words.extend(word.filter(|w| !w.text.is_empty() || w.quoted_to.is_some()));
+    words.extend(word.filter(|w| !w.text.is_empty() || w.literal_to.is_some()));
     Ok(words)
 }
 
@@ -112,6 +113,17 @@ mod tests {
         assert_eq!(texts(r"\"), [r"\"]);
         // An escaped space starts no new word, and isn't dropped.
         assert_eq!(texts(r"\ "), [" "]);
+        // Any whitespace character can be escaped, as any splits words.
+        assert_eq!(texts("a\\\tb c\\\u{3000}d"), ["a\tb", "c\u{3000}d"]);
+        assert_eq!(texts("x\u{3000}y"), ["x", "y"]);
+    }
+
+    #[test]
+    fn non_ascii_words_split_and_quote_like_any_other() {
+        assert_eq!(texts(r#"say "wörld ü" é\ x"#), ["say", "wörld ü", "é x"]);
+        assert_eq!(texts("'日本 語' ß"), ["日本 語", "ß"]);
+        let words = split(r"é\ x").unwrap();
+        assert_eq!(words[0].literal_to, Some("é ".len()));
     }
 
     #[test]
@@ -125,11 +137,15 @@ mod tests {
     }
 
     #[test]
-    fn a_word_knows_where_its_quoted_part_ends() {
-        let words = split(r#"plain "q"@8 "a@b"@3 a"b"c \"e\""#).unwrap();
-        let ends: Vec<_> = words.iter().map(|w| w.quoted_to).collect();
-        assert_eq!(ends, [None, Some(1), Some(3), Some(2), None]);
+    fn a_word_knows_where_its_quoted_or_escaped_part_ends() {
+        let words = split(r#"plain "q"@8 "a@b"@3 a"b"c \"e\" Zone\ 2@9 C:\temp"#).unwrap();
+        let ends: Vec<_> = words.iter().map(|w| w.literal_to).collect();
+        assert_eq!(
+            ends,
+            [None, Some(1), Some(3), Some(2), Some(3), Some(5), None]
+        );
         assert_eq!(words[1].text, "q@8");
         assert_eq!(words[2].text, "a@b@3");
+        assert_eq!(words[5].text, "Zone 2@9");
     }
 }

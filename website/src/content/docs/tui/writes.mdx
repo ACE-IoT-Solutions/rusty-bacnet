@@ -89,13 +89,13 @@ The result lists each write's outcome. A device whose own policy refuses the wri
 
 A batch is always at least T2. Each property may appear only once in a batch, because a failed batch names the failing write without its priority.
 
-To write text with spaces, quote it. A quoted value is a character string, and a priority goes after the closing quote:
+To write text with spaces, quote it, or escape each space with a backslash. A quoted or escaped value is a character string, and a priority goes after the closing quote or the last escape:
 
 ```text
 :writem 1001 av:1 description "Zone 2 supply"@12
 ```
 
-Single and double quotes both work, and a backslash makes the quote, space or backslash after it plain text (`\"`). A quote left open is an error, and nothing is previewed.
+Single and double quotes both work, and a backslash makes the quote, whitespace character or backslash after it plain text (`\"`, `Zone\ 2`). A quoted number, such as `'72.5'`, is a string too, so a numeric property refuses it. A quote left open is an error, and nothing is previewed.
 
 ![A WritePropertyMultiple batch preview of two writes, confirmed at T2.](../../../assets/tui/writes-writem-preview.webp)
 

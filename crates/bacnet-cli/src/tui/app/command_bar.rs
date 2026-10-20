@@ -15,14 +15,15 @@
 //!   (`ip` or `ip:port`, port 47808 by default); `bbmd` alone goes back to
 //!   the tables of the BBMD the session registers with.
 //! - `find NAME`: broadcast a Who-Has for the object named NAME, the rest
-//!   of the line's words, and list the answers below the device table;
-//!   `find` alone closes the list.
+//!   of the line as typed (one quoted word is unwrapped), and list the
+//!   answers below the device table; `find` alone, or `find ""`, closes the
+//!   list.
 //! - `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`: the MS/TP
 //!   monitor's thresholds, and how long its join wizard listens.
 //!
-//! The line is split into words by [`words::split`]: quotes group words and
-//! a backslash escapes a quote, a space or a backslash. A quoted VALUE in
-//! `writem` is a CharacterString.
+//! Every command but `find` is split into words by [`words::split`]: quotes
+//! group words and a backslash escapes a quote, a whitespace character or a
+//! backslash. A quoted or escaped VALUE in `writem` is a CharacterString.
 
 mod words;
 
@@ -216,10 +217,11 @@ fn object(word: &str) -> Result<ObjectIdentifier, String> {
 }
 
 /// A `VALUE[@P]` word as the value grammar's text and the priority. A word
-/// with a quoted part is a CharacterString, its priority an `@P` after the
-/// last quote; any other word is read by the one-shot value grammar.
+/// with a quoted or escaped part is a CharacterString, its priority an `@P`
+/// after the last such part; any other word is read by the one-shot value
+/// grammar.
 fn value(word: &Word) -> Result<(String, Option<u8>), String> {
-    let Some(quoted_to) = word.quoted_to else {
+    let Some(literal_to) = word.literal_to else {
         let (_, priority) = parse_value_with_priority(&word.text)?;
         let text = match priority {
             Some(_) => word.text.rsplit_once('@').map_or(&*word.text, |(v, _)| v),
@@ -227,9 +229,9 @@ fn value(word: &Word) -> Result<(String, Option<u8>), String> {
         };
         return Ok((text.to_string(), priority));
     };
-    let (text, priority) = match word.text[quoted_to..].find('@') {
+    let (text, priority) = match word.text[literal_to..].find('@') {
         Some(at) => {
-            let (text, priority) = word.text.split_at(quoted_to + at);
+            let (text, priority) = word.text.split_at(literal_to + at);
             let priority = &priority[1..];
             match priority.parse::<u8>() {
                 Ok(p) if (1..=16).contains(&p) => (text, Some(p)),
@@ -240,6 +242,20 @@ fn value(word: &Word) -> Result<(String, Option<u8>), String> {
     };
     // The value grammar's string form: its outer quotes are taken off whole.
     Ok((format!("\"{text}\""), priority))
+}
+
+/// The name `find` looks for: the rest of the line as typed, or, when all
+/// of it is one quoted word, that word unwrapped (`"Zone  Temp"`). An empty
+/// name closes the list.
+fn find_name(rest: &str) -> String {
+    let quoted = matches!(rest.chars().next(), Some(q @ ('"' | '\''))
+        if rest.len() >= 2 && rest.ends_with(q));
+    if quoted {
+        if let Ok([word]) = words::split(rest).as_deref() {
+            return word.text.clone();
+        }
+    }
+    rest.to_string()
 }
 
 /// `OBJECT PROPERTY VALUE[@P]` groups, checked with the one-shot parsers.
@@ -268,6 +284,13 @@ fn writes(device: u32, words: &[Word]) -> Result<Vec<WriteSpec>, String> {
 /// and the rest is read by that row's form. A routed station is looked up
 /// in `devices`.
 pub(crate) fn parse(text: &str, devices: &DeviceTable) -> Result<Line, String> {
+    // `find` reads the rest of the line itself, before any splitting, so a
+    // name such as `Joe's office` needs no quotes.
+    let line = text.trim();
+    let (head, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    if command(head).is_some_and(|syntax| syntax.name == "find") {
+        return Ok(Line::Find(find_name(rest.trim())));
+    }
     let all = words::split(text)?;
     let Some((first, args)) = all.split_first() else {
         return Err(usage());
@@ -305,8 +328,8 @@ pub(crate) fn parse(text: &str, devices: &DeviceTable) -> Result<Line, String> {
         ("bbmd", []) => Ok(Line::Bbmd(None)),
         ("bbmd", [address]) => Ok(Line::Bbmd(Some(crate::foreign::parse_bbmd_arg(address)?))),
         ("mstp", [which, value]) => Ok(Line::Mstp(mstp_setting(which, value)?)),
-        // The rest of the line's words; quote a name to keep a run of spaces.
-        ("find", words) => Ok(Line::Find(words.join(" "))),
+        // A quoted first word, `"find"`, is still find.
+        ("find", _) => Ok(Line::Find(find_name(rest.trim()))),
         _ => Err(wrong()),
     }
 }
@@ -402,9 +425,12 @@ mod tests {
             panic!("expected writem");
         };
         assert_eq!(specs[0].device, 2001);
+        // A MAC is matched octet for octet: 2:0x0005 is two octets, not
+        // station 5.
         for missing in [
             "watch 2:0x06 ai:1",
             "watch 3:0x05 ai:1",
+            "watch 2:0x0005 ai:1",
             "writem 2:0x06 av:1 pv 4",
         ] {
             let error = super::parse(missing, &devices).unwrap_err();
@@ -414,6 +440,29 @@ mod tests {
         devices.upsert(device_row(2003, Some((2, &[5]))));
         let error = super::parse("watch 2:0x05 ai:1", &devices).unwrap_err();
         assert!(error.contains("devices 2001, 2003 share"), "{error}");
+    }
+
+    /// `find` takes the rest of the line as typed, apostrophes and runs of
+    /// spaces included; only a name that is one quoted word is unwrapped,
+    /// and `find ""` closes the list like a bare `find`.
+    #[test]
+    fn find_takes_the_rest_of_the_line_as_typed() {
+        let find = |line: &str| match parse(line) {
+            Ok(Line::Find(name)) => name,
+            other => panic!("{line}: {other:?}"),
+        };
+        assert_eq!(find("find Joe's office"), "Joe's office");
+        assert_eq!(find("find  Supply  Air Temp "), "Supply  Air Temp");
+        assert_eq!(find(r#"find "Zone  Temp""#), "Zone  Temp");
+        assert_eq!(find(r#"find 'Zone "A"'"#), r#"Zone "A""#);
+        assert_eq!(find(r#"find "a\"b""#), r#"a"b"#);
+        assert_eq!(find(r#"find """#), "");
+        assert_eq!(find("find"), "");
+        // More than one quoted word, or an unbalanced one, stays as typed.
+        assert_eq!(find(r#"find "a" "b""#), r#""a" "b""#);
+        assert_eq!(find(r#"find "Zone 1"#), r#""Zone 1"#);
+        assert_eq!(find(r"find C:\temp"), r"C:\temp");
+        assert_eq!(find("\"find\" x  y"), "x  y");
     }
 
     /// A quoted VALUE is a CharacterString, spaces and all, with any
@@ -455,11 +504,27 @@ mod tests {
             values(r#"writem 100 av:1 description zone' 'four"#),
             [(string("zone four"), None)]
         );
-        // An escaped quote is the value grammar's own string quote.
+        // An escape makes the word a string too, escaped quotes and all,
+        // with the priority after the last escape.
         assert_eq!(
             values(r#"writem 100 av:1 description \"x\""#),
-            [(Some("\"x\"".into()), None)]
+            [(string(r#""x""#), None)]
         );
+        assert_eq!(
+            values(r"writem 100 av:1 description Zone\ 2@9 av:2 pv 4"),
+            [(string("Zone 2"), Some(9)), (Some("4".into()), None)]
+        );
+        // A quoted number is a string, which a numeric property refuses
+        // when the write is planned.
+        assert_eq!(
+            values("writem 100 av:1 pv '72.5'"),
+            [(string("72.5"), None)]
+        );
+        assert!(parse(r"writem 100 av:1 description Zone\ 2@17").is_err());
+        // A backslash that escapes nothing is plain text, not a string.
+        assert!(parse(r"writem 100 av:1 description C:\temp")
+            .unwrap_err()
+            .contains("cannot parse value"));
         // Each value reads back as the string typed.
         let Some(text) = string("two words") else {
             unreachable!()
@@ -474,6 +539,9 @@ mod tests {
             .unwrap_err()
             .contains("priority"));
         assert!(parse(r#"writem 100 av:1 description "x"@"#).is_err());
+        assert!(parse(r#"writem 100 av:1 description "x"@0"#)
+            .unwrap_err()
+            .contains("priority"));
         let open = parse(r#"writem 100 av:1 description "two words"#).unwrap_err();
         assert!(open.contains("unclosed \" quote"), "{open}");
         // Unquoted, a space still splits the value from the next group.
@@ -513,14 +581,6 @@ mod tests {
             .contains("a device from the device table"));
         assert!(parse("watch 100 ai:1 object-list[2]").is_err());
         assert!(parse("watch 100 ai:x").is_err());
-        assert_eq!(
-            parse("find  Supply  Air Temp "),
-            Ok(Line::Find("Supply Air Temp".into()))
-        );
-        assert_eq!(
-            parse(r#"find "Supply  Air" 'Temp'"#),
-            Ok(Line::Find("Supply  Air Temp".into()))
-        );
         assert_eq!(parse("find"), Ok(Line::Find(String::new())));
         let ms = Duration::from_millis;
         assert_eq!(

@@ -446,13 +446,13 @@ network, vendor ID, max APDU, segmentation and time since the last I-Am. A
 routed device's address is its station in the CLI's target syntax,
 `NET:0xMAC` (`2:0x7F000001C335`, or `2:0x05` for an MS/TP station), which
 the one-shot commands and the command bar take back as a target. The router
-it answered through is in a `Via` column when the whole column fits, and otherwise left out. Each
-column is as wide as its header or its widest cell, so a wide terminal leaves
-the spare room at the right; instance and address are never cut. The filter
-also matches the router. When two addresses answer for the same instance, a
-`DUPLICATE` banner names both (a routed one as `2:0x05 via ROUTER`). If the
-UI falls behind a burst of I-Am traffic, events are dropped rather than
-queued without limit; the status bar's `drop` counter shows how many, and the
+it answered through is in a `Via` column when the whole column fits, and
+otherwise left out. Each column is as wide as its header or its widest cell,
+so a wide terminal leaves the spare room at the right; instance and address
+are never cut. The filter also matches the router. When two addresses answer
+for the same instance, a `DUPLICATE` banner names both (a routed one as
+`2:0x05 via ROUTER`). If the UI falls behind a burst of I-Am traffic, events
+are dropped rather than queued without limit; the status bar's `drop` counter shows how many, and the
 table is refreshed from the client's discovery table afterwards.
 
 **Keys:**
@@ -552,7 +552,9 @@ and its private one in its own) shows as two rows, one flagged with no entry
 for itself.
 
 **Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has for the
-object named NAME (the rest of the line, exactly as typed) and lists the
+object named NAME (the rest of the line, exactly as typed, apostrophes and
+runs of spaces included; a name that is one quoted word, `"Zone  Temp"`, is
+unwrapped, and `:find ""` closes the panel like `:find` alone) and lists the
 devices whose I-Have answers it in a panel below the device table: the
 device, the object as the browser labels it (`analog-input 3`), the object's
 name (cut with `…` when it doesn't fit, control characters shown as spaces),
@@ -776,11 +778,14 @@ to one device as one WritePropertyMultiple; each property may appear only once
 in a batch, because a failed batch names the failing write without its
 priority.
 
-The command bar splits its line into words itself. Single or double quotes
-group words, and a backslash makes the quote, space or backslash after it
-plain text; a quote left open is an error. A quoted VALUE is a
-CharacterString, with any priority after the closing quote:
-`:writem 1001 av:1 description "two words"` or `... "Zone 2"@12`.
+The command bar splits its line into words itself (all but `:find`, which
+takes the rest of the line). Single or double quotes group words, and a
+backslash makes the quote, whitespace character or backslash after it plain
+text; a quote left open is an error. A quoted or escaped VALUE is a
+CharacterString, with any priority after the last quote or escape:
+`:writem 1001 av:1 description "two words"`, `... Zone\ 2` or
+`... "Zone 2"@12`. A quoted number, such as `'72.5'`, is a string too, so a
+numeric property refuses it.
 
 Before every write the TUI reads the object's priority array, Present_Value,
 Relinquish_Default and Out_Of_Service, then shows a preview: the old and new
