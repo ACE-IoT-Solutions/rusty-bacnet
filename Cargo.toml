@@ -209,3 +209,17 @@ panic = "abort"
 # where the link test reads the images it measures.
 [profile.emulate]
 inherits = "firmware"
+
+# The published CLIs and wheels (#973), which scripts/release/build_*.sh build
+# with `--profile dist`. Whole-program LTO with one codegen unit cuts the
+# macOS arm64 CLI from 18.9 to 12.4 MB and the wheel from 10.4 to 7.4 MB, at
+# about twice the build time; docs/ci.md, "Release profile", has the
+# measurements. Symbols stay, so a user's RUST_BACKTRACE=1 report names its
+# functions: stripping them saves another 1.8 MB but leaves the backtrace
+# empty. `release` (and `bench`, which inherits it) stays as it was, so
+# developer builds and the numbers in Benchmarks.md don't move.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
