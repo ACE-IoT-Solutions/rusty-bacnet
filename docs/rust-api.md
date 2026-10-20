@@ -3456,9 +3456,11 @@ framing, through the shared `bacnet-encoding` codecs.
   BACnetEventParameter and BACnetFaultParameter CHOICE framing. Modeled
   alternatives round-trip. An alternative the stack does not model is kept as
   opaque bytes, and omitted, deprecated and reserved choices, or trailing bytes
-  after a framed element, are rejected. Fault_Parameters without a fault
-  algorithm reads as the context-tagged `none` choice (`08`), and writing that
-  clears it. The CHOICE has no application NULL, so a NULL written to it
+  after a framed element, are rejected. Event_Parameters never set reads as
+  the context-tagged `none` choice (`F8 14`, tag 20); such an enrollment runs
+  no algorithm and stays out of enrollment summaries (#1868). Fault_Parameters
+  without a fault algorithm reads as the context-tagged `none` choice (`08`),
+  and writing that clears it. The CHOICE has no application NULL, so a NULL written to it
   succeeds and changes nothing (#1417).
 - **BACnetTimeStamp** (Clause 21) has one codec for every producer and consumer.
   The time form is a primitive tag holding raw Time octets, the sequence number

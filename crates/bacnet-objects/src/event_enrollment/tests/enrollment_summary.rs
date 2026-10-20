@@ -103,3 +103,46 @@ fn detection_enable_is_separate_from_configured_capability() {
     assert_eq!(capability.event_type, EventType::OUT_OF_RANGE);
     assert_eq!(capability.last_transition, None);
 }
+
+/// An enrollment whose Event_Parameters were never set serves the `none`
+/// alternative of the CHOICE: context tag 20 with a NULL body, which takes
+/// the extended tag-number form `F8 14`. It runs no algorithm, so even with
+/// a monitored reference it stays out of enrollment summaries (#1868).
+#[test]
+fn unset_event_parameters_serve_the_none_alternative() {
+    let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::OUT_OF_RANGE).unwrap();
+    ee.set_object_property_reference(Some(monitored_reference()))
+        .unwrap();
+    let val = ee
+        .read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
+        .unwrap();
+    assert_eq!(val, PropertyValue::ApplicationData(vec![0xF8, 0x14]));
+    let PropertyValue::ApplicationData(bytes) = &val else {
+        unreachable!()
+    };
+    assert_eq!(
+        bacnet_encoding::constructed::decode_event_parameter(bytes, 0).unwrap(),
+        (
+            BACnetEventParameter::Opaque {
+                tag: 20,
+                data: Vec::new()
+            },
+            2
+        )
+    );
+    assert_eq!(ee.enrollment_summary_capability_internal(), None);
+
+    // The served value writes back as itself.
+    ee.write_property(
+        PropertyIdentifier::EVENT_PARAMETERS,
+        None,
+        val.clone(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        ee.read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
+            .unwrap(),
+        val
+    );
+}

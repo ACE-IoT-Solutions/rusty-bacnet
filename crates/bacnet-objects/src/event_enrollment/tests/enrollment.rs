@@ -333,7 +333,7 @@ fn write_event_parameters_framed_trailing_garbage_rejected() {
             }
             other => panic!("expected PROPERTY/INVALID_DATA_TYPE, got {other:?}"),
         }
-        // Stored value is untouched: the default Opaque placeholder remains.
+        // Stored value is untouched: the unset `none` alternative remains.
         let val = ee
             .read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
             .unwrap();
@@ -344,7 +344,7 @@ fn write_event_parameters_framed_trailing_garbage_rejected() {
         assert_eq!(
             decoded,
             BACnetEventParameter::Opaque {
-                tag: 0xFF,
+                tag: 20,
                 data: Vec::new()
             }
         );

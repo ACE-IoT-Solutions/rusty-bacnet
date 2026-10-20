@@ -447,7 +447,7 @@ contents as `bytes` for a vendor tag), `change_of_value` (`time_delay`, then
 encoded `bytes`), `none`, or `other` (`tag` and `data`, the encoded contents)
 for an algorithm the stack keeps as octets. There is no typed write; the read
 value writes back as its octets. An enrollment whose parameters were never set
-serves an empty `octet_string`, which reads as one.
+serves the `none` alternative (#1868).
 
 A Group's Present_Value results, and an `ActionCommand`'s `property_value`,
 are themselves read results: each value is shaped as a read of the property it

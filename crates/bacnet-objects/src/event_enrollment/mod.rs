@@ -84,10 +84,7 @@ impl EventEnrollmentObject {
             description: String::new(),
             event_type,
             notify_type: NotifyType::ALARM,
-            event_parameters: BACnetEventParameter::Opaque {
-                tag: 0xFF,
-                data: Vec::new(),
-            },
+            event_parameters: Self::UNSET_EVENT_PARAMETERS,
             object_property_reference: None,
             event_state: EventState::NORMAL,
             event_enable: EventTransitionBits::all(),
@@ -117,6 +114,15 @@ impl EventEnrollmentObject {
     /// the value a flag holds until its transition kind first occurs on the
     /// object (ASHRAE 135-2020 Clause 12.12).
     const RESET_ACKED_TRANSITIONS: EventTransitionBits = EventTransitionBits::all();
+
+    /// `Event_Parameters` before anything sets them: the `none` alternative
+    /// of the BACnetEventParameter CHOICE (context tag 20, a NULL; Clause
+    /// 21), so an unset enrollment serves a member of the property's
+    /// datatype (#1868). The evaluator has no algorithm to run for it.
+    const UNSET_EVENT_PARAMETERS: BACnetEventParameter = BACnetEventParameter::Opaque {
+        tag: 20,
+        data: Vec::new(),
+    };
 
     /// Put the object in the state ASHRAE 135-2020 Clause 13.2.2.1 prescribes
     /// for disabled detection (`Event_Detection_Enable` FALSE): Event_State
@@ -218,8 +224,8 @@ impl EventEnrollmentObject {
 
     /// The pTimeDelay the stored `Event_Parameters` supply: the `time_delay`
     /// field every evaluated algorithm carries (Table 12-15). Unmodeled
-    /// alternatives — including the `0xFF` legacy octet layout, which has no
-    /// time-delay slot — contribute zero, so their TDN fallback reads as 0
+    /// alternatives — including `none` and the `0xFF` legacy octet layout,
+    /// which have no time-delay slot — contribute zero, so their TDN fallback reads as 0
     /// and their evaluation fires immediately, exactly as they did before
     /// delay honoring existed.
     fn event_parameters_time_delay(&self) -> u32 {
@@ -253,6 +259,8 @@ impl BACnetObject for EventEnrollmentObject {
     fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
         let supported_parameters = match &self.event_parameters {
             BACnetEventParameter::Extended { .. } => false,
+            // Only the legacy octet layout evaluates; `none` (the unset
+            // form) and the unmodeled alternatives run no algorithm.
             BACnetEventParameter::Opaque { tag, .. } => *tag == 0xFF,
             _ => true,
         } || matches!(
