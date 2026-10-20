@@ -2,14 +2,16 @@
 //! extension functions B/IP and B/IPv6 receive and send packet info with.
 //!
 //! An extension function comes from `WSAIoctl` on a socket, and only
-//! `RecvMsg::lookup` and `SendMsg::lookup` (with `ipv6`) make one, so a held
-//! `RecvMsg` or `SendMsg` is always the function Winsock returned. Each
-//! caller looks it up on the socket it then uses it with.
+//! `RecvMsg::lookup` and `SendMsg::lookup` (with `ipv6`) make one. Each keeps
+//! the raw handle it was looked up on, and refuses with `InvalidInput` a call
+//! on any other, so the function a call runs is always the one Winsock
+//! returned for that socket. The transports look it up on a `socket2::Socket`
+//! and use it on the tokio socket made from it, which keeps the handle.
 
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::os::windows::io::{AsRawSocket, BorrowedSocket};
+use std::os::windows::io::{AsRawSocket, BorrowedSocket, RawSocket};
 
 use windows_sys::Win32::Networking::WinSock::*;
 
@@ -53,8 +55,11 @@ pub(crate) fn set_int_option(
     }
 }
 
-/// `WSARecvMsg`, as `WSAIoctl` returned it for a socket.
-pub(crate) struct RecvMsg(LPFN_WSARECVMSG);
+/// `WSARecvMsg`, as `WSAIoctl` returned it for `socket`.
+pub(crate) struct RecvMsg {
+    function: LPFN_WSARECVMSG,
+    socket: RawSocket,
+}
 
 /// What one [`RecvMsg::recv`] got.
 pub(crate) struct WsaReceived {
@@ -94,21 +99,26 @@ impl RecvMsg {
             return Err(last_error());
         }
         function
-            .map(|function| Self(Some(function)))
+            .map(|function| Self {
+                function: Some(function),
+                socket: socket.as_raw_socket(),
+            })
             .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "WSARecvMsg unavailable"))
     }
 
     /// One synchronous `WSARecvMsg` on `socket` into `buf`, with `control`
     /// for the control messages. A Winsock failure is its OS error, which
-    /// the caller classifies.
+    /// the caller classifies; `socket` must be the one this was looked up on
+    /// (`InvalidInput` otherwise).
     pub(crate) fn recv(
         &self,
         socket: BorrowedSocket<'_>,
         buf: &mut [u8],
         control: &mut ControlBuffer,
     ) -> io::Result<WsaReceived> {
+        super::same_socket(self.socket, socket.as_raw_socket())?;
         let recv_msg = self
-            .0
+            .function
             .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "WSARecvMsg unavailable"))?;
         // SAFETY: SOCKADDR_STORAGE is a plain C struct of integers, so all
         // zeros is a valid value.
@@ -117,20 +127,22 @@ impl RecvMsg {
             len: u32::try_from(buf.len()).unwrap_or(u32::MAX),
             buf: buf.as_mut_ptr(),
         };
+        let control = control.bytes_mut();
         let mut message = WSAMSG {
             name: (&mut peer_storage as *mut SOCKADDR_STORAGE).cast(),
             namelen: size_of::<SOCKADDR_STORAGE>() as i32,
             lpBuffers: &mut data,
             dwBufferCount: 1,
             Control: WSABUF {
-                len: control.0.len() as u32,
-                buf: control.0.as_mut_ptr(),
+                len: control.len() as u32,
+                buf: control.as_mut_ptr(),
             },
             dwFlags: 0,
         };
         let mut received = 0u32;
-        // SAFETY: `recv_msg` is the WSARecvMsg that WSAIoctl returned (only
-        // `lookup` makes a RecvMsg). Every pointer in `message` points to live
+        // SAFETY: `recv_msg` is the WSARecvMsg that WSAIoctl returned for
+        // this very socket handle: only `lookup` makes a RecvMsg, and the
+        // check above refused any other handle. Every pointer in `message` points to live
         // storage of the length given beside it: `peer_storage` (namelen),
         // `data` over `buf` (len, clamped to u32) and `control` (Control.len).
         // Null OVERLAPPED and completion routine make the call synchronous, so
@@ -201,9 +213,12 @@ unsafe fn windows_socket_addr(storage: &SOCKADDR_STORAGE) -> Option<SocketAddr> 
     }
 }
 
-/// `WSASendMsg`, as `WSAIoctl` returned it for a socket.
+/// `WSASendMsg`, as `WSAIoctl` returned it for `socket`.
 #[cfg(feature = "ipv6")]
-pub(crate) struct SendMsg(LPFN_WSASENDMSG);
+pub(crate) struct SendMsg {
+    function: LPFN_WSASENDMSG,
+    socket: RawSocket,
+}
 
 #[cfg(feature = "ipv6")]
 impl SendMsg {
@@ -230,13 +245,17 @@ impl SendMsg {
             return Err(last_error());
         }
         function
-            .map(|function| Self(Some(function)))
+            .map(|function| Self {
+                function: Some(function),
+                socket: socket.as_raw_socket(),
+            })
             .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "WSASendMsg unavailable"))
     }
 
     /// One synchronous `WSASendMsg` of `bytes` to `peer` on `socket`, with
     /// `source` and the interface `index` in a hand-built `IN6_PKTINFO`
-    /// control message.
+    /// control message. `socket` must be the one this was looked up on
+    /// (`InvalidInput` otherwise).
     pub(crate) fn send_ipv6_pktinfo(
         &self,
         socket: BorrowedSocket<'_>,
@@ -245,8 +264,9 @@ impl SendMsg {
         source: Ipv6Addr,
         index: u32,
     ) -> io::Result<usize> {
+        super::same_socket(self.socket, socket.as_raw_socket())?;
         let function = self
-            .0
+            .function
             .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "WSASendMsg unavailable"))?;
         let destination = socket2::SockAddr::from(peer);
         let mut control = [0usize; 16];
@@ -297,8 +317,9 @@ impl SendMsg {
             dwFlags: 0,
         };
         let mut sent = 0;
-        // SAFETY: `function` is the WSASendMsg that WSAIoctl returned (only
-        // `lookup` makes a SendMsg). Null OVERLAPPED and callback request a
+        // SAFETY: `function` is the WSASendMsg that WSAIoctl returned for this
+        // very socket handle: only `lookup` makes a SendMsg, and the check
+        // above refused any other handle. Null OVERLAPPED and callback request a
         // synchronous attempt, including on an overlapped-created socket. All
         // message/payload pointers remain live until it returns; WouldBlock is
         // retried by Tokio readiness.

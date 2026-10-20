@@ -226,7 +226,7 @@ impl DestinationReceiver {
         }
 
         let control = control
-            .0
+            .bytes()
             .get(..received.control_len)
             .ok_or_else(|| invalid_metadata("oversized Windows UDP control buffer"))?;
         let peer = received
@@ -257,7 +257,7 @@ impl DestinationReceiver {
     }
 }
 
-fn invalid_metadata(message: &'static str) -> io::Error {
+pub(crate) fn invalid_metadata(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 

@@ -27,13 +27,9 @@ pub(crate) enum Request {
 
 /// Make the RS-485 ioctl `request` on the serial port `port`, with `config`
 /// as the `serial_rs485` it sets from or reads into.
-///
-/// `port` is a raw descriptor (tokio-serial's stream has no `AsFd`). That
-/// is sound: these two requests touch no memory but `config`, so a stale or
-/// wrong descriptor fails with `EBADF` or `ENOTTY`.
 #[cfg(target_os = "linux")]
 pub(crate) fn rs485_ioctl(
-    port: &impl std::os::fd::AsRawFd,
+    port: &tokio_serial::SerialStream,
     request: Request,
     config: &mut SerialRs485,
 ) -> std::io::Result<()> {
@@ -47,11 +43,14 @@ pub(crate) fn rs485_ioctl(
     #[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
     const TIOCSRS485: libc::c_ulong = 0xc020_5442;
 
+    use std::os::fd::AsRawFd;
+
     let request = match request {
         Request::Set => TIOCSRS485,
         Request::Get => TIOCGRS485,
     };
-    // SAFETY: The caller's borrow keeps the serial port and its fd alive.
+    // SAFETY: The borrow keeps the serial stream and its fd open, and the
+    // fd is a serial port's.
     // `config` is a writable, initialized 32-byte Linux serial_rs485
     // structure (the layout above, size checked at compile time), and the
     // pointer remains valid for this ioctl call, which reads or writes no

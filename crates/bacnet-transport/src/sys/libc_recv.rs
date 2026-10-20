@@ -7,10 +7,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd};
 
 use crate::sys::ControlBuffer;
-
-fn invalid_metadata(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
+use crate::udp_metadata::invalid_metadata;
 
 /// One datagram from `fd` into `buf`, through a direct `recvmsg` with
 /// `control` for its control messages: its length, its sender, and the
@@ -36,8 +33,9 @@ pub(crate) fn recv_ipv6_pktinfo(
     message.msg_namelen = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
-    message.msg_control = control.0.as_mut_ptr().cast();
-    message.msg_controllen = control.0.len() as _;
+    let control = control.bytes_mut();
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control.len() as _;
 
     // SAFETY: every pointer in `message` points to live storage of the
     // length given beside it: `peer_storage` (msg_namelen), the iovec over

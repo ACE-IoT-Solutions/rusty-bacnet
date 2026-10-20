@@ -222,7 +222,7 @@ impl TokioSerialPort {
             delay_before_send_us,
             delay_after_send_us,
             // The lock guard keeps the serial stream and its fd alive.
-            |request, config| crate::sys::serial::rs485_ioctl(&*stream, request, config),
+            |request, config| crate::sys::serial::rs485_ioctl(&stream, request, config),
         )
     }
 }

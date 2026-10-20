@@ -63,14 +63,50 @@ pub(crate) mod winsock;
 /// size against whole-struct payloads.
 #[cfg(any(unix, windows))]
 #[repr(C, align(8))]
-pub(crate) struct ControlBuffer(pub(crate) [u8; 256]);
+pub(crate) struct ControlBuffer([u8; 256]);
 
 #[cfg(any(unix, windows))]
 impl ControlBuffer {
-    /// A zeroed buffer, for one receive.
+    /// A zeroed buffer, for one receive. It is the only way to make one, so
+    /// every receive starts from zeros.
     pub(crate) fn new() -> Self {
         Self([0; 256])
     }
+
+    /// The buffer's octets, for parsing what a receive wrote.
+    #[cfg(windows)]
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// The buffer's octets, for a receive to write its control messages to.
+    /// The slice starts at the buffer's 8-aligned start.
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+/// `Ok` when `used`, the raw socket handle a call is about to use, is
+/// `looked_up`, the one a Winsock extension function was looked up on;
+/// `InvalidInput` otherwise.
+#[cfg(any(windows, test))]
+fn same_socket<Handle: PartialEq>(looked_up: Handle, used: Handle) -> std::io::Result<()> {
+    if looked_up == used {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Winsock extension function used on another socket than its own",
+        ))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_extension_function_runs_only_on_its_own_socket() {
+    assert!(same_socket(0x1f4, 0x1f4).is_ok());
+    let error = same_socket(0x1f4, 0x1f8).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[cfg(test)]

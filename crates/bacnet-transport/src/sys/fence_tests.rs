@@ -21,8 +21,9 @@ fn rust_files(dir: &Path, skip: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Whether `code` (one line, comments removed) holds the keyword `unsafe`
-/// as a word of its own, or names the `unsafe_code` lint in anything but a
-/// `deny` or `forbid`.
+/// as a word of its own, or names the `unsafe_code` lint anywhere but
+/// straight after `deny(` or `forbid(`. Strings count as code, so this fails
+/// closed on them.
 fn holds_unsafe(code: &str) -> bool {
     let word = |c: char| c.is_alphanumeric() || c == '_';
     let keyword = code.match_indices("unsafe").any(|(at, found)| {
@@ -30,13 +31,57 @@ fn holds_unsafe(code: &str) -> bool {
         let after = code[at + found.len()..].chars().next();
         !before.is_some_and(word) && !after.is_some_and(word)
     });
-    let lint = code.contains("unsafe_code") && !code.contains("deny(") && !code.contains("forbid(");
+    let lint = code.match_indices("unsafe_code").any(|(at, _)| {
+        let before = &code[..at];
+        !before.ends_with("deny(") && !before.ends_with("forbid(")
+    });
     keyword || lint
 }
 
-/// The line's code, without a `//` comment (doc comments included).
-fn code_of(line: &str) -> &str {
-    line.split_once("//").map_or(line, |(code, _)| code)
+/// The line's code, without a `//` comment (doc comments included). A `//`
+/// inside a string literal is code; `in_string` carries an open string from
+/// one line to the next.
+fn code_of<'a>(line: &'a str, in_string: &mut bool) -> &'a str {
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let char_at = |i: usize| chars.get(i).map(|&(_, c)| c);
+    let mut i = 0;
+    while let Some(&(at, c)) = chars.get(i) {
+        let next = char_at(i + 1);
+        if *in_string {
+            match c {
+                '\\' => i += 1,
+                '"' => *in_string = false,
+                _ => {}
+            }
+        } else {
+            match c {
+                '/' if next == Some('/') => return &line[..at],
+                '"' => *in_string = true,
+                // An escaped char literal ('\\', '\''): skip to its end.
+                '\'' if next == Some('\\') => {
+                    i += 3;
+                    while char_at(i).is_some_and(|c| c != '\'') {
+                        i += 1;
+                    }
+                }
+                // A plain char literal ('"'), not a lifetime.
+                '\'' if char_at(i + 2) == Some('\'') => i += 2,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    line
+}
+
+/// The lines of `text` that hold unsafe code, numbered from 1.
+fn offending_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut in_string = false;
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| holds_unsafe(code_of(line, &mut in_string)))
+        .map(|(number, line)| (number + 1, line))
+        .collect()
 }
 
 #[test]
@@ -50,10 +95,9 @@ fn unsafe_stays_in_sys() {
         .iter()
         .flat_map(|file| {
             let text = std::fs::read_to_string(file).unwrap();
-            text.lines()
-                .enumerate()
-                .filter(|(_, line)| holds_unsafe(code_of(line)))
-                .map(|(number, line)| format!("{}:{}: {}", file.display(), number + 1, line.trim()))
+            offending_lines(&text)
+                .into_iter()
+                .map(|(number, line)| format!("{}:{number}: {}", file.display(), line.trim()))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -76,9 +120,19 @@ fn the_fence_sees_unsafe_and_lets_prose_by() {
         "#![allow(unsafe_code)]",
         "#[cfg_attr(test, allow(unsafe_code))]",
         "#[expect(unsafe_code)]",
+        "#[allow(unsafe_code)] #[deny(missing_docs)]",
+        "let u = \"http://x\"; #[allow(unsafe_code)]",
+        "let c = '\"'; #[allow(unsafe_code)]",
+        "let c = '\\''; #[allow(unsafe_code)]",
+        "let s = \"unsafe { }\";",
     ] {
-        assert!(holds_unsafe(code_of(caught)), "{caught}");
+        assert_eq!(offending_lines(caught).len(), 1, "{caught}");
     }
+    // A string over two lines hides no `//` from the second.
+    assert_eq!(
+        offending_lines("let s = \"a\n// b\"; #[allow(unsafe_code)]"),
+        [(2, "// b\"; #[allow(unsafe_code)]")]
+    );
     for passed in [
         "#![forbid(unsafe_code)]",
         "#![deny(unsafe_code)]",
@@ -86,7 +140,9 @@ fn the_fence_sees_unsafe_and_lets_prose_by() {
         "let x = 1; // unsafe { } in a comment",
         "#[deny(unsafe_op_in_unsafe_fn)]",
         "let unsafe_count = 0;",
+        "fn f<'a>(x: &'a str) {} // unsafe",
+        "let s = \"a \\\" b\"; // unsafe",
     ] {
-        assert!(!holds_unsafe(code_of(passed)), "{passed}");
+        assert!(offending_lines(passed).is_empty(), "{passed}");
     }
 }
