@@ -1732,16 +1732,20 @@ class CovNotification:
 class CovNotificationIterator:
     """Async iterator yielding ``CovNotification`` objects. One that falls
     behind the client's COV channel loses the oldest and adds them to
-    ``missed``. A cancel that lands while an event is being
-    delivered, as a timed-out ``asyncio.wait_for`` does, puts the event back:
-    the next ``__anext__`` returns it first.
+    ``missed``. A cancel that lands while a notification is being delivered,
+    as a timed-out ``asyncio.wait_for`` does, puts it back: the next
+    ``__anext__`` returns it first. Concurrent ``__anext__`` calls complete one at a time. Read it from one
+    running event loop (``asyncio.run`` is fine): an item on its way to a read
+    whose loop stops for good holds up later reads, which raise one
+    ``RuntimeWarning`` after 5 s and keep waiting.
     Iteration ends when the client stops."""
 
     def __aiter__(self) -> CovNotificationIterator: ...
     def __anext__(self) -> Awaitable[CovNotification]: ...
     @property
     def missed(self) -> int:
-        """Notifications lost so far because this iterator fell behind."""
+        """Notifications lost so far: because this iterator fell behind,
+        or dropped on the way to a read, as when its event loop closed first."""
         ...
 
 
@@ -1774,13 +1778,16 @@ class IHaveIterator:
     The client never waits for it: one more than 256 behind loses the
     oldest and adds them to ``missed``. A cancel that lands while an item
     is being delivered puts it back: the next ``__anext__`` returns it
-    first. Iteration ends when the client stops."""
+    first. Concurrent ``__anext__`` calls complete one at a time. Read it from one
+    running event loop (``asyncio.run`` is fine): an item on its way to a read
+    whose loop stops for good holds up later reads, which raise one
+    ``RuntimeWarning`` after 5 s and keep waiting. Iteration ends when the client stops."""
 
     def __aiter__(self) -> IHaveIterator: ...
     def __anext__(self) -> Awaitable[IHave]: ...
     @property
     def missed(self) -> int:
-        """I-Haves lost so far because this iterator fell behind."""
+        """I-Haves lost so far: because this iterator fell behind, or dropped on the way to a read, as when its event loop closed first."""
         ...
 
 
@@ -1840,13 +1847,17 @@ class NetworkReportIterator:
     ``network_reports()`` call. The client never waits for it: one more
     than 64 behind loses the oldest and adds them to ``missed``. A cancel
     that lands while an item is being delivered puts it back: the next
-    ``__anext__`` returns it first. Iteration ends when the client stops."""
+    ``__anext__`` returns it first. Concurrent ``__anext__`` calls complete one at a time. Read it from one
+    running event loop (``asyncio.run`` is fine): an item on its way to a read
+    whose loop stops for good holds up later reads, which raise one
+    ``RuntimeWarning`` after 5 s and keep waiting. Iteration ends when the client
+    stops."""
 
     def __aiter__(self) -> NetworkReportIterator: ...
     def __anext__(self) -> Awaitable[NetworkReport]: ...
     @property
     def missed(self) -> int:
-        """Reports lost so far because this iterator fell behind."""
+        """Reports lost so far: because this iterator fell behind, or dropped on the way to a read, as when its event loop closed first."""
         ...
 
 
@@ -2440,17 +2451,20 @@ class ScEventIterator:
     """Async iterator over ``ScEvent`` from one ``connection_events()`` call.
 
     The connector never waits for it: an iterator more than 64 events behind
-    loses the oldest and adds them to ``missed``. A cancel that lands while an event is being
-    delivered, as a timed-out ``asyncio.wait_for`` does, puts the event back:
-    the next ``__anext__`` returns it first.
+    loses the oldest and adds them to ``missed``. A cancel that lands while an
+    event is being delivered, as a timed-out ``asyncio.wait_for`` does, puts
+    the event back: the next ``__anext__`` returns it first. Concurrent ``__anext__`` calls complete one at a time. Read it from one
+    running event loop (``asyncio.run`` is fine): an item on its way to a read
+    whose loop stops for good holds up later reads, which raise one
+    ``RuntimeWarning`` after 5 s and keep waiting.
     Iteration ends when the client stops.
     """
     def __aiter__(self) -> ScEventIterator: ...
     def __anext__(self) -> Awaitable[ScEvent]: ...
     @property
     def missed(self) -> int:
-        """Events lost so far because this iterator fell behind the
-        connector."""
+        """Events lost so far: because this iterator fell behind the
+        connector, or dropped on the way to a read, as when its event loop closed first."""
         ...
 
 class BACnetClient:
@@ -3597,8 +3611,9 @@ class BACnetClient:
         after a start gets the events since the client was built, starting
         with the first ``connected`` (#1908); if that first call comes long
         after the start, its first events may be old ones from the build. A
-        later call is a late subscriber and gets the events from that call on. A slow reader
-        never holds up the connector: see ``ScEventIterator.missed``.
+        later call is a late subscriber and gets the events from that call
+        on. A slow reader never holds up the connector: see
+        ``ScEventIterator.missed``.
         RuntimeError for a stopped or non-SC client."""
         ...
 

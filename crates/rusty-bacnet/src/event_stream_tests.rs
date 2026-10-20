@@ -1,15 +1,23 @@
 use super::*;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::time::Duration;
 
 use pyo3::types::PyDict;
 
-/// The next item, which must come from the channel.
+/// The next item, which must come from the channel, its delivery settled
+/// as a delivered one.
 async fn fresh<T: Clone + Send + 'static>(stream: &LossyReceiver<T>) -> Option<T> {
-    stream.next().0.await.map(|next| match next {
+    let (next, hook) = stream.next();
+    let item = next.await.map(|next| match next {
         Next::Fresh(item) => item,
         Next::Again(_) => panic!("nothing was put back"),
-    })
+    });
+    hook.settled();
+    item
+}
+
+fn in_flight<T>(stream: &LossyReceiver<T>) -> usize {
+    stream.slot.in_flight.load(Ordering::Acquire)
 }
 
 #[tokio::test]
@@ -40,8 +48,8 @@ async fn a_cancelled_next_loses_nothing_and_the_end_follows_the_last_item() {
             .await
             .is_err()
     );
-    // Given up before it armed, it left nothing in flight.
-    assert_eq!(stream.slot.in_flight.load(Ordering::Acquire), 0);
+    // Given up before it armed, it left nothing in flight and lost nothing.
+    assert_eq!(in_flight(&stream), 0);
     tx.send(1u32).unwrap();
     tx.send(2).unwrap();
     drop(tx);
@@ -49,6 +57,7 @@ async fn a_cancelled_next_loses_nothing_and_the_end_follows_the_last_item() {
     assert_eq!(fresh(&stream).await, Some(2));
     assert_eq!(fresh(&stream).await, None);
     assert_eq!(fresh(&stream).await, None);
+    assert_eq!(stream.missed(), 0);
 }
 
 #[tokio::test]
@@ -63,20 +72,22 @@ async fn a_pending_next_ends_when_the_last_sender_drops() {
 }
 
 /// An item handed out and then dropped on its way, its delivery never
-/// settled by hand, still lets the next `next()` through.
+/// settled, counts as missed and still lets the next `next()` through.
 #[tokio::test]
-async fn a_delivery_dropped_unsettled_leaves_nothing_in_flight() {
+async fn a_delivery_dropped_unsettled_counts_its_item_and_leaves_nothing_in_flight() {
     let (tx, rx) = broadcast::channel(4);
     let stream = LossyReceiver::new(rx);
     tx.send(1u32).unwrap();
     tx.send(2).unwrap();
     let (next, hook) = stream.next();
     assert!(matches!(next.await, Some(Next::Fresh(1))));
-    assert_eq!(stream.slot.in_flight.load(Ordering::Acquire), 1);
+    assert_eq!(in_flight(&stream), 1);
     drop(hook);
-    assert_eq!(stream.slot.in_flight.load(Ordering::Acquire), 0);
+    assert_eq!(in_flight(&stream), 0);
+    assert_eq!(stream.missed(), 1);
     let second = tokio::time::timeout(Duration::from_secs(5), fresh(&stream)).await;
     assert_eq!(second.unwrap(), Some(2));
+    assert_eq!(stream.missed(), 1);
 }
 
 /// While a delivery is in flight the next `next()` waits, even with the
@@ -90,12 +101,17 @@ async fn a_put_back_item_comes_before_a_later_one_already_queued() {
     tx.send(2).unwrap();
     let (first, first_hook) = stream.next();
     assert!(matches!(first.await, Some(Next::Fresh(1))));
+    assert_eq!(in_flight(&stream), 1);
     let (second, second_hook) = stream.next();
     let second = tokio::spawn(second);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Every turn the second read gets, it finds the first still in flight.
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
     assert!(!second.is_finished(), "read past an item still in flight");
+    assert_eq!(in_flight(&stream), 1);
     Python::attach(|py| {
-        first_hook.put_back(py, 1u32.into_py_any(py).unwrap());
+        first_hook.put_back(py, 1u32.into_py_any(py).unwrap(), Via::OnLoop);
         first_hook.settled();
     });
     let again = tokio::time::timeout(Duration::from_secs(5), second)
@@ -109,8 +125,37 @@ async fn a_put_back_item_comes_before_a_later_one_already_queued() {
         _ => panic!("expected the put-back item"),
     }
     // Delivered: until its delivery settles, the next read waits behind it.
-    drop(second_hook);
+    second_hook.settled();
     assert_eq!(fresh(&stream).await, Some(2));
+    assert_eq!(stream.missed(), 0);
+    let trace = &stream.slot.trace;
+    assert_eq!(trace.on_loop.load(Ordering::Relaxed), 1);
+    assert_eq!(trace.delivered.load(Ordering::Relaxed), 2);
+}
+
+/// A read held up behind an unsettled delivery past the limit warns once
+/// and keeps waiting: the item ahead still comes first.
+#[tokio::test]
+async fn a_read_held_up_past_the_limit_warns_once_and_keeps_waiting() {
+    Python::initialize();
+    let (tx, rx) = broadcast::channel(4);
+    let stream = LossyReceiver::new(rx);
+    tx.send(1u32).unwrap();
+    tx.send(2).unwrap();
+    let (first, first_hook) = stream.next();
+    assert!(matches!(first.await, Some(Next::Fresh(1))));
+    let (second, second_hook) = stream.next();
+    let second = tokio::spawn(second);
+    tokio::time::sleep(STALL_WARNING * 3).await;
+    assert!(stream.slot.warned.load(Ordering::Acquire));
+    assert!(!second.is_finished(), "the warning must not end the wait");
+    first_hook.settled();
+    let next = tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(next, Some(Next::Fresh(2))));
+    second_hook.settled();
     assert_eq!(stream.missed(), 0);
 }
 
@@ -160,10 +205,59 @@ impl Probe {
     fn missed(&self) -> u64 {
         self.stream.missed()
     }
+
+    #[getter]
+    fn in_flight(&self) -> usize {
+        in_flight(&self.stream)
+    }
+
+    #[getter]
+    fn warned(&self) -> bool {
+        self.stream.slot.warned.load(Ordering::Acquire)
+    }
+
+    /// `set_result` callbacks queued on a loop so far.
+    #[getter]
+    fn queued(&self) -> u64 {
+        self.stream.slot.trace.queued.load(Ordering::Relaxed)
+    }
+
+    /// The delivery paths taken so far, by name.
+    #[getter]
+    fn trace<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let trace = &self.stream.slot.trace;
+        let paths = PyDict::new(py);
+        for (name, count) in [
+            ("before_delivery", &trace.before_delivery),
+            ("on_loop", &trace.on_loop),
+            ("closed_loop", &trace.closed_loop),
+            ("delivered", &trace.delivered),
+        ] {
+            paths.set_item(name, count.load(Ordering::Relaxed))?;
+        }
+        Ok(paths)
+    }
 }
+
+/// Helpers every check gets: `block_until` blocks the calling thread, and
+/// so the loop, with the GIL released, until `done()` or a deadline.
+const PRELUDE: &str = r#"
+import asyncio, sys, time
+def block_until(done, what):
+    deadline = time.monotonic() + 10
+    while not done():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out waiting for " + what)
+        time.sleep(0.001)
+def trace(**expected):
+    paths = dict(before_delivery=0, on_loop=0, closed_loop=0, delivered=0)
+    paths.update(expected)
+    return paths
+"#;
 
 fn run(code: &CStr) {
     Python::initialize();
+    let code = CString::new(format!("{PRELUDE}{}", code.to_str().unwrap())).unwrap();
     Python::attach(|py| {
         let scope = PyDict::new(py);
         let (tx, rx) = broadcast::channel(16);
@@ -174,7 +268,7 @@ fn run(code: &CStr) {
         scope
             .set_item("probe", Py::new(py, probe).unwrap())
             .unwrap();
-        if let Err(err) = py.run(code, Some(&scope), None) {
+        if let Err(err) = py.run(&code, Some(&scope), None) {
             err.print(py);
             panic!("Python check failed: {err}");
         }
@@ -183,22 +277,20 @@ fn run(code: &CStr) {
 
 /// Cancelled while its `set_result` callback waits on the event loop: the
 /// callback finds the future done and puts the item back. A `next()` that
-/// was already waiting on the channel wakes for it.
+/// was already waiting wakes for it.
 #[test]
 fn an_item_cancelled_on_the_loop_comes_back_first() {
     run(cr#"
-import asyncio, time
 async def main():
     first = probe.next()
     await asyncio.sleep(0)
     probe.send(7)
-    # Blocks the loop with the GIL released: the item arrives and its
-    # set_result callback is queued behind this.
-    time.sleep(0.3)
+    # The loop stays blocked until first's set_result callback is queued.
+    block_until(lambda: probe.queued == 1, "the set_result callback")
     first.cancel()
-    # Waits on the channel before the queued callback runs.
     second = probe.next()
     assert await asyncio.wait_for(second, 5) == 7
+    assert probe.trace == trace(on_loop=1, delivered=1), probe.trace
     assert probe.missed == 0
     probe.send(8)
     assert await asyncio.wait_for(probe.next(), 5) == 8
@@ -212,18 +304,20 @@ asyncio.run(main())
 #[test]
 fn a_cancelled_read_in_a_burst_keeps_the_order() {
     run(cr#"
-import asyncio, time
 async def main():
-    first, second = probe.next(), probe.next()
+    first = probe.next()
     await asyncio.sleep(0)
     probe.send(1)
+    block_until(lambda: probe.queued == 1, "the set_result callback")
+    # With 1's callback still queued, the second read starts and 2 is
+    # already in the channel: the read must wait behind 1, not take 2.
+    second = probe.next()
     probe.send(2)
-    # Blocks the loop with the GIL released: the first read's task returns
-    # 1 and its set_result callback is queued behind this.
-    time.sleep(0.3)
+    assert probe.in_flight == 1 and probe.queued == 1
     first.cancel()
     assert await asyncio.wait_for(second, 5) == 1
     assert await asyncio.wait_for(probe.next(), 5) == 2
+    assert probe.trace == trace(on_loop=1, delivered=2), probe.trace
     assert probe.missed == 0
 asyncio.run(main())
 "#);
@@ -234,12 +328,11 @@ asyncio.run(main())
 #[test]
 fn a_cancelled_read_comes_back_before_the_end() {
     run(cr#"
-import asyncio, time
 async def main():
     first = probe.next()
     await asyncio.sleep(0)
     probe.send(1)
-    time.sleep(0.3)
+    block_until(lambda: probe.queued == 1, "the set_result callback")
     first.cancel()
     probe.close()
     second = probe.next()
@@ -250,6 +343,7 @@ async def main():
         pass
     else:
         raise AssertionError("the stream should have ended")
+    assert probe.trace == trace(on_loop=1, delivered=1), probe.trace
 asyncio.run(main())
 "#);
 }
@@ -260,7 +354,6 @@ asyncio.run(main())
 #[test]
 fn reads_cancelled_before_delivery_lose_nothing() {
     run(cr#"
-import asyncio, sys, time
 async def main():
     interval = sys.getswitchinterval()
     first, second = probe.next(), probe.next()
@@ -269,19 +362,59 @@ async def main():
     try:
         probe.send(1)
         probe.send(2)
-        # Holds the GIL, so the first item waits to be delivered.
-        until = time.perf_counter() + 0.3
-        while time.perf_counter() < until:
-            pass
+        # Holds the GIL until the first read's task has returned its item,
+        # so its delivery is left waiting for the GIL.
+        deadline = time.monotonic() + 10
+        while probe.in_flight != 1:
+            assert time.monotonic() < deadline, "the first read never armed"
         first.cancel()
         second.cancel()
     finally:
         sys.setswitchinterval(interval)
     assert await asyncio.wait_for(probe.next(), 5) == 1
     assert await asyncio.wait_for(probe.next(), 5) == 2
+    # The first read's delivery took this path. The second read, cancelled
+    # but not yet aborted when the item came back, may take it too and put
+    # it back again; either way it is the only path besides the deliveries.
+    paths = probe.trace
+    assert paths["before_delivery"] in (1, 2), paths
+    assert paths == trace(before_delivery=paths["before_delivery"], delivered=2), paths
+    assert probe.queued == 2
     assert probe.missed == 0
     probe.send(3)
     assert await asyncio.wait_for(probe.next(), 5) == 3
+asyncio.run(main())
+"#);
+}
+
+/// A read whose `set_result` callback is queued on a loop that stopped and
+/// is never run again holds up reads from another loop: they warn once and
+/// keep waiting. Closing the stalled loop drops the callback, which counts
+/// the item as missed and lets the next read through.
+#[test]
+fn a_stalled_loop_warns_and_closing_it_counts_the_item() {
+    run(cr#"
+stalled = asyncio.new_event_loop()
+async def start():
+    pending = probe.next()
+    await asyncio.sleep(0)
+    return pending
+pending = stalled.run_until_complete(start())
+# The loop has stopped; the callback for this item is queued on it.
+probe.send(1)
+block_until(lambda: probe.queued == 1, "the set_result callback")
+probe.send(2)
+async def main():
+    later = asyncio.ensure_future(probe.next())
+    deadline = time.monotonic() + 10
+    while not probe.warned:
+        assert time.monotonic() < deadline, "no stall warning"
+        await asyncio.sleep(0.05)
+    assert not later.done()
+    stalled.close()
+    assert await asyncio.wait_for(later, 5) == 2
+    assert probe.missed == 1
+    assert probe.trace == trace(delivered=1), probe.trace
 asyncio.run(main())
 "#);
 }

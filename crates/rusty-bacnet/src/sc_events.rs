@@ -301,7 +301,8 @@ impl PyScEventIterator {
         )
     }
 
-    /// Events this iterator lost because it fell more than 64 behind. The
+    /// Events this iterator lost: because it fell more than 64 behind, or
+    /// dropped on the way to a read, as when its event loop closed first. The
     /// connector never waits for a reader; after a gap, read
     /// `connection_status()` for where the link stands.
     #[getter]

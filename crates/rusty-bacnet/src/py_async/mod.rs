@@ -126,11 +126,26 @@ where
 pub(crate) trait PutBack: Send + Sync + 'static {
     /// Called on the thread that found the future done, attached to the
     /// interpreter.
-    fn put_back(&self, py: Python<'_>, value: Py<PyAny>);
+    fn put_back(&self, py: Python<'_>, value: Py<PyAny>, via: Via);
 
     /// Called once a value has reached its future or gone to `put_back`,
     /// so the iterator can hand out the next one in order.
     fn settled(&self);
+
+    /// Called once the `set_result` callback is queued on the loop.
+    #[cfg(test)]
+    fn queued(&self) {}
+}
+
+/// Where a value that could no longer reach its future was handed back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Via {
+    /// The binding thread found the future already done.
+    BeforeDelivery,
+    /// The `set_result` callback found it done on the loop.
+    OnLoop,
+    /// The loop was closed, so no callback could be queued.
+    ClosedLoop,
 }
 
 /// [`future_into_py`], except that a successful value that finds its
@@ -251,7 +266,7 @@ impl Completion {
         };
         if done {
             if let Some(put_back) = put_back {
-                put_back.put_back(py, value.unbind());
+                put_back.put_back(py, value.unbind(), Via::BeforeDelivery);
                 put_back.settled();
             }
             return Ok(());
@@ -270,9 +285,14 @@ impl Completion {
                 return Err(err);
             }
             if let Some(put_back) = put_back {
-                put_back.put_back(py, value.unbind());
+                put_back.put_back(py, value.unbind(), Via::ClosedLoop);
                 put_back.settled();
             }
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(put_back) = &put_back {
+            put_back.queued();
         }
         Ok(())
     }
@@ -297,7 +317,7 @@ impl SetUnlessDone {
         if !future.call_method0(intern!(py, "done"))?.is_truthy()? {
             setter.call1((value,))?;
         } else if let Some(put_back) = &self.0 {
-            put_back.put_back(py, value.clone().unbind());
+            put_back.put_back(py, value.clone().unbind(), Via::OnLoop);
         }
         if let Some(put_back) = &self.0 {
             put_back.settled();

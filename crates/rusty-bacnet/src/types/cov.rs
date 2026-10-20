@@ -157,8 +157,9 @@ impl PyCovNotificationIterator {
         )
     }
 
-    /// Notifications this iterator lost because it fell behind the
-    /// client's COV channel.
+    /// Notifications this iterator lost: because it fell behind the client's
+    /// COV channel, or dropped on the way to a read, as when its event loop
+    /// closed first.
     #[getter]
     fn missed(&self) -> u64 {
         self.0.missed()

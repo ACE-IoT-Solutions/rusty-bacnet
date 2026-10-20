@@ -547,7 +547,9 @@ async for notification in notifications:
 One that falls behind the client's COV channel loses the oldest
 notifications and adds their count to `missed`. A cancelled `__anext__`
 loses nothing: a notification it was about to deliver comes back first on
-the next call (#1858). Raises `StopAsyncIteration` when the client is stopped.
+the next call (#1858). Like the other event iterators described under
+`connection_events()`, it completes one read at a time and belongs to one
+event loop. Raises `StopAsyncIteration` when the client is stopped.
 
 ---
 
@@ -933,10 +935,20 @@ A cancel before an event arrives loses nothing, and one that lands while an
 event is being delivered, as a timed-out `asyncio.wait_for` does, puts the
 event back in a one-event slot that the next `__anext__` returns first
 (#1858). Reads wait behind an event on its way back, so it keeps its place
-before later events and before the end of the iteration.
-Iteration ends
-(`StopAsyncIteration`) once the client stops; the iterator holds no reference
-to the client.
+before later events and before the end of the iteration; concurrent
+`__anext__` calls on one iterator complete one at a time.
+
+Read an iterator from one running event loop; `asyncio.run` and
+`async for` are fine. If a read's event loop stops for good while an
+event is on its way to it, as when a manual `run_until_complete` returns
+first, later reads from any other loop wait behind that event. They raise
+one `RuntimeWarning` after 5 seconds and keep waiting, since skipping the
+event would break the order. Closing the stopped loop drops the event,
+which then counts in `missed`, and the reads go on. `missed` counts events
+lost to lag and events dropped on their way to a read like this.
+
+Iteration ends (`StopAsyncIteration`) once the client stops; the iterator
+holds no reference to the client.
 
 `await client.connection_status()` returns a frozen `ScLinkStatus`: `state`
 (`disconnected`, `connecting`, `connected` or `disconnecting`), `active_hub`,
@@ -1395,7 +1407,8 @@ that the client never waits for. One that falls behind (256 I-Haves, 64
 network reports) loses the oldest, adds their count to its `missed` and
 goes on with the oldest it still has. As with `connection_events()`, a
 cancelled `__anext__` loses nothing: an item it was delivering comes back
-first on the next call. Iteration ends once the client stops.
+first on the next call, reads complete one at a time, and each iterator
+belongs to one event loop. Iteration ends once the client stops.
 
 `who_has_replies()` and `discover_routers()` hold the started client for
 their whole `timeout_ms`, so `stop()`, or leaving `async with`, waits for them

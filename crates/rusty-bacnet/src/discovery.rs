@@ -232,7 +232,8 @@ impl PyIHaveIterator {
         )
     }
 
-    /// I-Haves this iterator lost because it fell more than 256 behind.
+    /// I-Haves this iterator lost: because it fell more than 256 behind, or
+    /// dropped on the way to a read, as when its event loop closed first.
     #[getter]
     fn missed(&self) -> u64 {
         self.0.missed()
@@ -274,7 +275,8 @@ impl PyNetworkReportIterator {
         )
     }
 
-    /// Reports this iterator lost because it fell more than 64 behind.
+    /// Reports this iterator lost: because it fell more than 64 behind, or
+    /// dropped on the way to a read, as when its event loop closed first.
     #[getter]
     fn missed(&self) -> u64 {
         self.0.missed()

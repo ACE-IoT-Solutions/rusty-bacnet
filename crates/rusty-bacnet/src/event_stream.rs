@@ -15,17 +15,33 @@
 //! (#1858). Deliveries go one at a time: while one is in flight, from the
 //! channel to its asyncio future or back into the slot, the next `next()`
 //! waits, so a later item can't overtake one on its way back, and neither
-//! can the end of the stream.
+//! can the end of the stream. A delivery left unsettled for
+//! [`STALL_WARNING`], as when its event loop stopped with the `set_result`
+//! callback still queued, raises one `RuntimeWarning`; the read keeps
+//! waiting, since dropping the item would break the order.
+//!
+//! `missed` counts the items lost: to lag, and to a delivery dropped before
+//! its item reached a future or the slot (an aborted task, a failed
+//! conversion, a closed exit gate or a closed loop that dropped the queued
+//! callback).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use pyo3::prelude::*;
 use pyo3::IntoPyObjectExt;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::{Mutex, Notify};
 
-use crate::py_async::PutBack;
+use crate::py_async::{PutBack, Via};
+
+/// How long a read waits behind an unsettled delivery before it warns.
+#[cfg(not(test))]
+pub(crate) const STALL_WARNING: Duration = Duration::from_secs(5);
+/// Short in tests, so a stalled loop shows up quickly.
+#[cfg(test)]
+pub(crate) const STALL_WARNING: Duration = Duration::from_millis(300);
 
 #[cfg(test)]
 #[path = "event_stream_tests.rs"]
@@ -51,6 +67,28 @@ pub(crate) struct Redelivery {
     /// Deliveries handed out by `next()` and not yet settled: at most one,
     /// since `next()` hands out none while this is above zero.
     in_flight: AtomicUsize,
+    /// Set once the stall warning has gone out, so it goes out once.
+    warned: AtomicBool,
+    /// Which put-back and settle paths ran, for the tests.
+    #[cfg(test)]
+    trace: Trace,
+}
+
+/// Counts of the delivery paths taken, so tests can tell which one ran
+/// instead of trusting their timing.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Trace {
+    /// Put back by the binding thread: the future was done before delivery.
+    pub(crate) before_delivery: AtomicU64,
+    /// Put back by the `set_result` callback on the loop.
+    pub(crate) on_loop: AtomicU64,
+    /// Put back because the loop was closed.
+    pub(crate) closed_loop: AtomicU64,
+    /// Settled with the item in its future.
+    pub(crate) delivered: AtomicU64,
+    /// `set_result` callbacks queued on the loop.
+    pub(crate) queued: AtomicU64,
 }
 
 impl Redelivery {
@@ -60,6 +98,27 @@ impl Redelivery {
 
     fn take(&self) -> Option<Py<PyAny>> {
         self.item().take()
+    }
+
+    /// Raise one `RuntimeWarning` for a read held up behind a delivery that
+    /// has not settled, from a blocking thread so no runtime worker waits
+    /// for the GIL.
+    fn warn_stalled(&self) {
+        if self.warned.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        tokio::task::spawn_blocking(|| {
+            let _ = crate::py_async::attach(|py| {
+                PyErr::warn(
+                    py,
+                    &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+                    c"an event iterator's read is held up behind an earlier event that has not \
+                      reached its asyncio future, whose event loop may have stopped: read each \
+                      iterator from one running event loop",
+                    0,
+                )
+            });
+        });
     }
 
     fn put_back(&self, value: Py<PyAny>) {
@@ -93,6 +152,9 @@ impl Redelivery {
 struct Delivery {
     slot: Arc<Redelivery>,
     armed: AtomicBool,
+    /// Whether the item went back into the slot, for the tests' trace.
+    #[cfg(test)]
+    put: AtomicBool,
 }
 
 impl Delivery {
@@ -112,19 +174,44 @@ impl Delivery {
 }
 
 impl PutBack for Delivery {
-    fn put_back(&self, _py: Python<'_>, value: Py<PyAny>) {
+    fn put_back(&self, _py: Python<'_>, value: Py<PyAny>, via: Via) {
+        #[cfg(test)]
+        {
+            self.put.store(true, Ordering::Relaxed);
+            let trace = &self.slot.trace;
+            match via {
+                Via::BeforeDelivery => &trace.before_delivery,
+                Via::OnLoop => &trace.on_loop,
+                Via::ClosedLoop => &trace.closed_loop,
+            }
+            .fetch_add(1, Ordering::Relaxed);
+        }
+        let _ = via;
         self.slot.put_back(value);
     }
 
     fn settled(&self) {
+        #[cfg(test)]
+        if self.armed.load(Ordering::Acquire) && !self.put.load(Ordering::Relaxed) {
+            self.slot.trace.delivered.fetch_add(1, Ordering::Relaxed);
+        }
         self.settle();
+    }
+
+    #[cfg(test)]
+    fn queued(&self) {
+        self.slot.trace.queued.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 impl Drop for Delivery {
-    /// An item dropped on its way (an aborted task, a closed exit gate, an
-    /// error) settles here, so the count never stays raised.
+    /// An item dropped on its way (an aborted task, a failed conversion, a
+    /// closed exit gate, a closed loop that dropped the queued callback)
+    /// counts as missed and settles here, so the count never stays raised.
     fn drop(&mut self) {
+        if self.armed.load(Ordering::Acquire) {
+            self.slot.missed.fetch_add(1, Ordering::Relaxed);
+        }
         self.settle();
     }
 }
@@ -169,7 +256,7 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
         }
     }
 
-    /// Items lost so far: to lag, or to a full redelivery slot.
+    /// Items lost so far: to lag, or dropped on the way to a read.
     pub(crate) fn missed(&self) -> u64 {
         self.slot.missed.load(Ordering::Relaxed)
     }
@@ -199,6 +286,8 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
         let delivery = Arc::new(Delivery {
             slot: Arc::clone(&self.slot),
             armed: AtomicBool::new(false),
+            #[cfg(test)]
+            put: AtomicBool::new(false),
         });
         let hook: Arc<dyn PutBack> = delivery.clone();
         let next = async move {
@@ -211,7 +300,14 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
                 tokio::pin!(wake);
                 wake.as_mut().enable();
                 if slot.in_flight.load(Ordering::Acquire) > 0 {
-                    wake.await;
+                    // Bounded only to warn: the item ahead must come first.
+                    if tokio::time::timeout(STALL_WARNING, wake.as_mut())
+                        .await
+                        .is_err()
+                    {
+                        slot.warn_stalled();
+                        wake.await;
+                    }
                     continue;
                 }
                 if let Some(object) = slot.take() {
