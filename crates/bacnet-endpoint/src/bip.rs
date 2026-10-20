@@ -60,7 +60,7 @@ pub struct BipEndpointBuilder {
     database: Option<ObjectDatabase>,
     registered_network_port: Option<ObjectIdentifier>,
     identity: Option<crate::identity::DeviceIdentity>,
-    device_write_authorizer: Option<bacnet_server::mutation::MutationAuthorizer>,
+    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
     reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     reinit_password: Option<String>,
     source_audit_bindings: Vec<(ObjectIdentifier, SocketAddrV4)>,
@@ -182,7 +182,7 @@ impl BipEndpointBuilder {
     /// a bare transport cannot retain this session-owned authorization.
     pub fn device_writes(
         mut self,
-        authorizer: bacnet_server::mutation::MutationAuthorizer,
+        authorizer: bacnet_server::mutation::DeviceWriteAuthorizer,
     ) -> Self {
         self.device_write_authorizer = Some(authorizer);
         self

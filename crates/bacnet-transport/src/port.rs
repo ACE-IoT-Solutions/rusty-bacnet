@@ -9,6 +9,7 @@
 //! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
 pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseScopeGuard};
+pub use crate::principal::ScPrincipal;
 use bacnet_npdu::NpduLimits;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -95,6 +96,12 @@ impl DirectScIdentity {
     /// as an identity across processes; no ordering contract is exposed.
     pub fn incarnation(self) -> u64 {
         self.incarnation
+    }
+
+    /// This hop's leaf-certificate principal, without the connection
+    /// incarnation. For a routed request it is the forwarding router's.
+    pub fn principal(self) -> ScPrincipal {
+        ScPrincipal::from_leaf_sha256(self.leaf_sha256)
     }
 
     // Only the sc-tls direct accept and dial paths mint verified identities.
@@ -186,6 +193,14 @@ impl TransportProvenance {
             ProvenanceKind::DirectPeer(identity) => Some(identity),
             _ => None,
         }
+    }
+
+    /// The immediate direct-SC hop's leaf-certificate principal: for a routed
+    /// request, the router that forwarded it. `None` for every other ingress,
+    /// a hub's relayed origins and its own channel included. The server's
+    /// policy contexts withhold it from `principal()` for routed requests.
+    pub fn principal(self) -> Option<ScPrincipal> {
+        self.direct_sc_identity().map(DirectScIdentity::principal)
     }
 
     /// True only for the unverified legacy variant.

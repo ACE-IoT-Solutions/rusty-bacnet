@@ -157,8 +157,11 @@ async fn start_on(
             .with_max_apdu(u16::try_from(max_apdu_length).expect("Device APDU fits u16"))
             .expect("valid Device APDU"),
             audit_notification_sink: Some(oid(ObjectType::AUDIT_LOG, 7)),
-            audit_notification_authorizer: Some(Arc::new(|_| true)),
-            unconfirmed_audit_notification_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new()
+                    .audit_notification(|_| true)
+                    .unconfirmed_audit_notification(|_| true),
+            )),
             enable_event_enrollment: false,
             ..Default::default()
         },

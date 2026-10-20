@@ -521,7 +521,7 @@ async fn audit_reporter_list_value_bounds_preserve_empty_and_omit_large() {
 }
 
 #[tokio::test]
-async fn audit_reporter_list_policy_and_authorizer_denials_are_silent() {
+async fn audit_reporter_list_mode_and_policy_denials_are_silent() {
     for service in SERVICES {
         for policy_denial in [false, true] {
             let mut fixture = list_server(vec![1]).await;
@@ -529,7 +529,8 @@ async fn audit_reporter_list_policy_and_authorizer_denials_are_silent() {
                 fixture.server.config_mut().mutation_policy =
                     crate::mutation::MutationPolicy::DenyAll;
             } else {
-                fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false));
+                fixture.server.config_mut().policy =
+                    Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)));
             }
             let response = dispatch(
                 &fixture.server,

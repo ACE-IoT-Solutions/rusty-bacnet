@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::mutation::{
-    MutationAuthorizationContext, MutationAuthorizer, MutationTarget, MutationTrust,
+    DeviceWriteAuthorizer, MutationAuthorizationContext, MutationTarget, MutationTrust,
 };
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu};
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointEgress};
@@ -71,7 +71,7 @@ pub struct EndpointResponder {
     db: Option<Arc<RwLock<ObjectDatabase>>>,
     egress: EndpointEgress,
     open: AtomicBool,
-    device_writes: Option<(ObjectIdentifier, MutationAuthorizer)>,
+    device_writes: Option<(ObjectIdentifier, DeviceWriteAuthorizer)>,
     reinitialize: Option<(ReinitializeHandler, Option<String>)>,
     reinitialize_audit: Option<reinitialize::EndpointReinitializeAudit>,
     registered_port: Option<(ObjectIdentifier, std::sync::Weak<()>)>,
@@ -145,7 +145,7 @@ impl EndpointResponder {
     pub fn with_device_writes(
         mut self,
         device: ObjectIdentifier,
-        authorizer: MutationAuthorizer,
+        authorizer: DeviceWriteAuthorizer,
     ) -> Self {
         self.device_writes = Some((device, authorizer));
         self

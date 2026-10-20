@@ -126,8 +126,11 @@ async fn start_logger(
         .device(bacnet_objects::DeviceIdentity::new(20, 0).unwrap())
         .database(logger_db)
         .audit_notification_sink(oid(ObjectType::AUDIT_LOG, 1))
-        .audit_notification_authorizer(move |_| policy.load(Ordering::Acquire))
-        .unconfirmed_audit_notification_authorizer(|_| true)
+        .policy(
+            bacnet_server::FnPolicy::new()
+                .audit_notification(move |_| policy.load(Ordering::Acquire))
+                .unconfirmed_audit_notification(|_| true),
+        )
         .build()
         .await
         .unwrap()

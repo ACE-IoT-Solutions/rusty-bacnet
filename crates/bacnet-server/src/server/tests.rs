@@ -10,7 +10,7 @@ fn server_config_cov_retry_timeout_default() {
 fn server_config_time_sync_callback_default_is_none() {
     let config = ServerConfig::default();
     assert!(config.on_time_sync.is_none());
-    assert!(config.life_safety_operation_authorizer.is_none());
+    assert!(config.policy.is_none());
 }
 
 #[tokio::test]
@@ -82,19 +82,20 @@ async fn default_and_clockless_start_bind_truthful_device_clock() {
 }
 
 #[test]
-fn all_builders_assign_life_safety_operation_authorizer() {
-    let generic =
-        BACnetServer::<BipTransport>::generic_builder().life_safety_operation_authorizer(|_| true);
-    assert!(generic.config.life_safety_operation_authorizer.is_some());
+fn all_builders_assign_the_policy() {
+    let generic = BACnetServer::<BipTransport>::generic_builder()
+        .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
+    assert!(generic.config.policy.is_some());
 
-    let bip =
-        BACnetServer::<BipTransport>::bip_builder().life_safety_operation_authorizer(|_| true);
-    assert!(bip.config.life_safety_operation_authorizer.is_some());
+    let bip = BACnetServer::<BipTransport>::bip_builder()
+        .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
+    assert!(bip.config.policy.is_some());
 
     #[cfg(feature = "sc-tls")]
     {
-        let sc = BACnetServer::sc_builder().life_safety_operation_authorizer(|_| true);
-        assert!(sc.config.life_safety_operation_authorizer.is_some());
+        let sc = BACnetServer::sc_builder()
+            .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
+        assert!(sc.config.policy.is_some());
     }
 }
 

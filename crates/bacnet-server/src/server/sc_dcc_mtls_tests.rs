@@ -9,6 +9,9 @@ const ENABLE: EnableDisable = EnableDisable::ENABLE;
 mod support;
 use support::{bounded, run, Certificates, Outcome, PASSWORD, PEERS};
 
+#[path = "sc_policy_principal_tests.rs"]
+mod policy_principal;
+
 #[tokio::test]
 async fn sc_dcc_mtls_requires_client_and_server_trust() {
     run(async |f| {

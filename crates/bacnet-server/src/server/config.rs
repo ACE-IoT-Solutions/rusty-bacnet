@@ -1,5 +1,6 @@
 use super::*;
-use crate::mutation::{MutationAuthorizationContext, MutationAuthorizer, MutationPolicy};
+use crate::mutation::MutationPolicy;
+use crate::ServerPolicy;
 
 /// Server configuration.
 #[derive(Clone)]
@@ -70,47 +71,35 @@ pub struct ServerConfig {
     /// task; its database edits skip the COV, event and Audit work of
     /// [`BACnetServer::write_local`], so apply changes that need it there
     /// afterwards. Without [`reinit_password`](Self::reinit_password) any peer
-    /// reaches it, and neither the mutation policy nor the mutation authorizer
-    /// covers this service, so restrict sources through the context. Refuse
+    /// reaches it, and neither [`mutation_policy`](Self::mutation_policy) nor
+    /// [`policy`](Self::policy) covers this service, so restrict sources
+    /// through the context. Refuse
     /// with [`Error::Protocol`]: a panic or an [`Error::Reject`] is answered
     /// SERVICES / OTHER.
     pub on_reinitialize: Option<ReinitializeHandler>,
     /// Local mutation authorization mode (default: permissive). SC mTLS channel/peer
-    /// authentication is not service authorization; addresses here are claimed,
-    /// never certificate principals. See [`MutationPolicy`]. Each decision also
-    /// carries the reassembled ingress [`TransportProvenance`](bacnet_transport::port::TransportProvenance)
-    /// snapshot and the derived channel/relay [`MutationTrust`](crate::mutation::MutationTrust)
-    /// scope (never leaf identity); unknown origin never satisfies a
-    /// baseline-only allow rule. Denials mutate nothing and write no audit log.
-    /// `DenyAll` also denies each Channel write of an inbound WriteGroup,
-    /// counted in `BACnetServer::mutation_decision_counters` (#1319).
+    /// authentication is not service authorization. See [`MutationPolicy`].
+    /// `DenyAll` denies every covered mutation without asking
+    /// [`policy`](Self::policy), each Channel write of an inbound WriteGroup
+    /// included, counted in `BACnetServer::mutation_decision_counters` (#1319).
+    /// Denials mutate nothing and write no audit log.
     pub mutation_policy: MutationPolicy,
-    /// Opt-in mutation authorizer; `None` allows only in permissive mode.
-    /// See [`MutationAuthorizer`]. It also decides each Channel write of an
-    /// inbound WriteGroup, with no invoke ID and the unconfirmed service in its
-    /// context, so it can allow some Channels and not others (#1319).
-    pub mutation_authorizer: Option<MutationAuthorizer>,
-    /// Optional LifeSafetyOperation authorization policy.
-    ///
-    /// Absence is fail-closed: requests receive SERVICES /
-    /// SERVICE_REQUEST_DENIED before object mutation.
-    pub life_safety_operation_authorizer: Option<LifeSafetyOperationAuthorizer>,
+    /// The application's authorization decisions (default: none). See
+    /// [`ServerPolicy`] for what it decides, each method's default and the
+    /// direct-SC principal its contexts carry. `None` behaves as those
+    /// defaults: covered mutations are allowed (without being decoded for
+    /// authorization first), and LifeSafetyOperation and both
+    /// AuditNotification services are denied.
+    pub policy: Option<Arc<dyn ServerPolicy>>,
     /// Exactly one explicitly configured Audit Log notification sink.
     ///
     /// Absence is fail-closed; the server never selects a sink by database
-    /// iteration order.
+    /// iteration order. Storing a notification also needs
+    /// [`policy`](Self::policy) to authorize it.
     /// A built-in AuditLogObject configured with `set_member_of` also forwards
     /// record-changing accepted batches once, after commit, to that parent using
     /// a configured DeviceBinding. No backlog, retries, or durable send progress.
     pub audit_notification_sink: Option<ObjectIdentifier>,
-    /// Optional fast, nonblocking ConfirmedAuditNotification authorizer.
-    ///
-    /// Absence, `false`, or a panic denies the request before mutation.
-    pub audit_notification_authorizer: Option<AuditNotificationAuthorizer>,
-    /// Optional fast, nonblocking UnconfirmedAuditNotification authorizer.
-    ///
-    /// Absence, `false`, or a panic silently denies the request before mutation.
-    pub unconfirmed_audit_notification_authorizer: Option<UnconfirmedAuditNotificationAuthorizer>,
     /// Optional password required for DeviceCommunicationControl.
     pub dcc_password: Option<String>,
     /// Local DCC authorization. Supplying a password alone does not enable DCC.
@@ -210,32 +199,8 @@ impl std::fmt::Debug for ServerConfig {
                 "on_reinitialize",
                 &self.on_reinitialize.as_ref().map(|_| "<callback>"),
             )
-            .field(
-                "mutation_authorizer",
-                &self.mutation_authorizer.as_ref().map(|_| "<callback>"),
-            )
-            .field(
-                "life_safety_operation_authorizer",
-                &self
-                    .life_safety_operation_authorizer
-                    .as_ref()
-                    .map(|_| "<callback>"),
-            )
+            .field("policy", &self.policy.as_ref().map(|_| "<policy>"))
             .field("audit_notification_sink", &self.audit_notification_sink)
-            .field(
-                "audit_notification_authorizer",
-                &self
-                    .audit_notification_authorizer
-                    .as_ref()
-                    .map(|_| "<callback>"),
-            )
-            .field(
-                "unconfirmed_audit_notification_authorizer",
-                &self
-                    .unconfirmed_audit_notification_authorizer
-                    .as_ref()
-                    .map(|_| "<callback>"),
-            )
             .field("dcc_password", &self.dcc_password.as_ref().map(|_| "***"))
             .field("dcc_policy", &self.dcc_policy)
             .field("dcc_source_restriction", &self.dcc_source_restriction)
@@ -254,6 +219,17 @@ impl std::fmt::Debug for ServerConfig {
             .field("cov_policy", &self.cov_policy)
             .field("request_admission_policy", &self.request_admission_policy)
             .finish()
+    }
+}
+
+impl ServerConfig {
+    /// The installed policy, if it decides mutations
+    /// ([`ServerPolicy::decides_mutations`]). `None` takes the no-policy
+    /// path: allowed without decoding for authorization.
+    pub(crate) fn mutation_decider(&self) -> Option<&dyn ServerPolicy> {
+        self.policy
+            .as_deref()
+            .filter(|policy| policy.decides_mutations())
     }
 }
 
@@ -279,11 +255,8 @@ impl Default for ServerConfig {
             on_time_sync: None,
             on_reinitialize: None,
             mutation_policy: MutationPolicy::default(),
-            mutation_authorizer: None,
-            life_safety_operation_authorizer: None,
+            policy: None,
             audit_notification_sink: None,
-            audit_notification_authorizer: None,
-            unconfirmed_audit_notification_authorizer: None,
             dcc_password: None,
             dcc_policy: DccPolicy::default(),
             dcc_source_restriction: None,
@@ -301,20 +274,18 @@ impl Default for ServerConfig {
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
     /// Select local mutation authorization (default: [`MutationPolicy::Permissive`]).
-    /// SC mTLS channel/peer authentication is not service authorization; identities
-    /// here are claimed link/routed addresses, never certificate principals.
+    /// SC mTLS channel/peer authentication is not service authorization.
     pub fn mutation_policy(mut self, policy: MutationPolicy) -> Self {
         self.config.mutation_policy = policy;
         self
     }
 
-    /// Set opt-in mutation policy. See [`MutationAuthorizer`] for callback rules,
-    /// the Channel writes of an inbound WriteGroup among them (#1319).
-    pub fn mutation_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&MutationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.mutation_authorizer = Some(Arc::new(authorizer));
+    /// Install the server's authorization policy; see [`ServerPolicy`], or
+    /// [`FnPolicy`](crate::FnPolicy) to build one from closures.
+    /// It replaces any policy set before; put every decision in one policy
+    /// (one `FnPolicy` chain) rather than calling this twice.
+    pub fn policy(mut self, policy: impl ServerPolicy) -> Self {
+        self.config.policy = Some(Arc::new(policy));
         self
     }
 }
@@ -385,8 +356,7 @@ impl BipServerBuilder {
     }
 
     /// Select local mutation authorization (default: [`MutationPolicy::Permissive`]).
-    /// SC mTLS channel/peer authentication is not service authorization; identities
-    /// here are claimed link/routed addresses, never certificate principals.
+    /// SC mTLS channel/peer authentication is not service authorization.
     ///
     /// ```
     /// use bacnet_server::{mutation::MutationPolicy, server::BACnetServer};
@@ -397,18 +367,19 @@ impl BipServerBuilder {
         self
     }
 
-    /// Set opt-in mutation policy. See [`MutationAuthorizer`] for callback rules,
-    /// the Channel writes of an inbound WriteGroup among them (#1319).
+    /// Install the server's authorization policy; see [`ServerPolicy`], or
+    /// [`FnPolicy`](crate::FnPolicy) to build one from closures.
+    /// It replaces any policy set before; put every decision in one policy
+    /// (one `FnPolicy` chain) rather than calling this twice.
     ///
     /// ```
     /// use bacnet_server::server::BACnetServer;
-    /// let builder = BACnetServer::bip_builder().mutation_authorizer(|_| false);
+    /// use bacnet_server::FnPolicy;
+    /// // Refuse every remote write; LifeSafety and Audit keep denying.
+    /// let builder = BACnetServer::bip_builder().policy(FnPolicy::new().mutation(|_| false));
     /// ```
-    pub fn mutation_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&MutationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.mutation_authorizer = Some(Arc::new(authorizer));
+    pub fn policy(mut self, policy: impl ServerPolicy) -> Self {
+        self.config.policy = Some(Arc::new(policy));
         self
     }
 }
@@ -416,20 +387,18 @@ impl BipServerBuilder {
 #[cfg(feature = "sc-tls")]
 impl ScServerBuilder {
     /// Select local mutation authorization (default: [`MutationPolicy::Permissive`]).
-    /// SC mTLS channel/peer authentication is not service authorization; identities
-    /// here are claimed link/routed addresses, never certificate principals.
+    /// SC mTLS channel/peer authentication is not service authorization.
     pub fn mutation_policy(mut self, policy: MutationPolicy) -> Self {
         self.config.mutation_policy = policy;
         self
     }
 
-    /// Set opt-in mutation policy. See [`MutationAuthorizer`] for callback rules,
-    /// the Channel writes of an inbound WriteGroup among them (#1319).
-    pub fn mutation_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&MutationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.mutation_authorizer = Some(Arc::new(authorizer));
+    /// Install the server's authorization policy; see [`ServerPolicy`], or
+    /// [`FnPolicy`](crate::FnPolicy) to build one from closures.
+    /// It replaces any policy set before; put every decision in one policy
+    /// (one `FnPolicy` chain) rather than calling this twice.
+    pub fn policy(mut self, policy: impl ServerPolicy) -> Self {
+        self.config.policy = Some(Arc::new(policy));
         self
     }
 }
