@@ -167,8 +167,8 @@ semihosting = { version = "0.1.25", features = ["stdio"] }
 # Unsafe policy (#1880). `deny` is the floor for every target. Each library
 # and binary root with no unsafe raises it to `#![forbid(unsafe_code)]`;
 # the rest (bacnet-transport's OS FFI, the firmware runtime hooks, and under
-# tests/ the global allocators) keeps `deny`, with a narrow `#[allow(unsafe_code)]` on each item that needs
-# it, never on a module.
+# tests/ the global allocators) keeps `deny`, with a narrow
+# `#[allow(unsafe_code)]` on each item that needs it, never on a module.
 # Clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:` comment on
 # every unsafe block and impl, `missing_safety_doc` (private fns too, through
 # `check-private-items` in clippy.toml) a `# Safety` section on every unsafe

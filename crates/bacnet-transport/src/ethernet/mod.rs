@@ -351,6 +351,18 @@ mod transport {
         ))
     }
 
+    /// A failed interface lookup (`what`) for `name`. No such device or
+    /// address, or a name the kernel can't take, is `NotFound`; anything
+    /// else, such as running out of file descriptors, keeps its own kind.
+    pub(super) fn lookup_error(name: &str, what: &str, errno: nix::errno::Errno) -> Error {
+        use nix::errno::Errno;
+        let kind = match errno {
+            Errno::ENODEV | Errno::ENXIO | Errno::EINVAL => std::io::ErrorKind::NotFound,
+            other => std::io::Error::from(other).kind(),
+        };
+        interface_error(name, kind, format_args!("{what}: {errno}"))
+    }
+
     /// The AF_PACKET link address of the interface `name` (#1883): its index
     /// from `if_nametoindex`, and its MAC from that index's packet entry in
     /// `getifaddrs`. The entry is also the address the socket binds to. Its
@@ -358,10 +370,10 @@ mod transport {
     /// own, so nix's safe `bind` needs no hand-built `sockaddr_ll`.
     pub(super) fn interface_link(name: &str) -> Result<LinkAddr, Error> {
         use std::io::ErrorKind;
-        let index = if_nametoindex(name)
-            .map_err(|errno| interface_error(name, ErrorKind::NotFound, errno))?;
+        let index =
+            if_nametoindex(name).map_err(|errno| lookup_error(name, "interface index", errno))?;
         let link = getifaddrs()
-            .map_err(|errno| interface_error(name, ErrorKind::Other, errno))?
+            .map_err(|errno| lookup_error(name, "interface addresses", errno))?
             .filter_map(|entry| entry.address?.as_link_addr().copied())
             .find(|link| link.ifindex() == index as usize)
             .ok_or_else(|| interface_error(name, ErrorKind::NotFound, "no link-layer address"))?;
@@ -441,6 +453,34 @@ mod transport {
         }
     }
 
+    /// Fewer bytes than the kernel charges a receive buffer for any one
+    /// queued frame: its `sk_buff` bookkeeping alone is more.
+    const MIN_QUEUED_FRAME_COST: usize = 256;
+
+    /// Read and drop every frame already queued on the non-blocking
+    /// `socket`, and say how many went. A short buffer is enough: a packet
+    /// socket discards what doesn't fit. The reads stop at the most frames
+    /// the receive buffer could have held, so a steady stream on the bound
+    /// interface can't keep the drain going.
+    pub(super) fn drain_queued_frames(socket: &Socket) -> usize {
+        let most = socket
+            .recv_buffer_size()
+            .map_or(4096, |bytes| bytes / MIN_QUEUED_FRAME_COST + 1);
+        let mut reader = socket;
+        let mut scratch = [0u8; 64];
+        let mut dropped = 0;
+        while dropped < most {
+            match reader.read(&mut scratch) {
+                Ok(_) => dropped += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                // WouldBlock: the queue is empty. Any other error is the
+                // receive loop's to report.
+                Err(_) => break,
+            }
+        }
+        dropped
+    }
+
     impl Drop for EthernetTransport {
         fn drop(&mut self) {
             self.abort();
@@ -477,10 +517,11 @@ mod transport {
                 "Ethernet transport binding"
             );
 
-            // A raw AF_PACKET socket that sees every frame, header included.
+            // A raw AF_PACKET socket that sees every frame, header included,
+            // opened non-blocking (and, by socket2, close-on-exec).
             let socket = Socket::new(
                 Domain::PACKET,
-                Type::RAW,
+                Type::RAW.nonblocking(),
                 Some(Protocol::from(i32::from(ETH_P_ALL_BE))),
             )
             .map_err(Error::Transport)?;
@@ -492,7 +533,15 @@ mod transport {
             // and a send goes out on it with no address of its own.
             nix::sys::socket::bind(socket.as_raw_fd(), &link)
                 .map_err(|errno| Error::Transport(errno.into()))?;
-            socket.set_nonblocking(true).map_err(Error::Transport)?;
+            // Until the bind, the socket took frames from every interface,
+            // so drop whatever queued: none of it reaches classification
+            // or draws an XID or TEST reply. Opening with protocol zero and
+            // binding with ETH_P_ALL would close the window instead, but
+            // that bind needs a hand-built `sockaddr_ll`, which is unsafe.
+            let dropped = drain_queued_frames(&socket);
+            if dropped > 0 {
+                debug!(dropped, "Dropped frames queued before the bind");
+            }
 
             let socket = Arc::new(socket);
             self.socket = Some(Arc::clone(&socket));

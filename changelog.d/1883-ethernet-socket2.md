@@ -1,7 +1,7 @@
 ---
 section: Changed
 ---
-- The Linux Ethernet transport opens, filters and binds its AF_PACKET socket
-  through socket2 and nix with no unsafe code, reads the interface index and
-  MAC through nix, sends on the bound socket, and reports a missing interface
-  as a clear error before opening a socket (#1883).
+- The Linux Ethernet transport's AF_PACKET socket goes through socket2 and
+  nix with no unsafe code, is close-on-exec, and drops frames queued before
+  its bind. A missing interface, or one without a 6-octet MAC (tun,
+  WireGuard), fails start with a clear error (#1883).

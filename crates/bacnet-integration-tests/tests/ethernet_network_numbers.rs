@@ -128,7 +128,7 @@ impl RawLink {
         assert_eq!(self.0.send(&frame).unwrap(), frame.len());
     }
 
-    /// The next frame on the interface sent from `source`, within the
+    /// The next BACnet LLC frame on the interface sent from `source`, within the
     /// fixture's progress guard.
     fn next_from(&self, source: &[u8]) -> Vec<u8> {
         use std::io::Read;
@@ -139,7 +139,9 @@ impl RawLink {
             let Ok(read) = (&self.0).read(&mut buffer) else {
                 continue;
             };
-            if read >= 12 && buffer[6..12] == *source {
+            // BACnet LLC frames only (DSAP 0x82), so ARP or IPv6 neighbour
+            // traffic from the same station is skipped.
+            if read >= 15 && buffer[6..12] == *source && buffer[14] == 0x82 {
                 return buffer[..read].to_vec();
             }
         }

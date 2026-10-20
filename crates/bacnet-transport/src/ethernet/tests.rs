@@ -180,6 +180,43 @@ fn a_missing_interface_is_a_clear_error() {
             other => panic!("{name:?}: {other:?}"),
         }
     }
+    // A lookup that fails for want of a resource is not a missing interface.
+    use nix::errno::Errno;
+    for (errno, kind) in [
+        (Errno::ENODEV, std::io::ErrorKind::NotFound),
+        (Errno::ENXIO, std::io::ErrorKind::NotFound),
+        (Errno::EINVAL, std::io::ErrorKind::NotFound),
+        (Errno::EMFILE, std::io::Error::from(Errno::EMFILE).kind()),
+        (Errno::ENOMEM, std::io::ErrorKind::OutOfMemory),
+    ] {
+        let Error::Transport(error) = super::transport::lookup_error("eth9", "index", errno) else {
+            panic!("{errno}");
+        };
+        assert_eq!(error.kind(), kind, "{errno}");
+        assert!(error.to_string().contains("\"eth9\""), "{error}");
+    }
+    assert_ne!(
+        std::io::Error::from(Errno::EMFILE).kind(),
+        std::io::ErrorKind::NotFound
+    );
+}
+
+/// #1883: the drain after the bind empties the queue, a datagram longer
+/// than its buffer included, and stops at an empty one. A Unix datagram
+/// pair stands in for the packet socket: delivery is synchronous, and a
+/// short read discards the rest of a datagram as it does a frame.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_drain_drops_every_queued_frame_and_stops() {
+    let (sender, receiver) =
+        socket2::Socket::pair(socket2::Domain::UNIX, socket2::Type::DGRAM, None).unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    assert_eq!(super::transport::drain_queued_frames(&receiver), 0);
+    for frame in [&[1u8; 60][..], &[2; 1514], &[3; 17]] {
+        sender.send(frame).unwrap();
+    }
+    assert_eq!(super::transport::drain_queued_frames(&receiver), 3);
+    assert_eq!(super::transport::drain_queued_frames(&receiver), 0);
 }
 
 /// #1883: the loopback interface, present on every Linux host and
