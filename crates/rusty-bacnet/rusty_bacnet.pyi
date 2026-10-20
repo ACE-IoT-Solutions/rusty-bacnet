@@ -4496,6 +4496,8 @@ class BACnetServer:
         name: str,
         *,
         present_value: Optional[tuple[float, float]] = None,
+        default_color: Optional[tuple[float, float]] = None,
+        storage_path: Optional[str] = None,
         value_source_tracking: bool = False,
         tags: Optional[list[NameValue]] = None,
         profile_location: Optional[str] = None,
@@ -4506,7 +4508,16 @@ class BACnetServer:
         pair, each 0.0 to 1.0 (BacnetProtocolError otherwise). It reads as a
         ``list`` of two ``real`` values. ``value_source_tracking`` serves
         Value_Source, the writer of the last Present_Value or Color_Command
-        that set it. Profile keywords as on ``add_analog_input``."""
+        that set it. Profile keywords as on ``add_analog_input``.
+
+        At start the server drives the output to ``default_color`` (D65
+        unless given), at once. ``(0.0, 0.0)`` keeps the colour from before
+        the restart instead, which needs ``storage_path``: the file the
+        object keeps Present_Value in. With nothing stored, In_Progress reads
+        NOT_CONTROLLED until a write drives the output. A ``present_value``
+        drives the output itself, so the start leaves it; a colour the
+        storage holds wins over it. A file that doesn't load raises
+        BacnetError."""
         ...
     def add_color_temperature(
         self,
@@ -4516,6 +4527,8 @@ class BACnetServer:
         present_value: Optional[int] = None,
         min_pres_value: Optional[int] = None,
         max_pres_value: Optional[int] = None,
+        default_color_temperature: Optional[int] = None,
+        storage_path: Optional[str] = None,
         value_source_tracking: bool = False,
         tags: Optional[list[NameValue]] = None,
         profile_location: Optional[str] = None,
@@ -4526,7 +4539,11 @@ class BACnetServer:
         ``min_pres_value`` and ``max_pres_value`` narrow the 1000 to 30000
         range and come together (ValueError otherwise); ``present_value`` is
         clamped to them. A value out of range raises BacnetProtocolError.
-        ``value_source_tracking`` is as on ``add_color``."""
+        ``value_source_tracking`` is as on ``add_color``.
+        ``default_color_temperature`` (4000 unless given, clamped to the
+        limits) and ``storage_path`` work as ``default_color`` and
+        ``storage_path`` on ``add_color``, with 0 keeping the temperature
+        from before the restart."""
         ...
     def add_channel(
         self,

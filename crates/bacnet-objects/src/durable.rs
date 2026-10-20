@@ -206,22 +206,40 @@ impl Event {
 #[derive(Clone)]
 pub struct SaveWait {
     event: Arc<Event>,
+    /// A second wait this one also ends after, when an object that keeps
+    /// two kinds of state in storage settles both ([`and`](Self::and)).
+    then: Option<Arc<SaveWait>>,
 }
 
 impl SaveWait {
     pub(crate) fn new(event: Arc<Event>) -> Self {
-        Self { event }
+        Self { event, then: None }
+    }
+
+    /// A wait that ends once both this wait and `other` have.
+    pub(crate) fn and(self, other: SaveWait) -> SaveWait {
+        let then = match self.then {
+            Some(then) => SaveWait::clone(&then).and(other),
+            None => other,
+        };
+        SaveWait {
+            event: self.event,
+            then: Some(Arc::new(then)),
+        }
     }
 
     /// Whether the wait is already over.
     pub fn is_ready(&self) -> bool {
-        self.event.is_set()
+        self.event.is_set() && self.then.as_ref().is_none_or(|then| then.is_ready())
     }
 
     /// Block this thread until the wait is over, for a caller that waits
     /// off its async runtime, such as on Tokio's blocking pool.
     pub fn block(&self) {
         self.event.wait_blocking();
+        if let Some(then) = &self.then {
+            then.block();
+        }
     }
 }
 
@@ -237,14 +255,19 @@ impl Future for SaveWait {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let mut state = lock(&self.event.state);
-        if state.done {
-            return Poll::Ready(());
+        {
+            let mut state = lock(&self.event.state);
+            if !state.done {
+                if !state.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+                    state.wakers.push(cx.waker().clone());
+                }
+                return Poll::Pending;
+            }
         }
-        if !state.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-            state.wakers.push(cx.waker().clone());
+        match &self.then {
+            Some(then) => Pin::new(&mut SaveWait::clone(then)).poll(cx),
+            None => Poll::Ready(()),
         }
-        Poll::Pending
     }
 }
 

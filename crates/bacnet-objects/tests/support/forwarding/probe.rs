@@ -236,6 +236,9 @@ impl BACnetObject for Probe {
         let waker = waker.as_deref().map(address);
         self.called("bind_deadline_waker_internal", (waker,));
     }
+    fn start_output_internal(&mut self) {
+        self.called("start_output_internal", ());
+    }
     fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
         self.called("advance_monotonic_time_internal", (now,));
         true

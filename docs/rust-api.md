@@ -5184,9 +5184,45 @@ Color_Command that set Present_Value, and only that writer may correct it (see
 Two choices here go past the addendum's text. A new object's
 `Default_Fade_Time` is 100 ms, the shortest the range allows, as Lighting
 Output's is: the addendum gives no initial value, and 0 lies outside its
-range. Neither object models a restart, so `Default_Color` and
-`Default_Color_Temperature` are only stored, and In_Progress never reads
-NOT_CONTROLLED or OTHER.
+range. In_Progress never reads OTHER.
+
+Both objects model the device's start (#1526). A new object's In_Progress
+reads NOT_CONTROLLED: nothing has driven its output yet. As the server
+starts, before it shares the database, it calls `start_output` on each colour
+object (an application running one without a server calls it itself):
+
+- An output a Present_Value write, or a Color_Command that set
+  Present_Value, has already driven is left alone, so a value the
+  application sets before the start stands.
+- A non-zero `Default_Color` or `Default_Color_Temperature` (clamped to the
+  limits) becomes Present_Value at once and In_Progress reads IDLE. The
+  addendum gives the start no fade, so neither `Transition` nor
+  `Default_Fade_Time` applies.
+- A zero default, `Default_Color` (0, 0) or a `Default_Color_Temperature` of
+  0, keeps the value from before the restart (Clauses 12.X.8 and 12.Y.4):
+  the output takes the Present_Value the object brought back from its
+  storage and reads IDLE. With nothing brought back it stays NOT_CONTROLLED
+  until a write drives it; a STOP with nothing moving doesn't.
+
+`set_default_color` and `set_default_color_temperature` set the defaults as a
+write would. `with_output_persistence(persistence)`, called on a newly built
+object, keeps Present_Value in an `Arc<dyn ColorOutputPersistence>`
+(`bacnet_objects::color`) and takes the value saved there for the object as
+Present_Value; `output_restored` says whether it did. The object saves each new
+Present_Value, whether a write, a command, a STOP or the start set it, on its
+own writer thread, the one the durable objects share (see
+`bacnet_objects::durable`), so nothing touches storage under the database
+guard. Unlike a Notification Class's Recipient_List, a change doesn't wait
+for its save and isn't refused when the save fails: the value is a live
+output. Saves coalesce, a failed one is logged and tried again with the next
+change, at `stop()` (which waits for the saves) and as the object drops, and
+`wait_for_output_saves` blocks until the queued ones have run. Tags storage
+(`with_tags_persistence`) and Present_Value storage combine.
+`FileColorOutputPersistence::new(path)` is the bundled backend: a tagged
+header with the object identifier, a kind octet and the value (two
+big-endian REALs, or a 32-bit kelvin), replaced whole through a synchronized
+temporary file. A file of the wrong size, kind or object, or holding a value
+out of range, fails `with_output_persistence` with an error.
 
 The colour properties use their standard identifiers: `DEFAULT_COLOR` is
 4194330, `DEFAULT_COLOR_TEMPERATURE` 4194331 and `COLOR_COMMAND` 4194334

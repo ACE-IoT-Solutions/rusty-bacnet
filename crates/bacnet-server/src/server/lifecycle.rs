@@ -60,6 +60,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
 
         let (clock, monotonic) = period::install_database_clocks(&mut db, clock_config);
+        // The device is starting: colour outputs go to their defaults
+        // (#1526). The database isn't shared yet, so no lock is taken.
+        db.for_each_object_mut(|_, object| object.start_output_internal());
         let membership = crate::membership::install_waker(&mut db);
 
         let (network, mut apdu_rx, audit_routes, network_controls) =

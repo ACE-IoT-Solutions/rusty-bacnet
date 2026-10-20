@@ -265,3 +265,7 @@ async fn a_finer_tracking_value_subscriber_samples_a_temperature_ramp_more_often
     }
     server.stop().await.unwrap();
 }
+
+// The start of the device, on the same server harness (#1526).
+#[path = "color_start_tests.rs"]
+mod start_tests;

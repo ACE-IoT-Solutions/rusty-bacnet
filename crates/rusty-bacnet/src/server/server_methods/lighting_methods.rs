@@ -3,7 +3,7 @@
 //! an output shows, and the profile and Value_Source keywords (#1552, #1553).
 use super::super::*;
 use crate::object_options::provision_profile;
-use bacnet_objects::color::{ColorObject, ColorTemperatureObject};
+use bacnet_objects::color::{ColorObject, ColorTemperatureObject, FileColorOutputPersistence};
 use bacnet_objects::lighting::{ColorLink, ColorOverride, OutputColor};
 use bacnet_types::constructed::BACnetXyColor;
 use bacnet_types::error::Error;
@@ -111,9 +111,17 @@ impl BACnetServer {
     ///
     /// `value_source_tracking` serves Value_Source, the writer of the last
     /// Present_Value or Color_Command that set it (#1552).
+    ///
+    /// At start the server drives the output to `default_color` (D65 unless
+    /// given), at once (#1526). `(0.0, 0.0)` instead keeps the colour from
+    /// before the restart, which needs `storage_path` (a `str`): the file the
+    /// object keeps Present_Value in. With nothing stored, In_Progress reads
+    /// NOT_CONTROLLED until a write drives the output. A `present_value`
+    /// drives the output itself, so the start leaves it; a colour storage
+    /// holds wins over it.
     #[pyo3(signature = (
-        instance, name, *, present_value=None, value_source_tracking=false,
-        tags=None, profile_location=None, profile_name=None
+        instance, name, *, present_value=None, default_color=None, storage_path=None,
+        value_source_tracking=false, tags=None, profile_location=None, profile_name=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn add_color(
@@ -121,16 +129,19 @@ impl BACnetServer {
         instance: u32,
         name: &str,
         present_value: Option<(f32, f32)>,
+        default_color: Option<(f32, f32)>,
+        storage_path: Option<&str>,
         value_source_tracking: bool,
         tags: Option<&Bound<'_, PyAny>>,
         profile_location: Option<String>,
         profile_name: Option<String>,
     ) -> PyResult<()> {
-        let mut obj = ColorObject::new(instance, name).map_err(to_py_err)?;
-        if let Some((x, y)) = present_value {
-            obj.set_present_value(BACnetXyColor::new(x, y))
-                .map_err(to_py_err)?;
-        }
+        let output = ColorOutput {
+            present_value: present_value.map(|(x, y)| BACnetXyColor::new(x, y)),
+            default: default_color.map(|(x, y)| BACnetXyColor::new(x, y)),
+            storage_path,
+        };
+        let mut obj = color(instance, name, output).map_err(to_py_err)?;
         obj.set_value_source_tracking(value_source_tracking);
         provision_profile(tags, profile_location, profile_name, |p| obj.set_profile(p))?;
         self.push_pending(Box::new(obj))
@@ -144,9 +155,15 @@ impl BACnetServer {
     /// (both or neither); `present_value` is clamped to them. A value out of
     /// range raises BacnetProtocolError. `value_source_tracking` is as on
     /// `add_color`.
+    ///
+    /// `default_color_temperature` (4000 unless given, clamped to the
+    /// limits) and `storage_path` work as `default_color` and `storage_path`
+    /// on `add_color`, with 0 keeping the temperature from before the
+    /// restart (#1526).
     #[pyo3(signature = (
         instance, name, *, present_value=None, min_pres_value=None, max_pres_value=None,
-        value_source_tracking=false, tags=None, profile_location=None, profile_name=None
+        default_color_temperature=None, storage_path=None, value_source_tracking=false,
+        tags=None, profile_location=None, profile_name=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn add_color_temperature(
@@ -156,24 +173,28 @@ impl BACnetServer {
         present_value: Option<u32>,
         min_pres_value: Option<u32>,
         max_pres_value: Option<u32>,
+        default_color_temperature: Option<u32>,
+        storage_path: Option<&str>,
         value_source_tracking: bool,
         tags: Option<&Bound<'_, PyAny>>,
         profile_location: Option<String>,
         profile_name: Option<String>,
     ) -> PyResult<()> {
-        let mut obj = ColorTemperatureObject::new(instance, name).map_err(to_py_err)?;
-        match (min_pres_value, max_pres_value) {
-            (Some(min), Some(max)) => obj.set_min_max(min, max).map_err(to_py_err)?,
-            (None, None) => {}
+        let limits = match (min_pres_value, max_pres_value) {
+            (Some(min), Some(max)) => Some((min, max)),
+            (None, None) => None,
             _ => {
                 return Err(PyValueError::new_err(
                     "give min_pres_value and max_pres_value together",
                 ))
             }
-        }
-        if let Some(kelvin) = present_value {
-            obj.set_present_value(kelvin).map_err(to_py_err)?;
-        }
+        };
+        let output = ColorOutput {
+            present_value,
+            default: default_color_temperature,
+            storage_path,
+        };
+        let mut obj = color_temperature(instance, name, limits, output).map_err(to_py_err)?;
         obj.set_value_source_tracking(value_source_tracking);
         provision_profile(tags, profile_location, profile_name, |p| obj.set_profile(p))?;
         self.push_pending(Box::new(obj))
@@ -270,3 +291,71 @@ fn color_link(
         color_override,
     }))
 }
+
+/// The output keywords of `add_color` (`V` an xy colour) and
+/// `add_color_temperature` (`V` kelvin).
+struct ColorOutput<'a, V> {
+    present_value: Option<V>,
+    default: Option<V>,
+    storage_path: Option<&'a str>,
+}
+
+impl<V> ColorOutput<'_, V> {
+    /// The storage for `storage_path`, if given.
+    fn storage(&self) -> Result<Option<Arc<FileColorOutputPersistence>>, Error> {
+        self.storage_path
+            .map(|path| FileColorOutputPersistence::new(path).map(Arc::new))
+            .transpose()
+    }
+}
+
+/// Build a Color object: kept in the file at `storage_path` when one is
+/// given (#1526), then its default and Present_Value set through their
+/// checking setters. A colour storage brought back wins over
+/// `present_value`, as a write it saved would.
+fn color(
+    instance: u32,
+    name: &str,
+    output: ColorOutput<'_, BACnetXyColor>,
+) -> Result<ColorObject, Error> {
+    let mut obj = ColorObject::new(instance, name)?;
+    if let Some(storage) = output.storage()? {
+        obj = obj.with_output_persistence(storage)?;
+    }
+    if let Some(color) = output.default {
+        obj.set_default_color(color)?;
+    }
+    if let Some(color) = output.present_value.filter(|_| !obj.output_restored()) {
+        obj.set_present_value(color)?;
+    }
+    Ok(obj)
+}
+
+/// Build a Color Temperature object as [`color`] builds a Color object,
+/// with `limits` (Min_Pres_Value, Max_Pres_Value) set before the default
+/// and Present_Value so both are clamped to them.
+fn color_temperature(
+    instance: u32,
+    name: &str,
+    limits: Option<(u32, u32)>,
+    output: ColorOutput<'_, u32>,
+) -> Result<ColorTemperatureObject, Error> {
+    let mut obj = ColorTemperatureObject::new(instance, name)?;
+    if let Some(storage) = output.storage()? {
+        obj = obj.with_output_persistence(storage)?;
+    }
+    if let Some((min, max)) = limits {
+        obj.set_min_max(min, max)?;
+    }
+    if let Some(kelvin) = output.default {
+        obj.set_default_color_temperature(kelvin)?;
+    }
+    if let Some(kelvin) = output.present_value.filter(|_| !obj.output_restored()) {
+        obj.set_present_value(kelvin)?;
+    }
+    Ok(obj)
+}
+
+#[cfg(test)]
+#[path = "lighting_methods_tests.rs"]
+mod tests;

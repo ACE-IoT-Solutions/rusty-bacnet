@@ -11,6 +11,8 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::engine::Engine;
+use super::persistence::{ColorOutputPersistence, ColorOutputValue};
+use super::saving::{impl_color_durable, OutputStorage};
 use super::{
     command, metadata, milliseconds, noncommandable_audit_policy, written_transition,
     written_unsigned,
@@ -85,6 +87,10 @@ pub struct ColorTemperatureObject {
     value_source: SingleValueSource,
     /// Tags, Profile_Location and Profile_Name, once provisioned (#1553).
     profile: ProfileState,
+    /// Present_Value storage, once taken (#1526).
+    output: OutputStorage,
+    /// Whether Present_Value came back from that storage.
+    restored: bool,
     engine: Engine<u32>,
 }
 
@@ -114,8 +120,101 @@ impl ColorTemperatureObject {
             audit_policy: ObjectAuditPolicy::default(),
             value_source: SingleValueSource::default(),
             profile: ProfileState::default(),
+            output: OutputStorage::default(),
+            restored: false,
             engine: Engine::new(KELVIN_SAMPLE_STEP),
         })
+    }
+
+    /// Keep Present_Value in `persistence` (#1526), and take the temperature
+    /// it saved for this object, if any, as Present_Value, clamped to
+    /// Min_Pres_Value and Max_Pres_Value. Call it right after building the
+    /// object, before anything writes Present_Value.
+    ///
+    /// Saving works as on a Color object
+    /// ([`ColorObject::with_output_persistence`](super::ColorObject::with_output_persistence)).
+    /// With a Default_Color_Temperature of 0, the device's start keeps the
+    /// saved temperature (Clause 12.Y.4).
+    ///
+    /// Fails with storage's error when what it holds can't be loaded, and
+    /// when it holds an xy colour or a temperature outside 1000 to 30000 K.
+    pub fn with_output_persistence(
+        mut self,
+        persistence: Arc<dyn ColorOutputPersistence>,
+    ) -> Result<Self, Error> {
+        let current = ColorOutputValue::Kelvin(self.present_value);
+        match self.output.open(self.oid, current, persistence)? {
+            Some(ColorOutputValue::Kelvin(kelvin)) if command::KELVIN.contains(&kelvin) => {
+                self.present_value = self.clamped(kelvin);
+                self.restored = true;
+            }
+            Some(_) => {
+                return Err(Error::Encoding(
+                    "saved Color Temperature output is not a temperature the object can hold"
+                        .into(),
+                ))
+            }
+            None => {}
+        }
+        Ok(self)
+    }
+
+    /// Whether Present_Value came back from storage
+    /// ([`with_output_persistence`](Self::with_output_persistence)).
+    pub fn output_restored(&self) -> bool {
+        self.restored
+    }
+
+    /// Block until the Present_Value saves queued so far have run. Dropping
+    /// the object waits for them too.
+    pub fn wait_for_output_saves(&self) {
+        self.output.wait_for_saves();
+    }
+
+    /// Default_Color_Temperature in kelvin: the temperature the device's
+    /// start drives the output to, or 0 to keep the one from before the
+    /// restart.
+    pub fn default_color_temperature(&self) -> u32 {
+        self.default_color_temperature
+    }
+
+    /// Set Default_Color_Temperature, as a WriteProperty of it would: 0, or
+    /// 1000 to 30000 K clamped to Min_Pres_Value and Max_Pres_Value (Clause
+    /// 12.Y.8). Any other value is refused with VALUE_OUT_OF_RANGE.
+    pub fn set_default_color_temperature(&mut self, kelvin: u32) -> Result<(), Error> {
+        self.default_color_temperature = match kelvin {
+            0 => 0,
+            kelvin => self.written_kelvin(u64::from(kelvin))?,
+        };
+        Ok(())
+    }
+
+    /// Drive the output as the device's start does (#1526), as a Color
+    /// object's [`start_output`](super::ColorObject::start_output) does.
+    ///
+    /// An output a write or command has already driven is left alone.
+    /// Otherwise a non-zero Default_Color_Temperature becomes Present_Value
+    /// at once. With a default of 0 the output takes the temperature
+    /// restored from storage, and with none restored it stays undriven:
+    /// In_Progress reads NOT_CONTROLLED until a Present_Value or
+    /// Color_Command write drives it (Clause 12.Y.4).
+    pub fn start_output(&mut self) {
+        if self.engine.is_controlled() {
+            return;
+        }
+        if self.default_color_temperature != 0 {
+            self.present_value = self.clamped(self.default_color_temperature);
+            self.engine.start(None);
+            self.output_changed();
+        } else if self.restored {
+            self.engine.take_control();
+        }
+    }
+
+    /// Present_Value may have changed: save it, if the object keeps it.
+    fn output_changed(&mut self) {
+        self.output
+            .note(ColorOutputValue::Kelvin(self.present_value));
     }
 
     /// Track Value_Source (Clause 19.5, #1552), as a Color object's
@@ -205,6 +304,7 @@ impl ColorTemperatureObject {
             self.engine.halt(self.engine.now());
             self.present_value = clamped;
             self.value_source.forget();
+            self.output_changed();
         }
         if self.default_color_temperature != 0 {
             self.default_color_temperature = self.default_color_temperature.clamp(min, max);
@@ -257,6 +357,15 @@ impl ColorTemperatureObject {
     /// ends it (Clause 12.Y.6.1). Whether it set Present_Value: a STOP with
     /// nothing moving doesn't.
     fn take_color_command(&mut self, command: BACnetColorCommand) -> bool {
+        let set = self.carry_out(command);
+        if set {
+            self.output_changed();
+        }
+        set
+    }
+
+    /// [`take_color_command`](Self::take_color_command) without the save.
+    fn carry_out(&mut self, command: BACnetColorCommand) -> bool {
         self.color_command = command;
         let now = self.engine.now();
         let tracking = self.engine.tracking(self.present_value, now);
@@ -342,6 +451,7 @@ impl ColorTemperatureObject {
             _ => None,
         };
         self.engine.start(transition);
+        self.output_changed();
     }
 }
 
@@ -489,7 +599,14 @@ impl BACnetObject for ColorTemperatureObject {
     }
 
     fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        if self.output.is_some() {
+            return Some(self);
+        }
         self.profile.capability()
+    }
+
+    fn start_output_internal(&mut self) {
+        self.start_output();
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -541,3 +658,5 @@ impl BACnetObject for ColorTemperatureObject {
         }))
     }
 }
+
+impl_color_durable!(ColorTemperatureObject);
