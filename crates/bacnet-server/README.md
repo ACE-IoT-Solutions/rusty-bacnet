@@ -116,7 +116,9 @@ belongs to that transport dependency. For the displayed application,
 program still uses loopback. An actual SC connection needs validated TLS
 policy and a caller-provisioned nonzero device UUID. Authentication of an SC
 peer does not automatically grant BACnet service or mutation authority;
-configure the relevant service, mutation and source policies separately.
+install a `ServerPolicy` (see `bacnet_server::policy`), which sees the
+verified certificate principal of a direct SC peer, and configure the other
+service and source policies separately.
 
 The docs.rs profile selects `sc-tls`, disables defaults and targets
 `x86_64-unknown-linux-gnu`. The optional SC builder and factory carry feature

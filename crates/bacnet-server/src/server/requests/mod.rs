@@ -489,15 +489,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     invoke_id,
                                     request: request.clone(),
                                 };
-                                let authorized = config
-                                    .life_safety_operation_authorizer
-                                    .as_ref()
-                                    .is_some_and(|authorizer| {
-                                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                                            || authorizer(&context),
-                                        ))
-                                        .unwrap_or(false)
-                                    });
+                                let authorized = config.policy.as_ref().is_some_and(|policy| {
+                                    fail_closed_authorize(|| {
+                                        policy.authorize_life_safety_operation(&context)
+                                    })
+                                });
                                 if !authorized {
                                     Err(handlers::life_safety_error(
                                         ErrorClass::SERVICES,

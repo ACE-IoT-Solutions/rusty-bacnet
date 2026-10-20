@@ -1,7 +1,5 @@
 //! Receiver policy for confirmed and unconfirmed AuditNotification services.
 
-use std::sync::Arc;
-
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_transport::port::TransportProvenance;
@@ -13,7 +11,8 @@ pub const MAX_AUDIT_NOTIFICATION_BYTES: usize = 64 * 1024;
 /// Local maximum number of notifications in one accepted request.
 pub const MAX_AUDIT_NOTIFICATIONS: usize = 256;
 
-/// Transport provenance and decoded content supplied to the Audit authorizer.
+/// Transport provenance and decoded content supplied to
+/// [`ServerPolicy::authorize_audit_notification`](crate::ServerPolicy::authorize_audit_notification).
 ///
 /// The source/target identities inside `request` are peer-reported audit data,
 /// not authenticated transport provenance. Policy should use `source_network`
@@ -24,8 +23,8 @@ pub struct AuditNotificationAuthorizationContext {
     pub source_mac: MacAddr,
     /// Originating NPDU source when one was present.
     pub source_network: Option<NpduAddress>,
-    /// Honest transport + origin provenance, threaded for diagnostics only
-    /// (RB-07 compat mode: authorization decisions unchanged).
+    /// Honest transport + origin provenance for this ingress; the source of
+    /// the principal, if any.
     pub provenance: TransportProvenance,
     /// Outer Confirmed-Request invoke identifier.
     pub invoke_id: u8,
@@ -35,14 +34,16 @@ pub struct AuditNotificationAuthorizationContext {
     pub request: AuditNotificationRequest,
 }
 
-/// Fast, nonblocking authorization callback for ConfirmedAuditNotification.
-///
-/// Absence, `false`, or a panic denies the request before storage mutation.
-pub type AuditNotificationAuthorizer =
-    Arc<dyn Fn(&AuditNotificationAuthorizationContext) -> bool + Send + Sync>;
+impl AuditNotificationAuthorizationContext {
+    /// The verified direct-SC leaf certificate's principal; `None` for every
+    /// other ingress, hub-relayed requests included (see [`crate::policy`]).
+    pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        self.provenance.principal()
+    }
+}
 
-/// Transport provenance and decoded content supplied to the unconfirmed Audit
-/// authorizer.
+/// Transport provenance and decoded content supplied to
+/// [`ServerPolicy::authorize_unconfirmed_audit_notification`](crate::ServerPolicy::authorize_unconfirmed_audit_notification).
 ///
 /// The source/target identities inside `request` are peer-reported audit data,
 /// not authenticated transport provenance. Policy should use `source_network`
@@ -53,8 +54,8 @@ pub struct UnconfirmedAuditNotificationAuthorizationContext {
     pub source_mac: MacAddr,
     /// Originating NPDU source when one was present.
     pub source_network: Option<NpduAddress>,
-    /// Honest transport + origin provenance, threaded for diagnostics only
-    /// (RB-07 compat mode: authorization decisions unchanged).
+    /// Honest transport + origin provenance for this ingress; the source of
+    /// the principal, if any.
     pub provenance: TransportProvenance,
     /// Explicitly configured local Audit Log sink.
     pub audit_log_sink: ObjectIdentifier,
@@ -62,9 +63,10 @@ pub struct UnconfirmedAuditNotificationAuthorizationContext {
     pub request: AuditNotificationRequest,
 }
 
-/// Fast, nonblocking authorization callback for UnconfirmedAuditNotification.
-///
-/// Absence, `false`, or a panic silently denies the request before storage
-/// mutation.
-pub type UnconfirmedAuditNotificationAuthorizer =
-    Arc<dyn Fn(&UnconfirmedAuditNotificationAuthorizationContext) -> bool + Send + Sync>;
+impl UnconfirmedAuditNotificationAuthorizationContext {
+    /// The verified direct-SC leaf certificate's principal; `None` for every
+    /// other ingress, hub-relayed requests included (see [`crate::policy`]).
+    pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        self.provenance.principal()
+    }
+}

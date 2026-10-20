@@ -529,7 +529,8 @@ async fn audit_reporter_list_policy_and_authorizer_denials_are_silent() {
                 fixture.server.config_mut().mutation_policy =
                     crate::mutation::MutationPolicy::DenyAll;
             } else {
-                fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false));
+                fixture.server.config_mut().policy =
+                    Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)));
             }
             let response = dispatch(
                 &fixture.server,

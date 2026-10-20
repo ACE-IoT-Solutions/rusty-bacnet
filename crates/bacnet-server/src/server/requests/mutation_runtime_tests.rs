@@ -97,7 +97,7 @@ async fn mutation_counters_record_decisions_not_handler_success() {
             expected(
                 service,
                 MutationServiceCounters {
-                    allow_total: u64::from(server.config.mutation_authorizer.is_none()),
+                    allow_total: u64::from(server.config.policy.is_none()),
                     ..Default::default()
                 }
             )

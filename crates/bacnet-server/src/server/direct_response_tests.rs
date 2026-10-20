@@ -205,10 +205,12 @@ async fn direct_response_lso_replay_and_same_leaf_reconnect_keep_original_route(
     let mut f = Fixture::new(
         &ca,
         ServerConfig {
-            life_safety_operation_authorizer: Some(Arc::new(move |_| {
-                observed.fetch_add(1, Ordering::AcqRel);
-                true
-            })),
+            policy: Some(Arc::new(crate::FnPolicy::new().life_safety_operation(
+                move |_| {
+                    observed.fetch_add(1, Ordering::AcqRel);
+                    true
+                },
+            ))),
             ..Default::default()
         },
         database(executions.clone()),

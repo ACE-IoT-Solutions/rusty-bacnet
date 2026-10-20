@@ -58,7 +58,7 @@ impl DecidedAhead {
         if attempts.is_empty() {
             return Vec::new();
         }
-        if request.config.mutation_authorizer.is_none() {
+        if request.config.policy.is_none() {
             return DurableTarget::in_object_order(attempts, |_| true);
         }
         let db = db.read().await;

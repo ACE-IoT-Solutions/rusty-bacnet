@@ -256,7 +256,9 @@ async fn r7_lso_replay_keeps_apdu_only_and_uses_current_der_or_router_context() 
     let context = context(
         db,
         ServerConfig {
-            life_safety_operation_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().life_safety_operation(|_| true),
+            )),
             ..Default::default()
         },
     );

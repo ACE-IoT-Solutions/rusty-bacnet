@@ -152,19 +152,23 @@ async fn audit_forwarding_observed_binding_and_local_alias_do_not_send() {
 #[tokio::test(start_paused = true)]
 async fn audit_forwarding_denial_disabled_and_malformed_batches_are_silent() {
     let mut f = ready().await;
-    f.server.config_mut().audit_notification_authorizer = Some(Arc::new(|_| false));
-    f.server
-        .config_mut()
-        .unconfirmed_audit_notification_authorizer = Some(Arc::new(|_| false));
+    f.server.config_mut().policy = Some(Arc::new(
+        crate::FnPolicy::new().audit_notification(|_| false),
+    ));
+    f.server.config_mut().policy = Some(Arc::new(
+        crate::FnPolicy::new().unconfirmed_audit_notification(|_| false),
+    ));
     assert!(matches!(
         f.confirmed(1, &[3], payload(false)).await,
         Some(Apdu::Error(_))
     ));
     f.unconfirmed(payload(false)).await;
-    f.server.config_mut().audit_notification_authorizer = Some(Arc::new(|_| true));
-    f.server
-        .config_mut()
-        .unconfirmed_audit_notification_authorizer = Some(Arc::new(|_| true));
+    f.server.config_mut().policy = Some(Arc::new(
+        crate::FnPolicy::new().audit_notification(|_| true),
+    ));
+    f.server.config_mut().policy = Some(Arc::new(
+        crate::FnPolicy::new().unconfirmed_audit_notification(|_| true),
+    ));
     let mut malformed = payload(false).to_vec();
     malformed.pop();
     assert!(matches!(

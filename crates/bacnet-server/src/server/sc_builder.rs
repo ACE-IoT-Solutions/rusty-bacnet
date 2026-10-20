@@ -154,36 +154,9 @@ impl ScServerBuilder {
         self
     }
 
-    /// Set the policy that authorizes inbound LifeSafetyOperation requests.
-    pub fn life_safety_operation_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&LifeSafetyOperationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.life_safety_operation_authorizer = Some(Arc::new(authorizer));
-        self
-    }
-
     /// Select the only local Audit Log that receives authorized notifications.
     pub fn audit_notification_sink(mut self, sink: ObjectIdentifier) -> Self {
         self.config.audit_notification_sink = Some(sink);
-        self
-    }
-
-    /// Set the fail-closed ConfirmedAuditNotification authorization policy.
-    pub fn audit_notification_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&AuditNotificationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.audit_notification_authorizer = Some(Arc::new(authorizer));
-        self
-    }
-
-    /// Set the fail-closed UnconfirmedAuditNotification authorization policy.
-    pub fn unconfirmed_audit_notification_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&UnconfirmedAuditNotificationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.unconfirmed_audit_notification_authorizer = Some(Arc::new(authorizer));
         self
     }
 

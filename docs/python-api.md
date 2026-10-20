@@ -2985,7 +2985,7 @@ The policy is **transport admission only**, not identity verification or query
 authorization. `allow_all` admits any otherwise valid sender reaching this server;
 deploy only on an appropriately isolated/trusted network. Payload `Source_Device`
 and `Target_Device` remain **peer-reported content**, never verified origin. Static
-Rust authorizers do not call Python or acquire the GIL; there are no callbacks or
+Rust policies do not call Python or acquire the GIL; there are no callbacks or
 allowlists. The existing runtime, database locks, error mapping and joined shutdown
 remain in use.
 
@@ -4367,7 +4367,7 @@ Invalid mode strings raise `ValueError`; non-strings raise `TypeError` during
 construction, before startup drains registrations or performs I/O. DCC,
 ReinitializeDevice, LifeSafety and Audit keep separate policies; this option
 neither configures endpoint Device-write authorization nor identifies certificate
-principals. See [Local mutation authorization](mutation-policy.md) for exact
+principals. See [Server authorization policy](mutation-policy.md) for exact
 service coverage, validation precedence and exclusions.
 
 #### `purge_audit_log(object_id)`

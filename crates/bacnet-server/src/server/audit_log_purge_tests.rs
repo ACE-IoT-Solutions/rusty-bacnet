@@ -108,7 +108,9 @@ async fn stop(server: Arc<BACnetServer<TestTransport>>) {
 fn receiving() -> ServerConfig {
     ServerConfig {
         audit_notification_sink: Some(audit_log()),
-        audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     }
 }

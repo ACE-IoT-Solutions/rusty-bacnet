@@ -275,9 +275,11 @@ impl BACnetServer {
             if let Some(sink) = audit_notification_sink {
                 builder = builder.audit_notification_sink(sink.object_id);
                 if sink.allow_all {
-                    builder = builder
-                        .audit_notification_authorizer(|_| true)
-                        .unconfirmed_audit_notification_authorizer(|_| true);
+                    builder = builder.policy(
+                        bacnet_server::FnPolicy::new()
+                            .audit_notification(|_| true)
+                            .unconfirmed_audit_notification(|_| true),
+                    );
                 }
                 // deny_all deliberately retains the Rust fail-closed defaults.
             }

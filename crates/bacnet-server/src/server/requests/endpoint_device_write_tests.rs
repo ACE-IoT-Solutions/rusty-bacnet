@@ -63,7 +63,7 @@ fn received(request: ConfirmedRequestPdu) -> ReceivedApdu {
 }
 
 async fn fixture(
-    authorizer: Option<MutationAuthorizer>,
+    authorizer: Option<DeviceWriteAuthorizer>,
 ) -> (EndpointResponder, EndpointIngress<LoopbackTransport>) {
     let (transport, _peer) = LoopbackTransport::pair(vec![1], vec![2]);
     let mut ingress = EndpointIngress::new(transport, 4);
@@ -158,7 +158,7 @@ async fn endpoint_device_write_authorizes_exact_context_and_preserves_reply_tx()
 #[tokio::test]
 async fn endpoint_device_write_default_refusal_and_panic_never_mutate() {
     for mode in 0..3 {
-        let authorizer: Option<MutationAuthorizer> = match mode {
+        let authorizer: Option<DeviceWriteAuthorizer> = match mode {
             0 => None,
             1 => Some(Arc::new(|_| false)),
             _ => Some(Arc::new(|_| panic!("policy panic"))),

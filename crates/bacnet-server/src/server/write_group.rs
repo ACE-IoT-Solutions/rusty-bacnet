@@ -101,7 +101,7 @@ impl Requester<'_> {
     fn admits(&self, request: &WriteGroupRequest, write: &GroupWrite<'_>) -> bool {
         let decision = if self.config.mutation_policy == MutationPolicy::DenyAll {
             MutationDecision::PolicyDeny
-        } else if let Some(authorizer) = &self.config.mutation_authorizer {
+        } else if let Some(policy) = &self.config.policy {
             let context = MutationAuthorizationContext {
                 source_mac: MacAddr::from_slice(self.source_mac),
                 source_network: self.source_network.cloned(),
@@ -119,7 +119,7 @@ impl Requester<'_> {
                 }),
             };
             // A callback that panics denies, as for the confirmed services.
-            if super::requests::fail_closed_authorize(|| authorizer(&context)) {
+            if super::requests::fail_closed_authorize(|| policy.authorize_mutation(&context)) {
                 MutationDecision::Allow
             } else {
                 MutationDecision::Deny

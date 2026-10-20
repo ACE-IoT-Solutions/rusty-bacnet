@@ -15,9 +15,10 @@
 //! `mutation_*` suites; LifeSafety keeps its own authorizer without
 //! provenance (noted gap, out of scope).
 
+use super::mutation_tests::MutationAuthorizer;
 use super::mutation_tests::{apdu, assert_denied, cases, oid, route, Fixture, SOURCE};
 use super::*;
-use crate::mutation::{MutationAuthorizationContext, MutationAuthorizer, MutationTrust};
+use crate::mutation::{MutationAuthorizationContext, MutationTrust};
 use crate::server::test_transport::TestTransport;
 use bacnet_services::file::{AtomicWriteFileRequest, FileWriteAccessMethod};
 use bacnet_transport::port::TransportProvenance;

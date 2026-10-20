@@ -320,7 +320,7 @@ async fn deny_all_denies_each_channel_write_of_a_write_group() {
     // An authorizer that would allow everything isn't asked.
     let h = start(ServerConfig {
         mutation_policy: MutationPolicy::DenyAll,
-        mutation_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(crate::FnPolicy::new().mutation(|_| true))),
         ..ServerConfig::default()
     })
     .await;
@@ -346,11 +346,11 @@ async fn the_mutation_authorizer_decides_each_channel_write_of_a_write_group() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let shown = Arc::clone(&seen);
     let h = start(ServerConfig {
-        mutation_authorizer: Some(Arc::new(move |context| {
+        policy: Some(Arc::new(crate::FnPolicy::new().mutation(move |context| {
             shown.lock().unwrap().push(context.clone());
             matches!(&context.target, MutationTarget::WriteGroup(target)
                 if [3, 5].contains(&target.channel.instance_number()))
-        })),
+        }))),
         ..ServerConfig::default()
     })
     .await;
@@ -412,7 +412,9 @@ async fn the_mutation_authorizer_decides_each_channel_write_of_a_write_group() {
 #[tokio::test(start_paused = true)]
 async fn a_panicking_authorizer_denies_the_channel_write() {
     let h = start(ServerConfig {
-        mutation_authorizer: Some(Arc::new(|_| panic!("authorizer bug"))),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().mutation(|_| panic!("authorizer bug")),
+        )),
         ..ServerConfig::default()
     })
     .await;

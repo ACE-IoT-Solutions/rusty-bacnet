@@ -307,10 +307,12 @@ async fn unknown_target_is_rejected_before_authorization() {
     let authorizations = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&authorizations);
     let config = ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(move |_| {
-            observed.fetch_add(1, Ordering::AcqRel);
-            true
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().life_safety_operation(
+            move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+        ))),
         ..ServerConfig::default()
     };
 
@@ -344,14 +346,16 @@ async fn life_safety_operation_authorizer_receives_routed_identity_before_succes
         mac_address: MacAddr::from_slice(&[12, 13]),
     };
     let config = ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(move |context| {
-            assert!(
-                db_by_policy.try_write().is_ok(),
-                "authorization must run outside the database lock"
-            );
-            *seen_by_policy.lock().unwrap() = Some(context.clone());
-            true
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().life_safety_operation(
+            move |context| {
+                assert!(
+                    db_by_policy.try_write().is_ok(),
+                    "authorization must run outside the database lock"
+                );
+                *seen_by_policy.lock().unwrap() = Some(context.clone());
+                true
+            },
+        ))),
         ..ServerConfig::default()
     };
 
@@ -384,7 +388,9 @@ async fn life_safety_operation_authorizer_receives_routed_identity_before_succes
 #[tokio::test]
 async fn life_safety_operation_dispatch_preserves_all_targeted_error_rows() {
     let allow = || ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().life_safety_operation(|_| true),
+        )),
         ..ServerConfig::default()
     };
     let source = MacAddr::from_slice(&[1]);
@@ -476,7 +482,9 @@ async fn life_safety_operation_targetless_missing_executor_returns_simple_ack_wi
     objects.add(Box::new(point)).unwrap();
     let db = Arc::new(RwLock::new(objects));
     let config = ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().life_safety_operation(|_| true),
+        )),
         ..ServerConfig::default()
     };
 
@@ -509,7 +517,9 @@ async fn life_safety_operation_panicking_authorizer_fails_closed() {
         .add(Box::new(LifeSafetyPointObject::new(1, "point").unwrap()))
         .unwrap();
     let config = ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(|_| panic!("policy failure"))),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().life_safety_operation(|_| panic!("policy failure")),
+        )),
         ..ServerConfig::default()
     };
 
@@ -557,10 +567,12 @@ async fn exact_success_duplicate_replays_identical_simple_ack_single_execution()
     let authorizations = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&authorizations);
     let config = ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(move |_| {
-            observed.fetch_add(1, Ordering::AcqRel);
-            true
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().life_safety_operation(
+            move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+        ))),
         ..ServerConfig::default()
     };
     let tracker = Arc::new(ConfirmedRequestTracker::default());
@@ -655,10 +667,12 @@ async fn exact_denied_duplicate_replays_identical_error_single_authorization() {
     let authorizations = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&authorizations);
     let config = ServerConfig {
-        life_safety_operation_authorizer: Some(Arc::new(move |_| {
-            observed.fetch_add(1, Ordering::AcqRel);
-            false
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().life_safety_operation(
+            move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                false
+            },
+        ))),
         ..ServerConfig::default()
     };
     let tracker = Arc::new(ConfirmedRequestTracker::default());

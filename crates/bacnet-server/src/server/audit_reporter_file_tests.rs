@@ -539,10 +539,14 @@ async fn audit_reporter_atomic_write_file_budget_and_authorization_are_silent() 
                     fixture.server.config_mut().mutation_policy =
                         crate::mutation::MutationPolicy::DenyAll
                 }
-                1 => fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false)),
+                1 => {
+                    fixture.server.config_mut().policy =
+                        Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)))
+                }
                 2 => {
-                    fixture.server.config_mut().mutation_authorizer =
-                        Some(Arc::new(|_| panic!("fail closed")))
+                    fixture.server.config_mut().policy = Some(Arc::new(
+                        crate::FnPolicy::new().mutation(|_| panic!("fail closed")),
+                    ))
                 }
                 3 => {
                     fixture

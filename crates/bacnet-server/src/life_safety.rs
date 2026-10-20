@@ -1,12 +1,11 @@
 //! Server policy types for LifeSafetyOperation (Clause 13.13).
 
-use std::sync::Arc;
-
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_services::life_safety::LifeSafetyOperationRequest;
 use bacnet_types::MacAddr;
 
-/// Network and request identity supplied to a LifeSafetyOperation authorizer.
+/// Network and request identity supplied to
+/// [`ServerPolicy::authorize_life_safety_operation`](crate::ServerPolicy::authorize_life_safety_operation).
 ///
 /// `requesting_source` inside [`request`](Self::request) is peer-controlled
 /// descriptive text. It is not an authenticated operator identity. For routed
@@ -27,6 +26,12 @@ pub struct LifeSafetyOperationAuthorizationContext {
 }
 
 impl LifeSafetyOperationAuthorizationContext {
+    /// The verified direct-SC leaf certificate's principal; `None` for every
+    /// other ingress, hub-relayed requests included (see [`crate::policy`]).
+    pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        self.provenance.principal()
+    }
+
     /// Original verified direct-SC leaf and incarnation, separate from claims.
     pub fn direct_sc_identity(&self) -> Option<bacnet_transport::port::DirectScIdentity> {
         self.provenance.direct_sc_identity()
@@ -44,14 +49,8 @@ impl std::fmt::Debug for LifeSafetyOperationAuthorizationContext {
                     .map(|s| (s.network, s.mac_address.len())),
             )
             .field("provenance", &self.provenance)
+            .field("principal", &self.principal().is_some())
             .field("invoke_id", &self.invoke_id)
             .finish_non_exhaustive()
     }
 }
-
-/// Thread-safe authorization callback for LifeSafetyOperation.
-///
-/// The callback must be fast and nonblocking. Returning `false`, panicking, or
-/// omitting the callback denies the request before object mutation.
-pub type LifeSafetyOperationAuthorizer =
-    Arc<dyn Fn(&LifeSafetyOperationAuthorizationContext) -> bool + Send + Sync>;
