@@ -48,7 +48,7 @@ pub(super) fn recv(
     let message = recvmsg::<SockaddrStorage>(
         udp_socket.as_raw_fd(),
         &mut data,
-        Some(&mut control.0),
+        Some(control.bytes_mut()),
         MsgFlags::empty(),
     )?;
     if message

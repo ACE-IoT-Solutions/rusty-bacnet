@@ -207,25 +207,12 @@ impl TokioSerialPort {
     /// or driver-sanitized mismatch returns an error even though the hardware
     /// configuration may already have changed. No rollback or retry is attempted.
     #[cfg(target_os = "linux")]
-    #[allow(unsafe_code)]
     pub fn enable_kernel_rs485(
         &self,
         invert_rts: bool,
         delay_before_send_us: u32,
         delay_after_send_us: u32,
     ) -> Result<(), Error> {
-        use std::os::unix::io::AsRawFd;
-
-        #[cfg(not(any(target_arch = "sparc", target_arch = "sparc64")))]
-        use libc::{TIOCGRS485, TIOCSRS485};
-        // libc 0.2.189 does not export these on SPARC. Linux v6.12 UAPI:
-        // arch/sparc/include/uapi/asm/{ioctls,ioctl}.h encodes a 32-byte
-        // serial_rs485 with _IOR('T', 0x41, ...) and _IOWR('T', 0x42, ...).
-        #[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
-        const TIOCGRS485: libc::c_ulong = 0x4020_5441;
-        #[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
-        const TIOCSRS485: libc::c_ulong = 0xc020_5442;
-
         let stream = self.inner.try_lock().map_err(|_| {
             Error::Encoding("Cannot enable RS-485: serial port is in use".to_string())
         })?;
@@ -234,21 +221,8 @@ impl TokioSerialPort {
             invert_rts,
             delay_before_send_us,
             delay_after_send_us,
-            |request, config| {
-                let request = match request {
-                    kernel_rs485::Request::Set => TIOCSRS485,
-                    kernel_rs485::Request::Get => TIOCGRS485,
-                };
-                // SAFETY: The lock guard keeps the serial stream and its fd alive.
-                // `config` is a writable, initialized 32-byte Linux serial_rs485
-                // structure, and the pointer remains valid for this ioctl call.
-                let ret = unsafe { libc::ioctl(stream.as_raw_fd(), request, config as *mut _) };
-                if ret < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            },
+            // The lock guard keeps the serial stream and its fd alive.
+            |request, config| crate::sys::serial::rs485_ioctl(&stream, request, config),
         )
     }
 }

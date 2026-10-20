@@ -1,10 +1,10 @@
 //! The local IPv6 addresses from the one `getifaddrs` walk
-//! ([`crate::ifaddrs`]).
+//! ([`crate::sys::ifaddrs`]).
 
 use std::io;
 
 use super::{Candidate, SelectedLink};
-use crate::ifaddrs::{interface_addresses, Address};
+use crate::sys::ifaddrs::{interface_addresses, Address};
 
 pub(super) fn enumerate() -> io::Result<Vec<Candidate>> {
     Ok(interface_addresses()?

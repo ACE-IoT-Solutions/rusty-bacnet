@@ -1,11 +1,11 @@
 //! The host's IPv4 addresses from the one `getifaddrs` walk
-//! ([`crate::ifaddrs`]).
+//! ([`crate::sys::ifaddrs`]).
 
 use std::io;
 use std::net::Ipv4Addr;
 
 use super::{LocalInterface, ReportedAddress};
-use crate::ifaddrs::{interface_addresses, Address, Flags};
+use crate::sys::ifaddrs::{interface_addresses, Address, Flags};
 
 /// One IPv4 address `getifaddrs` reports, with its interface.
 struct Entry {
