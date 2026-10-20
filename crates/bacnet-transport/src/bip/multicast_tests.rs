@@ -80,10 +80,19 @@ fn multicast_needs_an_explicit_interface_and_a_port() {
     let mut picked = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let error = picked.set_multicast(Some(multicast)).unwrap_err();
     assert!(error.to_string().contains("needs a port"), "{error}");
-    picked
-        .set_multicast(Some(multicast.with_port(47809).unwrap()))
-        .unwrap();
-    assert_eq!(picked.multicast().and_then(|m| m.port()), Some(47809));
+    let own_port = multicast.with_port(47809).unwrap();
+    if cfg!(windows) {
+        // The primary socket joins the group there, so the group's port is
+        // the transport's: a picked port can't have its own group port.
+        let error = picked.set_multicast(Some(own_port)).unwrap_err();
+        assert!(error.to_string().contains("transport's own"), "{error}");
+    } else {
+        picked.set_multicast(Some(own_port)).unwrap();
+        assert_eq!(picked.multicast().and_then(|m| m.port()), Some(47809));
+    }
+    // A group port equal to the transport's is taken everywhere.
+    let mut same = BipTransport::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::LOCALHOST);
+    same.set_multicast(Some(own_port)).unwrap();
 
     let mut explicit = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::LOCALHOST);
     explicit.set_multicast(Some(multicast)).unwrap();
@@ -100,15 +109,17 @@ fn multicast_needs_an_explicit_interface_and_a_port() {
 
 #[tokio::test]
 async fn a_member_cant_be_a_bbmd_a_foreign_device_or_share_its_port_by_address() {
+    // The transports take the group's port, which Windows requires; each
+    // start is refused before it binds anything.
     let multicast = group(47809);
-    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
+    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::LOCALHOST);
     bbmd.set_multicast(Some(multicast)).unwrap();
     bbmd.enable_bbmd(Vec::new());
     assert!(bbmd.bip_port().unwrap().multicast.is_none());
     let error = bbmd.start().await.unwrap_err();
     assert!(error.to_string().contains("BBMD"), "{error}");
 
-    let mut foreign = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
+    let mut foreign = BipTransport::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::LOCALHOST);
     foreign.set_multicast(Some(multicast)).unwrap();
     foreign.register_as_foreign_device(ForeignDeviceConfig {
         bbmd_ip: Ipv4Addr::new(192, 0, 2, 1),
@@ -119,7 +130,7 @@ async fn a_member_cant_be_a_bbmd_a_foreign_device_or_share_its_port_by_address()
     let error = foreign.start().await.unwrap_err();
     assert!(error.to_string().contains("foreign device"), "{error}");
 
-    let mut shared = BipTransport::new(Ipv4Addr::LOCALHOST, 47811, Ipv4Addr::LOCALHOST);
+    let mut shared = BipTransport::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::LOCALHOST);
     shared.set_multicast(Some(multicast)).unwrap();
     shared.set_share_port_by_address(true);
     let error = shared.start().await.unwrap_err();
@@ -365,9 +376,10 @@ fn only_a_plain_node_with_an_interface_lends_its_group() {
 
 #[test]
 fn a_members_configured_broadcast_stays_a_group_destination() {
+    // At the group's port, as Windows requires.
     let mut member = BipTransport::new(
         Ipv4Addr::new(192, 0, 2, 20),
-        47808,
+        47809,
         Ipv4Addr::new(192, 0, 2, 255),
     );
     member.set_multicast(Some(group(47809))).unwrap();
@@ -385,5 +397,5 @@ fn a_members_configured_broadcast_stays_a_group_destination() {
     assert!(!member.is_group_destination(&mac([192, 0, 2, 30], 47808)));
     // Only the group is this link's broadcast.
     assert!(member.is_broadcast_mac(&mac(GROUP.octets(), 47809)));
-    assert!(!member.is_broadcast_mac(&mac([192, 0, 2, 255], 47808)));
+    assert!(!member.is_broadcast_mac(&mac([192, 0, 2, 255], 47809)));
 }

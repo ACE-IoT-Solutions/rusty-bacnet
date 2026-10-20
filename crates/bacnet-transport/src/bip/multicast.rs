@@ -333,8 +333,9 @@ pub(crate) struct MulticastControl {
     /// The transport's configured port, 0 when the OS picks it: a group at
     /// a picked port couldn't share it with the other members.
     configured_port: u16,
-    /// Makes the next listener an activation opens fail, for tests.
-    #[cfg(test)]
+    /// Makes the next listener an activation opens fail, for tests. Not on
+    /// Windows, which opens no listener.
+    #[cfg(all(test, not(windows)))]
     pub(super) fail_next_listener: std::sync::atomic::AtomicBool,
 }
 
@@ -349,7 +350,7 @@ impl MulticastControl {
             }),
             interface,
             configured_port,
-            #[cfg(test)]
+            #[cfg(all(test, not(windows)))]
             fail_next_listener: Default::default(),
         }
     }

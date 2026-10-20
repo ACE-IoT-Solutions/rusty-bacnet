@@ -32,14 +32,15 @@ async fn member_server(group_port: u16) -> BACnetServer<BipTransport> {
     let mut db = ObjectDatabase::new();
     let config = BipPortConfig {
         ip_address: [127, 0, 0, 1],
-        udp_port: 0,
+        udp_port: group_port,
         ..Default::default()
     };
     db.add(Box::new(
         NetworkPortObject::new_bip(1, "member", config).unwrap(),
     ))
     .unwrap();
-    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
+    // At the group's port, as Windows requires.
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, group_port, Ipv4Addr::LOCALHOST);
     let multicast = BipMulticast::new(GROUP.into())
         .unwrap()
         .with_port(group_port)

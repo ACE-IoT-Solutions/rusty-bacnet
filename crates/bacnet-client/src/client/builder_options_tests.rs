@@ -302,9 +302,10 @@ async fn bip_builder_joins_a_multicast_group_only_with_an_interface() {
         refused.to_string().contains("explicit interface"),
         "{refused}"
     );
+    // The transport at the group's port, as Windows requires.
     let mut client = BACnetClient::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
+        .port(group_port)
         .multicast(Some(group))
         .build()
         .await
