@@ -355,6 +355,9 @@ fn connection(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Enter => Key::Submit,
         KeyCode::Backspace if editing => Key::Backspace,
         _ if editing => Key::Char(typed(key)?),
+        // As in the other lists (#1894).
+        KeyCode::Char('j') => Key::Next,
+        KeyCode::Char('k') => Key::Prev,
         KeyCode::Char('n') => Key::New,
         KeyCode::Char('s') => Key::NewSc,
         KeyCode::Char('m') => Key::NewMstp,

@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/mstp_screen.rs
 expression: "screen(&mut app, 80, 24)"
 ---
-" bacnet | MSTP | confirm joining | READ-ONLY | COV 0 FD 0 | drop 0       ? help "
+" bacnet | MSTP | confirm joining | READ-ONLY | COV 0 | drop 0            ? help "
 "┌ Devices (0) | sort: instance ↑ ──────────────────────────────────────────────┐"
 "│                                                                              │"
 "│                                                                              │"

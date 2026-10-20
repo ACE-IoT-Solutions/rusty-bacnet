@@ -1,7 +1,9 @@
 //! The device browser: device card, object list, properties and priority
 //! array. From the full width the panes sit side by side; below it they
-//! stack, and only the focused one is drawn under a strip naming them all.
-//! From the wide width the object list grows and the priority array moves
+//! stack, and only the focused one is drawn under a strip naming them all;
+//! a commandable object's priority array is one of them there, so the
+//! properties keep the whole width. From the full width it sits under the
+//! properties, and from the wide width the object list grows and the priority array moves
 //! beside the properties.
 //!
 //! The properties pane sizes its name column from the longest name, keeps
@@ -60,10 +62,20 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, browser: &Browser, theme: &The
     }
     let [strip, pane] = Layout::vertical([Constraint::Length(1), Constraint::Min(5)]).areas(area);
     tab_strip(frame, strip, browser, theme);
-    match browser.focus {
+    // Below the full width the priority array is a pane of its own, so the
+    // properties keep the whole width at 80 columns (#1894).
+    match browser.shown_focus() {
         Pane::Card => card_pane(frame, pane, browser, theme),
         Pane::Objects => objects_pane(frame, pane, browser, theme),
-        Pane::Properties => object_panes(frame, pane, browser, theme, true),
+        Pane::Properties => properties_pane(frame, pane, browser, theme),
+        Pane::Priority => match &browser.view {
+            ViewState::Ready(view) if view.priority.is_some() => {
+                if let Some(priority) = &view.priority {
+                    priority_pane(frame, pane, priority, true, theme);
+                }
+            }
+            _ => properties_pane(frame, pane, browser, theme),
+        },
     }
 }
 
@@ -86,12 +98,14 @@ fn tab_strip(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
         format!(" Device {} ", browser.device),
         theme.accent(),
     )];
-    for (pane, name) in [
-        (Pane::Card, "Card"),
-        (Pane::Objects, "Objects"),
-        (Pane::Properties, "Properties"),
-    ] {
-        if pane == browser.focus {
+    for pane in browser.panes() {
+        let name = match pane {
+            Pane::Card => "Card",
+            Pane::Objects => "Objects",
+            Pane::Properties => "Properties",
+            Pane::Priority => "Priority",
+        };
+        if *pane == browser.shown_focus() {
             spans.push(Span::styled(format!(" [{name}] "), theme.selected()));
         } else {
             spans.push(Span::styled(format!("  {name}  "), theme.dim()));
@@ -216,11 +230,12 @@ fn object_panes(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme,
         Layout::vertical([Constraint::Min(5), Constraint::Length(PRIORITY_HEIGHT)]).areas(area)
     };
     properties_pane(frame, properties, browser, theme);
-    priority_pane(frame, slots, priority, theme);
+    let focused = browser.shown_focus() == Pane::Priority;
+    priority_pane(frame, slots, priority, focused, theme);
 }
 
 fn properties_pane(frame: &mut Frame, area: Rect, browser: &Browser, theme: &Theme) {
-    let focused = browser.focus == Pane::Properties;
+    let focused = browser.shown_focus() == Pane::Properties;
     // Inside the border.
     let inner = usize::from(area.width.saturating_sub(2));
     let (title, lines) = match &browser.view {
@@ -399,13 +414,19 @@ fn priority_width(priority: &PriorityView) -> u16 {
     u16::try_from(PRIORITY_LABEL + longest + 3).unwrap_or(u16::MAX)
 }
 
-fn priority_pane(frame: &mut Frame, area: Rect, priority: &PriorityView, theme: &Theme) {
+fn priority_pane(
+    frame: &mut Frame,
+    area: Rect,
+    priority: &PriorityView,
+    focused: bool,
+    theme: &Theme,
+) {
     let winner = priority.winner();
     let title = match winner {
         Some(slot) => format!(" Priority array: {slot} in control "),
         None => " Priority array: relinquished ".to_string(),
     };
-    let block = pane_block(title, false, theme);
+    let block = pane_block(title, focused, theme);
     let mut lines: Vec<Line> = priority
         .slots
         .iter()

@@ -4,6 +4,7 @@
 //! 80x24 is the smallest supported terminal and 120x40 the full layout.
 //! Below the minimum only a notice is drawn.
 
+mod bars;
 mod browser;
 mod capture;
 mod chrome;
@@ -11,6 +12,7 @@ mod columns;
 mod connection;
 mod devices;
 mod dialogs;
+mod fit;
 mod monitor;
 mod mstp;
 mod network;
@@ -70,7 +72,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         Constraint::Length(1),
     ])
     .areas(area);
-    chrome::status_bar(frame, status, app, &theme);
+    bars::status_bar(frame, status, app, &theme);
     devices::banner(frame, banner_area, &banner, &theme);
     match &app.browser {
         _ if app.screen == Screen::Watch => watch::draw(frame, body, app, &theme),
@@ -85,7 +87,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         chrome::log_pane(frame, log, app, &theme);
     }
     let tab_focus = app.screen == Screen::Network && network::wide(app, body);
-    chrome::footer(frame, footer, app, &theme, tab_focus);
+    bars::footer(frame, footer, app, &theme, tab_focus);
     match &app.overlay {
         // The command bar is the footer.
         Overlay::None | Overlay::Command(_) => {}

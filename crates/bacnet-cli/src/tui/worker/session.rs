@@ -319,7 +319,7 @@ pub(crate) async fn finish_build<T: TransportPort + 'static>(
 async fn failed(sink: &EventSink, error: Error) {
     tracing::error!("connect failed: {error}");
     sink.deliver(WorkerEvent::ConnectFailed {
-        error: error.to_string(),
+        error: crate::tui::message::Failure::of(&error),
     })
     .await;
 }

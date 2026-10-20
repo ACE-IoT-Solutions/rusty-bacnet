@@ -48,7 +48,7 @@ pub(crate) async fn serve(
         Err(error) => {
             tracing::error!("MS/TP monitor on {}: {error}", plan.port);
             sink.deliver(WorkerEvent::ConnectFailed {
-                error: format!("{}: {error}", plan.port),
+                error: crate::tui::message::Failure::within(&plan.port, &error),
             })
             .await;
             return;

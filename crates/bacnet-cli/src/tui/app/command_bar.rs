@@ -10,8 +10,9 @@
 //!   WritePropertyMultiple to the device, any number of `OBJECT PROPERTY
 //!   VALUE` groups, previewed and confirmed at T2 or above. Needs an armed
 //!   write session.
-//! - `bbmd ADDRESS`: show and read that BBMD's tables on the Network screen
-//!   (`ip` or `ip:port`, port 47808 by default).
+//! - `bbmd [ADDRESS]`: show and read that BBMD's tables on the Network screen
+//!   (`ip` or `ip:port`, port 47808 by default); `bbmd` alone goes back to
+//!   the tables of the BBMD the session registers with.
 //! - `find NAME`: broadcast a Who-Has for the object named NAME, the rest
 //!   of the line as typed, and list the answers below the device table;
 //!   `find` alone closes the list.
@@ -33,7 +34,7 @@ use crate::tui::watched::{Point, WatchCommand};
 
 /// The usage line shown for an unknown command.
 pub(crate) const USAGE: &str =
-    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd ADDRESS | find NAME | mstp rotation|hold MS | mstp listen SECS";
+    "commands: watch DEVICE OBJECT [PROPERTY] | csv on|off | writem DEVICE OBJECT PROPERTY VALUE[@P] ... | bbmd [ADDRESS] | find NAME | mstp rotation|hold MS | mstp listen SECS";
 
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +46,7 @@ pub(crate) enum Line {
     /// A WritePropertyMultiple batch.
     Writem(Vec<WriteSpec>),
     /// Show a BBMD's tables.
-    Bbmd(std::net::SocketAddrV4),
+    Bbmd(Option<std::net::SocketAddrV4>),
     /// Search for an object by name; empty closes the search.
     Find(String),
     /// An MS/TP monitor setting.
@@ -139,7 +140,8 @@ pub(crate) fn parse(text: &str) -> Result<Line, String> {
         }
         ["csv", "on"] => Ok(Line::Csv(true)),
         ["csv", "off"] => Ok(Line::Csv(false)),
-        ["bbmd", address] => Ok(Line::Bbmd(crate::foreign::parse_bbmd_arg(address)?)),
+        ["bbmd"] => Ok(Line::Bbmd(None)),
+        ["bbmd", address] => Ok(Line::Bbmd(Some(crate::foreign::parse_bbmd_arg(address)?))),
         ["mstp", which, value] => Ok(Line::Mstp(mstp_setting(which, value)?)),
         ["find", ..] => {
             // A name may hold several spaces in a row: keep it as typed.
@@ -175,7 +177,7 @@ impl App {
                     Ok(Line::Watch(point)) => self.watch_point(point, out),
                     Ok(Line::Csv(on)) => out.push(Command::Watch(WatchCommand::Csv(on))),
                     Ok(Line::Writem(specs)) => self.prepare(specs, true, out),
-                    Ok(Line::Bbmd(bbmd)) => self.set_bbmd(bbmd, out),
+                    Ok(Line::Bbmd(bbmd)) => self.show_bbmd(bbmd, out),
                     Ok(Line::Find(name)) => self.find(name, out),
                     Ok(Line::Mstp(setting)) => self.mstp_setting(setting),
                     Err(error) => self.flash(error, FLASH_FOR),
@@ -215,9 +217,10 @@ mod tests {
         assert_eq!(parse("csv on"), Ok(Line::Csv(true)));
         assert_eq!(
             parse("bbmd 10.0.0.1"),
-            Ok(Line::Bbmd("10.0.0.1:47808".parse().unwrap()))
+            Ok(Line::Bbmd(Some("10.0.0.1:47808".parse().unwrap())))
         );
         assert!(parse("bbmd 10.0.0").is_err());
+        assert_eq!(parse("bbmd"), Ok(Line::Bbmd(None)));
         assert!(parse("watch 10.0.0.5 ai:1")
             .unwrap_err()
             .contains("device instance"));

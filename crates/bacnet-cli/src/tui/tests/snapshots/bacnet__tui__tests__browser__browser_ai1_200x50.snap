@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/browser.rs
 expression: text
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 FD 0 | drop 0                                                                                                                              ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0                                                                                                                                   ? help "
 "┌ Device 100 at 10.0.0.100:47808 ──────────────────────────┐┌ analog-input 1 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
 "│ Name              Lab device 100                         ││ Status: [ALM] [FLT] [OOS]                                                                                                                │"
 "│ Vendor            Rusty Lab                              ││ object-identifier               analog-input 1                                                                                           │"

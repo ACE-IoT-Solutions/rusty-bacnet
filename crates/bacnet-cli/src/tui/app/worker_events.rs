@@ -75,7 +75,7 @@ impl App {
             WorkerEvent::Profile(result) => {
                 if let Err(error) = &result {
                     if self.link == Link::Connecting {
-                        self.link = Link::Failed(error.clone());
+                        self.link = Link::Failed(Failure::text(error.clone()));
                     }
                 }
                 if let Some(connection) = &mut self.connection {
@@ -85,7 +85,7 @@ impl App {
             WorkerEvent::Rejected { error } if self.monitor_join_refused(&error) => {}
             WorkerEvent::Rejected { error } => {
                 if self.link == Link::Connecting {
-                    self.link = Link::Failed(error.clone());
+                    self.link = Link::Failed(Failure::text(error.clone()));
                 }
                 if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
                     op.state = OpState::Failed(error.clone());
@@ -96,10 +96,9 @@ impl App {
                 self.link = Link::Up { local };
                 self.start_capture(out);
             }
-            WorkerEvent::ConnectFailed { error } => {
-                self.link = Link::Failed(error.clone());
-                self.flash(error, FLASH_FOR);
-            }
+            // The footer shows its summary with the recovery keys; the
+            // device screen and the log have the whole error.
+            WorkerEvent::ConnectFailed { error } => self.link = Link::Failed(error),
             WorkerEvent::Discovered(row) | WorkerEvent::Updated(row) => {
                 if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
                     op.replies += usize::from(op.spec.wants(row.instance));

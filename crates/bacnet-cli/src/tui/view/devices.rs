@@ -298,7 +298,7 @@ fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         (Link::Disconnecting, _) => "Disconnecting; waiting for local resources to stop...".into(),
         (Link::Picking, _) => String::new(),
         (Link::Connecting, _) => "Connecting...".to_string(),
-        (Link::Failed(error), _) => format!("Connection failed: {error}"),
+        (Link::Failed(error), _) => format!("Connection failed: {}", error.detail),
         (Link::Passive, _) => {
             "Passive: no network client; nothing is transmitted. u shows the ledger.".into()
         }

@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/watch_rows.rs
 expression: text
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 FD 0 | drop 0      ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0           ? help "
 "┌ Watch (1) | COV 0 | requests 0.0/s ──────────────────────────────────────────┐"
 "│Device  Object                     Value    Flags           Source Trend      │"
 "│4194302 multi-state-output 4194302 12 (Eco… ALM FLT OVR OOS COV    ▄          │"
@@ -25,4 +25,4 @@ expression: text
 "│                                                                              │"
 "│ COV, lifetime 300 s, renewed before it runs out · multi-state-output 4194302 │"
 "└──────────────────────────────────────────────────────────────────────────────┘"
-" Watching multi-state-output 4194302 on device 4194302. Press 3 for the watch li"
+" Watching multi-state-output 4194302 on device 419430…  Esc back  ? help  q quit"

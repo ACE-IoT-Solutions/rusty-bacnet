@@ -41,13 +41,14 @@ Plain `bacnet` opens the TUI only when stdin and stdout are both terminals and `
 
 Every screen has the same three parts:
 
-- **The status bar**, on the top line: the transport and local address, the link state, the session level, the footprint, and `? help` on the right. For example, `bacnet | BIP 127.0.0.1:50263 | up | READ-ONLY | COV 0 FD 1 | drop 0`.
+- **The status bar**, on the top line: the transport and local address, the link state, the session level, the footprint, and `? help` on the right. For example, `bacnet | BIP 127.0.0.1:50263 | up | READ-ONLY | COV 0 | FD held | drop 0`.
   - The level is `READ-ONLY`, `PASSIVE`, or a red `WRITE mm:ss` while a write session is armed.
-  - `COV n FD m` is the state this session holds on other devices: COV subscriptions, and an entry in a BBMD's foreign-device table.
+  - `COV n` and `FD` are the state this session holds on other devices: COV subscriptions, and this session's entry in a BBMD's foreign-device table. `FD` shows only with a registration, and says where it stands: `held`, `pending`, `refused`, `no answer` or `lapsed`, as the Network screen's banner does.
   - `ledger n` appears once a write is still in effect. `drop n` counts events the UI couldn't keep up with.
   - On BACnet/SC it also names the hub in use, such as `hub primary`.
+  - Before a profile connects it reads `no profile`. In a narrow terminal the least useful fields go first; the link state, the level and `? help` always stay.
 - **The screen** in the middle.
-- **The footer**, on the bottom line: the keys that work right now. A message, such as a refusal or an error, takes its place for a few seconds.
+- **The footer**, on the bottom line: the keys that work right now. In a narrow terminal the less used keys go first; `? help` and `q quit` always stay. A message, such as a refusal or an error, sits at the left beside the keys for a few seconds, and goes as soon as you change screens or open a dialog. A failed connection shows its cause there with the keys that recover (`p settings`, `c retry`); the device screen and the log pane have the whole error.
 
 Number keys switch screens:
 

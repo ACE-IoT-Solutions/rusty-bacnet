@@ -524,7 +524,7 @@ async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
     loop {
         if let WorkerEvent::Session { event, .. } = event(&mut events).await {
             if let WorkerEvent::ConnectFailed { error } = *event {
-                assert!(error.contains(&chosen), "{error}");
+                assert!(error.detail.contains(&chosen), "{error}");
                 break;
             }
         }

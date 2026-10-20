@@ -26,6 +26,8 @@
 //!   on the scripted ring of `bacnet-transport`'s `test-support`.
 //! - `mstp_screen`: the MS/TP screen and the join confirmation from
 //!   synthetic reports and keys, with their frames, and the sampler.
+//! - `footer`: the footer and the status bar at 80, 120 and 200 columns:
+//!   notices, hint priorities, the failure summary and the `FD` state.
 //! - `watch_rows`: watch rows' names, routed devices and column fit at
 //!   80, 120 and 200 columns, and the name read against refusing devices.
 //!
@@ -49,6 +51,7 @@ mod crash;
 mod devices_layout;
 mod discovery;
 mod event_loop;
+mod footer;
 mod frames;
 mod inprocess;
 #[allow(dead_code)] // The integration tests use the rest.

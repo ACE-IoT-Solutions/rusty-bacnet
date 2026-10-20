@@ -407,7 +407,7 @@ impl App {
             return;
         };
         if let Some(error) = monitor.report(report) {
-            self.link = super::Link::Failed(error);
+            self.link = super::Link::Failed(crate::tui::message::Failure::text(error));
         }
     }
 }

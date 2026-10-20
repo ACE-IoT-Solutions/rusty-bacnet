@@ -32,7 +32,7 @@ The number keys switch screens: `1` or `2` the devices, `3` the watch list, `4` 
 | `/` | Filter the devices, or in the browser the objects |
 | `s` | Sort by the next column |
 | `S` | Reverse the sort order |
-| `Tab` | Browser: the next pane |
+| `Tab` | Browser: the next pane. Below 120 columns a commandable object's priority array is a pane of its own |
 | `Shift-Tab` | Browser: the previous pane |
 | `r` | Browser: read the open object again |
 | `a` | Browser: watch the open object's Present_Value |
@@ -131,7 +131,7 @@ In the list and the preview:
 
 | Key | Action |
 |---|---|
-| `Up`, `Down`, `Tab`, `Shift-Tab` | Choose a profile |
+| `Up`, `Down`, `k`, `j`, `Tab`, `Shift-Tab` | Choose a profile |
 | `Enter` | Preview the profile; in a preview, connect |
 | `a` | Attest to first use, save the authorization and connect |
 | `y` | Accept the credential warnings shown |
@@ -217,7 +217,7 @@ The arm dialog, the write and relinquish forms, the previews, the ledger and the
 | `csv on` | Log every watched value to a CSV file in the profile's workspace |
 | `csv off` | Stop logging |
 | `writem DEVICE OBJECT PROPERTY VALUE[@P] ...` | Several writes to one device in one WritePropertyMultiple, previewed and confirmed at T2 or above; needs an armed session |
-| `bbmd ADDRESS` | Show and read that BBMD's tables on the Network screen (`ip` or `ip:port`) |
+| `bbmd [ADDRESS]` | Show and read that BBMD's tables on the Network screen (`ip` or `ip:port`); with no address, go back to the tables of the BBMD you register with |
 | `find NAME` | Broadcast a Who-Has for the object named NAME and list the answers |
 | `find` | Close the Who-Has panel |
 | `mstp rotation MS` | Monitor: flag token rotations longer than this |

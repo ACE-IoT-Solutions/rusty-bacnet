@@ -10,7 +10,7 @@ use ratatui::crossterm::event::KeyCode;
 
 use super::site::{ClientLimits, Quirks, Server, Site};
 use super::*;
-use crate::tui::app::browser::{ListState, ViewState};
+use crate::tui::app::browser::{ListState, Pane, ViewState};
 use crate::tui::point::{BrowseRead, BrowseResult, ObjectView, ReadVia};
 
 /// The lab device's instance and address.
@@ -109,12 +109,25 @@ async fn the_lab_device_lists_every_object_and_opens_ao1() {
     assert_eq!(priority.slots[9].as_deref(), Some("55"));
     assert_eq!(priority.relinquish_default.as_deref(), Some("0"));
     assert_eq!(view.value(PropertyIdentifier::PRESENT_VALUE), Some("55 %"));
-    for (w, h) in [(200, 50), (120, 40), (80, 24)] {
+    for (w, h) in [(200, 50), (120, 40)] {
         let text = screen(&mut site.app, w, h);
         assert!(text.contains(">10 site defined"), "{text}");
         assert!(text.contains("Relinquish_Default  0"), "{text}");
         assert_snapshot!(format!("browser_ao1_{w}x{h}"), text);
     }
+    // At 80 columns the priority array is a pane of its own (#1894), so
+    // the properties keep the width; Tab reaches it.
+    let text = screen(&mut site.app, 80, 24);
+    assert!(!text.contains(">10 site defined"), "{text}");
+    assert!(text.contains("[Properties]   Priority"), "{text}");
+    assert_snapshot!("browser_ao1_80x24", text);
+    press(&mut site.app, KeyCode::Tab);
+    let text = screen(&mut site.app, 80, 24);
+    assert!(text.contains(">10 site defined"), "{text}");
+    assert!(text.contains("Relinquish_Default  0"), "{text}");
+    assert_snapshot!("browser_ao1_priority_80x24", text);
+    press(&mut site.app, KeyCode::Tab);
+    assert_eq!(site.app.browser.as_ref().unwrap().focus, Pane::Card);
     site.stop().await;
 }
 

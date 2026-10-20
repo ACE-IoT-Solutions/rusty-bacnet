@@ -24,8 +24,12 @@ pub(crate) enum Pane {
     Card,
     /// The object list.
     Objects,
-    /// The selected object's properties and priority array.
+    /// The selected object's properties.
     Properties,
+    /// A commandable object's priority array (#1894). Below the full
+    /// width it is a pane of its own, so the properties keep the width;
+    /// from it, the pane beside the properties takes the accent.
+    Priority,
 }
 
 /// Progress of the device read.
@@ -157,13 +161,37 @@ impl Browser {
 
     /// Focus the next pane, or the previous one with `back`.
     pub(crate) fn cycle_focus(&mut self, back: bool) {
-        const ORDER: [Pane; 3] = [Pane::Card, Pane::Objects, Pane::Properties];
-        let at = ORDER
+        let order = self.panes();
+        let at = order
             .iter()
             .position(|pane| *pane == self.focus)
             .unwrap_or(1);
-        let next = if back { at + ORDER.len() - 1 } else { at + 1 };
-        self.focus = ORDER[next % ORDER.len()];
+        let next = if back { at + order.len() - 1 } else { at + 1 };
+        self.focus = order[next % order.len()];
+    }
+
+    /// The panes Tab visits: the priority array only for an object that
+    /// has one.
+    pub(crate) fn panes(&self) -> &'static [Pane] {
+        const ALL: [Pane; 4] = [Pane::Card, Pane::Objects, Pane::Properties, Pane::Priority];
+        if self.has_priority() {
+            &ALL
+        } else {
+            &ALL[..3]
+        }
+    }
+
+    /// The focused pane as drawn: the priority pane falls back to the
+    /// properties once the object shown has no priority array.
+    pub(crate) fn shown_focus(&self) -> Pane {
+        match self.focus {
+            Pane::Priority if !self.has_priority() => Pane::Properties,
+            focus => focus,
+        }
+    }
+
+    fn has_priority(&self) -> bool {
+        matches!(&self.view, ViewState::Ready(view) if view.priority.is_some())
     }
 
     /// Move in the focused pane.
@@ -182,7 +210,7 @@ impl Browser {
                     Movement::End => usize::MAX,
                 });
             }
-            Pane::Card => {}
+            Pane::Card | Pane::Priority => {}
         }
     }
 }
@@ -246,8 +274,8 @@ impl App {
         let Some(browser) = self.browser.as_deref_mut() else {
             return;
         };
-        let reading = match (&browser.view, browser.focus) {
-            (ViewState::Ready(view), Pane::Properties) => Some(view.object),
+        let reading = match (&browser.view, browser.shown_focus()) {
+            (ViewState::Ready(view), Pane::Properties | Pane::Priority) => Some(view.object),
             (ViewState::Failed(object, _) | ViewState::Reading(object), Pane::Properties) => {
                 Some(*object)
             }
