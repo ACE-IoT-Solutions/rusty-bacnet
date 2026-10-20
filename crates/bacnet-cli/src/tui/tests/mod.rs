@@ -65,6 +65,7 @@ mod inprocess;
 #[path = "../../../tests/support/lab.rs"]
 mod lab;
 mod load;
+mod mstp_join_audit;
 mod mstp_layout;
 mod mstp_monitor;
 #[cfg(all(target_os = "linux", feature = "serial"))]
@@ -85,6 +86,8 @@ mod sc_hub;
 mod sc_layout;
 mod sc_lint;
 mod sc_profiles;
+#[cfg(feature = "sc-tls")]
+mod sc_reconnect;
 mod sc_screen;
 mod site;
 mod values;
@@ -92,6 +95,8 @@ mod watch;
 mod watch_rows;
 mod writes;
 mod writes_app;
+mod writes_arrays;
+mod writes_indexed;
 mod writes_ledger;
 
 use std::net::Ipv4Addr;

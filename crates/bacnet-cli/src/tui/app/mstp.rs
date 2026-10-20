@@ -246,7 +246,9 @@ impl JoinDialog {
     pub(crate) fn for_flags(settings: MstpArgs, listed: Vec<String>) -> Self {
         let mut ports = vec![settings.port.clone()];
         ports.extend(listed);
-        let ports = crate::mstp::dedup(ports);
+        // A listed by-id link to the configured port is the same port
+        // (#1928). Resolving names reads the filesystem, once, here.
+        let ports = crate::mstp::dedup_resolved(ports, crate::mstp::resolve);
         Self {
             settings,
             ports,

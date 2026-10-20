@@ -62,6 +62,9 @@ pub(super) fn validate(matches: &ArgMatches) -> Result<(), clap::Error> {
         ("device_instance", "--device-instance"),
         ("sc", "--sc"),
         ("sc_url", "--sc-url"),
+        ("sc_failover_url", "--sc-failover-url"),
+        ("sc_reconnect", "--sc-reconnect"),
+        ("sc_connect_timeout", "--sc-connect-timeout"),
         ("sc_vmac", "--sc-vmac"),
         ("sc_device_uuid", "--sc-device-uuid"),
     ] {

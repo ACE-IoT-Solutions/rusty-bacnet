@@ -320,7 +320,7 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 |---|---|---|
 | T0 | Reads, discovery, capture | None, except that a global or full-range Who-Is gets a one-line warning with the expected response volume and needs a second Enter (M0) |
 | T1 | Writes at priorities 9 to 16, non-commandable property writes | Preview (old to new, slot occupancy, whether the effective value changes), then Enter |
-| T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image: it is logged (`L`, `--log-file`), not yet written to the ledger or the audit log |
+| T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image, so it has no ledger entry; on a profile session each confirmed join is written to the audit log (`mstp-join`: profile, port, station, baud, Max_Master, Max_Info_Frames, time) before the port opens. Unlike a write, whose audit record failing is only logged, a join that can't be recorded is not made (#1862) |
 | T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. DCC defaults to a finite duration |
 | Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3); the deprecated plain-disable DCC option, which current-revision servers ignore (Clause 16.1) | Expert flag only |
 
@@ -345,7 +345,15 @@ from a device's mutation policy is shown as `DENIED`, apart from other errors.
 
 **Session ledger** (#964). Every change records its pre-image (the slot value,
 or the property's old value, Out_Of_Service included; BDT entries come with
-BDT writes). `ledger.json` in the workspace is saved atomically before each
+BDT writes). A write to one array element reads that element alone first and
+keeps it as the pre-image, so revert writes it back at the same index (#1801);
+when the element can't be read, the pre-image is unknown, the preview says why,
+and revert leaves the entry and says so. Index 0 (the length) is a resize,
+recorded with an unknown pre-image. Element and whole writes to one array
+share one record of the original: a whole write folds the element entries
+before it into one entry (its pre-image with each element's put back), and an
+element write after a whole one records nothing new; a refused whole write
+gives the element entries back. `ledger.json` in the workspace is saved atomically before each
 request goes out and after its answer, so a kill mid-request still leaves the
 entry (state `sending`, or `unknown` after a timeout); a write is not sent if
 the ledger can't be saved. Repeated writes to one target keep the first
@@ -648,9 +656,12 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
 
 B/IP and BACnet/SC profiles are implemented behind `tui`. The entry flow,
 schema and keys are in the [CLI reference](../CLI.md#terminal-ui). MS/TP
-profiles (#969) add a `transport` value and their own table. An SC profile's
-failover hub goes to the client builder with the default reconnect policy,
-which the builder needs for failover; the SC screen (#967) shows which hub is in use.
+profiles (#969) add a `transport` value and their own table. An SC profile
+reconnects with backoff by default, primary-only or not, and can turn that off
+unless it names a failover hub (the builder needs a reconnect policy for
+failover); its backoff and connect timeout reach the client builder, and
+`--sc-failover-url`, `--sc-reconnect` and `--sc-connect-timeout` give a
+flags-only session the same (#1831). The SC screen (#967) shows which hub is in use.
 
 - Each transport keeps its settings in its own table (`[bip]` or `[sc]`), and
   exactly the one `transport` names is present. B/IP files from before SC

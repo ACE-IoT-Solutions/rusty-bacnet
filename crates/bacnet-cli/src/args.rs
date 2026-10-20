@@ -113,6 +113,22 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) sc_url: Option<String>,
 
+    /// SC failover hub WebSocket URL, used when the primary hub can't be
+    /// reached or its reconnects run out. Turns on --sc-reconnect.
+    #[arg(long, global = true, value_name = "URL")]
+    pub(crate) sc_failover_url: Option<String>,
+
+    /// Redial a lost SC hub connection with backoff (10 s doubling to 10 min,
+    /// 10 attempts). A TUI profile does this unless it sets reconnect = false.
+    #[arg(long, global = true)]
+    pub(crate) sc_reconnect: bool,
+
+    /// SC connect timeout in milliseconds, for each hub dial and handshake
+    /// (1 to 600000; default 10000).
+    #[arg(long, global = true, value_name = "MS",
+          value_parser = crate::transport::parse_sc_connect_timeout_arg)]
+    pub(crate) sc_connect_timeout: Option<u64>,
+
     /// SC trusted site CA PEM file (required for SC; no system-root fallback).
     // Validate emptiness only when constructing an SC client, not for discovery
     // or a feature-disabled build. Preserve native OS path bytes.
@@ -654,6 +670,58 @@ mod tests {
         assert!(args.foreign_device.is_none());
         let cli = parse(["bacnet", "register", "192.0.2.10", "--ttl", "45"]).unwrap();
         assert_eq!(cli.ttl, 45);
+    }
+
+    /// The SC reconnect flags (#1831): `--sc-failover-url` brings the
+    /// default reconnect policy, as `--sc-reconnect` does alone; neither
+    /// leaves reconnect off; the connect timeout is checked at parse time.
+    #[test]
+    fn the_sc_reconnect_flags_reach_the_transport() {
+        let args = |cli: &Cli| {
+            crate::transport::TransportArgs::from_cli(
+                cli,
+                Ipv4Addr::UNSPECIFIED,
+                Ipv4Addr::BROADCAST,
+            )
+        };
+        let cli = parse([
+            "bacnet",
+            "--sc",
+            "--sc-url",
+            "wss://hub.example",
+            "--sc-failover-url",
+            "wss://hub2.example",
+            "--sc-connect-timeout",
+            "2500",
+            "discover",
+        ])
+        .unwrap();
+        let sc = args(&cli).unwrap();
+        assert_eq!(sc.sc_failover_url.as_deref(), Some("wss://hub2.example"));
+        assert_eq!(
+            sc.sc_reconnect.map(|p| p.max_retries),
+            Some(bacnet_transport::sc::ScReconnectConfig::default().max_retries)
+        );
+        assert_eq!(sc.sc_connect_timeout_ms, Some(2500));
+        let cli = parse(["bacnet", "--sc", "--sc-reconnect", "discover"]).unwrap();
+        assert!(args(&cli).unwrap().sc_reconnect.is_some());
+        let cli = parse(["bacnet", "--sc", "discover"]).unwrap();
+        let plain = args(&cli).unwrap();
+        assert!(plain.sc_reconnect.is_none() && plain.sc_connect_timeout_ms.is_none());
+        let same = parse([
+            "bacnet",
+            "--sc-url",
+            "wss://hub.example",
+            "--sc-failover-url",
+            "WSS://Hub.Example/",
+            "discover",
+        ])
+        .unwrap();
+        assert!(args(&same).err().unwrap().contains("differ"), "normalized");
+        for bad in ["0", "600001", "soon"] {
+            let error = parse(["bacnet", "--sc-connect-timeout", bad, "discover"]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ValueValidation, "{bad}");
+        }
     }
 
     /// `find` takes the name as a word or with `--name`, never both and

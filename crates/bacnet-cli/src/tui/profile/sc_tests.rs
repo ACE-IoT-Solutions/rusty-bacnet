@@ -158,11 +158,16 @@ fn serialized_sc_profile_holds_paths_and_never_pem_or_key_bytes() {
         [
             "ca",
             "cert",
+            "connect_timeout_ms",
             "device_uuid",
             "failover_hub_url",
             "hub_url",
             "key",
             "min_interval_ms",
+            "reconnect",
+            "reconnect_initial_delay_ms",
+            "reconnect_max_delay_ms",
+            "reconnect_max_retries",
             "timeout_ms",
             "vmac"
         ]
@@ -285,11 +290,27 @@ fn sc_validation_covers_urls_paths_and_failover() {
     let files = tempfile::tempdir().unwrap();
     let base = sc_profile(files.path(), "wss://hub.example");
     assert_eq!(base.validate(), Ok(()));
-    let cases: [(Break, &str); 5] = [
+    let cases: [(Break, &str); 9] = [
         (|s| s.hub_url = "https://hub".into(), "wss://"),
+        (
+            |s| {
+                s.failover_hub_url = Some("wss://hub2.example".into());
+                s.reconnect = false;
+            },
+            "needs reconnect on",
+        ),
+        (
+            |s| s.connect_timeout_ms = 0,
+            "connect_timeout_ms must be 1 to",
+        ),
+        (|s| s.reconnect_initial_delay_ms = 0, "reconnect settings"),
+        (
+            |s| s.reconnect_initial_delay_ms = s.reconnect_max_delay_ms + 1,
+            "must not exceed",
+        ),
         (|s| s.hub_url = "wss://hub:0".into(), "1-65535"),
         (
-            |s| s.failover_hub_url = Some("wss://hub.example".into()),
+            |s| s.failover_hub_url = Some("WSS://HUB.example/".into()),
             "differ",
         ),
         (|s| s.failover_hub_url = Some("hub2".into()), "Failover URL"),
@@ -303,4 +324,96 @@ fn sc_validation_covers_urls_paths_and_failover() {
     }
     // Without an identity there is nothing to connect as.
     assert!(base.transport_args().err().unwrap().contains("UUID"));
+}
+
+/// #1831: a primary-only profile reconnects by default, with the client's
+/// own backoff and connect timeout; the profile can turn reconnect off and
+/// tune both, and what it sets reaches the client's settings.
+#[test]
+fn sc_reconnect_and_connect_timeout_reach_the_transport_settings() {
+    let files = tempfile::tempdir().unwrap();
+    let mut p = sc_profile(files.path(), "wss://hub.example");
+    p.sc_mut().assign_identity().unwrap();
+    // A file written before these keys existed loads with the defaults.
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    store.save("site", &p, true).unwrap();
+    let path = root.path().join("profiles/site.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let old: String = text
+        .lines()
+        .filter(|l| !l.starts_with("reconnect") && !l.starts_with("connect_timeout_ms"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_ne!(old, text);
+    std::fs::write(&path, old).unwrap();
+    assert_eq!(store.load("site").unwrap(), p);
+
+    let args = p.transport_args().unwrap();
+    let policy = args
+        .sc_reconnect
+        .expect("primary-only reconnects by default");
+    let default = bacnet_transport::sc::ScReconnectConfig::default();
+    assert_eq!(
+        (
+            policy.initial_delay_ms,
+            policy.max_delay_ms,
+            policy.max_retries
+        ),
+        (
+            default.initial_delay_ms,
+            default.max_delay_ms,
+            default.max_retries
+        )
+    );
+    assert_eq!(args.sc_connect_timeout_ms, Some(10_000));
+    assert_eq!(args.sc_failover_url, None);
+
+    let sc = p.sc_mut();
+    (sc.reconnect_initial_delay_ms, sc.reconnect_max_delay_ms) = (500, 4_000);
+    (sc.reconnect_max_retries, sc.connect_timeout_ms) = (3, 2_500);
+    let args = p.transport_args().unwrap();
+    let policy = args.sc_reconnect.unwrap();
+    assert_eq!(
+        (
+            policy.initial_delay_ms,
+            policy.max_delay_ms,
+            policy.max_retries
+        ),
+        (500, 4_000, 3)
+    );
+    assert_eq!(args.sc_connect_timeout_ms, Some(2_500));
+    p.sc_mut().reconnect = false;
+    assert!(p.transport_args().unwrap().sc_reconnect.is_none(), "off");
+}
+
+/// The SC flags override a profile like the others: a failover hub (which
+/// turns reconnect back on), `--sc-reconnect`, and the connect timeout.
+#[test]
+fn sc_failover_reconnect_and_timeout_flags_override_a_profile() {
+    let files = tempfile::tempdir().unwrap();
+    let mut p = sc_profile(files.path(), "wss://hub.example");
+    p.sc_mut().assign_identity().unwrap();
+    p.sc_mut().reconnect = false;
+    let resolve = |flags: &[&str]| {
+        let mut args = vec!["bacnet"];
+        args.extend_from_slice(flags);
+        args.extend(["tui", "--profile", "site"]);
+        Overrides::from_cli(&cli(&args)).unwrap().resolve(&p)
+    };
+    let effective = resolve(&[
+        "--sc-failover-url",
+        "wss://hub2.example",
+        "--sc-connect-timeout",
+        "3000",
+    ])
+    .unwrap();
+    let sc = effective.sc.unwrap();
+    assert_eq!(sc.failover_hub_url.as_deref(), Some("wss://hub2.example"));
+    assert!(sc.reconnect, "a failover hub brings reconnect");
+    assert_eq!(sc.connect_timeout_ms, 3000);
+    assert!(resolve(&["--sc-reconnect"]).unwrap().sc.unwrap().reconnect);
+    assert!(!resolve(&[]).unwrap().sc.unwrap().reconnect, "kept off");
+    let error = resolve(&["--sc-failover-url", "wss://hub.example"]).unwrap_err();
+    assert!(error.contains("differ"), "{error}");
 }

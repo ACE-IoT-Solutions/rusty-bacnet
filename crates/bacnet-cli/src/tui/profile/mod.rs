@@ -238,6 +238,8 @@ impl Profile {
             sc: false,
             sc_url: None,
             sc_failover_url: None,
+            sc_reconnect: None,
+            sc_connect_timeout_ms: None,
             sc_ca: None,
             sc_cert: None,
             sc_key: None,
@@ -264,6 +266,8 @@ impl Profile {
             args.sc = true;
             args.sc_url = Some(sc.hub_url.clone());
             args.sc_failover_url = sc.failover_hub_url.clone();
+            args.sc_reconnect = sc.reconnect();
+            args.sc_connect_timeout_ms = Some(sc.connect_timeout_ms);
             args.sc_ca = Some(sc.ca.clone());
             args.sc_cert = Some(sc.cert.clone());
             args.sc_key = Some(sc.key.clone());

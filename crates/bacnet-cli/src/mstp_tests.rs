@@ -363,8 +363,111 @@ fn listing(ports: &[(&str, bool, bool)]) -> Vec<Listed> {
             name: name.to_string(),
             usb,
             bluetooth,
+            target: None,
         })
         .collect()
+}
+
+/// A by-id link and the kernel device it resolves to are one adapter:
+/// offered once, by the stable link name (#1928). A second link to the same
+/// device is dropped too.
+#[test]
+fn linux_offers_a_linked_adapter_once_by_its_by_id_name() {
+    let link = |name: &str, target: Option<&str>| Listed {
+        name: name.into(),
+        usb: false,
+        bluetooth: false,
+        target: target.map(str::to_string),
+    };
+    let mut listed = vec![
+        link("/dev/serial/by-id/usb-FTDI-A10K-if00", Some("/dev/ttyUSB0")),
+        link(
+            "/dev/serial/by-id/usb-FTDI-A10K-alias",
+            Some("/dev/ttyUSB0"),
+        ),
+    ];
+    listed.extend(listing(&[
+        ("/dev/ttyS0", false, false),
+        ("/dev/ttyUSB0", true, false),
+        ("/dev/ttyUSB1", true, false),
+    ]));
+    assert_eq!(
+        choose_ports(listed, Platform::Linux),
+        [
+            "/dev/serial/by-id/usb-FTDI-A10K-if00",
+            "/dev/ttyUSB1",
+            "/dev/ttyS0",
+        ]
+    );
+}
+
+/// The links are read from a directory, each resolved to its device: a fake
+/// `/dev/serial/by-id` over a fake `/dev`.
+#[cfg(unix)]
+#[test]
+fn linked_ports_resolve_each_link_in_a_fake_by_id_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let dev = root.path().join("dev");
+    let by_id = dev.join("serial/by-id");
+    std::fs::create_dir_all(&by_id).unwrap();
+    std::fs::write(dev.join("ttyUSB0"), b"").unwrap();
+    std::fs::write(dev.join("ttyACM0"), b"").unwrap();
+    std::os::unix::fs::symlink("../../ttyUSB0", by_id.join("usb-FTDI-A10K-if00-port0")).unwrap();
+    std::os::unix::fs::symlink("../../ttyACM0", by_id.join("usb-Arduino-if00")).unwrap();
+    std::os::unix::fs::symlink("../../ttyUSB9", by_id.join("usb-unplugged-if00")).unwrap();
+    // The kernel's names, as the system lists them (canonical, like `/dev`).
+    let usb0 = std::fs::canonicalize(dev.join("ttyUSB0")).unwrap();
+    let acm0 = std::fs::canonicalize(dev.join("ttyACM0")).unwrap();
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+
+    let linked = linked_ports(&by_id);
+    let names: Vec<_> = linked.iter().map(|port| port.name.clone()).collect();
+    assert_eq!(
+        names,
+        [
+            text(&by_id.join("usb-Arduino-if00")),
+            text(&by_id.join("usb-FTDI-A10K-if00-port0")),
+        ],
+        "sorted by name, the dangling link left out"
+    );
+    assert_eq!(linked[0].target, Some(text(&acm0)));
+    assert_eq!(linked[1].target, Some(text(&usb0)));
+
+    let mut listed = linked;
+    listed.push(Listed {
+        name: text(&usb0),
+        usb: true,
+        bluetooth: false,
+        target: None,
+    });
+    listed.push(Listed {
+        name: text(&acm0),
+        usb: true,
+        bluetooth: false,
+        target: None,
+    });
+    let offered = choose_ports(listed, Platform::Linux);
+    assert_eq!(offered, names, "each adapter once, by its link");
+    assert!(linked_ports(&root.path().join("missing")).is_empty());
+
+    // The join dialog's list: the configured kernel name first, and the
+    // listed link to it dropped as the same port.
+    let configured = text(&usb0);
+    let ports = vec![
+        configured.clone(),
+        text(&by_id.join("usb-FTDI-A10K-if00-port0")),
+        text(&by_id.join("usb-Arduino-if00")),
+        "/dev/ttyNOWHERE9".into(),
+        "/dev/ttyNOWHERE9".into(),
+    ];
+    assert_eq!(
+        dedup_resolved(ports, resolve),
+        [
+            configured,
+            text(&by_id.join("usb-Arduino-if00")),
+            "/dev/ttyNOWHERE9".into(),
+        ]
+    );
 }
 
 /// macOS offers call-out devices only, without the Bluetooth services or

@@ -189,7 +189,15 @@ async fn run(
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
                                         let kind = prepared.stored.transport.kind();
-                                        options.watch.workspace = profiles.workspace(&name);
+                                        let workspace = profiles.workspace(&name);
+                                        // The app sends an MS/TP profile's Connect only once
+                                        // its join is confirmed: record that join first, and
+                                        // change nothing when it can't be.
+                                        if let Err(error) = record_join(workspace.as_deref(), &name, options.safety.passive, &args).await {
+                                            sink.deliver(WorkerEvent::Profile(Err(error))).await;
+                                            continue;
+                                        }
+                                        options.watch.workspace = workspace;
                                         options.safety.workspace = options.watch.workspace.clone();
                                         options.safety.profile = Some(name.clone());
                                         options.safety.policy = prepared.stored.safety.clone();
@@ -291,6 +299,26 @@ async fn export(job: ExportJob, dir: PathBuf, sink: EventSink) {
     }
     sink.deliver(WorkerEvent::Capture(CaptureEvent::Exported(exported)))
         .await;
+}
+
+/// Record a profile session's MS/TP join in its workspace's audit log
+/// (#1862). Nothing for another transport, or a passive session, which
+/// never joins. A join that can't be recorded is not made.
+async fn record_join(
+    workspace: Option<&std::path::Path>,
+    profile: &str,
+    passive: bool,
+    args: &crate::transport::TransportArgs,
+) -> Result<(), String> {
+    let (Some(settings), Some(dir)) = (&args.mstp, workspace) else {
+        return Ok(());
+    };
+    if passive {
+        return Ok(());
+    }
+    crate::tui::safety::audit::record_join(dir, profile, settings)
+        .await
+        .map_err(|error| format!("the join was not made: {error}"))
 }
 
 /// Why a JoinTrunk is refused outside an MS/TP session.

@@ -27,7 +27,7 @@ use tokio::time::Instant;
 
 use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
 use super::browse::limits::RateCap;
-use super::browse::read::{Halt, Reader, Wanted};
+use super::browse::read::{unreachable, Halt, Reader, Wanted};
 use super::EventSink;
 use crate::core::class::Class;
 use crate::tui::message::WorkerEvent;
@@ -35,7 +35,7 @@ use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::audit::{utc_now, Audit, Context};
 use crate::tui::safety::ledger::{Entry, Ledger};
 use crate::tui::safety::lock::{lock, WorkspaceLock};
-use crate::tui::safety::plan::{self, PRE_READ, PRIORITY_6};
+use crate::tui::safety::plan::{self, PreRead, PRE_READ, PRIORITY_6};
 use crate::tui::safety::{
     Gate, Level, Outcome, Planned, Preview, SafetyCommand, SafetyEvent, WriteSpec, MAX_MINUTES,
 };
@@ -45,6 +45,10 @@ pub(crate) const PASSIVE: &str = "passive session: nothing is transmitted";
 
 /// Why a stale preview is not sent.
 pub(crate) const STALE: &str = "changed since preview, review again";
+
+/// Why revert leaves an entry whose old value wasn't read before the write.
+pub(crate) const UNKNOWN_PRE_IMAGE: &str =
+    "the old value was not read before the write, so there is nothing to put back";
 
 /// What the write session needs from the session's settings.
 #[derive(Debug, Clone)]
@@ -487,7 +491,7 @@ impl<'a> Runner<'a> {
             cancel: &cancel,
             rpm: true,
         };
-        let mut rows = Vec::with_capacity(specs.len());
+        let mut reads = Vec::with_capacity(specs.len());
         for spec in specs {
             let mut wanted = PRE_READ.to_vec();
             if !wanted.contains(&spec.property) && spec.index.is_none() {
@@ -498,19 +502,40 @@ impl<'a> Runner<'a> {
                 () = sink.cancelled() => return Err("the session ended".into()),
                 read = reader.properties(spec.object, Wanted::List(&wanted)) => read,
             };
-            match read {
-                Ok((read, _)) => rows.push(read),
+            let rows = match read {
+                Ok((rows, _)) => rows,
                 Err(Halt::Device(error)) => {
                     return Err(format!("reading {}: {error}", spec.object))
                 }
                 Err(Halt::Cancelled) => return Err("cancelled".into()),
-            }
+            };
+            // An indexed write's pre-image is its element, read alone.
+            // Index 0 (a resize) has no pre-image to read.
+            let element = match spec.index {
+                None | Some(0) => None,
+                Some(index) => {
+                    let read = tokio::select! {
+                        biased;
+                        () = sink.cancelled() => return Err("the session ended".into()),
+                        read = reader.rp(spec.object, spec.property, Some(index)) => read,
+                    };
+                    Some(match read {
+                        Ok(bytes) => Ok(bytes),
+                        Err(Halt::Device(error)) if unreachable(&error) => {
+                            return Err(format!("reading {}: {error}", spec.object))
+                        }
+                        Err(Halt::Device(error)) => Err(error.to_string()),
+                        Err(Halt::Cancelled) => return Err("cancelled".into()),
+                    })
+                }
+            };
+            reads.push(PreRead { rows, element });
         }
         let ledger = self.ledger.as_ref();
         let ours = |spec: &WriteSpec, priority, now: &[u8]| {
             ledger.is_some_and(|l| l.owns(spec, priority, now))
         };
-        plan::preview(specs, &rows, ours, self.options.policy.dangerous, batch)
+        plan::preview(specs, &reads, ours, self.options.policy.dangerous, batch)
     }
 
     /// Record every write of `preview` as not sent, and why.
@@ -658,7 +683,7 @@ impl<'a> Runner<'a> {
                         .await;
                     Outcome::of(&result)
                 }
-                _ => Outcome::NotSent("the old value is unknown".into()),
+                _ => Outcome::NotSent(UNKNOWN_PRE_IMAGE.into()),
             };
             if outcome.applied() == Some(true) {
                 if let Some(ledger) = &mut self.ledger {

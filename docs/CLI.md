@@ -57,6 +57,9 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--device-instance <N>` | | Device instance whose VMAC the CLI uses on `--ipv6`; needed where the link has no multicast, such as Linux loopback |
 | `--sc` | | Use BACnet/SC transport |
 | `--sc-url <URL>` | | SC hub WebSocket URL |
+| `--sc-failover-url <URL>` | | SC failover hub, used when the primary can't be reached or its reconnects run out; turns on `--sc-reconnect` |
+| `--sc-reconnect` | off (a profile: on) | Redial a lost SC hub with backoff: 10 s doubling to 10 min, 10 attempts |
+| `--sc-connect-timeout <MS>` | 10000 | Bound on each SC hub dial and handshake, 1 to 600000 ms |
 | `--sc-ca <FILE>` | required for SC | Trusted site CA certificate(s) in PEM; no system-root fallback |
 | `--sc-cert <FILE>` | | SC TLS certificate PEM |
 | `--sc-key <FILE>` | | SC TLS private key PEM |
@@ -322,9 +325,19 @@ certificate and key PEM files. Only the paths are saved, never PEM text, key
 bytes or passwords; relative paths are made absolute on save. A blank VMAC or
 device UUID is generated when the profile is first saved (or first connected,
 for a hand-written file) and kept from then on, so the device UUID stays the
-same across restarts. A profile with a failover URL connects with automatic
-reconnect, using the client's default policy, and turns to the failover hub
-when the primary can't be reached.
+same across restarts. An SC profile reconnects with backoff after it loses its
+hub, primary-only profiles included, so a long session survives a hub restart:
+by default the first retry comes after 10 s, the delay doubles up to 10 min,
+and 10 attempts are made before a failover hub, if one is set, is tried.
+`reconnect = false` turns this off (a lost hub then stays down) and is refused
+with a failover URL, since the failover hub is reached by reconnecting. The
+backoff (`reconnect_initial_delay_ms`, `reconnect_max_delay_ms`,
+`reconnect_max_retries`) and the connect timeout (`connect_timeout_ms`, 1 to
+600000, default 10000) can be set in the file; the editor offers the connect
+timeout and reconnect on/off. `--sc-failover-url`, `--sc-reconnect` and
+`--sc-connect-timeout` override a profile like the other flags, and give a
+flags-only session the same settings (reconnect stays off there unless one of
+the first two is given).
 
 Before a connection is attempted, the preview checks that each named file
 opens for reading, and on Unix warns when the key file is readable by group or
@@ -397,6 +410,11 @@ vmac = "22:10:20:30:40:50"                           # generated when blank
 device_uuid = "6f1c2a9e-4407-4b3d-9a51-0e7c8821d40b" # generated when blank
 timeout_ms = 6000
 min_interval_ms = 0
+connect_timeout_ms = 10000
+reconnect = true                  # false: a lost hub stays down (no failover then)
+reconnect_initial_delay_ms = 10000
+reconnect_max_delay_ms = 600000
+reconnect_max_retries = 10
 
 [safety]
 writes = "session"
@@ -604,7 +622,11 @@ others `mstp-ports` lists; a profile's own port only), and joins on `y`. Like
 the write session's T2 changes, nothing but `y` goes ahead; Esc goes back to
 the profile, or quits a flags-only session before its first join. Every later
 join (`c` after a disconnect or a failed join) shows the dialog again, and
-declining it then leaves the session disconnected. `--passive` joins nothing. The
+declining it then leaves the session disconnected. On a profile session each
+confirmed join is written to the workspace's `audit.jsonl` (event `mstp-join`,
+with the port, station, baud, Max_Master and Max_Info_Frames) before the port
+opens. Unlike a write, whose audit record failing is only logged, a join that
+can't be recorded is not made. `--passive` joins nothing. The
 one-shot commands take `--mstp` itself as the request.
 
 **MS/TP screen.** `6` shows this station (port, MAC, baud rate, Max_Master,
@@ -823,6 +845,11 @@ wrote; one someone has overwritten since is treated as another commander's.
 `u` lists the ledger, and `R` then `y` reverts everything, latest write first:
 our slots are relinquished, or given back the value another commander had
 there; other properties (Out_Of_Service included) get their old value back. A
+write to one array element (`state-text[2]`) keeps that element's old value and
+reverts just that element; if the element couldn't be read before the write,
+revert leaves the entry and says the old value is unknown. Writing index 0 (the
+array's length) is a resize, which is never reverted. Element and whole writes
+to one array revert to the array as it was before the first of them. A
 device not yet discovered (after a restart, say) is looked for first. Reverting
 needs a connection but not an armed session. Quitting with entries in the
 ledger, or with a write session request still out, opens the exit guard: `r`
@@ -1379,7 +1406,8 @@ A station is addressed as `mstp:N` (or `mstp:0xNN`). A station behind a
 router is still `DNET:0xMAC`, as on any other transport. `mstp-ports` opens no
 port and needs no `--mstp`. It puts the likely choice first. On Linux it lists
 the stable names under `/dev/serial/by-id/`, then USB adapters (`ttyUSB*`,
-`ttyACM*`), then the rest. On macOS it lists only the call-out devices
+`ttyACM*`), then the rest; an adapter with a by-id name is listed once, by that
+name, not again as the `ttyUSB*` device it points to. On macOS it lists only the call-out devices
 (`/dev/cu.*`), which open without waiting for a carrier signal the way their
 `/dev/tty.*` twins do, leaves out Bluetooth ports and the debug console, and
 puts USB adapters first. On Windows it lists USB adapters first, each group in

@@ -17,8 +17,14 @@ use serde::{Deserialize, Serialize};
 
 use super::{Planned, Stored, WriteSpec, NULL};
 
+mod fold;
+
 /// The ledger's file in the workspace.
 pub(crate) const FILE: &str = "ledger.json";
+
+/// What [`Ledger::begin`] returns for an element write that a whole-property
+/// entry already covers: no entry, so settling it changes nothing.
+pub(crate) const COVERED: u64 = 0;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -120,6 +126,28 @@ impl Entry {
             && self.priority == priority
     }
 
+    /// A non-commandable entry on the property `spec` names, at any index.
+    fn same_property(&self, spec: &WriteSpec) -> bool {
+        self.priority.is_none()
+            && self.device == spec.device
+            && self.object_type == spec.object.object_type().to_raw()
+            && self.instance == spec.object.instance_number()
+            && self.property == spec.property.to_raw()
+    }
+
+    /// Both entries are non-commandable writes to one property.
+    fn same_array(&self, other: &Entry) -> bool {
+        self.priority.is_none()
+            && other.priority.is_none()
+            && (self.device, self.object_type, self.instance, self.property)
+                == (
+                    other.device,
+                    other.object_type,
+                    other.instance,
+                    other.property,
+                )
+    }
+
     /// The device is back at the pre-image.
     fn undone(&self) -> bool {
         match &self.before {
@@ -163,6 +191,13 @@ impl Ledger {
         &self.entries
     }
 
+    /// The whole-property entry for the property `spec` names, if any.
+    fn whole_entry(&self, spec: &WriteSpec) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .find(|e| e.index.is_none() && e.same_property(spec))
+    }
+
     /// True when the slot `spec` names at `priority` still holds what
     /// this ledger wrote there: `current` is the slot's encoded value now.
     /// A slot someone has since overwritten is theirs, not ours.
@@ -173,10 +208,20 @@ impl Ledger {
     }
 
     /// Record `planned` as sending, merging into an entry for the same
-    /// target (whose first pre-image stays). Returns the entry's id.
+    /// target (whose first pre-image stays). Returns the entry's id, or
+    /// [`COVERED`] when nothing is recorded.
+    ///
+    /// Element and whole-property writes to one array (#1801): a whole
+    /// write folds the element entries before it into one entry whose
+    /// pre-image is the original array, and an element write to an array
+    /// with a whole entry records nothing, since that entry's pre-image
+    /// already puts the element back.
     pub(crate) fn begin(&mut self, planned: &Planned, run: &str, at: &str) -> u64 {
         let (spec, priority) = (&planned.spec, planned.priority);
         let seq = self.entries.iter().map(|e| e.seq).max().unwrap_or(0) + 1;
+        if priority.is_none() && spec.index.is_some() && self.whole_entry(spec).is_some() {
+            return COVERED;
+        }
         if let Some(entry) = self
             .entries
             .iter_mut()
@@ -189,6 +234,20 @@ impl Ledger {
         }
         let id = self.entries.iter().map(|e| e.id).max().map_or(1, |n| n + 1);
         let spec = &planned.spec;
+        let mut before = planned.before.clone();
+        if priority.is_none() && spec.index.is_none() {
+            let elements: Vec<Entry> = self
+                .entries
+                .iter()
+                .filter(|e| e.index.is_some() && e.same_property(spec))
+                .cloned()
+                .collect();
+            if !elements.is_empty() {
+                before = fold::original(before.as_ref(), &elements);
+                self.entries
+                    .retain(|e| !(e.index.is_some() && e.same_property(spec)));
+            }
+        }
         self.entries.push(Entry {
             id,
             run: run.into(),
@@ -200,7 +259,7 @@ impl Ledger {
             index: spec.index,
             priority: planned.priority,
             commandable: planned.commandable,
-            before: planned.before.clone(),
+            before,
             written: planned.value.clone(),
             state: State::Sending,
             kept: false,
@@ -214,12 +273,23 @@ impl Ledger {
     pub(crate) fn finish(&mut self, id: u64, applied: Option<bool>, backup: &[Entry]) {
         match applied {
             Some(false) => {
+                let failed = self.entries.iter().find(|e| e.id == id).cloned();
                 let old = backup.iter().find(|e| e.id == id).cloned();
                 self.entries.retain(|e| e.id != id);
                 if let Some(old) = old {
                     self.entries.push(old);
-                    self.entries.sort_by_key(|e| e.id);
                 }
+                // A refused whole write gives back the element entries it folded.
+                if let Some(whole) = failed.filter(|e| e.index.is_none() && e.priority.is_none()) {
+                    let folded: Vec<Entry> = backup
+                        .iter()
+                        .filter(|e| e.index.is_some() && e.same_array(&whole))
+                        .filter(|e| !self.entries.iter().any(|kept| kept.id == e.id))
+                        .cloned()
+                        .collect();
+                    self.entries.extend(folded);
+                }
+                self.entries.sort_by_key(|e| e.id);
             }
             Some(true) => {
                 if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
@@ -349,6 +419,80 @@ mod tests {
         let id = ledger.begin(&planned(Stored::null(), Some(stored(43.0))), "run-a", "t");
         ledger.finish(id, Some(true), &backup);
         assert!(ledger.entries().is_empty());
+    }
+
+    fn texts(values: &[&str]) -> Stored {
+        let mut buf = bytes::BytesMut::new();
+        for value in values {
+            let value = PropertyValue::CharacterString((*value).into());
+            bacnet_encoding::primitives::encode_property_value(&mut buf, &value).unwrap();
+        }
+        Stored {
+            bytes: buf.to_vec(),
+            text: values.join(", "),
+        }
+    }
+
+    /// A non-commandable write to MSV:1's State_Text, at `index` or whole.
+    fn state_text(index: Option<u32>, value: &[&str], before: Option<&[&str]>) -> Planned {
+        let mut planned = planned(texts(value), before.map(texts));
+        planned.spec.object = ObjectIdentifier::new(ObjectType::MULTI_STATE_VALUE, 1).unwrap();
+        planned.spec.property = PropertyIdentifier::STATE_TEXT;
+        planned.spec.index = index;
+        planned.spec.priority = None;
+        (planned.priority, planned.commandable) = (None, false);
+        planned
+    }
+
+    /// The reviewer's sequence on [S1, S2, S3]: `[2]` = A, then the whole
+    /// array, then `[2]` = B. One entry is left, and it holds the original.
+    #[test]
+    fn element_and_whole_writes_to_one_array_revert_to_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path()).unwrap();
+        let t1 = ledger.begin(&state_text(Some(2), &["A"], Some(&["S2"])), "r", "t");
+        ledger.finish(t1, Some(true), &[]);
+        let whole = state_text(None, &["X", "Y", "Z"], Some(&["S1", "A", "S3"]));
+        let t2 = ledger.begin(&whole, "r", "t");
+        ledger.finish(t2, Some(true), &[]);
+        let t3 = ledger.begin(&state_text(Some(2), &["B"], Some(&["Y"])), "r", "t");
+        assert_eq!(t3, COVERED, "the whole entry covers it");
+        ledger.finish(t3, Some(true), &[]);
+        let [entry] = ledger.entries() else {
+            panic!("{:?}", ledger.entries());
+        };
+        assert_eq!(entry.index, None);
+        assert_eq!(
+            entry.undo().unwrap().bytes,
+            texts(&["S1", "S2", "S3"]).bytes
+        );
+        assert_eq!(entry.written.bytes, texts(&["X", "Y", "Z"]).bytes);
+    }
+
+    /// A refused whole write gives back the element entries it folded; an
+    /// element whose old value is unknown leaves the original unknown.
+    #[test]
+    fn a_refused_whole_write_unfolds_and_an_unknown_element_stays_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path()).unwrap();
+        let t1 = ledger.begin(&state_text(Some(2), &["A"], Some(&["S2"])), "r", "t");
+        ledger.finish(t1, Some(true), &[]);
+        let backup = ledger.entries().to_vec();
+        let whole = state_text(None, &["X", "Y", "Z"], Some(&["S1", "A", "S3"]));
+        let t2 = ledger.begin(&whole, "r", "t");
+        assert_eq!(ledger.entries().len(), 1, "folded");
+        ledger.finish(t2, Some(false), &backup);
+        assert_eq!(ledger.entries(), backup.as_slice());
+
+        let resize = state_text(Some(0), &["4"], None);
+        let t0 = ledger.begin(&resize, "r", "t");
+        ledger.finish(t0, Some(true), &[]);
+        let t2 = ledger.begin(&whole, "r", "t");
+        ledger.finish(t2, Some(true), &[]);
+        let [entry] = ledger.entries() else {
+            panic!("{:?}", ledger.entries());
+        };
+        assert_eq!(entry.undo(), None, "a resize was among them");
     }
 
     #[test]

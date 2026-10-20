@@ -17,8 +17,16 @@ pub struct TransportArgs {
     pub min_interval_ms: u64,
     pub sc: bool,
     pub sc_url: Option<String>,
-    /// The failover hub; set only from a profile (#962). Turns on reconnect.
+    /// The failover hub (#962): from a profile, or `--sc-failover-url`
+    /// (#1831). It needs `sc_reconnect`.
     pub sc_failover_url: Option<String>,
+    /// How a lost hub connection is redialled: from a profile (on by
+    /// default), or `--sc-reconnect` / `--sc-failover-url`. `None` leaves a
+    /// lost connection down.
+    pub sc_reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
+    /// The bound on each hub dial and handshake; `None` keeps the client's
+    /// default.
+    pub sc_connect_timeout_ms: Option<u64>,
     pub sc_ca: Option<PathBuf>,
     pub sc_cert: Option<PathBuf>,
     pub sc_key: Option<PathBuf>,
@@ -54,6 +62,11 @@ impl TransportArgs {
                 "--foreign-bbmd requires BACnet/IP transport (do not use --sc or --ipv6)".into(),
             );
         }
+        if let (Some(failover), Some(primary)) = (&cli.sc_failover_url, &cli.sc_url) {
+            if same_hub_url(failover, primary) {
+                return Err("--sc-failover-url must differ from --sc-url".into());
+            }
+        }
         Ok(Self {
             interface,
             port: cli.port,
@@ -62,7 +75,12 @@ impl TransportArgs {
             min_interval_ms: cli.min_interval_ms,
             sc: cli.sc,
             sc_url: cli.sc_url.clone(),
-            sc_failover_url: None,
+            sc_failover_url: cli.sc_failover_url.clone(),
+            // A failover hub is only reached by reconnecting, so it brings
+            // the default policy along.
+            sc_reconnect: (cli.sc_reconnect || cli.sc_failover_url.is_some())
+                .then(bacnet_transport::sc::ScReconnectConfig::default),
+            sc_connect_timeout_ms: cli.sc_connect_timeout,
             sc_ca: cli.sc_ca.clone(),
             sc_cert: cli.sc_cert.clone(),
             sc_key: cli.sc_key.clone(),
@@ -253,14 +271,66 @@ pub fn sc_client_builder(
         .device_uuid(sc_device_uuid)
         .apdu_timeout_ms(args.timeout_ms)
         .min_request_interval_ms(args.min_interval_ms);
+    builder = builder.connect_timeout_ms(
+        args.sc_connect_timeout_ms
+            .unwrap_or(DEFAULT_SC_CONNECT_TIMEOUT_MS),
+    );
+    if let Some(policy) = args.sc_reconnect.clone() {
+        builder = builder.reconnect(policy);
+    }
     if let Some(failover) = &args.sc_failover_url {
-        // The builder refuses a failover hub without a reconnect policy, so
-        // a profile's failover hub brings the default one.
-        builder = builder
-            .failover_hub_url(failover)
-            .reconnect(bacnet_transport::sc::ScReconnectConfig::default());
+        // The builder refuses a failover hub without a reconnect policy.
+        builder = builder.failover_hub_url(failover);
     }
     Ok(builder)
+}
+
+/// The connect timeout the CLI gives the SC client builder when none is
+/// set: 10 s, the builder's own default (`ScClientBuilder::connect_timeout_ms`),
+/// and a profile's.
+#[cfg_attr(not(any(feature = "tui", feature = "sc-tls")), allow(dead_code))]
+pub(crate) const DEFAULT_SC_CONNECT_TIMEOUT_MS: u64 = 10_000;
+
+/// Whether two hub URLs name the same hub: compared with the scheme and
+/// host lowercased and a trailing slash ignored.
+pub(crate) fn same_hub_url(a: &str, b: &str) -> bool {
+    fn normalized(url: &str) -> String {
+        let url = url.trim();
+        let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, tail) = rest.split_at(end);
+        let tail = tail.strip_suffix('/').unwrap_or(tail);
+        format!(
+            "{}://{}{tail}",
+            scheme.to_ascii_lowercase(),
+            authority.to_ascii_lowercase()
+        )
+    }
+    normalized(a) == normalized(b)
+}
+
+/// The longest connect timeout a profile or `--sc-connect-timeout` takes.
+pub(crate) const MAX_SC_CONNECT_TIMEOUT_MS: u64 = 600_000;
+
+/// Why an SC connect timeout is out of range, if it is: zero would fail
+/// every dial at once.
+pub(crate) fn check_sc_connect_timeout(ms: u64) -> Result<(), String> {
+    if (1..=MAX_SC_CONNECT_TIMEOUT_MS).contains(&ms) {
+        Ok(())
+    } else {
+        Err(format!(
+            "must be 1 to {MAX_SC_CONNECT_TIMEOUT_MS} ms, got {ms}"
+        ))
+    }
+}
+
+/// `--sc-connect-timeout`: milliseconds, 1 to [`MAX_SC_CONNECT_TIMEOUT_MS`].
+pub(crate) fn parse_sc_connect_timeout_arg(s: &str) -> Result<u64, String> {
+    let ms = s
+        .parse::<u64>()
+        .map_err(|_| format!("'{s}' is not a number of milliseconds"))?;
+    check_sc_connect_timeout(ms)?;
+    Ok(ms)
 }
 
 /// Build a BACnet/IPv6 (BIP6) client from CLI transport arguments.
@@ -295,6 +365,8 @@ mod tests {
             sc: true,
             sc_url: Some("wss://hub.example.com/bacnet".into()),
             sc_failover_url: None,
+            sc_reconnect: None,
+            sc_connect_timeout_ms: None,
             sc_ca: Some(PathBuf::from("site-ca.pem")),
             sc_cert: Some(PathBuf::from("cert.pem")),
             sc_key: Some(PathBuf::from("key.pem")),

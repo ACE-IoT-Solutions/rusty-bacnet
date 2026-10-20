@@ -43,6 +43,10 @@ struct BipOverrides {
 struct ScOverrides {
     sc: bool,
     hub_url: Option<String>,
+    failover_hub_url: Option<String>,
+    /// `--sc-reconnect` turns reconnect on; there is no flag to turn it off.
+    reconnect: bool,
+    connect_timeout_ms: Option<u64>,
     ca: Option<PathBuf>,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
@@ -89,6 +93,12 @@ impl Overrides {
             sc: ScOverrides {
                 sc: has("sc") && cli.sc,
                 hub_url: cli.sc_url.clone().filter(|_| has("sc_url")),
+                failover_hub_url: cli
+                    .sc_failover_url
+                    .clone()
+                    .filter(|_| has("sc_failover_url")),
+                reconnect: has("sc_reconnect") && cli.sc_reconnect,
+                connect_timeout_ms: cli.sc_connect_timeout.filter(|_| has("sc_connect_timeout")),
                 ca: path("sc_ca", &cli.sc_ca)?,
                 cert: path("sc_cert", &cli.sc_cert)?,
                 key: path("sc_key", &cli.sc_key)?,
@@ -160,6 +170,14 @@ impl Overrides {
                 let s = resolved.sc.as_mut().expect("validated SC profile");
                 let o = &self.sc;
                 set(&mut s.hub_url, o.hub_url.clone());
+                if let Some(v) = &o.failover_hub_url {
+                    s.failover_hub_url = Some(v.clone());
+                }
+                // As on the command line, a failover hub brings reconnect.
+                if o.reconnect || o.failover_hub_url.is_some() {
+                    s.reconnect = true;
+                }
+                set(&mut s.connect_timeout_ms, o.connect_timeout_ms);
                 set(&mut s.ca, o.ca.clone());
                 set(&mut s.cert, o.cert.clone());
                 set(&mut s.key, o.key.clone());
@@ -206,6 +224,9 @@ pub(crate) fn has_transport_flags(cli: &Cli) -> bool {
                 | "device_instance"
                 | "sc"
                 | "sc_url"
+                | "sc_failover_url"
+                | "sc_reconnect"
+                | "sc_connect_timeout"
                 | "sc_ca"
                 | "sc_cert"
                 | "sc_key"
