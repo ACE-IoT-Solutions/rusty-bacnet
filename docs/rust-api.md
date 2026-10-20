@@ -4126,9 +4126,9 @@ covered by [the external-crate tests](../crates/bacnet-server/tests/event_enroll
 
 | Type | Constructor |
 |------|-------------|
-| `TrendLogObject` | `::new(instance, name, buffer_size)` |
-| `TrendLogMultipleObject` | `::new(instance, name, buffer_size)` |
-| `EventLogObject` | `::new(instance, name, buffer_size)` |
+| `TrendLogObject` | `::new(instance, name, buffer_size)`, `::with_persistence(instance, name, buffer_size, persistence)` |
+| `TrendLogMultipleObject` | `::new(instance, name, buffer_size)`, `::with_persistence(instance, name, buffer_size, persistence)` |
+| `EventLogObject` | `::new(instance, name, buffer_size)`, `::with_persistence(instance, name, buffer_size, persistence)` |
 | `AuditLogObject` | `::new(instance, name, buffer_size, persistence)` |
 | `AuditReporterObject` | `::new(instance, name)` |
 
@@ -4161,8 +4161,8 @@ are both TRUE, or a record that would not encode. It is for start-up, before
 the log goes into an `ObjectDatabase`: a running server reaches its objects
 only through `BACnetObject`, which has no restore, because renumbering a log
 peers are reading would change what their sequence numbers mean with no
-BUFFER_PURGED record to tell them. Durable storage of a log, as the Audit
-Log has, is not built yet.
+BUFFER_PURGED record to tell them. For storage the log keeps itself, see
+the next section.
 
 A device restoring saved records after a restart should then call
 `record_interruption(date, time)` with the time it came back. Clause
@@ -4175,6 +4175,93 @@ collection is off (and turning Enable FALSE when it fills a Stop_When_Full
 buffer). No clock is bound before the log joins a database, so the caller
 gives the time; one that isn't an actual moment fails with
 `Error::OutOfRange`.
+
+##### Durable logs (#1541)
+
+Each of the three logs can keep itself in application-owned storage, as the
+Audit Log does. `bacnet_objects::log_persistence` holds the port:
+
+| Item | What it is |
+|------|------------|
+| `LogPersistence<R>` | `load(oid)` and `commit(&snapshot)` for one log; `R` is the log's record type (`BACnetLogRecord`, `BACnetEventLogRecord` or `BACnetLogMultipleRecord`) |
+| `LogSnapshot<R>` | identity and generation, Buffer_Size, Enable, Stop_When_Full, Total_Record_Count and the records oldest first, Last_Notify_Record, the Records_Since_Notification base and Notification_Threshold, Start_Time and Stop_Time, and on the trend logs a `LogAcquisitionSettings` (Logging_Type, Log_Interval, Align_Intervals, Interval_Offset) and Log_DeviceObjectProperty |
+| `FileLogPersistence` | two-slot, versioned, checksummed files `<base>.slot0` and `<base>.slot1`, as `FileAuditLogPersistence` keeps them; implements the port for all three record types |
+| `LogCommitCadence` | `records` and `interval`; the default is 100 records or 60 seconds |
+
+```rust
+use std::sync::Arc;
+use bacnet_objects::log_persistence::{FileLogPersistence, LogCommitCadence};
+use bacnet_objects::trend::TrendLogObject;
+
+let storage = Arc::new(FileLogPersistence::new("/var/lib/app/trend-log-1")?);
+let mut log = TrendLogObject::with_persistence(1, "Zone temp", 1000, storage)?;
+if !log.reopened() {
+    // First start only: a reopened log keeps the settings it saved.
+    log.set_log_interval(6_000)?;
+}
+log.set_commit_cadence(LogCommitCadence {
+    records: 500,
+    interval: std::time::Duration::from_secs(300),
+});
+```
+
+`TrendLogObject::with_persistence`, `TrendLogMultipleObject::with_persistence`
+and `EventLogObject::with_persistence` take `(instance, name, buffer_size,
+persistence)`.
+
+- **Opening.** A log storage holds comes back as it was saved, except
+  Buffer_Size: peers can't write it, so `buffer_size` wins. A larger size
+  keeps every record; a smaller one keeps the newest records that fit (one
+  slot fewer while Stop_When_Full and Enable are both TRUE, so the next record
+  stops the log as usual) and logs a warning naming both sizes. Sequence
+  numbers, Total_Record_Count and the BUFFER_READY counts don't change.
+- **Size limit.** A slot holds at most 256 MiB, so `with_persistence` refuses
+  with `Error::OutOfRange` a `buffer_size` whose full buffer of the family's
+  largest records couldn't fit: 828,302 records for a Trend Log, 178,437 for
+  an Event Log and 15,849 for a Trend Log Multiple (sized for 64 references
+  of 256-octet values). A record an application adds that is larger than the
+  stack's own can still make a commit fail; the log warns and retries.
+- **Checks.** `FileLogPersistence` checks each slot as it reads it, as
+  `restore_log_buffer` checks its arguments plus the snapshot's own rules:
+  the log's identity, a nonzero generation, at most one reference on a Trend
+  Log and 64 on a Trend Log Multiple, a Logging_Type the object can take, and
+  window ends that are actual moments or wholly unspecified. A slot that is
+  damaged or fails those checks is passed over for the other slot; with no
+  usable slot, or a slot naming another object or an unknown schema,
+  `with_persistence` fails. `with_persistence` checks the loaded snapshot
+  once more, as a guard for other `LogPersistence` backends: one that fails
+  then fails the open. `reopened()` says whether the log came back.
+- **LOG_INTERRUPTED.** A reopened log owes one LOG_INTERRUPTED status record
+  (Clauses 12.25.14, 12.27.13 and 12.30.19). It appends it the first time it
+  reads a valid clock, normally as it joins an `ObjectDatabase`; a record that
+  arrives first without a clock lends its own timestamp, so the record lands
+  after the marker. Calling `record_interruption` before then stands in for
+  it. A log that reopens full and stopped (Enable FALSE, as Stop_When_Full
+  leaves it, Clause 12.25.12) skips the marker rather than push out its
+  oldest record; a stopped log with room takes it, marked LOG_DISABLED too.
+- **BUFFER_READY** carries on from the saved Last_Notify_Record and
+  Notification_Threshold, so a report falls due once that many records have
+  been collected since the last report before the restart, the
+  LOG_INTERRUPTED record included. Notification_Class and the other reporting
+  settings aren't saved: the application sets them on every start.
+- **Committing.** The log copies its state and queues it on its own writer
+  thread (`bacnet_objects::durable`), so the copy is
+  taken under the database guard and the file I/O runs outside it. It commits
+  once Total_Record_Count has moved `records` past the last commit, as a
+  record lands, and once `interval` has passed with a change, which the
+  server's once-a-second operation pass checks (a zero turns either trigger
+  off). Whichever trigger comes first wins, so after a quiet spell longer
+  than `interval` the first change commits at the next pass. A queued commit
+  not yet started is replaced by a newer one. A commit that fails is logged
+  and leaves the log counted as changed, so the next interval pass, or stop,
+  tries again with no new change. The server's `stop()` commits each changed
+  log once more and waits for it, and so does dropping the log. A log no
+  server drives commits by count and when dropped.
+- **Deleting.** Storage outlives the object: a log removed from the database
+  leaves its slots on disk, and one built again on the same base path
+  reopens from them. Delete the slot files to start afresh.
+- `commit_cadence()`, `set_commit_cadence()` and `storage_generation()` read
+  and set the cadence and give the generation storage last took.
 
 Log_DeviceObjectProperty reads as the context-tagged
 `BACnetDeviceObjectPropertyReference` (#1234): one

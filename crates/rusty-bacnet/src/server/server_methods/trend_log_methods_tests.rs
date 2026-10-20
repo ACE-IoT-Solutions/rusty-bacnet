@@ -46,6 +46,7 @@ fn python_add_trend_log_multiple_settings_reach_every_row() {
         1,
         "TLM-1",
         50,
+        None,
         TrendLogMultipleSettings {
             members: vec![member(1), member(2)],
             log_interval: Some(1_500),
@@ -84,6 +85,7 @@ fn python_add_trend_log_multiple_settings_reach_every_row() {
         2,
         "TLM-2",
         50,
+        None,
         TrendLogMultipleSettings {
             logging_type: Some(LoggingType::POLLED),
             ..Default::default()
@@ -98,6 +100,7 @@ fn python_add_trend_log_multiple_settings_reach_every_row() {
         3,
         "TLM-3",
         50,
+        None,
         TrendLogMultipleSettings {
             logging_type: Some(LoggingType::TRIGGERED),
             ..Default::default()
@@ -113,7 +116,8 @@ fn python_add_trend_log_multiple_settings_reach_every_row() {
         PropertyValue::Unsigned(0)
     );
     // Omitted arguments keep the object's defaults.
-    let plain = trend_log_multiple(4, "TLM-4", 50, TrendLogMultipleSettings::default()).unwrap();
+    let plain =
+        trend_log_multiple(4, "TLM-4", 50, None, TrendLogMultipleSettings::default()).unwrap();
     assert_eq!(read(&plain, P::LOG_INTERVAL), PropertyValue::Unsigned(0));
     assert_eq!(
         read(&plain, P::LOG_DEVICE_OBJECT_PROPERTY),
@@ -126,7 +130,7 @@ fn python_add_trend_log_multiple_settings_are_checked_like_the_rust_setters() {
     let settings = |set: fn(&mut TrendLogMultipleSettings)| {
         let mut settings = TrendLogMultipleSettings::default();
         set(&mut settings);
-        trend_log_multiple(1, "TLM-1", 50, settings)
+        trend_log_multiple(1, "TLM-1", 50, None, settings)
     };
     assert_refused(
         settings(|s| s.logging_type = Some(LoggingType::COV)),
@@ -173,6 +177,7 @@ fn python_add_trend_log_settings_reach_every_row() {
         1,
         "TL-1",
         50,
+        None,
         TrendLogSettings {
             reference: Some(member(1)),
             logging_type: Some(LoggingType::COV),
@@ -226,6 +231,7 @@ fn python_add_trend_log_settings_reach_every_row() {
         2,
         "TL-2",
         50,
+        None,
         TrendLogSettings {
             logging_type: Some(LoggingType::COV),
             log_interval: Some(500),
@@ -243,7 +249,7 @@ fn python_add_trend_log_settings_reach_every_row() {
     );
     // Omitted arguments keep the object's defaults: no reference, a NULL
     // increment.
-    let plain = trend_log(3, "TL-3", 50, TrendLogSettings::default()).unwrap();
+    let plain = trend_log(3, "TL-3", 50, None, TrendLogSettings::default()).unwrap();
     let fresh = TrendLogObject::new(9, "fresh", 1).unwrap();
     assert_eq!(
         read_tl(&plain, P::LOG_DEVICE_OBJECT_PROPERTY),
@@ -258,7 +264,7 @@ fn python_add_trend_log_settings_reach_every_row() {
 #[test]
 fn python_add_trend_log_settings_are_checked_like_the_rust_setters() {
     let refused = |settings: TrendLogSettings, code: ErrorCode| {
-        let error = trend_log(1, "TL-1", 50, settings).err().unwrap();
+        let error = trend_log(1, "TL-1", 50, None, settings).err().unwrap();
         assert!(
             matches!(error, Error::Protocol { class: ErrorClass::PROPERTY, code: e } if e == code),
             "{error:?}"
@@ -286,4 +292,44 @@ fn python_add_trend_log_settings_are_checked_like_the_rust_setters() {
         },
         ErrorCode::VALUE_OUT_OF_RANGE,
     );
+}
+
+#[test]
+fn python_storage_path_keeps_saved_settings_over_the_keywords() {
+    let dir =
+        std::env::temp_dir().join(format!("rusty-bacnet-py-trend-log-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tl-1");
+    let path = path.to_str().unwrap();
+    let first = TrendLogSettings {
+        logging_type: Some(LoggingType::POLLED),
+        log_interval: Some(1_500),
+        total_record_count: 40,
+        ..Default::default()
+    };
+    let log = trend_log(1, "TL-1", 50, Some(path), first).unwrap();
+    assert!(!log.reopened());
+    assert_eq!(log.total_record_count(), 40);
+    drop(log);
+
+    let second = TrendLogSettings {
+        log_interval: Some(9_000),
+        client_cov_increment: Some(2.5),
+        total_record_count: 7,
+        ..Default::default()
+    };
+    let log = trend_log(1, "TL-1", 50, Some(path), second).unwrap();
+    assert!(log.reopened());
+    // Saved: the interval and the count. Not saved: the COV increment.
+    assert_eq!(
+        read_tl(&log, P::LOG_INTERVAL),
+        PropertyValue::Unsigned(1_500)
+    );
+    assert_eq!(log.total_record_count(), 40);
+    assert_eq!(
+        read_tl(&log, P::CLIENT_COV_INCREMENT),
+        PropertyValue::Real(2.5)
+    );
+    drop(log);
+    let _ = std::fs::remove_dir_all(&dir);
 }

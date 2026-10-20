@@ -9,6 +9,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
 use crate::common;
+use crate::log_persistence::LogAcquisitionSettings;
 
 /// The Log_Interval a trend log takes, in hundredths of a second (one
 /// minute), when POLLED is chosen while its Log_Interval is zero. Clauses
@@ -60,6 +61,27 @@ impl Acquisition {
 
     pub(super) fn logging_type(&self) -> LoggingType {
         self.logging_type
+    }
+
+    /// The settings a durable log saves (#1541). Trigger isn't one: a
+    /// pending acquisition doesn't outlive a restart.
+    pub(super) fn settings(&self) -> LogAcquisitionSettings {
+        LogAcquisitionSettings {
+            logging_type: self.logging_type,
+            log_interval: self.log_interval,
+            align_intervals: self.align_intervals,
+            interval_offset: self.interval_offset,
+        }
+    }
+
+    /// Take back saved settings as they were. The snapshot was checked
+    /// against these rules when it was read.
+    pub(super) fn restore(&mut self, settings: LogAcquisitionSettings) {
+        self.logging_type = settings.logging_type;
+        self.log_interval = settings.log_interval;
+        self.align_intervals = settings.align_intervals;
+        self.interval_offset = settings.interval_offset;
+        self.trigger = false;
     }
 
     /// Whether Log_Interval takes writes now: in every mode but TRIGGERED
