@@ -278,6 +278,7 @@ impl BipTransport {
             management_acl: Vec::new(),
             foreign_device_policy: None,
             alone_on_subnet: false,
+            nat: None,
         });
     }
 

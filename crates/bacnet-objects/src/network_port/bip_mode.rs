@@ -5,7 +5,9 @@
 //! from the transport's registration at the moment of the read. BBMD mode
 //! adds BBMD_Broadcast_Distribution_Table, BBMD_Accept_FD_Registrations and
 //! BBMD_Foreign_Device_Table, each read from the transport's own tables at
-//! the moment of the read. In either mode a written value waiting for
+//! the moment of the read, and, on an IPv4 port whose BBMD can run behind a
+//! NAT router, BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address
+//! (Clause 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10). In either mode a written value waiting for
 //! activation is read instead (`pending`).
 //!
 //! The mode is the last one published. After its owner stops, the port keeps
@@ -53,6 +55,12 @@ impl LiveMode {
         })
     }
 
+    /// Whether this mode is a BBMD that can run behind a NAT router, so an
+    /// IPv4 port serves the two NAT rows.
+    pub(super) fn has_nat_rows(&self) -> bool {
+        matches!(self, Self::Bbmd(tables) if tables.nat_traversal().is_some())
+    }
+
     /// Whether the transport behind this mode takes written values, so its
     /// pending-activation rows are writable at all.
     pub(super) fn can_change(&self) -> bool {
@@ -87,6 +95,12 @@ impl LiveMode {
             (Self::Bbmd(tables), P::BBMD_ACCEPT_FD_REGISTRATIONS) => Some(Ok(
                 PropertyValue::Boolean(tables.accepts_foreign_device_registrations()),
             )),
+            (Self::Bbmd(tables), P::BACNET_IP_NAT_TRAVERSAL) => tables
+                .nat_traversal()
+                .map(|nat| Ok(PropertyValue::Boolean(nat))),
+            (Self::Bbmd(tables), P::BACNET_IP_GLOBAL_ADDRESS) => tables
+                .global_address()
+                .map(|address| host_n_port_value(&address)),
             (Self::Bbmd(tables), P::BBMD_FOREIGN_DEVICE_TABLE) => Some(Ok(PropertyValue::List(
                 tables
                     .foreign_device_table()

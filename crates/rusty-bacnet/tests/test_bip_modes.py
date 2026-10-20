@@ -96,6 +96,31 @@ class OptionTests(unittest.TestCase):
         self.assertFalse(Bbmd().alone_on_subnet)
         self.assertTrue(Bbmd(alone_on_subnet=True).alone_on_subnet)
 
+    def test_bbmd_behind_nat_keeps_its_global_address(self):
+        # A BBMD behind a NAT router (#940).
+        self.assertIsNone(Bbmd().nat_global_address)
+        self.assertEqual(Bbmd().nat_private_ranges, [])
+        bbmd = Bbmd(["203.0.113.1:47809", "198.51.100.2:47809"],
+                    nat_global_address="203.0.113.1:47809",
+                    nat_private_ranges=["100.64.9.9/10"])
+        self.assertEqual(bbmd.nat_global_address, "203.0.113.1:47809")
+        self.assertEqual(bbmd.nat_private_ranges, ["100.64.0.0/10"])
+        self.assertEqual(Bbmd(nat_global_address="203.0.113.1")
+                         .nat_global_address, "203.0.113.1:47808")
+        self.assertIn("nat_global_address='203.0.113.1:47809'", repr(bbmd))
+        for kwargs in ({"nat_global_address": "203.0.113"},
+                       {"nat_global_address": "203.0.113.1:0"},
+                       {"nat_global_address": "239.1.1.1"},
+                       {"nat_private_ranges": ["10.0.0.0/8"]},
+                       {"nat_global_address": "203.0.113.1",
+                        "nat_private_ranges": ["100.64.0.0/33"]},
+                       {"nat_global_address": "203.0.113.1",
+                        "nat_private_ranges": ["100.64.0.0"]},
+                       {"nat_global_address": "203.0.113.1",
+                        "nat_private_ranges": [f"100.{i}.0.0/16" for i in range(5)]}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                Bbmd(**kwargs)
+
     def test_bbmd_refuses_bad_settings(self):
         for kwargs in ({"bdt": ["10.0.5"]}, {"bdt": [("10.0.5.2", "mask")]},
                        {"bdt": [42]}, {"management_acl": ["10.0.0"]}):

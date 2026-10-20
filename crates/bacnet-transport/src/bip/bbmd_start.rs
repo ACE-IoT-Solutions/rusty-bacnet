@@ -34,7 +34,7 @@ use std::path::Path;
 
 use tracing::{debug, warn};
 
-use crate::bbmd::{self, BbmdState, BdtEntry, ForeignDevicePolicy};
+use crate::bbmd::{self, BbmdState, BdtEntry, ForeignDevicePolicy, NatTraversal};
 use bacnet_types::error::Error;
 
 /// Pre-start configuration for BBMD mode.
@@ -43,6 +43,7 @@ pub(super) struct BbmdConfig {
     pub(super) management_acl: Vec<[u8; 4]>,
     pub(super) foreign_device_policy: Option<ForeignDevicePolicy>,
     pub(super) alone_on_subnet: bool,
+    pub(super) nat: Option<NatTraversal>,
 }
 
 /// The BDT a wildcard-bound BBMD reads its own address from, for messages.
@@ -215,6 +216,14 @@ fn load_persisted_bdt(path: &Path) -> Option<Vec<BdtEntry>> {
     }
 }
 
+/// An empty BBMD state at `ip:port`, behind NAT when `config` says so, so
+/// the BDT set next is checked under NAT's rules (Annex J.7.5).
+fn new_state(config: &BbmdConfig, ip: Ipv4Addr, port: u16) -> Result<BbmdState, Error> {
+    let mut state = BbmdState::new(ip.octets(), port);
+    state.set_nat_traversal(config.nat.clone())?;
+    Ok(state)
+}
+
 /// The BBMD state for a first start: the persisted BDT when it loads, else the
 /// configured one, and this BBMD's own address chosen with that BDT. An
 /// invalid configured BDT or an undeterminable own address fails the start.
@@ -229,7 +238,7 @@ pub(super) fn initial_bbmd_state(
     let persisted = persist_path.and_then(|path| Some((path, load_persisted_bdt(path)?)));
     if let Some((path, rows)) = persisted {
         let ip = ctx.own_ip(&rows, BdtSource::Persisted(path))?;
-        let mut state = BbmdState::new(ip.octets(), ctx.port);
+        let mut state = new_state(config, ip, ctx.port)?;
         // The rows are canonical, so only the self row can still overflow.
         match state.set_bdt(rows) {
             Ok(()) => {
@@ -249,7 +258,7 @@ pub(super) fn initial_bbmd_state(
             let config_error = |e: Error| Error::Encoding(format!("BDT configuration error: {e}"));
             let rows = bbmd::canonical_bdt(config.initial_bdt.clone()).map_err(config_error)?;
             let ip = ctx.own_ip(&rows, BdtSource::Configured)?;
-            let mut state = BbmdState::new(ip.octets(), ctx.port);
+            let mut state = new_state(config, ip, ctx.port)?;
             state.set_bdt(rows).map_err(config_error)?;
             state
         }

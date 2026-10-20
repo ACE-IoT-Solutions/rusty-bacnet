@@ -79,6 +79,19 @@ const BBMD: &[PropertyMetadata] = &[
     ),
     PropertyMetadata::new(P::BBMD_FOREIGN_DEVICE_TABLE, RequiredRead, None, ReadOnly),
 ];
+// Table 12-71 footnotes 9 and 10 (IPV4 only): a port that can run behind a
+// NAT router (Annex J.7.5) has BACnet_IP_NAT_Traversal, and one configured
+// to has BACnet_IP_Global_Address. This stack's BBMD can, so an IPv4 BBMD
+// port whose transport says so serves both, the address as the unset
+// sentinel while none is configured. Clauses 12.56.32 and 12.56.33 make
+// them writable (the address because this stack never discovers it), with
+// a write waiting for a ReinitializeDevice as the BBMD rows' do (#940).
+// They are listed read-only here and become writable only for an owner
+// that activates changes.
+const NAT: &[PropertyMetadata] = &[
+    PropertyMetadata::new(P::BACNET_IP_NAT_TRAVERSAL, RequiredRead, None, ReadOnly),
+    PropertyMetadata::new(P::BACNET_IP_GLOBAL_ADDRESS, Optional, None, ReadOnly),
+];
 // Table 12-71 footnote 13 and Table 12-72: FOREIGN mode has these, for
 // either IP version. Clauses
 // 12.56.37 and 12.56.38 make them writable, with a write waiting for a
@@ -99,10 +112,12 @@ pub(super) fn for_object(object: &NetworkPortObject) -> Cow<'_, [PropertyMetadat
             IPMode::FOREIGN => FOREIGN,
             _ => &[],
         };
+        let nat: &[PropertyMetadata] = if object.serves_nat() { NAT } else { &[] };
         Cow::Owned(
             COMMON
                 .iter()
                 .chain(profile)
+                .chain(nat)
                 .chain(mode)
                 .copied()
                 .map(|mut row| {

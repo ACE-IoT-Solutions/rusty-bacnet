@@ -1,12 +1,17 @@
 //! Values written to the BBMD's Network Port properties, checked against
 //! the BDT policy and put into effect on activation (Clause 12.56.13,
-//! 12.56.34, 12.56.35, #1578).
+//! 12.56.32 to 12.56.35, #1578, #940).
+//!
+//! The BDT and the NAT setting are checked and put into effect together:
+//! behind a NAT router the BDT must list the global address and be
+//! two-hop only, so a new global address and the table that lists it can
+//! only go in at once.
 
 use std::net::{IpAddr, SocketAddrV4};
 
 use bacnet_bip_codec::{self as codec, BdtEntries};
 use bacnet_types::bip_port::BbmdChanges;
-use bacnet_types::constructed::{BACnetBDTEntry, BACnetHostAddress};
+use bacnet_types::constructed::{BACnetBDTEntry, BACnetHostAddress, BACnetHostNPort};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::Error;
 
@@ -38,14 +43,72 @@ fn rows(table: &[BACnetBDTEntry]) -> Result<Vec<codec::BdtEntry>, Error> {
         .collect()
 }
 
+/// A written BACnet_IP_Global_Address: an IPv4 host and a nonzero port, or
+/// the `None` host with port 0, which clears it (Clause 12.56.33). This
+/// BBMD resolves no host names.
+fn global_of(address: &BACnetHostNPort) -> Result<Option<SocketAddrV4>, Error> {
+    match (&address.host, address.port) {
+        (BACnetHostAddress::None, 0) => Ok(None),
+        (BACnetHostAddress::Ip(IpAddr::V4(ip)), port) if port != 0 => {
+            Ok(Some(SocketAddrV4::new(*ip, port)))
+        }
+        _ => Err(out_of_range()),
+    }
+}
+
+/// The NAT setting and BDT `changes` leave a BBMD with.
+struct Candidate {
+    enabled: bool,
+    global: Option<SocketAddrV4>,
+    rows: Vec<codec::BdtEntry>,
+}
+
 impl BbmdState {
     /// Whether `table` would pass as this BBMD's BDT: the same checks
     /// [`Self::set_bdt`] makes, its own row included, on a copy.
     pub(crate) fn check_written_bdt(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
-        let rows = rows(table)?;
-        let mut probe = self.tables.bdt.clone();
+        let mut changes = BbmdChanges::default();
+        changes.broadcast_distribution_table = Some(table.to_vec());
+        self.check_changes(&changes)
+    }
+
+    /// The NAT setting and BDT after `changes`, when they touch either.
+    fn candidate(&self, changes: &BbmdChanges) -> Result<Option<Candidate>, Error> {
+        if changes.broadcast_distribution_table.is_none()
+            && changes.nat_traversal.is_none()
+            && changes.global_address.is_none()
+        {
+            return Ok(None);
+        }
+        let rows = match &changes.broadcast_distribution_table {
+            Some(table) => rows(table)?,
+            None => self.tables.bdt.configured_rows().to_vec(),
+        };
+        let global = match &changes.global_address {
+            Some(address) => global_of(address)?,
+            None => self.nat.global,
+        };
+        Ok(Some(Candidate {
+            enabled: changes.nat_traversal.unwrap_or(self.nat.enabled),
+            global,
+            rows,
+        }))
+    }
+
+    /// Whether [`Self::activate`] would take `changes`, changing nothing:
+    /// the BDT, the NAT setting and the global address are checked as they
+    /// would go in together.
+    pub(crate) fn check_changes(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        let Some(candidate) = self.candidate(changes)? else {
+            return Ok(());
+        };
+        let nat = self
+            .nat
+            .core(candidate.enabled, candidate.global)
+            .map_err(|_| out_of_range())?;
+        let mut probe = self.tables.clone();
         probe
-            .set(BdtEntries::from_entries(&rows))
+            .set_nat_and_bdt(nat, self.local, BdtEntries::from_entries(&candidate.rows))
             .map_err(|_| out_of_range())
     }
 
@@ -63,14 +126,11 @@ impl BbmdState {
         }
     }
 
-    /// Put `changes` into effect: the BDT, then the registration setting,
-    /// or neither when the BDT is refused.
+    /// Put `changes` into effect: the BDT and NAT setting together, then
+    /// the registration setting, or none when the first are refused.
     pub(crate) fn activate(&mut self, changes: &BbmdChanges) -> Result<(), Error> {
-        if let Some(table) = &changes.broadcast_distribution_table {
-            let rows = rows(table)?;
-            self.tables
-                .bdt
-                .set(BdtEntries::from_entries(&rows))
+        if let Some(candidate) = self.candidate(changes)? {
+            self.apply_nat_and_bdt(candidate.enabled, candidate.global, &candidate.rows)
                 .map_err(|_| out_of_range())?;
         }
         if let Some(accept) = changes.accept_foreign_device_registrations {

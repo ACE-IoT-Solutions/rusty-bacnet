@@ -111,6 +111,19 @@ pub enum BdtError {
         /// The later of the two rows.
         entry: BdtEntry,
     },
+    /// Behind a NAT router, a row with a mask other than [`TWO_HOP_MASK`]:
+    /// a directed broadcast can't cross the router (Annex J.7.5).
+    OneHopBehindNat {
+        /// The row.
+        entry: BdtEntry,
+    },
+    /// Behind a NAT router, a table with no row for this BBMD's global
+    /// address, which is how the table names this BBMD there (Annex
+    /// J.7.5). It isn't added, since the peers' tables must list it too.
+    NoOwnRow {
+        /// The global address.
+        own: SocketAddrV4,
+    },
     /// The distinct rows, with this BBMD's own row where the table needs it
     /// added, would not fit.
     Capacity {
@@ -131,6 +144,15 @@ impl fmt::Display for BdtError {
                 f,
                 "BDT rows for {} with conflicting masks (one is {})",
                 entry.address, entry.mask
+            ),
+            Self::OneHopBehindNat { entry } => write!(
+                f,
+                "BDT row {} mask {}: behind a NAT router every mask must be all ones",
+                entry.address, entry.mask
+            ),
+            Self::NoOwnRow { own } => write!(
+                f,
+                "behind a NAT router the BDT must list the global address {own} as this BBMD's own row"
             ),
             Self::Capacity { needed, available } => {
                 write!(
@@ -260,7 +282,10 @@ pub fn canonicalize(table: BdtEntries<'_>, out: &mut [BdtEntry]) -> Result<usize
 /// Rows keep the order they were given in. A table that the caller sets
 /// without this BBMD's own address gets a row for it, with
 /// [`TWO_HOP_MASK`], at the end; that row follows the address when
-/// [`Bdt::set_own_address`] changes it.
+/// [`Bdt::set_own_address`] changes it. Behind a NAT router
+/// ([`Tables::set_nat`](super::Tables::set_nat)) nothing is added: the
+/// table must list the own (global) address, and every mask must be
+/// [`TWO_HOP_MASK`].
 #[derive(Clone)]
 pub struct Bdt<const N: usize> {
     rows: [BdtEntry; N],
@@ -268,6 +293,8 @@ pub struct Bdt<const N: usize> {
     own: SocketAddrV4,
     /// The last row is the own row that `set` appended.
     own_row_appended: bool,
+    /// The own address is a NAT router's global address (Annex J.7.5).
+    behind_nat: bool,
 }
 
 /// Shows the rows in use, not the whole array.
@@ -277,6 +304,7 @@ impl<const N: usize> fmt::Debug for Bdt<N> {
             .field("own", &self.own)
             .field("rows", &self.rows())
             .field("own_row_appended", &self.own_row_appended)
+            .field("behind_nat", &self.behind_nat)
             .finish()
     }
 }
@@ -294,7 +322,22 @@ impl<const N: usize> Bdt<N> {
             len: 0,
             own,
             own_row_appended: false,
+            behind_nat: false,
         }
+    }
+
+    /// An empty table for the BBMD at `own`, behind a NAT router or not.
+    pub(super) const fn with_nat(own: SocketAddrV4, behind_nat: bool) -> Self {
+        let mut bdt = Self::new(own);
+        bdt.behind_nat = behind_nat;
+        bdt
+    }
+
+    /// Whether the own address is a NAT router's global address, so the
+    /// NAT rules of [`Bdt::set`] apply.
+    #[must_use]
+    pub const fn behind_nat(&self) -> bool {
+        self.behind_nat
     }
 
     /// This BBMD's own B/IP address.
@@ -351,11 +394,23 @@ impl<const N: usize> Bdt<N> {
 
     /// Replace the table with `table`, as [`canonicalize`] cleans it, plus a
     /// row for this BBMD's own address with [`TWO_HOP_MASK`] when `table` has
-    /// none. On error the table is unchanged.
+    /// none. Behind a NAT router a table without the own row is refused
+    /// instead ([`BdtError::NoOwnRow`]), as is one with a mask other than
+    /// [`TWO_HOP_MASK`] ([`BdtError::OneHopBehindNat`]). On error the table
+    /// is unchanged.
     pub fn set(&mut self, table: BdtEntries<'_>) -> Result<(), BdtError> {
         let mut next = Self::new(self.own);
+        next.behind_nat = self.behind_nat;
         let found = canonical_rows(table, &mut next.rows)?;
         let has_own = table.iter().any(|row| row.address == self.own);
+        if self.behind_nat {
+            if let Some(entry) = table.iter().find(|row| row.mask != TWO_HOP_MASK) {
+                return Err(BdtError::OneHopBehindNat { entry });
+            }
+            if !has_own {
+                return Err(BdtError::NoOwnRow { own: self.own });
+            }
+        }
         let needed = found.distinct + usize::from(!has_own);
         if needed > N {
             return Err(BdtError::Capacity {
@@ -374,10 +429,16 @@ impl<const N: usize> Bdt<N> {
     /// An own row that [`Bdt::set`] appended moves to the new address. A row
     /// the table lists for the old address stays, as an ordinary peer row,
     /// and the new address gets a row unless it has one. On error, for want
-    /// of room for that row, nothing changes.
+    /// of room for that row, nothing changes. Behind a NAT router `own` is
+    /// a new global address, which the table must already list
+    /// ([`BdtError::NoOwnRow`] otherwise).
     pub fn set_own_address(&mut self, own: SocketAddrV4) -> Result<(), BdtError> {
         if own == self.own {
             return Ok(());
+        }
+        if self.behind_nat {
+            // The table must list the new global address itself.
+            return self.reconfigure(own, true);
         }
         let configured = self.configured_rows();
         let has_own = configured.iter().any(|row| row.address == own);
@@ -394,6 +455,27 @@ impl<const N: usize> Bdt<N> {
         }
         self.own = own;
         self.ensure_own_row();
+        Ok(())
+    }
+
+    /// Move to the own address `own`, behind a NAT router or not, keeping
+    /// the configured rows: they are set again under the new rules, so an
+    /// own row appended for the old address goes, and on error nothing
+    /// changes. A table never set takes the new address and rules alone.
+    pub(super) fn reconfigure(
+        &mut self,
+        own: SocketAddrV4,
+        behind_nat: bool,
+    ) -> Result<(), BdtError> {
+        if self.is_empty() {
+            self.own = own;
+            self.behind_nat = behind_nat;
+            return Ok(());
+        }
+        let mut next = Self::new(own);
+        next.behind_nat = behind_nat;
+        next.set(BdtEntries::from_entries(self.configured_rows()))?;
+        *self = next;
         Ok(())
     }
 

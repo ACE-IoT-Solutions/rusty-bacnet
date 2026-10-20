@@ -57,6 +57,37 @@ pub trait BbmdTables: Send + Sync {
         Err(write_access_denied())
     }
 
+    /// Whether the BBMD runs behind a NAT router (Annex J.7.5): the value of
+    /// BACnet_IP_NAT_Traversal. `None`, the default, for a BBMD that can't,
+    /// whose port then has neither NAT row (Table 12-71, footnotes 9 and
+    /// 10). An IPv4 BBMD only: B/IPv6 has no NAT rows.
+    fn nat_traversal(&self) -> Option<bool> {
+        None
+    }
+
+    /// The NAT router's public address and port that reach this BBMD: the
+    /// value of BACnet_IP_Global_Address. The `None` host with port 0 when
+    /// none is configured (Clause 12.56.33). `None`, the default, for a
+    /// BBMD that can't run behind NAT.
+    fn global_address(&self) -> Option<BACnetHostNPort> {
+        None
+    }
+
+    /// Check every written value waiting together, changing nothing: `Ok`
+    /// when [`activate`](Self::activate) would take them. The default
+    /// checks a BDT alone with
+    /// [`check_broadcast_distribution_table`](Self::check_broadcast_distribution_table)
+    /// and refuses the NAT values, as for a BBMD that can't run behind NAT.
+    fn check(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        if changes.nat_traversal.is_some() || changes.global_address.is_some() {
+            return Err(write_access_denied());
+        }
+        match &changes.broadcast_distribution_table {
+            Some(table) => self.check_broadcast_distribution_table(table),
+            None => Ok(()),
+        }
+    }
+
     /// Put written values into effect, as a ReinitializeDevice
     /// ACTIVATE_CHANGES or WARMSTART asks (Clause 12.56.13): all of them, or
     /// none and an error. The default refuses.
@@ -78,7 +109,7 @@ pub trait BbmdTables: Send + Sync {
 }
 
 /// Values written to a BBMD's Network Port properties and not yet in effect
-/// (Clause 12.56.34, 12.56.35): `None` leaves that setting as it is.
+/// (Clause 12.56.32 to 12.56.35): `None` leaves that setting as it is.
 ///
 /// It is `#[non_exhaustive]`: outside this crate, start from
 /// [`BbmdChanges::default`] and set the fields that change.
@@ -90,6 +121,11 @@ pub struct BbmdChanges {
     /// Whether to accept foreign-device registrations:
     /// BBMD_Accept_FD_Registrations.
     pub accept_foreign_device_registrations: Option<bool>,
+    /// Whether to run behind a NAT router: BACnet_IP_NAT_Traversal.
+    pub nat_traversal: Option<bool>,
+    /// The NAT router's public address and port: BACnet_IP_Global_Address.
+    /// The `None` host with port 0 clears it.
+    pub global_address: Option<BACnetHostNPort>,
 }
 
 impl BbmdChanges {
@@ -97,6 +133,8 @@ impl BbmdChanges {
     pub fn is_empty(&self) -> bool {
         self.broadcast_distribution_table.is_none()
             && self.accept_foreign_device_registrations.is_none()
+            && self.nat_traversal.is_none()
+            && self.global_address.is_none()
     }
 }
 

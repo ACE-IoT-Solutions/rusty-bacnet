@@ -2074,9 +2074,18 @@ class Bbmd:
     there. ``alone_on_subnet`` says this BBMD is the only device of its
     B/IP network on its subnet, as behind a NAT router: forwarded and
     distributed broadcasts then go only to its peers and foreign devices,
-    not to its own subnet (default False). Write-BDT from the network is
-    always refused. Invalid values raise ValueError, or OverflowError for an
-    integer out of range.
+    not to its own subnet (default False). ``nat_global_address``,
+    ``"ip"`` or ``"ip:port"``, runs it behind a NAT router that
+    port-forwards that public address to it (Annex J.7.5): the BDT must list
+    the address as this BBMD's own row, every row must be two-hop, and the
+    Forwarded-NPDUs it builds name that address as their origin.
+    ``nat_private_ranges`` lists up to four ``"a.b.c.d/n"`` ranges to count
+    as private besides RFC 1918: a foreign device registered from a private
+    address has its broadcasts sent on from the global address. The
+    registered Network Port serves both as BACnet_IP_NAT_Traversal and
+    BACnet_IP_Global_Address. Write-BDT from the network is always refused.
+    Invalid values raise ValueError, or OverflowError for an integer out of
+    range.
     """
 
     def __init__(
@@ -2087,6 +2096,8 @@ class Bbmd:
         management_acl: Optional[Sequence[str]] = None,
         bdt_persist_path: Optional[str | os.PathLike[str]] = None,
         alone_on_subnet: bool = False,
+        nat_global_address: Optional[str] = None,
+        nat_private_ranges: Optional[Sequence[str]] = None,
     ) -> None: ...
     @property
     def bdt(self) -> list[tuple[str, str]]: ...
@@ -2098,6 +2109,10 @@ class Bbmd:
     def bdt_persist_path(self) -> Optional[pathlib.Path]: ...
     @property
     def alone_on_subnet(self) -> bool: ...
+    @property
+    def nat_global_address(self) -> Optional[str]: ...
+    @property
+    def nat_private_ranges(self) -> list[str]: ...
 
 class ForeignRegistrationStatus(TypedDict):
     """A foreign device's registration, as ``foreign_registration()``

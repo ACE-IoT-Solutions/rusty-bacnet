@@ -40,6 +40,7 @@ fn bip_builder_applies_the_mode_concretely() {
         fanout_policy: FanoutPolicy::default(),
         bdt_persist_path: None,
         alone_on_subnet: false,
+        nat: None,
     });
     // The transport builds unstarted, in the mode given: a BBMD's tables
     // appear only once `start()` creates them.

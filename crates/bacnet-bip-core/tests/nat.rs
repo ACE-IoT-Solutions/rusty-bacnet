@@ -200,9 +200,10 @@ fn a_bbmd_alone_behind_its_nat_skips_the_local_rebroadcast() {
     );
 }
 
-/// The hosted transport today runs with its private socket address as its
-/// own (#940): the public row then reads as a peer, so the BBMD also sends
-/// to its own NAT, and a second, private own row is added.
+/// Without [`Tables::set_nat`] a BBMD runs under the address it is given.
+/// Given its private socket address, the public row reads as a peer, so it
+/// also sends to its own NAT, and a second, private own row is added: what
+/// the NAT setting (`tests/nat_rules.rs`) is for.
 #[test]
 fn with_its_private_address_as_its_own_a_bbmd_also_sends_to_its_own_nat() {
     let bbmd1 = site(PRIVATE);

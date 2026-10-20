@@ -152,6 +152,12 @@ impl IpConfig {
         })
     }
 
+    /// Whether this is an IPv4 profile, the only one with NAT rows (Table
+    /// 12-71, footnotes 9 and 10).
+    pub(super) fn is_ipv4(&self) -> bool {
+        matches!(self, Self::V4(_))
+    }
+
     /// The property naming the port's mode: BACnet_IP_Mode or
     /// BACnet_IPv6_Mode (Clause 12.56.21, 12.56.39).
     pub(super) fn mode_property(&self) -> P {

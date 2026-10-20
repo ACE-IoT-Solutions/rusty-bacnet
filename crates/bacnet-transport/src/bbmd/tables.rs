@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use bacnet_types::bip_port::{BbmdChanges, BbmdTables};
-use bacnet_types::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
+use bacnet_types::constructed::{
+    BACnetBDTEntry, BACnetFDTEntry, BACnetHostAddress, BACnetHostNPort,
+};
 use bacnet_types::error::Error;
 
 use super::persist::BdtFile;
@@ -39,6 +41,18 @@ impl BbmdState {
                 broadcast_mask: Some(row.mask.octets()),
             })
             .collect()
+    }
+
+    /// [`Self::global_address`] as BACnet_IP_Global_Address: the `None`
+    /// host with port 0 when none is configured (Clause 12.56.33).
+    pub fn global_address_value(&self) -> BACnetHostNPort {
+        self.global_address().map_or(
+            BACnetHostNPort {
+                host: BACnetHostAddress::None,
+                port: 0,
+            },
+            |global| BACnetHostNPort::from_socket_addr(SocketAddr::V4(global)),
+        )
     }
 
     /// Whether a foreign device registration policy is set. Without one
@@ -90,6 +104,18 @@ impl BbmdTables for LiveTables {
 
     fn check_broadcast_distribution_table(&self, table: &[BACnetBDTEntry]) -> Result<(), Error> {
         lock(&self.state).check_written_bdt(table)
+    }
+
+    fn nat_traversal(&self) -> Option<bool> {
+        Some(lock(&self.state).nat_traversal())
+    }
+
+    fn global_address(&self) -> Option<BACnetHostNPort> {
+        Some(lock(&self.state).global_address_value())
+    }
+
+    fn check(&self, changes: &BbmdChanges) -> Result<(), Error> {
+        lock(&self.state).check_changes(changes)
     }
 
     /// A new BDT is saved to the persisted-BDT file once it is in effect.

@@ -1,6 +1,6 @@
 //! `set_mode` and the status handle (#938).
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +8,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 
 use super::*;
+use crate::bbmd::NatTraversal;
 
 fn foreign_to(bbmd_port: u16) -> ForeignDeviceConfig {
     ForeignDeviceConfig {
@@ -47,9 +48,17 @@ fn bbmd_mode_maps_every_option_onto_its_setter() {
         bdt_persist_path: Some(PathBuf::from("bdt.bin")),
         fanout_policy: fanout.clone(),
         alone_on_subnet: true,
+        nat: Some(NatTraversal::new(SocketAddrV4::new(
+            Ipv4Addr::new(203, 0, 113, 1),
+            47809,
+        ))),
     }));
     let config = transport.bbmd_config.as_ref().unwrap();
     assert!(config.alone_on_subnet);
+    assert_eq!(
+        config.nat.as_ref().map(|nat| nat.global_address),
+        Some(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 1), 47809))
+    );
     assert_eq!(config.initial_bdt, [row]);
     assert_eq!(config.foreign_device_policy, Some(policy));
     assert_eq!(config.management_acl, [[10, 0, 0, 9]]);
