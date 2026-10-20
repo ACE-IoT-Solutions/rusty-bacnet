@@ -189,7 +189,10 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, ta
         // The open dialog lists its own keys; a notice set while it is
         // open still shows.
         if let Some((text, style)) = flash {
-            let line = Line::styled(format!(" {}", ellipsize(text, width - 1)), style);
+            let line = Line::styled(
+                format!(" {}", ellipsize(text, width.saturating_sub(1))),
+                style,
+            );
             frame.render_widget(Paragraph::new(line), area);
         }
         return;
@@ -267,7 +270,7 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
         Screen::Network if app.networks_tab() => {
             parts.push(h(6, "r", "ask routers"));
             parts.push(h(5, "Tab", "tables"));
-            parts.push(h(3, ":", "find NAME"));
+            parts.push(h(3, ":find", "NAME"));
             parts.push(h(8, "Esc", "back"));
         }
         Screen::Network => {
@@ -281,7 +284,7 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
             // After `:bbmd OTHER`, the way back to our own BBMD's tables.
             parts.push(match app.away_from_own_bbmd() {
                 Some(_) => h(7, ":bbmd", "own BBMD"),
-                None => h(3, ":", "bbmd ADDRESS"),
+                None => h(3, ":bbmd", "ADDRESS"),
             });
             parts.push(h(8, "Esc", "back"));
         }
@@ -316,10 +319,11 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
         }
         // Before a station joins: joining again, or a profile.
         Screen::Mstp => {
-            if app.transport == "MSTP" && matches!(app.link, Link::Down | Link::Failed(_)) {
-                parts.push(h(6, "c", "join"));
-            } else if profiles {
+            // With profiles on, `c` opens the profile dialog like `p`.
+            if profiles {
                 parts.push(h(6, "p", "profiles"));
+            } else if app.transport == "MSTP" && matches!(app.link, Link::Down | Link::Failed(_)) {
+                parts.push(h(6, "c", "join"));
             }
             parts.push(h(8, "Esc", "back"));
         }
@@ -333,10 +337,10 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
         }
         Screen::Watch => {
             parts.push(h(6, "x", "remove"));
-            parts.push(h(5, ":", "command"));
+            parts.push(h(5, ":watch", "DEV OBJ"));
             parts.push(h(8, "Esc", "back"));
         }
-        Screen::Main => main_hints(app, theme, &mut parts),
+        Screen::Main | Screen::Browse => main_hints(app, theme, &mut parts),
     }
     parts.push(h(ALWAYS, "?", "help"));
     parts.push(h(ALWAYS, "q", "quit"));
@@ -348,7 +352,7 @@ fn main_hints(app: &App, theme: &Theme, parts: &mut Vec<Part>) {
     let profiles = app.connection.is_some();
     let h = |keep, key, what| hint(theme, keep, key, what);
     match &app.link {
-        Link::Up { .. } if app.browser.is_some() => {
+        Link::Up { .. } if app.screen == Screen::Browse => {
             parts.push(h(7, "Enter", "read"));
             parts.push(h(6, "a", "watch"));
             parts.push(h(5, "Tab", "pane"));
@@ -365,19 +369,20 @@ fn main_hints(app: &App, theme: &Theme, parts: &mut Vec<Part>) {
         }
         // The summary is beside these; the whole error is on the device
         // screen and in the log.
+        // With profiles on, `c` only opens the profile dialog, as `p`
+        // does, so one hint names it; it stays clear of the summary.
         Link::Failed(_) => {
-            if profiles {
-                parts.push(h(7, "p", "settings"));
-            }
-            parts.push(h(7, "c", "retry"));
+            parts.push(match profiles {
+                true => h(8, "p", "settings"),
+                false => h(8, "c", "retry"),
+            });
             parts.push(h(4, "L", "log"));
         }
         link => {
-            if matches!(link, Link::Down) {
-                parts.push(h(7, "c", "connect"));
-            }
             if profiles {
                 parts.push(h(6, "p", "profiles"));
+            } else if matches!(link, Link::Down) {
+                parts.push(h(7, "c", "connect"));
             }
             if matches!(link, Link::Connecting | Link::Picking) {
                 parts.push(h(5, "x", "cancel"));

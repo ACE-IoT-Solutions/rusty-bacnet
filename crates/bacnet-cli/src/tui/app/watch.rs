@@ -26,9 +26,12 @@ pub(crate) const HISTORY: usize = 512;
 /// The screen in the body.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Screen {
-    /// The device table, or the browser when one is open.
+    /// The device table (screen 1). An open browser is kept, hidden.
     #[default]
     Main,
+    /// The open device's browser (screen 2); shown only while
+    /// [`App::browser`](super::App::browser) holds one.
+    Browse,
     /// The watch list.
     Watch,
     /// B/IP infrastructure: foreign-device status, BDT, FDT and the matrix.
@@ -216,8 +219,7 @@ impl App {
 
     /// `a` in the browser: watch the selected object's Present_Value.
     pub(super) fn watch_selected(&mut self, out: &mut Vec<Command>) {
-        let Some((device, object)) = self.browser.as_deref().and_then(|b| b.selected_point())
-        else {
+        let Some((device, object)) = self.shown_browser().and_then(|b| b.selected_point()) else {
             self.flash("Open a device and select an object to watch.", FLASH_FOR);
             return;
         };

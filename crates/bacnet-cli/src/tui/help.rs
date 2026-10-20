@@ -8,7 +8,7 @@
 
 use super::app::command_bar::COMMANDS;
 use super::app::watch::Screen;
-use super::app::App;
+use super::app::{App, Link};
 
 /// One screen in the strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,13 +22,16 @@ pub(crate) struct Tab {
 }
 
 /// The screens that apply to this session, in key order: Devices,
-/// Browse, Watch and Capture always; Network on B/IP, SC on BACnet/SC,
-/// MS/TP with a serial port. The screen shown is listed even where it
+/// Browse, Watch and Capture always; Network once a session is connected
+/// (its Networks tab works on every transport), SC on BACnet/SC, MS/TP
+/// with a serial port. The screen shown is listed even where it
 /// doesn't apply, so the strip always says where the operator is.
 pub(crate) fn screens(app: &App) -> Vec<Tab> {
     let serial = app.transport == "MSTP" || app.monitor.is_some();
+    // The Networks tab (routers heard) works on every transport.
+    let connected = matches!(app.link, Link::Up { .. });
     let current = match app.screen {
-        Screen::Main if app.browser.is_some() => '2',
+        Screen::Browse => '2',
         Screen::Main => '1',
         Screen::Watch => '3',
         Screen::Network => '4',
@@ -40,7 +43,7 @@ pub(crate) fn screens(app: &App) -> Vec<Tab> {
         ('1', "Devices", true),
         ('2', "Browse", true),
         ('3', "Watch", true),
-        ('4', "Network", app.transport == "BIP"),
+        ('4', "Network", connected),
         ('5', "SC", app.transport == "SC"),
         ('6', "MS/TP", serial),
         ('7', "Capture", true),
@@ -63,12 +66,16 @@ pub(crate) struct Section {
     pub(crate) title: &'static str,
     /// `(keys, what they do)`.
     pub(crate) rows: Vec<(String, String)>,
+    /// Its keys are the screen's own (or global): false for a dialog's
+    /// keys shown for reference, and for the command list.
+    pub(crate) on_screen: bool,
 }
 
 impl Section {
     fn new(title: &'static str, rows: &[(&str, &str)]) -> Self {
         Self {
             title,
+            on_screen: true,
             rows: rows
                 .iter()
                 .map(|(keys, what)| (keys.to_string(), what.to_string()))
@@ -107,7 +114,10 @@ const GLOBAL: &[(&str, &str)] = &[
 
 const DEVICES: &[(&str, &str)] = &[
     ("d", "The Who-Is form"),
-    ("Enter", "Browse the selected device"),
+    (
+        "Enter",
+        "Browse the selected device (the one kept open comes back as it was)",
+    ),
     MOVE,
     JUMP,
     ENDS,
@@ -131,7 +141,14 @@ const BROWSER: &[(&str, &str)] = &[
         "w n",
         "In a write session: write a property; relinquish a slot",
     ),
-    ("Esc", "Clear the filter, then back to the devices"),
+    MOVE,
+    JUMP,
+    ENDS,
+    ("x", "Disconnect"),
+    (
+        "Esc",
+        "Clear the filter, then close the device and go back (1 keeps it)",
+    ),
 ];
 
 const WHO_IS: &[(&str, &str)] = &[
@@ -207,14 +224,13 @@ const CAPTURE: &[(&str, &str)] = &[
 pub(crate) fn sections(app: &App) -> Vec<Section> {
     let mut out = vec![Section::new("Global", GLOBAL)];
     match app.screen {
-        Screen::Main if app.browser.is_some() => {
-            out.push(Section::new("Browse (2)", BROWSER));
-            out.push(Section::new("Devices (1)", DEVICES));
-        }
+        Screen::Browse => out.push(Section::new("Browse (2)", BROWSER)),
         Screen::Main => {
             out.push(Section::new("Devices (1)", DEVICES));
-            out.push(Section::new("Browse (2), once a device is open", BROWSER));
-            out.push(Section::new("Who-Is form (d)", WHO_IS));
+            out.push(Section {
+                on_screen: false,
+                ..Section::new("Who-Is form (d)", WHO_IS)
+            });
         }
         Screen::Watch => out.push(Section::new("Watch (3)", WATCH)),
         Screen::Network => out.push(Section::new("Network (4)", NETWORK)),
@@ -224,6 +240,7 @@ pub(crate) fn sections(app: &App) -> Vec<Section> {
     }
     out.push(Section {
         title: "Commands (:)",
+        on_screen: false,
         rows: COMMANDS
             .iter()
             .flat_map(|syntax| {

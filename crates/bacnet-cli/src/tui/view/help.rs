@@ -17,7 +17,8 @@ const KEY_COLUMN: usize = 20;
 
 /// Draw the help overlay over `area`.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let width = area.width.saturating_sub(2).min(MAX_WIDTH);
+    // A column clear each side, so the border never doubles a pane's.
+    let width = area.width.saturating_sub(4).min(MAX_WIDTH);
     let inner = usize::from(width.saturating_sub(2));
     let lines = lines(app, inner, theme);
     let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
@@ -57,7 +58,8 @@ fn lines(app: &App, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         out.push(Line::styled(format!(" {}", section.title), theme.accent()));
         for (keys, what) in section.rows {
             let lead = format!("   {keys}");
-            let room = width.saturating_sub(KEY_COLUMN).max(10);
+            // A space before the right border.
+            let room = width.saturating_sub(KEY_COLUMN + 1).max(10);
             let mut wrapped = wrap(&what, room).into_iter();
             // Keys too wide for their column get a line of their own.
             if text_width(&lead) < KEY_COLUMN {

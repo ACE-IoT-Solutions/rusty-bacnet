@@ -41,4 +41,4 @@ expression: text
 "│                                                                                                                      │"
 "│ COV, lifetime 300 s, renewed before it runs out · analog-input 3, Discharge Temp                                     │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" x remove  : command  Esc back  ? help  q quit                                                                          "
+" x remove  :watch DEV OBJ  Esc back  ? help  q quit                                                                     "

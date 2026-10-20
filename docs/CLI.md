@@ -465,7 +465,7 @@ table is refreshed from the client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network on B/IP, SC on SC, MS/TP with a serial port), with the one shown in brackets |
+| `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
 | `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |

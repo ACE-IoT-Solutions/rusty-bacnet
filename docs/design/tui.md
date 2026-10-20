@@ -118,14 +118,22 @@ What M0 draws (80x24):
 - Below 120 columns the browser's priority array is a pane of its own in the
   Tab order (#1894), so the properties keep the whole width at 80; stacking
   it under the properties would leave them three rows at 80x24.
-- Screens appear only where they apply: Network for B/IP, SC for SC, MS/TP for
-  a serial port. Devices, Browse, Watch and Capture are always present.
+- Screens appear only where they have something to show: Network once a
+  session is connected, on every transport (its Networks tab lists the routers
+  heard; the B/IP-only parts show their own empty states elsewhere), SC for
+  SC, MS/TP for a serial port. Devices, Browse, Watch and Capture are always
+  present.
   - The numbered strip sits in the status bar rather than on a row of its own
     (#1895), so it costs no content row at 80x24: `1 Devices 2 Browse
     [3 Watch] 4 Network 7 Capture` where it fits, `1 2 [3 Watch] 4 7` (only
     the screen shown keeps its name) where it doesn't. The screen shown is
     listed even where it doesn't apply, and every number key works on every
-    session; the strip only leaves out what has nothing to show there.
+    session.
+  - Devices (`1`) and Browse (`2`) are separate screens (`Screen::Main` and
+    `Screen::Browse`). `1` hides an open browser and keeps it as it was
+    (device, object, pane, scroll, filter); `2` shows it again, or with no
+    device open stays on Devices and says so. Enter on the kept device shows
+    it again; on another device opens that one. Esc in the browser closes it.
 - Help (`?`) is built from sections (#1895): the global keys, then the
   current screen's, then the command bar's commands, read from the same table
   as the parser. A test presses every key on every screen and fails if one the

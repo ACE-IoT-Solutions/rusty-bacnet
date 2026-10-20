@@ -51,12 +51,12 @@ Every screen has the same three parts:
 - **The screen** in the middle.
 - **The footer**, on the bottom line: the keys that work right now. In a narrow terminal the less used keys go first; `? help` and `q quit` always stay. A message, such as a refusal or an error, sits at the left beside the keys for a few seconds, and goes as soon as you change screens or open a dialog. A failed connection shows its cause there with the keys that recover (`p settings`, `c retry`); the device screen and the log pane have the whole error.
 
-Number keys switch screens. The strip shows Network only for B/IP, BACnet/SC only for SC and MS/TP only with a serial port, but every key works on every session:
+Number keys switch screens. The strip shows Network once a session is connected (its Networks tab works on every transport), BACnet/SC only for SC and MS/TP only with a serial port, but every key works on every session:
 
 | Key | Screen | What it shows |
 |---|---|---|
-| `1` | Devices | The device table |
-| `2` | Browse | The browser of the device you opened with Enter |
+| `1` | Devices | The device table; an open browser stays as it was |
+| `2` | Browse | The browser of the device you opened with Enter, back where you left it; with none open, `2` stays on the devices and says so |
 | `3` | Watch | Watched points, by COV or polling |
 | `4` | Network | Foreign-device registration, BDT, FDT, the BDT matrix, and routers |
 | `5` | BACnet/SC | The hub connector, certificates and the connection doctor |

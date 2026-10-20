@@ -81,8 +81,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         _ if app.screen == Screen::Sc => sc::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Mstp => mstp::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Capture => capture::draw(frame, body, app, &theme),
-        Some(open) => browser::draw(frame, body, open, &theme),
-        None => who_has::devices(frame, body, app, &theme),
+        Some(open) if app.screen == Screen::Browse => browser::draw(frame, body, open, &theme),
+        _ => who_has::devices(frame, body, app, &theme),
     }
     if app.show_log {
         chrome::log_pane(frame, log, app, &theme);

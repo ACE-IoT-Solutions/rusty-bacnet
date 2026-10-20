@@ -61,7 +61,7 @@ const sections = {
   main: 'Devices and the browser', watch: 'Watch list', network: 'Network screen', sc: 'BACnet/SC screen',
   mstp: 'MS/TP screen', capture: 'Capture screen', join: 'MS/TP join confirmation', connection: 'Profile dialog', picker: 'Interface picker',
   form: 'Who-Is form', filter: 'Filters', safety: 'Write dialogs', command_line: 'Command bar',
-  global: 'Everywhere', help: 'Help overlay',
+  global: 'Everywhere', help: 'Help overlay', browse: 'Devices and the browser',
 };
 const named = { Esc: 'Esc', Enter: 'Enter', Tab: 'Tab', BackTab: 'Shift-Tab', Up: 'Up', Down: 'Down', Left: 'Left',
   Right: 'Right', PageUp: 'PgUp', PageDown: 'PgDn', Home: 'Home', End: 'End', Backspace: 'Backspace', Delete: 'Delete' };

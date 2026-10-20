@@ -236,12 +236,12 @@ impl Failure {
     }
 
     /// From an error that is only text (a profile the service refused,
-    /// say): its last clause, the cause, without an OS error number.
+    /// say): the whole message, which the footer shortens with `…`. Its
+    /// clauses aren't split, as a `field: value` error needs both.
     pub(crate) fn text(detail: impl Into<String>) -> Self {
         let detail = detail.into();
-        let cause = detail.rsplit(": ").next().unwrap_or(&detail);
         Self {
-            summary: strip_os_error(cause).to_string(),
+            summary: detail.clone(),
             detail,
         }
     }
@@ -260,13 +260,12 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// An I/O error by its kind (`address in use`), or by its message when the
-/// kind says nothing more.
+/// An OS error by its kind (`address in use`); one the stack wrote itself
+/// (`own address not local`) by its own message.
 fn io_summary(error: &std::io::Error) -> String {
-    use std::io::ErrorKind;
-    match error.kind() {
-        ErrorKind::Other => strip_os_error(&error.to_string()).to_string(),
-        kind => kind.to_string(),
+    match error.raw_os_error() {
+        Some(_) => error.kind().to_string(),
+        None => strip_os_error(&error.to_string()).to_string(),
     }
 }
 

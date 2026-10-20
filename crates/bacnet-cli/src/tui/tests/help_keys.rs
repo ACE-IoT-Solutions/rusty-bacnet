@@ -59,8 +59,10 @@ fn the_strip_lists_only_the_screens_that_apply() {
     let mut sc = connected("SC", AddressStyle::Hex, "22:10:20:30:40:50");
     let mut mstp = connected("MSTP", AddressStyle::Mstp, "mstp:3");
     assert_eq!(keys(&bip), ['1', '2', '3', '4', '7']);
-    assert_eq!(keys(&sc), ['1', '2', '3', '5', '7']);
-    assert_eq!(keys(&mstp), ['1', '2', '3', '6', '7']);
+    assert_eq!(keys(&sc), ['1', '2', '3', '4', '5', '7']);
+    assert_eq!(keys(&mstp), ['1', '2', '3', '4', '6', '7']);
+    // Network waits for a connection; then its Networks tab has routers.
+    assert_eq!(keys(&new_app(None)), ['1', '2', '3', '7']);
     for (name, app) in [("B/IP", &mut bip), ("SC", &mut sc), ("MS/TP", &mut mstp)] {
         press(app, KeyCode::Char('3'));
         for (w, h) in SIZES {
@@ -158,7 +160,7 @@ fn every_key() -> Vec<KeyCode> {
 fn named(app: &App) -> BTreeSet<String> {
     sections(app)
         .into_iter()
-        .filter(|section| !section.title.starts_with("Commands"))
+        .filter(|section| section.on_screen)
         .flat_map(|section| section.rows)
         .flat_map(|(keys, _)| {
             keys.split_whitespace()
@@ -168,19 +170,31 @@ fn named(app: &App) -> BTreeSet<String> {
         .collect()
 }
 
-/// Each key the key map takes on a screen is named in that screen's help.
-#[test]
-fn help_names_every_key_each_screen_takes() {
-    let mut contexts: Vec<(&str, App)> = Vec::new();
-    contexts.push(("devices", connected_app()));
-    let mut browsing = connected_app();
+/// A connected app browsing device 1001.
+fn browsing() -> App {
+    let mut app = connected_app();
     worker(
-        &mut browsing,
+        &mut app,
         WorkerEvent::Discovered(row(1001, "10.0.1.21:47808", 260, 2)),
     );
-    press(&mut browsing, KeyCode::Enter);
-    assert!(browsing.browser.is_some());
-    contexts.push(("browser", browsing));
+    worker(
+        &mut app,
+        WorkerEvent::Discovered(row(1002, "10.0.1.22:47808", 5, 2)),
+    );
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Browse);
+    app
+}
+
+/// Every screen's key-map context: the devices (with and without a
+/// browser kept), the browser, and each other screen.
+fn contexts() -> Vec<(&'static str, App)> {
+    let mut contexts: Vec<(&str, App)> = Vec::new();
+    contexts.push(("devices", connected_app()));
+    contexts.push(("browser", browsing()));
+    let mut kept = browsing();
+    press(&mut kept, KeyCode::Char('1'));
+    contexts.push(("devices, browser kept", kept));
     for (name, key) in [
         ("watch", '3'),
         ("network", '4'),
@@ -196,6 +210,75 @@ fn help_names_every_key_each_screen_takes() {
     press(&mut tree, KeyCode::Char('7'));
     press(&mut tree, KeyCode::Tab);
     contexts.push(("capture tree", tree));
+    contexts
+}
+
+/// The key a help row's word names, or `None` for a word that names no
+/// key. A row is a key row when every word in its keys column names a key
+/// (`d`, `Shift-Tab`, `Ctrl-C`); any other word (`watch DEVICE ...`) makes
+/// it a prose row, which the reverse check skips.
+fn key_named(word: &str) -> Option<KeyEvent> {
+    let none = KeyModifiers::NONE;
+    let code = match word {
+        "Ctrl-C" => return Some(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        "Space" => KeyCode::Char(' '),
+        "Esc" => KeyCode::Esc,
+        "Enter" => KeyCode::Enter,
+        "Tab" => KeyCode::Tab,
+        "Shift-Tab" => KeyCode::BackTab,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "PgUp" => KeyCode::PageUp,
+        "PgDn" => KeyCode::PageDown,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "Backspace" => KeyCode::Backspace,
+        "Delete" => KeyCode::Delete,
+        _ => {
+            let mut chars = word.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => KeyCode::Char(ch),
+                _ => return None,
+            }
+        }
+    };
+    Some(KeyEvent::new(code, none))
+}
+
+/// Each key a screen's help names is one its key map takes there (in
+/// at least one of that screen's contexts, as Left and Right work only
+/// in Capture's tree).
+#[test]
+fn every_key_help_names_works_on_its_screen() {
+    let contexts = contexts();
+    for (name, app) in &contexts {
+        for section in sections(app).into_iter().filter(|s| s.on_screen) {
+            for (keys, what) in section.rows {
+                let Some(events) = keys
+                    .split_whitespace()
+                    .map(key_named)
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                for event in events {
+                    let works = contexts
+                        .iter()
+                        .filter(|(_, other)| other.screen == app.screen)
+                        .any(|(_, other)| map_key(other, event).is_some());
+                    assert!(works, "{name}: help row `{keys}` ({what}) names {event:?}");
+                }
+            }
+        }
+    }
+}
+
+/// Each key the key map takes on a screen is named in that screen's help.
+#[test]
+fn help_names_every_key_each_screen_takes() {
+    let contexts = contexts();
     for (name, app) in &contexts {
         assert_eq!(app.overlay, Overlay::None, "{name}");
         let named = named(app);
@@ -336,4 +419,99 @@ fn help_opens_on_every_screen_without_a_session() {
         app.screen = screen;
         assert!(sections(&app).len() >= 3, "{screen:?}");
     }
+}
+
+/// `1` hides the browser and keeps it as it was; `2` brings back the
+/// same device, object, pane, scroll and filter.
+#[test]
+fn screen_1_keeps_the_browser_and_2_brings_it_back() {
+    use crate::tui::app::browser::{Pane, ViewState};
+    use bacnet_types::enums::ObjectType;
+    use bacnet_types::primitives::ObjectIdentifier;
+    let mut app = browsing();
+    let object = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 3).unwrap();
+    {
+        let browser = app.browser.as_deref_mut().unwrap();
+        browser.view = ViewState::Reading(object);
+        browser.focus = Pane::Properties;
+        browser.scroll.set(4);
+    }
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "ai");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Tab);
+    let focus = app.browser.as_ref().unwrap().focus;
+
+    assert!(
+        press(&mut app, KeyCode::Char('1')).is_empty(),
+        "nothing stops"
+    );
+    assert_eq!(app.screen, Screen::Main);
+    let text = screen(&mut app, 80, 24);
+    assert!(text.contains("Devices (2)"), "{text}");
+    assert!(status(&mut app, 80, 24).contains("[1 Devices]"));
+    // Keys reach the device table, not the hidden browser.
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.devices.selected_row().unwrap().instance, 1002);
+    assert_eq!(app.browser.as_ref().unwrap().focus, focus);
+
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.screen, Screen::Browse);
+    let browser = app.browser.as_ref().unwrap();
+    assert_eq!(browser.device, 1001);
+    assert_eq!(browser.view, ViewState::Reading(object));
+    assert_eq!(browser.focus, focus);
+    assert_eq!(browser.scroll.get(), 4);
+    assert_eq!(browser.objects.filter(), "ai");
+    assert!(status(&mut app, 80, 24).contains("[2 Browse]"));
+
+    // Enter on the kept device shows it again; on another opens that one.
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Up);
+    assert!(press(&mut app, KeyCode::Enter).is_empty());
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.browser.as_ref().unwrap().objects.filter(), "ai");
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Down);
+    let commands = press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(
+            commands.as_slice(),
+            [
+                Command::StopBrowse { device: 1001 },
+                Command::Browse { device: 1002, .. }
+            ]
+        ),
+        "{commands:?}"
+    );
+    // Esc from the browser closes it and goes back to the devices.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Main);
+    assert!(app.browser.is_none());
+}
+
+#[test]
+fn screen_2_without_an_open_device_stays_and_says_so() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.screen, Screen::Main);
+    assert_eq!(
+        app.flash.as_ref().map(|f| f.text.as_str()),
+        Some("Open a device first (Enter on a row).")
+    );
+}
+
+/// Tab moves from the pane drawn, even when the focus names the priority
+/// pane of an object that has none.
+#[test]
+fn tab_moves_from_the_pane_shown() {
+    use crate::tui::app::browser::Pane;
+    let mut app = browsing();
+    app.browser.as_deref_mut().unwrap().focus = Pane::Priority;
+    assert_eq!(
+        app.browser.as_ref().unwrap().shown_focus(),
+        Pane::Properties
+    );
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.browser.as_ref().unwrap().focus, Pane::Card);
 }

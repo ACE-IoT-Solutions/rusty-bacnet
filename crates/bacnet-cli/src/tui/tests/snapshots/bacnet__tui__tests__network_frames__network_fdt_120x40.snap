@@ -41,4 +41,4 @@ expression: text
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" r read tables  m survey BBMDs  Tab BDT/FDT/matrix/networks  : bbmd ADDRESS  Esc back  ? help  q quit                   "
+" r read tables  m survey BBMDs  Tab BDT/FDT/matrix/networks  :bbmd ADDRESS  Esc back  ? help  q quit                    "

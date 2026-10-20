@@ -185,13 +185,17 @@ fn bbmd_alone_without_a_registration_says_what_it_needs() {
     assert!(app.flash.as_ref().unwrap().text.contains(":bbmd ADDRESS"));
 }
 
+/// The last row of an 80x24 frame.
+fn footer_of(app: &mut App) -> String {
+    let text = screen(app, 80, 24);
+    text.lines().last().unwrap().trim_matches('"').to_string()
+}
+
 #[test]
 fn a_failed_connection_shows_its_summary_and_the_recovery_keys() {
     let mut app = new_app(None);
-    let error = Error::Transport(std::io::Error::new(
-        std::io::ErrorKind::AddrInUse,
-        "Address already in use (os error 48)",
-    ));
+    // ENOENT on Unix, ERROR_FILE_NOT_FOUND on Windows: NotFound either way.
+    let error = Error::Transport(std::io::Error::from_raw_os_error(2));
     worker(
         &mut app,
         WorkerEvent::ConnectFailed {
@@ -199,34 +203,83 @@ fn a_failed_connection_shows_its_summary_and_the_recovery_keys() {
         },
     );
     let text = screen(&mut app, 80, 24);
-    let footer = text.lines().last().unwrap().trim_matches('"');
+    let footer = footer_of(&mut app);
     assert!(
-        footer.starts_with(" Connection failed: address in use"),
+        footer.starts_with(" Connection failed: entity not found"),
         "{footer}"
     );
+    // Without profiles `c` retries; there is no `p settings` to offer.
     assert!(footer.contains("c retry"), "{footer}");
+    assert!(!footer.contains("settings"), "{footer}");
     assert!(footer.contains("? help  q quit"), "{footer}");
     assert!(!footer.contains("os error"), "{footer}");
     // The device screen keeps the whole error.
-    assert!(
-        text.contains("transport error: Address already in use (os error 48)"),
-        "{text}"
-    );
+    assert!(text.contains("transport error: "), "{text}");
+    assert!(text.contains("(os error 2)"), "{text}");
     assert_snapshot!("footer_failed", chrome_at_sizes(&mut app));
 }
 
 #[test]
-fn failures_reduce_to_their_cause() {
+fn failures_keep_what_identifies_them() {
+    // An OS error by its kind.
+    let os = Failure::of(&Error::Transport(std::io::Error::from_raw_os_error(2)));
+    assert_eq!(os.summary, "entity not found");
+    // A message the stack wrote keeps its words, whatever its kind.
+    let own = Failure::of(&Error::Transport(std::io::Error::new(
+        std::io::ErrorKind::AddrNotAvailable,
+        "own address 10.0.9.5 not local",
+    )));
+    assert_eq!(own.summary, "own address 10.0.9.5 not local");
     let timeout = Failure::of(&Error::Timeout(Duration::from_secs(3)));
     assert_eq!(timeout.summary, "timed out");
-    let text = Failure::text("profile 'plant': interface en9: No such device (os error 19)");
-    assert_eq!(text.summary, "No such device");
-    assert!(text.detail.starts_with("profile 'plant'"));
     let port = Failure::within(
         "/dev/ttyUSB0",
         &Error::Transport(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
     );
     assert_eq!(port.summary, "/dev/ttyUSB0: permission denied");
+    // Text keeps both clauses; the footer shortens it to fit.
+    let long = "profile 'plant-a-long-name': field 'Interface': no interface named \
+                enp0s31f6 on this host; pick one from the list";
+    let text = Failure::text(long);
+    assert_eq!(text.summary, long);
+    let mut app = new_app(None);
+    worker(&mut app, WorkerEvent::ConnectFailed { error: text });
+    let footer = footer_of(&mut app);
+    assert!(
+        footer.starts_with(" Connection failed: profile 'plant-a-long-name': field"),
+        "{footer}"
+    );
+    assert!(footer.contains('…'), "{footer}");
+    assert!(footer.contains("c retry"), "{footer}");
+    assert!(footer.trim_end().ends_with("? help  q quit"), "{footer}");
+}
+
+/// Esc on a write preview declines it, and its notice stays in the
+/// footer: it was set by that action.
+#[test]
+fn a_declined_preview_says_so_in_the_footer() {
+    use crate::tui::app::safety::Modal;
+    use crate::tui::safety::{Gate, Preview, Tier};
+    let mut app = connected_app();
+    app.overlay = Overlay::Safety(Box::new(Modal::Confirm {
+        req: 1,
+        preview: Box::new(Preview {
+            device: 100,
+            items: Vec::new(),
+            batch: false,
+            gate: Gate::Allowed(Tier::T1),
+        }),
+        typed: String::new(),
+        error: None,
+        opened: app.now,
+    }));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.overlay, Overlay::None);
+    let footer = footer_of(&mut app);
+    assert!(
+        footer.starts_with(" Declined: nothing was sent."),
+        "{footer}"
+    );
 }
 
 /// `FD` reads the same state the Network screen's banner does.

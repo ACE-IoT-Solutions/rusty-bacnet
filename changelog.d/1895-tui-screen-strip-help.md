@@ -1,6 +1,7 @@
 ---
 section: Added
 ---
-- The TUI's status bar numbers the screens that apply to the session, help
-  lists the global and the current screen's keys and scrolls at 80x24, and the
-  command bar shows the syntax of the command being typed (#1895).
+- The TUI's status bar numbers the screens that apply to the session, `1` and
+  `2` switch between the devices and a kept browser, help lists the global and
+  the screen's keys and scrolls, and the command bar shows the syntax being
+  typed (#1895).

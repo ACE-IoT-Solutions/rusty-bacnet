@@ -36,6 +36,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         Overlay::None if app.screen == Screen::Sc => sc(key),
         Overlay::None if app.screen == Screen::Mstp => mstp(key),
         Overlay::None if app.screen == Screen::Capture => capture(app, key),
+        Overlay::None if app.screen == Screen::Browse => browse(key),
         Overlay::None => main(key),
     }
 }
@@ -83,7 +84,8 @@ fn global(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(':') => Action::OpenCommandLine,
         KeyCode::Char('p') => Action::OpenConnection,
         KeyCode::Char('c') => Action::Reconnect,
-        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('1') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('2') => Action::ShowScreen(Screen::Browse),
         KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
         KeyCode::Char('4') => Action::ShowScreen(Screen::Network),
         KeyCode::Char('5') => Action::ShowScreen(Screen::Sc),
@@ -102,8 +104,28 @@ fn help(key: KeyEvent) -> Option<Action> {
     })
 }
 
-/// The devices and the browser.
+/// The device table (screen 1).
 fn main(key: KeyEvent) -> Option<Action> {
+    if chorded(key) {
+        return None;
+    }
+    if let Some(m) = movement(key.code) {
+        return Some(Action::Move(m));
+    }
+    Some(match key.code {
+        KeyCode::Esc => Action::Escape,
+        KeyCode::Enter => Action::Open,
+        KeyCode::Char('d') => Action::OpenWhoIs,
+        KeyCode::Char('x') => Action::Disconnect,
+        KeyCode::Char('/') => Action::StartFilter,
+        KeyCode::Char('s') => Action::CycleSort,
+        KeyCode::Char('S') => Action::ReverseSort,
+        _ => return global(key),
+    })
+}
+
+/// The browser (screen 2): panes, reads, watching and writes.
+fn browse(key: KeyEvent) -> Option<Action> {
     if chorded(key) {
         return None;
     }
@@ -116,11 +138,8 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Tab => Action::CyclePane { back: false },
         KeyCode::BackTab => Action::CyclePane { back: true },
         KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('d') => Action::OpenWhoIs,
         KeyCode::Char('x') => Action::Disconnect,
         KeyCode::Char('/') => Action::StartFilter,
-        KeyCode::Char('s') => Action::CycleSort,
-        KeyCode::Char('S') => Action::ReverseSort,
         KeyCode::Char('a') => Action::AddWatch,
         KeyCode::Char('w') => Action::OpenWrite { relinquish: false },
         KeyCode::Char('n') => Action::OpenWrite { relinquish: true },

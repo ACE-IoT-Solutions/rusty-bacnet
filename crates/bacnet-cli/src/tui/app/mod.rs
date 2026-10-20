@@ -423,12 +423,34 @@ impl App {
         self.op.as_ref().is_some_and(Operation::running)
     }
 
+    /// The browser, while it is the screen shown (screen 2). Screen 1
+    /// keeps an open one hidden, so its keys reach the device table.
+    pub(crate) fn shown_browser(&self) -> Option<&Browser> {
+        self.browser
+            .as_deref()
+            .filter(|_| self.screen == Screen::Browse)
+    }
+
+    pub(super) fn shown_browser_mut(&mut self) -> Option<&mut Browser> {
+        let shown = self.screen == Screen::Browse;
+        self.browser.as_deref_mut().filter(|_| shown)
+    }
+
+    /// `2`: the open device's browser; without one, stay and say so.
+    fn show_browser(&mut self) {
+        if self.browser.is_some() {
+            self.screen = Screen::Browse;
+        } else {
+            self.flash("Open a device first (Enter on a row).", FLASH_FOR);
+        }
+    }
+
     /// The filter of the list on screen: the browser's objects or the devices.
     pub(crate) fn filter_text(&self) -> &str {
         if self.screen == Screen::Capture {
             return &self.capture.filter;
         }
-        match &self.browser {
+        match self.shown_browser() {
             Some(browser) => browser.objects.filter(),
             None => self.devices.filter(),
         }
@@ -562,13 +584,13 @@ impl App {
             // As the dialog's own Esc: a preview closed is a decline.
             Overlay::Safety(_) => self.modal_key(safety::ModalKey::Esc, out),
             Overlay::Join(_) => self.decline_join(),
-            Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
-            Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
+            Overlay::None if self.screen == Screen::Browse => match self.shown_browser_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
                     browser.objects.clear_filter();
                 }
                 _ => self.close_browser(out),
             },
+            Overlay::None if self.screen != Screen::Main => self.screen = Screen::Main,
             Overlay::None if !self.devices.filter().is_empty() => {
                 self.devices.clear_filter();
                 self.devices.settle();
@@ -597,7 +619,8 @@ impl App {
         if self.screen == Screen::Capture {
             return self.capture_filter_key(key);
         }
-        if let Some(browser) = self.browser.as_deref_mut() {
+        let shown = self.screen == Screen::Browse;
+        if let Some(browser) = self.browser.as_deref_mut().filter(|_| shown) {
             let objects = &mut browser.objects;
             match key {
                 FilterKey::Char(ch) => objects.push_filter(ch),
@@ -677,6 +700,9 @@ impl App {
     fn reset_session(&mut self) {
         self.devices = DeviceTable::default();
         self.browser = None;
+        if self.screen == Screen::Browse {
+            self.screen = Screen::Main;
+        }
         // The worker of the ended session cancelled the subscriptions.
         self.watch = WatchList::default();
         self.network = network::NetworkState::default();
@@ -824,17 +850,17 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
                 }
             }
         }
-        Action::Move(movement) => match app.browser.as_deref_mut() {
-            _ if app.screen == Screen::Watch => app.watch.move_selection(movement),
-            _ if app.screen == Screen::Capture => {
-                app.capture_key(capture::CaptureKey::Move(movement), out);
-            }
-            Some(browser) => browser.move_selection(movement),
-            None => app.devices.move_selection(movement),
+        Action::Move(movement) => match app.screen {
+            Screen::Watch => app.watch.move_selection(movement),
+            Screen::Capture => app.capture_key(capture::CaptureKey::Move(movement), out),
+            _ => match app.shown_browser_mut() {
+                Some(browser) => browser.move_selection(movement),
+                None => app.devices.move_selection(movement),
+            },
         },
         Action::Open => app.open(out),
         Action::CyclePane { back } => {
-            if let Some(browser) = app.browser.as_deref_mut() {
+            if let Some(browser) = app.shown_browser_mut() {
                 browser.cycle_focus(back);
             }
         }
@@ -848,7 +874,7 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
             app.devices.settle();
         }
         Action::StartFilter => {
-            if let Some(browser) = app.browser.as_deref_mut() {
+            if let Some(browser) = app.shown_browser_mut() {
                 browser.focus = browser::Pane::Objects;
             }
             app.filter_editing = true;
@@ -857,6 +883,7 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
         Action::Form(key) => app.form_key(key, out),
         Action::Picker(key) => app.picker_key(key, out),
         Action::ShowScreen(Screen::Capture) => app.show_capture(out),
+        Action::ShowScreen(Screen::Browse) => app.show_browser(),
         Action::ShowScreen(screen) => app.screen = screen,
         Action::AddWatch => app.watch_selected(out),
         Action::RemoveWatch => app.unwatch_selected(out),

@@ -12,6 +12,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use super::devices::Movement;
 use super::objects::ObjectList;
+use super::watch::Screen;
 use super::{App, Link, FLASH_FOR};
 use crate::tui::message::Command;
 use crate::tui::point::{BrowseRead, BrowseResult, DeviceCard, ObjectView, ReqId};
@@ -164,7 +165,7 @@ impl Browser {
         let order = self.panes();
         let at = order
             .iter()
-            .position(|pane| *pane == self.focus)
+            .position(|pane| *pane == self.shown_focus())
             .unwrap_or(1);
         let next = if back { at + order.len() - 1 } else { at + 1 };
         self.focus = order[next % order.len()];
@@ -231,22 +232,31 @@ impl App {
             return;
         }
         let req = self.next_req();
-        match self.browser.as_deref_mut() {
-            None => {
-                self.devices.settle();
-                let Some(row) = self.devices.selected_row() else {
-                    self.flash("No device selected. Press d to send a Who-Is.", FLASH_FOR);
-                    return;
-                };
-                let device = row.instance;
-                self.browser = Some(Box::new(Browser::new(device, row.address.clone(), req)));
-                self.filter_editing = false;
-                out.push(Command::Browse {
-                    req,
-                    device,
-                    read: BrowseRead::Device,
-                });
+        if self.screen != Screen::Browse {
+            self.devices.settle();
+            let Some(row) = self.devices.selected_row() else {
+                self.flash("No device selected. Press d to send a Who-Is.", FLASH_FOR);
+                return;
+            };
+            let (device, address) = (row.instance, row.address.clone());
+            self.filter_editing = false;
+            // The device kept from before is shown again as it was.
+            if self.browser.as_ref().is_some_and(|b| b.device == device) {
+                self.screen = Screen::Browse;
+                return;
             }
+            self.close_browser(out);
+            self.screen = Screen::Browse;
+            self.browser = Some(Box::new(Browser::new(device, address, req)));
+            out.push(Command::Browse {
+                req,
+                device,
+                read: BrowseRead::Device,
+            });
+            return;
+        }
+        match self.browser.as_deref_mut() {
+            None => {}
             Some(browser) if browser.focus == Pane::Objects => {
                 if let Some(object) = browser.objects.selected() {
                     browser.object_req = Some(req);
@@ -271,7 +281,7 @@ impl App {
             return;
         }
         let req = self.next_req();
-        let Some(browser) = self.browser.as_deref_mut() else {
+        let Some(browser) = self.shown_browser_mut() else {
             return;
         };
         let reading = match (&browser.view, browser.shown_focus()) {
@@ -308,6 +318,9 @@ impl App {
 
     /// Leave the browser for the device table, stopping its reads.
     pub(super) fn close_browser(&mut self, out: &mut Vec<Command>) {
+        if self.screen == Screen::Browse {
+            self.screen = Screen::Main;
+        }
         if let Some(browser) = self.browser.take() {
             self.filter_editing = false;
             out.push(Command::StopBrowse {
@@ -375,6 +388,7 @@ mod tests {
         let mut browser = Browser::new(7, "10.0.0.7:47808".into(), 1);
         browser.objects.set(vec![ai]);
         app.browser = Some(Box::new(browser));
+        app.screen = Screen::Browse;
         let read = update(&mut app, Action::Open);
         let [Command::Browse {
             req: object_req, ..

@@ -51,4 +51,4 @@ expression: text
 "│                                                                                                                                                                                                      │"
 "│ polled: routed device · analog-input 1, Discharge Air Temperature North Wing                                                                                                                         │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" Watching analog-value 7 on device 1002. Press 3 for the watch list.                                                                                       x remove  : command  Esc back  ? help  q quit"
+" Watching analog-value 7 on device 1002. Press 3 for the watch list.                                                                                  x remove  :watch DEV OBJ  Esc back  ? help  q quit"
