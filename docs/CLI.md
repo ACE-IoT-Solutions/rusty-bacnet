@@ -253,7 +253,7 @@ flag for the other transport (say `--port` on an SC profile) is an error.
 | `--profile <NAME>` | | Preview a named B/IP, SC or MS/TP profile; explicit global flags override saved values |
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
 | `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. The ledger can still be viewed |
-| `--mstp-monitor <PORT>` | | Listen to an MS/TP trunk on this serial port without transmitting (the `serial` feature). Takes `--mstp-baud` and `--mstp-max-info-frames`; not `--mstp`, `--mstp-mac`, `--mstp-max-master`, another transport's flags or `--profile`. See [MS/TP monitor](#mstp-monitor-and-safe-join) |
+| `--mstp-monitor <PORT>` | | Listen to an MS/TP trunk on this serial port without transmitting (the `serial` feature). Takes `--mstp-baud` and `--mstp-max-info-frames`, and on Linux `--mstp-rt-priority` and `--mstp-cpus`, which only a station joined from it gets (the monitor itself runs normally); not `--mstp`, `--mstp-mac`, `--mstp-max-master`, another transport's flags or `--profile`. See [MS/TP monitor](#mstp-monitor-and-safe-join) |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
 | `--log-file <FILE>` | | Append log lines to this file as well as the in-app log pane |
 | `--max-rate <N>` | `20` | Confirmed requests a second across the browser and the watch list; 0 for no cap |
@@ -1454,12 +1454,14 @@ usage and reply timeouts are the longest Clause 9.5 allows.
 
 **Real-time scheduling (Linux).** Two flags schedule that thread, for any
 station the process joins as: with `--mstp`, or in the terminal UI from a
-profile or the monitor's join. They are host settings, so profiles don't keep
-them.
+profile or the monitor's join. The passive monitor (`tui --mstp-monitor`)
+listens on its own, normally scheduled; only a station joined from it gets the
+settings. They are host settings, so profiles don't keep them, and a terminal
+UI session whose transport isn't MS/TP logs a warning that they don't apply.
 
 | Flag | Effect |
 |---|---|
-| `--mstp-rt-priority N` | Run the thread under `SCHED_FIFO` at priority N, 1 to 99. Needs `CAP_SYS_NICE` or an `RLIMIT_RTPRIO` of at least N (`ulimit -r`). |
+| `--mstp-rt-priority N` | Run the thread under `SCHED_FIFO` at priority N, 1 to 99. Needs `CAP_SYS_NICE` or an `RLIMIT_RTPRIO` of at least N (`ulimit -r`), and real-time budget in the process's cgroup where the kernel has real-time group scheduling. |
 | `--mstp-cpus CPUS` | Pin the thread to these CPUs, such as `2` or `2,3`. |
 
 ```bash
@@ -1469,8 +1471,11 @@ bacnet tui --mstp-monitor /dev/ttyUSB0 --mstp-rt-priority 40
 
 A setting the kernel won't apply fails the join with the reason (exit status 1
 for a one-shot command; the terminal UI shows the error), never a station that
-quietly runs without it. On macOS and Windows both flags are usage errors. They
-lower scheduling latency; they don't guarantee timing. Compare the MS/TP
+quietly runs without it. On macOS and Windows both flags are usage errors. The
+join confirmation shows the thread settings asked for, the MS/TP screen's
+`Thread` row shows what the kernel applied (such as `FIFO 40, CPU 3`, or
+`normal`), and a profile's `mstp-join` audit record has `realtime_priority` and
+`cpu_affinity`. They lower scheduling latency; they don't guarantee timing. Compare the MS/TP
 screen's timer lateness with and without them, and see the
 [Rust API guide](rust-api.md#real-time-scheduling-and-cpu-affinity-linux) for
 PREEMPT_RT, interrupt-thread priorities and memory locking.

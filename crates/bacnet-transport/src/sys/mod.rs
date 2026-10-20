@@ -26,7 +26,7 @@
 //! - `libc_msg`: the libc socket option, `recvmsg` and `sendmsg` paths, for
 //!   the Unix targets nix doesn't cover.
 //! - `serial`: Linux's `TIOCSRS485` and `TIOCGRS485`.
-//! - `sched`: Linux's `sched_setscheduler` and its read-back, for the MS/TP
+//! - `sched`: Linux's `pthread_setschedparam` and its read-back, for the MS/TP
 //!   transport's dedicated thread.
 
 #![allow(unsafe_code)]

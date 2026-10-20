@@ -7,50 +7,110 @@
 //! Both are Linux only, and refused as they are parsed elsewhere. A setting
 //! the kernel won't apply fails the join with the reason.
 
-use bacnet_transport::mstp::{MstpExecutionMode, MstpThreadConfig};
+use bacnet_transport::mstp::{MstpExecutionMode, MstpThreadConfig, MAX_CPUS};
 
 /// The flags' clap ids.
 pub(crate) const FLAGS: [&str; 2] = ["mstp_rt_priority", "mstp_cpus"];
 
 /// `--mstp-rt-priority`: a `SCHED_FIFO` priority, 1 to 99, on Linux.
 pub(crate) fn parse_rt_priority(text: &str) -> Result<u8, String> {
-    let priority = text
-        .parse::<u8>()
-        .map_err(|_| "must be 1 to 99".to_string())?;
-    MstpThreadConfig::new()
-        .with_realtime_priority(priority)
-        .validate()
-        .map_err(|error| without_prefix(&error))?;
-    Ok(priority)
+    linux_only("--mstp-rt-priority")?;
+    let priority = text.trim().parse::<u8>().ok();
+    let config = priority.map(|p| MstpThreadConfig::new().with_realtime_priority(p));
+    match (priority, config.map(|config| config.validate())) {
+        (Some(priority), Some(Ok(()))) => Ok(priority),
+        _ => Err("must be 1 to 99".into()),
+    }
 }
 
 /// One CPU of `--mstp-cpus`, numbered from 0 as Linux numbers them.
 pub(crate) fn parse_cpu(text: &str) -> Result<usize, String> {
+    linux_only("--mstp-cpus")?;
     let cpu = text
         .trim()
         .parse::<usize>()
         .map_err(|_| "must be CPU numbers, such as 2 or 2,3".to_string())?;
-    MstpThreadConfig::new()
-        .with_cpu_affinity([cpu])
-        .validate()
-        .map_err(|error| without_prefix(&error))?;
+    if cpu >= MAX_CPUS {
+        return Err(format!(
+            "CPU {cpu}: CPUs are numbered 0 to {}",
+            MAX_CPUS - 1
+        ));
+    }
     Ok(cpu)
 }
 
-/// The transport's message, without the error kind's prefix.
-fn without_prefix(error: &bacnet_types::error::Error) -> String {
-    match error {
-        bacnet_types::error::Error::Encoding(message) => message.clone(),
-        other => other.to_string(),
+/// Refuse `flag` off Linux, naming it.
+fn linux_only(flag: &str) -> Result<(), String> {
+    if cfg!(target_os = "linux") {
+        Ok(())
+    } else {
+        Err(format!(
+            "{flag} is Linux only, and this is {}",
+            std::env::consts::OS
+        ))
     }
 }
 
 /// The flags' settings.
 #[cfg_attr(not(any(feature = "serial", feature = "tui")), allow(dead_code))]
 pub(crate) fn from_cli(cli: &crate::args::Cli) -> MstpThreadConfig {
-    MstpThreadConfig {
-        realtime_priority: cli.mstp_rt_priority,
-        cpu_affinity: cli.mstp_cpus.clone(),
+    let mut config = MstpThreadConfig::new().with_cpu_affinity(cli.mstp_cpus.iter().copied());
+    if let Some(priority) = cli.mstp_rt_priority {
+        config = config.with_realtime_priority(priority);
+    }
+    config
+}
+
+/// Whether either flag was given.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn given(cli: &crate::args::Cli) -> bool {
+    cli.mstp_rt_priority.is_some() || !cli.mstp_cpus.is_empty()
+}
+
+/// Log, once per process, that the flags were given to a session whose
+/// transport (`transport`) has no MS/TP station to schedule.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn warn_unused(transport: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            "--mstp-rt-priority and --mstp-cpus apply only to an MS/TP station; \
+             this session's transport is {transport}"
+        );
+    });
+}
+
+/// How a started transport's loop runs, for the MS/TP screen: as
+/// [`describe`] for a thread of its own, from what the transport read back.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn status(status: Option<&bacnet_transport::mstp::MstpExecutionStatus>) -> String {
+    match status {
+        Some(status) if status.dedicated_thread => {
+            describe(status.realtime_priority, &status.cpu_affinity)
+        }
+        Some(_) => "the application's runtime".into(),
+        None => "not reported".into(),
+    }
+}
+
+/// How a station's thread runs, for the MS/TP screen, the join
+/// confirmation and the join's audit record: `FIFO 40, CPUs 3` or
+/// `normal`.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn describe(realtime_priority: Option<u8>, cpus: &[usize]) -> String {
+    let mut parts = Vec::new();
+    if let Some(priority) = realtime_priority {
+        parts.push(format!("FIFO {priority}"));
+    }
+    if !cpus.is_empty() {
+        let list: Vec<String> = cpus.iter().map(usize::to_string).collect();
+        let noun = if cpus.len() == 1 { "CPU" } else { "CPUs" };
+        parts.push(format!("{noun} {}", list.join(",")));
+    }
+    if parts.is_empty() {
+        "normal".into()
+    } else {
+        parts.join(", ")
     }
 }
 
@@ -131,14 +191,26 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn priorities_outside_1_to_99_are_refused() {
         for bad in ["0", "100", "-1", "x"] {
-            assert!(parse_rt_priority(bad).is_err(), "{bad}");
+            assert_eq!(
+                parse_rt_priority(bad),
+                Err("must be 1 to 99".into()),
+                "{bad}"
+            );
         }
         let error = parse_cpu("1024").unwrap_err();
         assert!(error.contains("CPU 1024"), "{error}");
         assert!(parse_cpu("two").is_err());
+    }
+
+    #[test]
+    fn the_thread_is_described_in_a_few_words() {
+        assert_eq!(describe(None, &[]), "normal");
+        assert_eq!(describe(Some(40), &[3]), "FIFO 40, CPU 3");
+        assert_eq!(describe(None, &[2, 3]), "CPUs 2,3");
     }
 
     #[cfg(target_os = "linux")]
@@ -151,11 +223,12 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn elsewhere_both_are_refused() {
-        for error in [
-            parse_rt_priority("50").unwrap_err(),
-            parse_cpu("3").unwrap_err(),
-        ] {
-            assert!(error.contains("Linux only"), "{error}");
-        }
+        let priority = parse_rt_priority("50").unwrap_err();
+        assert!(
+            priority.starts_with("--mstp-rt-priority is Linux only"),
+            "{priority}"
+        );
+        let cpus = parse_cpu("3").unwrap_err();
+        assert!(cpus.starts_with("--mstp-cpus is Linux only"), "{cpus}");
     }
 }

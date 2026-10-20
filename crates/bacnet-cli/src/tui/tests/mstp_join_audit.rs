@@ -117,6 +117,9 @@ async fn a_confirmed_profile_join_is_recorded_once() {
     assert_eq!(record["port"], PORT);
     assert_eq!(record["station"], 3);
     assert_eq!(record["baud"], 76_800);
+    // No thread settings were given (#501).
+    assert!(record["realtime_priority"].is_null(), "{record}");
+    assert_eq!(record["cpu_affinity"], serde_json::json!([]));
     assert!(record["time"].as_str().is_some_and(|t| t.ends_with('Z')));
 }
 

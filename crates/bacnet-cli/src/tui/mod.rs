@@ -233,6 +233,15 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         app.transport = "";
         app.overlay = Overlay::Connection;
     }
+    let thread = &options.mstp.thread;
+    app.mstp_thread = crate::mstp_thread::describe(thread.realtime_priority, &thread.cpu_affinity);
+    // A profile session warns when its profile connects, if it isn't MS/TP.
+    if app.connection.is_none()
+        && crate::mstp_thread::given(&cli)
+        && !matches!(kind, TransportKind::Mstp | TransportKind::MstpMonitor)
+    {
+        crate::mstp_thread::warn_unused(kind.label());
+    }
     if let Some(plan) = &monitor {
         app.start_monitor(plan, !options.safety.passive);
     }

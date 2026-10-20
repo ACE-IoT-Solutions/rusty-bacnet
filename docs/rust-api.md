@@ -2006,7 +2006,8 @@ assert_eq!(status.cpu_affinity, [3]);
   port, and reads both back from the kernel. Threads its runtime starts later
   for blocking serial calls (the drain) inherit both from it.
 - **Failure is an error from `start`, for both settings.** Missing privilege
-  for the policy (`PermissionDenied`, with the capability or limit it needs),
+  for the policy (`PermissionDenied`, with the capability, limit or cgroup
+  real-time budget it needs),
   a CPU set the kernel refuses, or a read-back that differs from the request
   (the kernel silently drops CPUs outside the process's cpuset) all fail
   `start` with an error naming the setting. Nothing has gone on the wire by
@@ -2016,7 +2017,9 @@ assert_eq!(status.cpu_affinity, [3]);
   scheduling is counting on it, and a station that joined the token ring
   without it would show only as worse timing later.
 - **Linux only.** On every other OS, `MstpThreadConfig::validate` and `start`
-  refuse either setting with an error that says so; neither is ignored.
+  refuse either setting with `Error::Transport` of kind `Unsupported`; neither
+  is ignored. The policy calls are `pthread_setschedparam` on the thread
+  itself, so they work with glibc and musl alike.
 - **The outcome.** `MstpTransport::execution_status()`, and
   `MstpDiagnostics::execution_status()` on a handle taken before the transport
   moved into a client or router, report whether the loop has its own thread and
@@ -2047,6 +2050,11 @@ do nothing about where else the time goes:
   same CPU, or a neighbour.
 - **CPU isolation.** `isolcpus=`, `nohz_full=` or a cpuset keeps other work off
   the CPU the loop is pinned to.
+- **RT throttling.** By default the kernel lets real-time threads use only
+  950 ms of each second (`/proc/sys/kernel/sched_rt_runtime_us` against
+  `sched_rt_period_us`), keeping the rest for normal threads. The MS/TP loop
+  sleeps far more than that, so the limit only bites a thread that spins; leave
+  it on as a safety net.
 - **USB adapters.** RT scheduling can't remove what the adapter holds back: an
   FTDI part keeps received octets for its latency timer, 16 ms by default
   (`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`; 1 ms suits MS/TP), and
@@ -2054,7 +2062,8 @@ do nothing about where else the time goes:
 - **Memory locking.** A page fault in the loop costs far more than a wake-up.
   The transport doesn't lock memory itself, because `mlockall` covers the whole
   process: the application calls it before starting, for example with nix's
-  `mlockall(MlockAllFlags::MCL_CURRENT | MlockAllFlags::MCL_FUTURE)`, which needs
+  `mlockall(MlockAllFlags::MCL_CURRENT | MlockAllFlags::MCL_FUTURE)` (nix's
+  `mman` feature), which needs
   `CAP_IPC_LOCK` or a large enough `RLIMIT_MEMLOCK` (`LimitMEMLOCK=` in systemd).
 - **Preallocated buffers.** The token queues (512 slots in all) and the core's
   frame buffers are reserved when the transport starts and never grow while it

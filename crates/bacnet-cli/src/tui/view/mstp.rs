@@ -82,6 +82,9 @@ fn participant_lines(mstp: &MstpState, theme: &Theme) -> Vec<Line<'static>> {
             station.max_info_frames
         )));
     }
+    if let Some(thread) = &mstp.thread {
+        lines.push(Line::raw(format!("Thread       {thread}")));
+    }
     lines.push(Line::raw(""));
     match mstp.shown.and_then(|sample| sample.node) {
         None => lines.push(Line::styled("Token        not reported yet", theme.dim())),
@@ -201,7 +204,13 @@ fn millis(duration: std::time::Duration, up: bool) -> String {
 }
 
 /// The join confirmation (T2): what joining does, the port, then `y`.
-pub(super) fn join(frame: &mut Frame, area: Rect, dialog: &JoinDialog, theme: &Theme) {
+pub(super) fn join(
+    frame: &mut Frame,
+    area: Rect,
+    dialog: &JoinDialog,
+    thread: &str,
+    theme: &Theme,
+) {
     let rows = dialog
         .ports
         .len()
@@ -211,7 +220,7 @@ pub(super) fn join(frame: &mut Frame, area: Rect, dialog: &JoinDialog, theme: &T
         _ => None,
     };
     let extra = u16::from(note.is_some());
-    let box_area = centered(area, 76, rows as u16 + 9 + extra);
+    let box_area = centered(area, 76, rows as u16 + 10 + extra);
     frame.render_widget(Clear, box_area);
     let s = &dialog.settings;
     let mut lines = vec![
@@ -219,6 +228,7 @@ pub(super) fn join(frame: &mut Frame, area: Rect, dialog: &JoinDialog, theme: &T
             "Join as master mstp:{}: {} baud, Max_Master {}, Max_Info_Frames {}.",
             s.mac, s.baud, s.max_master, s.max_info_frames
         )),
+        Line::raw(format!("Token-handling thread: {thread}.")),
         Line::styled(
             "This station will take part in token passing: every station on the trunk",
             theme.warn(),

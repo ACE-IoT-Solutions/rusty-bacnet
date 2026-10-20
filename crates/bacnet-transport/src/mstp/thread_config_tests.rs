@@ -60,6 +60,10 @@ async fn settings_are_refused_off_linux() {
         let mode = MstpExecutionMode::DedicatedThread(thread);
         let error = mode.validate().unwrap_err();
         assert!(error.to_string().contains("Linux only"), "{error}");
+        let bacnet_types::error::Error::Transport(io) = &error else {
+            panic!("not an I/O error: {error}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::Unsupported);
         let mut transport = transport(mode);
         let error = transport.start().await.unwrap_err();
         assert!(error.to_string().contains("Linux only"), "{error}");
@@ -92,14 +96,15 @@ async fn start_reports_how_the_loop_runs() {
     }
 }
 
-/// Without `CAP_SYS_NICE` or an `RLIMIT_RTPRIO` of 99 (CI's runners have
-/// neither) `SCHED_FIFO` 99 is refused, and `start` says so and keeps the
-/// serial port. Where the host does allow it, the status must show it.
-/// Either way a started transport never runs without what it asked for.
+/// Without `CAP_SYS_NICE` or an `RLIMIT_RTPRIO` (CI's runners have
+/// neither) even `SCHED_FIFO` 1 is refused, and `start` says so and keeps
+/// the serial port. Where the host does allow it, the status must show it,
+/// and only the transport's thread runs real-time. Either way a started
+/// transport never runs without what it asked for.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_refused_realtime_priority_fails_start() {
-    let thread = MstpThreadConfig::new().with_realtime_priority(MAX_REALTIME_PRIORITY);
+    let thread = MstpThreadConfig::new().with_realtime_priority(MIN_REALTIME_PRIORITY);
     let mut transport = transport(MstpExecutionMode::DedicatedThread(thread));
     match transport.start().await {
         Err(error) => {
@@ -116,7 +121,9 @@ async fn a_refused_realtime_priority_fails_start() {
         }
         Ok(_npdus) => {
             let status = transport.execution_status().unwrap();
-            assert_eq!(status.realtime_priority, Some(MAX_REALTIME_PRIORITY));
+            assert_eq!(status.realtime_priority, Some(MIN_REALTIME_PRIORITY));
+            let (fifo, _) = crate::sys::sched::current().unwrap();
+            assert!(!fifo, "the test's own thread went real-time");
             transport.stop().await.unwrap();
         }
     }

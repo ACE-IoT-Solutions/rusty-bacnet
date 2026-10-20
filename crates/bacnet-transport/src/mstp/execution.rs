@@ -34,7 +34,7 @@ impl MstpExecutionMode {
     ///
     /// # Errors
     ///
-    /// [`Error::Encoding`] for a thread config `validate` refuses.
+    /// The errors of [`MstpThreadConfig::validate`].
     pub fn validate(&self) -> Result<(), Error> {
         match self {
             Self::Tokio => Ok(()),
@@ -53,7 +53,9 @@ pub const MIN_REALTIME_PRIORITY: u8 = 1;
 pub const MAX_REALTIME_PRIORITY: u8 = 99;
 
 /// The most CPUs an affinity set can name: glibc's `CPU_SETSIZE`, the size
-/// of nix's `CpuSet`. CPU numbers run from 0 to one less.
+/// of nix's `CpuSet`. CPU numbers run from 0 to one less. On a machine with
+/// more CPUs the thread can only be pinned among the first 1024, and the
+/// read-back covers only those.
 pub const MAX_CPUS: usize = 1024;
 
 /// How the dedicated MS/TP thread is scheduled
@@ -72,7 +74,10 @@ pub const MAX_CPUS: usize = 1024;
 /// Threads the loop's runtime starts later, for blocking serial calls such
 /// as the drain, start from this thread, and new Linux threads inherit
 /// their creator's policy, priority and affinity.
+///
+/// Build one from [`Self::new`] (or `Default`) and the `with_` methods.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MstpThreadConfig {
     /// Run the thread under `SCHED_FIFO` at this priority,
     /// [`MIN_REALTIME_PRIORITY`] to [`MAX_REALTIME_PRIORITY`]; `None` keeps
@@ -85,8 +90,10 @@ pub struct MstpThreadConfig {
     /// MS/TP timing already.
     ///
     /// The process needs `CAP_SYS_NICE`, or an `RLIMIT_RTPRIO` of at least
-    /// this priority (`ulimit -r`, or `LimitRTPRIO=` in a systemd unit);
-    /// without either, `start` fails with `PermissionDenied`.
+    /// this priority (`ulimit -r`, or `LimitRTPRIO=` in a systemd unit),
+    /// and its cgroup a real-time budget where the kernel has real-time
+    /// group scheduling; without them, `start` fails with
+    /// `PermissionDenied`.
     pub realtime_priority: Option<u8>,
     /// Pin the thread to these CPUs, numbered from 0 as Linux numbers them;
     /// empty leaves its affinity alone. Order and repeats don't matter.
@@ -125,9 +132,10 @@ impl MstpThreadConfig {
     /// # Errors
     ///
     /// [`Error::Encoding`] for a priority outside
-    /// [`MIN_REALTIME_PRIORITY`]..=[`MAX_REALTIME_PRIORITY`], a CPU number
-    /// of [`MAX_CPUS`] or more, or, on any OS but Linux, either setting at
-    /// all.
+    /// [`MIN_REALTIME_PRIORITY`]..=[`MAX_REALTIME_PRIORITY`] or a CPU
+    /// number of [`MAX_CPUS`] or more. On any OS but Linux, either setting
+    /// at all is [`Error::Transport`] with
+    /// [`std::io::ErrorKind::Unsupported`].
     pub fn validate(&self) -> Result<(), Error> {
         if let Some(priority) = self.realtime_priority {
             if !(MIN_REALTIME_PRIORITY..=MAX_REALTIME_PRIORITY).contains(&priority) {
@@ -144,10 +152,13 @@ impl MstpThreadConfig {
             )));
         }
         if !cfg!(target_os = "linux") && !self.is_default() {
-            return Err(Error::Encoding(format!(
-                "MS/TP thread realtime_priority and cpu_affinity are Linux only, \
-                 and this is {}",
-                std::env::consts::OS
+            return Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "MS/TP thread realtime_priority and cpu_affinity are Linux only, \
+                     and this is {}",
+                    std::env::consts::OS
+                ),
             )));
         }
         Ok(())
@@ -206,7 +217,8 @@ pub(crate) fn apply(config: &MstpThreadConfig) -> Result<MstpExecutionStatus, Er
         crate::sys::sched::set_fifo(priority.into()).map_err(|error| {
             let hint = if error.kind() == std::io::ErrorKind::PermissionDenied {
                 format!(
-                    "; the process needs CAP_SYS_NICE or an RLIMIT_RTPRIO of at least {priority}"
+                    "; the process needs CAP_SYS_NICE or an RLIMIT_RTPRIO of at least \
+                     {priority} (or the cgroup's real-time budget)"
                 )
             } else {
                 String::new()
@@ -282,7 +294,7 @@ fn set_affinity(wanted: &[usize]) -> Result<Vec<usize>, Error> {
     if applied != wanted {
         return Err(mismatch(format!(
             "CPU affinity {wanted:?} was asked for, and the kernel applied {applied:?}; \
-             the process's cpuset doesn't allow the rest"
+             the cpuset or the online CPUs don't allow the rest"
         )));
     }
     Ok(applied)
