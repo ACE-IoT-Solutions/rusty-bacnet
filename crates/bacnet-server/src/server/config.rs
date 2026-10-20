@@ -222,6 +222,17 @@ impl std::fmt::Debug for ServerConfig {
     }
 }
 
+impl ServerConfig {
+    /// The installed policy, if it decides mutations
+    /// ([`ServerPolicy::decides_mutations`]). `None` takes the no-policy
+    /// path: allowed without decoding for authorization.
+    pub(crate) fn mutation_decider(&self) -> Option<&dyn ServerPolicy> {
+        self.policy
+            .as_deref()
+            .filter(|policy| policy.decides_mutations())
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -271,6 +282,8 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
 
     /// Install the server's authorization policy; see [`ServerPolicy`], or
     /// [`FnPolicy`](crate::FnPolicy) to build one from closures.
+    /// It replaces any policy set before; put every decision in one policy
+    /// (one `FnPolicy` chain) rather than calling this twice.
     pub fn policy(mut self, policy: impl ServerPolicy) -> Self {
         self.config.policy = Some(Arc::new(policy));
         self
@@ -354,6 +367,8 @@ impl BipServerBuilder {
 
     /// Install the server's authorization policy; see [`ServerPolicy`], or
     /// [`FnPolicy`](crate::FnPolicy) to build one from closures.
+    /// It replaces any policy set before; put every decision in one policy
+    /// (one `FnPolicy` chain) rather than calling this twice.
     ///
     /// ```
     /// use bacnet_server::server::BACnetServer;
@@ -378,6 +393,8 @@ impl ScServerBuilder {
 
     /// Install the server's authorization policy; see [`ServerPolicy`], or
     /// [`FnPolicy`](crate::FnPolicy) to build one from closures.
+    /// It replaces any policy set before; put every decision in one policy
+    /// (one `FnPolicy` chain) rather than calling this twice.
     pub fn policy(mut self, policy: impl ServerPolicy) -> Self {
         self.config.policy = Some(Arc::new(policy));
         self

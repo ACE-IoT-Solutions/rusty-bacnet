@@ -1566,9 +1566,12 @@ Delayed, already-admitted A segments can finish A's context after replacement;
 new frames from retired A cannot enter it.
 
 Mutation and LifeSafetyOperation authorization contexts expose
-`direct_sc_identity()`, and every `ServerPolicy` context exposes `principal()`,
-the same leaf digest as a stable `ScPrincipal` without the incarnation (#524). Every WPM element retains the request's one snapshot,
-with existing per-element ordering and authorized-prefix behavior. Application
+`direct_sc_identity()`. Every `ServerPolicy` context, and `ReinitializeContext`,
+also exposes `principal()`, the same leaf digest as a stable `ScPrincipal`
+without the incarnation, `None` for a routed request; and
+`forwarding_peer_principal()`, the immediate direct peer's, routed or not (#524).
+Every WPM element retains the request's one snapshot, with existing
+per-element ordering and authorized-prefix behavior. Application
 policy still decides permission. `MutationTrust` and `ControlTrust` remain
 scope labels; claimed addresses remain claims. **Pre-1.0 API change:**
 `LifeSafetyOperationAuthorizationContext` now includes `provenance`, and its
@@ -8914,9 +8917,10 @@ settlement boundary.
 one local Device's `Description` and, with a complete source profile,
 `Audit_Notification_Recipient`. Supply a mandatory Rust
 `bacnet_server::mutation::DeviceWriteAuthorizer`; its decoded context retains the
-immediate peer, claimed routed source, transport provenance and invoke ID.
-The callback must be fast, nonblocking and side-effect-free. Refusal or panic
-denies before mutation. Provenance is channel scope, not authenticated leaf identity.
+immediate peer, claimed routed source, transport provenance and invoke ID, and
+its `principal()` names a verified direct SC peer (`None` on B/IP, for a routed
+request and for hub-relayed ingress). The callback must be fast, nonblocking and
+side-effect-free. Refusal or panic denies before mutation.
 
 Startup requires a server role and a concrete built-in local Device in the
 attached database (the lowest when it holds several; see

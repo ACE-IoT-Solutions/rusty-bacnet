@@ -15,9 +15,13 @@ it decides:
 
 With no policy installed (`ServerConfig::policy` is `None`) the server decides as
 those defaults do, except that it allows a covered mutation without decoding it
-for authorization first. Returning `false`, or panicking, denies, and the request
-changes nothing. `bacnet_server::FnPolicy` builds a policy from closures, one per
-decision; a decision with no closure keeps its default:
+for authorization first. A policy whose `decides_mutations()` returns `false`
+takes that same path, so a policy that only decides LifeSafetyOperation or Audit
+receipt leaves mutations exactly as they were. Returning `false`, or panicking,
+denies, and the request changes nothing. `bacnet_server::FnPolicy` builds a
+policy from closures, one per decision; a decision with no closure keeps its
+default, and with no mutation closure it doesn't decide mutations at all.
+`Arc<P>` and `Box<P>` are policies when `P` is.
 
 ```rust
 use bacnet_server::{server::BACnetServer, FnPolicy};
@@ -44,10 +48,15 @@ Outside the policy, and why:
 **Pre-1.0 API change (#524):** `ServerConfig::policy` replaces
 `mutation_authorizer`, `life_safety_operation_authorizer`,
 `audit_notification_authorizer` and `unconfirmed_audit_notification_authorizer`,
-and the builders' `.policy(..)` replaces their four setters. The
-`MutationAuthorizer`, `LifeSafetyOperationAuthorizer`, `AuditNotificationAuthorizer`
-and `UnconfirmedAuditNotificationAuthorizer` aliases are gone; the shared
-endpoint's Device-write callback type is now `mutation::DeviceWriteAuthorizer`.
+and the builders' `.policy(..)` replaces their four setters. Each `.policy(..)`
+call replaces the policy before it, so put every decision in one policy, for
+example one `FnPolicy` chain. The `MutationAuthorizer`,
+`LifeSafetyOperationAuthorizer`, `AuditNotificationAuthorizer` and
+`UnconfirmedAuditNotificationAuthorizer` aliases are gone; the shared endpoint's
+Device-write callback type is now `mutation::DeviceWriteAuthorizer`. Decision
+counters behave as before: only a policy that decides mutations makes the server
+decode a mutation for authorization first, as an installed mutation authorizer
+did.
 
 ## Mutation policy modes
 
@@ -76,15 +85,16 @@ such code still compiles, so handle `MutationTarget::WriteGroup` explicitly.
 admits may use every service the server's defaults allow, until a policy says
 otherwise.
 
-Every decision context has `principal()`: an `Option<ScPrincipal>`
-(`bacnet_transport::port::ScPrincipal`). It is `Some` only when the request
-arrived over a verified **direct** BACnet/SC connection, accepted or built-in
-outbound, and holds the SHA-256 of the exact leaf certificate DER that TLS
+Every decision context, and `ReinitializeContext`, has `principal()`: an
+`Option<ScPrincipal>` (`bacnet_server::policy::ScPrincipal`). It names the peer
+that **originated** the request, and is `Some` only when the request arrived over
+a verified **direct** BACnet/SC connection, accepted or built-in outbound, with no
+routed SNET/SADR source. It holds the SHA-256 of the exact leaf certificate DER that TLS
 verified, the digest hub certificate bindings pin. It has no connection
 incarnation, so a reconnect with the same certificate keeps its principal, and a
 renewed certificate is a new one; pin both while it rolls out. `Display` writes
-the 64 hex digits; `Debug` shows only the first eight, and the contexts' `Debug`
-says only whether a principal is present.
+the 64 hex digits; `Debug` shows only the first eight hex digits, and the
+contexts' `Debug` says only whether a principal is present.
 
 It is `None` for:
 
@@ -93,7 +103,15 @@ It is `None` for:
   the origin's certificate never reaches this node, so a policy can't tell one
   hub member from another. A hub's certificate bindings (#800) constrain which
   leaf may register which VMAC and UUID at that hub; they don't forward the leaf;
-- the hub admission callback's own channel.
+- the hub admission callback's own channel;
+- a routed request, one carrying an SNET/SADR source, even over a direct
+  connection: that connection authenticates the router that forwarded it, not the
+  device behind it.
+
+`forwarding_peer_principal()` returns the principal of the direct peer that
+handed the request over, a router included. A policy that trusts a router with
+everything it forwards can allow on it; that trusts every claimed origin behind
+that router.
 
 A source VMAC, UUID, routed SNET/SADR, Requesting Source or process ID is a
 claim, never a principal. A policy that should admit only known operators can
@@ -104,8 +122,9 @@ Replies to a direct request go back only over the connection it arrived on
 ([accepted direct server responses](rust-api.md#accepted-direct-server-responses)).
 If another certificate later claims the same VMAC, or the first reconnects, a
 reply still owed to the first connection is dropped rather than sent to the new
-one, for success, Error, Reject, Abort and segmented responses alike. The server's
-`direct_principal_*` and `direct_response_*` tests show this over real TLS.
+one. The server's `direct_principal_*` and `direct_response_*` tests show this
+over real TLS for success, segmented, Error and Abort replies; Reject takes the
+same route check.
 Admitted work may still finish under its original principal after its connection
 closes; a lost reply doesn't roll it back.
 
@@ -120,7 +139,8 @@ Each mutation decision receives a `mutation::MutationAuthorizationContext`:
   into `mutations::Request`. Cross-segment provenance mismatches already fail
   closed at reassembly, so every element of one request (including each WPM
   element) observes the same snapshot.
-- `principal()` — as above, from `provenance`.
+- `principal()` / `forwarding_peer_principal()` — as above, from `provenance`
+  and `source_network`.
 - `trust` — `mutation::MutationTrust` derived from the snapshot, mirroring
   RB-09 `ControlTrust`: `Unverified`, `VerifiedChannel` (direct SC-TLS peer),
   or `VerifiedRelay` (SC-hub relayed origin). Channel/relay scope only, never
@@ -140,7 +160,7 @@ Each mutation decision receives a `mutation::MutationAuthorizationContext`:
 provenance/trust labels, whether a principal is present and the target kind only —
 never MAC bytes, the fingerprint, property values, file payloads, or other decoded
 inputs. The LifeSafetyOperation and both AuditNotification contexts carry the same
-addresses, `provenance` and `principal()`.
+addresses, `provenance`, `principal()` and `forwarding_peer_principal()`.
 
 ## Timing and side effects
 
@@ -209,6 +229,8 @@ I/O. Reads and trusted local `write_property_local` calls remain available under
 `"deny_all"`. It also denies each Channel write of an inbound WriteGroup to a Channel
 added with `add_channel`. The option does not configure DCC, ReinitializeDevice, LifeSafety,
 Audit or endpoint authorization.
+
+## Decision counters (Rust)
 
 `BACnetServer::mutation_decision_counters()` exposes fixed per-service saturating
 `u64` totals, including after `stop()`: `allow_total`, `deny_total` (all denials),

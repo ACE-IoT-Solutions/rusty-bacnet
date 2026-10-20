@@ -173,7 +173,7 @@ async fn write_group_is_audited_once_per_channel_from_the_requester() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_channel_write_the_authorizer_denies_makes_no_record() {
+async fn a_channel_write_the_policy_denies_makes_no_record() {
     let mut fixture = start().await;
     // Only CH-2 may be written; each decision sees an unconfirmed request.
     let authorizer = crate::FnPolicy::new().mutation(|context| {

@@ -262,7 +262,7 @@ async fn mutation_policy_matrix_all_ten_decisions_and_post_issuance_reauthorizat
 }
 
 #[test]
-fn mutation_policy_builders_preserve_authorizers_and_defaults() {
+fn mutation_policy_builders_preserve_policies_and_defaults() {
     assert_eq!(
         BACnetServer::bip_builder().config.mutation_policy,
         MutationPolicy::Permissive

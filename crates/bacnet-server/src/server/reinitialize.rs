@@ -79,8 +79,8 @@ use super::*;
 ///   reset made for the application's own reasons with
 ///   [`BACnetServer::report_device_reset_local`].
 /// - **Gate the requester.** Without `reinit_password` any peer reaches the
-///   handler. [`MutationPolicy`](crate::mutation::MutationPolicy) and the
-///   mutation authorizer don't cover ReinitializeDevice, so check the
+///   handler. Neither [`MutationPolicy`](crate::mutation::MutationPolicy)
+///   nor the [`ServerPolicy`](crate::ServerPolicy) covers ReinitializeDevice, so check the
 ///   [`ReinitializeContext`] to restrict sources.
 /// - **Refuse with [`Error::Protocol`].** Its class and code go back in an
 ///   Error PDU, for example DEVICE / CONFIGURATION_IN_PROGRESS (Clause
@@ -107,9 +107,9 @@ pub type EndpointReinitializeAudit = Arc<
 ///
 /// The addresses are claims, not an authenticated operator. For routed
 /// traffic `source_mac` is the last router, so restrict routed requesters by
-/// `source_network`; only [`direct_sc_identity`](Self::direct_sc_identity) is
-/// verified. Neither the mutation policy nor the mutation authorizer sees
-/// this service, so a handler that serves only some peers checks them here.
+/// `source_network`; only [`principal`](Self::principal) and
+/// [`direct_sc_identity`](Self::direct_sc_identity) are verified. Neither the
+/// mutation policy nor the [`ServerPolicy`](crate::ServerPolicy) sees this service, so a handler that serves only some peers checks them here.
 ///
 /// The server builds the context; [`new`](Self::new) lets a test build one
 /// to call a handler directly.
@@ -238,6 +238,22 @@ impl ReinitializeContext {
         let count = hooks.0.len();
         hooks.run();
         count
+    }
+
+    /// The principal of the peer that originated the request: the verified
+    /// leaf certificate of a direct BACnet/SC connection, when the request
+    /// carries no routed source. `None` for other ingress, hub-relayed and
+    /// routed requests included (see [`crate::policy`]).
+    pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        crate::policy::originating_principal(self.provenance, self.source_network.as_ref())
+    }
+
+    /// The principal of the direct BACnet/SC peer that handed this request
+    /// over, a router included when the request was routed; `None` off a
+    /// verified direct SC connection. Trusting it trusts everything that
+    /// peer forwards.
+    pub fn forwarding_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        self.provenance.principal()
     }
 
     /// Original verified direct-SC leaf and incarnation, separate from claims.

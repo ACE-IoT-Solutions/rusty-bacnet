@@ -202,9 +202,19 @@ pub struct MutationAuthorizationContext {
 }
 
 impl MutationAuthorizationContext {
-    /// The verified direct-SC leaf certificate's principal; `None` for every
-    /// other ingress, hub-relayed requests included (see [`crate::policy`]).
+    /// The principal of the peer that originated the request: the verified
+    /// leaf certificate of a direct BACnet/SC connection, when the request
+    /// carries no routed source. `None` for other ingress, hub-relayed and
+    /// routed requests included (see [`crate::policy`]).
     pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        crate::policy::originating_principal(self.provenance, self.source_network.as_ref())
+    }
+
+    /// The principal of the direct BACnet/SC peer that handed this request
+    /// over, a router included when the request was routed; `None` off a
+    /// verified direct SC connection. Trusting it trusts everything that
+    /// peer forwards.
+    pub fn forwarding_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
         self.provenance.principal()
     }
 

@@ -330,7 +330,7 @@ async fn unknown_target_is_rejected_before_authorization() {
 }
 
 #[tokio::test]
-async fn life_safety_operation_authorizer_receives_routed_identity_before_success() {
+async fn life_safety_operation_policy_receives_routed_identity_before_success() {
     let oid = point_oid(1);
     let mut point = LifeSafetyPointObject::new(1, "point").unwrap();
     point.set_operation_expected(LifeSafetyOperation::SILENCE);
@@ -510,7 +510,7 @@ async fn life_safety_operation_targetless_missing_executor_returns_simple_ack_wi
 }
 
 #[tokio::test]
-async fn life_safety_operation_panicking_authorizer_fails_closed() {
+async fn life_safety_operation_panicking_policy_fails_closed() {
     let oid = point_oid(1);
     let mut objects = ObjectDatabase::new();
     objects

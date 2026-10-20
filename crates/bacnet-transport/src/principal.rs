@@ -17,15 +17,17 @@ use std::fmt;
 /// Ethernet have none, and neither do requests a hub relays: the hub
 /// authenticated its own TLS client, and the origin's certificate never
 /// reaches this node. The VMAC, UUID and routed SNET/SADR a peer sends are
-/// claims, never principals.
+/// claims, never principals. A direct peer that forwards a routed request is
+/// only the router: the server's policy contexts report its principal as the
+/// forwarding peer's and give the routed request none.
 ///
 /// A principal identifies; it doesn't authorize. Compare it against the
 /// fingerprints an installation provisions. Building one with
 /// [`from_leaf_sha256`](Self::from_leaf_sha256) makes such a pin; it can't
 /// make a request carry it.
 ///
-/// `Debug` shows only the first four fingerprint octets; `Display` writes
-/// all 32 as lowercase hex, the form to copy into configuration. Neither
+/// `Debug` shows only the first eight hex digits; `Display` writes all 64
+/// in lowercase, the form to copy into configuration. Neither
 /// shows any other certificate content.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ScPrincipal {

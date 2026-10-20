@@ -54,7 +54,8 @@ impl Request<'_> {
         &self,
         decode: impl FnOnce() -> Result<MutationTarget, Error>,
     ) -> Result<(), Error> {
-        if self.config.mutation_policy == MutationPolicy::Permissive && self.config.policy.is_none()
+        if self.config.mutation_policy == MutationPolicy::Permissive
+            && self.config.mutation_decider().is_none()
         {
             return self.record(MutationDecision::Allow);
         }
@@ -69,7 +70,7 @@ impl Request<'_> {
         if self.config.mutation_policy == MutationPolicy::DenyAll {
             return MutationDecision::PolicyDeny;
         }
-        let Some(policy) = &self.config.policy else {
+        let Some(policy) = self.config.mutation_decider() else {
             return MutationDecision::Allow;
         };
         let context = MutationAuthorizationContext {

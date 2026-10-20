@@ -341,7 +341,7 @@ async fn deny_all_denies_each_channel_write_of_a_write_group() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_mutation_authorizer_decides_each_channel_write_of_a_write_group() {
+async fn the_policy_decides_each_channel_write_of_a_write_group() {
     // It allows CH-3 and CH-5, and keeps every context it is shown.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let shown = Arc::clone(&seen);
@@ -410,7 +410,7 @@ async fn the_mutation_authorizer_decides_each_channel_write_of_a_write_group() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_panicking_authorizer_denies_the_channel_write() {
+async fn a_panicking_policy_denies_the_channel_write() {
     let h = start(ServerConfig {
         policy: Some(Arc::new(
             crate::FnPolicy::new().mutation(|_| panic!("authorizer bug")),

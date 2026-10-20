@@ -82,7 +82,7 @@ async fn default_and_clockless_start_bind_truthful_device_clock() {
 }
 
 #[test]
-fn all_builders_assign_life_safety_operation_authorizer() {
+fn all_builders_assign_the_policy() {
     let generic = BACnetServer::<BipTransport>::generic_builder()
         .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
     assert!(generic.config.policy.is_some());

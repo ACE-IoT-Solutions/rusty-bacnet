@@ -105,3 +105,22 @@ fn each_closure_decides_only_its_own_service() {
          audit_notification: true, unconfirmed_audit_notification: false }"
     );
 }
+
+#[test]
+fn shared_and_boxed_policies_forward_every_decision() {
+    let flipped = || {
+        FnPolicy::new()
+            .mutation(|_| false)
+            .life_safety_operation(|_| true)
+    };
+    let shared: Arc<dyn ServerPolicy> = Arc::new(flipped());
+    let boxed: Box<dyn ServerPolicy> = Box::new(flipped());
+    let concrete = Arc::new(flipped());
+    for policy in [&shared as &dyn ServerPolicy, &boxed, &concrete] {
+        assert_eq!(decisions(policy), [false, true, false, false]);
+        assert!(policy.decides_mutations());
+    }
+    assert!(Defaults.decides_mutations());
+    assert!(!FnPolicy::new().decides_mutations());
+    assert!(!Arc::new(FnPolicy::new().audit_notification(|_| true)).decides_mutations());
+}

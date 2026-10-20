@@ -17,7 +17,9 @@ pub const MAX_AUDIT_NOTIFICATIONS: usize = 256;
 /// The source/target identities inside `request` are peer-reported audit data,
 /// not authenticated transport provenance. Policy should use `source_network`
 /// for a usable routed origin and `source_mac` for the immediate data-link peer.
-#[derive(Debug, Clone, PartialEq)]
+/// `Debug` is redacted: address lengths, the sink, whether a principal is
+/// present and the notification count, never the notifications themselves.
+#[derive(Clone, PartialEq)]
 pub struct AuditNotificationAuthorizationContext {
     /// Immediate data-link peer (normally a router for routed traffic).
     pub source_mac: MacAddr,
@@ -35,9 +37,19 @@ pub struct AuditNotificationAuthorizationContext {
 }
 
 impl AuditNotificationAuthorizationContext {
-    /// The verified direct-SC leaf certificate's principal; `None` for every
-    /// other ingress, hub-relayed requests included (see [`crate::policy`]).
+    /// The principal of the peer that originated the request: the verified
+    /// leaf certificate of a direct BACnet/SC connection, when the request
+    /// carries no routed source. `None` for other ingress, hub-relayed and
+    /// routed requests included (see [`crate::policy`]).
     pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        crate::policy::originating_principal(self.provenance, self.source_network.as_ref())
+    }
+
+    /// The principal of the direct BACnet/SC peer that handed this request
+    /// over, a router included when the request was routed; `None` off a
+    /// verified direct SC connection. Trusting it trusts everything that
+    /// peer forwards.
+    pub fn forwarding_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
         self.provenance.principal()
     }
 }
@@ -48,7 +60,9 @@ impl AuditNotificationAuthorizationContext {
 /// The source/target identities inside `request` are peer-reported audit data,
 /// not authenticated transport provenance. Policy should use `source_network`
 /// for a usable routed origin and `source_mac` for the immediate data-link peer.
-#[derive(Debug, Clone, PartialEq)]
+/// `Debug` is redacted: address lengths, the sink, whether a principal is
+/// present and the notification count, never the notifications themselves.
+#[derive(Clone, PartialEq)]
 pub struct UnconfirmedAuditNotificationAuthorizationContext {
     /// Immediate data-link peer (normally a router for routed traffic).
     pub source_mac: MacAddr,
@@ -64,9 +78,58 @@ pub struct UnconfirmedAuditNotificationAuthorizationContext {
 }
 
 impl UnconfirmedAuditNotificationAuthorizationContext {
-    /// The verified direct-SC leaf certificate's principal; `None` for every
-    /// other ingress, hub-relayed requests included (see [`crate::policy`]).
+    /// The principal of the peer that originated the request: the verified
+    /// leaf certificate of a direct BACnet/SC connection, when the request
+    /// carries no routed source. `None` for other ingress, hub-relayed and
+    /// routed requests included (see [`crate::policy`]).
     pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        crate::policy::originating_principal(self.provenance, self.source_network.as_ref())
+    }
+
+    /// The principal of the direct BACnet/SC peer that handed this request
+    /// over, a router included when the request was routed; `None` off a
+    /// verified direct SC connection. Trusting it trusts everything that
+    /// peer forwards.
+    pub fn forwarding_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
         self.provenance.principal()
+    }
+}
+
+impl std::fmt::Debug for AuditNotificationAuthorizationContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuditNotificationAuthorizationContext")
+            .field("source_mac_len", &self.source_mac.len())
+            .field(
+                "source_network",
+                &self
+                    .source_network
+                    .as_ref()
+                    .map(|source| (source.network, source.mac_address.len())),
+            )
+            .field("provenance", &self.provenance)
+            .field("principal", &self.principal().is_some())
+            .field("invoke_id", &self.invoke_id)
+            .field("audit_log_sink", &self.audit_log_sink)
+            .field("notifications", &self.request.notifications.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for UnconfirmedAuditNotificationAuthorizationContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnconfirmedAuditNotificationAuthorizationContext")
+            .field("source_mac_len", &self.source_mac.len())
+            .field(
+                "source_network",
+                &self
+                    .source_network
+                    .as_ref()
+                    .map(|source| (source.network, source.mac_address.len())),
+            )
+            .field("provenance", &self.provenance)
+            .field("principal", &self.principal().is_some())
+            .field("audit_log_sink", &self.audit_log_sink)
+            .field("notifications", &self.request.notifications.len())
+            .finish_non_exhaustive()
     }
 }

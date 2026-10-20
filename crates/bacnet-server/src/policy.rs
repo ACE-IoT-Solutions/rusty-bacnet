@@ -21,14 +21,20 @@
 //! ## Who sent it
 //!
 //! Every context carries the claimed source addresses, the ingress
-//! [`TransportProvenance`](bacnet_transport::port::TransportProvenance), and
-//! from that a `principal()`: the [`ScPrincipal`] of the leaf certificate
-//! when the request came over a verified direct BACnet/SC connection, and
-//! `None` otherwise. B/IP, B/IPv6, MS/TP and Ethernet have no principal.
-//! Neither does a request a hub relays: the hub authenticated its own TLS
-//! client, and the origin's certificate never reaches this node, so the
-//! policy can't tell one hub member from another. A source VMAC, UUID or
-//! routed SNET/SADR is a claim, never a principal.
+//! [`TransportProvenance`], and
+//! from those a `principal()`: the [`ScPrincipal`] of the leaf certificate
+//! when the request came over a verified direct BACnet/SC connection from
+//! the peer that originated it, and `None` otherwise. B/IP, B/IPv6, MS/TP
+//! and Ethernet have no principal. Neither does a request a hub relays: the
+//! hub authenticated its own TLS client, and the origin's certificate never
+//! reaches this node, so the policy can't tell one hub member from another.
+//!
+//! A routed request (one with an SNET/SADR source) has no principal either,
+//! even over a direct connection: the connection authenticates the router
+//! that forwarded it, not the device behind it. `forwarding_peer_principal()`
+//! returns that router's principal, for a policy that trusts a router with
+//! everything it forwards. A source VMAC, UUID or routed SNET/SADR is a
+//! claim, never a principal.
 //!
 //! SC mutual TLS authenticates a connection; it doesn't authorize a
 //! service. Without a policy, any peer a CA admits may use every service
@@ -80,9 +86,22 @@ use crate::audit_notification::{
 };
 use crate::life_safety::LifeSafetyOperationAuthorizationContext;
 use crate::mutation::MutationAuthorizationContext;
-#[cfg(doc)]
-use bacnet_transport::port::ScPrincipal;
+use bacnet_encoding::npdu::NpduAddress;
+pub use bacnet_transport::port::ScPrincipal;
+use bacnet_transport::port::TransportProvenance;
 use std::sync::Arc;
+
+/// The originating peer's principal: the direct-SC leaf, unless the request
+/// was routed, when the connection only authenticates the forwarding router.
+pub(crate) fn originating_principal(
+    provenance: TransportProvenance,
+    source_network: Option<&NpduAddress>,
+) -> Option<ScPrincipal> {
+    source_network
+        .is_none()
+        .then(|| provenance.principal())
+        .flatten()
+}
 
 /// The server's authorization decisions, each with a documented default.
 ///
@@ -93,8 +112,25 @@ use std::sync::Arc;
 ///
 /// Without any policy installed, the server behaves as these defaults do,
 /// except that it allows a covered mutation without decoding it for
-/// authorization first.
+/// authorization first; so does a policy whose
+/// [`decides_mutations`](Self::decides_mutations) is `false`.
+///
+/// `Arc<P>` and `Box<P>` are policies when `P` is, so one policy can be
+/// shared or boxed.
 pub trait ServerPolicy: Send + Sync + 'static {
+    /// Whether [`authorize_mutation`](Self::authorize_mutation) decides
+    /// anything (default: `true`).
+    ///
+    /// When `false`, the server never asks it: each covered mutation is
+    /// allowed without being decoded for authorization first, and counted as
+    /// allowed before the handler runs, exactly as with no policy. A policy
+    /// that only decides LifeSafetyOperation or Audit receipt returns `false`
+    /// so that mutations keep that path. It is read once per decision and
+    /// should not change.
+    fn decides_mutations(&self) -> bool {
+        true
+    }
+
     /// Whether to carry out one covered mutation (default: allow).
     ///
     /// Asked after DeviceCommunicationControl's checks, request admission,
@@ -172,7 +208,8 @@ pub trait ServerPolicy: Send + Sync + 'static {
 type Decide<C> = Arc<dyn Fn(&C) -> bool + Send + Sync>;
 
 /// A [`ServerPolicy`] made of closures, one per decision. A decision with no
-/// closure keeps the trait's default.
+/// closure keeps the trait's default; with no mutation closure it doesn't
+/// decide mutations at all ([`ServerPolicy::decides_mutations`]).
 ///
 /// Each closure follows the calling rules of the method it stands for.
 #[derive(Clone, Default)]
@@ -233,6 +270,60 @@ impl FnPolicy {
     }
 }
 
+impl<P: ServerPolicy + ?Sized> ServerPolicy for Arc<P> {
+    fn decides_mutations(&self) -> bool {
+        (**self).decides_mutations()
+    }
+    fn authorize_mutation(&self, context: &MutationAuthorizationContext) -> bool {
+        (**self).authorize_mutation(context)
+    }
+    fn authorize_life_safety_operation(
+        &self,
+        context: &LifeSafetyOperationAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_life_safety_operation(context)
+    }
+    fn authorize_audit_notification(
+        &self,
+        context: &AuditNotificationAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_audit_notification(context)
+    }
+    fn authorize_unconfirmed_audit_notification(
+        &self,
+        context: &UnconfirmedAuditNotificationAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_unconfirmed_audit_notification(context)
+    }
+}
+
+impl<P: ServerPolicy + ?Sized> ServerPolicy for Box<P> {
+    fn decides_mutations(&self) -> bool {
+        (**self).decides_mutations()
+    }
+    fn authorize_mutation(&self, context: &MutationAuthorizationContext) -> bool {
+        (**self).authorize_mutation(context)
+    }
+    fn authorize_life_safety_operation(
+        &self,
+        context: &LifeSafetyOperationAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_life_safety_operation(context)
+    }
+    fn authorize_audit_notification(
+        &self,
+        context: &AuditNotificationAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_audit_notification(context)
+    }
+    fn authorize_unconfirmed_audit_notification(
+        &self,
+        context: &UnconfirmedAuditNotificationAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_unconfirmed_audit_notification(context)
+    }
+}
+
 impl std::fmt::Debug for FnPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FnPolicy")
@@ -251,6 +342,11 @@ impl std::fmt::Debug for FnPolicy {
 }
 
 impl ServerPolicy for FnPolicy {
+    /// Only when it was given a mutation closure.
+    fn decides_mutations(&self) -> bool {
+        self.mutation.is_some()
+    }
+
     fn authorize_mutation(&self, context: &MutationAuthorizationContext) -> bool {
         self.mutation.as_ref().is_none_or(|decide| decide(context))
     }

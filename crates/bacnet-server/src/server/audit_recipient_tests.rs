@@ -516,7 +516,7 @@ async fn recipient_active_metadata_rpm_and_property_list_follow_runtime_presence
 mod lifecycle;
 
 #[tokio::test]
-async fn recipient_wpm_authorizer_denies_after_committed_prefix_without_suffix_attempt() {
+async fn recipient_wpm_policy_denies_after_committed_prefix_without_suffix_attempt() {
     let mut fixture = fixture(reporter()).await;
     let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let captured = Arc::clone(&decisions);
