@@ -10,7 +10,7 @@ use std::net::Ipv4Addr;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
-use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
+use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal};
 use bacnet_transport::bip::BipTransport;
 use clap::Parser;
 
@@ -36,6 +36,16 @@ struct Args {
     /// Device instance number for the BBMD's device object
     #[arg(long, default_value_t = 9000)]
     device_instance: u32,
+
+    /// Run behind a NAT router that port-forwards this public ip:port to
+    /// the BBMD (Annex J.7.5). The --bdt rows must then list it, with every
+    /// site's public address, and no own row is added.
+    #[arg(long)]
+    nat_global: Option<std::net::SocketAddrV4>,
+
+    /// The BBMD is the only device of its B/IP network on its subnet.
+    #[arg(long)]
+    alone_on_subnet: bool,
 }
 
 fn parse_bdt_entry(spec: &str) -> Result<BdtEntry, Box<dyn std::error::Error>> {
@@ -67,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add our own row. A 0.0.0.0 row is invalid, so a wildcard-bound BBMD
     // instead takes its own address from a --bdt row at one of the host's
     // addresses, or else from the default route, and adds its row itself.
-    if !interface.is_unspecified() {
+    if !interface.is_unspecified() && args.nat_global.is_none() {
         bdt.push(BdtEntry {
             ip: interface.octets(),
             port: args.port,
@@ -78,6 +88,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut transport = BipTransport::new(interface, args.port, broadcast);
     transport.enable_bbmd(bdt);
     transport.enable_foreign_device_registration(ForeignDevicePolicy::default());
+    transport.set_bbmd_alone_on_subnet(args.alone_on_subnet);
+    transport.set_bbmd_nat_traversal(args.nat_global.map(NatTraversal::new));
 
     // Minimal device database
     let mut db = ObjectDatabase::new();

@@ -258,8 +258,15 @@ since nothing else on the subnet would receive the broadcast and the BBMD's
 own application still gets the message. Peers and foreign devices get both
 as before. It is
 off by default: any other device of the network on that subnet would stop
-hearing remote broadcasts. Running a BBMD under its public NAT address is
-#940's work, not this setting's.
+hearing remote broadcasts.
+
+Behind a NAT router (Annex J.7.5, #940) the core runs the BBMD under its
+global address (`Tables::set_nat`, with a `bbmd::Nat`): its BDT must name
+that address as the own row and be two-hop only, and the Forwarded-NPDUs it
+builds carry that address as their origin, except a foreign device's
+Distribute-Broadcast-To-Network from a public registration source, which
+keeps its own. The host keeps the socket's private address for the node's
+link, its echo filter and its subnet.
 
 `BbmdState` maps `std::time::Instant` onto the core's nanosecond clock
 (`bacnet-time`'s `Instant`, which `bacnet-mstp-core` takes too) with a
