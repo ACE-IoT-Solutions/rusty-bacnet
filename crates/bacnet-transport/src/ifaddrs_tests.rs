@@ -119,6 +119,9 @@ fn the_walk_reports_both_loopback_addresses_on_one_interface() {
         }
     );
     assert!(v4.flags.up && v4.flags.loopback && !v4.flags.broadcast, "{v4:?}");
+    // `::1` is required, not skipped when absent: the crate's other tests
+    // (udp_metadata, bip6) already bind it unconditionally, so a host with
+    // IPv6 disabled fails those first.
     let v6 = entries
         .iter()
         .find(|entry| entry.address == Address::V6(Ipv6Addr::LOCALHOST))
@@ -129,7 +132,11 @@ fn the_walk_reports_both_loopback_addresses_on_one_interface() {
 }
 
 /// nix walks the same list. Where it decodes a field, the walk agrees; the
-/// only field it may miss is a netmask the BSDs cut short.
+/// only field it may miss is a netmask Apple or the BSDs cut short.
+///
+/// On the BSDs this call makes nix's over-read of a short IPv4 netmask (see
+/// the module doc). It is test-only, and the extra octets it reads stay
+/// within the one buffer libc's getifaddrs allocates for the list.
 #[cfg(any(
     target_os = "linux",
     target_os = "android",

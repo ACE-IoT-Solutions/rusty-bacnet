@@ -3,9 +3,12 @@
 //! come from [`interface_addresses`], which copies each IPv4 or IPv6 entry
 //! out while the OS list is alive.
 //!
-//! nix's `getifaddrs` is not used: on the BSDs other than Apple it drops a
-//! netmask the kernel hands back truncated with its family unset, which
-//! [`truncated_netmask`] recovers.
+//! nix's `getifaddrs` is not used, for two reasons. On Apple and the BSDs it
+//! drops a netmask the kernel hands back truncated with its family unset,
+//! which [`truncated_netmask`] recovers: nix picks the address type by family
+//! alone. And with no length to go by, it reads a whole 16-octet
+//! `sockaddr_in` for an IPv4 mask whatever `sa_len` says, past the end of a
+//! short BSD mask.
 //!
 //! # The list invariant
 //!
