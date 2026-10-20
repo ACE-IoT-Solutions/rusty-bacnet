@@ -306,6 +306,15 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     #[doc(hidden)]
     fn bind_deadline_waker_internal(&mut self, _waker: Option<Arc<DeadlineWaker>>) {}
 
+    /// The device is starting: drive the object's output as a start does.
+    ///
+    /// The server calls this once for every object in the database as it
+    /// starts, before the database is shared. The Color and Color
+    /// Temperature objects drive an output nothing has driven yet to its
+    /// default (#1526); other objects ignore it.
+    #[doc(hidden)]
+    fn start_output_internal(&mut self) {}
+
     /// Advance operations to an absolute process-local monotonic instant.
     #[doc(hidden)]
     fn advance_monotonic_time_internal(&mut self, _now: Duration) -> bool {

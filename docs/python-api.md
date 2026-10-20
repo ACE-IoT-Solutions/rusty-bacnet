@@ -3533,7 +3533,27 @@ server.add_binary_lighting_output(
 # (source, kelvin), following Color_Override; None without a colour object.
 source, colour = await server.lighting_color(ObjectIdentifier(ObjectType.LIGHTING_OUTPUT, 2))
 server.add_binary_lighting_output(instance=1, name="On/Off Light")
+# Driven to its default at start; (0.0, 0.0) or 0 keeps the value from
+# before the restart, kept in storage_path (#1526).
+server.add_color(instance=2, name="Wall wash", default_color=(0.0, 0.0),
+                 storage_path="/var/lib/bacnet/color-2.bin")
+server.add_color_temperature(instance=2, name="Downlight", default_color_temperature=3000)
 ```
+
+At start the server drives each colour output to its default
+(`default_color`, D65 unless given, or `default_color_temperature`, 4000
+unless given), at once, and In_Progress then reads IDLE (#1526). A
+non-zero default wins over the `present_value` keyword, which is
+configuration: no peer can write before the start, so a first boot and later
+ones agree. A zero default, `(0.0, 0.0)` or 0, keeps instead, in order: the
+value kept in `storage_path` (the file the object keeps Present_Value in),
+else `present_value`; with neither, In_Progress reads NOT_CONTROLLED (3)
+until a Present_Value or Color_Command write drives the output. The object
+saves each new Present_Value off the database lock; a change never waits for
+its save, and a failed save is logged and tried again only at the next
+change, at `stop()` and as the object goes. A file that doesn't load raises
+`BacnetError`. `lighting_color` returns None while the colour object it
+follows reads NOT_CONTROLLED.
 
 A Lighting Output's Present_Value and Relinquish_Default take a REAL level
 from 0.0 to 100.0. A level above 0.0 and below 1.0, written locally or over the

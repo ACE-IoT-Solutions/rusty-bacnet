@@ -62,9 +62,10 @@ class LightingAndColorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_color_links_serve_references_and_lighting_color_follows_them(self):
         server = new_server()
-        server.add_color(1, "Color", present_value=(0.25, 0.5))
-        server.add_color_temperature(1, "Warm", present_value=2700, min_pres_value=2000,
-                                     max_pres_value=6500)
+        # The start drives each colour object to its default (#1526).
+        server.add_color(1, "Color", default_color=(0.25, 0.5))
+        server.add_color_temperature(1, "Warm", default_color_temperature=2700,
+                                     min_pres_value=2000, max_pres_value=6500)
         server.add_lighting_output(1, "Light", color_reference=COLOR,
                                    override_color_reference=WARM)
         server.add_binary_lighting_output(1, "Switch", color_reference=WARM)
@@ -104,7 +105,7 @@ class LightingAndColorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_active_override_given_at_build_time_takes_the_override_colour(self):
         server = new_server()
-        server.add_color_temperature(1, "Warm", present_value=3000)
+        server.add_color_temperature(1, "Warm", default_color_temperature=3000)
         server.add_lighting_output(1, "Light", color_reference=NO_COLOR, color_override=True,
                                    override_color_reference=WARM)
         async with running(server):
@@ -126,8 +127,9 @@ class LightingAndColorTests(unittest.IsolatedAsyncioTestCase):
     async def test_colour_objects_take_their_values_and_refuse_bad_ones(self):
         server = new_server()
         server.add_color(1, "Default")
+        # A zero default keeps the configured present_value at start (#1526).
         server.add_color_temperature(1, "Clamped", present_value=9000, min_pres_value=2000,
-                                     max_pres_value=6500)
+                                     max_pres_value=6500, default_color_temperature=0)
         with self.assertRaises(BacnetProtocolError):
             server.add_color(2, "Bad", present_value=(1.5, 0.2))
         with self.assertRaises(BacnetProtocolError):

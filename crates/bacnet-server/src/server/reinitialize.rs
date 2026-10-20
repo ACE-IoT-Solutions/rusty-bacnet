@@ -64,6 +64,13 @@ use super::*;
 ///   leaves them pending. With no handler set, a registered port's
 ///   pending-activation rows refuse writes, since nothing could activate
 ///   them.
+/// - **Colour outputs on an in-process restart.** A server start drives each
+///   Color and Color Temperature output to its default (#1526). An
+///   application that carries WARMSTART or COLDSTART out in process, without
+///   building a new server, should do the same: call `start_output` on each
+///   colour object, which is safe to call again (a zero default then keeps
+///   the current value). It is a raw database edit, so it sends no COV
+///   notification of its own.
 /// - **Audited once accepted.** With Audit Reporters configured, an accepted
 ///   request (the handler accepted and any Network Port activation took)
 ///   records DEVICE_RESET, DEVICE_BACKUP or DEVICE_RESTORE from the

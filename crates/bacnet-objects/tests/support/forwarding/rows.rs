@@ -323,6 +323,9 @@ pub const COMMANDS: &[(&str, Command)] = &[
     ("bind_deadline_waker_internal", |o| {
         format!("{:?}", o.bind_deadline_waker_internal(Some(waker())))
     }),
+    ("start_output_internal", |o| {
+        format!("{:?}", o.start_output_internal())
+    }),
     ("advance_monotonic_time_internal", |o| {
         o.advance_monotonic_time_internal(Duration::from_secs(33))
             .to_string()
