@@ -388,3 +388,5 @@ mod completion_order;
 mod noncommandable_value_source;
 
 mod single_source_value_source;
+
+mod lighting_value_source;

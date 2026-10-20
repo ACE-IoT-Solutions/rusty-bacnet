@@ -298,7 +298,8 @@ fn objects() -> Vec<Case> {
         (
             Box::new(BinaryLightingOutputObject::new(1, "BLO-1").unwrap()),
             Box::new(binary),
-            P::CURRENT_COMMAND_PRIORITY,
+            // Table 12-69 lists the value-source rows (#1866) before Tags.
+            P::LAST_COMMAND_TIME,
         ),
     ]
 }

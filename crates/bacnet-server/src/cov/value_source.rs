@@ -28,8 +28,8 @@ fn fields(commandable: bool, flags: bool) -> &'static [P] {
 }
 
 /// Whether a subscription to `property` of `object` takes the specialized
-/// Table 13-1a-2 report. Commandable outputs and values use the commandable
-/// row. The single-source objects that track Value_Source (#1552: the
+/// Table 13-1a-2 report. Commandable outputs and values, and the two
+/// lighting outputs (#1866), use the commandable row. The single-source objects that track Value_Source (#1552: the
 /// noncommandable value modes, Color and Color Temperature) use the
 /// noncommandable row (#1582).
 pub(crate) fn applies(object: &dyn BACnetObject, property: P) -> bool {
@@ -39,7 +39,11 @@ pub(crate) fn applies(object: &dyn BACnetObject, property: P) -> bool {
     let properties = object.property_list();
     let commandable = properties.contains(&P::PRIORITY_ARRAY);
     match object.object_identifier().object_type() {
-        O::ANALOG_OUTPUT | O::BINARY_OUTPUT | O::MULTI_STATE_OUTPUT => commandable,
+        O::ANALOG_OUTPUT
+        | O::BINARY_OUTPUT
+        | O::MULTI_STATE_OUTPUT
+        | O::LIGHTING_OUTPUT
+        | O::BINARY_LIGHTING_OUTPUT => commandable,
         O::ANALOG_VALUE | O::BINARY_VALUE | O::MULTI_STATE_VALUE => {
             commandable || properties.contains(&P::VALUE_SOURCE)
         }
@@ -75,13 +79,14 @@ impl PreparedValueSource {
                 object, property, None, None, &value,
             )?);
         }
-        // Only analog PV uses the object's increment. A selected Value_Source
-        // increment must never replace the object's Table 13-1 criterion.
-        // Color and Color Temperature are not in Table 13-1 and have no
-        // COV_Increment, so their Present_Value reports on any change.
+        // Only an analog or Lighting Output PV uses the object's increment
+        // (Table 13-1). A selected Value_Source increment must never replace
+        // the object's Table 13-1 criterion. Color and Color Temperature are
+        // not in Table 13-1 and have no COV_Increment, so their Present_Value
+        // reports on any change.
         if !matches!(
             object.object_identifier().object_type(),
-            O::ANALOG_OUTPUT | O::ANALOG_VALUE
+            O::ANALOG_OUTPUT | O::ANALOG_VALUE | O::LIGHTING_OUTPUT
         ) {
             fields[0].increment = None;
         }
@@ -145,7 +150,13 @@ fn validate(object: O, property: P, value: &V) -> Result<(), Error> {
     let valid = match property {
         P::PRESENT_VALUE => match object {
             O::ANALOG_OUTPUT | O::ANALOG_VALUE => matches!(value, V::Real(v) if v.is_finite()),
-            O::BINARY_OUTPUT | O::BINARY_VALUE => matches!(value, V::Enumerated(0..=1)),
+            // A level on the normalized 0.0 to 100.0 scale (Clause 12.54.4).
+            O::LIGHTING_OUTPUT => matches!(value, V::Real(v) if (0.0..=100.0).contains(v)),
+            // A Binary Lighting Output holds only OFF or ON; the warn and
+            // stop values are commands, never a Present_Value (Clause 12.55).
+            O::BINARY_OUTPUT | O::BINARY_VALUE | O::BINARY_LIGHTING_OUTPUT => {
+                matches!(value, V::Enumerated(0..=1))
+            }
             // A BACnetxyColor: the two finite REAL coordinates.
             O::COLOR => matches!(value, V::List(xy) if xy.len() == 2
                 && xy.iter().all(|c| matches!(c, V::Real(v) if v.is_finite()))),

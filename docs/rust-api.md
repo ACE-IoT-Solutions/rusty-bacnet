@@ -433,6 +433,17 @@ contract described below and do not require command provenance.
 Input measurement setters keep their separate contract. Priority_Array stays
 read-only; a sourced Present_Value NULL relinquishes the specified priority.
 
+Lighting Output and Binary Lighting Output serve the same three rows (Tables
+12-64 and 12-69, #1866), and their context-free `write_property` denies
+Present_Value, and on a Lighting Output Lighting_Command, the same way. A
+Lighting_Command is its writer's command at the priority it acts at. A command
+that acts on its slot (a level, a fade, ramp or step, WARN_RELINQUISH,
+WARN_OFF, or a STOP that ends something) records its writer there; WARN, an
+ignored step and a STOP with nothing to stop leave the slot's source as it was.
+`LightingOutputObject::set_lighting_command` names no writer, so the slot it
+acts on reads source NONE that no one may correct. An egress that runs out
+later still counts as its command for Last_Command_Time.
+
 The full server derives remote origins from direct network 0/source MAC or routed
 SNET/SADR, independently of Audit reporting. Address-to-Device correlation is a
 snapshot, not authentication. Once the server knows its own network number, a
@@ -482,9 +493,10 @@ selected interpretation of the last command), while the visible source moves to
 the next active slot or none.
 
 Single and Multiple subscriptions to commandable `Value_Source` on these six
-families report `Present_Value`, `Status_Flags`, `Value_Source`,
+families and the two lighting outputs report `Present_Value`, `Status_Flags`, `Value_Source`,
 `Last_Command_Time`, and `Current_Command_Priority` together. The trigger uses
-the object's PV criterion (its `COV_Increment` for analogs), flags, source, or
+the object's PV criterion (its `COV_Increment` for analogs and Lighting
+Output), flags, source, or
 priority changes; time alone does not trigger. A Value_Source subscription's
 increment does not replace the analog object's increment. Initial and renewal
 reports contain the same five fields. A failed or malformed required companion

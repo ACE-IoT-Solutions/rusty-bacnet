@@ -36,7 +36,7 @@ fn write_wire(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property(db, &bytes).map(|_| ())
+    sourced_wp(db, &bytes).map(|_| ())
 }
 
 fn write_multiple_relinquish_defaults(
@@ -60,7 +60,7 @@ fn write_multiple_relinquish_defaults(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property_multiple(db, &bytes)
+    sourced_wpm(db, &bytes)
 }
 
 fn read_property(

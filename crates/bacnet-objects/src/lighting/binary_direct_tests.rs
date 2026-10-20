@@ -21,22 +21,24 @@ fn slot(object: &BinaryLightingOutputObject, priority: u8) -> PropertyValue {
 
 fn write_present(object: &mut BinaryLightingOutputObject, value: u32, priority: u8) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             PropertyValue::Enumerated(value),
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }
 
 fn command(object: &mut BinaryLightingOutputObject, priority: u8, value: PropertyValue) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             value,
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }
