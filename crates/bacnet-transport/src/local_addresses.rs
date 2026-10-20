@@ -9,60 +9,11 @@
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "l4re",
-    target_os = "android",
-    target_os = "emscripten",
-    target_vendor = "apple",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris",
-    target_os = "illumos",
-    target_os = "haiku",
-    target_os = "nto",
-    target_os = "hurd",
-    target_os = "fuchsia",
-))]
-mod getifaddrs;
-#[cfg(any(
-    target_os = "linux",
-    target_os = "l4re",
-    target_os = "android",
-    target_os = "emscripten",
-    target_vendor = "apple",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris",
-    target_os = "illumos",
-    target_os = "haiku",
-    target_os = "nto",
-    target_os = "hurd",
-    target_os = "fuchsia",
-))]
-pub(crate) use getifaddrs::interface_of;
-#[cfg(any(
-    target_os = "linux",
-    target_os = "l4re",
-    target_os = "android",
-    target_os = "emscripten",
-    target_vendor = "apple",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris",
-    target_os = "illumos",
-    target_os = "haiku",
-    target_os = "nto",
-    target_os = "hurd",
-    target_os = "fuchsia",
-))]
-use getifaddrs::reported_ipv4;
+with_getifaddrs! {
+    mod getifaddrs;
+    pub(crate) use getifaddrs::interface_of;
+    use getifaddrs::reported_ipv4;
+}
 
 /// An IPv4 address the OS reports on one of the host's interfaces.
 #[derive(Clone, Copy, Debug)]
@@ -124,52 +75,18 @@ fn reported_ipv4() -> io::Result<Vec<ReportedAddress>> {
         .collect())
 }
 
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "l4re",
-    target_os = "android",
-    target_os = "emscripten",
-    target_vendor = "apple",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris",
-    target_os = "illumos",
-    target_os = "haiku",
-    target_os = "nto",
-    target_os = "hurd",
-    target_os = "fuchsia",
-    windows,
-)))]
-fn reported_ipv4() -> io::Result<Vec<ReportedAddress>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "listing local IPv4 addresses is not supported on this OS",
-    ))
-}
+without_interface_list! {
+    fn reported_ipv4() -> io::Result<Vec<ReportedAddress>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "listing local IPv4 addresses is not supported on this OS",
+        ))
+    }
 
-/// No interface list on this OS.
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "l4re",
-    target_os = "android",
-    target_os = "emscripten",
-    target_vendor = "apple",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris",
-    target_os = "illumos",
-    target_os = "haiku",
-    target_os = "nto",
-    target_os = "hurd",
-    target_os = "fuchsia",
-    windows,
-)))]
-pub(crate) fn interface_of(_ip: Ipv4Addr) -> io::Result<Option<LocalInterface>> {
-    Ok(None)
+    /// No interface list on this OS.
+    pub(crate) fn interface_of(_ip: Ipv4Addr) -> io::Result<Option<LocalInterface>> {
+        Ok(None)
+    }
 }
 
 /// The adapter address that is `ip`, or whose subnet holds it.
