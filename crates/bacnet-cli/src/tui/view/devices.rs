@@ -1,11 +1,12 @@
 //! The Devices screen: the duplicate-instance banner and the live table.
 
-use ratatui::layout::{Alignment, Constraint, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table};
 use ratatui::Frame;
 
-use super::{Theme, FULL_WIDTH};
+use super::columns::{self, Column};
+use super::{ellipsize, text_width, Theme, FULL_WIDTH};
 use crate::tui::app::devices::{age_label, segmentation_label, SortKey};
 use crate::tui::app::{App, Link, OpState};
 use crate::tui::message::DeviceRow;
@@ -93,66 +94,131 @@ fn title(app: &App) -> String {
     format!(" Devices ({count}) | sort: {} {arrow} ", key.label())
 }
 
-struct Columns {
-    headers: [&'static str; 8],
-    widths: [Constraint; 8],
+/// What a column of the table shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    /// The selection marker.
+    Marker,
+    /// Device instance.
+    Instance,
+    /// Its address, or a routed device's station, as a target.
+    Address,
+    /// The router a routed device answered through.
+    Via,
+    /// Its network, or `local`.
+    Network,
+    /// Vendor.
+    Vendor,
+    /// Max APDU length accepted.
+    Apdu,
+    /// Segmentation supported.
+    Segmentation,
+    /// Age of the last I-Am.
+    Seen,
 }
 
-fn columns(width: u16) -> Columns {
-    if width >= FULL_WIDTH {
-        Columns {
-            headers: [
-                "",
-                "Instance",
-                "Address",
-                "Network",
-                "Vendor",
-                "Max APDU",
-                "Segmentation",
-                "Last seen",
-            ],
-            widths: [
-                Constraint::Length(1),
-                Constraint::Length(9),
-                Constraint::Min(24),
-                Constraint::Length(8),
-                Constraint::Length(7),
-                Constraint::Length(9),
-                Constraint::Length(13),
-                Constraint::Length(10),
-            ],
+/// The columns for a table `width` columns wide, each sized to its content
+/// over every visible row (not just those on screen, so scrolling doesn't
+/// move them). From [`FULL_WIDTH`] the headers are spelled out. Instance and
+/// address are never cut, and the Via column appears only when the whole of
+/// it fits.
+///
+/// The vendor column is the one that gives way when a row is too wide. A
+/// vendor ID (at most five digits) never needs to; the shrink is there for
+/// the vendor names #1896 brings. It stops at the header's own width, sort
+/// marker included, so the header is never clipped.
+fn columns(width: u16, app: &App) -> Vec<Column<Field>> {
+    let full = width >= FULL_WIDTH;
+    let sorted = sorted_field(app.devices.sort().0);
+    let column = |field: Field, short: &str, long: &str| {
+        let mut header = if full { long } else { short }.to_string();
+        if field == sorted {
+            header.push('*');
         }
-    } else {
-        Columns {
-            headers: [
-                "", "Instance", "Address", "Net", "Vendor", "APDU", "Seg", "Seen",
-            ],
-            widths: [
-                Constraint::Length(1),
-                Constraint::Length(9),
-                Constraint::Min(20),
-                Constraint::Length(6),
-                Constraint::Length(6),
-                Constraint::Length(5),
-                Constraint::Length(8),
-                Constraint::Length(5),
-            ],
+        Column::new(field, header)
+    };
+    let mut columns = vec![
+        column(Field::Marker, "", ""),
+        column(Field::Instance, "Instance", "Instance"),
+        column(Field::Address, "Address", "Address"),
+        column(Field::Network, "Net", "Network"),
+        column(Field::Vendor, "Vendor", "Vendor"),
+        column(Field::Apdu, "APDU", "Max APDU"),
+        column(Field::Segmentation, "Seg", "Segmentation"),
+        column(Field::Seen, "Seen", "Last seen"),
+    ];
+    let mut via = column(Field::Via, "Via", "Via");
+    let mut routed = false;
+    for row in app.devices.visible() {
+        for column in &mut columns {
+            column.fit(cell_width(column.kind, row, app));
         }
+        if let Some(router) = &row.via {
+            routed = true;
+            via.fit(text_width(router));
+        }
+    }
+    let min_vendor = columns
+        .iter()
+        .find(|column| column.kind == Field::Vendor)
+        .map_or(0, |column| text_width(&column.header));
+    // Inside the borders.
+    let room = usize::from(width.saturating_sub(2));
+    columns::shrink(&mut columns, Field::Vendor, room, min_vendor);
+    if routed {
+        columns::insert_if_room(&mut columns, 3, via, room);
+    }
+    columns
+}
+
+/// One cell's text, before it is fitted to its column.
+fn cell(field: Field, row: &DeviceRow, app: &App, selected: bool) -> String {
+    match field {
+        Field::Marker => if selected { ">" } else { " " }.to_string(),
+        Field::Instance => row.instance.to_string(),
+        Field::Address => row.address.clone(),
+        Field::Via => row.via.clone().unwrap_or_default(),
+        Field::Network => row
+            .network
+            .map_or_else(|| "local".to_string(), |n| n.to_string()),
+        Field::Vendor => row.vendor_id.to_string(),
+        Field::Apdu => row.max_apdu.to_string(),
+        Field::Segmentation => segmentation_label(row.segmentation),
+        Field::Seen => age_label(app.now, row.last_seen),
     }
 }
 
-fn cells(row: &DeviceRow, app: &App, selected: bool) -> [String; 8] {
-    [
-        if selected { ">" } else { " " }.to_string(),
-        row.instance.to_string(),
-        row.address.clone(),
-        row.network
-            .map_or_else(|| "local".to_string(), |n| n.to_string()),
-        row.vendor_id.to_string(),
-        row.max_apdu.to_string(),
-        segmentation_label(row.segmentation),
-        age_label(app.now, row.last_seen),
-    ]
+/// The width of [`cell`]'s text, without building it where the cell is a
+/// number or a string the row already holds: the columns are measured over
+/// every visible row on every frame.
+fn cell_width(field: Field, row: &DeviceRow, app: &App) -> usize {
+    let digits = |n: u32| n.checked_ilog10().map_or(1, |d| d as usize + 1);
+    match field {
+        Field::Marker => 1,
+        Field::Instance => digits(row.instance),
+        Field::Address => text_width(&row.address),
+        Field::Via => row.via.as_deref().map_or(0, text_width),
+        Field::Network => row.network.map_or("local".len(), |n| digits(n.into())),
+        // A vendor name (#1896) will need text_width here.
+        Field::Vendor => digits(row.vendor_id.into()),
+        Field::Apdu => digits(row.max_apdu),
+        Field::Segmentation | Field::Seen => text_width(&cell(field, row, app, false)),
+    }
+}
+
+/// A row's cells, each fitted to its column: a vendor too wide for its
+/// column ends in `…`.
+fn cells(columns: &[Column<Field>], row: &DeviceRow, app: &App, selected: bool) -> Vec<String> {
+    columns
+        .iter()
+        .map(|column| {
+            let text = cell(column.kind, row, app, selected);
+            match column.kind {
+                Field::Vendor => ellipsize(&text, column.width),
+                _ => text,
+            }
+        })
+        .collect()
 }
 
 pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -172,7 +238,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         empty(frame, inner, app, theme);
         return;
     }
-    let columns = columns(area.width);
+    let columns = columns(area.width, app);
     // One line for the header row.
     let height = usize::from(inner.height.saturating_sub(1)).max(1);
     let offset = scroll(app, height);
@@ -183,7 +249,7 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .enumerate()
         .map(|(i, row)| {
             let is_selected = selected == Some(offset + i);
-            let line = Row::new(cells(row, app, is_selected));
+            let line = Row::new(cells(&columns, row, app, is_selected));
             if is_selected {
                 line.style(theme.selected())
             } else {
@@ -191,38 +257,20 @@ pub(super) fn table(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             }
         })
         .collect();
-    let mut header = columns.headers;
-    let sorted = sorted_column(app.devices.sort().0);
-    header[sorted] = header_with_marker(header[sorted]);
-    let table = Table::new(rows, columns.widths)
-        .header(Row::new(header).style(theme.accent()))
-        .column_spacing(1);
+    let table = Table::new(rows, columns::constraints(&columns))
+        .header(Row::new(columns::headers(&columns)).style(theme.accent()))
+        .column_spacing(columns::SPACING);
     frame.render_widget(table, inner);
 }
 
-/// Index of the sorted column in [`Columns::headers`].
-fn sorted_column(key: SortKey) -> usize {
+/// The column a sort key orders by, whose header is marked.
+fn sorted_field(key: SortKey) -> Field {
     match key {
-        SortKey::Instance => 1,
-        SortKey::Address => 2,
-        SortKey::Network => 3,
-        SortKey::Vendor => 4,
-        SortKey::LastSeen => 7,
-    }
-}
-
-/// Mark the sorted column's header; the strings are static so pick from a
-/// fixed set.
-fn header_with_marker(header: &'static str) -> &'static str {
-    match header {
-        "Instance" => "Instance*",
-        "Address" => "Address*",
-        "Network" => "Network*",
-        "Net" => "Net*",
-        "Vendor" => "Vendor*",
-        "Last seen" => "Last seen*",
-        "Seen" => "Seen*",
-        other => other,
+        SortKey::Instance => Field::Instance,
+        SortKey::Address => Field::Address,
+        SortKey::Network => Field::Network,
+        SortKey::Vendor => Field::Vendor,
+        SortKey::LastSeen => Field::Seen,
     }
 }
 
@@ -262,4 +310,45 @@ fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     };
     let lines = vec![Line::raw(""), Line::from(Span::styled(text, theme.dim()))];
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::tests::{at, connected_app, routed_row, row};
+
+    /// Measuring a cell gives the width of the text the table draws.
+    #[test]
+    fn cell_widths_match_the_drawn_text() {
+        let mut app = connected_app();
+        app.now = at(4_000);
+        let mut wide = row(4_194_303, "192.168.100.102:47808", 65_535, 0);
+        wide.max_apdu = 50;
+        let rows = [
+            row(0, "10.0.0.1:47808", 0, 3_999),
+            wide,
+            routed_row(9, (65_534, &[1, 2, 3, 4, 5, 6]), "10.0.0.9:47808", 99, 10),
+        ];
+        let fields = [
+            Field::Marker,
+            Field::Instance,
+            Field::Address,
+            Field::Via,
+            Field::Network,
+            Field::Vendor,
+            Field::Apdu,
+            Field::Segmentation,
+            Field::Seen,
+        ];
+        for row in &rows {
+            for field in fields {
+                let text = cell(field, row, &app, false);
+                assert_eq!(
+                    cell_width(field, row, &app),
+                    text_width(&text),
+                    "{field:?} {text:?}"
+                );
+            }
+        }
+    }
 }

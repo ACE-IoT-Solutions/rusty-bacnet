@@ -96,9 +96,9 @@ What M0 draws (80x24):
 ```
  bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | drop 0                   ? help
 ┌ Devices (5) | sort: instance ↑ ──────────────────────────────────────────────┐
-│  Instance* Address                         Net    Vendor APDU  Seg      Seen │
-│> 1001      10.0.1.21:47808                 local  260    1476  none     2s   │
-│  2001      05 via 10.0.1.1:47808           2      24     480   both     7s   │
+│  Instance* Address         Via            Net   Vendor APDU Seg  Seen        │
+│> 1001      10.0.1.21:47808                local 260    1476 none 2s          │
+│  2001      2:0x05          10.0.1.1:47808 2     24     480  both 7s          │
 └ Who-Is local 1000-2999: done, 3 replies ─────────────────────────────────────┘
  d Who-Is  / filter  s sort  S reverse  L log  ? help  q quit
 ```
@@ -135,7 +135,7 @@ What M0 draws (80x24):
 
 | Screen | Contents |
 |---|---|
-| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, address, network, vendor, max APDU, segmentation, last seen); sort and filter; duplicate-instance banner. **Planned:** Who-Has search and a Networks tab |
+| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content; a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort and filter (the filter matches the router too); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network) |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with a filter; property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
 | Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD. Write-BDT and Delete-FDT-Entry are later items |

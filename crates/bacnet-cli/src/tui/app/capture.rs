@@ -472,18 +472,13 @@ impl App {
     }
 }
 
-/// Where device `instance` is, as a captured frame would name it: its
-/// address, or for a routed device its routed station (`2:0x05`), from the
-/// SNET and SADR of its I-Am.
+/// Where device `instance` is, as a captured frame would name it: the
+/// table's address, which for a routed device is its routed station
+/// (`2:0x05`) in the same syntax the capture writes.
 fn device_addresses(devices: &DeviceTable, instance: u32) -> Vec<String> {
-    let Some(row) = devices.get(instance) else {
-        return Vec::new();
-    };
-    match (row.network, row.address.split_once(" via ")) {
-        (Some(network), Some((station, _))) => {
-            let hex = station.replace(':', "").to_uppercase();
-            vec![format!("{network}:0x{hex}")]
-        }
-        _ => vec![row.address.clone()],
-    }
+    devices
+        .get(instance)
+        .map(|row| row.address.clone())
+        .into_iter()
+        .collect()
 }

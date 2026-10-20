@@ -27,7 +27,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
 use super::message::{DeviceRow, WorkerEvent};
-use crate::core::target::{hex, AddressStyle};
+use crate::core::target::AddressStyle;
 
 /// Capacity of the worker-to-UI channel.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 1_024;
@@ -197,17 +197,15 @@ impl DeviceFeed {
 
     /// Convert a client row for the UI.
     pub(crate) fn row(&self, device: &DiscoveredDevice) -> DeviceRow {
-        let address = match (&device.source_network, &device.source_address) {
-            (Some(_), Some(remote)) => format!(
-                "{} via {}",
-                hex(remote.as_slice()),
-                self.style.format(device.mac_address.as_slice())
-            ),
-            _ => self.style.format(device.mac_address.as_slice()),
-        };
+        let routed = device
+            .source_network
+            .zip(device.source_address.as_ref())
+            .map(|(network, station)| (network, station.as_slice()));
+        let (address, via) = self.style.locate(device.mac_address.as_slice(), routed);
         DeviceRow {
             instance: device.object_identifier.instance_number(),
             address,
+            via,
             network: device.source_network,
             vendor_id: device.vendor_id,
             max_apdu: device.max_apdu_length,
@@ -226,7 +224,7 @@ impl DeviceFeed {
                     DeviceEventKind::Updated => WorkerEvent::Updated(row),
                     DeviceEventKind::Lost => {
                         // The row leaves the table, so say so in the log pane.
-                        tracing::info!("device {} lost ({})", row.instance, row.address);
+                        tracing::info!("device {} lost ({})", row.instance, row.located());
                         WorkerEvent::Lost(row)
                     }
                 };

@@ -119,6 +119,49 @@ fn addresses_format_per_transport_and_read_back() {
     assert_eq!(AddressStyle::of(&bip), AddressStyle::Bip);
 }
 
+/// A routed station as the TUI's tables and the capture show it parses
+/// back to the same station: B/IP, MS/TP and SC MACs, and every network
+/// number a router can name. The broadcast form `NET:*` is display-only
+/// and does not parse.
+#[test]
+fn routed_stations_read_back_as_the_same_target() {
+    let stations: [(u16, &[u8], &str); 4] = [
+        (2, &[0x7F, 0, 0, 1, 0xC3, 0x35], "2:0x7F000001C335"),
+        (2, &[5], "2:0x05"),
+        (1, &[0], "1:0x00"),
+        (65534, &[0xAB, 0xCD, 0xEF, 1, 2, 3], "65534:0xABCDEF010203"),
+    ];
+    for (network, station, text) in stations {
+        let shown = routed_station(network, station);
+        assert_eq!(shown, text);
+        assert_eq!(
+            parse_target(&shown),
+            Ok(Target::RoutedMac {
+                dnet: network,
+                mac: station.to_vec()
+            }),
+            "{shown}"
+        );
+    }
+    // A broadcast on a network is shown, never typed back: it is not a target.
+    assert_eq!(routed_station(2, &[]), "2:*");
+    assert!(parse_target("2:*").is_err());
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn a_routed_device_is_located_by_its_station_and_router() {
+    let router = [10, 0, 1, 1, 0xBA, 0xC0];
+    assert_eq!(
+        AddressStyle::Bip.locate(&router, Some((2, &[5]))),
+        ("2:0x05".to_string(), Some("10.0.1.1:47808".to_string()))
+    );
+    assert_eq!(
+        AddressStyle::Bip.locate(&router, None),
+        ("10.0.1.1:47808".to_string(), None)
+    );
+}
+
 #[test]
 fn test_parse_target_invalid() {
     assert!(parse_target("not-a-target").is_err());

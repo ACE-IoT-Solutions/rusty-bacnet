@@ -46,6 +46,7 @@ mod capture_views;
 mod connections;
 #[cfg(unix)]
 mod crash;
+mod devices_layout;
 mod discovery;
 mod event_loop;
 mod frames;
@@ -136,12 +137,29 @@ pub(super) fn row(instance: u32, address: &str, vendor_id: u16, seen: u64) -> De
     DeviceRow {
         instance,
         address: address.into(),
+        via: None,
         network: None,
         vendor_id,
         max_apdu: 1476,
         segmentation: Segmentation::NONE,
         last_seen: at(seen),
     }
+}
+
+/// A synthetic row for a device a router at `router` passed on: station
+/// `station` on network `network`, written as the worker writes it.
+pub(super) fn routed_row(
+    instance: u32,
+    (network, station): (u16, &[u8]),
+    router: &str,
+    vendor_id: u16,
+    seen: u64,
+) -> DeviceRow {
+    let address = crate::core::target::routed_station(network, station);
+    let mut row = row(instance, &address, vendor_id, seen);
+    row.network = Some(network);
+    row.via = Some(router.into());
+    row
 }
 
 /// Apply an action.

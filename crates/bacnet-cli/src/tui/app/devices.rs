@@ -109,6 +109,7 @@ impl DeviceTable {
             Some(old) => {
                 self.sort == SortKey::LastSeen
                     || old.address != row.address
+                    || old.via != row.via
                     || old.network != row.network
                     || old.vendor_id != row.vendor_id
             }
@@ -230,7 +231,6 @@ impl DeviceTable {
     }
 
     /// Visible rows in display order. Call [`settle`](Self::settle) first.
-    #[cfg(test)]
     pub(crate) fn visible(&self) -> impl Iterator<Item = &DeviceRow> + '_ {
         self.visible.iter().filter_map(|i| self.rows.get(i))
     }
@@ -288,6 +288,10 @@ impl DeviceTable {
 fn matches(row: &DeviceRow, needle: &str) -> bool {
     row.instance.to_string().contains(needle)
         || row.address.to_lowercase().contains(needle)
+        || row
+            .via
+            .as_ref()
+            .is_some_and(|via| via.to_lowercase().contains(needle))
         || row.network.is_some_and(|n| n.to_string().contains(needle))
         || row.vendor_id.to_string().contains(needle)
 }
@@ -381,7 +385,7 @@ impl Duplicates {
             return false;
         }
         let claims = self.by_instance.entry(instance).or_default();
-        let added = claims.add(&retained.address) | claims.add(&incoming.address);
+        let added = claims.add(&retained.located()) | claims.add(&incoming.located());
         if added {
             self.rebuild_banner();
         }
@@ -440,6 +444,7 @@ mod tests {
         DeviceRow {
             instance,
             address: address.into(),
+            via: None,
             network: None,
             vendor_id: 1,
             max_apdu: 1476,
