@@ -400,3 +400,77 @@ fn a_frame_from_a_group_source_is_dropped_before_any_answer_or_decode() {
         );
     }
 }
+
+/// #1918: a frame goes out whole or the send is an error. A short send is
+/// `WriteZero`, an interrupted call is retried, and any other error passes
+/// through unchanged.
+#[test]
+fn a_short_send_is_an_error_and_an_interrupted_one_is_retried() {
+    use super::egress::send_whole_frame;
+    use std::io::{Error, ErrorKind};
+    let frame = [0x5Au8; 60];
+
+    assert!(send_whole_frame(&frame, |f| Ok(f.len())).is_ok());
+
+    let short = send_whole_frame(&frame, |f| Ok(f.len() - 1)).unwrap_err();
+    assert_eq!(short.kind(), ErrorKind::WriteZero);
+    assert!(short.to_string().contains("59 of 60"), "{short}");
+    let nothing = send_whole_frame(&frame, |_| Ok(0)).unwrap_err();
+    assert_eq!(nothing.kind(), ErrorKind::WriteZero);
+
+    let mut calls = 0;
+    let retried = send_whole_frame(&frame, |f| {
+        calls += 1;
+        if calls < 3 {
+            Err(Error::from(ErrorKind::Interrupted))
+        } else {
+            Ok(f.len())
+        }
+    });
+    assert!(retried.is_ok());
+    assert_eq!(calls, 3);
+
+    let failed = send_whole_frame(&frame, |_| Err(Error::other("no buffer space"))).unwrap_err();
+    assert_eq!(failed.to_string(), "no buffer space");
+}
+
+/// #1918: an XID or TEST reply that fails to go out, whole or in part, is
+/// counted, and its warning is throttled; one that goes out isn't counted.
+#[tokio::test(start_paused = true)]
+async fn a_failed_llc_reply_is_counted_and_its_warning_throttled() {
+    use super::egress::{LlcReply, ReplyFailures};
+    use crate::warn_throttle::WARNING_INTERVAL;
+    use std::io::{Error, ErrorKind};
+    let failures = ReplyFailures::default();
+    let local = [2, 0, 0, 0, 0, 1];
+    let station = INDIVIDUAL_MACS[0];
+    let xid = build_xid_response(&local, &station);
+    let test = build_test_response(&local, &station, &WHO_IS);
+    let refused = |_: &[u8]| Err(Error::from(ErrorKind::OutOfMemory));
+
+    assert_eq!(
+        failures.send_reply(LlcReply::Xid, &station, &xid, |f| Ok(f.len())),
+        None
+    );
+    assert_eq!(failures.count(), 0, "a reply that went out isn't counted");
+
+    assert_eq!(
+        failures.send_reply(LlcReply::Xid, &station, &xid, refused),
+        Some(1),
+        "the first failure warns"
+    );
+    assert_eq!(
+        failures.send_reply(LlcReply::Test, &station, &test, |f| Ok(f.len() / 2)),
+        None,
+        "a short send fails too, and logs at debug inside the interval"
+    );
+    assert_eq!(failures.count(), 2);
+
+    tokio::time::advance(WARNING_INTERVAL).await;
+    assert_eq!(
+        failures.send_reply(LlcReply::Test, &station, &test, refused),
+        Some(2),
+        "the next warning reports the one held back, and this one"
+    );
+    assert_eq!(failures.count(), 3);
+}
