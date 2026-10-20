@@ -2,7 +2,8 @@
 //! (#1892): routed devices in the target syntax with the router in a Via
 //! column when it fits, columns sized to their cells rather than spread
 //! across a wide terminal, and found objects with their names and the
-//! browser's object labels. Frames at 80x24, 120x40 and 200x50.
+//! browser's object labels; the panel beside the table from 160 columns
+//! where both fit (#1915). Frames at 80x24, 120x40 and 200x50.
 
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_types::enums::{ObjectType, Segmentation};
@@ -207,13 +208,13 @@ fn the_filter_finds_routed_devices_by_their_router() {
 
 const LONG_NAME: &str = "Building 4 East Wing AHU-07 Supply Air Temp Setpoint";
 
-fn found_rows() -> [FoundRow; 2] {
+fn found_rows(name: &str) -> [FoundRow; 2] {
     let object = |kind, instance| ObjectIdentifier::new(kind, instance).unwrap();
     [
         FoundRow {
             device: 1001,
             object: object(ObjectType::ANALOG_OUTPUT, 1),
-            name: LONG_NAME.into(),
+            name: name.into(),
             address: "192.168.100.1:47808".into(),
             via: None,
             network: None,
@@ -221,7 +222,7 @@ fn found_rows() -> [FoundRow; 2] {
         FoundRow {
             device: 3005,
             object: object(ObjectType::ANALOG_VALUE, 4_194_302),
-            name: LONG_NAME.into(),
+            name: name.into(),
             address: "3:0x05".into(),
             via: Some(ROUTER.into()),
             network: Some(3),
@@ -231,15 +232,87 @@ fn found_rows() -> [FoundRow; 2] {
 
 /// The site, after `:find LONG_NAME` and both I-Haves for it.
 fn who_has_app() -> App {
+    who_has_for(LONG_NAME)
+}
+
+/// The site, after `:find NAME` and both I-Haves for it.
+fn who_has_for(name: &str) -> App {
     let mut app = site();
     press(&mut app, KeyCode::Char(':'));
-    type_text(&mut app, &format!("find {LONG_NAME}"));
+    type_text(&mut app, &format!("find {name}"));
     press(&mut app, KeyCode::Enter);
-    for row in found_rows() {
+    for row in found_rows(name) {
         worker(&mut app, WorkerEvent::Discovery(DiscoveryEvent::IHave(row)));
     }
     assert_eq!(app.who_has.as_ref().unwrap().found.len(), 2);
     app
+}
+
+/// The row of `frame` where the panel's title is.
+fn title_row(frame: &str) -> &str {
+    frame.lines().find(|line| line.contains("Who-Has")).unwrap()
+}
+
+/// From 160 columns the panel sits beside the device table when both fit
+/// at their content widths (#1915), and below it otherwise: at 120x40, or
+/// when the names searched for are too long to fit beside the table.
+#[test]
+fn who_has_sits_beside_the_table_where_both_fit() {
+    let mut app = who_has_for("Damper");
+    let wide = screen(&mut app, 200, 50);
+    assert_snapshot!("who_has_beside_200x50", &wide);
+    // Beside: the panel's title shares the table's top border row, and
+    // the table's rows run beside the panel's.
+    let top = title_row(&wide);
+    assert!(top.contains("Devices (4)"), "{wide}");
+    let row = wide.lines().find(|l| l.contains("> 1001")).unwrap();
+    assert!(row.contains("analog-output 1"), "{wide}");
+    // With room left, the panel shows the Via column, and the table its
+    // own and its full headers.
+    assert!(panel(&wide).contains(ROUTER), "{wide}");
+    assert!(header(&wide).contains("Max APDU"), "{wide}");
+
+    let stacked = screen(&mut app, 120, 40);
+    assert_snapshot!("who_has_stacked_120x40", &stacked);
+    assert!(!title_row(&stacked).contains("Devices"), "{stacked}");
+
+    // The long name doesn't fit beside the table at 200 columns: stacked.
+    let mut app = who_has_app();
+    let frame = screen(&mut app, 200, 50);
+    assert!(!title_row(&frame).contains("Devices"), "{frame}");
+
+    // Filtered to one local device, both would fit in 150 columns; they
+    // go side by side from 160 only.
+    let mut app = who_has_for("Damper");
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "1001");
+    press(&mut app, KeyCode::Enter);
+    let narrow = screen(&mut app, 159, 40);
+    assert!(!title_row(&narrow).contains("Devices"), "{narrow}");
+    let wide = screen(&mut app, 160, 40);
+    assert!(title_row(&wide).contains("Devices (1 of 4)"), "{wide}");
+}
+
+/// Names read for the device table don't move the panel: the table's
+/// Name column counts at its least width when the layout is chosen, so
+/// the panel stays beside and the names take the room it leaves.
+#[test]
+fn reading_names_keeps_the_panel_beside_the_table() {
+    use super::names::{device, named, names};
+    let mut app = who_has_for("Damper");
+    assert!(title_row(&screen(&mut app, 200, 50)).contains("Devices"));
+    let long = "Air handler 1 supply fan and economizer, level 3 mechanical room";
+    for instance in [1001, 2001, 3005, 4_194_302] {
+        names(&mut app, instance, vec![(device(instance), named(long))]);
+    }
+    let frame = screen(&mut app, 200, 50);
+    assert!(title_row(&frame).contains("Devices (4)"), "{frame}");
+    assert!(
+        frame.contains("Air handler"),
+        "names show, cut to fit:\n{frame}"
+    );
+    assert!(!frame.contains(long), "{frame}");
+    assert!(panel(&frame).contains("Damper"), "{frame}");
 }
 
 /// The results panel: from its title to the end of the frame.
