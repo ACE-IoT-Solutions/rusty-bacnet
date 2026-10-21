@@ -146,7 +146,13 @@ impl Tasks {
                     state.empty_waiter = Some(cx.waker().clone());
                     Poll::Pending
                 }
-                Poll::Ready(Some(_)) => Poll::Ready(()),
+                Poll::Ready(Some(result)) => {
+                    // A panic payload can run arbitrary Drop code. Release the
+                    // task-set lock before dropping it, as in before the edition migration.
+                    drop(state);
+                    drop(result);
+                    Poll::Ready(())
+                },
                 Poll::Pending => Poll::Pending,
             }
         })
@@ -223,5 +229,36 @@ impl Drop for AbortOnExit {
     fn drop(&mut self) {
         self.0.request_shutdown();
         self.0.state.lock().unwrap().set.abort_all();
+    }
+}
+
+#[cfg(test)]
+mod edition_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reap_drops_panic_payload_after_releasing_task_set_lock() {
+        struct PanicPayload {
+            state: Arc<Mutex<State>>,
+            dropped_unlocked: Arc<AtomicBool>,
+        }
+        impl Drop for PanicPayload {
+            fn drop(&mut self) {
+                self.dropped_unlocked
+                    .store(self.state.try_lock().is_ok(), Ordering::Release);
+            }
+        }
+
+        let tasks = Tasks::new();
+        let dropped_unlocked = Arc::new(AtomicBool::new(false));
+        let payload = PanicPayload {
+            state: Arc::clone(&tasks.state),
+            dropped_unlocked: Arc::clone(&dropped_unlocked),
+        };
+        assert!(tasks.spawner().spawn(async move {
+            std::panic::panic_any(payload);
+        }));
+        tasks.reap().await;
+        assert!(dropped_unlocked.load(Ordering::Acquire));
     }
 }

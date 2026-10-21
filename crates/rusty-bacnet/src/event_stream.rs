@@ -279,7 +279,7 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
     pub(crate) fn next(
         &self,
     ) -> (
-        impl std::future::Future<Output = Option<Next<T>>> + Send + 'static,
+        impl std::future::Future<Output = Option<Next<T>>> + Send + 'static + use<T>,
         Arc<dyn PutBack>,
     ) {
         let rx = Arc::clone(&self.rx);

@@ -101,7 +101,7 @@ impl ObjectProfile {
 
     /// The provisioned rows, in the tables' order: Tags, Profile_Location,
     /// Profile_Name.
-    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> {
+    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> + use<> {
         [
             (P::TAGS, self.tags.is_some(), Always),
             (

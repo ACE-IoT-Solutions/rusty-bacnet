@@ -184,7 +184,7 @@ impl PyReinitialize {
     /// The Rust handler that runs the callable.
     pub(crate) fn handler(
         self: &Arc<Self>,
-    ) -> impl Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error> + Send + Sync + 'static
+    ) -> impl Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error> + Send + Sync + 'static + use<>
     {
         let this = Arc::clone(self);
         move |context, _db| this.decide(context)

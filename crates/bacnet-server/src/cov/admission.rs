@@ -307,7 +307,7 @@ impl CovSubscriptionTable {
         }
         let peer = sub.recipient();
         let new_indefinite = sub.expires_at.is_none();
-        if let Some(old) = self.subs.insert(snapshot.key.clone(), snapshot.clone()) {
+        match self.subs.insert(snapshot.key.clone(), snapshot.clone()) { Some(old) => {
             if !old.flight.same(&snapshot.flight) {
                 // The replaced incarnation's outstanding report stops retrying;
                 // the replacement reports for itself (#896).
@@ -324,7 +324,7 @@ impl CovSubscriptionTable {
                     }
                 }
             }
-        } else {
+        } _ => {
             *self.peer_counts.entry(peer.clone()).or_default() += 1;
             if new_indefinite {
                 *self.peer_indefinite_counts.entry(peer).or_default() += 1;
@@ -332,7 +332,7 @@ impl CovSubscriptionTable {
             self.counters
                 .subscriptions_created
                 .fetch_add(1, Ordering::Relaxed);
-        }
+        }}
         self.counters
             .subscriptions_active
             .store(self.subs.len() as u64, Ordering::Relaxed);

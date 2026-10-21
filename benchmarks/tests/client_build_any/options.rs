@@ -20,7 +20,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 
 macro_rules! configured {
-    ($builder:expr) => {
+    ($builder:expr_2021) => {
         $builder
             .apdu_timeout_ms(2_000)
             .apdu_retries(0)

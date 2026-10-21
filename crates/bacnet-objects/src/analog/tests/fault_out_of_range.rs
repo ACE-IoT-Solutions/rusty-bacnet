@@ -85,7 +85,7 @@ fn assert_fault_properties(object: &dyn BACnetObject, expected: bool) {
 }
 
 macro_rules! assert_property_surface {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         assert_unknown_property(object.read_property(PropertyIdentifier::FAULT_LOW_LIMIT, None));
         assert_unknown_property(object.read_property(PropertyIdentifier::FAULT_HIGH_LIMIT, None));
@@ -146,7 +146,7 @@ fn ai_and_av_fault_limit_properties_are_atomic_optional_and_read_only() {
 }
 
 macro_rules! assert_invalid_configuration_is_atomic {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         let invalid_limits = [
             (f32::NAN, 1.0),
@@ -237,7 +237,7 @@ fn configured_ai_evaluator_enters_under_range_from_no_fault() {
 }
 
 macro_rules! assert_strict_range_transitions {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         object.configure_fault_out_of_range(10.0, 20.0).unwrap();
 
@@ -333,7 +333,7 @@ fn ai_and_av_use_strict_entry_inclusive_recovery_and_no_deadband() {
 }
 
 macro_rules! assert_first_stage_precedence {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         object.configure_fault_out_of_range(10.0, 20.0).unwrap();
 

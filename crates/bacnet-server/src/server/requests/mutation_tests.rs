@@ -201,7 +201,7 @@ pub(super) fn assert_denied(bytes: Bytes, service: ConfirmedServiceChoice, id: u
 pub(super) fn cases() -> Vec<(ConfirmedServiceChoice, Bytes, MutationTarget)> {
     let mut cases = Vec::new();
     macro_rules! case {
-        ($service:ident, $target:ident, $request:expr) => {{
+        ($service:ident, $target:ident, $request:expr_2021) => {{
             let request = $request;
             let mut bytes = BytesMut::new();
             request.encode(&mut bytes);
@@ -406,7 +406,7 @@ async fn denial_case(index: usize) {
 }
 
 macro_rules! denial_test {
-    ($name:ident, $index:expr) => {
+    ($name:ident, $index:expr_2021) => {
         #[tokio::test]
         async fn $name() {
             denial_case($index).await;

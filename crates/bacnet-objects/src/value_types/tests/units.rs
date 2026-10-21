@@ -25,7 +25,7 @@ fn units(object: &dyn BACnetObject) -> PropertyValue {
 
 /// Run the Units checks on one freshly built numeric value object.
 macro_rules! assert_units_row {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         let kind = object.object_identifier().object_type();
         assert_eq!(

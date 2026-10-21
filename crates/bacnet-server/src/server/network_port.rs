@@ -109,7 +109,7 @@ pub(super) fn publish<T: TransportPort + 'static>(
     };
     let transport = network.transport();
     let capacity = transport.local_receive_apdu_capacity() as u32;
-    if let Some(port) = transport.bip_port() {
+    match transport.bip_port() { Some(port) => {
         db.publish_bip_port_internal(
             oid,
             port.endpoint.ip().octets(),
@@ -119,7 +119,7 @@ pub(super) fn publish<T: TransportPort + 'static>(
         )?;
         // A port that can use B/IP multicast serves its group (#941).
         db.set_network_port_multicast_internal(oid, port.multicast)?;
-    } else {
+    } _ => {
         let port = transport
             .bip6_port()
             .ok_or_else(|| Error::Encoding("registered B/IP mode changed during bind".into()))?;
@@ -135,7 +135,7 @@ pub(super) fn publish<T: TransportPort + 'static>(
             capacity,
             port.mode,
         )?;
-    }
+    }}
     // Written values activate only through a ReinitializeDevice handler.
     db.set_network_port_activation_internal(oid, activation)?;
     // The port's configured number is the local network number from the

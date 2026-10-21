@@ -218,9 +218,9 @@ enum PemInput<'a, 'py> {
 }
 impl<'a, 'py> PemInput<'a, 'py> {
     fn pin(value: &'a Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(value) = value.cast::<PyBytes>() {
+        match value.cast::<PyBytes>() { Ok(value) => {
             Ok(Self::Bytes(value.as_bytes()))
-        } else if let Ok(value) = value.cast::<PyByteArray>() {
+        } _ => { match value.cast::<PyByteArray>() { Ok(value) => {
             let buffer = if !value.is_exact_instance_of::<PyByteArray>()
                 && value.py().version_info() >= (3, 12)
             {
@@ -238,11 +238,11 @@ impl<'a, 'py> PemInput<'a, 'py> {
                 PyBuffer::get(value.as_any())?
             };
             Ok(Self::Mutable { value, buffer })
-        } else {
+        } _ => {
             Err(PyTypeError::new_err(
                 "PEM content must be bytes or bytearray",
             ))
-        }
+        }}}}
     }
 
     fn snapshot(self, remaining: &mut usize, role: ScInputRole) -> PyResult<Cow<'a, [u8]>> {

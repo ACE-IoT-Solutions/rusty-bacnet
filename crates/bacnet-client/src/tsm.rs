@@ -738,12 +738,12 @@ impl Tsm {
         }) {
             return false;
         }
-        if let Some(pending) = self.pending.remove(&key) {
+        match self.pending.remove(&key) { Some(pending) => {
             self.release_pending(destination_mac, invoke_id, pending, PendingRelease::Cancel);
             true
-        } else {
+        } _ => {
             false
-        }
+        }}
     }
 
     /// Number of confirmed transactions currently awaiting a response.

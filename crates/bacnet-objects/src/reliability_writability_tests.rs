@@ -306,7 +306,7 @@ fn leaving_out_of_service_without_saved_value_falls_back_to_no_fault() {
 }
 
 macro_rules! reliability_gate_test {
-    ($name:ident, $object:expr) => {
+    ($name:ident, $object:expr_2021) => {
         #[test]
         fn $name() {
             let mut object = $object;

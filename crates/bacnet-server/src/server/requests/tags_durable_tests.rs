@@ -105,14 +105,14 @@ fn object(kind: Case, storage: &Arc<Storage>) -> Box<dyn BACnetObject> {
         ..ObjectProfile::default()
     };
     macro_rules! build {
-        ($ty:ty $(, $extra:expr)?) => {{
+        ($ty:ty $(, $extra:expr_2021)?) => {{
             let mut object = <$ty>::with_tags_persistence(1, "tags", $($extra,)? storage.clone()).unwrap();
             object.set_profile(profile).unwrap();
             Box::new(object)
         }};
     }
     macro_rules! value {
-        ($ty:ty $(, $extra:expr)?) => {{
+        ($ty:ty $(, $extra:expr_2021)?) => {{
             let mut object = <$ty>::with_tags_persistence(1, "tags", $($extra,)? kind.access, storage.clone()).unwrap();
             object.set_profile(profile).unwrap();
             Box::new(object)

@@ -313,7 +313,7 @@ impl ObjectDatabase {
         if self.objects.contains_key(oid) {
             self.invalidate_enrollments_monitoring(oid);
         }
-        if let Some(mut obj) = self.objects.remove(oid) {
+        match self.objects.remove(oid) { Some(mut obj) => {
             if let Some(reporter) = obj.audit_reporter_internal() {
                 reporter.status_internal().configuration_changed();
             }
@@ -338,9 +338,9 @@ impl ObjectDatabase {
             self.audit_membership_changed(*oid, false);
             self.membership_changed(*oid, false);
             Ok(Some(obj))
-        } else {
+        } _ => {
             Ok(None)
-        }
+        }}
     }
 
     /// List all object identifiers in the database.

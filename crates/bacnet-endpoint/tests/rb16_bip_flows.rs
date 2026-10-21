@@ -183,16 +183,16 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut saw_inbound_ack = false;
     let deadline = tokio::time::Instant::now() + WAIT;
     while tokio::time::Instant::now() < deadline && !saw_inbound_ack {
-        if let Ok(recv) = tokio::time::timeout(Duration::from_millis(200), rx_a.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(200), rx_a.recv()).await { Ok(recv) => {
             let msg = recv.expect("closed");
             if let Ok(Apdu::ComplexAck(a)) = decode_apdu(msg.apdu) {
                 if a.invoke_id == 0 {
                     saw_inbound_ack = true;
                 }
             }
-        } else {
+        } _ => {
             break;
-        }
+        }}
     }
     assert!(
         saw_inbound_ack,

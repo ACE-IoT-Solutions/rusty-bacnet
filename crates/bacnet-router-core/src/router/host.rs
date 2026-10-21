@@ -76,7 +76,7 @@ pub enum Targets<'c> {
 
 impl<'c> Targets<'c> {
     /// The networks, in the order the message lists them.
-    pub fn iter(&self) -> impl Iterator<Item = u16> + 'c {
+    pub fn iter(&self) -> impl Iterator<Item = u16> + 'c + use<'c> {
         let (list, entries) = match *self {
             Self::Networks(list) => (Some(list.iter()), None),
             Self::Entries(entries) => (None, Some(entries.iter().map(|entry| entry.network))),

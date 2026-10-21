@@ -65,7 +65,7 @@ fn assert_unknown_property(result: Result<PropertyValue, Error>) {
 }
 
 macro_rules! assert_number_of_states_policy {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         object
             .write_property(

@@ -40,11 +40,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// was made, so the future is `Ok(())` then too. A panic in `work` is
     /// raised again in the caller, as it would be were the work done in
     /// place; with the caller gone, it is logged and goes no further.
-    pub(super) fn finish_in_task(
+    pub(super) fn finish_in_task<F: Future<Output = ()> + Send + 'static>(
         &self,
         runtime: &tokio::runtime::Handle,
-        work: impl Future<Output = ()> + Send + 'static,
-    ) -> impl Future<Output = Result<(), Error>> {
+        work: F,
+    ) -> impl Future<Output = Result<(), Error>> + use<T, F> {
         let (done, finished) = oneshot::channel();
         self.request_tasks.spawn_on(
             async move {

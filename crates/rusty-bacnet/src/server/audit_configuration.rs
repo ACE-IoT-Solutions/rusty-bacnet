@@ -24,15 +24,15 @@ fn monitored_object_selectors(
         .map(|(index, selector)| {
             if selector.is_none() {
                 Ok(BACnetObjectSelector::None)
-            } else if let Ok(object) = selector.extract::<PyObjectIdentifier>() {
+            } else { match selector.extract::<PyObjectIdentifier>() { Ok(object) => {
                 Ok(BACnetObjectSelector::Object(object.to_rust()))
-            } else if let Ok(kind) = selector.extract::<PyObjectType>() {
+            } _ => { match selector.extract::<PyObjectType>() { Ok(kind) => {
                 Ok(BACnetObjectSelector::ObjectType(kind.to_rust()))
-            } else {
+            } _ => {
                 Err(PyTypeError::new_err(format!(
                     "monitored_objects[{index}] must be ObjectIdentifier, ObjectType, or None"
                 )))
-            }
+            }}}}}
         })
         .collect::<PyResult<Vec<_>>>()
         .map(Some)

@@ -173,7 +173,7 @@ fn reliability_multi_state_out_of_range() {
 /// `bacnet_enum!` type's `ALL_NAMED`: same length, same order, and every
 /// entry round-trips `from_raw` / `Display`.
 macro_rules! assert_production_values {
-    ($Ty:ident, [$($pair:expr),+ $(,)?] $(,)?) => {
+    ($Ty:ident, [$($pair:expr_2021),+ $(,)?] $(,)?) => {
         let all = [$($pair),+];
         assert_eq!($Ty::ALL_NAMED.len(), all.len(), "{} count", stringify!($Ty));
         for (i, &(name, raw)) in all.iter().enumerate() {

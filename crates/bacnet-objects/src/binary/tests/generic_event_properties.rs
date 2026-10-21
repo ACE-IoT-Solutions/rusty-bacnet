@@ -420,7 +420,7 @@ fn binary_event_history_is_listed_readable_and_read_only() {
 }
 
 macro_rules! assert_seeded_binary_event_history {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         let expected_timestamps = [
             BACnetTimeStamp::Time(Time {
@@ -524,7 +524,7 @@ fn binary_seeded_event_history_preserves_array_order_and_timestamp_choices() {
 }
 
 macro_rules! assert_binary_history_reset {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         object.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
         object.event_history.message_texts[1] = "seeded".into();

@@ -174,7 +174,7 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                 profile_name: (mask & 4 != 0).then(|| "555-value".into()),
             };
             macro_rules! build {
-                ($ctor:expr) => {{
+                ($ctor:expr_2021) => {{
                     let mut object = $ctor.unwrap();
                     object.set_profile(configured.clone()).unwrap();
                     object.set_profile(ObjectProfile::default()).unwrap();
@@ -257,7 +257,7 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 profile_name: (mask & 4 != 0).then(|| "555-input".into()),
             };
             macro_rules! build {
-                ($ctor:expr) => {{
+                ($ctor:expr_2021) => {{
                     let mut object = $ctor.unwrap();
                     object.set_profile(configured.clone()).unwrap();
                     object.set_profile(ObjectProfile::default()).unwrap();
@@ -344,7 +344,7 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 profile_name: (mask & 4 != 0).then(|| "555-input".into()),
             };
             macro_rules! build {
-                ($ctor:expr) => {{
+                ($ctor:expr_2021) => {{
                     let mut object = $ctor.unwrap();
                     object.set_profile(configured.clone()).unwrap();
                     object.set_profile(ObjectProfile::default()).unwrap();

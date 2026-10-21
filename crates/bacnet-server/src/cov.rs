@@ -219,7 +219,7 @@ impl CovSubscriptionTable {
     }
 
     fn remove_internal(&mut self, key: &CovSubscriptionKey, was_cancelled: bool) -> bool {
-        if let Some(sub) = self.subs.remove(key) {
+        match self.subs.remove(key) { Some(sub) => {
             self.timed.lock().remove(key);
             self.revisits.forget(key);
             let peer = sub.recipient();
@@ -246,9 +246,9 @@ impl CovSubscriptionTable {
                 .subscriptions_active
                 .store(self.subs.len() as u64, Ordering::Relaxed);
             true
-        } else {
+        } _ => {
             false
-        }
+        }}
     }
 
     /// Cancel only the exact family/form/property/index identity.

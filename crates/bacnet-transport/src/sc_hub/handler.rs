@@ -235,14 +235,14 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::unknown_transit::local_nak(&sc_msg) {
+            } else { match super::unknown_transit::local_nak(&sc_msg) { Some(nak) => {
                 let mut buf = BytesMut::new();
                 encode_sc_message(&mut buf, &nak);
                 // Same socket only, including supplied response address metadata.
                 // Retain the fallback's ignored immediate send error and existing
                 // supervised retirement/absolute pre-registration deadline.
                 let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            }
+            } _ => {}}}
             continue;
         }
 
@@ -278,13 +278,13 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::resolution_transit::local_nak(&sc_msg) {
+            } else { match super::resolution_transit::local_nak(&sc_msg) { Some(nak) => {
                 let mut buf = BytesMut::new();
                 encode_sc_message(&mut buf, &nak);
                 // Same socket only. Keep ignored immediate write failures and
                 // the existing retirement/absolute Connect deadline owners.
                 let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            }
+            } _ => {}}}
             continue;
         }
 
@@ -321,13 +321,13 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::advertisement_transit::local_nak(&sc_msg, &data) {
+            } else { match super::advertisement_transit::local_nak(&sc_msg, &data) { Some(nak) => {
                 let mut buf = BytesMut::new();
                 encode_sc_message(&mut buf, &nak);
                 // Same socket only. Keep ignored immediate write failures and
                 // the existing retirement/absolute Connect deadline owners.
                 let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            }
+            } _ => {}}}
             continue;
         }
 
@@ -367,13 +367,13 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::proprietary_transit::local_nak(&sc_msg, &data) {
+            } else { match super::proprietary_transit::local_nak(&sc_msg, &data) { Some(nak) => {
                 let mut buf = BytesMut::new();
                 encode_sc_message(&mut buf, &nak);
                 // Same socket only. Keep ignored immediate write failures and
                 // the existing retirement/absolute Connect deadline owners.
                 let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            }
+            } _ => {}}}
             continue;
         }
 

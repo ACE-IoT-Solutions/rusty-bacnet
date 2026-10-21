@@ -17,7 +17,7 @@ type Seen = Rc<RefCell<Vec<(u8, u8, Vec<u8>, bool)>>>;
 
 /// An application that notes each NPDU, answers an unconfirmed one to its
 /// source and sends a unicast and a broadcast of its own for it.
-fn noting(seen: &Seen) -> impl FnMut(&Received<'_>, &mut Outbox) -> Option<Answer> {
+fn noting(seen: &Seen) -> impl FnMut(&Received<'_>, &mut Outbox) -> Option<Answer> + use<> {
     let seen = Rc::clone(seen);
     move |received, outbox| {
         seen.borrow_mut().push((

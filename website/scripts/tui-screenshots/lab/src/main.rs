@@ -543,7 +543,7 @@ async fn main() -> Res<()> {
     }
     eprintln!("tui-lab: stopping");
     macro_rules! stop {
-        ($name:literal, $fut:expr) => {{
+        ($name:literal, $fut:expr_2021) => {{
             let t = std::time::Instant::now();
             let r = tokio::time::timeout(Duration::from_secs(2), $fut).await;
             eprintln!(

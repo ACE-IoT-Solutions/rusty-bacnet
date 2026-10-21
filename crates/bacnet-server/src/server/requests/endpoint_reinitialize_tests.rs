@@ -208,7 +208,7 @@ fn watching(
     inbox: &Inbox,
     seen: &Seen,
     answer: Answer,
-) -> impl Fn(&ReinitializeContext) -> Result<(), Error> + Send + Sync + 'static {
+) -> impl Fn(&ReinitializeContext) -> Result<(), Error> + Send + Sync + 'static + use<> {
     let (inbox, seen) = (Arc::clone(inbox), Arc::clone(seen));
     move |context| {
         let (inbox, seen) = (Arc::clone(&inbox), Arc::clone(&seen));

@@ -78,7 +78,7 @@ impl ProfileState {
         &self.profile
     }
 
-    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> {
+    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> + use<> {
         self.profile.metadata()
     }
 

@@ -69,7 +69,7 @@ pub use bacnet_bip_codec::{
 /// function of `$Type` listed, or `None` for another value, so a payload
 /// refusal reads as the codec's does without formatting (#1776).
 macro_rules! payload_label {
-    ($function:expr, $Type:ident: $($name:ident),+ $(,)?) => {
+    ($function:expr_2021, $Type:ident: $($name:ident),+ $(,)?) => {
         match $function {
             $( $Type::$name => Some(concat!(stringify!($name), " cannot carry a {}-octet payload")), )+
             _ => None,

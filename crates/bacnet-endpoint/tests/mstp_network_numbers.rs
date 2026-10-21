@@ -219,7 +219,7 @@ async fn mstp_number_transport_group_and_any_delegation() {
     }
 }
 macro_rules! mode_tests {
-    ($name:ident, $role:expr, $mode:expr) => {
+    ($name:ident, $role:expr_2021, $mode:expr_2021) => {
         #[tokio::test]
         async fn $name() {
             controls($role, $mode).await;

@@ -264,13 +264,13 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 {
                     self.local_vmac = conn.lock().await.local_vmac;
                     return Err(primary_err);
-                } else if let Some(failover) = dial_failover_ws(
+                } else { match dial_failover_ws(
                     &failover_connector,
                     &mut failover_ws,
                     self.connect_timeout_ms,
                 )
                 .await
-                {
+                { Some(failover) => {
                     debug!("BACnet/SC primary connect failed, attempting failover");
                     observer.failover_engaged();
                     // Reset connection state for the retry.
@@ -286,10 +286,10 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                             observer.connect_failed(ScActiveHub::Failover, &e);
                             primary_err
                         })?
-                } else {
+                } _ => {
                     self.local_vmac = conn.lock().await.local_vmac;
                     return Err(primary_err);
-                }
+                }}}
             }
         };
 

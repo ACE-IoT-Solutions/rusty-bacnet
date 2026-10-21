@@ -103,7 +103,7 @@ async fn cancelled_at(position: usize) {
 }
 
 macro_rules! cancellation_test {
-    ($name:ident, $position:expr) => {
+    ($name:ident, $position:expr_2021) => {
         #[tokio::test(start_paused = true)]
         async fn $name() {
             cancelled_at($position).await;
