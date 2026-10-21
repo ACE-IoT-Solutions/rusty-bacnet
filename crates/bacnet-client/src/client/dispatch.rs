@@ -27,6 +27,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             device_collision_tx,
             i_have_tx,
             seg_ack_senders,
+            decode_warning,
+            response_warning,
         } = context;
         let InboundApdu {
             source_mac,
@@ -96,7 +98,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 .await
                 {
                     TerminalDispatchOutcome::Completion(outcome) => {
-                        log_coordinated_mismatch(&outcome, ack.invoke_id, "SimpleAck");
+                        log_coordinated_mismatch(
+                            &outcome,
+                            ack.invoke_id,
+                            "SimpleAck",
+                            response_warning,
+                        );
                     }
                     TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
                         Self::send_client_abort(
@@ -120,6 +127,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             mac: source_mac,
                             network: source_network,
                             provenance,
+                            warning: response_warning,
                         },
                         ack,
                         limits,
@@ -173,7 +181,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     .await
                     {
                         TerminalDispatchOutcome::Completion(outcome) => {
-                            log_coordinated_mismatch(&outcome, ack.invoke_id, "ComplexAck");
+                            log_coordinated_mismatch(
+                                &outcome,
+                                ack.invoke_id,
+                                "ComplexAck",
+                                response_warning,
+                            );
                         }
                         TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
                             Self::send_client_abort(
@@ -415,7 +428,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         Err(e) => {
                             let reject_reason = e.reject_reason();
                             let e = e.into_error();
-                            warn!(error = %e, "Failed to decode ConfirmedCOVNotification");
+                            warn_throttled!(
+                                decode_warning,
+                                error = %e,
+                                "Failed to decode ConfirmedCOVNotification"
+                            );
                             Self::send_confirmed_request_reject(
                                 network,
                                 source_mac,
@@ -436,6 +453,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         source_network,
                         reply,
                         req,
+                        decode_warning,
                     )
                     .await;
                 } else {
@@ -507,7 +525,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             }
                         }
                         Err(e) => {
-                            warn!(error = %e, "Failed to decode IAm");
+                            warn_throttled!(decode_warning, error = %e, "Failed to decode IAm");
                         }
                     }
                 } else if req.service_choice
@@ -528,7 +546,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             let _ = cov_tx.send(received);
                         }
                         Err(e) => {
-                            warn!(error = %e, "Failed to decode UnconfirmedCOVNotification");
+                            warn_throttled!(
+                                decode_warning,
+                                error = %e,
+                                "Failed to decode UnconfirmedCOVNotification"
+                            );
                         }
                     }
                 } else if req.service_choice
@@ -539,9 +561,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         source_mac,
                         source_network,
                         &req.service_request,
+                        decode_warning,
                     );
                 } else if req.service_choice == UnconfirmedServiceChoice::I_HAVE {
-                    i_have::deliver(i_have_tx, source_mac, source_network, &req.service_request);
+                    i_have::deliver(
+                        i_have_tx,
+                        source_mac,
+                        source_network,
+                        &req.service_request,
+                        decode_warning,
+                    );
                 } else {
                     debug!(
                         service = req.service_choice.to_raw(),

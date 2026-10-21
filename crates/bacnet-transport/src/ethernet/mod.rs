@@ -290,8 +290,9 @@ mod transport {
     use tracing::{debug, warn};
 
     use super::egress::{send_whole_frame, LlcReply, ReplyFailures};
-    use super::ingress::{classify_frame, FrameIngress};
+    use super::ingress::{classify_frame, npdu_channel_full, FrameIngress};
     use crate::port::{ReceivedNpdu, TransportPort, TransportProvenance};
+    use crate::warn_throttle::WarnThrottle;
 
     /// Max NPDU size for Ethernet: 1518 (max frame) - 14 (eth header) - 3 (LLC) - 4 (FCS by NIC) = 1497.
     pub const MAX_ETHERNET_NPDU: usize = 1497;
@@ -578,6 +579,7 @@ mod transport {
             let reply_failures = Arc::clone(&self.reply_failures);
             let recv_task = tokio::spawn(async move {
                 let mut recv_buf = vec![0u8; 2048];
+                let channel_full = WarnThrottle::default();
                 loop {
                     let mut readable = match async_fd.readable().await {
                         Ok(r) => r,
@@ -652,9 +654,7 @@ mod transport {
                                         })
                                         .is_err()
                                     {
-                                        warn!(
-                                            "Ethernet: NPDU channel full, dropping incoming frame"
-                                        );
+                                        npdu_channel_full(&channel_full);
                                     }
                                 }
                                 Err(_) => {

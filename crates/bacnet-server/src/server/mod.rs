@@ -43,6 +43,8 @@ use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 use bacnet_transport::port::TransportPort;
+use bacnet_transport::warn_throttle::WarnThrottle;
+use bacnet_transport::warn_throttled;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, NotifyType,
     ObjectType, PropertyIdentifier, RejectReason, Segmentation, UnconfirmedServiceChoice,
@@ -774,6 +776,8 @@ mod truncated_request_wire_tests;
 mod value_cov_increment_tests;
 #[cfg(test)]
 mod value_source_local_tests;
+#[cfg(test)]
+mod warn_spy;
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Get a snapshot of discovery rate-limiting counters.

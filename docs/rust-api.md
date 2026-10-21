@@ -8460,8 +8460,9 @@ and neither does a destination naming the server's own Device object. A local
 notification whose Notification Class names that Device object under several
 process identifiers is one notification, with one cap and one copy per
 destination. The destinations past the cap are dropped and counted in
-`forwarding_cap_dropped`; a capped notification logs a warning at most once a
-minute per process, and at debug level in between. There is no rate limit on
+`forwarding_cap_dropped`; a capped notification logs a warning at most once
+every 10 seconds per server (before 0.14.0, once a minute per process), with
+the count since the last one, and at debug level in between. There is no rate limit on
 received notifications.
 
 The server executes ConfirmedEventNotification, so it acknowledges every

@@ -289,6 +289,11 @@ impl Forwarding {
         self.services.event_suppressions.snapshot()
     }
 
+    /// The server's throttle on the forwarding-cap warning.
+    pub(super) fn cap_warning(&self) -> &WarnThrottle {
+        &self.services.event_suppressions.cap_warning
+    }
+
     /// Give the network layer `number` as the local network's number, as
     /// the server's startup or its Number worker publishes it.
     pub(super) fn set_local_network(&self, number: u16) {

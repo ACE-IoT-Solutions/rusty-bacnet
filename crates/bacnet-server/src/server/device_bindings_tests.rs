@@ -13,6 +13,9 @@ const ROUTER: &[u8] = &[0x30, 0x31];
 const FINAL_PEER: &[u8] = &[0x40, 0x41, 0x42];
 const BROADCAST: &[u8] = &[0xFF, 0xFF];
 
+#[path = "unconfirmed_warning_tests.rs"]
+mod unconfirmed_warnings;
+
 fn device(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap()
 }

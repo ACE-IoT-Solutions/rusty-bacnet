@@ -474,3 +474,22 @@ async fn a_failed_llc_reply_is_counted_and_its_warning_throttled() {
     );
     assert_eq!(failures.count(), 3);
 }
+
+/// #1950: a burst of frames dropped on a full NPDU channel warns once per
+/// interval, with the drops since the last warning.
+#[tokio::test(start_paused = true)]
+async fn the_channel_full_warning_goes_out_at_most_once_per_interval() {
+    use super::ingress::npdu_channel_full;
+    use crate::warn_throttle::{WarnThrottle, WARNING_INTERVAL};
+    let throttle = WarnThrottle::default();
+    assert_eq!(npdu_channel_full(&throttle), Some(1));
+    for _ in 0..5 {
+        assert_eq!(
+            npdu_channel_full(&throttle),
+            None,
+            "debug inside the interval"
+        );
+    }
+    tokio::time::advance(WARNING_INTERVAL).await;
+    assert_eq!(npdu_channel_full(&throttle), Some(6));
+}

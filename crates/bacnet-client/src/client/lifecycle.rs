@@ -123,6 +123,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let routed_path_limits_dispatch = Arc::clone(&routed_path_limits);
         let group_source_request_drops = Arc::new(AtomicU64::new(0));
         let group_source_drops_dispatch = Arc::clone(&group_source_request_drops);
+        // One of each per client: a peer's flood of undecodable APDUs, or of
+        // responses refused, warns once per interval, the rest at debug
+        // (#1950).
+        let decode_warning = Arc::new(WarnThrottle::default());
+        let response_warning = Arc::new(WarnThrottle::default());
+        #[cfg(test)]
+        let decode_warning_hook = Arc::clone(&decode_warning);
+        #[cfg(test)]
+        let response_warning_hook = Arc::clone(&response_warning);
 
         let dispatch_task = tokio::spawn(async move {
             let mut seg_state: HashMap<SegKey, SegmentedReceiveState> = HashMap::new();
@@ -243,6 +252,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         device_collision_tx: &device_collision_tx_dispatch,
                                         i_have_tx: &i_have_tx_dispatch,
                                         seg_ack_senders: &seg_ack_senders_dispatch,
+                                        decode_warning: &decode_warning,
+                                        response_warning: &response_warning,
                                     },
                                     &mut seg_state,
                                     InboundApdu {
@@ -259,7 +270,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 .await;
                             }
                             Err(e) => {
-                                warn!(error = %e, "Failed to decode received APDU");
+                                warn_throttled!(
+                                    decode_warning,
+                                    error = %e,
+                                    "Failed to decode received APDU"
+                                );
                             }
                         }
                     }
@@ -290,6 +305,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             segmented_post_wait_cleanup: Arc::new(SegmentedPostWaitCleanupHook::default()),
             #[cfg(test)]
             segmented_cleanup,
+            #[cfg(test)]
+            decode_warning: decode_warning_hook,
+            #[cfg(test)]
+            response_warning: response_warning_hook,
             local_mac,
             routed_path_limits,
             group_source_request_drops,

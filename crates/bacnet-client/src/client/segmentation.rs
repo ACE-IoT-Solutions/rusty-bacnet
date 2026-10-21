@@ -56,6 +56,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             mac: source_mac,
             network: source_network,
             provenance,
+            warning,
         } = source;
         let seq = ack.sequence_number.unwrap_or(0);
         let coordinator_apdu = Apdu::ComplexAck(ack.clone());
@@ -78,7 +79,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             provenance,
         ) {
             if let Some(state) = seg_state.remove(&conflict) {
-                warn!(
+                warn_throttled!(
+                    warning,
                     invoke_id = ack.invoke_id,
                     "Aborting segmented reassembly on provenance mismatch (fail-closed)"
                 );
@@ -175,7 +177,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         // draws the Clause 5.4.4.1 Abort even when every slot is occupied.
         const MAX_CONCURRENT_SEG_SESSIONS: usize = 64;
         if !seg_state.contains_key(&key) && seg_state.len() >= MAX_CONCURRENT_SEG_SESSIONS {
-            warn!(
+            warn_throttled!(
+                warning,
                 invoke_id = ack.invoke_id,
                 sessions = seg_state.len(),
                 "Max concurrent segmented sessions reached, aborting newcomer"
@@ -255,14 +258,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
             if is_duplicate {
                 state.duplicate_count = 0;
-                warn!(
+                warn_throttled!(
+                    warning,
                     invoke_id = ack.invoke_id,
-                    seq, "Duplicate allowance exhausted, sending negative SegmentAck"
+                    seq,
+                    "Duplicate allowance exhausted, sending negative SegmentAck"
                 );
             } else {
                 state.initial_sequence_number = state.last_sequence_number;
                 state.duplicate_count = 0;
-                warn!(
+                warn_throttled!(
+                    warning,
                     invoke_id = ack.invoke_id,
                     expected = state.expected_next_seq,
                     received = seq,
@@ -293,7 +299,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         // treated as an error, so a cap that duplicates could trip would abort
         // healthy transfers on retransmission.
         if state.accepted_segments >= limits.max_reassembly_segments {
-            warn!(
+            warn_throttled!(
+                warning,
                 invoke_id = ack.invoke_id,
                 accepted = state.accepted_segments,
                 limit = limits.max_reassembly_segments,
@@ -349,7 +356,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             // This is another local failure to retain the segment, so
             // Clause 5.4.4.4 wants the same Abort rather than leaving the
             // caller to time out on a session that can no longer complete.
-            warn!(error = %e, "Rejecting oversized segment");
+            warn_throttled!(warning, error = %e, "Rejecting oversized segment");
             let reply_mac = state.reply_mac.clone();
             let reply_network = state.reply_network.clone();
             let owner = state.owner.clone();
@@ -431,7 +438,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     if let CompletionOutcome::ServiceChoiceMismatch { expected, observed } = outcome
                     {
                         tsm.reset_segmented_response(&tsm_mac, ack.invoke_id, &state.owner);
-                        warn!(
+                        warn_throttled!(
+                            warning,
                             invoke_id = ack.invoke_id,
                             expected = expected.to_raw(),
                             observed = observed.to_raw(),
@@ -445,7 +453,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         ack.invoke_id,
                         &state.owner,
                     );
-                    warn!(error = %e, "Failed to reassemble segmented ComplexAck");
+                    warn_throttled!(
+                        warning,
+                        error = %e,
+                        "Failed to reassemble segmented ComplexAck"
+                    );
                 }
             }
         }
