@@ -95,6 +95,27 @@ evidence, not PyPI, general wheel/platform, or physical-network qualification.
 That evidence is for v0.11.0; the lab has not yet run against a later
 release's wheels.
 
+## Displayed Python first-read verification
+
+The binding unittest suite also extracts the sole Python code block from
+`src/content/docs/start/python.md` and executes those exact bytes in a subprocess.
+It uses the installed extension and an ephemeral loopback server to check typed
+values, instance selection, unknown-object errors and argument bounds. Missing,
+ambiguous, empty or unclosed Python blocks fail instead of silently selecting a
+different sample. Run this check from the repository root:
+
+```sh
+python -m unittest discover -s crates/rusty-bacnet/tests -p test_website_first_read.py -v
+```
+
+The existing binding CI jobs discover this test against their development
+extension. To validate a published release, run the same test in a separate
+virtual environment containing its published wheel and record the wheel's source,
+hash and installation report. A development package can report the release's
+version, so the version string alone is insufficient provenance. This check does
+not execute other website snippets or qualify discovery, COV, writes or physical
+networks. `npm run verify` remains separate from native Python execution.
+
 ## TUI screenshots
 
 The `tui/` pages show real macOS Terminal screenshots of `bacnet tui`. They are
