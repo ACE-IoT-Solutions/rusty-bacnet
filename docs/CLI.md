@@ -106,13 +106,15 @@ Commands that take a `<target>` argument accept several formats:
 
 When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
-**Routed targets.** `read`, `readm`, `write`, `writem` and `subscribe` take
+**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `write`, `writem`
+and `subscribe` take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
 the device to answer, then sends the request through the router that answered
-for it. Other commands refuse a routed target, since the client has routed
-calls only for those services. On BACnet/SC, device tables show a VMAC as hex
-octets (`02:00:00:00:00:01`), which every target argument takes back.
+for it. `read-range --all` keeps every metadata read and range request routed
+to that device while paging its log. Other commands still refuse routed
+targets; their service variants remain part of #1786. On BACnet/SC, device
+tables show a VMAC as hex octets (`02:00:00:00:00:01`), which every target argument takes back.
 
 **B/IPv6 targets are VMACs.** A B/IPv6 node is addressed by its 3-octet VMAC,
 not its IPv6 address (Clause U.1.3), and a device's VMAC is its device instance

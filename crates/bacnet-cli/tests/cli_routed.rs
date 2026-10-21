@@ -60,7 +60,7 @@ async fn site() -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
             let server = BACnetServer::generic_builder()
                 .device(lab_identity(INSTANCE))
                 .transport(station)
-                .database(lab_database(INSTANCE))
+                .database(read_services::database())
                 .build()
                 .await
                 .unwrap();
@@ -161,11 +161,15 @@ async fn routed_targets_fail_clearly() {
         "--port",
         "0",
         "--json",
-        "alarms",
+        "file-read",
         &format!("{DNET}:{INSTANCE}"),
+        "1",
     ])
     .await;
     failure(&output, "is a routed target");
     server.stop().await.unwrap();
     router.stop().await;
 }
+
+#[path = "cli_routed/read_services.rs"]
+mod read_services;

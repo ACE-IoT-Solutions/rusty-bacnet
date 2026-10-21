@@ -7,6 +7,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{EnableDisable, EventState, ObjectType, ReinitializedState};
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
+use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 /// Synchronize time with a remote device.
@@ -145,10 +146,10 @@ pub async fn reinit_cmd<T: TransportPort + 'static>(
 /// Get event/alarm information from a device.
 pub async fn alarms_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client.get_event_information(mac, None).await?;
+    let response = to.get_event_information(client, None).await?;
 
     // TODO: Decode GetEventInformation-ACK properly.
     let hex: String = response

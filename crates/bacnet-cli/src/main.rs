@@ -251,8 +251,8 @@ async fn execute_command<T: TransportPort + 'static>(
             commands::device::reinit_cmd(client, &mac, state, password.as_deref(), format).await?;
         }
         Command::Alarms { target } => {
-            let mac = resolve_target_mac(client, target).await?;
-            commands::device::alarms_cmd(client, &mac, format).await?;
+            let to = resolve_destination(client, target).await?;
+            commands::device::alarms_cmd(client, &to, format).await?;
         }
         Command::FileRead {
             target,
@@ -327,12 +327,12 @@ async fn execute_command<T: TransportPort + 'static>(
             property,
             range,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
             let (prop, index) = parse::parse_property(property)?;
             commands::read_range::read_range_cmd(
                 client,
-                &mac,
+                &to,
                 object_type,
                 instance,
                 prop,

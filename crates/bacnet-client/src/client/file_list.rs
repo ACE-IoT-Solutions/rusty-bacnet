@@ -65,6 +65,36 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         .await
     }
 
+    /// Get event information from a discovered device, routing when needed.
+    ///
+    /// The continuation object and raw acknowledgement have the same meaning as
+    /// [`Self::get_event_information`]. A missing device fails before sending.
+    pub async fn get_event_information_from_device(
+        &self,
+        device_instance: u32,
+        last_received_object_identifier: Option<bacnet_types::primitives::ObjectIdentifier>,
+    ) -> Result<Bytes, Error> {
+        let (mac, routing) = self.resolve_device(device_instance).await?;
+        if let Some((network, address)) = routing {
+            let request = bacnet_services::alarm_event::GetEventInformationRequest {
+                last_received_object_identifier,
+            };
+            let mut buf = BytesMut::new();
+            request.encode(&mut buf);
+            self.confirmed_request_routed(
+                &mac,
+                network,
+                &address,
+                ConfirmedServiceChoice::GET_EVENT_INFORMATION,
+                &buf,
+            )
+            .await
+        } else {
+            self.get_event_information(&mac, last_received_object_identifier)
+                .await
+        }
+    }
+
     /// Send a caller-supplied AcknowledgeAlarm request without fabricating fields.
     pub async fn acknowledge_alarm_request(
         &self,
