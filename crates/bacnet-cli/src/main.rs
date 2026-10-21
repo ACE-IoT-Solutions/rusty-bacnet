@@ -305,10 +305,10 @@ async fn execute_command<T: TransportPort + 'static>(
             ack_time,
         } => {
             let (object_type, instance) = parse::parse_object_specifier(object)?;
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             commands::device::acknowledge_alarm_cmd(
                 client,
-                &mac,
+                &to,
                 commands::device::AcknowledgeAlarmArgs {
                     object_type,
                     instance,
@@ -343,16 +343,14 @@ async fn execute_command<T: TransportPort + 'static>(
             .await?;
         }
         Command::CreateObject { target, object } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
-            commands::device::create_object_cmd(client, &mac, object_type, instance, format)
-                .await?;
+            commands::device::create_object_cmd(client, &to, object_type, instance, format).await?;
         }
         Command::DeleteObject { target, object } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
-            commands::device::delete_object_cmd(client, &mac, object_type, instance, format)
-                .await?;
+            commands::device::delete_object_cmd(client, &to, object_type, instance, format).await?;
         }
         Command::Capture { .. } => {
             return Err("capture command should be handled before client setup".into());

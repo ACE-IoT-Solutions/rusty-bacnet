@@ -177,11 +177,8 @@ async fn routed_targets_fail_clearly() {
         "--port",
         "0",
         "--json",
-        "delete-object",
+        "bdt",
         &format!("{DNET}:{INSTANCE}"),
-        "av:1",
-        "--allow-write",
-        "--yes",
     ])
     .await;
     failure(&output, "is a routed target");
@@ -199,3 +196,6 @@ mod file_services;
 
 #[path = "cli_routed/device_admin.rs"]
 mod device_admin;
+
+#[path = "cli_routed/object_alarm.rs"]
+mod object_alarm;

@@ -7,7 +7,8 @@
 //! ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, SubscribeCOV,
 //! GetEventInformation, ReadRange (including log paging), AtomicReadFile and
 //! AtomicWriteFile, DeviceCommunicationControl, ReinitializeDevice and both
-//! time synchronization services use routed calls.
+//! time synchronization services, CreateObject, DeleteObject and canonical
+//! AcknowledgeAlarm use routed calls.
 //! Commands without a routed call take [`resolve_mac`], which refuses one.
 
 use std::time::Duration;
@@ -102,14 +103,14 @@ pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
                 "Device {instance} is behind a router; only read, readm, read-range, alarms, \
-                 file-read, file-write, write, writem, subscribe, control, reinit and time-sync reach routed devices"
+                 file-read, file-write, write, writem, subscribe, control, reinit, time-sync, create-object, delete-object and ack-alarm reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
             "'{text}' is a routed target; only read, readm, read-range, alarms, \
-             file-read, file-write, write, writem, subscribe, control, reinit and time-sync reach routed devices"
+             file-read, file-write, write, writem, subscribe, control, reinit, time-sync, create-object, delete-object and ack-alarm reach routed devices"
         )),
     }
 }
@@ -228,6 +229,51 @@ impl Destination {
             }
         }
     }
+    /// Create an object, retaining its raw service acknowledgement.
+    pub(crate) async fn create_object<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        specifier: bacnet_services::object_mgmt::ObjectSpecifier,
+        initial_values: Vec<bacnet_services::common::BACnetPropertyValue>,
+    ) -> Result<bytes::Bytes, Error> {
+        match self {
+            Self::Mac(mac) => client.create_object(mac, specifier, initial_values).await,
+            Self::Device(instance) => {
+                client
+                    .create_object_from_device(*instance, specifier, initial_values)
+                    .await
+            }
+        }
+    }
+
+    /// Delete the identified object.
+    pub(crate) async fn delete_object<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        object: ObjectIdentifier,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Mac(mac) => client.delete_object(mac, object).await,
+            Self::Device(instance) => client.delete_object_from_device(*instance, object).await,
+        }
+    }
+
+    /// Acknowledge an alarm with the caller's exact request.
+    pub(crate) async fn acknowledge_alarm_request<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        request: &bacnet_services::alarm_event::AcknowledgeAlarmRequest,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Mac(mac) => client.acknowledge_alarm_request(mac, request).await,
+            Self::Device(instance) => {
+                client
+                    .acknowledge_alarm_request_from_device(*instance, request)
+                    .await
+            }
+        }
+    }
+
     /// Dispatch device_communication_control through the resolved device or local MAC.
     pub(crate) async fn device_communication_control<T: TransportPort + 'static>(
         &self,

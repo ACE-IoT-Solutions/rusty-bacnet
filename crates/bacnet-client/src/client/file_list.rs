@@ -115,6 +115,33 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         Ok(())
     }
 
+    /// Send exact caller-supplied alarm acknowledgment fields to a discovered device.
+    ///
+    /// Routes when needed and preserves both timestamps, confirmation and errors
+    /// from [`Self::acknowledge_alarm_request`]. A missing device fails before sending.
+    pub async fn acknowledge_alarm_request_from_device(
+        &self,
+        device_instance: u32,
+        request: &bacnet_services::alarm_event::AcknowledgeAlarmRequest,
+    ) -> Result<(), Error> {
+        let (mac, routing) = self.resolve_device(device_instance).await?;
+        if let Some((network, address)) = routing {
+            let mut buf = BytesMut::new();
+            request.encode(&mut buf)?;
+            self.confirmed_request_routed(
+                &mac,
+                network,
+                &address,
+                ConfirmedServiceChoice::ACKNOWLEDGE_ALARM,
+                &buf,
+            )
+            .await?;
+            Ok(())
+        } else {
+            self.acknowledge_alarm_request(&mac, request).await
+        }
+    }
+
     /// Acknowledge an alarm on a remote device.
     ///
     /// This compatibility helper fabricates sequence-zero timestamps, which

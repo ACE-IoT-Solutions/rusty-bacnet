@@ -107,7 +107,8 @@ Commands that take a `<target>` argument accept several formats:
 When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
 **Routed targets.** `read`, `readm`, `read-range`, `alarms`, `file-read`,
-`file-write`, `write`, `writem`, `subscribe`, `control`, `reinit` and `time-sync` take
+`file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
+`create-object`, `delete-object` and `ack-alarm` (`ack`) take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
 the device to answer, then sends the request through the router that answered
@@ -117,9 +118,10 @@ window; `file-write` retains stream access and requires `--allow-write`.
 `control` and `reinit` retain their write and confirmation guards. `time-sync`
 requires `--allow-write`; its success reports local send completion, not remote
 clock acceptance. Both local and `--utc` choices retain the existing UTC-derived
-calendar fields. Other
-commands still refuse routed targets; their service variants remain part of
-#1786. On BACnet/SC, device
+calendar fields. Object creation/deletion and alarm acknowledgment require
+`--allow-write`; acknowledgment retains both caller-supplied timestamps. The
+BVLC commands `bdt`, `fdt`, `register` and `unregister` address local B/IP peers
+and refuse routed targets. On BACnet/SC, device
 tables show a VMAC as hex octets (`02:00:00:00:00:01`), which every target argument takes back.
 
 **B/IPv6 targets are VMACs.** A B/IPv6 node is addressed by its 3-octet VMAC,
