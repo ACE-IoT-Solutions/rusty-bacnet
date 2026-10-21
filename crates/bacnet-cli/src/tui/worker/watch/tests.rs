@@ -146,3 +146,6 @@ fn a_log_line_puts_a_routed_device_network_in_its_own_column() {
     let line = csv_line(&point, &sample, &Ok("72.5".into()), 7, "cov");
     assert_eq!(line, "7,2001,analog-input 1,present-value,72.5,,cov,");
 }
+
+#[path = "retry_tests.rs"]
+mod retry;
