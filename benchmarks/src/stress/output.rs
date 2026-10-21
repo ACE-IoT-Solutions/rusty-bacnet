@@ -12,6 +12,8 @@ pub struct StressResult {
     pub transport: String,
     pub parameters: serde_json::Value,
     pub results: StressMetrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clients_diagnostics: Option<super::client_diagnostics::ClientsDiagnostics>,
 }
 
 /// Aggregate metrics for one scenario run, summed over every step of its

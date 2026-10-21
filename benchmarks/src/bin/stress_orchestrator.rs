@@ -204,6 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = StressResult {
         scenario: "docker-cross-network".into(),
+        clients_diagnostics: None,
         transport: "bip".into(),
         parameters: serde_json::json!({
             "duration_secs": args.duration,
