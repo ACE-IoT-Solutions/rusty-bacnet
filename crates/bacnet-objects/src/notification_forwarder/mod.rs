@@ -81,7 +81,7 @@ pub use persistence::{
     FileNotificationForwarderPersistence, ForwarderSnapshot, NotificationForwarderPersistence,
 };
 pub use saving::ForwarderSaveCounters;
-pub use selection::{forwarding_targets, ForwardingInput, ForwardingTargets};
+pub use selection::{ForwardingInput, ForwardingTargets, forwarding_targets};
 
 /// BACnet Notification Forwarder object (type 51). See the
 /// [module documentation](self).

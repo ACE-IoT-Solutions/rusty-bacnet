@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use super::mstp::{JoinDialog, MstpKey};
-use super::{App, Overlay, FLASH_FOR};
+use super::{App, FLASH_FOR, Overlay};
 use crate::mstp::MstpArgs;
 use crate::tui::monitor::analysis::{self, Proposal, Thresholds};
 use crate::tui::monitor::{MonitorPlan, MonitorReport, MonitorSample};

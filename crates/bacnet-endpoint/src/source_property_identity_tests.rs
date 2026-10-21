@@ -236,9 +236,11 @@ async fn source_read_alias_cancelled_retry_resolves_identity_on_original_recipie
         Some(BACnetTimeStamp::SequenceNumber(0))
     );
     released(&session).await;
-    assert!(timeout(Duration::from_millis(30), old_records.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(30), old_records.recv())
+            .await
+            .is_err()
+    );
     // Subsequent admitted work uses the new route and concrete peer identity.
     let read = start_alias(&session, peer.local_mac(), ObjectType::NETWORK_PORT);
     let envelope = receive(&mut requests).await;

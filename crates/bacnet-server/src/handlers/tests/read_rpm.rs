@@ -77,10 +77,12 @@ fn active_cov_subscriptions_low_level_handlers_read_standalone_empty_list() {
     request.encode(&mut request_buf);
     let mut response_buf = BytesMut::new();
     handle_read_property(&db, &request_buf, &mut response_buf).unwrap();
-    assert!(ReadPropertyACK::decode(&response_buf)
-        .unwrap()
-        .property_value
-        .is_empty());
+    assert!(
+        ReadPropertyACK::decode(&response_buf)
+            .unwrap()
+            .property_value
+            .is_empty()
+    );
 
     let request = ReadPropertyMultipleRequest {
         list_of_read_access_specs: vec![ReadAccessSpecification {
@@ -576,10 +578,10 @@ fn read_property_serves_derived_services_supported() {
 
 #[test]
 fn rpm_multistate_indexed_state_text_and_list_gating_preserve_bytes() {
+    use PropertyIdentifier as P;
     use bacnet_services::rpm::ReadPropertyMultipleACK;
     use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
     use bacnet_types::primitives::PropertyValue;
-    use PropertyIdentifier as P;
 
     for mut object in super::property_metadata::multistate_objects() {
         let oid = object.object_identifier();

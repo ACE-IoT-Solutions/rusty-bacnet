@@ -611,9 +611,10 @@ fn access_door_relinquish_default_write_recaptures_present_value() {
 
     // The local setter shares the validation domain.
     assert!(door.set_relinquish_default(DoorValue::from_raw(4)).is_err());
-    assert!(door
-        .set_relinquish_default(DoorValue::EXTENDED_PULSE_UNLOCK)
-        .is_err());
+    assert!(
+        door.set_relinquish_default(DoorValue::EXTENDED_PULSE_UNLOCK)
+            .is_err()
+    );
     door.set_relinquish_default(DoorValue::LOCK).unwrap();
     assert_eq!(
         door.read_property(PropertyIdentifier::PRESENT_VALUE, None)

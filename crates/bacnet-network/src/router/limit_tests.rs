@@ -3,14 +3,14 @@
 //! long, on ports the test drives. The BACnet/SC failovers are in
 //! `tests/sc_limits.rs`.
 
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_npdu::NetworkMessageType;
 use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use std::sync::atomic::Ordering;
 use tokio::sync::watch;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::driven_port::{Driven, Handle, Sent};
 use super::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};

@@ -1,9 +1,9 @@
 //! Frame types, headers, and encoding.
 
 use crate::cobs;
-use crate::crc::{crc16, crc8};
+use crate::crc::{crc8, crc16};
 use crate::{
-    FrameError, FrameSink, BROADCAST_MAC, HEADER_LENGTH, MAX_COBS_LENGTH, MAX_STANDARD_MPDU_DATA,
+    BROADCAST_MAC, FrameError, FrameSink, HEADER_LENGTH, MAX_COBS_LENGTH, MAX_STANDARD_MPDU_DATA,
     MIN_COBS_LENGTH, PREAMBLE,
 };
 

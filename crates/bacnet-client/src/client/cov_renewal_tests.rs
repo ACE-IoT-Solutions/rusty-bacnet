@@ -1,6 +1,6 @@
 use super::*;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, UnconfirmedRequest};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{UnconfirmedRequest, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_transport::loopback::LoopbackTransport;
@@ -592,9 +592,11 @@ async fn managed_cov_subscription_validates_finite_lifetime_options() {
         Ok(_) => panic!("zero lifetime should be rejected before subscribing"),
         Err(error) => error,
     };
-    assert!(zero_lifetime
-        .to_string()
-        .contains("finite non-zero lifetime"));
+    assert!(
+        zero_lifetime
+            .to_string()
+            .contains("finite non-zero lifetime")
+    );
 
     let oversized_margin = match Arc::clone(&client)
         .manage_cov_subscription(
@@ -610,9 +612,11 @@ async fn managed_cov_subscription_validates_finite_lifetime_options() {
         Ok(_) => panic!("oversized renewal margin should be rejected before subscribing"),
         Err(error) => error,
     };
-    assert!(oversized_margin
-        .to_string()
-        .contains("renewal margin must be shorter than lifetime"));
+    assert!(
+        oversized_margin
+            .to_string()
+            .contains("renewal margin must be shorter than lifetime")
+    );
 
     for capacity in [0, MAX_COV_CHANNEL_CAPACITY + 1] {
         let invalid_capacity = match Arc::clone(&client)
@@ -629,9 +633,11 @@ async fn managed_cov_subscription_validates_finite_lifetime_options() {
             Ok(_) => panic!("invalid event channel capacity should be rejected before subscribing"),
             Err(error) => error,
         };
-        assert!(invalid_capacity
-            .to_string()
-            .contains("event channel capacity"));
+        assert!(
+            invalid_capacity
+                .to_string()
+                .contains("event channel capacity")
+        );
     }
 
     let mut client = match Arc::try_unwrap(client) {

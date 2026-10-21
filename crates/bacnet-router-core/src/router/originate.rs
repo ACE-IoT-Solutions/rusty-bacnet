@@ -20,7 +20,7 @@ use super::ingress::is_unconfirmed;
 use super::output::{Cause, Current, Kind, Target};
 use super::tasks::Task;
 use super::{Group, Storage};
-use crate::npdu::{Address, NetworkPriority, Npdu, GLOBAL_NETWORK};
+use crate::npdu::{Address, GLOBAL_NETWORK, NetworkPriority, Npdu};
 use crate::table::Reachability;
 use crate::{Instant, PortId};
 
@@ -145,14 +145,14 @@ impl core::error::Error for OriginateError {}
 const NO_PORT: PortId = PortId(u8::MAX);
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-        const B: usize,
-    > Storage<P, R, H, D, N, G, B>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// [`Router::originate`](super::Router::originate).
     pub(super) fn originate(

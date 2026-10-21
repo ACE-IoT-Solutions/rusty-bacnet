@@ -29,7 +29,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 return Err(invalid(
                     "registered Network Port refused: a BBMD that also registers as a \
                      foreign device has no single B/IP mode",
-                ))
+                ));
             }
             None => return Err(invalid("registration requires B/IP")),
         };

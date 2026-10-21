@@ -1,7 +1,7 @@
 //! Application values as text: numbers, enumerations and bit strings named
 //! for their property in kebab case, dates and times readable.
 
-use bacnet_types::enums::{resolve_bits, resolve_enum, PropertyIdentifier, ResolvedBits};
+use bacnet_types::enums::{PropertyIdentifier, ResolvedBits, resolve_bits, resolve_enum};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 
 use super::Floats;

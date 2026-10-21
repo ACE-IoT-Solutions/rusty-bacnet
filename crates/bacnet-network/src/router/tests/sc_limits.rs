@@ -12,9 +12,9 @@ use super::*;
 use bacnet_npdu::NpduLimits;
 use bacnet_transport::sc::{LoopbackWebSocket, ScReconnectConfig, ScTransport, WebSocketPort};
 use bacnet_transport::sc_frame::{
-    decode_sc_message, encode_sc_message, ScFunction, ScMessage, ScOption, Vmac,
+    ScFunction, ScMessage, ScOption, Vmac, decode_sc_message, encode_sc_message,
 };
-use tokio::time::{sleep, timeout, Instant};
+use tokio::time::{Instant, sleep, timeout};
 
 /// The node on network 1000 that sends, and the one on 2000 it sends to.
 const NODE: Vmac = [0x0A; 6];

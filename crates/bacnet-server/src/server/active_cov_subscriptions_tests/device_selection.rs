@@ -2,7 +2,7 @@
 //! and discovery-limiter rebinding are deliberately outside this contract.
 use super::*;
 use bacnet_encoding::apdu::decode_apdu;
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::encode_app_object_id;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;

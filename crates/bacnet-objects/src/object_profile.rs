@@ -49,7 +49,7 @@ use crate::property_metadata::{
 mod persistence;
 mod saving;
 pub use persistence::{
-    FileTagsPersistence, TagsPersistence, TagsSnapshot, MAX_TAGS_SNAPSHOT_BYTES,
+    FileTagsPersistence, MAX_TAGS_SNAPSHOT_BYTES, TagsPersistence, TagsSnapshot,
 };
 pub(crate) use saving::ProfileState;
 

@@ -5,11 +5,11 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
 use bacnet_types::error::Error;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::segmented_receive_lifecycle_tests::{
-    expect_client_abort, expect_segment_ack, recv_apdu, response_segment, send_to_client,
-    start_reassembly, CLIENT_MAC, SERVER_MAC,
+    CLIENT_MAC, SERVER_MAC, expect_client_abort, expect_segment_ack, recv_apdu, response_segment,
+    send_to_client, start_reassembly,
 };
 use super::{BACnetClient, ClientConfig};
 

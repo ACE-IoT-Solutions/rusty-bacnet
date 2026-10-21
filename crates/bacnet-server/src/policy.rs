@@ -267,9 +267,9 @@ impl FnPolicy {
     pub fn unconfirmed_audit_notification(
         mut self,
         decide: impl Fn(&UnconfirmedAuditNotificationAuthorizationContext) -> bool
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.unconfirmed_audit_notification = Some(Arc::new(decide));
         self

@@ -2,7 +2,7 @@ use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{Duration as CoreDuration, QueueRefusal};
 use bacnet_time::HostClock;
 use bacnet_types::error::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use super::adapter::Task;
 use super::diagnostics::increment;
@@ -463,8 +463,8 @@ impl SerialPort for NoSerial {
 #[cfg(test)]
 mod abort_tests {
     use std::future::pending;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::*;

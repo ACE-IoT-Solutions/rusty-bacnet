@@ -10,11 +10,11 @@ use tokio::{
     time::Instant,
 };
 use tokio_tungstenite::{
-    tungstenite::{
-        handshake::server::{ErrorResponse, Request, Response},
-        Message,
-    },
     WebSocketStream,
+    tungstenite::{
+        Message,
+        handshake::server::{ErrorResponse, Request, Response},
+    },
 };
 
 type Socket = WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>;
@@ -94,7 +94,7 @@ async fn eof(mut tcp: TcpStream) {
                         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
                     ) =>
                 {
-                    break
+                    break;
                 }
                 Err(e) => panic!("unexpected TCP read error: {e}"),
             }

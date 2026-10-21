@@ -15,7 +15,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use serde::{Deserialize, Serialize};
 
-use super::{Planned, Stored, WriteSpec, NULL};
+use super::{NULL, Planned, Stored, WriteSpec};
 
 mod fold;
 

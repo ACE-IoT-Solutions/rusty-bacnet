@@ -148,7 +148,11 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             tokio::time::sleep(delay).await;
             if !self.conn.lock().await.connect_retry_allowed {
                 if let Some(suppressed) = self.retry_diagnostic() {
-                    warn!(attempt, suppressed, "SC reconnection skipped without retry eligibility (suppressed {suppressed} reconnect diagnostics)");
+                    warn!(
+                        attempt,
+                        suppressed,
+                        "SC reconnection skipped without retry eligibility (suppressed {suppressed} reconnect diagnostics)"
+                    );
                 }
                 break;
             }
@@ -203,7 +207,10 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                         self.publish(&failover, &probe_conn, ScActiveHub::Failover)
                             .await;
                         let suppressed = self.diagnostic_throttle.take_suppressed();
-                        info!(suppressed, "SC connected to failover hub after primary reconnect exhaustion (suppressed {suppressed} reconnect diagnostics)");
+                        info!(
+                            suppressed,
+                            "SC connected to failover hub after primary reconnect exhaustion (suppressed {suppressed} reconnect diagnostics)"
+                        );
                         return Some((failover, ScActiveHub::Failover));
                     }
                     Err(e) => {
@@ -250,7 +257,10 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             // reused. Another hub without one is simply skipped.
             if lost {
                 if let Some(suppressed) = self.retry_diagnostic() {
-                    warn!(suppressed, "SC retired socket cannot be reused without a fresh connector (suppressed {suppressed} reconnect diagnostics)");
+                    warn!(
+                        suppressed,
+                        "SC retired socket cannot be reused without a fresh connector (suppressed {suppressed} reconnect diagnostics)"
+                    );
                 }
                 return Step::Dead;
             }

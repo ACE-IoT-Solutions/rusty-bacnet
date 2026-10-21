@@ -1,7 +1,7 @@
 use super::request_tasks_tests::fixture;
 use super::*;
 use crate::server::test_transport::TestTransport;
-use std::future::{pending, poll_fn, Future};
+use std::future::{Future, pending, poll_fn};
 use std::task::Poll;
 use tokio::sync::oneshot;
 

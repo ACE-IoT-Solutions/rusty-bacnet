@@ -1,7 +1,7 @@
 //! B/IPv6 BVLL frames and messages: one-shot decode, and checked encode.
 
-use super::{Bip6Address, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6Error, BVLC_TYPE_BIP6};
-use crate::{BvllSink, PayloadShape, HEADER_LENGTH, MAX_BVLL_LENGTH};
+use super::{BVLC_TYPE_BIP6, Bip6Address, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6Error};
+use crate::{BvllSink, HEADER_LENGTH, MAX_BVLL_LENGTH, PayloadShape};
 
 /// A B/IPv6 BVLL message whose header checks out, before its payload is
 /// read.
@@ -148,7 +148,7 @@ fn read(function: Bvlc6Function, payload: &[u8]) -> Option<Bvll6<'_>> {
             return Some(Bvll6::OriginalBroadcastNpdu {
                 source,
                 npdu: fields.npdu(),
-            })
+            });
         }
         Bvlc6Function::ADDRESS_RESOLUTION => Bvll6::AddressResolution {
             source,
@@ -191,7 +191,7 @@ fn read(function: Bvlc6Function, payload: &[u8]) -> Option<Bvll6<'_>> {
             return Some(Bvll6::DistributeBroadcastToNetwork {
                 original_source: source,
                 npdu: fields.npdu(),
-            })
+            });
         }
         _ => return None,
     };

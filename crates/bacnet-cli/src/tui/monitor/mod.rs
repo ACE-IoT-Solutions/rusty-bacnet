@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
-use bacnet_transport::mstp::monitor::{LostToken, MonitorStats, DEFAULT_TIMESTAMP_RESOLUTION};
+use bacnet_transport::mstp::monitor::{DEFAULT_TIMESTAMP_RESOLUTION, LostToken, MonitorStats};
 
 pub(crate) mod analysis;
 pub(crate) mod lines;

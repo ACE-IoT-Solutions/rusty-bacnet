@@ -1,12 +1,12 @@
 //! Write session dialogs: arming, the write form, the preview with its
 //! confirmation tier, the result, the ledger and the exit guard.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
-use ratatui::Frame;
 
-use super::{centered, Theme};
+use super::{Theme, centered};
 use crate::tui::app::objects::object_label;
 use crate::tui::app::safety::{Form, Modal};
 use crate::tui::app::{App, Link};

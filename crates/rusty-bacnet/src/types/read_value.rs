@@ -36,15 +36,15 @@
 //!   Time, for example).
 
 use bacnet_encoding::primitives::decode_application_value;
-use bacnet_encoding::tags::{self, app_tag, TagClass};
+use bacnet_encoding::tags::{self, TagClass, app_tag};
 use bacnet_objects::traits::{standard_array_property, standard_list_property};
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
-use super::constructed_read;
 use super::PyPropertyValue;
+use super::constructed_read;
 
 /// Decode the value octets read from `property` of an object of
 /// `object_type`, with the read's `array_index`, by the rules in the module

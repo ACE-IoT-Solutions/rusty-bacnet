@@ -17,7 +17,7 @@ use tokio::time::timeout;
 
 use crate::core::target::AddressStyle;
 use crate::tui::message::{Command, DirectedTo, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent};
-use crate::tui::worker::{session, EventSink, EVENT_CHANNEL_CAPACITY};
+use crate::tui::worker::{EVENT_CHANNEL_CAPACITY, EventSink, session};
 
 /// Long enough for any step here, short of a hang.
 const STEP: Duration = Duration::from_secs(10);

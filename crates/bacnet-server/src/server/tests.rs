@@ -369,9 +369,11 @@ async fn server_runs_fault_detection_without_enrollment() {
 
 #[test]
 fn identity_rejects_below_minimum_local_apdu_capacity() {
-    assert!(bacnet_objects::DeviceIdentity::default()
-        .with_max_apdu(49)
-        .is_err());
+    assert!(
+        bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(49)
+            .is_err()
+    );
 }
 
 fn test_mac(byte: u8) -> MacAddr {

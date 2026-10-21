@@ -8,7 +8,7 @@ use super::{
     charset, decode_bit_string_ref, decode_double, decode_real, decode_signed, decode_unsigned,
     fixed_length_label, invalid_utf8, unknown_charset,
 };
-use crate::tags::{self, app_tag, Tag, TagClass};
+use crate::tags::{self, Tag, TagClass, app_tag};
 
 /// A CharacterString's contents, borrowed from the octets they were decoded
 /// from: the character-set octet, then the string in that character set

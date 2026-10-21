@@ -17,7 +17,7 @@ impl BACnetServer {
                     _ => {
                         return Err(PyRuntimeError::new_err(
                             "sc_npdu_drop_counts requires an SC server",
-                        ))
+                        ));
                     }
                 }
             };

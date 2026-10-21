@@ -24,11 +24,11 @@ mod sc_credentials;
 mod watch;
 mod who_has;
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
 use super::app::names::Name;
 use super::app::watch::Screen;
@@ -138,11 +138,7 @@ pub(crate) struct Theme {
 
 impl Theme {
     fn pick(&self, colored: Style, plain: Style) -> Style {
-        if self.color {
-            colored
-        } else {
-            plain
-        }
+        if self.color { colored } else { plain }
     }
 
     /// Status bar.

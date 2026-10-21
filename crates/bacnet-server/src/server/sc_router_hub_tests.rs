@@ -1,7 +1,7 @@
 //! A router port on a real BACnet/SC hub (#518): broadcast route
 //! announcements arrive hub-relayed, with no principal, and a node's
 //! control-message rate limit drops a flood end to end.
-use super::support::{bounded, run, Certificates};
+use super::support::{Certificates, bounded, run};
 use crate::server::*;
 use bacnet_network::router::control_policy::{
     ControlAuthContext, ControlAuthorizer, ControlPolicy,

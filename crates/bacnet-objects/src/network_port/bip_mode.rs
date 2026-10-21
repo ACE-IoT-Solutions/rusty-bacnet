@@ -50,7 +50,7 @@ impl LiveMode {
             BipPortMode::Bbmd { tables: None } => {
                 return Err(Error::Encoding(
                     "a registered BBMD must lend its tables once started".into(),
-                ))
+                ));
             }
         })
     }

@@ -1,8 +1,8 @@
 use super::read_range::*;
 use super::*;
 use bacnet_client::client::BACnetClient;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu, ComplexAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{Apdu, ComplexAck, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_objects::event_log::EventLogObject;
 use bacnet_objects::log_buffer::LogRecordIdentity;
 use bacnet_objects::trend::{TrendLogMultipleObject, TrendLogObject};
@@ -12,7 +12,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bacnet_types::primitives::{Date, StatusFlags, Time};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     assert!(matches!(

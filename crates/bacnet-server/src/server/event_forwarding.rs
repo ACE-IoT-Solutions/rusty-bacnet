@@ -37,13 +37,13 @@
 //! route naming it into a local route ([`RecipientRoute::localize`]). The loop
 //! rules see that local route, and the copy goes with no DNET.
 
-use super::event_recipient_route::{system_utc_recipient_filter_time, RecipientRoute};
+use super::event_recipient_route::{RecipientRoute, system_utc_recipient_filter_time};
 use super::event_send::OutboundNotification;
 use super::event_suppression::EventSuppression;
 use super::*;
 use bacnet_encoding::constructed::encode_event_notification;
 use bacnet_objects::notification_class::MAX_RECIPIENT_LIST_DESTINATIONS;
-use bacnet_objects::notification_forwarder::{forwarding_targets, ForwardingInput};
+use bacnet_objects::notification_forwarder::{ForwardingInput, forwarding_targets};
 use bacnet_objects::subscribed_recipients::MAX_SUBSCRIBED_RECIPIENTS;
 use bacnet_services::alarm_event::ForwardedEventNotification;
 use bacnet_types::constructed::BACnetRecipient;

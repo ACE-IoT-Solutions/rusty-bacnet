@@ -3,8 +3,8 @@
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_transport::port::TransportProvenance;
-use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
+use bacnet_types::primitives::ObjectIdentifier;
 
 /// Local maximum accepted AuditNotification service payload.
 pub const MAX_AUDIT_NOTIFICATION_BYTES: usize = 64 * 1024;

@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     elevator::{ElevatorGroupObject, EscalatorObject},
     traits::BACnetObject,
@@ -8,7 +9,6 @@ use bacnet_types::constructed::{
 };
 use bacnet_types::enums::LiftCarDirection;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 mod lift;
 
@@ -85,7 +85,7 @@ fn assert_cases(
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     let budget = crate::server::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
         max_service_ack_bytes: legacy.len(),

@@ -13,14 +13,14 @@ use super::mstp::codec::{Frame, FrameType};
 use super::mstp::{LoopbackSerial, MstpConfig, MstpTransport, SerialPort};
 use super::port::{ReceivedNpdu, TransportPort, TransportProvenance};
 use super::sc::{LoopbackWebSocket, ScTransport, WebSocketPort};
-use super::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage};
+use super::sc_frame::{ScFunction, ScMessage, decode_sc_message, encode_sc_message};
 #[cfg(feature = "sc-tls")]
 use super::sc_tls::{DirectAcceptConfig, DirectListener, ScNodeTlsConfig};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use std::net::Ipv4Addr;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[test]
 fn provenance_variants_and_scope() {

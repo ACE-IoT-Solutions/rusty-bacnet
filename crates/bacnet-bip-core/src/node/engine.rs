@@ -5,13 +5,13 @@
 use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
-use bacnet_time::{earliest, Duration, Instant};
+use bacnet_time::{Duration, Instant, earliest};
 
 use crate::LocalSubnet;
 
 use super::actions::{Action, Actions};
 use super::config::{ConfigError, Foreign, Link, Mode, Retry};
-use super::counters::{add, bump, NodeCounters, RegisterAttempt};
+use super::counters::{NodeCounters, RegisterAttempt, add, bump};
 use super::exchange::{
     Early, ExchangeId, ExchangeRefusal, Exchanges, Key, LocalFailure, Operation, Phase,
 };

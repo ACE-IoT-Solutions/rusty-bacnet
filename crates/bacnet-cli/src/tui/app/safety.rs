@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bacnet_types::enums::PropertyIdentifier;
 
 use super::browser::ViewState;
-use super::{App, Link, Overlay, FLASH_FOR};
+use super::{App, FLASH_FOR, Link, Overlay};
 use crate::core::class::Class;
 use crate::parse::{parse_property, parse_value};
 use crate::tui::message::Command;
@@ -18,8 +18,8 @@ use crate::tui::point::BrowseRead;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::ledger::Entry;
 use crate::tui::safety::{
-    Gate, Level, Outcome, Preview, SafetyCommand, SafetyEvent, Tier, WriteSpec, DEFAULT_MINUTES,
-    MAX_MINUTES,
+    DEFAULT_MINUTES, Gate, Level, MAX_MINUTES, Outcome, Preview, SafetyCommand, SafetyEvent, Tier,
+    WriteSpec,
 };
 
 /// How long after a preview opens its confirmation is ignored, so a
@@ -699,7 +699,7 @@ fn write_spec(
             _ => {
                 return Err(
                     "Priority: 1-16, or blank for a property that isn't commandable.".into(),
-                )
+                );
             }
         },
     };

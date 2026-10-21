@@ -17,7 +17,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use insta::assert_snapshot;
 use ratatui::crossterm::event::KeyCode;
 
-use super::network::{plan, Net};
+use super::network::{Net, plan};
 use super::*;
 use crate::tui::app::network::View;
 use crate::tui::app::watch::Screen;

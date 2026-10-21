@@ -18,9 +18,9 @@ use bacnet_transport::bbmd::ForeignDevicePolicy;
 use bacnet_transport::bip::{BbmdOptions, BipMode, BipTransport};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::NoSerial;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use support::lab::{lab_database, lab_identity};
-use support::{command, failure, run, Process};
+use support::{Process, command, failure, run};
 
 /// The lab device's network and instance.
 const DNET: u16 = 2;

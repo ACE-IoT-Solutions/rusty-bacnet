@@ -1,6 +1,6 @@
 //! One bounded serial owner; raw Reject/APDU dispatch never awaits Number egress.
 use super::*;
-use bacnet_network::network_number::{number_is_reply, NumberControl};
+use bacnet_network::network_number::{NumberControl, number_is_reply};
 use bacnet_types::network_number::NetworkNumber;
 
 pub(super) const CAPACITY: usize = 256;

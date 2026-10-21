@@ -246,9 +246,11 @@ fn door_alarm_state_values_match_clause_21() {
 
     // The conflation guard: lock-fault belongs to LockStatus, at value 2.
     assert_eq!(LockStatus::LOCK_FAULT.to_raw(), 2);
-    assert!(DoorAlarmState::ALL_NAMED
-        .iter()
-        .all(|(name, _)| *name != "LOCK_FAULT"));
+    assert!(
+        DoorAlarmState::ALL_NAMED
+            .iter()
+            .all(|(name, _)| *name != "LOCK_FAULT")
+    );
 }
 
 /// 135-2020 Clause 21 (`BACnetLifeSafetyState ::= ENUMERATED`) runs through

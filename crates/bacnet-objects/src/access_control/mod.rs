@@ -26,7 +26,7 @@ use bytes::BytesMut;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::clock::{current_datetime, ClockReader};
+use crate::clock::{ClockReader, current_datetime};
 use crate::common::{self, read_common_properties};
 use crate::traits::BACnetObject;
 

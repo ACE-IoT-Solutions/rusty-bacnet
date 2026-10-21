@@ -1,11 +1,11 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     accumulator::{AccumulatorObject, PulseConverterObject},
     traits::BACnetObject,
 };
 use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn accumulator_objects(configured: bool) -> [Box<dyn BACnetObject>; 2] {
     let mut acc = AccumulatorObject::new(7, "ACC-7", EngineeringUnits::NO_UNITS).unwrap();

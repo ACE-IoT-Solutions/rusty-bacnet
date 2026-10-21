@@ -113,9 +113,9 @@ mod tests {
     use bacnet_encoding::npdu::NpduAddress;
     use bacnet_npdu::{RejectMessageReason, RejectMessageToNetwork};
     use bacnet_services::who_has::IHaveRequest;
+    use bacnet_types::MacAddr;
     use bacnet_types::enums::ObjectType;
     use bacnet_types::primitives::ObjectIdentifier;
-    use bacnet_types::MacAddr;
 
     use super::*;
 

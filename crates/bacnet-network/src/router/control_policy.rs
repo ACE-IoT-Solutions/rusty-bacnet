@@ -88,8 +88,8 @@
 //! (`ScControlRateLimit` in `bacnet-transport`).
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_transport::port::TransportProvenance;
 use tracing::debug;
@@ -282,7 +282,15 @@ impl ControlDecisions {
                 policy_deny_total: p,
             }
         });
-        let [i_am, init_ack, init_mgmt, busy, available, reject, i_could_be] = rows;
+        let [
+            i_am,
+            init_ack,
+            init_mgmt,
+            busy,
+            available,
+            reject,
+            i_could_be,
+        ] = rows;
         ControlDecisionCounters {
             i_am,
             init_ack,

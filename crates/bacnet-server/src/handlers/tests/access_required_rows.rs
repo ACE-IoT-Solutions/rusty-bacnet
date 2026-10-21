@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::{AccessCredentialObject, AccessDoorObject};
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_types::constructed::{
@@ -14,7 +15,6 @@ use bacnet_types::constructed::{
 };
 use bacnet_types::enums::{AccessAuthenticationFactorDisable, AuthenticationFactorType};
 use bacnet_types::primitives::{Date, Time};
-use PropertyIdentifier as P;
 
 const EMPTY: &[u8] = &[];
 

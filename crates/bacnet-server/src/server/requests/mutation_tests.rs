@@ -27,7 +27,7 @@ use bacnet_services::wpm::{
 };
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_types::constructed::{BACnetObjectPropertyReference, PropertyReference};
-use std::sync::{atomic::AtomicUsize, Mutex as StdMutex};
+use std::sync::{Mutex as StdMutex, atomic::AtomicUsize};
 
 pub(super) fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(kind, instance).unwrap()
@@ -532,20 +532,24 @@ async fn malformed_final_field_is_decoded_before_policy_for_non_wpm_services() {
 
 #[test]
 fn builders_install_mutation_policy_and_debug_redacts_callbacks() {
-    assert!(BACnetServer::<BipTransport>::generic_builder()
-        .policy(crate::FnPolicy::new().mutation(|_| false))
-        .config
-        .policy
-        .is_some());
+    assert!(
+        BACnetServer::<BipTransport>::generic_builder()
+            .policy(crate::FnPolicy::new().mutation(|_| false))
+            .config
+            .policy
+            .is_some()
+    );
     let config = BACnetServer::bip_builder()
         .policy(crate::FnPolicy::new().mutation(|_| true))
         .config;
     assert!(config.policy.is_some());
     assert!(format!("{config:?}").contains("policy: Some(\"<policy>\")"));
     #[cfg(feature = "sc-tls")]
-    assert!(BACnetServer::sc_builder()
-        .policy(crate::FnPolicy::new().mutation(|_| false))
-        .config
-        .policy
-        .is_some());
+    assert!(
+        BACnetServer::sc_builder()
+            .policy(crate::FnPolicy::new().mutation(|_| false))
+            .config
+            .policy
+            .is_some()
+    );
 }

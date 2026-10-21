@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use bacnet_benchmarks::stress::clients::ClientTransport;
 use bacnet_benchmarks::stress::harness::current_rss_kb;
 use bacnet_benchmarks::stress::mstp::Reply;
-use bacnet_benchmarks::stress::output::{print_results, StressMetrics, StressResult};
+use bacnet_benchmarks::stress::output::{StressMetrics, StressResult, print_results};
 use bacnet_benchmarks::stress::router::Path;
 
 #[derive(Parser)]

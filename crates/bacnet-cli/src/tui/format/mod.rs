@@ -20,7 +20,7 @@ mod constructed;
 mod primitive;
 mod units;
 
-use bacnet_encoding::constructed::{property_element, ConstructedElement, ElementShape};
+use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::PropertyValue;

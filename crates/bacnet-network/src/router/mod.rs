@@ -82,8 +82,8 @@ mod sender;
 pub use replies::RouterResponse;
 
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use bacnet_npdu::Mac;
 pub use bacnet_router_core::router::{
@@ -91,8 +91,8 @@ pub use bacnet_router_core::router::{
 };
 use bacnet_router_core::{Instant, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 pub use counters::Counters;
 pub use originate::OriginateFailure;
@@ -106,7 +106,7 @@ pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
 use dispatch::{Outputs, PortDispatch, Shared};
-use engine::{tokio_clock, Engine, EngineGuard, PORTS};
+use engine::{Engine, EngineGuard, PORTS, tokio_clock};
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
 use port_groups::PortGroups;
 
@@ -114,7 +114,7 @@ use port_groups::PortGroups;
 // engine.
 #[cfg(test)]
 use {
-    bacnet_encoding::npdu::{encode_npdu, Npdu},
+    bacnet_encoding::npdu::{Npdu, encode_npdu},
     bacnet_npdu::NetworkMessageType,
     bacnet_transport::port::TransportProvenance,
     bytes::BytesMut,

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
@@ -24,7 +24,7 @@ use super::{CommState, CovAckResult, Refusal};
 mod attempts;
 pub use attempts::run_notification_worker;
 pub(super) use attempts::{
-    run_attempts, run_notification_under_dcc, Attempt, AttemptsEnd, InitiationRestricted,
+    Attempt, AttemptsEnd, InitiationRestricted, run_attempts, run_notification_under_dcc,
 };
 
 #[cfg(test)]

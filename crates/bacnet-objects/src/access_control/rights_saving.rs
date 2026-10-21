@@ -40,7 +40,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
 use super::persistence::{AccessRightsPersistence, AccessRightsSnapshot};
-use super::{check_accompaniment, checked_rules, AccessRightsObject};
+use super::{AccessRightsObject, check_accompaniment, checked_rules};
 use crate::common;
 use crate::durable::staged::{self, StagedSaves, Step};
 use crate::durable::{DurableWrites, PendingWrite, SaveWait, SaveWriter, StageStep};
@@ -209,7 +209,7 @@ impl AccessRightsObject {
             }
             // Only the application adds the optional row.
             PropertyIdentifier::ACCOMPANIMENT if self.accompaniment.is_none() => {
-                return Err(common::unknown_property_error())
+                return Err(common::unknown_property_error());
             }
             // Enable and Accompaniment are no arrays: the handlers refuse an
             // index before the object sees it, and so does a direct call.
@@ -224,7 +224,7 @@ impl AccessRightsObject {
                 return match value {
                     PropertyValue::Boolean(enable) => Ok(NextState::Enable(enable)),
                     _ => Err(common::invalid_data_type_error()),
-                }
+                };
             }
         };
         // An indexed write edits the array the object serves; a whole write

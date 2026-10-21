@@ -190,9 +190,10 @@ impl Drop for FileReadDestination {
         if let Err(error) = self.cleanup() {
             eprintln!(
                 "Error: cleanup failed during file-read cancellation: {error}; retained staging path: {}",
-                retained
-                    .as_deref()
-                    .map_or_else(|| "<unknown>".to_string(), |path| path.display().to_string())
+                retained.as_deref().map_or_else(
+                    || "<unknown>".to_string(),
+                    |path| path.display().to_string()
+                )
             );
         }
     }

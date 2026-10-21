@@ -140,9 +140,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.who_is_directed(&server_mac, None).await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let devices = client.discovered_devices().await;
-    assert!(devices
-        .iter()
-        .any(|dev| dev.object_identifier.instance_number() == 1234));
+    assert!(
+        devices
+            .iter()
+            .any(|dev| dev.object_identifier.instance_number() == 1234)
+    );
     println!("\nDiscovered {} device(s):", devices.len());
     for dev in &devices {
         println!(

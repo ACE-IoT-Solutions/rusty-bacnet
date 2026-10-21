@@ -12,7 +12,7 @@ use super::*;
 #[path = "../../bacnet-objects/tests/support/forwarding/mod.rs"]
 mod forwarding;
 
-use forwarding::probe::{take, CallLog, Probe};
+use forwarding::probe::{CallLog, Probe, take};
 use forwarding::rows::QUERIES;
 
 /// The calls the view handed on, less the identity reads it makes to tell a
@@ -69,7 +69,8 @@ fn a_device_keeps_its_owned_answers_and_forwards_every_other_query() {
         }
     }
     assert_eq!(view.cov_snapshot_internal().map(|_| ()), None);
-    assert!(view
-        .property_list()
-        .contains(&P::PROTOCOL_SERVICES_SUPPORTED));
+    assert!(
+        view.property_list()
+            .contains(&P::PROTOCOL_SERVICES_SUPPORTED)
+    );
 }

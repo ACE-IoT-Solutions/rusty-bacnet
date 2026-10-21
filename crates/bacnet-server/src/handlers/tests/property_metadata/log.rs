@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     event_log::EventLogObject,
     traits::BACnetObject,
@@ -11,7 +12,6 @@ use bacnet_types::constructed::{
 };
 use bacnet_types::enums::LoggingType;
 use bacnet_types::primitives::{Date, PropertyValue, StatusFlags, Time};
-use PropertyIdentifier as P;
 
 fn log_objects(capacity: u32, configured: bool) -> [Box<dyn BACnetObject>; 3] {
     let mut trend = TrendLogObject::new(1, "TL-1", capacity).unwrap();
@@ -247,7 +247,7 @@ fn request(oid: ObjectIdentifier, references: &[(P, Option<u32>)]) -> BytesMut {
 }
 
 fn assert_budget_parity(db: &ObjectDatabase, request: &[u8], legacy: &[u8], count: usize) {
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     use crate::server::ReadPropertyMultipleBudget;
     let budget = ReadPropertyMultipleBudget {
         max_result_elements: count,
@@ -461,10 +461,12 @@ fn rpm_and_rp_refuse_log_buffer_while_read_range_serves_framed_records() {
                 Some((ErrorClass::PROPERTY, ErrorCode::READ_ACCESS_DENIED)),
                 "{oid:?} {selector:?}"
             );
-            assert!(results
-                .iter()
-                .filter(|result| result.property_identifier != P::LOG_BUFFER)
-                .all(|result| result.error.is_none()));
+            assert!(
+                results
+                    .iter()
+                    .filter(|result| result.property_identifier != P::LOG_BUFFER)
+                    .all(|result| result.error.is_none())
+            );
         }
 
         let mut range_request = BytesMut::new();

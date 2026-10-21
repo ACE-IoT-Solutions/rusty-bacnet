@@ -23,9 +23,9 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 use bytes::Bytes;
 use ratatui::crossterm::event::KeyCode;
 use tokio::sync::mpsc;
@@ -35,7 +35,7 @@ use super::lab::{lab_database, lab_identity};
 use super::*;
 use crate::tui::app::{Link, OpState};
 use crate::tui::worker::session::SessionOptions;
-use crate::tui::worker::{session, EventSink, EVENT_CHANNEL_CAPACITY};
+use crate::tui::worker::{EVENT_CHANNEL_CAPACITY, EventSink, session};
 
 /// Reject reason: the service is not recognized (Clause 20.1.5).
 const UNRECOGNIZED_SERVICE: u8 = 9;

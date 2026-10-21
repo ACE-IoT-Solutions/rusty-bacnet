@@ -672,7 +672,8 @@ fn pulse_converter_cov_reports_update_time() {
         pc.cov_reported_properties(),
         [Value(PropertyIdentifier::UPDATE_TIME)]
     );
-    assert!(pc
-        .property_list()
-        .contains(&PropertyIdentifier::UPDATE_TIME));
+    assert!(
+        pc.property_list()
+            .contains(&PropertyIdentifier::UPDATE_TIME)
+    );
 }

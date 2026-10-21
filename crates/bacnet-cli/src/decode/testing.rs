@@ -2,16 +2,16 @@
 //! encoders.
 
 use bacnet_encoding::apdu::{
-    encode_apdu, Apdu, ComplexAck, ConfirmedRequest, ErrorPdu, UnconfirmedRequest,
+    Apdu, ComplexAck, ConfirmedRequest, ErrorPdu, UnconfirmedRequest, encode_apdu,
 };
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_npdu::NetworkPriority;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::who_is::IAmRequest;
-use bacnet_transport::bip6::{encode_bvll6, Bip6Vmac, Bvll6};
-use bacnet_transport::bvll::{encode_bvll, BvlcResultCode, Bvll};
+use bacnet_transport::bip6::{Bip6Vmac, Bvll6, encode_bvll6};
+use bacnet_transport::bvll::{BvlcResultCode, Bvll, encode_bvll};
 use bacnet_transport::mstp::codec::{Frame, FrameType};
-use bacnet_transport::sc_frame::{encode_sc_message, ScFunction, ScMessage, Vmac};
+use bacnet_transport::sc_frame::{ScFunction, ScMessage, Vmac, encode_sc_message};
 use bacnet_types::enums::{
     ConfirmedServiceChoice, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier, Segmentation,
     UnconfirmedServiceChoice,

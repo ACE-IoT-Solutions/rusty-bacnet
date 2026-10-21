@@ -28,7 +28,7 @@ use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use tracing::warn;
 
-use super::{property_value_to_log_value, LocalDevice, Member, ObjectDatabase, RECONCILE};
+use super::{LocalDevice, Member, ObjectDatabase, RECONCILE, property_value_to_log_value};
 use crate::cov_change::{effective_increment, is_numeric, reports_change};
 use crate::traits::{BACnetObject, MonotonicClock};
 

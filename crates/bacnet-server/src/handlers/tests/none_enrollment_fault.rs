@@ -177,10 +177,12 @@ fn a_none_enrollment_that_cant_fault_stays_out() {
     // No monitored reference: nothing to fault on.
     let (db, ee_oid, _) = make_db(false);
     let summary = response(&db, &request()).unwrap();
-    assert!(summary
-        .entries
-        .iter()
-        .all(|e| e.object_identifier != ee_oid));
+    assert!(
+        summary
+            .entries
+            .iter()
+            .all(|e| e.object_identifier != ee_oid)
+    );
 
     // Detection disabled: the handler leaves it out too.
     let (mut db, ee_oid, _) = make_db(true);
@@ -194,8 +196,10 @@ fn a_none_enrollment_that_cant_fault_stays_out() {
         )
         .unwrap();
     let summary = response(&db, &request()).unwrap();
-    assert!(summary
-        .entries
-        .iter()
-        .all(|e| e.object_identifier != ee_oid));
+    assert!(
+        summary
+            .entries
+            .iter()
+            .all(|e| e.object_identifier != ee_oid)
+    );
 }

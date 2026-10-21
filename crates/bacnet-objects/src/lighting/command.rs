@@ -31,7 +31,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 use bytes::BytesMut;
 
-use super::{lighting_percent, DEFAULT_FADE_TIME_MS};
+use super::{DEFAULT_FADE_TIME_MS, lighting_percent};
 use crate::common;
 
 /// The BACnetLightingOperation values open to vendors (Clause 23).

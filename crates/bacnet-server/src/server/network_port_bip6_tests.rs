@@ -5,7 +5,7 @@
 //! a custom transport could lend, and shows that a B/IPv6 port's BBMD rows
 //! take writes and activation through the same path as a B/IP port's.
 
-use super::network_port_activation_tests::{reinitialize, wp, FALSE, TRUE};
+use super::network_port_activation_tests::{FALSE, TRUE, reinitialize, wp};
 use super::network_port_mode_tests::{port_oid, property_list, rp};
 use super::*;
 use crate::server::test_transport::TestTransport;

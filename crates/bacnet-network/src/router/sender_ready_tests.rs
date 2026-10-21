@@ -12,12 +12,12 @@ use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
+use super::super::SendRequest;
 use super::super::control_policy::ControlGate;
 use super::super::dispatch::Shared;
-use super::super::engine::{tokio_clock, Engine, OPTIONS};
+use super::super::engine::{Engine, OPTIONS, tokio_clock};
 use super::super::port_groups::PortGroups;
 use super::super::send_queue;
-use super::super::SendRequest;
 use bacnet_router_core::PortId;
 
 const REFILL_LIMIT: usize = 1024;

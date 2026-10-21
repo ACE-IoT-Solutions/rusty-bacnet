@@ -72,11 +72,7 @@ impl StressMetrics {
 /// Zero when nothing was timed.
 pub fn rate(count: u64, elapsed: Duration) -> f64 {
     let secs = elapsed.as_secs_f64();
-    if secs > 0.0 {
-        count as f64 / secs
-    } else {
-        0.0
-    }
+    if secs > 0.0 { count as f64 / secs } else { 0.0 }
 }
 
 /// Latency percentiles in microseconds.

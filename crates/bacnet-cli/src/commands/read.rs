@@ -3,7 +3,7 @@
 //! ReadRange is in [`super::read_range`].
 
 use bacnet_client::client::BACnetClient;
-use bacnet_client::tags::{decode_tags_read, TagsRead};
+use bacnet_client::tags::{TagsRead, decode_tags_read};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::BACnetNameValue;

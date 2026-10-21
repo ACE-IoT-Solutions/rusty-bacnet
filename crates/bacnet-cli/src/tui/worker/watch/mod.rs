@@ -24,18 +24,18 @@ use bacnet_client::client::{
     BACnetClient, ManagedCOVSubscription, ManagedCOVSubscriptionEvent, ReceivedCOVNotification,
 };
 use bacnet_transport::port::TransportPort;
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use self::csv::{field, unix_ms, CsvLog};
+use self::csv::{CsvLog, field, unix_ms};
 use self::jobs::{Lifetime, Polled, Refusal, Started};
 use self::sample::{Reading, RowFormat};
-use super::browse::limits::RateCap;
 use super::EventSink;
+use super::browse::limits::RateCap;
 use crate::tui::app::objects::{kebab, object_label};
 use crate::tui::message::{Command, WorkerEvent};
 use crate::tui::watched::{Point, RowId, Sample, Source, WatchCommand, WatchEvent, WatchStats};
@@ -607,7 +607,7 @@ impl<'s> State<'s> {
                     }
                 }),
                 None if self.shutting_down || device.retry_at.is_some_and(|at| at > now) => {
-                    continue
+                    continue;
                 }
                 None => {
                     let every = self.options.poll_every;

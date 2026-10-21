@@ -8,8 +8,8 @@ use bacnet_time::Instant;
 
 use super::addressing::Addressed;
 use super::config::{ForwardedTrust, Link, Mode};
-use crate::bbmd::Request;
 use crate::Arrival;
+use crate::bbmd::Request;
 
 /// One received datagram, as the host's socket reported it.
 ///
@@ -254,7 +254,7 @@ impl<'d> ForBbmd<'d> {
     fn of_request(message: Bvll<'d>, sender: SocketAddrV4) -> Option<Self> {
         let request = match message {
             Bvll::DistributeBroadcastToNetwork(npdu) => {
-                return Some(Self::Distribute { sender, npdu })
+                return Some(Self::Distribute { sender, npdu });
             }
             Bvll::RegisterForeignDevice { ttl } => Request::Register { sender, ttl },
             Bvll::ReadBroadcastDistributionTable => Request::ReadBdt { sender },

@@ -46,7 +46,7 @@ mod holds;
 
 use core::fmt;
 
-use crate::{swap_apart, Duration, Instant, Mac, PortId};
+use crate::{Duration, Instant, Mac, PortId, swap_apart};
 
 pub use claims::{LearnRefusal, Learned};
 pub use holds::RejectEffect;

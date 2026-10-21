@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::port::DataAttribute;
 use crate::sc_frame::{
-    decode_sc_bvlc_result, is_broadcast_vmac, ScBvlcResult, ScFunction, ScMessage, Vmac,
+    ScBvlcResult, ScFunction, ScMessage, Vmac, decode_sc_bvlc_result, is_broadcast_vmac,
 };
 
 use super::diagnostic_throttle::DiagnosticThrottle;
@@ -380,7 +380,10 @@ impl ScConnection {
                     if self.malformed_diag.should_emit_now() {
                         let suppressed = self.malformed_diag.take_suppressed();
                         if suppressed > 0 {
-                            debug!("Ignoring EncapsulatedNpdu in {:?} state (suppressed {suppressed} similar diagnostics)", self.state);
+                            debug!(
+                                "Ignoring EncapsulatedNpdu in {:?} state (suppressed {suppressed} similar diagnostics)",
+                                self.state
+                            );
                         } else {
                             debug!("Ignoring EncapsulatedNpdu in {:?} state", self.state);
                         }
@@ -486,7 +489,9 @@ impl ScConnection {
                         if self.malformed_diag.should_emit_now() {
                             let suppressed = self.malformed_diag.take_suppressed();
                             if suppressed > 0 {
-                                warn!("Malformed BACnet/SC BVLC-Result: {e} (suppressed {suppressed} similar diagnostics)");
+                                warn!(
+                                    "Malformed BACnet/SC BVLC-Result: {e} (suppressed {suppressed} similar diagnostics)"
+                                );
                             } else {
                                 warn!("Malformed BACnet/SC BVLC-Result: {e}");
                             }

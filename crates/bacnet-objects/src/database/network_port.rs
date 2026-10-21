@@ -107,13 +107,13 @@ impl ObjectDatabase {
             Some(configured) if configured.same_family(address) => {
                 return Err(invalid(
                     "Network Port configuration differs from transport interface/UDP",
-                ))
+                ));
             }
             _ => {
                 return Err(invalid(match address {
                     PortAddress::V4(..) => "registration requires an IPV4 port",
                     PortAddress::V6(..) => "registration requires an IPV6 port",
-                }))
+                }));
             }
         };
         let lease = Arc::new(());

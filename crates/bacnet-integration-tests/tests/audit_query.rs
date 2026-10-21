@@ -13,6 +13,7 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_services::audit::{AuditLogQueryRequest, BACnetAuditLogQueryParameters};
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{
     BACnetAddress, BACnetAuditLogDatum, BACnetAuditLogRecord, BACnetAuditLogRecordResult,
     BACnetAuditNotification, BACnetRecipient,
@@ -22,7 +23,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
-use bacnet_types::MacAddr;
 
 #[derive(Default)]
 struct MemoryPersistence(Mutex<Option<AuditLogSnapshot>>);

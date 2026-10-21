@@ -8,6 +8,7 @@
 //! filled and empty.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::{
     AccessDoorObject, AccessPointObject, CredentialDataInputObject,
 };
@@ -16,7 +17,6 @@ use bacnet_types::constructed::{
     ReadAccessSpecification,
 };
 use bacnet_types::enums::AuthenticationFactorType;
-use PropertyIdentifier as P;
 
 pub(super) type Expected = Result<Vec<u8>, ErrorCode>;
 

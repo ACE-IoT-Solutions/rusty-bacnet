@@ -1,13 +1,13 @@
-use crate::handlers::rpm_budget::{handle_rpm_budgeted, handle_rpm_budgeted_observed};
 use crate::handlers::ReadFailure;
+use crate::handlers::rpm_budget::{handle_rpm_budgeted, handle_rpm_budgeted_observed};
 use bacnet_objects::property_metadata::{
     PropertyConformance, PropertyMetadata, PropertyWriteCapability,
 };
 use std::{
     borrow::Cow,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 

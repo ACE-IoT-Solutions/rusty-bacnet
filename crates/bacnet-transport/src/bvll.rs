@@ -59,10 +59,10 @@ use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::{Bytes, BytesMut};
 
 pub use bacnet_bip_codec::{
-    address_from_octets, address_from_slice, address_to_octets, BdtEntries, BdtEntry, BvlcFunction,
-    BvlcResultCode, Bvll, BvllError, BvllFrame, BvllSink, Entries, EntryIter, FdtEntries, FdtEntry,
-    PayloadShape, SinkFull, TableEntry, BDT_ENTRY_LENGTH, BIP_ADDRESS_LENGTH, BVLC_TYPE_BIP,
-    DEFAULT_PORT, FDT_ENTRY_LENGTH, HEADER_LENGTH, MAX_BVLL_LENGTH,
+    BDT_ENTRY_LENGTH, BIP_ADDRESS_LENGTH, BVLC_TYPE_BIP, BdtEntries, BdtEntry, BvlcFunction,
+    BvlcResultCode, Bvll, BvllError, BvllFrame, BvllSink, DEFAULT_PORT, Entries, EntryIter,
+    FDT_ENTRY_LENGTH, FdtEntries, FdtEntry, HEADER_LENGTH, MAX_BVLL_LENGTH, PayloadShape, SinkFull,
+    TableEntry, address_from_octets, address_from_slice, address_to_octets,
 };
 
 /// The static label `NAME cannot carry a {}-octet payload` for each named

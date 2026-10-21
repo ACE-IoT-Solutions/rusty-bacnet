@@ -428,7 +428,7 @@ impl Request<'_> {
             let result = match result {
                 Ok(()) => Ok(()),
                 Err(handlers::CreateObjectRefusal::Malformed(error)) => {
-                    return self.error::<T>(&error)
+                    return self.error::<T>(&error);
                 }
                 Err(handlers::CreateObjectRefusal::Failed(error)) => Err(error),
             };

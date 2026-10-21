@@ -16,20 +16,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio::time::Duration;
 #[cfg(test)]
 use tokio::time::timeout;
-use tokio::time::Duration;
 use tracing::{debug, warn};
 
 use bacnet_encoding::apdu::{
-    self, encode_apdu, validate_max_apdu_length, validate_max_segments, AbortPdu, Apdu,
-    ConfirmedRequest as ConfirmedRequestPdu, RejectPdu, SegmentAck as SegmentAckPdu, SimpleAck,
+    self, AbortPdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu, RejectPdu,
+    SegmentAck as SegmentAckPdu, SimpleAck, encode_apdu, validate_max_apdu_length,
+    validate_max_segments,
 };
 use bacnet_encoding::npdu::NpduAddress;
 #[cfg(test)]
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordinator};
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
@@ -40,13 +41,13 @@ use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::{TransportPort, TransportProvenance};
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice};
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 
 use crate::discovery::{DeviceTable, DeviceUpsertResult, DiscoveredDevice, RoutedDeviceConfig};
 use crate::segmentation::{
-    duplicate_in_window, max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType,
+    SegmentReceiver, SegmentedPduType, duplicate_in_window, max_segment_payload, split_payload,
 };
 use crate::tsm::{
     ProgressReceiver, RequestTimerExpiration, SegmentAckPhase, SegmentTimerExpiration,
@@ -921,7 +922,7 @@ mod transport_access;
 mod write_group;
 pub(crate) use routed_path_limits::check_routed_unicast;
 use routed_path_limits::{
-    forwarded_npci_len, routed_path_quarantine_horizon, RoutedPathLease, RoutedPathLimits,
+    RoutedPathLease, RoutedPathLimits, forwarded_npci_len, routed_path_quarantine_horizon,
 };
 pub(crate) use transaction_peer::TransactionPeer;
 
@@ -934,10 +935,10 @@ pub use cov_renewal::{
     ManagedCOVSubscription, ManagedCOVSubscriptionEvent, ManagedCOVSubscriptionOptions,
 };
 pub use event_notifications::{
-    EventNotificationDelivery, ReceivedEventNotification, DEFAULT_EVENT_CHANNEL_CAPACITY,
-    MAX_EVENT_CHANNEL_CAPACITY,
+    DEFAULT_EVENT_CHANNEL_CAPACITY, EventNotificationDelivery, MAX_EVENT_CHANNEL_CAPACITY,
+    ReceivedEventNotification,
 };
-pub use i_have::{ReceivedIHave, I_HAVE_CHANNEL_CAPACITY};
+pub use i_have::{I_HAVE_CHANNEL_CAPACITY, ReceivedIHave};
 pub use network_reports::{DiscoveredRouter, NETWORK_REPORT_CHANNEL_CAPACITY};
 pub use pacing::MAX_MIN_REQUEST_INTERVAL_MS;
 pub use write_group::WriteGroupDestination;

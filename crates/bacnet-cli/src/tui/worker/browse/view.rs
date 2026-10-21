@@ -2,12 +2,12 @@
 //! card, an object's properties, its health badges and its priority pane,
 //! each value written by the TUI's formatter ([`crate::tui::format`]).
 
-use bacnet_types::enums::{resolve_bits, ObjectType, PropertyIdentifier, ResolvedBits};
+use bacnet_types::enums::{ObjectType, PropertyIdentifier, ResolvedBits, resolve_bits};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
-use crate::tui::format::{decode_all, object_name, units, Floats, RawRow, StateTexts, ValueFormat};
+use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, object_name, units};
 use crate::tui::point::{
-    DeviceCard, Health, ObjectView, PriorityView, PropertyRow, ReadVia, PRIORITIES,
+    DeviceCard, Health, ObjectView, PRIORITIES, PriorityView, PropertyRow, ReadVia,
 };
 
 /// The single value of `property` among `rows`.

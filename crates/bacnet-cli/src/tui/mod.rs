@@ -73,13 +73,13 @@ pub(crate) use self::terminal::unusable_terminal;
 use self::app::picker::Picker;
 use self::app::{App, AppConfig, Link, Overlay};
 use self::event_loop::LoopIo;
-use self::log_layer::{LogRing, RingLayer, LOG_CAPACITY};
+use self::log_layer::{LOG_CAPACITY, LogRing, RingLayer};
 use self::terminal::Signals;
 use self::worker::coordinator;
 use self::worker::session::{ConnectPlan, SessionOptions, TransportKind};
 use self::worker::watch::WatchOptions;
 use self::worker::write::SafetyOptions;
-use self::worker::{EventSink, COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY};
+use self::worker::{COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY, EventSink};
 use crate::args::{Cli, Command};
 use crate::core::interfaces::list_ipv4_interfaces;
 use crate::transport::TransportArgs;
@@ -116,7 +116,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         _ => (capture::DEFAULT_RING, None),
     };
     if capture_device.is_some() && !cfg!(feature = "pcap") {
-        eprintln!("Error: --capture-device requires the 'pcap' feature. Rebuild with: cargo install bacnet-cli --features pcap");
+        eprintln!(
+            "Error: --capture-device requires the 'pcap' feature. Rebuild with: cargo install bacnet-cli --features pcap"
+        );
         std::process::exit(1);
     }
     let (fps, log_file, mut options) = match &cli.command {
@@ -159,7 +161,9 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     };
     options.safety.transport = kind.label();
     if kind == TransportKind::Sc && !cfg!(feature = "sc-tls") {
-        eprintln!("Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls");
+        eprintln!(
+            "Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls"
+        );
         std::process::exit(1);
     }
     options.mstp.monitor.clone_from(&monitor);
@@ -383,9 +387,9 @@ fn choose_interface(
 /// Route tracing to the log pane's ring and, with `--log-file`, to a file.
 /// Nothing goes to stdout or stderr while the terminal is in raw mode.
 fn init_tracing(verbosity: u8, log_file: Option<&Path>, ring: &LogRing) -> Result<(), String> {
+    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
 
     let level = match verbosity {
         0 => "info",

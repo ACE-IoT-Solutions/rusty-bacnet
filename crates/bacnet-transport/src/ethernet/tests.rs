@@ -350,7 +350,7 @@ const WHO_IS: [u8; 4] = [0x01, 0x00, 0x10, 0x08];
 /// decoded as before.
 #[test]
 fn a_frame_from_a_group_source_is_dropped_before_any_answer_or_decode() {
-    use super::ingress::{classify_frame, FrameIngress};
+    use super::ingress::{FrameIngress, classify_frame};
     let local = [2, 0, 0, 0, 0, 1];
     let commands = [LLC_CONTROL_UI, LLC_CONTROL_XID_CMD, LLC_CONTROL_TEST_CMD];
     for source in GROUP_MACS {
@@ -480,7 +480,7 @@ async fn a_failed_llc_reply_is_counted_and_its_warning_throttled() {
 #[tokio::test(start_paused = true)]
 async fn the_channel_full_warning_goes_out_at_most_once_per_interval() {
     use super::ingress::npdu_channel_full;
-    use crate::warn_throttle::{WarnThrottle, WARNING_INTERVAL};
+    use crate::warn_throttle::{WARNING_INTERVAL, WarnThrottle};
     let throttle = WarnThrottle::default();
     assert_eq!(npdu_channel_full(&throttle), Some(1));
     for _ in 0..5 {

@@ -83,20 +83,20 @@ use std::task::Poll;
 use std::time::Duration;
 
 use bacnet_mstp_codec::{
-    FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+    BROADCAST_MAC, FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
 };
 use bacnet_mstp_core::{
-    Action, Direction, MasterCore, MasterState, MstpCoreConfig, QueueRefusal, ReplyDecision,
-    RequestError, RequestId, Storage, TransmitId, DEFAULT_DELIVERY_SLOTS,
+    Action, DEFAULT_DELIVERY_SLOTS, Direction, MasterCore, MasterState, MstpCoreConfig,
+    QueueRefusal, ReplyDecision, RequestError, RequestId, Storage, TransmitId,
 };
-use bacnet_time::{earliest, HostClock};
-use bacnet_types::error::Error;
+use bacnet_time::{HostClock, earliest};
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::diagnostics::{increment, Counters};
+use super::diagnostics::{Counters, increment};
 use super::echo::{EchoFilter, Ended, Pushed};
 use super::queues::{CoreQueues, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
@@ -469,7 +469,9 @@ impl<S: SerialPort> Mac<'_, S> {
             Ok(()) => {}
             Err(RequestError::Oversize { length, maximum }) => {
                 increment(&self.counts.outbound_oversize);
-                warn!("MS/TP application reply length {length} exceeds the port's maximum NPDU {maximum}");
+                warn!(
+                    "MS/TP application reply length {length} exceeds the port's maximum NPDU {maximum}"
+                );
                 // No answer can be sent, so the request is postponed.
                 let _ = core.complete_request(current.id, ReplyDecision::Postponed, now);
             }

@@ -49,7 +49,7 @@ impl AlarmSummaryProjection {
                     return Err(operational_problem(
                         object_identifier,
                         "Event_Detection_Enable is not Boolean",
-                    ))
+                    ));
                 }
             }
         }

@@ -1,26 +1,26 @@
 //! Bounded outbound socket ownership, generation-aware reuse and retirement.
+use super::WebSocketPort;
 use super::direct_discovery::{DIRECT_POOL_IDLE_TTL, DIRECT_POOL_MAX_ENTRIES};
 #[cfg(all(test, feature = "sc-tls"))]
 use super::direct_egress::DirectSendError;
 use super::direct_egress::DirectWrite;
-use super::direct_membership::{disconnect_request, Membership};
+use super::direct_membership::{Membership, disconnect_request};
 #[cfg(feature = "sc-tls")]
 use super::direct_receive::direct_npdu;
-use super::direct_receive::{direct_must_understand_decision, DirectMuDecision};
+use super::direct_receive::{DirectMuDecision, direct_must_understand_decision};
 use super::direct_socket::{DirectFrame, DirectSocket};
 #[cfg(feature = "sc-tls")]
 use super::npdu_admission::DirectPeer;
-use super::WebSocketPort;
 use crate::sc_frame::{
-    decode_sc_message, encode_sc_message, validate_control, ControlRecipient, ScFunction,
-    ScMessage, Vmac,
+    ControlRecipient, ScFunction, ScMessage, Vmac, decode_sc_message, encode_sc_message,
+    validate_control,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 #[cfg(test)]
 use std::time::Duration;
 use std::time::Instant;
-use tokio::sync::{mpsc, OwnedSemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 #[cfg(feature = "sc-tls")]
 #[derive(Clone)]

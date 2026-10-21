@@ -11,9 +11,9 @@
 //! DADR and SADR to [`MAX_MAC_LEN`] octets (#1141), so everything above the
 //! network layer only ever sees an address that some data link could carry.
 
-use bacnet_npdu::{Address, EncodeError, NetworkMessageType, NetworkPriority, MAX_MAC_LEN};
-use bacnet_types::error::{Error, RangeError};
+use bacnet_npdu::{Address, EncodeError, MAX_MAC_LEN, NetworkMessageType, NetworkPriority};
 use bacnet_types::MacAddr;
+use bacnet_types::error::{Error, RangeError};
 use bytes::{Bytes, BytesMut};
 
 mod decode_error;
@@ -239,10 +239,10 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
                 length,
                 dnet,
                 source: source.map(NpduAddress::from),
-            })
+            });
         }
         Err(bacnet_npdu::DecodeError::Malformed(fault)) => {
-            return Err(NpduDecodeError::Malformed(fault))
+            return Err(NpduDecodeError::Malformed(fault));
         }
     };
     let mut npdu = Npdu::header_from(&view);

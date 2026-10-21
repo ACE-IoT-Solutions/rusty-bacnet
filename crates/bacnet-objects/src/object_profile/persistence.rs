@@ -8,7 +8,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
-use super::{check_tags, no_space_error, MAX_TAGS};
+use super::{MAX_TAGS, check_tags, no_space_error};
 use crate::durable::file::ObjectFile;
 
 /// Maximum complete persisted Tags representation, including its 12-byte

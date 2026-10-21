@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use bacnet_mstp_codec::{FrameError, FrameHeader, FrameType, BROADCAST_MAC};
+use bacnet_mstp_codec::{BROADCAST_MAC, FrameError, FrameHeader, FrameType};
 
 /// How long the line may stay silent before a master takes the token as
 /// lost: T_no_token, 500 ms (Clause 9.5.3). A silence at least this long

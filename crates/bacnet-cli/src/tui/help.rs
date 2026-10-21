@@ -10,7 +10,7 @@
 use super::app::command_bar::COMMANDS;
 use super::app::watch::Screen;
 use super::app::{App, Link};
-use super::keymap::{Binding, BROWSER, CAPTURE, DEVICES, GLOBAL, MSTP, NETWORK, SC, WATCH};
+use super::keymap::{BROWSER, Binding, CAPTURE, DEVICES, GLOBAL, MSTP, NETWORK, SC, WATCH};
 
 /// One screen in the strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

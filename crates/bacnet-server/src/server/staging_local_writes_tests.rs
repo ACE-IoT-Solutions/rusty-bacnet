@@ -9,8 +9,8 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
 use bacnet_types::enums::{EngineeringUnits, Reliability};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 fn reference(object_type: ObjectType, instance: u32) -> BACnetDeviceObjectReference {
     BACnetDeviceObjectReference {

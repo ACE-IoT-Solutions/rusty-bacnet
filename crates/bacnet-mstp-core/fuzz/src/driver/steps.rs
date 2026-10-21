@@ -8,9 +8,9 @@ use bacnet_mstp_core::{
 use super::Driver;
 use crate::checker::Decided;
 use crate::input::{
-    fill, priority, Address, Decision, Echo, Path, Step, TransmitEvent, MAX_OCTETS,
+    Address, Decision, Echo, MAX_OCTETS, Path, Step, TransmitEvent, fill, priority,
 };
-use crate::model::{encode, Seen};
+use crate::model::{Seen, encode};
 
 /// How often a deadline may be serviced at one instant before it counts as
 /// stuck.

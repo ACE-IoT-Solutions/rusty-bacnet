@@ -24,7 +24,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant, timeout};
 
 /// The router's MAC on network 1.
 const ROUTER_ON_1: [u8; 6] = [0x0A, 0x00, 0x00, 0x01, 0xBA, 0xC0];

@@ -3,7 +3,7 @@
 //! 12.54, Table 12-67).
 
 use super::*;
-use crate::channel::{coerce_channel_value, MemberDatatype};
+use crate::channel::{MemberDatatype, coerce_channel_value};
 use bacnet_types::enums::{ErrorClass, ErrorCode, LightingOperation as Op};
 
 const LC: PropertyIdentifier = PropertyIdentifier::LIGHTING_COMMAND;

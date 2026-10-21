@@ -1,15 +1,15 @@
 //! A received frame, from its link source to the decision on its APDU.
 
+use super::Group;
+use super::Storage;
 use super::config::Options;
 use super::counters::bump;
 use super::host::Host;
 use super::tasks::Task;
-use super::Group;
-use super::Storage;
 use crate::node::admit;
 pub(super) use crate::node::is_unconfirmed;
 use crate::npdu::RejectMessageReason;
-use crate::npdu::{Address, AddressField, Malformed, NetworkPriority, Npdu, GLOBAL_NETWORK};
+use crate::npdu::{Address, AddressField, GLOBAL_NETWORK, Malformed, NetworkPriority, Npdu};
 use crate::table::{Reachability, Route};
 use crate::{Instant, Mac, PortId};
 
@@ -166,14 +166,14 @@ fn local<'f>(at: &Arrival<'_>, npdu: &Npdu<'f>, group: bool, global: bool) -> Lo
 }
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-        const B: usize,
-    > Storage<P, R, H, D, N, G, B>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// [`Router::receive`](super::Router::receive).
     pub(super) fn receive<'f>(

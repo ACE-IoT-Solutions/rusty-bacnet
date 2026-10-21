@@ -1,22 +1,22 @@
 //! A frozen server identity across real B/IP I-Am, RP, RPM and local reads.
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::{
-    apdu::{decode_apdu, Apdu},
+    apdu::{Apdu, decode_apdu},
     npdu::decode_npdu,
     primitives::decode_application_value,
 };
 use bacnet_objects::{
+    DeviceIdentity,
     database::ObjectDatabase,
     device::{DeviceConfig, DeviceObject},
     object_profile::ObjectProfile,
-    DeviceIdentity,
 };
 use bacnet_server::server::{BACnetServer, DiscoveryPolicy, ServerConfig};
 use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::{
     bbmd::BdtEntry,
     bip::BipTransport,
-    bvll::{decode_bvll, BvlcFunction},
+    bvll::{BvlcFunction, decode_bvll},
 };
 use bacnet_types::{
     constructed::{PropertyReference, ReadAccessSpecification},
@@ -143,10 +143,12 @@ async fn assert_views(
             identity.segmentation() != Segmentation::NONE
         );
         if identity.segmentation() == Segmentation::NONE {
-            assert!(client
-                .read_property(server.local_mac(), target, property, None)
-                .await
-                .is_err());
+            assert!(
+                client
+                    .read_property(server.local_mac(), target, property, None)
+                    .await
+                    .is_err()
+            );
         }
     }
 }

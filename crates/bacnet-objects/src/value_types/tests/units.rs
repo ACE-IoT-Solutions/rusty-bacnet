@@ -34,9 +34,11 @@ macro_rules! assert_units_row {
             "{kind:?}"
         );
         assert!(object.property_list().contains(&PropertyIdentifier::UNITS));
-        assert!(object
-            .required_properties()
-            .contains(&PropertyIdentifier::UNITS));
+        assert!(
+            object
+                .required_properties()
+                .contains(&PropertyIdentifier::UNITS)
+        );
         assert!(!object.is_array_property(PropertyIdentifier::UNITS));
 
         object.set_units(EngineeringUnits::DEGREES_CELSIUS).unwrap();

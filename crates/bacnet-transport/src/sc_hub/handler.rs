@@ -1,7 +1,7 @@
 //! Hub message dispatch; its registration lease is owned by the outer runner.
 
 use super::admission::{
-    channel_provenance, connect_denied_nak, ScHubAdmissionDecision, ScHubAdmissionInput,
+    ScHubAdmissionDecision, ScHubAdmissionInput, channel_provenance, connect_denied_nak,
 };
 use super::context::{HubConnectionContext, PeerConnection};
 use super::peer_warnings::ConnectRefusal;
@@ -235,14 +235,19 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else { match super::unknown_transit::local_nak(&sc_msg) { Some(nak) => {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only, including supplied response address metadata.
-                // Retain the fallback's ignored immediate send error and existing
-                // supervised retirement/absolute pre-registration deadline.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            } _ => {}}}
+            } else {
+                match super::unknown_transit::local_nak(&sc_msg) {
+                    Some(nak) => {
+                        let mut buf = BytesMut::new();
+                        encode_sc_message(&mut buf, &nak);
+                        // Same socket only, including supplied response address metadata.
+                        // Retain the fallback's ignored immediate send error and existing
+                        // supervised retirement/absolute pre-registration deadline.
+                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                    }
+                    _ => {}
+                }
+            }
             continue;
         }
 
@@ -278,13 +283,18 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else { match super::resolution_transit::local_nak(&sc_msg) { Some(nak) => {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only. Keep ignored immediate write failures and
-                // the existing retirement/absolute Connect deadline owners.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            } _ => {}}}
+            } else {
+                match super::resolution_transit::local_nak(&sc_msg) {
+                    Some(nak) => {
+                        let mut buf = BytesMut::new();
+                        encode_sc_message(&mut buf, &nak);
+                        // Same socket only. Keep ignored immediate write failures and
+                        // the existing retirement/absolute Connect deadline owners.
+                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                    }
+                    _ => {}
+                }
+            }
             continue;
         }
 
@@ -321,13 +331,18 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else { match super::advertisement_transit::local_nak(&sc_msg, &data) { Some(nak) => {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only. Keep ignored immediate write failures and
-                // the existing retirement/absolute Connect deadline owners.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            } _ => {}}}
+            } else {
+                match super::advertisement_transit::local_nak(&sc_msg, &data) {
+                    Some(nak) => {
+                        let mut buf = BytesMut::new();
+                        encode_sc_message(&mut buf, &nak);
+                        // Same socket only. Keep ignored immediate write failures and
+                        // the existing retirement/absolute Connect deadline owners.
+                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                    }
+                    _ => {}
+                }
+            }
             continue;
         }
 
@@ -367,13 +382,18 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else { match super::proprietary_transit::local_nak(&sc_msg, &data) { Some(nak) => {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only. Keep ignored immediate write failures and
-                // the existing retirement/absolute Connect deadline owners.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-            } _ => {}}}
+            } else {
+                match super::proprietary_transit::local_nak(&sc_msg, &data) {
+                    Some(nak) => {
+                        let mut buf = BytesMut::new();
+                        encode_sc_message(&mut buf, &nak);
+                        // Same socket only. Keep ignored immediate write failures and
+                        // the existing retirement/absolute Connect deadline owners.
+                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                    }
+                    _ => {}
+                }
+            }
             continue;
         }
 
@@ -401,7 +421,9 @@ pub(super) async fn run(
                 client_uuid.copy_from_slice(&sc_msg.payload[6..22]);
                 let client_max_bvlc = u16::from_be_bytes([sc_msg.payload[22], sc_msg.payload[23]]);
                 let client_max_npdu = u16::from_be_bytes([sc_msg.payload[24], sc_msg.payload[25]]);
-                debug!("Hub: ConnectRequest from {peer_addr} vmac={vmac:02x?} max_bvlc={client_max_bvlc} max_npdu={client_max_npdu}");
+                debug!(
+                    "Hub: ConnectRequest from {peer_addr} vmac={vmac:02x?} max_bvlc={client_max_bvlc} max_npdu={client_max_npdu}"
+                );
 
                 match connect_request_vmac_disposition(vmac, hub_vmac) {
                     ConnectRequestVmacDisposition::Accept => {}

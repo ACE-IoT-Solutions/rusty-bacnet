@@ -3,7 +3,7 @@ use super::*;
 use bacnet_encoding::{apdu::decode_apdu, npdu::decode_npdu};
 use bacnet_services::device_mgmt::DeviceCommunicationControlRequest;
 use bacnet_types::enums::EnableDisable;
-use tokio::time::{advance, Duration};
+use tokio::time::{Duration, advance};
 
 #[path = "dcc_local_network_tests.rs"]
 mod local_network;

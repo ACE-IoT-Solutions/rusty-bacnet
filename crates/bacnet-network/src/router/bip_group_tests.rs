@@ -17,7 +17,7 @@ use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
 use bacnet_transport::port::{GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::error::Error;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 

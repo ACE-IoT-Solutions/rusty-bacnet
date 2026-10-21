@@ -31,8 +31,8 @@ use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
-use super::bip_mode::{bdt_value, host_n_port_value, LiveMode};
 use super::NetworkPortObject;
+use super::bip_mode::{LiveMode, bdt_value, host_n_port_value};
 use crate::common;
 
 /// The values written to a port and waiting for activation. Only the

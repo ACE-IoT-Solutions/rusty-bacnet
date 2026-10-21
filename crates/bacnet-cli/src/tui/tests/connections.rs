@@ -8,7 +8,7 @@ use crate::tui::profile::service::{Request, Service};
 use crate::tui::profile::store::Store;
 use crate::tui::profile::{Overrides, Profile};
 use crate::tui::worker::session::{ConnectPlan, TransportKind};
-use crate::tui::worker::{coordinator, EventSink};
+use crate::tui::worker::{EventSink, coordinator};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 use tokio::sync::mpsc;

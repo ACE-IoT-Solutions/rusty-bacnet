@@ -1,8 +1,8 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{averaging::AveragingObject, traits::BACnetObject};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 #[test]
 fn rpm_averaging_indexed_reads_and_bytes_are_unchanged() {
@@ -261,7 +261,7 @@ fn rpm_averaging_indexed_reads_and_bytes_are_unchanged() {
                 }
             }
         }
-        use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+        use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
         let budget = crate::server::ReadPropertyMultipleBudget {
             max_result_elements: cases.len(),
             max_service_ack_bytes: legacy.len(),

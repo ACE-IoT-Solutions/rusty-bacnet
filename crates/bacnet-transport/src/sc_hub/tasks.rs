@@ -1,7 +1,7 @@
 //! Hub-owned tasks. Only the supervisor polls joins; weak spawners cannot
 //! keep the task set alive through the futures it owns.
 
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Poll, Waker};
@@ -152,7 +152,7 @@ impl Tasks {
                     drop(state);
                     drop(result);
                     Poll::Ready(())
-                },
+                }
                 Poll::Pending => Poll::Pending,
             }
         })

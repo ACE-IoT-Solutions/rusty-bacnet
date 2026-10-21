@@ -4,15 +4,15 @@
 //! The router answers an NPDU too long for an MS/TP port with reject reason
 //! 4, by the limit the port reports (#1665).
 
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use bacnet_npdu::NpduLimits;
 use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
 use bacnet_transport::port::{GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::error::Error;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 use crate::router_table::PortId;
@@ -368,8 +368,13 @@ async fn an_npdu_too_long_for_an_mstp_port_draws_reason_4() {
 /// network 1, and one at 501 goes out.
 #[tokio::test(start_paused = true)]
 async fn a_standard_frame_mstp_port_refuses_502_octets() {
-    let (mut router, [(mut destination, mut at_destination), (mut source, mut at_source)]) =
-        two_links([false, true]).await;
+    let (
+        mut router,
+        [
+            (mut destination, mut at_destination),
+            (mut source, mut at_source),
+        ],
+    ) = two_links([false, true]).await;
 
     let too_long = npdu_of(503, 1, 1);
     source.send_unicast(&too_long, &[0]).await.unwrap();

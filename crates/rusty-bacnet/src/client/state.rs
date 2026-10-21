@@ -4,11 +4,11 @@ use super::{ClientInner, CoreClient};
 use crate::errors::to_py_err;
 use bacnet_transport::sc::ScEvent;
 use bacnet_types::error::Error;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::PyResult;
+use pyo3::exceptions::PyRuntimeError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
-use tokio::sync::{broadcast, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, broadcast};
 use tokio::task::JoinHandle;
 
 #[cfg(test)]

@@ -40,8 +40,8 @@ pub use bacnet_mstp_core::MasterState;
 pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot, MstpNodeState};
 use execution::DedicatedRuntime;
 pub use execution::{
-    MstpExecutionMode, MstpExecutionStatus, MstpThreadConfig, MAX_CPUS, MAX_REALTIME_PRIORITY,
-    MIN_REALTIME_PRIORITY,
+    MAX_CPUS, MAX_REALTIME_PRIORITY, MIN_REALTIME_PRIORITY, MstpExecutionMode, MstpExecutionStatus,
+    MstpThreadConfig,
 };
 pub use totals::{LatenessHistogram, MstpCounters, QueueCounters};
 
@@ -362,11 +362,7 @@ impl MstpConfig {
     /// [`Self::max_npdu_length`] less room for the network header, 1476
     /// octets with extended frames and 480 without.
     pub fn max_apdu_length(&self) -> u16 {
-        if self.extended_frames {
-            1476
-        } else {
-            480
-        }
+        if self.extended_frames { 1476 } else { 480 }
     }
 
     /// The core configuration this one maps onto.

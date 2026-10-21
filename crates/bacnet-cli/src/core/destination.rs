@@ -23,7 +23,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::broadcast::error::RecvError;
 
-use super::target::{bip6_vmac, parse_target_on, Target};
+use super::target::{Target, bip6_vmac, parse_target_on};
 
 /// How long a routed target waits for its device to answer a Who-Is sent
 /// to its network, as long as `discover` waits by default.

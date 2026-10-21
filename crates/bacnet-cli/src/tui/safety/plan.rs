@@ -17,7 +17,7 @@ use bacnet_types::primitives::PropertyValue;
 use bytes::BytesMut;
 
 use super::{Effect, Gate, Occupancy, Planned, Preview, Stored, Tier, WriteSpec};
-use crate::tui::format::{decode_all, Floats, RawRow, StateTexts, ValueFormat};
+use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all};
 use crate::tui::point::PRIORITIES;
 
 /// What is read before a write, besides the target property.
@@ -221,7 +221,7 @@ fn plan(
             _ if present_value => {
                 return Err(
                     "the Priority_Array was read but isn't 16 values; refusing to write".into(),
-                )
+                );
             }
             _ => None,
         },
@@ -608,14 +608,16 @@ mod tests {
         assert_eq!(planned.gate, Gate::Allowed(Tier::T2));
         let mut description = spec(Some("null"), 12);
         description.property = PropertyIdentifier::DESCRIPTION;
-        assert!(preview(
-            &[description],
-            &[ao1().into()],
-            |_, _, _| false,
-            false,
-            false
-        )
-        .is_err());
+        assert!(
+            preview(
+                &[description],
+                &[ao1().into()],
+                |_, _, _| false,
+                false,
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -651,14 +653,16 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Priority_Array"), "{error}");
         rows[1].1 = Ok(vec![0xFF]);
-        assert!(preview(
-            &[spec(Some("1"), 12)],
-            &[rows.into()],
-            |_, _, _| false,
-            false,
-            false
-        )
-        .is_err());
+        assert!(
+            preview(
+                &[spec(Some("1"), 12)],
+                &[rows.into()],
+                |_, _, _| false,
+                false,
+                false
+            )
+            .is_err()
+        );
         // An error reading it means not commandable.
         let mut rows = ao1();
         rows[1].1 = Err("PROPERTY:UNKNOWN_PROPERTY".into());
@@ -697,14 +701,16 @@ mod tests {
         assert_eq!(planned.effect, Effect::NotPresentValue);
         let mut relinquish = spec(None, 12);
         relinquish.property = PropertyIdentifier::DESCRIPTION;
-        assert!(preview(
-            &[relinquish],
-            &[ao1().into()],
-            |_, _, _| false,
-            false,
-            false
-        )
-        .is_err());
+        assert!(
+            preview(
+                &[relinquish],
+                &[ao1().into()],
+                |_, _, _| false,
+                false,
+                false
+            )
+            .is_err()
+        );
     }
 
     /// `state-text[2]` of MSV:1, with `element` as the element's read.

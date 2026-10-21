@@ -41,10 +41,12 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
 
     let mut object: Box<dyn BACnetObject> = Box::new(AuditReporterObject::new(1, "AR").unwrap());
     let reporter = object.audit_reporter_internal().unwrap();
-    assert!(reporter
-        .configuration_internal()
-        .monitored_objects
-        .is_none());
+    assert!(
+        reporter
+            .configuration_internal()
+            .monitored_objects
+            .is_none()
+    );
     assert_eq!(
         reporter.configuration_internal().audit_priority_filter,
         BACnetPriorityFilter::all()
@@ -78,16 +80,18 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
         .iter()
         .map(|&p| object.read_property(p, None).unwrap())
         .collect();
-    assert!(object
-        .configure_audit_reporter_internal(
-            AuditLevel::DEFAULT,
-            AuditOperationFlags::empty(),
-            false,
-            None,
-            BACnetPriorityFilter::empty(),
-            None,
-        )
-        .is_err());
+    assert!(
+        object
+            .configure_audit_reporter_internal(
+                AuditLevel::DEFAULT,
+                AuditOperationFlags::empty(),
+                false,
+                None,
+                BACnetPriorityFilter::empty(),
+                None,
+            )
+            .is_err()
+    );
     for (&property, expected) in properties.iter().zip(before) {
         assert_eq!(object.read_property(property, None).unwrap(), expected);
     }
@@ -123,15 +127,19 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
         reporter.configuration_internal().audit_level,
         AuditLevel::NONE
     );
-    assert!(reporter
-        .configuration_internal()
-        .auditable_operations
-        .is_empty());
+    assert!(
+        reporter
+            .configuration_internal()
+            .auditable_operations
+            .is_empty()
+    );
     assert!(!reporter.confirmed_internal());
-    assert!(reporter
-        .configuration_internal()
-        .monitored_objects
-        .is_none());
+    assert!(
+        reporter
+            .configuration_internal()
+            .monitored_objects
+            .is_none()
+    );
     assert_eq!(
         reporter.configuration_internal().audit_priority_filter,
         BACnetPriorityFilter::all()
@@ -178,9 +186,11 @@ fn audit_reporter_monitored_objects_is_an_optional_array_even_when_absent() {
                     && code == ErrorCode::UNKNOWN_PROPERTY
         ));
     }
-    assert!(!reporter
-        .property_list()
-        .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+    assert!(
+        !reporter
+            .property_list()
+            .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+    );
 }
 
 #[test]
@@ -229,15 +239,17 @@ fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful
         );
     }
     assert_eq!(reporter.required_properties().as_ref(), required);
-    assert!(reporter
-        .property_metadata()
-        .iter()
-        .any(
-            |row| row.property_identifier == PropertyIdentifier::MONITORED_OBJECTS
-                && row.conformance == PropertyConformance::Optional
-                && row.write_capability == PropertyWriteCapability::ReadOnly
-                && row.presence_condition.is_none()
-        ));
+    assert!(
+        reporter
+            .property_metadata()
+            .iter()
+            .any(
+                |row| row.property_identifier == PropertyIdentifier::MONITORED_OBJECTS
+                    && row.conformance == PropertyConformance::Optional
+                    && row.write_capability == PropertyWriteCapability::ReadOnly
+                    && row.presence_condition.is_none()
+            )
+    );
     assert!(reporter.monitors_object_internal(selected));
     assert!(!reporter.monitors_object_internal(other));
     assert!(reporter.monitors_object_internal(input));
@@ -264,9 +276,11 @@ fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful
         reporter.set_monitored_objects(Some(selection)).unwrap();
         assert!(!reporter.monitors_object_internal(selected));
         assert!(!reporter.monitors_object_internal(input));
-        assert!(reporter
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+        assert!(
+            reporter
+                .property_list()
+                .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+        );
         assert!(!reporter.monitors_object_internal(reporter.object_identifier()));
     }
     reporter.set_monitored_objects(None).unwrap();

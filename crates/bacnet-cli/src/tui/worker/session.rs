@@ -20,7 +20,7 @@ use tokio::time::Instant;
 use super::browse::limits::RateCap;
 use super::watch::WatchOptions;
 use super::write::SafetyOptions;
-use super::{passive, DeviceFeed, EventSink, COMMAND_CHANNEL_CAPACITY};
+use super::{COMMAND_CHANNEL_CAPACITY, DeviceFeed, EventSink, passive};
 use crate::core::target::AddressStyle;
 use crate::transport::{self, TransportArgs};
 use crate::tui::message::{
@@ -29,7 +29,7 @@ use crate::tui::message::{
 use crate::tui::network::Foreign;
 use crate::tui::point::BrowseResult;
 #[cfg(feature = "sc-tls")]
-use crate::tui::sc::{credentials::Credentials, ScFailure, ScIdentity, ScReport};
+use crate::tui::sc::{ScFailure, ScIdentity, ScReport, credentials::Credentials};
 
 /// How often the worker checks whether the UI needs a resync.
 const RESYNC_EVERY: Duration = Duration::from_secs(1);
@@ -157,7 +157,9 @@ async fn connect(
                         return;
                     };
                     match outcome {
-                        Ok(()) => tracing::info!("BBMD {bbmd} accepted the foreign-device registration; it renews automatically"),
+                        Ok(()) => tracing::info!(
+                            "BBMD {bbmd} accepted the foreign-device registration; it renews automatically"
+                        ),
                         Err(error) => tracing::warn!("{error}; retrying in the background"),
                     }
                     // Accepted or retrying, the BBMD may hold an FDT entry

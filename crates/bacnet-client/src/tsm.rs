@@ -3,11 +3,11 @@
 //! Tracks in-flight confirmed requests. Each request gets a unique invoke_id
 //! (0-255) scoped per destination MAC. Responses are delivered via oneshot channels.
 
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
 };
 use bacnet_types::map_hash::BuildMapHasher;
-use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -738,12 +738,13 @@ impl Tsm {
         }) {
             return false;
         }
-        match self.pending.remove(&key) { Some(pending) => {
-            self.release_pending(destination_mac, invoke_id, pending, PendingRelease::Cancel);
-            true
-        } _ => {
-            false
-        }}
+        match self.pending.remove(&key) {
+            Some(pending) => {
+                self.release_pending(destination_mac, invoke_id, pending, PendingRelease::Cancel);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Number of confirmed transactions currently awaiting a response.

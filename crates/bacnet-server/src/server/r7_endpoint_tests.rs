@@ -82,10 +82,12 @@ async fn r7_endpoint_retirement_during_read_prevents_prompt_der_handoff() {
         let (tx, rx) = oneshot::channel();
         let received = routed.receive(2000, &read(11), Some(tx)).await;
         let mut handle = Box::pin(responder.handle(received));
-        assert!(handle
-            .as_mut()
-            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-            .is_pending());
+        assert!(
+            handle
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        );
         if close_responder {
             responder.close();
         } else {

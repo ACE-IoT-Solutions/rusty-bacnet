@@ -16,7 +16,7 @@ use pyo3::types::PyDict;
 
 use crate::errors::to_py_err;
 use crate::types::{
-    parse_address, PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue, PyReadAccessSpec,
+    PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue, PyReadAccessSpec, parse_address,
 };
 
 /// Client role: initiates ReadProperty/ReadRange/ReadPropertyMultiple/WriteProperty over the owner's single transport.
@@ -99,7 +99,7 @@ impl PyEndpointClient {
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "commandability must be 'commandable' or 'noncommandable'",
-                ))
+                ));
             }
         };
         let invalid = |error: bacnet_types::error::Error| {

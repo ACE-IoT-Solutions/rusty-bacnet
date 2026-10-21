@@ -115,9 +115,11 @@ macro_rules! assert_number_of_states_policy {
                 PropertyValue::CharacterString("Retained two".into()),
             ]
         );
-        assert!(object
-            .read_property(PropertyIdentifier::STATE_TEXT, Some(3))
-            .is_err());
+        assert!(
+            object
+                .read_property(PropertyIdentifier::STATE_TEXT, Some(3))
+                .is_err()
+        );
 
         object.set_number_of_states(4).unwrap();
         assert_eq!(
@@ -136,18 +138,22 @@ macro_rules! assert_number_of_states_policy {
                 .unwrap(),
             PropertyValue::CharacterString("State 4".into())
         );
-        assert!(object
-            .read_property(PropertyIdentifier::STATE_TEXT, Some(5))
-            .is_err());
+        assert!(
+            object
+                .read_property(PropertyIdentifier::STATE_TEXT, Some(5))
+                .is_err()
+        );
 
-        assert!(object
-            .write_property(
-                PropertyIdentifier::NUMBER_OF_STATES,
-                None,
-                PropertyValue::Unsigned(3),
-                None,
-            )
-            .is_err());
+        assert!(
+            object
+                .write_property(
+                    PropertyIdentifier::NUMBER_OF_STATES,
+                    None,
+                    PropertyValue::Unsigned(3),
+                    None,
+                )
+                .is_err()
+        );
         // A whole State_Text write changes it (#1443), but no write naming it
         // is taken, so it doesn't count as writable.
         assert!(!object.is_writable_property(PropertyIdentifier::NUMBER_OF_STATES));
@@ -382,23 +388,27 @@ fn msv_configuration_sources_recompute_immediately_and_fault_values_stays_absent
         Reliability::NO_FAULT_DETECTED.to_raw(),
         "the list write route must funnel through the same synchronous setter"
     );
-    assert!(alarms
-        .write_property(
-            PropertyIdentifier::ALARM_VALUES,
-            None,
-            PropertyValue::List(vec![PropertyValue::Unsigned(4)]),
-            None,
-        )
-        .is_err());
+    assert!(
+        alarms
+            .write_property(
+                PropertyIdentifier::ALARM_VALUES,
+                None,
+                PropertyValue::List(vec![PropertyValue::Unsigned(4)]),
+                None,
+            )
+            .is_err()
+    );
     assert_eq!(
         read_reliability(&alarms),
         Reliability::NO_FAULT_DETECTED.to_raw()
     );
 
     assert_unknown_property(alarms.read_property(PropertyIdentifier::FAULT_VALUES, None));
-    assert!(!alarms
-        .property_list()
-        .contains(&PropertyIdentifier::FAULT_VALUES));
+    assert!(
+        !alarms
+            .property_list()
+            .contains(&PropertyIdentifier::FAULT_VALUES)
+    );
     assert!(!alarms.is_writable_property(PropertyIdentifier::FAULT_VALUES));
 }
 

@@ -4,10 +4,10 @@
 //! statistics of an empty window go out as positive infinity, NaN and
 //! negative infinity.
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::averaging::AveragingObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
-use PropertyIdentifier as P;
 
 fn averaging_db(samples: &[f32]) -> (ObjectDatabase, ObjectIdentifier) {
     averaging_db_with(None, samples)

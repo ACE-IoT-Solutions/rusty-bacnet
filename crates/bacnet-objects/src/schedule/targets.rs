@@ -58,7 +58,7 @@ use bacnet_types::constructed::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
-use super::{writes, ScheduleObject, ScheduleWrite};
+use super::{ScheduleObject, ScheduleWrite, writes};
 use crate::{common, device_reference};
 
 /// Resource cap on List_Of_Object_Property_References members, the bound

@@ -23,8 +23,8 @@ use bacnet_types::MacAddr;
 use bytes::Bytes;
 
 use crate::loopback_fixture::{
-    next_frame_from_router, next_received_from_router, recv, wire, FromRouter, RouterFixture,
-    ORIGIN, REMOTE, TOO_LONG,
+    FromRouter, ORIGIN, REMOTE, RouterFixture, TOO_LONG, next_frame_from_router,
+    next_received_from_router, recv, wire,
 };
 use crate::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 use crate::router_table::{PortId, Reachability};

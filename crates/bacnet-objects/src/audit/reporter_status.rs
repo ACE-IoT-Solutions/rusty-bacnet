@@ -231,9 +231,11 @@ mod tests {
         let mut reporter = reporter();
         let status = reporter.status_internal();
         let expected = status.auditing_failure_epoch().unwrap();
-        assert!(status
-            .begin_auditing_failure_delivery(expected + 1)
-            .is_none());
+        assert!(
+            status
+                .begin_auditing_failure_delivery(expected + 1)
+                .is_none()
+        );
         // The caller observed an enabled old batch, then configuration changed
         // before completion admission. Equal final settings must not revive it.
         let old_token = status.begin_auditing_failure_delivery(expected).unwrap();
@@ -251,9 +253,11 @@ mod tests {
         assert_eq!(status.reliability(), Reliability::COMMUNICATION_FAILURE);
         reporter.set_audit_level(AuditLevel::NONE).unwrap();
         assert!(status.begin_auditing_failure_delivery(current).is_none());
-        assert!(AuditReporterStatus::default()
-            .begin_auditing_failure_delivery(0)
-            .is_none());
+        assert!(
+            AuditReporterStatus::default()
+                .begin_auditing_failure_delivery(0)
+                .is_none()
+        );
     }
 
     #[test]

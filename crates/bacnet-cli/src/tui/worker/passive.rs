@@ -7,12 +7,12 @@
 
 use tokio::sync::mpsc;
 
-use super::write::{keep_offline, ready_offline, SafetyOptions, PASSIVE};
 use super::EventSink;
+use super::write::{PASSIVE, SafetyOptions, keep_offline, ready_offline};
 use crate::tui::capture::CaptureEvent;
 use crate::tui::message::{Command, OpOutcome, WorkerEvent};
-use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
+use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::point::BrowseResult;
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
 use crate::tui::watched::{Source, WatchCommand, WatchEvent};

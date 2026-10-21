@@ -1,6 +1,6 @@
 //! Retention Aborts keep the verified original direct response capability.
 use super::*;
-use crate::server::segmented_receive::{initial_state, RequestPayload};
+use crate::server::segmented_receive::{RequestPayload, initial_state};
 use bacnet_transport::sc::WebSocketPort;
 
 #[tokio::test]

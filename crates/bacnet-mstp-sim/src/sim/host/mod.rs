@@ -22,8 +22,8 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use super::master::Input;
 use super::Sim;
+use super::master::Input;
 use crate::line::{Character, TxId};
 use crate::report::{HostStats, HostTransmitTiming, ViolationKind};
 use crate::trace::{TraceKind, Who};

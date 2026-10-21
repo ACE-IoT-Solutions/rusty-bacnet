@@ -13,8 +13,8 @@
 //! storage's wait when the object has one. Dropping the object does the
 //! same, and the writer's drop waits for those saves.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;

@@ -134,7 +134,9 @@ fn log_discovery_help(net: &NetworkConfig, port: u16, instance: u32) {
         "Manual add: {}:{} device ID {instance}",
         net.device_ip, port
     );
-    info!("Same-host whois-scan usually will not list this device (rusty-bacnet ignores same IP:47808); use Yabe from another PC on the subnet");
+    info!(
+        "Same-host whois-scan usually will not list this device (rusty-bacnet ignores same IP:47808); use Yabe from another PC on the subnet"
+    );
     info!("Debug: --debug or --trace (not --log-packets; that breaks Who-Is)");
 }
 
@@ -269,8 +271,7 @@ fn verify_server_mac(device_ip: Ipv4Addr, port: u16, mac: &[u8]) {
     } else {
         warn!(
             "Device MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} != expected {}:{} — check routing/default interface",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-            device_ip, port
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], device_ip, port
         );
     }
 }
@@ -562,7 +563,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match announcer.broadcast_i_am().await {
             Ok(()) => info!("startup I-Am broadcast sent for device {}", args.instance),
             Err(e) if held_back_by_dcc(&e) => {
-                info!("startup I-Am broadcast skipped: DeviceCommunicationControl disabled initiation")
+                info!(
+                    "startup I-Am broadcast skipped: DeviceCommunicationControl disabled initiation"
+                )
             }
             Err(e) => warn!("startup I-Am broadcast failed: {e}"),
         }

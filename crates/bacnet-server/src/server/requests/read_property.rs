@@ -118,7 +118,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     let result = match result {
                         Ok(()) => None,
                         Err(Error::Timeout(_) | Error::Reject { .. } | Error::Abort { .. }) => {
-                            return
+                            return;
                         }
                         Err(error) => Some(confirmed_response::error_fields(error)),
                     };

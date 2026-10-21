@@ -3,7 +3,7 @@ use bytes::BytesMut;
 use bacnet_types::error::Error;
 
 use crate::port::DataAttribute;
-use crate::sc_frame::{encode_sc_message, Vmac, BROADCAST_VMAC};
+use crate::sc_frame::{BROADCAST_VMAC, Vmac, encode_sc_message};
 
 use super::{ScConnectionState, ScTransport, WebSocketPort};
 

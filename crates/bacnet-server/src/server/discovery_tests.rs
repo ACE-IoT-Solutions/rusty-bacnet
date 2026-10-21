@@ -14,10 +14,10 @@ use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu,
-    UnconfirmedRequest as UnconfirmedRequestPdu,
+    Apdu, ConfirmedRequest as ConfirmedRequestPdu, UnconfirmedRequest as UnconfirmedRequestPdu,
+    decode_apdu, encode_apdu,
 };
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
@@ -25,12 +25,12 @@ use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
     UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 use super::*;
 use crate::server::test_transport::{SendLog, TestTransport};

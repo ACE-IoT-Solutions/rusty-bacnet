@@ -262,8 +262,11 @@ async fn read_range_prints_decoded_log_records() {
     // The table shows the same records, one row each, with nothing left as
     // hex; only the Trend Log's has a status flags column.
     let table = read_range(&target, "event-log:1", "table").await;
-    assert!(table
-        .starts_with("ReadRange EVENT_LOG:1  LOG_BUFFER  count=2  flags=FIRST_ITEM,LAST_ITEM\n"));
+    assert!(
+        table.starts_with(
+            "ReadRange EVENT_LOG:1  LOG_BUFFER  count=2  flags=FIRST_ITEM,LAST_ITEM\n"
+        )
+    );
     for cell in [
         "2026-10-03 08:00:00.00",
         "ALARM OUT_OF_RANGE ANALOG_INPUT:3 NORMAL -> HIGH_LIMIT \"too hot\"",

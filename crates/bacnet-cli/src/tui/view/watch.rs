@@ -5,18 +5,18 @@
 use std::collections::VecDeque;
 
 use bacnet_types::enums::PropertyIdentifier;
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::symbols::bar;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table};
-use ratatui::Frame;
 
-use super::{ellipsize as fit, sanitize, text_width, Theme, FULL_WIDTH, WIDE_WIDTH};
+use super::{FULL_WIDTH, Theme, WIDE_WIDTH, ellipsize as fit, sanitize, text_width};
+use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::objects::{kebab, object_label};
 use crate::tui::app::watch::WatchRow;
-use crate::tui::app::App;
-use crate::tui::watched::{Source, METER_WINDOW_SECS};
+use crate::tui::watched::{METER_WINDOW_SECS, Source};
 
 /// The bar levels, lowest first.
 const LEVELS: [&str; 8] = [

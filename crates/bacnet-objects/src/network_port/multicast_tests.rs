@@ -142,11 +142,12 @@ fn a_port_that_can_use_multicast_serves_its_group_live() {
     let (db, _lease) = port(Some(&group), true);
     let row = row(&db).expect("listed");
     assert_eq!(row.conformance, PropertyConformance::RequiredRead);
-    assert!(db
-        .get(&oid())
-        .unwrap()
-        .property_list()
-        .contains(&P::BACNET_IP_MULTICAST_ADDRESS));
+    assert!(
+        db.get(&oid())
+            .unwrap()
+            .property_list()
+            .contains(&P::BACNET_IP_MULTICAST_ADDRESS)
+    );
     // 0.0.0.0 while off (Clause 12.56.26), then the group, read live.
     assert_eq!(group_read(&db), OFF);
     *group.group.lock().unwrap() = GROUP;
@@ -268,9 +269,11 @@ fn a_new_publication_drops_a_written_group() {
 fn an_ipv6_port_never_serves_the_row() {
     let mut port = NetworkPortObject::new_bip6(1, "NP6", Bip6PortConfig::default()).unwrap();
     port.set_multicast_internal(Some(Group::new(GROUP) as Arc<dyn IpMulticast>));
-    assert!(!port
-        .property_list()
-        .contains(&P::BACNET_IP_MULTICAST_ADDRESS));
+    assert!(
+        !port
+            .property_list()
+            .contains(&P::BACNET_IP_MULTICAST_ADDRESS)
+    );
     assert_eq!(
         code(port.read_property(P::BACNET_IP_MULTICAST_ADDRESS, None)),
         ErrorCode::UNKNOWN_PROPERTY

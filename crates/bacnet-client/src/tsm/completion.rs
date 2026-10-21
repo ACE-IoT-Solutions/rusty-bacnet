@@ -2,8 +2,8 @@ use super::{
     CompletionOutcome, PendingRelease, PendingTransaction, TransactionOwner, TransactionPhase, Tsm,
     TsmResponse,
 };
-use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
 use std::collections::hash_map::Entry;
 
 impl Tsm {

@@ -125,7 +125,7 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};

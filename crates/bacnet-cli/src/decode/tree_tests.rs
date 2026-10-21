@@ -1,6 +1,6 @@
 use bacnet_transport::mstp::codec::FrameType;
 
-use super::{decode_tree, Field, Framing, Range};
+use super::{Field, Framing, Range, decode_tree};
 use crate::decode::testing::*;
 
 /// Every field's label, depth first, with its range.

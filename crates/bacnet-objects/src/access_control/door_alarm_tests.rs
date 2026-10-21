@@ -9,7 +9,7 @@ use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::enums::{DoorAlarmState as S, ErrorClass, ErrorCode, EventType};
 
 use super::*;
-use crate::event::{commit_test_proposal, EventStateChange, TransitionOutcome};
+use crate::event::{EventStateChange, TransitionOutcome, commit_test_proposal};
 
 const LISTS: [P; 3] = [P::ALARM_VALUES, P::FAULT_VALUES, P::MASKED_ALARM_VALUES];
 
@@ -190,9 +190,10 @@ fn access_door_alarm_lists_take_door_alarm_states_only() {
             );
             assert_eq!(read(&door, list), proprietary, "{list:?}");
         }
-        assert!(door
-            .write_property(list, Some(1), enumerated(3), None)
-            .is_err());
+        assert!(
+            door.write_property(list, Some(1), enumerated(3), None)
+                .is_err()
+        );
         assert_eq!(read(&door, list), proprietary, "{list:?}");
         write(&mut door, list, PropertyValue::List(vec![])).unwrap();
     }

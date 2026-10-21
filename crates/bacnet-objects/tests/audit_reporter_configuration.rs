@@ -151,10 +151,12 @@ fn custom_reporter_configuration_replaces_every_setting_through_trait_object() {
         read(object, PropertyIdentifier::MONITORED_OBJECTS),
         PropertyValue::List(vec![])
     );
-    assert!(!object
-        .audit_reporter_internal()
-        .unwrap()
-        .monitors_object_internal(target));
+    assert!(
+        !object
+            .audit_reporter_internal()
+            .unwrap()
+            .monitors_object_internal(target)
+    );
     assert_eq!(
         read(object, PropertyIdentifier::AUDIT_LEVEL),
         PropertyValue::Enumerated(AuditLevel::AUDIT_CONFIG.to_raw())
@@ -185,19 +187,23 @@ fn custom_reporter_configuration_replaces_every_setting_through_trait_object() {
             None,
         )
         .unwrap();
-    assert!(!object
-        .property_list()
-        .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+    assert!(
+        !object
+            .property_list()
+            .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+    );
     assert!(
         matches!(object.read_property(PropertyIdentifier::MONITORED_OBJECTS, None),
         Err(Error::Protocol { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::UNKNOWN_PROPERTY)
     );
-    assert!(object
-        .audit_reporter_internal()
-        .unwrap()
-        .monitors_object_internal(target));
+    assert!(
+        object
+            .audit_reporter_internal()
+            .unwrap()
+            .monitors_object_internal(target)
+    );
     assert_eq!(custom.configurations, 3);
 }
 

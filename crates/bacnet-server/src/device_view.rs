@@ -23,7 +23,7 @@ use bacnet_types::{
     error::Error,
     primitives::{ObjectIdentifier, PropertyValue},
 };
-use identity::{identity_property, IdentityView};
+use identity::{IdentityView, identity_property};
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

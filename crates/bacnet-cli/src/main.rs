@@ -613,7 +613,9 @@ async fn cli_main(cli: Cli) -> CliResult {
         #[cfg(not(feature = "pcap"))]
         {
             let _ = (read, save, quiet, decode, device, filter, count, snaplen);
-            eprintln!("Error: Packet capture requires the 'pcap' feature. Rebuild with:\n  cargo install bacnet-cli --features pcap");
+            eprintln!(
+                "Error: Packet capture requires the 'pcap' feature. Rebuild with:\n  cargo install bacnet-cli --features pcap"
+            );
             std::process::exit(1);
         }
     }
@@ -629,7 +631,9 @@ async fn cli_main(cli: Cli) -> CliResult {
         }
         #[cfg(not(feature = "sc-tls"))]
         {
-            eprintln!("Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls");
+            eprintln!(
+                "Error: BACnet/SC requires the 'sc-tls' feature. Rebuild with: cargo install bacnet-cli --features sc-tls"
+            );
             std::process::exit(1);
         }
     } else if args.ipv6 {
@@ -668,7 +672,9 @@ async fn run_tui(cli: Cli) -> CliResult {
     #[cfg(not(feature = "tui"))]
     {
         let _ = cli;
-        eprintln!("Error: The terminal UI requires the 'tui' feature. Rebuild with:\n  cargo install bacnet-cli --features tui");
+        eprintln!(
+            "Error: The terminal UI requires the 'tui' feature. Rebuild with:\n  cargo install bacnet-cli --features tui"
+        );
         std::process::exit(1);
     }
 }

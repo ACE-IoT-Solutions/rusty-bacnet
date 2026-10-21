@@ -439,13 +439,14 @@ fn null_indexed_element_interrupts_the_pending_delay() {
         )
         .unwrap();
     assert!(evaluate_event_enrollments(&mut db, 1).is_empty());
-    assert!(db
-        .get(&enrollment_oid)
-        .unwrap()
-        .enrollment_eval_state_internal()
-        .unwrap()
-        .pending
-        .is_none());
+    assert!(
+        db.get(&enrollment_oid)
+            .unwrap()
+            .enrollment_eval_state_internal()
+            .unwrap()
+            .pending
+            .is_none()
+    );
 
     db.get_mut(&value_oid)
         .unwrap()
@@ -575,13 +576,14 @@ fn null_indexed_floating_setpoint_interrupts_the_pending_delay() {
         )
         .unwrap();
     assert!(evaluate_event_enrollments(&mut db, 1).is_empty());
-    assert!(db
-        .get(&enrollment_oid)
-        .unwrap()
-        .enrollment_eval_state_internal()
-        .unwrap()
-        .pending
-        .is_none());
+    assert!(
+        db.get(&enrollment_oid)
+            .unwrap()
+            .enrollment_eval_state_internal()
+            .unwrap()
+            .pending
+            .is_none()
+    );
 
     db.get_mut(&setpoint_oid)
         .unwrap()

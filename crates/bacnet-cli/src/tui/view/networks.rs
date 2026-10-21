@@ -2,14 +2,14 @@
 //! routers that reach it, and a flag on a number more than one router
 //! claims. Every state is marked by text as well as colour.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Row, Table, Wrap};
-use ratatui::Frame;
 
 use super::Theme;
-use crate::tui::app::devices::age_label;
 use crate::tui::app::App;
+use crate::tui::app::devices::age_label;
 
 /// Widths of the Network, Heard and flag columns.
 const NETWORK: u16 = 7;

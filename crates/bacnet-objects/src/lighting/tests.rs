@@ -402,14 +402,15 @@ fn binary_lighting_output_priority_array_tracks_present_value_command() {
     assert_eq!(pv, PropertyValue::Enumerated(1));
 
     for operation in 2..=5 {
-        assert!(obj
-            .write_property(
+        assert!(
+            obj.write_property(
                 PropertyIdentifier::PRIORITY_ARRAY,
                 Some(3),
                 PropertyValue::Enumerated(operation),
                 None,
             )
-            .is_err());
+            .is_err()
+        );
         assert_eq!(
             obj.read_property(PropertyIdentifier::PRIORITY_ARRAY, Some(3))
                 .unwrap(),
@@ -466,9 +467,10 @@ fn lighting_output_relinquish_default_write_recaptures_present_value() {
         PropertyValue::Real(f32::NAN), // non-finite
         PropertyValue::Enumerated(1),  // wrong type
     ] {
-        assert!(lo
-            .write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, value, None)
-            .is_err());
+        assert!(
+            lo.write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, value, None)
+                .is_err()
+        );
         assert_eq!(
             lo.read_property(PropertyIdentifier::RELINQUISH_DEFAULT, None)
                 .unwrap(),

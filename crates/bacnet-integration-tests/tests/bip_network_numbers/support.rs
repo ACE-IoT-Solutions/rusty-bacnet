@@ -21,7 +21,7 @@ use std::{
 };
 use tokio::{
     net::UdpSocket,
-    sync::{mpsc, Semaphore},
+    sync::{Semaphore, mpsc},
 };
 
 pub const BROADCAST: Ipv4Addr = Ipv4Addr::new(127, 255, 255, 255);

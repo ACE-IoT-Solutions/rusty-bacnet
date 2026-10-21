@@ -1,7 +1,7 @@
 //! Python configuration and owned snapshots of the existing SC ingress policy.
 
 use bacnet_transport::sc::{ScNpduAdmissionPolicy, ScNpduDropCounts};
-use pyo3::{exceptions::PyValueError, PyResult};
+use pyo3::{PyResult, exceptions::PyValueError};
 use std::collections::HashMap;
 
 pub(crate) fn policy(transport: &str, limit: Option<usize>) -> PyResult<ScNpduAdmissionPolicy> {

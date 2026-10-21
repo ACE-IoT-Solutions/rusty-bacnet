@@ -1,15 +1,15 @@
 //! COV subscription engine — tracks SubscribeCOV subscriptions and their lifetimes.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use bacnet_encoding::npdu::NpduAddress;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 use crate::runtime_clock;
 
@@ -219,36 +219,37 @@ impl CovSubscriptionTable {
     }
 
     fn remove_internal(&mut self, key: &CovSubscriptionKey, was_cancelled: bool) -> bool {
-        match self.subs.remove(key) { Some(sub) => {
-            self.timed.lock().remove(key);
-            self.revisits.forget(key);
-            let peer = sub.recipient();
-            if let Some(count) = self.peer_counts.get_mut(&peer) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    self.peer_counts.remove(&peer);
-                }
-            }
-            if sub.expires_at.is_none() {
-                if let Some(count) = self.peer_indefinite_counts.get_mut(&peer) {
+        match self.subs.remove(key) {
+            Some(sub) => {
+                self.timed.lock().remove(key);
+                self.revisits.forget(key);
+                let peer = sub.recipient();
+                if let Some(count) = self.peer_counts.get_mut(&peer) {
                     *count = count.saturating_sub(1);
                     if *count == 0 {
-                        self.peer_indefinite_counts.remove(&peer);
+                        self.peer_counts.remove(&peer);
                     }
                 }
-            }
-            if was_cancelled {
+                if sub.expires_at.is_none() {
+                    if let Some(count) = self.peer_indefinite_counts.get_mut(&peer) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.peer_indefinite_counts.remove(&peer);
+                        }
+                    }
+                }
+                if was_cancelled {
+                    self.counters
+                        .subscriptions_cancelled
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 self.counters
-                    .subscriptions_cancelled
-                    .fetch_add(1, Ordering::Relaxed);
+                    .subscriptions_active
+                    .store(self.subs.len() as u64, Ordering::Relaxed);
+                true
             }
-            self.counters
-                .subscriptions_active
-                .store(self.subs.len() as u64, Ordering::Relaxed);
-            true
-        } _ => {
-            false
-        }}
+            _ => false,
+        }
     }
 
     /// Cancel only the exact family/form/property/index identity.

@@ -2,7 +2,7 @@
 use bacnet_mstp_core::{MasterState, RequestId};
 
 use super::state::{Decision, WireRequest};
-use crate::{sim::Sim, ViolationKind};
+use crate::{ViolationKind, sim::Sim};
 
 /// Same finite number of deferred replies as the production host adapter.
 const DECISION_BOUND: usize = 8;

@@ -174,11 +174,14 @@ impl SourceRecipient {
     }
 
     pub(crate) fn seal(&self) {
-        match self.notifications.upgrade() { Some(notifications) => {
-            notifications.seal_audit_owner(&self.owner);
-        } _ => {
-            self.owner.seal();
-        }}
+        match self.notifications.upgrade() {
+            Some(notifications) => {
+                notifications.seal_audit_owner(&self.owner);
+            }
+            _ => {
+                self.owner.seal();
+            }
+        }
     }
     pub(crate) fn uninstall(self: &Arc<Self>, db: &mut ObjectDatabase) {
         let sink: Arc<dyn AuditRecipientChangeSink> = self.clone();

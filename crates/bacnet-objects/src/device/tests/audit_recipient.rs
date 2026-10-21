@@ -1,6 +1,6 @@
 use super::*;
-use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::MacAddr;
+use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 
 /// An address recipient on the local network whose MAC is `len` octets.
 fn address(len: usize) -> BACnetRecipient {

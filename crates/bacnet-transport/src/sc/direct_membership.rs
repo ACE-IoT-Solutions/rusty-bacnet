@@ -7,8 +7,8 @@ use super::direct_egress::{DirectEgress, DirectWrite};
 use crate::sc_frame::Vmac;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 use tokio::sync::watch;

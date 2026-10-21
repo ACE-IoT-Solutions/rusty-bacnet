@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{network_port::NetworkPortObject, traits::BACnetObject};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use PropertyIdentifier as P;
 
 #[test]
 fn rpm_network_port_configured_profile_wire_bytes_and_dns_indices() {
@@ -229,7 +229,7 @@ fn rpm_network_port_configured_profile_wire_bytes_and_dns_indices() {
                 }
             }
         }
-        use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+        use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
         let budget = crate::server::ReadPropertyMultipleBudget {
             max_result_elements: cases.len(),
             max_service_ack_bytes: legacy.len(),

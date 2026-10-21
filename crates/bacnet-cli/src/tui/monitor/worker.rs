@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_npdu::NetworkMessageType;
 use bacnet_services::who_is::IAmRequest;
@@ -23,12 +23,12 @@ use bacnet_types::enums::UnconfirmedServiceChoice;
 use tokio::sync::{mpsc, watch};
 
 use super::{
-    Lines, MonitorPlan, MonitorReport, MonitorSample, LOST_TOKEN_HISTORY, ROTATION_HISTORY,
+    LOST_TOKEN_HISTORY, Lines, MonitorPlan, MonitorReport, MonitorSample, ROTATION_HISTORY,
     SAMPLE_EVERY,
 };
 use crate::tui::capture::{self, CaptureCommand};
 use crate::tui::message::{Command, WorkerEvent};
-use crate::tui::worker::{passive, EventSink, Offer};
+use crate::tui::worker::{EventSink, Offer, passive};
 
 /// Serve a monitor session until it is cancelled, disconnected, or the
 /// monitor ends. Before returning it stops the monitor and waits for its

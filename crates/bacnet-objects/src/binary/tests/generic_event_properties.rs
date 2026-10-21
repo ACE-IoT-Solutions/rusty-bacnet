@@ -206,9 +206,11 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
         label,
     );
     assert!(!object.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
-    assert!(object
-        .property_list()
-        .contains(&PropertyIdentifier::ACKED_TRANSITIONS));
+    assert!(
+        object
+            .property_list()
+            .contains(&PropertyIdentifier::ACKED_TRANSITIONS)
+    );
 
     // Event_State is maintained by the detector, never assignable from the
     // network — a write arm would let a client fake an alarm state.
@@ -309,13 +311,17 @@ fn binary_alarm_value_round_trips_and_matches_pics() {
                 .unwrap(),
             PropertyValue::Enumerated(0)
         );
-        assert!(object
-            .property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUE));
+        assert!(
+            object
+                .property_list()
+                .contains(&PropertyIdentifier::ALARM_VALUE)
+        );
         assert!(object.is_writable_property(PropertyIdentifier::ALARM_VALUE));
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUES));
+        assert!(
+            !object
+                .property_list()
+                .contains(&PropertyIdentifier::ALARM_VALUES)
+        );
         assert_protocol_error(
             object.write_property(
                 PropertyIdentifier::ALARM_VALUE,

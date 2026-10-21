@@ -1,6 +1,6 @@
 //! Complete target recipient mutation owner: preparation, commit and owned delivery.
 use super::audit_reporter::{
-    deliver, deliver_global_broadcast, encode_notification, DeliveryCompletion,
+    DeliveryCompletion, deliver, deliver_global_broadcast, encode_notification,
 };
 use super::*;
 use bacnet_objects::traits::BACnetObject;
@@ -184,10 +184,12 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
         db.protect_audit_internal(&runtime.owner)?;
         assert!(transactions.audit_routes.set(routes).is_ok());
         transactions.set_audit_owner(&runtime.owner);
-        assert!(transactions
-            .audit_batch
-            .set(Arc::downgrade(&runtime.batches))
-            .is_ok());
+        assert!(
+            transactions
+                .audit_batch
+                .set(Arc::downgrade(&runtime.batches))
+                .is_ok()
+        );
         super::audit_batch_runtime::start(
             Arc::clone(&runtime.batches),
             Arc::clone(network),

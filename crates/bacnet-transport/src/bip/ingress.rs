@@ -4,8 +4,8 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bacnet_bip_codec::{BvlcFunction, BvllFrame};
 use bacnet_bip_core::node::{Addressed, Datagram, Discard, LocalAddresses, Path};
@@ -13,10 +13,10 @@ use tracing::{debug, warn};
 
 use crate::tap::FrameTap;
 use crate::udp_metadata::{
-    request_arrival_stamps, DestinationReceiver, IpVersion, ReceivedDatagram,
+    DestinationReceiver, IpVersion, ReceivedDatagram, request_arrival_stamps,
 };
 
-use super::io::{receive, RecvContext};
+use super::io::{RecvContext, receive};
 use super::multicast::GroupSwap;
 use super::receive_counters::{DropReason, ReceiveDrops};
 use super::socket::{BipSocket, BoundSockets};

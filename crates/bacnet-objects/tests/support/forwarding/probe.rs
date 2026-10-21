@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::fixtures::{address, day, noon, oid, property_error, schedule_write, METADATA};
+use super::fixtures::{METADATA, address, day, noon, oid, property_error, schedule_write};
 use bacnet_objects::access_control::AccessControlInput;
 use bacnet_objects::accumulator::InputReading;
 use bacnet_objects::analog::AnalogValueObject;

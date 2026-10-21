@@ -105,12 +105,12 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use bacnet_types::enums::Segmentation;
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::Terminal;
 
 use super::app::picker::Picker;
-use super::app::{update, Action, App, AppConfig};
+use super::app::{Action, App, AppConfig, update};
 use super::keymap::map_key;
 use super::log_layer::LogRing;
 use super::message::{Command, DeviceRow, WorkerEvent};

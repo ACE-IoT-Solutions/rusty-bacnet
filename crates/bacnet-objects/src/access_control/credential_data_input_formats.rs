@@ -30,8 +30,8 @@
 use bacnet_types::constructed::{BACnetAuthenticationFactor, BACnetAuthenticationFactorFormat};
 use bacnet_types::enums::AuthenticationFactorType;
 
-use super::credential_data_input_out_of_service::Reading;
 use super::UpdateClock;
+use super::credential_data_input_out_of_service::Reading;
 
 /// A supported format with the format class a factor read in it carries:
 /// one Supported_Formats element and the Supported_Format_Classes element at

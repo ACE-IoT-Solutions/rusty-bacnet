@@ -112,7 +112,9 @@ pub(super) fn validate_milliseconds(name: &str, value: Duration) -> Result<(), E
         || value.as_millis() > i64::MAX as u128
         || Instant::now().checked_add(value).is_none()
     {
-        return Err(Error::Encoding(format!("Hub {name} must be whole milliseconds in 1..=i64::MAX and representable by the monotonic clock")));
+        return Err(Error::Encoding(format!(
+            "Hub {name} must be whole milliseconds in 1..=i64::MAX and representable by the monotonic clock"
+        )));
     }
     Ok(())
 }

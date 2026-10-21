@@ -35,7 +35,7 @@ use bacnet_transport::{
     mstp::LoopbackSerial,
 };
 use std::net::{Ipv6Addr, SocketAddrV6};
-use support::{fixture, udp, DEADLINE, GROUP};
+use support::{DEADLINE, GROUP, fixture, udp};
 use tokio::net::UdpSocket;
 
 const NODE: [u8; 3] = [0x12, 0x34, 0x56];

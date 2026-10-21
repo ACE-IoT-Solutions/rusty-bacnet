@@ -1,6 +1,6 @@
-use super::rejection::{RejectionBudget, RejectionExpired};
 use super::WebSocketPort;
-use crate::sc_frame::{validate_control, ControlRecipient, ScMessage};
+use super::rejection::{RejectionBudget, RejectionExpired};
+use crate::sc_frame::{ControlRecipient, ScMessage, validate_control};
 use tracing::warn;
 
 pub(super) async fn reject_invalid_control<W: WebSocketPort>(

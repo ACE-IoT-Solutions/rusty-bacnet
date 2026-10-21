@@ -1,9 +1,9 @@
 //! What the router asks of its caller during a call: the [`Host`] hooks.
 
+use crate::PortId;
 use crate::message::{Networks, RoutingEntries};
 use crate::npdu::{NetworkMessageType, RejectMessageReason};
 use crate::table::RejectEffect;
-use crate::PortId;
 
 /// The caller's side of a [`receive`](super::Router::receive) or
 /// [`on_deadline`](super::Router::on_deadline) call.

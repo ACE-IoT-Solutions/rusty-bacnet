@@ -11,6 +11,7 @@ use bacnet_encoding::constructed::{
     encode_property_access_result, encode_recipient, encode_special_event, encode_value_source,
 };
 use bacnet_encoding::primitives::{encode_property_value, encode_timestamp_choice};
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{
     AccessResult, BACnetAddress, BACnetCOVSubscription, BACnetCalendarEntry, BACnetDateRange,
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference,
@@ -20,15 +21,14 @@ use bacnet_types::constructed::{
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, Time};
-use bacnet_types::MacAddr;
 use bytes::BytesMut;
 use pyo3::types::PyDict;
 use std::ffi::CStr;
 
 use crate::types::read_value::decode_read_value;
 use crate::types::{
-    access_rules_from_py, audit_recipient_from_py, device_object_reference, PyBACnetTimeStamp,
-    PyErrorClass, PyErrorCode, PyObjectIdentifier, PyPropertyIdentifier,
+    PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyObjectIdentifier, PyPropertyIdentifier,
+    access_rules_from_py, audit_recipient_from_py, device_object_reference,
 };
 
 type O = ObjectType;

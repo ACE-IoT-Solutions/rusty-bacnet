@@ -2,14 +2,14 @@
 
 use bacnet_npdu::NpduLimits;
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort};
-use bacnet_types::{error::Error, MacAddr};
+use bacnet_types::{MacAddr, error::Error};
 use bytes::Bytes;
 use std::sync::{
-    atomic::{AtomicU16, Ordering},
     Arc,
+    atomic::{AtomicU16, Ordering},
 };
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetRouter, RouterOptions, RouterPort};
 use crate::layer::ReceivedApdu;

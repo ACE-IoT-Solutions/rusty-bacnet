@@ -226,7 +226,7 @@ fn decode_framed_event_parameters(
 
 #[test]
 fn write_event_parameters_structured_round_trip() {
-    use bacnet_types::constructed::{event_parameter_tag, BACnetEventParameter};
+    use bacnet_types::constructed::{BACnetEventParameter, event_parameter_tag};
     let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
     let params = BACnetEventParameter::OutOfRange {
         time_delay: 5,
@@ -339,14 +339,15 @@ fn write_event_parameters_framed_malformed_rejected() {
         vec![0x5E, 0x09, 0x07], // out-of-range opening with no closing
         vec![0x58],             // out-of-range encoded as a primitive tag
     ] {
-        assert!(ee
-            .write_property(
+        assert!(
+            ee.write_property(
                 PropertyIdentifier::EVENT_PARAMETERS,
                 None,
                 PropertyValue::ApplicationData(malformed),
                 None,
             )
-            .is_err());
+            .is_err()
+        );
     }
 }
 
@@ -365,14 +366,15 @@ fn write_event_parameters_flat_malformed_proprietary_body_rejected() {
         )],
     };
 
-    assert!(ee
-        .write_property(
+    assert!(
+        ee.write_property(
             PropertyIdentifier::EVENT_PARAMETERS,
             None,
             malformed.encode(),
             None,
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         ee.read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
             .unwrap(),
@@ -413,14 +415,15 @@ fn write_event_parameters_flat_reference_malformed_rejected() {
     reference.push(PropertyValue::Null);
 
     for malformed in [overflow, trailing] {
-        assert!(ee
-            .write_property(
+        assert!(
+            ee.write_property(
                 PropertyIdentifier::EVENT_PARAMETERS,
                 None,
                 PropertyValue::List(malformed),
                 None,
             )
-            .is_err());
+            .is_err()
+        );
         assert_eq!(
             ee.read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
                 .unwrap(),

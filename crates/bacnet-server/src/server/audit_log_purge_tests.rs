@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, mpsc};
 use std::time::Duration;
 
 use bacnet_objects::audit::{AuditLogObject, AuditLogPersistence, AuditLogSnapshot};

@@ -1,6 +1,6 @@
 //! Bounded source notification delivery and local communication-result mapping.
 use super::*;
-use bacnet_encoding::apdu::{encode_apdu, Apdu, ConfirmedRequest, UnconfirmedRequest};
+use bacnet_encoding::apdu::{Apdu, ConfirmedRequest, UnconfirmedRequest, encode_apdu};
 use bacnet_endpoint_core::coordinator::CanonicalPeer;
 use bacnet_endpoint_core::endpoint_ingress::EndpointEgressAdmissionError;
 use bacnet_npdu::NetworkPriority;
@@ -9,11 +9,11 @@ use bacnet_server::server::{
     __endpoint_run_notification_worker as run_notification_worker,
 };
 use bacnet_services::audit::AuditNotificationRequest;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
     UnconfirmedServiceChoice,
 };
-use bacnet_types::MacAddr;
 use bytes::BytesMut;
 use tokio::time::{Duration, Instant};
 

@@ -16,15 +16,15 @@ mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
 
 pub(crate) mod direct_accept;
-pub use direct_accept::{DirectAcceptConfig, DirectListener, DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS};
+pub use direct_accept::{DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS, DirectAcceptConfig, DirectListener};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::WebSocketStream;
 
 use bacnet_types::error::Error;
 
@@ -545,9 +545,9 @@ mod tests {
     use crate::port_ownership::connect_loopback;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use tokio_rustls::TlsAcceptor;
 
     #[tokio::test]
     async fn disable_nagle_sets_tcp_nodelay_on_both_ends() {

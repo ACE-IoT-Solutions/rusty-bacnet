@@ -14,8 +14,8 @@ use bacnet_types::constructed::{
 };
 use bacnet_types::error::Error;
 
-use super::persist::BdtFile;
 use super::BbmdState;
+use super::persist::BdtFile;
 
 /// Lock shared BBMD state. Every holder keeps the guard for a short,
 /// synchronous critical section and never across an await. A panic inside

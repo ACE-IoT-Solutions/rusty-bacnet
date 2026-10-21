@@ -1,13 +1,13 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
 use super::session::{ConnectPlan, SessionOptions, TransportKind};
-use super::write::{keep_offline, SafetyOptions};
-use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
+use super::write::{SafetyOptions, keep_offline};
+use super::{COMMAND_CHANNEL_CAPACITY, EventSink, session};
 use crate::tui::capture::worker::TAP;
-use crate::tui::capture::{pcap, CaptureEvent, ExportJob};
+use crate::tui::capture::{CaptureEvent, ExportJob, pcap};
 use crate::tui::message::{Command, OpId, WorkerEvent};
-use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
+use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
@@ -449,7 +449,9 @@ async fn forward_watch(
             source: Source::Failed("the session did not take the request".into()),
         },
         WatchCommand::Remove { row } => {
-            tracing::warn!("watch row {row}: the session did not take the remove; its subscription ends with the session");
+            tracing::warn!(
+                "watch row {row}: the session did not take the remove; its subscription ends with the session"
+            );
             return;
         }
         WatchCommand::Csv(_) => WatchEvent::Notice("The session did not take the request.".into()),

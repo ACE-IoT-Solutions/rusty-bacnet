@@ -8,7 +8,7 @@ use bacnet_types::constructed::{BACnetEventLogRecord, BACnetLogMultipleRecord, B
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::codec::{self, Decoded, SnapshotRecord, MAX_SNAPSHOT_BYTES};
+use super::codec::{self, Decoded, MAX_SNAPSHOT_BYTES, SnapshotRecord};
 use super::{LogPersistence, LogSnapshot};
 
 /// Two-slot, versioned and checksummed file store for one log's snapshots,

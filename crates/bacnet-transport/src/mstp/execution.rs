@@ -268,7 +268,7 @@ pub(crate) fn apply(config: &MstpThreadConfig) -> Result<MstpExecutionStatus, Er
 /// what the kernel reads back, which must be the same.
 #[cfg(target_os = "linux")]
 fn set_affinity(wanted: &[usize]) -> Result<Vec<usize>, Error> {
-    use nix::sched::{sched_getaffinity, sched_setaffinity, CpuSet};
+    use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
     use nix::unistd::Pid;
 
     let failed = |what: &str, errno: nix::Error| {

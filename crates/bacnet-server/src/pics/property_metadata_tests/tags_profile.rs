@@ -3,6 +3,7 @@
 //! read-only, the local choice their O code allows. Unprovisioned objects
 //! list none.
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::color::{ColorObject, ColorTemperatureObject};
 use bacnet_objects::lighting::{BinaryLightingOutputObject, LightingOutputObject};
 use bacnet_objects::object_profile::ObjectProfile;
@@ -10,7 +11,6 @@ use bacnet_objects::object_profile::{TagsPersistence, TagsSnapshot};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::BACnetNameValue;
 use std::sync::Arc;
-use PropertyIdentifier as P;
 
 fn profile() -> ObjectProfile {
     ObjectProfile {
@@ -55,10 +55,12 @@ fn pics_lists_provisioned_tags_and_read_only_profile_rows() {
     let provisioned = pics(true);
     assert_eq!(provisioned.supported_object_types.len(), 4);
     for support in &unprovisioned.supported_object_types {
-        assert!(support
-            .supported_properties
-            .iter()
-            .all(|row| rows.iter().all(|(p, _)| row.property_id != *p)));
+        assert!(
+            support
+                .supported_properties
+                .iter()
+                .all(|row| rows.iter().all(|(p, _)| row.property_id != *p))
+        );
     }
     for support in &provisioned.supported_object_types {
         for (property, writable) in rows {
@@ -457,9 +459,11 @@ fn device_profile_masks_and_saved_empty_retain_optional_pics_rows() {
                 assert_eq!(row.access.writable, p == P::TAGS);
             }
         }
-        assert!(!device
-            .supported_properties
-            .iter()
-            .any(|r| r.property_id == P::DEPLOYED_PROFILE_LOCATION));
+        assert!(
+            !device
+                .supported_properties
+                .iter()
+                .any(|r| r.property_id == P::DEPLOYED_PROFILE_LOCATION)
+        );
     }
 }

@@ -5,9 +5,9 @@
 //!
 //! Platform: Linux only (AF_PACKET raw sockets). Feature-gated behind `ethernet`.
 
-use bacnet_types::error::{DecodeError, DecodingKind, Error};
 #[cfg(target_os = "linux")]
 use bacnet_types::MacAddr;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bytes::{BufMut, Bytes, BytesMut};
 
 /// LLC DSAP for BACnet (0x82).
@@ -282,15 +282,15 @@ mod transport {
     use socket2::{Domain, Protocol, SockFilter, Socket, Type};
     use std::io::Read;
     use std::os::fd::AsRawFd;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::unix::AsyncFd;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
     use tracing::{debug, warn};
 
-    use super::egress::{send_whole_frame, LlcReply, ReplyFailures};
-    use super::ingress::{classify_frame, npdu_channel_full, FrameIngress};
+    use super::egress::{LlcReply, ReplyFailures, send_whole_frame};
+    use super::ingress::{FrameIngress, classify_frame, npdu_channel_full};
     use crate::port::{ReceivedNpdu, TransportPort, TransportProvenance};
     use crate::warn_throttle::WarnThrottle;
 

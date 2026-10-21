@@ -2,8 +2,8 @@
 //! engine: next-hop rejects and duplicate global-broadcast suppression.
 
 use bacnet_npdu::Mac;
-use bacnet_router_core::table::Reachability;
 use bacnet_router_core::PortId;
+use bacnet_router_core::table::Reachability;
 
 use super::priority_harness::*;
 use super::{BACnetRouter, Duplicates, RouterOptions};
@@ -55,9 +55,11 @@ async fn by_default_a_repeat_goes_through() {
 async fn off_path_reject(options: RouterOptions) -> (Option<Reachability>, u64) {
     let (mut router, _apdus, peers) = start_with(2, options).await;
     let now = router.now();
-    assert!(router
-        .table()
-        .add_learned(3000, PortId(1), Mac::from_array([7]), now));
+    assert!(
+        router
+            .table()
+            .add_learned(3000, PortId(1), Mac::from_array([7]), now)
+    );
     let reject = vec![1, 0x80, 0x03, 1, 0x0B, 0xB8];
     receive(&peers[0], reject, 0).await;
     until(&router, |router| {

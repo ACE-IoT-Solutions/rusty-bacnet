@@ -59,10 +59,12 @@ fn access_door_present_value_commands_each_door_value() {
         slots[7],
         PropertyValue::Enumerated(DoorValue::EXTENDED_PULSE_UNLOCK.to_raw())
     );
-    assert!(slots
-        .iter()
-        .enumerate()
-        .all(|(i, slot)| i == 7 || *slot == PropertyValue::Null));
+    assert!(
+        slots
+            .iter()
+            .enumerate()
+            .all(|(i, slot)| i == 7 || *slot == PropertyValue::Null)
+    );
     assert_eq!(read_slot(&door, 0), PropertyValue::Unsigned(16));
 
     // A higher priority outranks slot 8; relinquishing both falls back to
@@ -169,10 +171,12 @@ fn access_credential_status_is_read_only() {
 fn access_credential_has_no_present_value() {
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
     assert!(!credential.property_list().contains(&P));
-    assert!(!credential
-        .property_metadata()
-        .iter()
-        .any(|row| row.property_identifier == P));
+    assert!(
+        !credential
+            .property_metadata()
+            .iter()
+            .any(|row| row.property_identifier == P)
+    );
     assert!(!credential.is_writable_property(P));
     assert_property_error(
         credential.read_property(P, None).map(|_| ()),

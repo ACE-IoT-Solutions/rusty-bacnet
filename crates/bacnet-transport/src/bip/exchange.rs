@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
-use bacnet_bip_core::node::{ExchangeId, ExchangeRefusal, LocalFailure};
 use bacnet_bip_core::Duration as CoreDuration;
+use bacnet_bip_core::node::{ExchangeId, ExchangeRefusal, LocalFailure};
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 use tokio::sync::oneshot;
@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 use super::node::{NodeHandle, Outcome, Waiter};
 use super::{BipTransport, BvlcClientSnapshot, BvlcClientStatus};
 use crate::bbmd::{self, BdtEntry, FdtEntryWire};
-use crate::bvll::{decode_bip_mac, encode_bvll, BvllMessage};
+use crate::bvll::{BvllMessage, decode_bip_mac, encode_bvll};
 
 /// Why one of [`BipTransport`]'s BVLC management requests
 /// ([`read_bdt`](BipTransport::read_bdt) and its siblings) failed.

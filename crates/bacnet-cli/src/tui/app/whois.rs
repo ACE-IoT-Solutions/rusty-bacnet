@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use crate::core::target::AddressStyle;
-use crate::core::target::{parse_target, Target, MSTP_TEXT_PREFIX};
-use crate::tui::message::{DirectedTo, WhoIsScope, WhoIsSpec, MAX_INSTANCE};
+use crate::core::target::{MSTP_TEXT_PREFIX, Target, parse_target};
+use crate::tui::message::{DirectedTo, MAX_INSTANCE, WhoIsScope, WhoIsSpec};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::bip6::VMAC_TEXT_PREFIX;
 
@@ -405,11 +405,13 @@ mod tests {
             global.key(FormKey::Submit, AddressStyle::Bip, 0),
             FormOutcome::Editing
         );
-        assert!(global
-            .warning
-            .as_deref()
-            .unwrap()
-            .starts_with("Global Who-Is"));
+        assert!(
+            global
+                .warning
+                .as_deref()
+                .unwrap()
+                .starts_with("Global Who-Is")
+        );
         // An edit withdraws the pending confirmation.
         global.key(FormKey::Backspace, AddressStyle::Bip, 0);
         assert_eq!(global.warning, None);
@@ -460,11 +462,12 @@ mod tests {
         for style in [AddressStyle::Bip, AddressStyle::Hex] {
             form.target = "bip6:1234".into();
             form.key(FormKey::Submit, style, 0);
-            assert!(form
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("bip6: addresses need the --ipv6 transport"));
+            assert!(
+                form.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("bip6: addresses need the --ipv6 transport")
+            );
         }
 
         let mut sc = form.clone();
@@ -521,23 +524,31 @@ mod tests {
             parse_range("0-4194303"),
             Ok(Some(DeviceInstanceRange::new(0, MAX_INSTANCE).unwrap()))
         );
-        assert!(parse_range("0-4194304")
-            .unwrap_err()
-            .contains("above the highest instance"));
+        assert!(
+            parse_range("0-4194304")
+                .unwrap_err()
+                .contains("above the highest instance")
+        );
         assert_eq!(
             parse_range("4194303"),
             Ok(Some(DeviceInstanceRange::single(MAX_INSTANCE).unwrap()))
         );
-        assert!(parse_range("4194304")
-            .unwrap_err()
-            .contains("instances run from 0 to 4194303"));
-        assert!(parse_range("9-1")
-            .unwrap_err()
-            .contains("low (9) > high (1)"));
+        assert!(
+            parse_range("4194304")
+                .unwrap_err()
+                .contains("instances run from 0 to 4194303")
+        );
+        assert!(
+            parse_range("9-1")
+                .unwrap_err()
+                .contains("low (9) > high (1)")
+        );
         // One limit alone is refused, not sent as an unbounded Who-Is (#1483).
-        assert!(parse_range("9-")
-            .unwrap_err()
-            .contains("a low limit but no high limit"));
+        assert!(
+            parse_range("9-")
+                .unwrap_err()
+                .contains("a low limit but no high limit")
+        );
         assert!(parse_listen("0").is_err() && parse_listen("61").is_err());
         let spec = WhoIsForm {
             range: "0-4194303".into(),

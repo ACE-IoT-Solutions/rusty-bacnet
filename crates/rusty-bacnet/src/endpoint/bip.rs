@@ -20,10 +20,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
-    build_database, build_identity, build_pending_boxes, lifecycle_error, make_analog_input,
-    make_analog_value, make_binary_input, make_binary_value, parse_device_uuid, parse_ipv4,
-    parse_read_work_limit, parse_segmentation, parse_services, pending_group, with_bip_port,
-    PendingObject,
+    PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
+    make_analog_input, make_analog_value, make_binary_input, make_binary_value, parse_device_uuid,
+    parse_ipv4, parse_read_work_limit, parse_segmentation, parse_services, pending_group,
+    with_bip_port,
 };
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
@@ -277,7 +277,9 @@ impl PyBipEndpoint {
                 || interface_ip.is_broadcast()
                 || interface_ip == broadcast
             {
-                return Err(PyValueError::new_err("registered_network_port must select the declared 1..255 port on a concrete unicast interface"));
+                return Err(PyValueError::new_err(
+                    "registered_network_port must select the declared 1..255 port on a concrete unicast interface",
+                ));
             }
         }
         let segmentation = parse_segmentation(segmentation);

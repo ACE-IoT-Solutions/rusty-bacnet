@@ -25,7 +25,7 @@ use super::{
     CovNotificationKind, CovSubscriptionKey, CovSubscriptionSnapshot, CovSubscriptionTable,
 };
 use crate::handlers::{WriteCommitObserver, WriteTarget};
-use crate::life_safety_cov::{is_life_safety_object, LifeSafetyCovChange, LifeSafetyCovSnapshots};
+use crate::life_safety_cov::{LifeSafetyCovChange, LifeSafetyCovSnapshots, is_life_safety_object};
 
 /// Live timestamped references whose changes a producer must capture.
 pub(crate) struct TimedCapture {

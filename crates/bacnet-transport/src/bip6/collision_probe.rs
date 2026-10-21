@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use tracing::debug;
 
 use super::frame::encoded;
-use super::ingress::{is_local_unicast_delivery, LocalBinding};
+use super::ingress::{LocalBinding, is_local_unicast_delivery};
 use super::socket::{Bip6Socket, Inbound};
 use super::{Bip6Vmac, Bvll6};
 

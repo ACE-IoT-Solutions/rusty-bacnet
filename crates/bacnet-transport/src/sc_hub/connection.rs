@@ -1,7 +1,7 @@
 //! Connection acceptance and WebSocket upgrade loop for the BACnet/SC hub.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::Instant;
 
 use futures_util::StreamExt;
@@ -9,13 +9,13 @@ use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
-use crate::sc_frame::{Vmac, BACNET_SC_HUB_SUBPROTOCOL};
+use crate::sc_frame::{BACNET_SC_HUB_SUBPROTOCOL, Vmac};
 use crate::sc_tls::boxed;
 
 use super::context::{HubConnectionContext, HubListener, PeerConnection};
 use super::heartbeat;
 use super::helpers::{offers_websocket_subprotocol, websocket_subprotocol_error_response};
-use super::{handle_client, Clients, DeviceUuid};
+use super::{Clients, DeviceUuid, handle_client};
 
 // ---------------------------------------------------------------------------
 // Accept loop

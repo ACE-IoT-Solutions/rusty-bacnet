@@ -7,7 +7,7 @@ use bytes::Bytes;
 use tokio::time::Duration;
 
 use super::echo_tests::ECHOING;
-use super::test_support::{config, encode, Bus};
+use super::test_support::{Bus, config, encode};
 use super::*;
 use crate::any::AnyTransport;
 use crate::port::TransportPort;

@@ -600,12 +600,14 @@ async fn mandatory_policy_admitted_worker_is_joined_after_cancelled_stop() {
     f.server.stop().await.unwrap();
     f.server.stop().await.unwrap();
     assert!(f.server.notification_transactions.workers_empty());
-    assert!(database
-        .write()
-        .await
-        .remove(&oid(ObjectType::DEVICE, 10))
-        .unwrap()
-        .is_some());
+    assert!(
+        database
+            .write()
+            .await
+            .remove(&oid(ObjectType::DEVICE, 10))
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[path = "audit_policy_precommit_edge_tests.rs"]

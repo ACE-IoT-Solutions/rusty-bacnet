@@ -16,7 +16,7 @@ const ENERGY_METER_REF: PropertyIdentifier = PropertyIdentifier::ENERGY_METER_RE
 trait Metered: BACnetObject {
     fn energy_meter_ref(&self) -> &BACnetDeviceObjectReference;
     fn set_energy_meter_ref(&mut self, reference: BACnetDeviceObjectReference)
-        -> Result<(), Error>;
+    -> Result<(), Error>;
 }
 
 macro_rules! impl_metered {

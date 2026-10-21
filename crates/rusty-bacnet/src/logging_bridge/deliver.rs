@@ -1,16 +1,16 @@
 //! The forwarder thread, which hands queued records to `logging`, and the
 //! flush that delivers what's queued before the interpreter exits.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
-use super::levels::{logger_name, python_level, PREFIX};
+use super::levels::{PREFIX, logger_name, python_level};
 use super::record::Record;
 use super::{BATCH, DROPPED, FLUSH};
 use crate::py_async;

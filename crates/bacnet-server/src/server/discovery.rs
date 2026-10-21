@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 
-use bacnet_encoding::apdu::{encode_apdu, Apdu, UnconfirmedRequest as UnconfirmedRequestPdu};
+use bacnet_encoding::apdu::{Apdu, UnconfirmedRequest as UnconfirmedRequestPdu, encode_apdu};
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
 use bacnet_npdu::NetworkPriority;
@@ -18,10 +18,10 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
 use bacnet_transport::port::TransportPort;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ErrorClass, ErrorCode, UnconfirmedServiceChoice};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 use tokio::sync::RwLock;
 
 use super::{BACnetServer, CommState, ServerConfig};

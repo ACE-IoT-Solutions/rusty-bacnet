@@ -3,7 +3,7 @@
 use super::*;
 use crate::cov::{CovNotificationKind, CovSample, CovSubscription};
 use crate::server::cov_notify_context::CovNotifyContext;
-use crate::server::test_transport::{SendLog, SendMode, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, SendMode, TestTransport};
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_types::enums::EngineeringUnits;

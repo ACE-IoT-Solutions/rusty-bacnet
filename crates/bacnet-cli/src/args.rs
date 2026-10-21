@@ -943,8 +943,10 @@ mod tests {
         ])
         .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ValueValidation);
-        assert!(error
-            .to_string()
-            .contains("BACnetTimeStamp hour must be 0..=23 or 255 (unspecified), got 24"));
+        assert!(
+            error
+                .to_string()
+                .contains("BACnetTimeStamp hour must be 0..=23 or 255 (unspecified), got 24")
+        );
     }
 }

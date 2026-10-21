@@ -55,8 +55,13 @@ pub(super) struct DccOutcomes([AtomicU64; 5]);
 
 impl DccOutcomes {
     pub(super) fn snapshot(&self) -> DccOutcomeCounters {
-        let [accepted_total, policy_denied_total, password_failure_total, deprecated_denied_total, malformed_total] =
-            self.0.each_ref().map(|v| v.load(Ordering::Relaxed));
+        let [
+            accepted_total,
+            policy_denied_total,
+            password_failure_total,
+            deprecated_denied_total,
+            malformed_total,
+        ] = self.0.each_ref().map(|v| v.load(Ordering::Relaxed));
         DccOutcomeCounters {
             accepted_total,
             policy_denied_total,
@@ -122,10 +127,12 @@ fn dcc_outcomes_saturation_without_subscriber() {
             }
         }
     });
-    assert!(counters
-        .0
-        .iter()
-        .all(|counter| counter.load(Ordering::Relaxed) == u64::MAX));
+    assert!(
+        counters
+            .0
+            .iter()
+            .all(|counter| counter.load(Ordering::Relaxed) == u64::MAX)
+    );
 }
 impl fmt::Display for BoundedHex<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

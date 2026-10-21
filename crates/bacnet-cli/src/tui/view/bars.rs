@@ -4,14 +4,14 @@
 //! beside the key hints rather than over them; from [`WIDE_WIDTH`] columns
 //! the hints give way so it shows in full where they can (#1927).
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
-use super::fit::{self, hint, span, Part, ALWAYS};
-use super::{ellipsize, text_width, Theme, WIDE_WIDTH};
+use super::fit::{self, ALWAYS, Part, hint, span};
+use super::{Theme, WIDE_WIDTH, ellipsize, text_width};
 use crate::tui::app::command_bar;
 use crate::tui::app::watch::Screen;
 use crate::tui::app::{App, Link, Overlay};

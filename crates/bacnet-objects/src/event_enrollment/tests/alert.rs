@@ -228,9 +228,10 @@ fn alert_enrollment_disabled_state_rejects_internal_transition_updates() {
     ae.set_event_detection_enable(false);
 
     assert!(ae.set_event_state_internal(EventState::OFFNORMAL).is_err());
-    assert!(ae
-        .set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-        .is_err());
+    assert!(
+        ae.set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
+            .is_err()
+    );
     assert_eq!(
         ae.read_property(PropertyIdentifier::EVENT_STATE, None)
             .unwrap(),

@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use bacnet_mstp_core::{MasterSnapshot, MasterState, MstpCounters as CoreCounters};
 
+use super::MstpExecutionStatus;
 use super::queues::SharedQueues;
 use super::totals::MstpCounters;
-use super::MstpExecutionStatus;
 
 /// Owned, redacted MS/TP counts. All fields start at zero, and there is no
 /// reset; use before/after snapshots for a run. Every count saturates at

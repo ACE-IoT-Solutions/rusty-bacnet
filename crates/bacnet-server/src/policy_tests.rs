@@ -4,9 +4,9 @@ use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_services::life_safety::LifeSafetyOperationRequest;
 use bacnet_services::object_mgmt::DeleteObjectRequest;
 use bacnet_transport::port::TransportProvenance;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ConfirmedServiceChoice, LifeSafetyOperation, ObjectType};
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 struct Defaults;
 impl ServerPolicy for Defaults {}

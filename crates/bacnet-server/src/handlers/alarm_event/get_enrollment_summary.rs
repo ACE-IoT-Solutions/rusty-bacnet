@@ -102,7 +102,7 @@ fn visit_entries<E: From<Error>>(
                         object_identifier,
                         "Event_Detection_Enable is not Boolean",
                     )
-                    .into())
+                    .into());
                 }
             }
         }

@@ -1,5 +1,5 @@
-use super::binary::BinaryLightingOutputObject;
 use super::LightingOutputObject;
+use super::binary::BinaryLightingOutputObject;
 use std::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;

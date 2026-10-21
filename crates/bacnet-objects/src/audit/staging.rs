@@ -26,7 +26,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::buffer::{apply_change, written_buffer_size, Timestamp};
+use super::buffer::{Timestamp, apply_change, written_buffer_size};
 use super::*;
 use crate::durable::{
     DurableWrites, Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep,

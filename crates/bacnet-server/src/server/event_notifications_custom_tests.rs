@@ -5,8 +5,8 @@ use bacnet_services::alarm_event::NotificationParameters;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::primitives::StatusFlags;
 use std::borrow::Cow;
-use std::sync::atomic::AtomicU8;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicU8;
 
 struct CustomProposal {
     oid: ObjectIdentifier,
@@ -107,7 +107,7 @@ impl BACnetObject for CustomProposal {
                 return Err(Error::Protocol {
                     class: ErrorClass::PROPERTY,
                     code: ErrorCode::UNKNOWN_PROPERTY,
-                })
+                });
             }
         };
         Ok(value)
@@ -377,9 +377,11 @@ async fn failed_custom_commit_retries_through_per_write_runtime() {
     let (db, commits) = database(0, mode.clone(), false, true);
     let before = snapshot(&db);
     let db = Arc::new(RwLock::new(db));
-    assert!(broadcasts_from_per_write_path(&db, DccState::Enable)
-        .await
-        .is_empty());
+    assert!(
+        broadcasts_from_per_write_path(&db, DccState::Enable)
+            .await
+            .is_empty()
+    );
     assert_eq!(snapshot(&*db.read().await), before);
     assert_eq!(db.read().await.reserve_event_sequence_number().number(), 0);
     assert!(commits.lock().unwrap().is_empty());
@@ -396,9 +398,11 @@ async fn custom_immediate_proposal_commits_exact_history_before_distribution() {
     let sent = broadcasts_from_per_write_path(&db, DccState::Enable).await;
     let notification = decode_broadcast_notification(&sent);
     assert_committed(&*db.read().await, &notification, &commits.lock().unwrap());
-    assert!(broadcasts_from_per_write_path(&db, DccState::Enable)
-        .await
-        .is_empty());
+    assert!(
+        broadcasts_from_per_write_path(&db, DccState::Enable)
+            .await
+            .is_empty()
+    );
     assert_eq!(commits.lock().unwrap().len(), 1);
 }
 
@@ -421,11 +425,12 @@ async fn delayed_runtime(fail_first: bool, unsupported: bool) {
     let mode = Arc::new(AtomicU8::new(if fail_first { 2 } else { 1 }));
     let (mut db, commits) = database(2, mode.clone(), unsupported, true);
     let before = snapshot(&db);
-    assert!(db
-        .get_mut(&oid())
-        .unwrap()
-        .evaluate_intrinsic_reporting()
-        .is_none());
+    assert!(
+        db.get_mut(&oid())
+            .unwrap()
+            .evaluate_intrinsic_reporting()
+            .is_none()
+    );
     assert_eq!(snapshot(&db), before);
     let (transport, sent) = recording_transport();
     let mut server = BACnetServer::start_clockless(ServerConfig::default(), db, transport)

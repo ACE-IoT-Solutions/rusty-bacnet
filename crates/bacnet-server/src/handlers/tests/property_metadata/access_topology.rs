@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     access_control::{AccessDoorObject, AccessPointObject, AccessZoneObject},
     traits::BACnetObject,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn access_objects(configured: bool) -> [Box<dyn BACnetObject>; 3] {
     let mut door = AccessDoorObject::new(7, "DOOR-7").unwrap();

@@ -28,9 +28,11 @@ fn to_3000(source: SourceSelection) -> Request<'static> {
 async fn a_request_is_routed_by_the_table_and_its_reply_comes_home() {
     let (mut router, mut apdus, mut peers) = start(2).await;
     let now = router.now();
-    assert!(router
-        .table()
-        .add_learned(3000, PortId(1), Mac::from_array([7]), now));
+    assert!(
+        router
+            .table()
+            .add_learned(3000, PortId(1), Mac::from_array([7]), now)
+    );
 
     // From the egress port's address: no SNET, to the next router.
     router
@@ -97,9 +99,11 @@ async fn no_route_searches_and_refuses() {
 async fn a_full_queue_refuses_and_a_stopped_router_refuses_everything() {
     let (mut router, _apdus, mut peers) = start(2).await;
     let now = router.now();
-    assert!(router
-        .table()
-        .add_learned(3000, PortId(1), Mac::from_array([7]), now));
+    assert!(
+        router
+            .table()
+            .add_learned(3000, PortId(1), Mac::from_array([7]), now)
+    );
     let request = to_3000(SourceSelection::EgressPort);
     router.originate(&request).unwrap();
     let _in_progress = sending(&mut peers[1]).await;

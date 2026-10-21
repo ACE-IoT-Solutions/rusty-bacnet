@@ -151,15 +151,17 @@ fn configured_bip_numeric_boundaries_and_quality() {
             PropertyValue::Enumerated(quality)
         );
     }
-    assert!(NetworkPortObject::new_bip(
-        1,
-        "NP",
-        BipPortConfig {
-            network_number: 65535,
-            ..Default::default()
-        }
-    )
-    .is_err());
+    assert!(
+        NetworkPortObject::new_bip(
+            1,
+            "NP",
+            BipPortConfig {
+                network_number: 65535,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
     for length in [50, 51, 1497, u32::MAX] {
         let object = bip(BipPortConfig {
             apdu_length: length,
@@ -171,15 +173,17 @@ fn configured_bip_numeric_boundaries_and_quality() {
         );
     }
     for length in [0, 49] {
-        assert!(NetworkPortObject::new_bip(
-            1,
-            "NP",
-            BipPortConfig {
-                apdu_length: length,
-                ..Default::default()
-            }
-        )
-        .is_err());
+        assert!(
+            NetworkPortObject::new_bip(
+                1,
+                "NP",
+                BipPortConfig {
+                    apdu_length: length,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
 }
 
@@ -235,15 +239,17 @@ fn configured_bip_dns_array_and_derived_mac() {
             );
         }
     }
-    assert!(NetworkPortObject::new_bip(
-        1,
-        "NP",
-        BipPortConfig {
-            dns_servers: vec![],
-            ..Default::default()
-        }
-    )
-    .is_err());
+    assert!(
+        NetworkPortObject::new_bip(
+            1,
+            "NP",
+            BipPortConfig {
+                dns_servers: vec![],
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -271,12 +277,16 @@ fn configured_snapshot_refuses_activation_writes_without_state_change() {
         object.read_property(P::CHANGES_PENDING, None).unwrap(),
         PropertyValue::Boolean(false)
     );
-    assert!(object
-        .write_property(P::DESCRIPTION, None, PropertyValue::Unsigned(1), None)
-        .is_err());
-    assert!(object
-        .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Unsigned(1), None)
-        .is_err());
+    assert!(
+        object
+            .write_property(P::DESCRIPTION, None, PropertyValue::Unsigned(1), None)
+            .is_err()
+    );
+    assert!(
+        object
+            .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Unsigned(1), None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -330,9 +340,11 @@ fn non_bip_application_rows_do_not_claim_ipv4_fields() {
             P::MAX_APDU_LENGTH_ACCEPTED,
         ] {
             error(object.read_property(p, None), ErrorCode::UNKNOWN_PROPERTY);
-            assert!(object
-                .write_property(p, None, PropertyValue::Unsigned(1), None)
-                .is_err());
+            assert!(
+                object
+                    .write_property(p, None, PropertyValue::Unsigned(1), None)
+                    .is_err()
+            );
         }
         // The classification follows the datatype, not this object's rows:
         // IP_DNS_SERVER is an array the non-B/IP port doesn't hold.

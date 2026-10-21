@@ -47,8 +47,8 @@ pub(crate) mod recipient_list;
 mod saving;
 #[doc(hidden)]
 pub use enrollment_summary::{
-    resolve_enrollment_summary_class_internal, EnrollmentSummaryClassProjection,
-    EnrollmentSummaryClassProjectionError,
+    EnrollmentSummaryClassProjection, EnrollmentSummaryClassProjectionError,
+    resolve_enrollment_summary_class_internal,
 };
 pub use persistence::{
     FileNotificationClassPersistence, NotificationClassPersistence, NotificationClassSnapshot,

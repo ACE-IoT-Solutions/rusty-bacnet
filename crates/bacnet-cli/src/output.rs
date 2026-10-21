@@ -10,7 +10,7 @@ use bacnet_types::primitives::PropertyValue;
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
-use crate::core::target::{routed_station, AddressStyle};
+use crate::core::target::{AddressStyle, routed_station};
 
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,11 +459,11 @@ mod tests {
     /// same station (#1916).
     #[test]
     fn whois_prints_routed_stations_as_targets() {
+        use bacnet_types::MacAddr;
         use bacnet_types::enums::{ObjectType, Segmentation};
         use bacnet_types::primitives::ObjectIdentifier;
-        use bacnet_types::MacAddr;
 
-        use crate::core::target::{parse_target, Target};
+        use crate::core::target::{Target, parse_target};
 
         let found = |instance: u32, routed: Option<(u16, &[u8])>| DiscoveredDevice {
             object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),

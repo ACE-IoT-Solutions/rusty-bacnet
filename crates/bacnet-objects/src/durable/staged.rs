@@ -64,7 +64,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
 use super::{
-    Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep, STAGED_WRITE_LIFETIME,
+    Event, PendingWrite, STAGED_WRITE_LIFETIME, SaveTicket, SaveWait, SaveWriter, StageStep,
 };
 
 /// One write of a staged save, and the state `N` it leaves.

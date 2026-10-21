@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use bacnet_mstp_codec::FrameType;
-use bacnet_mstp_sim::{Answer, Fault, MasterSpec, Outbox, Received, Sim, SimConfig, BROADCAST};
+use bacnet_mstp_sim::{Answer, BROADCAST, Fault, MasterSpec, Outbox, Received, Sim, SimConfig};
 
 use common::*;
 
@@ -79,10 +79,11 @@ fn answers_to_unconfirmed_npdus_and_own_sends_wait_for_the_token() {
     for frame in from_3 {
         assert!(frame.start > request.end);
     }
-    assert!(sim
-        .deliveries(0)
-        .iter()
-        .any(|delivery| delivery.source == 3 && delivery.data == npdu(false, 0xA0)));
+    assert!(
+        sim.deliveries(0)
+            .iter()
+            .any(|delivery| delivery.source == 3 && delivery.data == npdu(false, 0xA0))
+    );
 }
 
 /// A request the application leaves unanswered stays undecided, so the

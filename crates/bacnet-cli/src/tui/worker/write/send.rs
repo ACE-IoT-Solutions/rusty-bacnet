@@ -10,9 +10,9 @@ use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::error::{Error, ErrorDetail};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::tui::safety::{Gate, Outcome, Planned, Preview, NULL};
+use crate::tui::safety::{Gate, NULL, Outcome, Planned, Preview};
 
 /// How long a revert waits for a device it had to look for.
 const FIND_FOR: Duration = Duration::from_secs(3);

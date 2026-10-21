@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 
 use crate::port::TransportPort;
 
-use super::{advertisement, ScConnectionState, ScTransport, WebSocketPort};
+use super::{ScConnectionState, ScTransport, WebSocketPort, advertisement};
 use crate::sc_frame::encode_sc_message;
 use bacnet_types::error::Error;
 use bytes::BytesMut;

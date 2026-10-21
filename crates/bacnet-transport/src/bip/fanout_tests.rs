@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use super::fanout::{FanoutPolicy, FanoutRateLimiter};
 use super::*;
 use crate::bbmd::{BdtEntry, ForeignDevicePolicy};
-use crate::bvll::{decode_bip_mac, decode_bvll, BvllMessage};
+use crate::bvll::{BvllMessage, decode_bip_mac, decode_bvll};
 use crate::port::TransportPort;
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode};
 

@@ -11,8 +11,8 @@
 pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseScopeGuard};
 pub use crate::principal::ScPrincipal;
 use bacnet_npdu::NpduLimits;
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -232,9 +232,15 @@ impl TransportProvenance {
     pub fn scope(self) -> &'static str {
         match self.kind {
             ProvenanceKind::Unverified => "unverified legacy origin (no assertion)",
-            ProvenanceKind::DirectPeer(_) => "authenticated immediate direct SC-TLS peer and connection incarnation",
-            ProvenanceKind::HubChannel => "authenticated Hub admission TLS-client channel (scope only)",
-            ProvenanceKind::RelayedOrigin => "independently validated SC-hub relayed origin (post source_admission; hub peer is not the leaf)",
+            ProvenanceKind::DirectPeer(_) => {
+                "authenticated immediate direct SC-TLS peer and connection incarnation"
+            }
+            ProvenanceKind::HubChannel => {
+                "authenticated Hub admission TLS-client channel (scope only)"
+            }
+            ProvenanceKind::RelayedOrigin => {
+                "independently validated SC-hub relayed origin (post source_admission; hub peer is not the leaf)"
+            }
         }
     }
 }

@@ -187,8 +187,8 @@ pub async fn build_sc_client(
 pub fn sc_client_builder(
     args: &TransportArgs,
 ) -> Result<bacnet_client::client::ScClientBuilder, Error> {
-    use bacnet_transport::sc_tls::pem;
     use bacnet_transport::sc_tls::ScNodeTlsConfig;
+    use bacnet_transport::sc_tls::pem;
     use rustls::RootCertStore;
     use rustls_pki_types::pem::Error as PemError;
     use std::fs::File;

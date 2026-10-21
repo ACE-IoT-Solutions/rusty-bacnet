@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{timer::TimerObject, traits::BACnetObject};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
-use PropertyIdentifier as P;
 
 fn timer_object(configured: bool) -> TimerObject {
     let mut object = TimerObject::new(7, "TMR-7").unwrap();

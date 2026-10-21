@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{load_control::LoadControlObject, traits::BACnetObject};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn load_control_object(configured: bool) -> LoadControlObject {
     let mut object = LoadControlObject::new(7, "LC-7").unwrap();

@@ -5,32 +5,32 @@
 //! bad tail changes nothing and sends nothing. A protected message then
 //! goes to [`Host::authorize`], and a refusal drops it silently.
 
+use super::Group;
+use super::Storage;
 use super::config::Options;
 use super::counters::bump;
 use super::host::{Claim, ControlClass, Event, Host, Targets};
 use super::ingress::{Arrival, Discard, Received};
 use super::output::Kind;
 use super::tasks::Task;
-use super::Group;
-use super::Storage;
 use crate::message::{
     DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks,
     WhoIsRouter,
 };
-use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
+use crate::npdu::{Address, GLOBAL_NETWORK, Npdu};
 use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use crate::swap_apart;
 use crate::table::{Learned, RejectEffect};
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-        const B: usize,
-    > Storage<P, R, H, D, N, G, B>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// A network message. What-Is, Number-Is and Reject are always handled
     /// here. Any other that names a DNET besides 0xFFFF and the arrival

@@ -51,11 +51,11 @@
 //! lifecycle mutation is owner-exclusive (`&mut`) or via atomics/async
 //! mutexes; role handles synchronize through the shared session token.
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use bacnet_client::client::ClientConfig;
 use bacnet_client::EndpointRequester;
+use bacnet_client::client::ClientConfig;
 use bacnet_encoding::apdu::Apdu;
 use bacnet_endpoint_core::coordinator::{
     AdmissionOutcome, CoordinatorError, OutboundTransactionCoordinator,
@@ -71,7 +71,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 #[path = "source_profile.rs"]
@@ -87,8 +87,8 @@ mod device_writes;
 mod registered_port;
 
 use crate::roles::{
-    admit_once, decode_terminal, inbound_canonical_peer, is_requester_lease, ClientRoleHandle,
-    ServerRoleHandle, SessionToken,
+    ClientRoleHandle, ServerRoleHandle, SessionToken, admit_once, decode_terminal,
+    inbound_canonical_peer, is_requester_lease,
 };
 use bacnet_server::server::{
     __endpoint_EndpointResponder as EndpointResponder,
@@ -905,7 +905,7 @@ struct DispatchParts {
 
 #[path = "session_dispatch.rs"]
 mod dispatch;
-use dispatch::{next_event, DispatchEvent};
+use dispatch::{DispatchEvent, next_event};
 
 async fn dispatch_loop(mut parts: DispatchParts, mut cancel: oneshot::Receiver<()>) -> SessionExit {
     // One consumer retains all receivers and joins; cancellation stays first.

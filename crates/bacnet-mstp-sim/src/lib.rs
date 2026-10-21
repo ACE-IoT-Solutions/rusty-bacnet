@@ -372,7 +372,7 @@ mod spec;
 mod trace;
 mod wire;
 
-pub use app::{Answer, Application, Outbox, Received, ReplyPolicy, BROADCAST};
+pub use app::{Answer, Application, BROADCAST, Outbox, Received, ReplyPolicy};
 pub use contention::{ContentionPolicy, ContentionStats};
 pub use line::Driver;
 pub use report::{
@@ -382,9 +382,9 @@ pub use report::{
 };
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};
-pub use skew::{Skew, MAX_SKEW_PPM};
+pub use skew::{MAX_SKEW_PPM, Skew};
 pub use spec::{
     AdapterSpec, Corruption, Fault, HostSpec, MasterSpec, Script, ScriptSend, SeenFrame,
 };
 pub use trace::{Millis, Trace, TraceEntry, TraceKind, Who};
-pub use wire::{WireTiming, BITS_PER_OCTET};
+pub use wire::{BITS_PER_OCTET, WireTiming};

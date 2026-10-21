@@ -505,9 +505,10 @@ mod detection_enable_tests {
             msi.event_detector.pending.is_none(),
             "evaluate/tick re-armed a countdown while detection is disabled"
         );
-        assert!(msi
-            .property_list()
-            .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE));
+        assert!(
+            msi.property_list()
+                .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE)
+        );
         assert!(msi.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
     }
 }

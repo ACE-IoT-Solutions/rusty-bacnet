@@ -5,8 +5,8 @@ use super::*;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PROPERTY: PropertyIdentifier = PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT;
 // Independent Clause 21 vectors: context [0], Device instance 42/43.

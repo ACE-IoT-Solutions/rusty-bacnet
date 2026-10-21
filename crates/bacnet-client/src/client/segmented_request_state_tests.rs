@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use bacnet_encoding::apdu::{self, encode_apdu, Apdu, ComplexAck, ErrorPdu, SegmentAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{self, Apdu, ComplexAck, ErrorPdu, SegmentAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
 };
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{mpsc, Notify};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{Notify, mpsc};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetClient, ClientConfig};
 
@@ -565,11 +565,13 @@ async fn stale_segment_ack_after_terminal_completion_is_not_routed() {
     )
     .await
     .expect("terminal response did not reach delayed route cleanup");
-    assert!(client
-        .seg_ack_senders
-        .lock()
-        .await
-        .contains_key(&(MacAddr::from_slice(SERVER_MAC), invoke_id)));
+    assert!(
+        client
+            .seg_ack_senders
+            .lock()
+            .await
+            .contains_key(&(MacAddr::from_slice(SERVER_MAC), invoke_id))
+    );
 
     send_to_client(
         &server,
@@ -640,12 +642,14 @@ async fn stale_segment_ack_after_terminal_completion_is_not_routed() {
     );
 
     client.segmented_post_wait_cleanup.release();
-    assert!(timeout(Duration::from_secs(2), first)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap()
-        .is_empty());
+    assert!(
+        timeout(Duration::from_secs(2), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
 
     let mut client = Arc::try_unwrap(client).unwrap_or_else(|_| panic!("requests retained client"));
     client.stop().await.unwrap();

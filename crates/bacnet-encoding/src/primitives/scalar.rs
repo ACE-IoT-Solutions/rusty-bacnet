@@ -5,7 +5,7 @@ use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use bytes::BytesMut;
 
 use crate::sink::{EncodeSink, SinkFull};
-use crate::tags::{self, app_tag, TagClass};
+use crate::tags::{self, TagClass, app_tag};
 
 /// Encode an unsigned integer using the minimum number of big-endian octets.
 #[cfg(feature = "alloc")]

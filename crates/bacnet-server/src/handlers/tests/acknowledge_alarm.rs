@@ -2,7 +2,7 @@ use super::*;
 use bacnet_types::bitstring::EventTransitionBits;
 
 use bacnet_encoding::primitives;
-use bacnet_encoding::tags::{encode_tag, TagClass};
+use bacnet_encoding::tags::{TagClass, encode_tag};
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
 use bacnet_objects::event::{EnrollmentSummaryCapability, EventStateChange, EventTransitionCommit};

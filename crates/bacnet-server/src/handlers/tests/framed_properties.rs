@@ -302,13 +302,15 @@ fn malformed_legacy_fault_parameters_preserve_existing_value() {
     let mut oversized_tag = BytesMut::new();
     bacnet_encoding::primitives::encode_app_unsigned(&mut oversized_tag, 256);
     bacnet_encoding::primitives::encode_app_unsigned(&mut oversized_tag, 1);
-    assert!(write_framed(
-        &mut db,
-        oid,
-        PropertyIdentifier::FAULT_PARAMETERS,
-        oversized_tag.to_vec(),
-    )
-    .is_err());
+    assert!(
+        write_framed(
+            &mut db,
+            oid,
+            PropertyIdentifier::FAULT_PARAMETERS,
+            oversized_tag.to_vec(),
+        )
+        .is_err()
+    );
     assert_eq!(
         read_raw(&db, oid, PropertyIdentifier::FAULT_PARAMETERS),
         before
@@ -317,13 +319,15 @@ fn malformed_legacy_fault_parameters_preserve_existing_value() {
     let mut trailing_value = BytesMut::new();
     bacnet_encoding::primitives::encode_app_unsigned(&mut trailing_value, 0);
     bacnet_encoding::primitives::encode_app_boolean(&mut trailing_value, true);
-    assert!(write_framed(
-        &mut db,
-        oid,
-        PropertyIdentifier::FAULT_PARAMETERS,
-        trailing_value.to_vec(),
-    )
-    .is_err());
+    assert!(
+        write_framed(
+            &mut db,
+            oid,
+            PropertyIdentifier::FAULT_PARAMETERS,
+            trailing_value.to_vec(),
+        )
+        .is_err()
+    );
     assert_eq!(
         read_raw(&db, oid, PropertyIdentifier::FAULT_PARAMETERS),
         before
@@ -430,13 +434,15 @@ fn malformed_extended_fault_application_form_is_rejected() {
     db.add(Box::new(ee)).unwrap();
 
     let malformed = vec![0x2E, 0x09, 0x01, 0x19, 0x02, 0x2E, 0x01, 0x00, 0x2F, 0x2F];
-    assert!(write_framed(
-        &mut db,
-        oid,
-        PropertyIdentifier::FAULT_PARAMETERS,
-        malformed,
-    )
-    .is_err());
+    assert!(
+        write_framed(
+            &mut db,
+            oid,
+            PropertyIdentifier::FAULT_PARAMETERS,
+            malformed,
+        )
+        .is_err()
+    );
     assert_eq!(
         read_raw(&db, oid, PropertyIdentifier::FAULT_PARAMETERS),
         vec![0x08]

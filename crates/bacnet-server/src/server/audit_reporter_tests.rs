@@ -67,7 +67,7 @@ mod live;
 
 #[tokio::test(start_paused = true)]
 async fn audit_reporter_atomic_write_file_delivery_saturation_deadline_and_no_recursion() {
-    use file::{access, file_server, request, SERVICE};
+    use file::{SERVICE, access, file_server, request};
     let mut fixture = file_server(false).await;
     fixture.transport.block.store(true, Ordering::Release);
     for _ in 0..65 {
@@ -436,10 +436,12 @@ async fn audit_reporter_missing_recipient_is_configuration_failure_without_growt
         );
         assert!(fixture.transport.sent.lock().unwrap().is_empty());
         assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-        assert!(fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
         assert_eq!(fixture.writes.load(Ordering::Acquire), 100);
         fixture.server.stop().await.unwrap();
     }
@@ -476,10 +478,12 @@ async fn audit_reporter_missing_ack_and_failed_delivery_are_communication_failur
         invoke_id: first.invoke_id,
         service_choice: first.service_choice,
     });
-    assert!(!fixture
-        .server
-        .notification_transactions
-        .admit_terminal(SOURCE, None, None, &ack));
+    assert!(
+        !fixture
+            .server
+            .notification_transactions
+            .admit_terminal(SOURCE, None, None, &ack)
+    );
     tokio::time::advance(Duration::from_secs(3)).await;
     settle().await;
     assert_eq!(
@@ -586,10 +590,12 @@ async fn audit_reporter_overflow_and_shutdown_with_inflight_send_are_bounded() {
         .unwrap()
         .unwrap();
     assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-    assert!(fixture
-        .server
-        .notification_transactions
-        .delivery_workers_idle());
+    assert!(
+        fixture
+            .server
+            .notification_transactions
+            .delivery_workers_idle()
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -611,10 +617,12 @@ async fn audit_reporter_blocked_transport_has_a_total_deadline_even_without_ack_
             Reliability::COMMUNICATION_FAILURE
         );
         assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-        assert!(fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
         fixture.server.stop().await.unwrap();
     }
 }

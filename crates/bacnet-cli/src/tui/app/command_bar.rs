@@ -35,8 +35,8 @@ use bacnet_types::primitives::ObjectIdentifier;
 use self::words::Word;
 use super::devices::DeviceTable;
 use super::monitor::Setting;
-use super::{App, FilterKey, Overlay, FLASH_FOR};
-use crate::core::target::{parse_target, Target};
+use super::{App, FLASH_FOR, FilterKey, Overlay};
+use crate::core::target::{Target, parse_target};
 use crate::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
 use crate::tui::message::Command;
 use crate::tui::safety::WriteSpec;
@@ -522,9 +522,11 @@ mod tests {
         );
         assert!(parse(r"writem 100 av:1 description Zone\ 2@17").is_err());
         // A backslash that escapes nothing is plain text, not a string.
-        assert!(parse(r"writem 100 av:1 description C:\temp")
-            .unwrap_err()
-            .contains("cannot parse value"));
+        assert!(
+            parse(r"writem 100 av:1 description C:\temp")
+                .unwrap_err()
+                .contains("cannot parse value")
+        );
         // Each value reads back as the string typed.
         let Some(text) = string("two words") else {
             unreachable!()
@@ -535,13 +537,17 @@ mod tests {
                 "two words".into()
             ))
         );
-        assert!(parse(r#"writem 100 av:1 description "x"@17"#)
-            .unwrap_err()
-            .contains("priority"));
+        assert!(
+            parse(r#"writem 100 av:1 description "x"@17"#)
+                .unwrap_err()
+                .contains("priority")
+        );
         assert!(parse(r#"writem 100 av:1 description "x"@"#).is_err());
-        assert!(parse(r#"writem 100 av:1 description "x"@0"#)
-            .unwrap_err()
-            .contains("priority"));
+        assert!(
+            parse(r#"writem 100 av:1 description "x"@0"#)
+                .unwrap_err()
+                .contains("priority")
+        );
         let open = parse(r#"writem 100 av:1 description "two words"#).unwrap_err();
         assert!(open.contains("unclosed \" quote"), "{open}");
         // Unquoted, a space still splits the value from the next group.
@@ -576,9 +582,11 @@ mod tests {
         );
         assert!(parse("bbmd 10.0.0").is_err());
         assert_eq!(parse("bbmd"), Ok(Line::Bbmd(None)));
-        assert!(parse("watch 10.0.0.5 ai:1")
-            .unwrap_err()
-            .contains("a device from the device table"));
+        assert!(
+            parse("watch 10.0.0.5 ai:1")
+                .unwrap_err()
+                .contains("a device from the device table")
+        );
         assert!(parse("watch 100 ai:1 object-list[2]").is_err());
         assert!(parse("watch 100 ai:x").is_err());
         assert_eq!(parse("find"), Ok(Line::Find(String::new())));
@@ -599,9 +607,11 @@ mod tests {
         assert!(parse("mstp listen 4000").is_err());
         assert!(parse("mstp poll 5").is_err());
         assert!(parse("finder x").unwrap_err().contains("unknown command"));
-        assert!(parse("read 100 ai:1")
-            .unwrap_err()
-            .contains("unknown command"));
+        assert!(
+            parse("read 100 ai:1")
+                .unwrap_err()
+                .contains("unknown command")
+        );
     }
 
     #[test]

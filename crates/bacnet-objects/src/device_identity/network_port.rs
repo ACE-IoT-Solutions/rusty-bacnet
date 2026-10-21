@@ -1,6 +1,6 @@
 //! Configured Network Port declarations, independent of a running transport.
 use crate::network_port::{BipPortConfig, NetworkPortObject};
-use bacnet_types::{enums::NetworkType, error::Error, MacAddr};
+use bacnet_types::{MacAddr, enums::NetworkType, error::Error};
 use std::net::Ipv4Addr;
 
 /// One configured Network-Port entry (see module docs for the profile boundary).

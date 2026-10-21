@@ -69,9 +69,11 @@ fn an_unprovisioned_profile_serves_and_lists_nothing() {
         );
     }
     assert!(profile.read(P::DESCRIPTION, None).is_none());
-    assert!(profile
-        .write(P::DESCRIPTION, None, &PropertyValue::Null)
-        .is_none());
+    assert!(
+        profile
+            .write(P::DESCRIPTION, None, &PropertyValue::Null)
+            .is_none()
+    );
 }
 
 #[test]

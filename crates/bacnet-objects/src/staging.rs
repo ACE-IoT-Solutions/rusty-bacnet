@@ -19,7 +19,7 @@ use bytes::BytesMut;
 use crate::common::{self, read_common_properties};
 use crate::device_reference;
 use crate::property_metadata::{
-    property_list_from_metadata, PropertyConformance, PropertyMetadata, PropertyWriteCapability,
+    PropertyConformance, PropertyMetadata, PropertyWriteCapability, property_list_from_metadata,
 };
 use crate::traits::BACnetObject;
 

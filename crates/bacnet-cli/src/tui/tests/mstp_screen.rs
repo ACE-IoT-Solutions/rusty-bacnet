@@ -435,11 +435,13 @@ fn an_mstp_profile_connects_only_after_the_join_is_confirmed() {
 
     press(&mut app, KeyCode::Char('c'));
     let sent = press(&mut app, KeyCode::Char('y'));
-    let [Command::Profile(Request::Connect {
-        name,
-        profile: sent,
-        ..
-    })] = sent.as_slice()
+    let [
+        Command::Profile(Request::Connect {
+            name,
+            profile: sent,
+            ..
+        }),
+    ] = sent.as_slice()
     else {
         panic!("unexpected {sent:?}");
     };
@@ -491,7 +493,7 @@ async fn the_sampler_reports_the_handle_each_second() {
 async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
     use super::connections::event;
     use crate::tui::worker::session::{ConnectPlan, TransportKind};
-    use crate::tui::worker::{coordinator, EventSink};
+    use crate::tui::worker::{EventSink, coordinator};
     let dir = tempfile::tempdir().unwrap();
     let missing = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
     let mut cli_settings = settings();

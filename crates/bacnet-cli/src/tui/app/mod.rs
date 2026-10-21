@@ -803,13 +803,18 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
             if matches!(app.link, Link::Down | Link::Failed(_)) {
                 if app.connection.is_some() {
                     app.open_connection();
-                } else { match app.join_again.clone() { Some(join) => {
-                    // Joining again is confirmed again (T2).
-                    app.overlay = Overlay::Join(join);
-                } _ => {
-                    app.link = Link::Connecting;
-                    out.push(Command::Reconnect);
-                }}}
+                } else {
+                    match app.join_again.clone() {
+                        Some(join) => {
+                            // Joining again is confirmed again (T2).
+                            app.overlay = Overlay::Join(join);
+                        }
+                        _ => {
+                            app.link = Link::Connecting;
+                            out.push(Command::Reconnect);
+                        }
+                    }
+                }
             }
         }
         Action::Move(movement) => match app.screen {

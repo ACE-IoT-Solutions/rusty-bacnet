@@ -1,6 +1,6 @@
 use super::super::confirmed_response_result;
 use crate::tsm::TsmResponse;
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
 use bacnet_types::error::{Error, ErrorDetail};

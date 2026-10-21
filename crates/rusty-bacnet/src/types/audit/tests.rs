@@ -8,12 +8,12 @@ use bacnet_types::enums::{
     BACnetSuccessFilter, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
 };
 use bacnet_types::primitives::{BACnetTimeStamp, Date, Time};
+use pyo3::PyTypeInfo;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::types::{PyBytes, PyDict, PyList};
-use pyo3::PyTypeInfo;
 
-use crate::types::audit_projection::audit_log_query_ack_to_py;
 use crate::types::PyObjectIdentifier;
+use crate::types::audit_projection::audit_log_query_ack_to_py;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -478,12 +478,14 @@ fn ack_projection_covers_every_datum_and_nested_optional_field() {
                 .to_rust(),
             oid(ObjectType::AUDIT_LOG, 9)
         );
-        assert!(projected
-            .get_item("no_more_items")
-            .unwrap()
-            .unwrap()
-            .is_truthy()
-            .unwrap());
+        assert!(
+            projected
+                .get_item("no_more_items")
+                .unwrap()
+                .unwrap()
+                .is_truthy()
+                .unwrap()
+        );
         let records = projected
             .get_item("records")
             .unwrap()

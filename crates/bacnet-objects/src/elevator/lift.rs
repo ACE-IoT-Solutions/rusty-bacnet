@@ -14,8 +14,8 @@ use std::borrow::Cow;
 
 use super::car_state::{self, CarState};
 use super::doors::CarDoors;
-use super::energy_meter::{energy_meter_accessors, EnergyMeter};
-use super::membership::{group_membership_accessors, GroupMembership};
+use super::energy_meter::{EnergyMeter, energy_meter_accessors};
+use super::membership::{GroupMembership, group_membership_accessors};
 use super::{checked, decode_fault_signals, direction_in_range, metadata};
 use crate::common::{self, read_common_properties};
 use crate::traits::BACnetObject;

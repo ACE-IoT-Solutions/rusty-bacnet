@@ -1,5 +1,5 @@
 use super::*;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 fn assert_initial_response_aborted(
     admission: SegmentedResponseAdmission,
@@ -692,9 +692,10 @@ async fn stale_owner_cannot_mutate_reused_transaction_key() {
         tsm.record_segmented_response_activity(&mac, invoke_id, &first.owner),
         None
     );
-    assert!(tsm
-        .begin_final_segment_send(&mac, invoke_id, &first.owner)
-        .is_none());
+    assert!(
+        tsm.begin_final_segment_send(&mac, invoke_id, &first.owner)
+            .is_none()
+    );
     assert!(!tsm.finish_segmented_request(&mac, invoke_id, &first.owner));
     assert!(!tsm.reset_segmented_response(&mac, invoke_id, &first.owner));
     assert_eq!(

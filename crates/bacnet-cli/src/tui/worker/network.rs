@@ -25,7 +25,7 @@ use super::EventSink;
 use crate::tui::message::WorkerEvent;
 use crate::tui::network::matrix::Probe;
 use crate::tui::network::{
-    address_of, mac, probe_error, read_error, BdtRow, FdtRow, NetworkCommand, NetworkEvent,
+    BdtRow, FdtRow, NetworkCommand, NetworkEvent, address_of, mac, probe_error, read_error,
 };
 
 /// How often the registration is polled; the countdown shows whole seconds.

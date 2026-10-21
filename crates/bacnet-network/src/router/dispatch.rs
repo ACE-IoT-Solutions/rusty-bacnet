@@ -14,8 +14,8 @@
 use std::sync::Arc;
 
 use bacnet_npdu::MAX_MAC_LEN;
-use bacnet_router_core::router::{Discard, Frame, Received};
 use bacnet_router_core::PortId;
+use bacnet_router_core::router::{Discard, Frame, Received};
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};

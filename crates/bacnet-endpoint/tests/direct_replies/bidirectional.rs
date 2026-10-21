@@ -1,14 +1,14 @@
 //! Real transport -> network -> public consumer intake on an outbound socket.
 use super::*;
 use bacnet_encoding::{
-    apdu::{decode_apdu, encode_apdu, ComplexAck},
-    npdu::{decode_npdu, encode_npdu, Npdu},
+    apdu::{ComplexAck, decode_apdu, encode_apdu},
+    npdu::{Npdu, decode_npdu, encode_npdu},
 };
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_transport::{
     port::{DirectResponse, DirectResponseScope, ReceivedNpdu, TransportPort},
     sc::{LoopbackWebSocket, ScTransport, WebSocketPort},
-    sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage},
+    sc_frame::{ScFunction, ScMessage, decode_sc_message, encode_sc_message},
     sc_tls::{DirectAcceptConfig, DirectListener},
 };
 use bacnet_types::{

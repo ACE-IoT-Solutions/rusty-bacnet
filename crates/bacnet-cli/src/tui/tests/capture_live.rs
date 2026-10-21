@@ -12,11 +12,11 @@ use ratatui::crossterm::event::KeyCode;
 use tokio::sync::mpsc;
 
 use super::capture::capturing;
-use super::network::{plan, Net};
+use super::network::{Net, plan};
 use super::site::bounded;
 use super::*;
-use crate::tui::capture::{worker as capture_worker, CaptureCommand, CaptureEvent, Direction};
-use crate::tui::worker::{EventSink, EVENT_CHANNEL_CAPACITY};
+use crate::tui::capture::{CaptureCommand, CaptureEvent, Direction, worker as capture_worker};
+use crate::tui::worker::{EVENT_CHANNEL_CAPACITY, EventSink};
 
 /// The lab device on loopback.
 async fn lab_server(instance: u32) -> BACnetServer<BipTransport> {
@@ -175,7 +175,7 @@ async fn the_session_tap_reaches_the_screen_through_the_coordinator() {
 /// the scripted ring, and the monitor still writes nothing.
 #[tokio::test(start_paused = true)]
 async fn the_monitor_feeds_the_capture_and_still_writes_nothing() {
-    use super::mstp_monitor::{acceptance_line, Run};
+    use super::mstp_monitor::{Run, acceptance_line};
     let mut run = Run::start(acceptance_line(), None, false).await;
     run.listen_for(Duration::ZERO).await;
     run.press(KeyCode::Char('7')).await;

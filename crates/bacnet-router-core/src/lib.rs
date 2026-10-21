@@ -270,7 +270,7 @@ pub use bacnet_time::{Duration, Instant};
 pub use router::{Router, RouterIn, Storage};
 
 // For the crate's own paths: the public ones are under `npdu`.
-use npdu::{Mac, MAX_MAC_LEN, MAX_NPDU};
+use npdu::{MAX_MAC_LEN, MAX_NPDU, Mac};
 
 /// A router port, by its index in the router's port list.
 ///

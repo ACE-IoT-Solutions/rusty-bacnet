@@ -7,7 +7,7 @@ use crate::committed_cov::BackgroundCommit;
 mod period;
 use super::heap_futures::boxed;
 use super::{audit_recipient::spawn_owned, audit_recipient_routes::AuditRoutes};
-pub(super) use period::{event_enrollment_period, MonotonicClocks};
+pub(super) use period::{MonotonicClocks, event_enrollment_period};
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Start a server: every public start and build path ends here. The
@@ -472,10 +472,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     if !(1..=127).contains(&proposed_window_size) {
                                         warn_throttled!(
                                             segment_warning,
-	                                            invoke_id = req.invoke_id,
-	                                            proposed_window_size,
-	                                            "Rejecting segmented request with invalid proposed window size"
-	                                        );
+                                            invoke_id = req.invoke_id,
+                                            proposed_window_size,
+                                            "Rejecting segmented request with invalid proposed window size"
+                                        );
                                         Self::send_server_abort(
                                             &network_dispatch,
                                             &source_mac,
@@ -550,10 +550,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 } else {
                                     warn_throttled!(
                                         segment_warning,
-	                                        invoke_id = req.invoke_id,
-	                                        seq = seq,
-	                                        "Received non-initial segment without prior segment 0, aborting"
-	                                    );
+                                        invoke_id = req.invoke_id,
+                                        seq = seq,
+                                        "Received non-initial segment without prior segment 0, aborting"
+                                    );
                                     Self::send_server_abort(
                                         &network_dispatch,
                                         &source_mac,

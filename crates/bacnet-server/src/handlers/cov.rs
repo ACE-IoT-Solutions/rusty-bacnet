@@ -178,13 +178,13 @@ pub(crate) fn handle_subscribe_cov_property_with_initial_endpoint(
             return Err(Error::Protocol {
                 class: ErrorClass::SERVICES,
                 code: ErrorCode::VALUE_OUT_OF_RANGE,
-            })
+            });
         }
         (Some(_), Some(lifetime)) => Some(lifetime),
         _ => {
             return Err(Error::Reject {
                 reason: RejectReason::INCONSISTENT_PARAMETERS,
-            })
+            });
         }
     };
 

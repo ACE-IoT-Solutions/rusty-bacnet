@@ -13,14 +13,14 @@
 
 use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{
-    next_from_router, pump, recv, reject_of, wire, FromRouter, LONGEST, REMOTE, TOO_LONG,
+    FromRouter, LONGEST, REMOTE, TOO_LONG, next_from_router, pump, recv, reject_of, wire,
 };
 use crate::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 

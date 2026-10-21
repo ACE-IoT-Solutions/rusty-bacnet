@@ -3,7 +3,7 @@
 //! router's engine through [`super::envelope_harness`] (#1679). The
 //! rewrite's unit cases moved to `bacnet-router-core`'s `tests/forward.rs`.
 
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::{DataAttribute, TransportPort};
@@ -12,7 +12,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use std::net::Ipv4Addr;
 use tokio::time::Duration;
 
-use super::envelope_harness::{control_npdu, Harness, TableSeed};
+use super::envelope_harness::{Harness, TableSeed, control_npdu};
 use super::{BACnetRouter, RouterOptions, RouterPort, SendRequest, StartedRouter};
 use crate::router_table::PortId;
 

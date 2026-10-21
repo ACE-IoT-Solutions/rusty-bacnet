@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use crate::common::{
     self, read_common_properties, read_generic_event_properties, write_generic_event_properties,
 };
-use crate::event::{history::EventHistory, ChangeOfStateDetector};
+use crate::event::{ChangeOfStateDetector, history::EventHistory};
 use crate::traits::{BACnetObject, ReliabilityEvaluation};
 
 /// Resource cap consistent with bounded server tables such as

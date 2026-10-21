@@ -163,20 +163,23 @@ fn trend_log_flags_match_its_fixed_state() {
     // so FAULT stays FALSE and agrees with the NO_FAULT_DETECTED readback.
     let mut log = TrendLogObject::new(1, "TL-1", 10).unwrap();
     assert_flags(&log, Kind::LogFixedFalse, StatusFlags::empty());
-    assert!(log
-        .read_property(PropertyIdentifier::OUT_OF_SERVICE, None)
-        .is_err());
-    assert!(log
-        .write_property(
+    assert!(
+        log.read_property(PropertyIdentifier::OUT_OF_SERVICE, None)
+            .is_err()
+    );
+    assert!(
+        log.write_property(
             PropertyIdentifier::RELIABILITY,
             None,
             PropertyValue::Enumerated(Reliability::OPEN_LOOP.to_raw()),
             None,
         )
-        .is_err());
-    assert!(log
-        .set_reliability_internal(Reliability::OPEN_LOOP)
-        .is_err());
+        .is_err()
+    );
+    assert!(
+        log.set_reliability_internal(Reliability::OPEN_LOOP)
+            .is_err()
+    );
     assert_flags(&log, Kind::LogFixedFalse, StatusFlags::empty());
 }
 

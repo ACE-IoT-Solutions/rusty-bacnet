@@ -73,7 +73,7 @@ use crate::notification_class::NotificationClass;
 use crate::notification_forwarder::NotificationForwarderObject;
 use crate::program::ProgramObject;
 use crate::property_metadata::{
-    required_properties_from_metadata, PropertyConformance, PropertyPresenceCondition,
+    PropertyConformance, PropertyPresenceCondition, required_properties_from_metadata,
 };
 use crate::schedule::{CalendarObject, ScheduleObject};
 use crate::staging::{StagingConfig, StagingObject};

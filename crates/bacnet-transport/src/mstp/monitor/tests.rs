@@ -5,7 +5,7 @@ use std::time::Duration;
 use bacnet_mstp_codec::FrameType;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
-use super::script::{analyse, LineScript, ScriptedRing};
+use super::script::{LineScript, ScriptedRing, analyse};
 use super::*;
 
 const BAUD: u32 = 38_400;

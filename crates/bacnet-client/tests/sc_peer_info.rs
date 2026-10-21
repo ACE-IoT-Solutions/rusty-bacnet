@@ -130,9 +130,11 @@ async fn configured_concrete_and_erased_clients_observe_their_accepted_hub() {
     concrete.stop().await.unwrap();
     erased.stop().await.unwrap();
     assert!(concrete.transport().hub_peer_info().await.is_none());
-    assert!(certificate_example::show_accepted(&concrete)
-        .await
-        .is_none());
+    assert!(
+        certificate_example::show_accepted(&concrete)
+            .await
+            .is_none()
+    );
     drop(concrete);
     drop(erased);
     assert_eq!(

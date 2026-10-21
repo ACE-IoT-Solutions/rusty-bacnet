@@ -9,7 +9,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::persistence::encode_snapshot;
-use super::{write_tags, ObjectProfile, TagsPersistence, TagsSnapshot};
+use super::{ObjectProfile, TagsPersistence, TagsSnapshot, write_tags};
 use crate::common;
 use crate::durable::staged::{self, StagedSaves};
 use crate::durable::{DurableWrites, PendingWrite, SaveWait, SaveWriter, StageStep};

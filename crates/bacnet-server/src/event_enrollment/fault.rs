@@ -5,8 +5,8 @@ use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier, Reliability
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::support::classify_required_property_read_error;
 use super::LocalConfigurationReadError;
+use super::support::classify_required_property_read_error;
 
 /// Fault algorithms intentionally implemented by the Event Enrollment core.
 ///

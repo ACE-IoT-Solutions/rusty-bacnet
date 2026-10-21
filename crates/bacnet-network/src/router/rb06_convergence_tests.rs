@@ -8,14 +8,14 @@
 //! `bacnet-router-core`'s `tests/table.rs`, `tests/table_claims.rs` and
 //! `tests/discovery.rs` in #1688; these run the router on its engine.
 
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportProvenance};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
-use super::envelope_harness::{broadcast_data, control_npdu, Harness};
+use super::envelope_harness::{Harness, broadcast_data, control_npdu};
 use super::{BACnetRouter, RouterOptions, RouterPort, SendRequest, StartedRouter};
 use crate::router_table::PortId;
 

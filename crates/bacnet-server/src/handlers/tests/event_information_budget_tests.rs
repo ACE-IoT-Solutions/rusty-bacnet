@@ -2,8 +2,8 @@ use super::*;
 use crate::server::GetEventInformationBudget;
 use bacnet_types::bitstring::EventTransitionBits;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct Counted {

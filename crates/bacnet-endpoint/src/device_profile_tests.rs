@@ -236,17 +236,19 @@ async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority()
                         ErrorCode::UNKNOWN_PROPERTY,
                     );
                 }
-                assert!(client
-                    .read_property(
-                        &mac,
-                        target,
-                        PropertyIdentifier::DEVICE_ADDRESS_BINDING,
-                        None
-                    )
-                    .await
-                    .unwrap()
-                    .property_value
-                    .is_empty());
+                assert!(
+                    client
+                        .read_property(
+                            &mac,
+                            target,
+                            PropertyIdentifier::DEVICE_ADDRESS_BINDING,
+                            None
+                        )
+                        .await
+                        .unwrap()
+                        .property_value
+                        .is_empty()
+                );
             }
             let result = client
                 .write_property(&mac, oid(123), TAGS, None, FLOOR.to_vec(), None)

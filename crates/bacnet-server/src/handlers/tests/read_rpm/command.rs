@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{command::CommandObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetActionCommand, BACnetActionList, PropertyReference, ReadAccessSpecification,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 /// The three Action elements the configured fixture holds, each one
 /// BACnetActionList framed in its own [0] pair (Table 12-12, Clause 21).
@@ -274,7 +274,7 @@ fn rpm_command_action_serves_one_action_list_per_index() {
                 }
             }
         }
-        use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+        use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
         let budget = crate::server::ReadPropertyMultipleBudget {
             max_result_elements: cases.len(),
             max_service_ack_bytes: legacy.len(),

@@ -183,9 +183,11 @@ async fn i_could_be_router_stops_at_the_route_cap() {
     drain_announcements(&mut peers).await;
     let now = router.now();
     for network in 1000..1254 {
-        assert!(router
-            .table()
-            .add_learned(network, PortId(0), Mac::from_array([9]), now));
+        assert!(
+            router
+                .table()
+                .add_learned(network, PortId(0), Mac::from_array([9]), now)
+        );
     }
     assert_eq!(router.table().len(), ROUTE_CAP);
     peers[1]
@@ -299,7 +301,7 @@ async fn start_refuses_a_reserved_network_before_any_transport_starts() {
 #[tokio::test]
 async fn a_rewrite_past_the_scratch_is_dropped_and_counted() {
     use super::envelope_harness::Harness;
-    use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
+    use bacnet_encoding::npdu::{NpduAddress, decode_npdu};
     use bacnet_npdu::NpduLimits;
 
     let widest = [NpduLimits::both(u16::MAX); 2];

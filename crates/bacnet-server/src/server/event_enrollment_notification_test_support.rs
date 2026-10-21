@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::server::test_transport::{SendMode, SentFrame, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendMode, SentFrame, TestTransport};
 use bacnet_encoding::apdu::decode_apdu;
 use bacnet_encoding::constructed::decode_bacnet_property_value;
 use bacnet_encoding::constructed::decode_event_notification;

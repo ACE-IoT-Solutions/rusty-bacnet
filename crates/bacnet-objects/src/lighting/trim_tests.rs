@@ -3,7 +3,7 @@
 //! In_Progress TRIM_ACTIVE, a trim change following Trim_Fade_Time, and
 //! commands, fades, steps, STOP and an egress staying inside the trims.
 
-use super::engine_tests::{op, Fixture};
+use super::engine_tests::{Fixture, op};
 use super::*;
 use crate::property_metadata::PropertyPresenceCondition;
 use bacnet_types::enums::{ErrorClass, ErrorCode, LightingInProgress, LightingOperation as Op};

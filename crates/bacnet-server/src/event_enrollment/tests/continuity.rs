@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::integration::{
-    indexed_reference_value, setup_qualified_reference, ReferenceValueObject,
+    ReferenceValueObject, indexed_reference_value, setup_qualified_reference,
 };
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::binary::BinaryInputObject;
@@ -114,13 +114,15 @@ fn assert_observation_gap(
 ) {
     assert!(report.transitions.is_empty());
     assert!(report.reliability_results.is_empty());
-    assert!(report
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::Reliability,
-            outcome: EventEnrollmentEvaluationOutcome::ObservationUnavailable,
-        }));
+    assert!(
+        report
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::Reliability,
+                outcome: EventEnrollmentEvaluationOutcome::ObservationUnavailable,
+            })
+    );
 }
 
 fn assert_private_reset(db: &ObjectDatabase, enrollment_oid: ObjectIdentifier) {
@@ -686,20 +688,24 @@ fn rejected_gap_resets_remain_visible_alongside_observation_diagnostic() {
 
     let report = evaluate_event_enrollments_report(&mut db, 1);
     assert_observation_gap(&report, enrollment_oid);
-    assert!(report
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::EvaluationSource,
-            outcome: EventEnrollmentEvaluationOutcome::Rejected,
-        }));
-    assert!(report
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::EvaluationState,
-            outcome: EventEnrollmentEvaluationOutcome::Rejected,
-        }));
+    assert!(
+        report
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::EvaluationSource,
+                outcome: EventEnrollmentEvaluationOutcome::Rejected,
+            })
+    );
+    assert!(
+        report
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::EvaluationState,
+                outcome: EventEnrollmentEvaluationOutcome::Rejected,
+            })
+    );
     assert_eq!(writes.load(Ordering::SeqCst), 1);
     assert!(db.enrollment_eval_state_invalidated(&enrollment_oid));
 }

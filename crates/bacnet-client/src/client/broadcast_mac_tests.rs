@@ -7,7 +7,7 @@
 //! goes local; an unconfirmed request still goes, and so does a routed
 //! request whose link DA is the broadcast MAC, since its DNET/DADR name one
 //! device.
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_network::network_number::LocalNetworkNumber;
 use bacnet_transport::bip::BipTransport;

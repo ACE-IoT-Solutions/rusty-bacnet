@@ -7,16 +7,16 @@
 
 use std::sync::{Arc, Weak};
 
-use bacnet_router_core::router::{RejectOrigin, SendRefusal};
 use bacnet_router_core::PortId;
+use bacnet_router_core::router::{RejectOrigin, SendRefusal};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 
+use super::SendRequest;
 use super::actions::{drain, report_backlog};
 use super::dispatch::{Outputs, Shared};
 use super::send_queue;
 use super::send_warning::SendWarnings;
-use super::SendRequest;
 
 /// Carry out every send until the queue closes. Weak feedback ownership
 /// lets dispatch closure release the queues and local consumers normally.

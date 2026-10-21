@@ -222,9 +222,11 @@ fn an_accumulator_serves_prescale_only_once_set() {
         ErrorCode::UNKNOWN_PROPERTY,
     );
     let list = read(&db, PropertyIdentifier::PROPERTY_LIST).unwrap();
-    assert!(!list
-        .chunks(2)
-        .any(|enumerated| enumerated == [0x91, prescale.to_raw() as u8]));
+    assert!(
+        !list
+            .chunks(2)
+            .any(|enumerated| enumerated == [0x91, prescale.to_raw() as u8])
+    );
     refused_with(
         write_to(&mut db, acc, prescale, &[0x00]),
         ErrorCode::UNKNOWN_PROPERTY,

@@ -1,5 +1,5 @@
 //! One real serial/MAC owner; gates observe admission without replacing transport behavior.
-use crate::mstp_wire::{decode_frame, encode_frame, FrameType, MstpFrame};
+use crate::mstp_wire::{FrameType, MstpFrame, decode_frame, encode_frame};
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
 use bacnet_objects::{analog::AnalogInputObject, database::ObjectDatabase};
@@ -13,7 +13,7 @@ use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use std::{future::Future, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 
 pub const NODE: u8 = 3;
 pub const PEER: u8 = 7;

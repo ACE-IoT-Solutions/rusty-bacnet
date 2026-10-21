@@ -3,8 +3,8 @@
 use core::net::SocketAddrV4;
 
 use crate::{
-    address_from_octets, address_to_octets, BdtEntries, BvlcFunction, BvlcResultCode, BvllError,
-    BvllSink, FdtEntries, BVLC_TYPE_BIP, HEADER_LENGTH, MAX_BVLL_LENGTH,
+    BVLC_TYPE_BIP, BdtEntries, BvlcFunction, BvlcResultCode, BvllError, BvllSink, FdtEntries,
+    HEADER_LENGTH, MAX_BVLL_LENGTH, address_from_octets, address_to_octets,
 };
 
 /// A BVLL message whose header checks out, before its payload is read.
@@ -132,7 +132,7 @@ impl<'a> BvllFrame<'a> {
             _ => {
                 return Err(BvllError::UnknownFunction {
                     function: function.to_raw(),
-                })
+                });
             }
         })
     }

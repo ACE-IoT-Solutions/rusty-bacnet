@@ -5,13 +5,13 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table};
-use ratatui::Frame;
 use tui_tree_widget::Tree;
 
-use super::{Theme, FULL_WIDTH};
+use super::{FULL_WIDTH, Theme};
 use crate::tui::app::capture::{CaptureState, Focus};
 use crate::tui::app::{App, Link};
 use crate::tui::capture::CaptureFrame;
