@@ -1,7 +1,7 @@
 ---
-section: Changed
+section: Added
 ---
 - `bacnet mstp-ports` and the TUI's join dialog list USB serial adapters
-  first, and on macOS only call-out (`/dev/cu.*`) devices, without Bluetooth
-  ports or the debug console. `mstp_serial::available_port_infos` reports
-  each port's kind (#1893).
+  first, once each, by their `/dev/serial/by-id` name on Linux and as
+  call-out (`/dev/cu.*`) devices on macOS; `mstp_serial::available_port_infos`
+  reports each port's kind (#1893, #1928).

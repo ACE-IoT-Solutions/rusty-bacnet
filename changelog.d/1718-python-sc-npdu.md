@@ -1,6 +1,6 @@
 ---
 section: Added
 ---
-- Python SC clients and servers can configure the queued NPDU quota per origin
-  and inspect owned drop-counter snapshots. The Rust SC client builder also
-  exposes the quota, preserving the existing default and aggregate bound (#1718).
+- Python SC clients and servers can set the queued NPDU quota per origin and
+  read snapshots of the drop counters; the Rust SC client builder also takes
+  the quota (#1718).

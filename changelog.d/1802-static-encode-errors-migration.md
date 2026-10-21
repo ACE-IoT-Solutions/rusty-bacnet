@@ -1,8 +1,10 @@
 ---
 section: Migration notes
 ---
-- **Encoding errors (Rust API, #1802):** match `Error::Encode(EncodeError)`,
-  not `Error::Encoding`, for codec encoder refusals, and `Error::Range`, not
-  `Error::OutOfRange`, for their range checks. `Error::Segmentation` holds a
-  `SegmentationError` enum, also without `alloc`. New: `Error::encode`,
-  `Error::range` and `Error::into_encode_refusal`.
+- **Encoding and range errors (Rust API, #1646, #1776, #1777, #1802):** match
+  `Error::Encode(EncodeError)`, not `Error::Encoding`, for codec encoder
+  refusals, and `Error::Range`, not `Error::Encoding` or `Error::OutOfRange`,
+  for range checks: the APDU and NPDU encoders and validators,
+  `ObjectIdentifier::new`, `DeviceInstanceRange`, an over-long NPDU address
+  and oversized lighting, color and elevator command members.
+  `Error::Segmentation` holds a `SegmentationError` enum.

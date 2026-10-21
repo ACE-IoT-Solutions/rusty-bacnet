@@ -1,6 +1,7 @@
 ---
 section: Changed
 ---
-- **Breaking (Rust API):** SC connect failures tell a stalled dial, with its
-  step, from a hub that never sends Connect-Accept, and keep the HTTP status
-  of a refused WebSocket upgrade; the TUI doctor places each (#1839).
+- **Breaking (Rust API):** A BACnet/SC dial that runs out of time fails with
+  `ScConnectError::DialTimeout`, naming the stalled step, inside
+  `Error::Transport` rather than `Error::Timeout`, and a refused WebSocket
+  upgrade keeps its HTTP status (#1839).

@@ -1,4 +1,7 @@
 ---
 section: Changed
 ---
-- `bacnet-types`, `bacnet-encoding` and `bacnet-services` now share crate landing pages with their READMEs, including development-source quickstarts, explicit allocator requirements and docs.rs feature profiles (#1723).
+- The types, encoding, services, transport, network and endpoint crates'
+  docs.rs pages open with their READMEs, each with a runnable quickstart,
+  its feature profiles and its allocator or host needs, and crate guides
+  cover object set-up, a client's Who-Is and a server's ReadProperty (#1723).

@@ -1,4 +1,7 @@
 ---
 section: Added
 ---
-- MS/TP simulation now covers buffered host adapters beside UART-style nodes, including read latency, chunking, serial drain and matching echo. Wire timing failures remain visible; this does not qualify physical hardware (#1628).
+- Test-only: the MS/TP bus simulator models buffered host adapters, delayed
+  self-echo, inter-octet gaps, driver hold after the stop bit, receiver
+  contention, each master's baud and clock error, and an application
+  callback that answers delivered NPDUs (#1628, #1772, #1796).
