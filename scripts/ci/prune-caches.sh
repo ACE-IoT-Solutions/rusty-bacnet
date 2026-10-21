@@ -78,11 +78,11 @@ delete_cache() {
       echo "deleted $line"
       return 0
     fi
-    # Read only gh's final HTTP diagnostic, never a status mentioned in the
-    # response body or message. gh uses these forms for JSON/plain responses.
-    status=$(tail -n 1 <<<"$out" | sed -n \
+    # Match gh's JSON/plain HTTP diagnostics, choosing the last one over
+    # earlier body lookalikes. Scope or SSO guidance may follow that line.
+    status=$(sed -n \
       -e 's/^gh: .* (HTTP \([0-9][0-9][0-9]\))$/\1/p' \
-      -e 's/^gh: HTTP \([0-9][0-9][0-9]\)$/\1/p')
+      -e 's/^gh: HTTP \([0-9][0-9][0-9]\)$/\1/p' <<<"$out" | tail -n 1)
     case "$status" in
       404)
         # The other workflow's prune, or an earlier attempt, got there first.

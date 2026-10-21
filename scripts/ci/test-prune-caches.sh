@@ -42,6 +42,19 @@ case "$*" in
       400|401|409|422|429|500|501|502|503|504) message='Server Error' ;;
       raw-504) echo 'gh: HTTP 504' >&2; exit 1 ;;
       raw-404) echo 'gh: HTTP 404' >&2; exit 1 ;;
+      guidance-404|guidance-504)
+        message='Server Error'
+        [ "$response" != guidance-404 ] || message='Not Found'
+        printf 'gh: %s (HTTP %s)\n' "$message" "${response#guidance-}" >&2
+        echo 'gh: This API operation needs the "repo" scope. To request it, run: gh auth refresh -h github.com -s repo' >&2
+        exit 1 ;;
+      earlier-diagnostic)
+        # A plain response body can resemble a diagnostic; gh's actual
+        # status is the last matching line, before its trailing guidance.
+        echo 'gh: upstream failure described in the body (HTTP 502)'
+        echo 'gh: Forbidden (HTTP 403)' >&2
+        echo 'Request access from your administrator.' >&2
+        exit 1 ;;
       body-502|body-404)
         printf '{"message": "an earlier HTTP %s failed"}\n' "${response#body-}"
         echo 'gh: Forbidden (HTTP 403)' >&2
@@ -104,7 +117,7 @@ events 'delete 1'
 output 'removed 1 entries, 1 MiB, leaving 0 MiB'
 errors 0
 
-for status in 502 503 504 raw-504; do
+for status in 502 503 504 raw-504 guidance-504; do
   single
   responses 1 "$status" ok
   expect 0 "$status is retried and recovers"
@@ -133,7 +146,7 @@ for status in 502 503 504; do
 done
 
 for status in 400 401 403 409 422 429 500 501 network \
-  body-502 body-404 message-502 long-code plain-mention; do
+  body-502 body-404 message-502 long-code plain-mention earlier-diagnostic; do
   single
   responses 1 "$status" ok
   expect 1 "$status fails without retry or success accounting"
@@ -142,7 +155,7 @@ for status in 400 401 403 409 422 429 500 501 network \
   errors 1
 done
 
-for status in 404 raw-404; do
+for status in 404 raw-404 guidance-404; do
   single
   responses 1 "$status"
   expect 0 "$status is already-gone success without retry"
