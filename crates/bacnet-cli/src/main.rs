@@ -262,10 +262,10 @@ async fn execute_command<T: TransportPort + 'static>(
             count,
             output,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             commands::file::file_read_cmd(
                 client,
-                &mac,
+                &to,
                 *file_instance,
                 commands::file::FileReadOptions {
                     access: *access,
@@ -283,8 +283,8 @@ async fn execute_command<T: TransportPort + 'static>(
             start,
             input,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
-            commands::file::file_write_cmd(client, &mac, *file_instance, *start, input, format)
+            let to = resolve_destination(client, target).await?;
+            commands::file::file_write_cmd(client, &to, *file_instance, *start, input, format)
                 .await?;
         }
         Command::Bdt { .. }

@@ -32,6 +32,12 @@ const INSTANCE: u32 = 1234;
 /// before the router takes it, and another process can take it in
 /// between: a start that fails is tried again on a fresh port.
 async fn site() -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
+    site_with_database(read_services::database()).await
+}
+
+async fn site_with_database(
+    database: bacnet_objects::database::ObjectDatabase,
+) -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
     for _ in 0..8 {
         let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .unwrap()
@@ -60,7 +66,7 @@ async fn site() -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
             let server = BACnetServer::generic_builder()
                 .device(lab_identity(INSTANCE))
                 .transport(station)
-                .database(read_services::database())
+                .database(database)
                 .build()
                 .await
                 .unwrap();
@@ -161,9 +167,11 @@ async fn routed_targets_fail_clearly() {
         "--port",
         "0",
         "--json",
-        "file-read",
+        "reinit",
         &format!("{DNET}:{INSTANCE}"),
-        "1",
+        "warmstart",
+        "--allow-write",
+        "--yes",
     ])
     .await;
     failure(&output, "is a routed target");
@@ -173,3 +181,8 @@ async fn routed_targets_fail_clearly() {
 
 #[path = "cli_routed/read_services.rs"]
 mod read_services;
+
+#[path = "cli_routed/file_fixture.rs"]
+mod file_fixture;
+#[path = "cli_routed/file_services.rs"]
+mod file_services;
