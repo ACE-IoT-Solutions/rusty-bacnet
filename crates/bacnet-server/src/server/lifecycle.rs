@@ -137,7 +137,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
         let requests = Arc::clone(&request_tasks);
         let dispatch_context = DispatchContext {
-            services: RequestServices {
+            services: Arc::new(RequestServices {
                 db: Arc::clone(&db),
                 network: Arc::clone(&network_dispatch),
                 cov_table: Arc::clone(&cov_table),
@@ -156,7 +156,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 mutation_decisions: Arc::clone(&mutation_decisions),
                 warnings: Arc::default(),
                 config: Arc::clone(&config_dispatch),
-            },
+            }),
             confirmed_request_tracker: Arc::clone(&confirmed_request_tracker),
             clock: clock.clone(),
             discovery_limiter: discovery_limiter.clone(),

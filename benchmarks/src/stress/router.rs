@@ -26,7 +26,9 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use crate::stress::harness::{make_bip_server_with_db, make_large_db, make_stress_client};
+use crate::stress::harness::{
+    make_bip_server_with_db, make_large_db, make_stress_client, stress_device_config,
+};
 use crate::stress::mstp::{station, SimWire};
 use crate::stress::output::{DegradationPoint, LatencyRecorder};
 
@@ -179,6 +181,7 @@ async fn start(path: Path, baud: u32) -> (Running, Target) {
                     continue;
                 };
                 let server = BACnetServer::<MstpTransport<SimWire>>::generic_builder()
+                    .device(stress_device_config(1234).identity)
                     .transport(MstpTransport::new(server_end, station(1, baud, true)))
                     .database(db())
                     .build()

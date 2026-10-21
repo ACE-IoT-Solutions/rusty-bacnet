@@ -16,7 +16,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 
 use crate::layer::NetworkLayer;
-use crate::loopback_fixture::{next_from_router, recv, reject_of, wire, RouterFixture, APDU};
+use crate::loopback_fixture::{next_from_router, pump, recv, reject_of, wire, RouterFixture, APDU};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_npdu::RejectMessageToNetwork;
 
@@ -58,6 +58,9 @@ async fn non_router_drops_and_counts_a_global_broadcast_that_names_a_device() {
     assert!(!local.global_broadcast, "the local APDU comes out first");
     let delivered = recv(&mut apdus).await;
     assert!(delivered.global_broadcast && delivered.is_group);
+    // The controls behind the last APDU reach their receiver once the
+    // APDU receiver is polled again (#1713).
+    pump(&mut apdus);
 
     let local = recv(&mut controls).await;
     assert_eq!(

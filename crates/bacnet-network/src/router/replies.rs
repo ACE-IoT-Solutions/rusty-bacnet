@@ -36,8 +36,15 @@ impl ReplyLifetime {
 /// Only local delivery by a running router creates this capability.
 #[derive(Clone)]
 pub struct RouterResponse {
-    pub(crate) plan: ReplyPlan,
-    pub(crate) max_npdu: u16,
+    /// Shared, so the capability is one pointer in every locally delivered
+    /// APDU and in a server's saved response route, and a clone is a
+    /// reference count (#1713). Every field is fixed at creation.
+    inner: Arc<RouterResponseInner>,
+}
+
+struct RouterResponseInner {
+    plan: ReplyPlan,
+    max_npdu: u16,
     outputs: Weak<Outputs>,
     lifetime: Weak<ReplyLifetime>,
 }
@@ -45,7 +52,7 @@ pub struct RouterResponse {
 impl std::fmt::Debug for RouterResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RouterResponse")
-            .field("plan", &self.plan)
+            .field("plan", &self.inner.plan)
             .finish_non_exhaustive()
     }
 }
@@ -53,32 +60,43 @@ impl std::fmt::Debug for RouterResponse {
 impl RouterResponse {
     pub(super) fn new(plan: ReplyPlan, max_npdu: u16, outputs: &Arc<Outputs>) -> Self {
         Self {
-            plan,
-            max_npdu,
-            outputs: Arc::downgrade(outputs),
-            lifetime: Arc::downgrade(&outputs.replies),
+            inner: Arc::new(RouterResponseInner {
+                plan,
+                max_npdu,
+                outputs: Arc::downgrade(outputs),
+                lifetime: Arc::downgrade(&outputs.replies),
+            }),
         }
     }
+    /// The saved reply addressing.
+    pub(crate) fn plan(&self) -> &ReplyPlan {
+        &self.inner.plan
+    }
+    /// The return port's NPDU limit when the request arrived.
+    pub(crate) fn max_npdu(&self) -> u16 {
+        self.inner.max_npdu
+    }
     pub(crate) fn same_origin(&self, other: &Self) -> bool {
-        let same_port = self.plan.port() == other.plan.port();
-        self.lifetime.ptr_eq(&other.lifetime)
-            && self.plan.source() == other.plan.source()
-            && self.plan.destination() == other.plan.destination()
+        let (this, other) = (&*self.inner, &*other.inner);
+        let same_port = this.plan.port() == other.plan.port();
+        this.lifetime.ptr_eq(&other.lifetime)
+            && this.plan.source() == other.plan.source()
+            && this.plan.destination() == other.plan.destination()
             // SNET/SADR identifies a routed requester independently of its
             // immediate return path. Port-local addresses remain scoped to
             // their ingress link; equal MACs on two links are different peers.
-            && (self.plan.destination().is_some()
-                || (same_port && self.plan.peer() == other.plan.peer()))
+            && (this.plan.destination().is_some()
+                || (same_port && this.plan.peer() == other.plan.peer()))
             // With no explicitly addressed endpoint, the ingress port selects
             // the local endpoint. An explicit endpoint may be reached via any
             // port of this same router. The saved plan itself never changes.
-            && (self.plan.source().is_some() || same_port)
+            && (this.plan.source().is_some() || same_port)
     }
     pub(crate) fn check(&self) -> Result<(), Error> {
         self.lifetime()?.check()
     }
     pub(crate) fn lifetime(&self) -> Result<Arc<ReplyLifetime>, Error> {
-        let lifetime = self.lifetime.upgrade().ok_or_else(unavailable)?;
+        let lifetime = self.inner.lifetime.upgrade().ok_or_else(unavailable)?;
         lifetime.check()?;
         Ok(lifetime)
     }
@@ -95,23 +113,23 @@ impl RouterResponse {
         }
         let (done, completed) = oneshot::channel();
         {
-            let outputs = self.outputs.upgrade().ok_or_else(unavailable)?;
+            let outputs = self.inner.outputs.upgrade().ok_or_else(unavailable)?;
             let queue = outputs
                 .send_txs
-                .get(usize::from(self.plan.port().0))
+                .get(usize::from(self.inner.plan.port().0))
                 .ok_or_else(unavailable)?;
             queue
                 .try_send(
                     priority,
                     SendRequest::Unicast {
                         npdu,
-                        mac: MacAddr::from_slice(self.plan.peer()),
+                        mac: MacAddr::from_slice(self.inner.plan.peer()),
                         data_attributes: vec![],
                         reject_origin: None,
                         response: Some(ReplyCompletion {
                             done,
                             owner,
-                            lifetime: self.lifetime.clone(),
+                            lifetime: self.inner.lifetime.clone(),
                             on_issuance: Box::new(on_issuance),
                         }),
                     },

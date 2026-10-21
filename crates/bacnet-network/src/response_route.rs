@@ -14,6 +14,29 @@ mod encode_tests;
 #[path = "response_budget_tests.rs"]
 mod budget_tests;
 
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use bacnet_transport::port::ReceivedNpdu;
+
+    /// Every received APDU is moved through two channels and into a
+    /// handler, and its response route is saved with each confirmed
+    /// request. The direct and router capabilities are one pointer each
+    /// (#1713); inline they were 88 bytes apiece. Shrink a type that grows
+    /// past its limit rather than raise the limit.
+    #[test]
+    fn received_envelopes_and_routes_stay_small() {
+        let sizes = [
+            ("ReceivedApdu", std::mem::size_of::<ReceivedApdu>(), 208),
+            ("ReceivedNpdu", std::mem::size_of::<ReceivedNpdu>(), 160),
+            ("ResponseRoute", std::mem::size_of::<ResponseRoute>(), 64),
+        ];
+        for (name, size, limit) in sizes {
+            assert!(size <= limit, "{name} is {size} bytes, over {limit}");
+        }
+    }
+}
+
 /// Saved transport authority and addressing for a response.
 ///
 /// Verified direct ingress requires a matching original-socket capability.
@@ -61,7 +84,7 @@ impl ResponseRoute {
         let header = self.header_len(destination)?;
         let mut npdu_limit = usize::MAX;
         if let Some(router) = &self.router {
-            npdu_limit = usize::from(router.max_npdu);
+            npdu_limit = usize::from(router.max_npdu());
         }
         if let Some(direct) = direct {
             npdu_limit = npdu_limit.min(direct.max_npdu_length());
@@ -76,7 +99,7 @@ impl ResponseRoute {
         let mut scratch = [0u8; 64];
         let written = match &self.router {
             Some(router) => router
-                .plan
+                .plan()
                 .npdu(&[], false, NetworkPriority::Normal)
                 .encode_into(&mut scratch),
             None => {
@@ -151,7 +174,7 @@ impl ResponseRoute {
         priority: NetworkPriority,
     ) -> Result<BytesMut, Error> {
         if let Some(router) = &self.router {
-            let npdu = router.plan.npdu(apdu, expecting_reply, priority);
+            let npdu = router.plan().npdu(apdu, expecting_reply, priority);
             let mut encoded = BytesMut::zeroed(npdu.encoded_len());
             npdu.encode_into(&mut encoded)
                 .map_err(|error| Error::Encoding(error.to_string()))?;

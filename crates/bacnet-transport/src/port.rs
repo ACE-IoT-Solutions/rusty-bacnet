@@ -537,7 +537,9 @@ pub trait TransportPort: Send + Sync {
         mac: &'a [u8],
         _data_attributes: &'a [DataAttribute],
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send + 'a {
-        async move { self.send_unicast(npdu, mac).await }
+        // The send's own future, not one wrapping it: every response future
+        // above this carries its size (#1713).
+        self.send_unicast(npdu, mac)
     }
 
     /// Broadcast NPDU bytes on the local network.

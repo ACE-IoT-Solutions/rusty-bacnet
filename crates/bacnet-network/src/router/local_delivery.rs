@@ -53,13 +53,15 @@ impl Delivery {
         outputs: &std::sync::Arc<super::dispatch::Outputs>,
     ) -> ReceivedApdu {
         let relayed_too = self.group && !self.global && has_destination(&received.npdu);
+        let apdu = received.npdu.slice(self.offset..);
+        // Only a Confirmed-Request is answered on its arrival route, so only
+        // one gets the reply capability, and an I-Am flood allocates nothing
+        // for it (#1713).
+        let confirmed = apdu.first().is_some_and(|octet| octet >> 4 == 0);
         ReceivedApdu {
-            router_response: Some(super::RouterResponse::new(
-                self.reply,
-                self.max_npdu,
-                outputs,
-            )),
-            apdu: received.npdu.slice(self.offset..),
+            router_response: confirmed
+                .then(|| super::RouterResponse::new(self.reply, self.max_npdu, outputs)),
+            apdu,
             source_mac: received.source_mac,
             ingress_network: Some(port_network),
             source_network: self.source,

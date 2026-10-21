@@ -350,7 +350,7 @@ struct IngressQueues {
 
 async fn session_task<T: TransportPort + 'static>(
     mut network: NetworkLayer<T>,
-    mut apdu_rx: mpsc::Receiver<ReceivedApdu>,
+    mut apdu_rx: bacnet_network::layer::ApduReceiver,
     queues: IngressQueues,
     mut egress_rx: mpsc::Receiver<NetworkServiceCommand>,
     mut cancel_rx: oneshot::Receiver<()>,
@@ -441,7 +441,7 @@ enum PendingEvent {
 async fn drive_network_service<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
     command: NetworkServiceCommand,
-    apdu_rx: &mut mpsc::Receiver<ReceivedApdu>,
+    apdu_rx: &mut bacnet_network::layer::ApduReceiver,
     queues: &IngressQueues,
     cancel_rx: &mut oneshot::Receiver<()>,
     prefer_ingress: &mut bool,

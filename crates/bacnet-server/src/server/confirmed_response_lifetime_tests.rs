@@ -188,7 +188,7 @@ async fn npdu_encoding_failure_including_mstp_fallback_drops_owner_without_issua
         let route = bacnet_network::response_route::ResponseRoute::unverified();
         requests::confirmed_response::send_unsegmented_response(
             f.server.test_network(),
-            requests::confirmed_response::encoded_apdu(&Apdu::SimpleAck(SimpleAck {
+            &requests::confirmed_response::encoded_apdu(&Apdu::SimpleAck(SimpleAck {
                 invoke_id: 1,
                 service_choice: ConfirmedServiceChoice::WRITE_PROPERTY,
             })),

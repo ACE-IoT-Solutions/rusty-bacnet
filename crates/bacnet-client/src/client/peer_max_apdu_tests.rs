@@ -10,7 +10,7 @@
 use std::time::Instant;
 
 use bacnet_encoding::apdu::{self, encode_apdu, Apdu, SimpleAck};
-use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, Segmentation};
@@ -31,7 +31,7 @@ async fn client_with_peer_advertising(
     BACnetClient<LoopbackTransport>,
     Vec<u8>,
     NetworkLayer<LoopbackTransport>,
-    tokio::sync::mpsc::Receiver<ReceivedApdu>,
+    bacnet_network::layer::ApduReceiver,
 ) {
     let client_mac = vec![0x01];
     let remote_mac = vec![0x02];

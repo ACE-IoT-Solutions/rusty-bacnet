@@ -17,7 +17,8 @@ use bacnet_transport::port::TransportPort;
 
 use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{
-    next_from_router, recv, reject_of, wire, RouterFixture, APDU, LONGEST, ORIGIN, REMOTE, TOO_LONG,
+    next_from_router, pump, recv, reject_of, wire, RouterFixture, APDU, LONGEST, ORIGIN, REMOTE,
+    TOO_LONG,
 };
 
 const FIELDS: [AddressField; 2] = [AddressField::Destination, AddressField::Source];
@@ -77,6 +78,9 @@ async fn non_router_drops_and_counts_an_over_long_address_in_either_field() {
         }
         let apdu = recv(&mut apdus).await;
         assert_eq!(apdu.apdu, APDU[..], "{field}");
+        // The controls behind the last APDU reach their receiver once the
+        // APDU receiver is polled again (#1713).
+        pump(&mut apdus);
         let received = recv(&mut controls).await;
         match field {
             AddressField::Destination => {

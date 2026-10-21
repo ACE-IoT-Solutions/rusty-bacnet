@@ -417,6 +417,10 @@ pub(super) struct BipSocket {
     /// Where a test's sends go instead of the network.
     #[cfg(test)]
     sink: Option<super::send_sink::SendSink>,
+    /// Makes the next send's first try report `WouldBlock`, so a test can
+    /// drive [`SendTo`]'s boxed wait on a real socket.
+    #[cfg(test)]
+    pub(super) block_next_try: std::sync::atomic::AtomicBool,
 }
 
 impl BipSocket {
@@ -427,6 +431,8 @@ impl BipSocket {
             tap: FrameTap::default(),
             #[cfg(test)]
             sink: None,
+            #[cfg(test)]
+            block_next_try: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -453,8 +459,57 @@ impl BipSocket {
 
     /// Send one datagram. Every send of the transport goes through here,
     /// and the tap sees each one sent.
+    #[cfg(not(test))]
+    pub(super) fn send_to<'a>(&'a self, buf: &'a [u8], target: SocketAddrV4) -> SendTo<'a> {
+        self.send_to_socket(buf, target)
+    }
+
+    /// [`Self::send_to`] for this crate's tests, which may send to a sink
+    /// instead, yielding first on request. It is an `async fn`, so a test
+    /// build's send futures are larger than a release build's; the future
+    /// size that #1713 pins is measured in another crate's tests, against
+    /// the [`SendTo`] the non-test build returns. A send without a sink is
+    /// that same [`SendTo`].
+    #[cfg(test)]
     pub(super) async fn send_to(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
-        let sent = self.send_unrecorded(buf, target).await;
+        if let Some(sink) = &self.sink {
+            if sink.yields() {
+                tokio::task::yield_now().await;
+            }
+            return self.recorded(sink.send(buf, target), buf, target);
+        }
+        self.send_to_socket(buf, target).await
+    }
+
+    fn send_to_socket<'a>(&'a self, buf: &'a [u8], target: SocketAddrV4) -> SendTo<'a> {
+        SendTo {
+            socket: self,
+            buf,
+            target,
+            blocked: None,
+            done: false,
+        }
+    }
+
+    /// One try at sending `buf`, without waiting for the socket.
+    fn try_send(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
+        #[cfg(test)]
+        if self
+            .block_next_try
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        self.socket.try_send_to(buf, SocketAddr::V4(target))
+    }
+
+    /// `sent`, after the tap sees `buf` if it was sent.
+    fn recorded(
+        &self,
+        sent: io::Result<usize>,
+        buf: &[u8],
+        target: SocketAddrV4,
+    ) -> io::Result<usize> {
         if sent.is_ok() {
             let peer = || TapPeer::Udp(target.into());
             self.tap
@@ -462,16 +517,66 @@ impl BipSocket {
         }
         sent
     }
+}
 
-    async fn send_unrecorded(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
-        #[cfg(test)]
-        if let Some(sink) = &self.sink {
-            if sink.yields() {
-                tokio::task::yield_now().await;
+/// Sending one datagram on a [`BipSocket`], then recording it.
+///
+/// A datagram almost always goes at once, so the first poll tries the send,
+/// and only a socket that would block waits, in a boxed `UdpSocket::send_to`.
+/// That future resolves the address before it waits and is about 400 bytes;
+/// inline, every send future above this one would carry it, up to a
+/// server's request handler, which is allocated for each request (#1713).
+/// The socket's `poll_send_to` would be as small, but it keeps one waker,
+/// and the receive loop, node driver and fanout worker all send on this
+/// socket.
+pub(super) struct SendTo<'a> {
+    socket: &'a BipSocket,
+    buf: &'a [u8],
+    target: SocketAddrV4,
+    blocked: Option<BlockedSend<'a>>,
+    done: bool,
+}
+
+type BlockedSend<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + Send + 'a>>;
+
+impl std::future::Future for SendTo<'_> {
+    type Output = io::Result<usize>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = &mut *self;
+        assert!(!this.done, "a B/IP send polled after it finished");
+        let (socket, buf, target) = (this.socket, this.buf, this.target);
+        let sent = match &mut this.blocked {
+            None => {
+                // The try spends the task's cooperative budget as the
+                // awaited send did, so a task that only sends (the BBMD
+                // fanout worker) still yields to its neighbours.
+                let coop = std::task::ready!(tokio::task::coop::poll_proceed(cx));
+                match socket.try_send(buf, target) {
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        // The boxed send keeps its own budget.
+                        drop(coop);
+                        let mut blocked: BlockedSend<'_> =
+                            Box::pin(socket.socket.send_to(buf, target));
+                        let polled = blocked.as_mut().poll(cx);
+                        this.blocked = Some(blocked);
+                        std::task::ready!(polled)
+                    }
+                    sent => {
+                        coop.made_progress();
+                        sent
+                    }
+                }
             }
-            return sink.send(buf, target);
-        }
-        self.socket.send_to(buf, target).await
+            Some(blocked) => std::task::ready!(blocked.as_mut().poll(cx)),
+        };
+        this.done = true;
+        this.blocked = None;
+        std::task::Poll::Ready(socket.recorded(sent, buf, target))
     }
 }
 
