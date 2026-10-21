@@ -797,16 +797,7 @@ pub(super) async fn run(
 
             other => {
                 super::malformed_diag::unknown_function(&mut malformed_diag, peer_addr, &other);
-                let nak = build_bvlc_result_nak(
-                    sc_msg.message_id,
-                    other,
-                    ErrorClass::COMMUNICATION,
-                    unexpected_bvlc_function_error_code(other),
-                );
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                let mut w = write.lock().await;
-                let _ = w.send(Message::Binary(buf.to_vec().into())).await;
+                super::handler_fallback::send(&write, sc_msg.message_id, other).await;
             }
         }
     }

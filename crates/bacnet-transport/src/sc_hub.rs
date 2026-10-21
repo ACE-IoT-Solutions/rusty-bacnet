@@ -41,6 +41,7 @@ mod context;
 mod deadlines;
 mod graceful;
 mod handler;
+mod handler_fallback;
 mod heartbeat;
 mod helpers;
 mod malformed_diag;
