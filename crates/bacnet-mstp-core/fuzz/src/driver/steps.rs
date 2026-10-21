@@ -222,10 +222,10 @@ impl Driver<'_> {
         let octet_time = self.params().octet_time;
         for (index, &octet) in octets.iter().enumerate() {
             self.now += octet_time;
-            if let Some((at, micros)) = gap {
-                if index == at % octets.len() {
-                    self.now += u64::from(micros);
-                }
+            if let Some((at, micros)) = gap
+                && index == at % octets.len()
+            {
+                self.now += u64::from(micros);
             }
             self.octet(core, octet);
         }

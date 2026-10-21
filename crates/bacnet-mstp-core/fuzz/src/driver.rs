@@ -338,10 +338,10 @@ impl<'s> Driver<'s> {
                         eprintln!("  {} us: transmit {:?}", self.now, Seen::decode(&octets));
                     }
                     self.checker.handover(&octets, self.now);
-                    if let Ok(frame) = Seen::decode(&octets) {
-                        if frame.destination != BROADCAST_MAC {
-                            self.peer = frame.destination;
-                        }
+                    if let Ok(frame) = Seen::decode(&octets)
+                        && frame.destination != BROADCAST_MAC
+                    {
+                        self.peer = frame.destination;
                     }
                     self.tx = Some(Tx {
                         id,
