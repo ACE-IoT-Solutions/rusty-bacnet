@@ -1,7 +1,8 @@
 ---
 section: Changed
 ---
-- Every crate without unsafe code now forbids it, the workspace lints
-  require a safety comment on each remaining unsafe block and a safety
-  section on each unsafe function, and the Windows UDP control-message
-  parser bounds-checks without arithmetic that could wrap (#1880).
+- Every crate without unsafe code forbids it, bacnet-encoding's tests too;
+  each remaining unsafe block needs a safety comment, and
+  `bacnet-transport`'s OS calls sit in one private `sys` module behind safe
+  wrappers. The Windows UDP control-message parser can no longer wrap
+  (#1880, #1881, #1923).

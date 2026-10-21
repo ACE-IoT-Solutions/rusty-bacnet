@@ -1,6 +1,7 @@
 ---
 section: Added
 ---
-- **Rust API:** `ScClientBuilder::build_with_events` builds a BACnet/SC client
-  and returns a hub-connector event receiver subscribed before the start, so
-  the first connect is on it (#1890).
+- **Rust API:** `ScClientBuilder::build_with_events` and
+  `build_any_with_events` build a BACnet/SC client, concrete or
+  transport-erased, with a hub-connector event receiver that already holds
+  the first `Connected` (#1890, #1909).

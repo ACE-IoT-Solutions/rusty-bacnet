@@ -1,4 +1,8 @@
 ---
 section: Migration notes
 ---
-- Manual `ReceivedApdu` construction needs `router_response: None`; preserve `response_route()` for router deliveries. Response issuance callbacks now require owned `Send + 'static` captures because a router queue may retain them until selection (#1699).
+- **Network layer replies (Rust API, #1699):** a `ReceivedApdu` built by hand
+  sets the new `router_response: None` (a router fills it in only for a
+  Confirmed-Request it delivers locally); keep `response_route()` for router
+  deliveries. The `*_on_issuance` callbacks must own their captures
+  (`Send + 'static`), since a router queue may hold them until the send.

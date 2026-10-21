@@ -1,9 +1,8 @@
 ---
 section: Migration notes
 ---
-- **SC connect causes (Rust and Python API, #1839):** `ScDisconnectCause::ConnectTimeout`
-  is gone: match `DialTimeout { stage }`, `ConnectAcceptTimeout` and the new
-  `UpgradeRefused { http_status }`. A dial timeout is now
-  `ScConnectError::DialTimeout` in `Error::Transport`, not `Error::Timeout`;
-  `ScConnectError::WebSocket` gains `http_status`. In Python, match
-  `"dial_timeout"` or `"connect_accept_timeout"` instead of `"connect_timeout"`.
+- **SC dial timeouts (Rust API, #1839):** a hub dial that times out is now
+  `Error::Transport` carrying `ScConnectError::DialTimeout { timeout, stage }`
+  (read it with `ScConnectError::from_io_error`), not `Error::Timeout`; a
+  missing Connect-Accept is still `Error::Timeout`. Python still raises
+  `BacnetTimeoutError` for both.
