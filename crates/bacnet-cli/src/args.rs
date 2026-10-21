@@ -608,7 +608,8 @@ pub(crate) enum Command {
         /// Network interface name for live capture (e.g., en0, eth0).
         #[arg(long)]
         device: Option<String>,
-        /// Additional BPF filter expression (appended to "udp port 47808").
+        /// Additional BPF filter expression, joined with `and` to "ip and udp
+        /// port PORT", PORT being -p (47808 by default).
         #[arg(long)]
         filter: Option<String>,
         /// Stop after capturing N packets.

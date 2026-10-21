@@ -1,8 +1,8 @@
 # Design: a terminal UI for the `bacnet` CLI
 
-Status: accepted (2026-10-01). Milestone M0's first issue, the scaffold and the
-live devices screen (#961), and the B/IP profile/connection portion of #962
-are implemented. The remaining #962 transports and the rest of epic #975 are planned. Spec references are clause numbers in ANSI/ASHRAE 135-2020,
+Status: accepted (2026-10-01). Implemented: M0 (#961) and the screens,
+profiles and safety work of epic #975 (#962 to #972, and #974, which made
+the TUI the default entry). Spec references are clause numbers in ANSI/ASHRAE 135-2020,
 paraphrased. Anything marked **planned** does not exist yet.
 
 ## 1. Summary
@@ -148,7 +148,7 @@ What M0 draws (80x24):
   movement keys when it doesn't fit. While typing a command, the footer shows
   the syntax of the commands that match, from that table too.
 - 80x24 is the functional minimum and 120x40 the full layout. From 120 columns
-  the device table uses its wide columns; below 120 the planned Browse panes
+  the device table uses its wide columns; below 120 the Browse panes
   stack and the focused pane fills the width. Below 80x24 the TUI shows a
   "terminal too small" notice and nothing else.
 - From 160 columns (`WIDE_WIDTH`, maintainer decision D1 in #1887) panes that
@@ -452,7 +452,7 @@ distinctly.
   empty stdout and a non-zero exit; stable `--sc-*` error phases; feature-off
   rebuild advice. Consumers include `scripts/release/cli_smoke.sh`, the README,
   the website guides and the integration tests in `crates/bacnet-cli/tests/`.
-- The planned command bar reuses shared parsing (`src/core/`) and clap
+- The command bar (`app/command_bar.rs`) reuses shared parsing (`src/core/`) and clap
   rather than adding a parser of its own, as the removed shell had.
 
 ### 6.2 Crate and module layout
@@ -490,9 +490,9 @@ crates/bacnet-cli/src/
 
 `safety/` holds the write session model (levels, tiers and planning, ledger,
 audit writer); `worker/write.rs` and `worker/passive.rs` its worker side, and
-`app/safety.rs` and `view/safety.rs` its dialogs (#964). Planned: one worker
-and view module per later screen. The implemented profile
-store is in `profile/`; SC and MS/TP persistence are still planned.
+`app/safety.rs` and `view/safety.rs` its dialogs (#964). Each screen has its
+own app and view modules. The profile store in `profile/` keeps B/IP, SC and
+MS/TP profiles.
 
 The 700-line file cap (`scripts/ci/check-file-size.sh`) and `missing_docs =
 deny` apply. The TUI writes through the crossterm backend, not `print!`, so the
@@ -538,8 +538,9 @@ signals ------------------+      if dirty: terminal.draw(view)
   (COV, events, frames) get the same treatment.
 - **Latest-value state** (SC link state, MS/TP statistics, FD countdown) will
   use `watch` channels.
-- **MS/TP** will run with `MstpExecutionMode::DedicatedThread`, so terminal
-  stalls cannot reach the MAC loop; Clause 9.5.3 timing works in tens of
+- **MS/TP** runs with `MstpExecutionMode::DedicatedThread` (on Linux,
+  optionally under `SCHED_FIFO` and pinned to CPUs, #501), so terminal stalls
+  cannot reach the MAC loop; Clause 9.5.3 timing works in tens of
   milliseconds.
 - **Stack size** (#953). Windows gives the main thread 1 MiB, and debug futures
   are large. The TUI future is boxed, `App` is boxed, the worker and each
@@ -683,7 +684,8 @@ flags-only session the same (#1831). The SC screen (#967) shows which hub is in 
   `directories::ProjectDirs::from("", "", "bacnet").config_dir()`. Set
   `BACNET_CONFIG_DIR` to replace that root. Per-profile `workspaces/NAME/`
   directories use the same root and hold the session ledger, the audit log
-  (#964) and watch-list CSV logs (#965); no device cache or capture yet.
+  (#964) and watch-list CSV logs (#965), and the Capture screen's pcap exports
+  (#971); no device cache yet.
 - Names are bounded ASCII identifiers, checked before constructing paths.
   New files cannot overwrite an existing profile. Saves publish a complete,
   synced temporary file atomically and preserve the prior file on failure.
@@ -740,9 +742,9 @@ flags-only session the same (#1831). The SC screen (#967) shows which hub is in 
 - **Size.** Measured for #961 on Linux x86_64 release builds, the `tui` feature
   adds about 1.0 MB to the default `bacnet` (7.20 to 8.20 MB; 5.40 to 6.13 MB
   stripped) and 1.1 MB with `sc-tls`, as the release assets are built (13.72 to
-  14.84 MB; 10.84 to 11.68 MB stripped). The workspace has no
-  `[profile.release]` tuning (strip, LTO) yet; #973 measures it before
-  deciding.
+  14.84 MB; 10.84 to 11.68 MB stripped). Release assets are built
+  with `--profile dist` (fat LTO, one codegen unit, debuginfo stripped; #973);
+  docs/ci.md, "Release profile", has its measurements.
 - **Duplicates.** The only new semver-incompatible duplicate in the built
   graph is `hashbrown` 0.16 (via `kasuari`). `Cargo.lock` also gains entries for
   ratatui's optional backends (termwiz, termina, with `thiserror` 1), which are
@@ -760,7 +762,7 @@ flags-only session the same (#1831). The SC screen (#967) shows which hub is in 
 | f. Contract | the existing one-shot integration tests, unchanged; `bacnet tui > out.txt` fails with a hint and an empty file | all OSes |
 | g. Docker topology | `examples/docker/docker-compose.yml` (bbmd-a/b, router, sc-hub, foreign-client) | manual and release checks |
 | h. MS/TP | `LoopbackSerial::pair()`, PTY `SerialStream::pair()`, the scripted ring of #958 (`bacnet-transport`'s `test-support`, played into the monitor on paused time); real USB-RS485 adapters for hardware checks | Linux for PTY; loopback and the scripted ring everywhere |
-| i. PTY end-to-end (planned) | start, quit, terminal restored, with portable-pty and vt100 | Unix first |
+| i. PTY end-to-end | plain `bacnet` on an `openpty` pair (nix) opens the alternate screen; `--no-tui` and `BACNET_NO_TUI` keep it out, with exit 2 (`tests/plain_bacnet_pty.rs`) | Unix |
 
 Rules: fixed terminal sizes; times as fixed offsets so ages render the same on
 every run; addresses from the in-memory hub rather than ephemeral ports.
@@ -792,7 +794,7 @@ cargo nextest run -p bacnet-cli --release -E 'test(drawing_a_full_device_table)'
 | BACnet/SC | yes | yes | yes |
 | MS/TP participant (#969) | yes, in the release binary: USB auto-direction (kernel RS-485 and `serial-gpio` stay library-only) | experimental, source builds with `serial`: USB auto-direction, `/dev/cu.*` | experimental, source builds with `serial`: USB auto-direction, `COMn` |
 | MS/TP passive monitor (#970) | yes, wherever the participant is | experimental | experimental (host timer resolution limits timing accuracy) |
-| Own-traffic capture (planned) | yes | yes | yes |
+| Own-traffic capture (#971) | yes | yes | yes |
 | Wire capture (libpcap) | yes (root or CAP_NET_RAW) | builds | needs the Npcap SDK |
 
 - The `serial` feature is not Linux-only: tokio-serial and serialport build on

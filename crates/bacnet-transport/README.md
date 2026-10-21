@@ -71,6 +71,7 @@ the concrete hosted adapters below are optional.
 | `serial` | `mstp_serial::TokioSerialPort`, and `mstp_serial::ReceiveOnlyPort` for the receive-only `mstp::monitor::MstpMonitor`; Linux also exposes kernel RS-485 direction control. |
 | `serial-gpio` | Linux GPIO character-device direction control through `mstp_serial::GpioDirectionPort`; also enables `serial`. |
 | `ethernet` | Ethernet frame codecs; `ethernet::EthernetTransport` additionally requires Linux and uses raw packet sockets. |
+| `test-support` | `mstp::monitor::script`: the scripted MS/TP line and token ring the monitor's own tests use, for tools built on the monitor. |
 
 Selecting a feature makes its APIs available; running a concrete adapter also
 requires suitable operating-system access, configuration and, where applicable,

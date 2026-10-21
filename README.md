@@ -49,7 +49,7 @@ It isn't BTL certified; [Conformance](#conformance) explains what is covered.
   assuming a Rust option exists there.
 - **CLI.** The `bacnet` tool does discovery, reads and writes, COV
   subscriptions, alarms, file transfer and BBMD management over BACnet/IP,
-  BACnet/IPv6 and BACnet/SC, as one-shot commands with JSON output or in a
+  BACnet/IPv6, BACnet/SC and MS/TP (with the `serial` feature), as one-shot commands with JSON output or in a
   full-screen terminal UI, with optional packet capture.
 - **Shared endpoints.** One device can send requests and
   answer a limited set of them (ReadProperty by default) through a single
@@ -105,7 +105,8 @@ check it against the release's `SHA256SUMS`, rename it to `bacnet`
 [installation guide](https://jscott3201.github.io/rusty-bacnet/start/installation/)
 has the checksum command for each OS.
 - There are builds for Linux (amd64, arm64), macOS (amd64, arm64) and Windows
-  (amd64), all with BACnet/SC. The Linux builds also include packet capture.
+  (amd64), all with BACnet/SC and the terminal UI. The Linux builds also
+  include packet capture and MS/TP.
 - The Linux builds need glibc 2.17 or newer (RHEL/CentOS 7, Debian 8, Ubuntu
   14.04 and later) and no libpcap package, because they link it statically.
 - The macOS builds need macOS 10.12 (amd64) or 11.0 (arm64) or later. They
@@ -115,7 +116,8 @@ has the checksum command for each OS.
 
 `bacnet-cli` is also on crates.io, so Cargo can build it on any platform with
 Rust 1.93 or later. Add `,pcap` to the features for capture, which needs the
-libpcap headers:
+libpcap headers, and `,serial` for MS/TP; `--no-default-features` leaves out
+the terminal UI:
 
 ```bash
 cargo install bacnet-cli --locked --features sc-tls

@@ -192,7 +192,7 @@ only with more than 4 GiB in one value, is refused with `SinkFull`, whose
 `needed` is its encoded length and `available` the sink's room, or
 `u32::MAX` for a sink that advertises none. The CharacterString `BytesMut`
 encoders, and the contents-only BIT STRING one, delegate to these sink
-encoders: a too-long CharacterString is still `Error::Encoding` with nothing
+encoders: a too-long CharacterString is a static `Error::Encode` with nothing
 written, which a test shows with a 4 GiB string in untouched zeroed memory.
 The tagged OCTET and BIT STRING `BytesMut` encoders keep their own code,
 since they write such a value with its length saturated instead.

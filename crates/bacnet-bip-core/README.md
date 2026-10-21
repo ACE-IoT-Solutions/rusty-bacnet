@@ -35,6 +35,9 @@ mode:
   a lease that never counts on the BBMD's grace period; broadcasts held
   until the first registration resolves; and the timers. You poll its
   actions after every call.
+- A node can be a B/IP-M member (Annex J.8): `LocalSubnet::member` puts its
+  broadcasts on a multicast group in place of the subnet's broadcast
+  address, and it takes broadcast functions from that group.
 
 The `bbmd` module holds a BBMD's broadcast distribution table and foreign
 device table, and decides where each broadcast goes:
@@ -56,6 +59,10 @@ Registrations expire on your clock, with the 30-second grace period.
 tables (Register-Foreign-Device, the two table reads and
 Delete-Foreign-Device-Table-Entry), with the result codes Annex J gives
 them, under your own rules.
+A BBMD can also be the one for a B/IP-M group (Annex J.8.3), and one behind a NAT router
+(Annex J.7.5) takes its public address with `Tables::set_nat`: the BDT must
+then name that global address as its own row, every row two-hop, and the
+Forwarded-NPDUs it builds name the global address as their origin.
 
 The `port` module is the driver that joins a node to a socket and does
 what it asks, so firmware doesn't write that loop:

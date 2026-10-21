@@ -43,7 +43,7 @@ bacnet --version
 bacnet --help
 ```
 
-The executable is `bacnet`. IPv6 is enabled through CLI dependencies; `pcap` is a separate optional feature requiring native capture dependencies. A CLI version string alone cannot distinguish a source build from the release.
+The executable is `bacnet`. IPv6 is enabled through CLI dependencies; `pcap` is a separate optional feature requiring native capture dependencies. On `dev`, the terminal UI (`tui`) is a default feature (`--no-default-features` leaves it out), and MS/TP needs `--features serial`. A CLI version string alone cannot distinguish a source build from the release.
 
 For Python, use a fresh virtual environment and build the native extension:
 

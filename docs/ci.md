@@ -1112,6 +1112,7 @@ The Lint and Python jobs run:
 ```bash
 cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --features "$NATIVE_FEATURES" -- -D warnings
 cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
+cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$NATIVE_FEATURES"
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusty-bacnet --no-deps --locked --document-private-items
 cargo nextest run -p bacnet-cli --locked --profile ci   # the CLI's feature-off tests
@@ -1605,6 +1606,7 @@ cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
 cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
 bash scripts/ci/check-default-features.sh   # the host; or pass target triples, as CI does
 cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
+cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --all-targets --locked -- -D warnings
 bash scripts/ci/check-no-std.sh             # needs the bare-metal targets (rustup target add)
 bash scripts/ci/check-firmware-link.sh      # likewise; see "Firmware link test"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$FEATURES"
@@ -1614,6 +1616,7 @@ cargo nextest run -p bacnet-cli --no-default-features --locked   # without the T
 cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked   # no_std code, alloc
 cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
 cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked   # no_std code, no allocator
+cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked
 cargo nextest run -p rusty-bacnet --locked # the PyO3 crate's Rust tests
 bash scripts/ci/check-file-size.sh
 bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh

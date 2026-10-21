@@ -14,9 +14,10 @@
 //! refused with [`SinkFull`], whose `needed` is its encoded length and
 //! `available` the sink's room, or `u32::MAX` for a sink that advertises
 //! none. The CharacterString `BytesMut` encoders, and the contents-only BIT
-//! STRING one, delegate to these, a too-long CharacterString still
-//! `Error::Encoding`. The tagged OCTET and BIT STRING `BytesMut` encoders keep
-//! their own code: they write such a value with its length saturated instead.
+//! STRING one, delegate to these, a too-long CharacterString being a static
+//! [`Error::Encode`](bacnet_types::error::Error::Encode). The tagged OCTET
+//! and BIT STRING `BytesMut` encoders keep their own code: they write such a
+//! value with its length saturated instead.
 //! Only a host with more than 4 GiB in one value can meet either.
 
 use super::charset;

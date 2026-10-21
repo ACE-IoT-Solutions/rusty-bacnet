@@ -150,8 +150,9 @@ Each mutation decision receives a `mutation::MutationAuthorizationContext`:
   RB-09 `ControlTrust`: `Unverified`, `VerifiedChannel` (direct SC-TLS peer),
   or `VerifiedRelay` (SC-hub relayed origin). Channel/relay scope only, never
   leaf identity.
-- `direct_sc_identity()` — the principal's digest plus the process-lifetime
-  connection incarnation, when present. Same-leaf reconnects get new
+- `direct_sc_identity()` — the immediate direct-SC hop's leaf digest (the
+  `forwarding_peer_principal()` one, so for a routed request the router that
+  forwarded it) plus the process-lifetime connection incarnation, when present. Same-leaf reconnects get new
   incarnations; queued complete work retains its original snapshot after
   replacement.
 - `invoke_id`, `service_choice`, `target` — the request's identity and the

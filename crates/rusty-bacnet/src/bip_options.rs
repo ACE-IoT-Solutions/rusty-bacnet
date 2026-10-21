@@ -241,16 +241,18 @@ impl PyBbmd {
 
 /// A B/IP multicast group, for the `multicast=` keyword (Annex J.8, #941).
 ///
-/// `group` is a class D IPv4 address (224.0.0.0 to 239.255.255.255). The
-/// node's broadcasts then go to the group, and it takes broadcasts only
-/// from the group, never a subnet broadcast. `ttl`, 1 to 255 (default 1),
-/// is the multicast TTL: 1 keeps the group's traffic on the local network,
-/// so raise it for a group that spans IP routers. `port` is the group's UDP
-/// port, by default the node's own; members on one host at one address
-/// need their own ports and so a shared group port. Multicast needs an
-/// explicit `interface` (not "0.0.0.0") and can't be combined with `bbmd=`
-/// or `foreign_device=`. A bad value raises ValueError, or OverflowError for
-/// an integer out of range.
+/// `group` is a class D IPv4 address outside 224.0.0.0/24, the block
+/// reserved for local network control. The node's broadcasts then go to the
+/// group, and it takes broadcasts only from the group, never a subnet
+/// broadcast. `ttl`, 1 to 255 (default 1), is the multicast TTL: 1 keeps
+/// the group's traffic on the local network, so raise it for a group that
+/// spans IP routers. `port` is the group's UDP port, by default the node's
+/// own; members on one host at one address need their own ports and so a
+/// shared group port. Multicast needs an explicit `interface` (not
+/// "0.0.0.0") and can't be combined with `foreign_device=` or
+/// `share_port_by_address=True`; with `bbmd=` the owner is the BBMD that
+/// serves the group (Annex J.8.3). A bad value raises ValueError, or
+/// OverflowError for an integer out of range.
 #[pyclass(
     name = "Multicast",
     module = "rusty_bacnet",

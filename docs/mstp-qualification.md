@@ -17,7 +17,10 @@ Use the [result template](mstp-qualification-result.json) for each campaign.
   `mstp_extended_frames`) raises those to 1497 and 1476, and `BACnetRouter` turns
   it on for every MS/TP port it routes, so record the setting for each cell. A
   routed ReadProperty experiment is diagnostic evidence, **not a conformant MS/TP
-  router claim**. Linux RT/affinity controls (RB-24/#501) are not implemented. The
+  router claim**. On Linux the dedicated thread can run under `SCHED_FIFO` and be
+  pinned to CPUs (`MstpThreadConfig::with_realtime_priority` and
+  `with_cpu_affinity`, CLI `--mstp-rt-priority` and `--mstp-cpus`, #501), so
+  record the requested settings and `execution_status()` for each cell. The
   host's timer defaults are under **Host timeouts and USB latency** below; this
   method changes no timers, queue sizes or direction policies.
 - Neither dedicated-thread execution nor PREEMPT_RT promises on-wire timing.
