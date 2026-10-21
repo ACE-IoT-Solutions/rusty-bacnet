@@ -46,6 +46,8 @@ pub(crate) enum MstpKey {
 pub(crate) struct MstpState {
     /// The settings the session joined with.
     pub(crate) station: Option<MstpArgs>,
+    /// How the station's loop runs, as the transport read it back.
+    pub(crate) thread: Option<String>,
     /// The reading on screen.
     pub(crate) shown: Option<Sample>,
     /// The newest reading, kept while the screen is paused.
@@ -60,9 +62,10 @@ impl MstpState {
     /// Take a worker report.
     pub(crate) fn report(&mut self, report: MstpReport) {
         match report {
-            MstpReport::Joined(station) => {
+            MstpReport::Joined(station, thread) => {
                 *self = Self {
                     station: Some(station),
+                    thread: Some(thread),
                     ..Self::default()
                 };
             }

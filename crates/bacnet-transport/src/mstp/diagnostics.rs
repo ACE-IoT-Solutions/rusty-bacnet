@@ -8,6 +8,7 @@ use bacnet_mstp_core::{MasterSnapshot, MasterState, MstpCounters as CoreCounters
 
 use super::queues::SharedQueues;
 use super::totals::MstpCounters;
+use super::MstpExecutionStatus;
 
 /// Owned, redacted MS/TP counts. All fields start at zero, and there is no
 /// reset; use before/after snapshots for a run. Every count saturates at
@@ -133,6 +134,19 @@ impl MstpDiagnostics {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// How the transport's MAC loop runs: on which runtime, and on Linux
+    /// whether its thread got the real-time priority and CPU affinity asked
+    /// for. `None` until [`start`](crate::port::TransportPort::start)
+    /// succeeds; a start that couldn't apply a setting fails and leaves it
+    /// `None`. It keeps its value once the transport stops.
+    pub fn execution_status(&self) -> Option<MstpExecutionStatus> {
+        self.counters
+            .execution
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// The master node's place in the token ring, as last published by the
@@ -172,6 +186,8 @@ macro_rules! counters {
             mac: Mutex<MstpCounters>,
             /// The node's state as last published by the task.
             node: Mutex<Option<MstpNodeState>>,
+            /// How the loop runs, set once by a successful start.
+            pub(super) execution: Mutex<Option<MstpExecutionStatus>>,
         }
 
         impl Counters {
@@ -238,6 +254,14 @@ impl Counters {
     pub(super) fn publish(&self, take: impl FnOnce() -> CoreCounters) {
         let mut totals = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
         totals.add(take());
+    }
+
+    /// Record how the loop runs, at a successful start.
+    pub(super) fn publish_execution(&self, status: MstpExecutionStatus) {
+        *self
+            .execution
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(status);
     }
 
     /// Publish the node's state, after the counters of the same event.

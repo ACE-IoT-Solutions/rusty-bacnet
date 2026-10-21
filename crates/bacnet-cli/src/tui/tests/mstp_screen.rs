@@ -98,7 +98,11 @@ fn joined() -> App {
             local: "mstp:3".into(),
         },
     );
-    worker(&mut app, WorkerEvent::Mstp(MstpReport::Joined(settings())));
+    let thread = "FIFO 40, CPU 3".to_string();
+    worker(
+        &mut app,
+        WorkerEvent::Mstp(MstpReport::Joined(settings(), thread)),
+    );
     worker(
         &mut app,
         WorkerEvent::Mstp(MstpReport::Sample(sample(1, false))),
@@ -260,7 +264,11 @@ fn panes_too_wide_for_their_content_split_45_55() {
         port: port.into(),
         ..settings()
     };
-    worker(&mut app, WorkerEvent::Mstp(MstpReport::Joined(station)));
+    let thread = "normal".to_string();
+    worker(
+        &mut app,
+        WorkerEvent::Mstp(MstpReport::Joined(station, thread)),
+    );
     worker(
         &mut app,
         WorkerEvent::Mstp(MstpReport::Sample(sample(1, false))),

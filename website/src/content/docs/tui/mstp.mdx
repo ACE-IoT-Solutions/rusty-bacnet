@@ -16,7 +16,7 @@ MS/TP needs a build with the `serial` feature and an RS-485 adapter that switche
 bacnet tui --mstp-monitor /dev/ttyUSB0 --mstp-baud 38400
 ```
 
-The monitor opens the port to listen only. It builds no client and drops the port's write side as it opens, so it can't transmit. The status bar reads `listen only` and the level is `PASSIVE`. It takes `--mstp-baud` and `--mstp-max-info-frames`, and refuses `--mstp`, `--mstp-mac`, `--mstp-max-master`, another transport's flags and `--profile`.
+The monitor opens the port to listen only. It builds no client and drops the port's write side as it opens, so it can't transmit. The status bar reads `listen only` and the level is `PASSIVE`. It takes `--mstp-baud` and `--mstp-max-info-frames`, and refuses `--mstp`, `--mstp-mac`, `--mstp-max-master`, another transport's flags and `--profile`. On Linux it also takes `--mstp-rt-priority` and `--mstp-cpus`, but the monitor itself runs normally: only a station you join from it gets them (see [Real-time scheduling](#real-time-scheduling-linux)).
 
 The MS/TP screen opens first. Tab moves between four views. `z` counts from now, Space pauses or follows, and `x` stops the monitor.
 
@@ -75,7 +75,7 @@ Header and data CRC errors, malformed or oversize frames, partial frames, noise,
 
 ![The join confirmation the safe join opens, naming the station and the port.](../../../assets/tui/mstp-join-confirm.webp)
 
-From then on the session is a participant at `READ-ONLY`. A join the transport refuses leaves the monitor listening, with the reason shown. If the join fails after the monitor closed the port, `c` confirms a join again; to listen again, quit and start with `--mstp-monitor`. With `--passive` the wizard proposes a MAC but never joins.
+The confirmation also shows how the station's token handling will be scheduled: `normal`, or the `--mstp-rt-priority` and `--mstp-cpus` settings. From then on the session is a participant at `READ-ONLY`. A join the transport refuses leaves the monitor listening, with the reason shown. If the join fails after the monitor closed the port, `c` confirms a join again; to listen again, quit and start with `--mstp-monitor`. With `--passive` the wizard proposes a MAC but never joins.
 
 ## Join directly: the participant
 
@@ -83,7 +83,15 @@ From then on the session is a participant at `READ-ONLY`. A join the transport r
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 tui
 ```
 
-Joining adds a master to the token ring, which every station notices, so the TUI asks before it opens the port. The dialog states the station, baud rate, Max_Master and Max_Info_Frames, and lists the serial ports: the one you gave first, then the others `bacnet mstp-ports` finds (an MS/TP profile offers its own port only). Up and Down choose the port. Only `y` joins; Esc goes back to the profile, or quits a flags-only session. Every later join, such as `c` after a disconnect, asks again. On a profile, each join you confirm is recorded in the profile's audit log (`audit.jsonl`) with the port, station and baud rate before the port opens.
+Joining adds a master to the token ring, which every station notices, so the TUI asks before it opens the port. The dialog states the station, baud rate, Max_Master and Max_Info_Frames, and lists the serial ports: the one you gave first, then the others `bacnet mstp-ports` finds (an MS/TP profile offers its own port only). Up and Down choose the port. Only `y` joins; Esc goes back to the profile, or quits a flags-only session. Every later join, such as `c` after a disconnect, asks again. On a profile, each join you confirm is recorded in the profile's audit log (`audit.jsonl`) with the port, station, baud rate and thread settings before the port opens.
+
+### Real-time scheduling (Linux)
+
+```sh
+bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --mstp-rt-priority 40 --mstp-cpus 3 tui
+```
+
+`--mstp-rt-priority N` runs the station's token handling under `SCHED_FIFO` at priority N (1 to 99; it needs `CAP_SYS_NICE` or `ulimit -r` of at least N), and `--mstp-cpus` pins it to those CPUs. They apply to every station the session joins, from flags, a profile or the monitor, and never to the passive monitor. A setting the kernel won't apply fails the join with the reason. The MS/TP screen's `Thread` row shows what was applied, such as `FIFO 40, CPU 3`. Compare the timer lateness with and without them: they lower scheduling delay but don't guarantee timing. On macOS and Windows both flags are refused.
 
 ![The confirmation shown before joining a trunk with --mstp.](../../../assets/tui/mstp-participant-join.webp)
 

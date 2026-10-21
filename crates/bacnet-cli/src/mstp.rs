@@ -110,6 +110,9 @@ pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Erro
         return check_monitor(port, given);
     }
     if matches.get_one::<String>("mstp").is_none() {
+        // The terminal UI can join a trunk from a profile or the monitor,
+        // where the thread flags apply too.
+        let tui = matches!(matches.subcommand_name(), None | Some("tui"));
         // Clap's `requires` misses a global flag given after the subcommand.
         let given = [
             "mstp_baud",
@@ -118,6 +121,7 @@ pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Erro
             "mstp_max_info_frames",
         ]
         .into_iter()
+        .chain(crate::mstp_thread::FLAGS.into_iter().filter(|_| !tui))
         .find(|id| given(id));
         return match given {
             Some(id) => Err(clap::Error::raw(
@@ -125,7 +129,7 @@ pub(crate) fn check_matches(matches: &clap::ArgMatches) -> Result<(), clap::Erro
                 format!(
                     "--{} requires --mstp PORT{}\n",
                     id.replace('_', "-"),
-                    if MONITOR_FLAGS.contains(&id) {
+                    if MONITOR_FLAGS.contains(&id) || crate::mstp_thread::FLAGS.contains(&id) {
                         " (or tui --mstp-monitor PORT)"
                     } else {
                         ""
@@ -297,9 +301,8 @@ impl MstpArgs {
 /// Build a client that joins the trunk on `serial` as station `args.mac`,
 /// its MAC loop placed by `mode`.
 ///
-/// The CLI runs the loop on a dedicated thread, so a busy application
-/// runtime doesn't delay token handling; tests on paused time keep it on
-/// theirs. The diagnostics handle is taken before the client owns the
+/// The CLI runs the loop on a dedicated thread ([`crate::mstp_thread::mode`]);
+/// tests on paused time keep it on theirs. The diagnostics handle is taken before the client owns the
 /// transport; it also carries the node's state.
 pub(crate) async fn build_client_on<S: SerialPort>(
     serial: S,
@@ -348,13 +351,14 @@ pub(crate) fn open_serial(mstp: &MstpArgs) -> Result<Serial, Error> {
 #[cfg(feature = "serial")]
 pub(crate) async fn build_client(
     args: &crate::transport::TransportArgs,
+    thread: &bacnet_transport::mstp::MstpThreadConfig,
 ) -> Result<(BACnetClient<MstpTransport<Serial>>, MstpDiagnostics), Error> {
     let mstp = args
         .mstp
         .as_ref()
         .ok_or_else(|| Error::Encoding("--mstp is required for MS/TP".into()))?;
     let serial = open_serial(mstp)?;
-    let mode = MstpExecutionMode::DedicatedThread;
+    let mode = crate::mstp_thread::mode(thread);
     build_client_on(serial, mstp, args.timeout_ms, args.min_interval_ms, mode).await
 }
 
@@ -596,7 +600,8 @@ pub(crate) async fn run(
     args: &crate::transport::TransportArgs,
     format: OutputFormat,
 ) -> crate::CliResult {
-    let (client, _diagnostics) = build_client(args).await?;
+    let thread = crate::mstp_thread::from_cli(cli);
+    let (client, _diagnostics) = build_client(args, &thread).await?;
     crate::run(client, cli, format).await
 }
 

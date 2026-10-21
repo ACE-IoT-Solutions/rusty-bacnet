@@ -88,7 +88,7 @@ async fn mstp_dropped_sender_releases_tokio() {
 
 #[tokio::test]
 async fn mstp_dropped_sender_releases_dedicated() {
-    dropped_sender_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    dropped_sender_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -98,7 +98,7 @@ async fn mstp_dropped_sender_releases_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_dropped_sender_releases_extended_dedicated() {
-    dropped_sender_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    dropped_sender_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -159,7 +159,7 @@ async fn mstp_token_pfm_during_work_tokio() {
 
 #[tokio::test]
 async fn mstp_token_pfm_during_work_dedicated() {
-    token_during_work_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    token_during_work_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ async fn mstp_token_pfm_during_work_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_token_pfm_during_work_extended_dedicated() {
-    token_during_work_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    token_during_work_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 /// Serializes direction-blind sends: every send blocks forever, so the
@@ -419,7 +419,7 @@ async fn mstp_cancel_releases_lease_tokio() {
 
 #[tokio::test]
 async fn mstp_cancel_releases_lease_dedicated() {
-    cancel_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    cancel_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -429,7 +429,7 @@ async fn mstp_cancel_releases_lease_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_cancel_releases_lease_extended_dedicated() {
-    cancel_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    cancel_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 async fn stop_outstanding_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -478,7 +478,7 @@ async fn mstp_stop_with_outstanding_tokio() {
 
 #[tokio::test]
 async fn mstp_stop_with_outstanding_dedicated() {
-    stop_outstanding_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    stop_outstanding_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -488,7 +488,7 @@ async fn mstp_stop_with_outstanding_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_stop_with_outstanding_extended_dedicated() {
-    stop_outstanding_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    stop_outstanding_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 #[tokio::test]
@@ -598,7 +598,7 @@ async fn mstp_nonrouting_standard_only_tokio() {
 
 #[tokio::test]
 async fn mstp_nonrouting_standard_only_dedicated() {
-    nonrouting_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    nonrouting_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -608,5 +608,5 @@ async fn mstp_nonrouting_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_nonrouting_extended_dedicated() {
-    nonrouting_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    nonrouting_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }

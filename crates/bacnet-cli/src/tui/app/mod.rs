@@ -301,6 +301,9 @@ pub(crate) struct App {
     /// A flags-only MS/TP session's join confirmation, shown again before
     /// every later join.
     pub(crate) join_again: Option<Box<mstp::JoinDialog>>,
+    /// How a joined station's thread is to run (`--mstp-rt-priority`,
+    /// `--mstp-cpus`), as the join confirmation shows it.
+    pub(crate) mstp_thread: String,
     /// The MS/TP monitor (`--mstp-monitor`), until the session joins.
     pub(crate) monitor: Option<Box<monitor::MonitorState>>,
     /// The Capture screen: its frames outlive sessions.
@@ -376,6 +379,7 @@ impl App {
             sc: sc::ScState::default(),
             mstp: mstp::MstpState::default(),
             join_again,
+            mstp_thread: "normal".into(),
             monitor: None,
             capture: capture::CaptureState::default(),
             who_has: None,

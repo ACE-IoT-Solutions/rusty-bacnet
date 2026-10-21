@@ -7,7 +7,10 @@ use tokio::sync::{mpsc, Mutex};
 use super::adapter::Task;
 use super::diagnostics::increment;
 use super::queues::{EnqueueError, SharedQueues};
-use super::{DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode, SerialPort};
+use super::{
+    DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode, MstpExecutionStatus,
+    SerialPort,
+};
 use crate::port::{ReceivedNpdu, TransportPort};
 use crate::runtime_clock::tokio_clock;
 
@@ -69,7 +72,10 @@ impl<S: SerialPort> MstpTransport<S> {
     /// settings change, and an already-running loop is not migrated.
     ///
     /// Dedicated execution isolates MAC polling and backend blocking work from
-    /// the application pool, not from OS scheduling delays. Async serial resources
+    /// the application pool. On its own it does not shorten OS scheduling
+    /// delays; on Linux its [`MstpThreadConfig`](super::MstpThreadConfig)
+    /// can ask for `SCHED_FIFO` and CPU affinity, which `start` applies or
+    /// fails on, and [`Self::execution_status`] reports. Async serial resources
     /// opened on another reactor still require that reactor to remain running.
     /// `stop` waits for teardown; `abort`/drop request cancellation without waiting.
     /// Neither can interrupt an in-progress blocking syscall or undo queued bytes.
@@ -97,6 +103,16 @@ impl<S: SerialPort> MstpTransport<S> {
     /// ```
     pub fn diagnostics(&self) -> MstpDiagnostics {
         self.diagnostics.clone()
+    }
+
+    /// How the MAC loop runs, once [`start`](TransportPort::start) has
+    /// succeeded: whether on a thread of its own, and the real-time
+    /// priority and CPU affinity that thread reads back. `None` before
+    /// then. The [diagnostics handle](Self::diagnostics) reports the same,
+    /// after the transport has moved
+    /// ([`MstpDiagnostics::execution_status`]).
+    pub fn execution_status(&self) -> Option<MstpExecutionStatus> {
+        self.diagnostics.execution_status()
     }
 
     /// This transport's frame tap: every frame this station sends and
@@ -189,18 +205,24 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         const NPDU_CHANNEL_CAPACITY: usize = 64;
 
         let config = self.config.core_config()?;
-        if let Some(serial) = &self.serial {
-            serial.echo().validate()?;
-        }
-        let serial = self
-            .serial
-            .take()
-            .ok_or_else(|| Error::Encoding("MS/TP transport already started".into()))?;
+        self.execution_mode.validate()?;
+        let not_started = || Error::Encoding("MS/TP transport already started".into());
+        self.serial
+            .as_ref()
+            .ok_or_else(not_started)?
+            .echo()
+            .validate()?;
 
-        let dedicated_runtime = match self.execution_mode {
-            MstpExecutionMode::Tokio => None,
-            MstpExecutionMode::DedicatedThread => Some(DedicatedRuntime::new().await?),
+        // The thread and its settings come first: if they fail, the serial
+        // port stays here for another try.
+        let (dedicated_runtime, status) = match &self.execution_mode {
+            MstpExecutionMode::Tokio => (None, MstpExecutionStatus::default()),
+            MstpExecutionMode::DedicatedThread(thread) => {
+                let (runtime, status) = DedicatedRuntime::new(thread.clone()).await?;
+                (Some(runtime), status)
+            }
         };
+        let serial = self.serial.take().ok_or_else(not_started)?;
 
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
         let queues = SharedQueues::new(self.config.extended_frames);
@@ -220,6 +242,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             None => tokio::spawn(task.run()),
         };
         self.dedicated_runtime = dedicated_runtime;
+        self.diagnostics.counters.publish_execution(status);
         self.task = Some(task);
         self.link = Some(Link {
             queues,
