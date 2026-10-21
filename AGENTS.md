@@ -2,7 +2,7 @@
 
 This repository uses focused skills and subagents for research and review. Prefer the installed skills under `.agents/skills/` and configured agents when available; use the running harness's advertised agent and model controls when repository-local agent definitions are absent.
 
-Use local Codebase Memory as the first structural code-intelligence layer. The canonical project is `Users-justin-Development-rusty-bacnet`, rooted at `/Users/justin/Development/rusty-bacnet`; verify it once with `list_projects` and `index_status` when entering a fresh repository source context, then use focused graph tools and check coverage for cited scopes. Codebase Memory is not a durable work ledger. Long-running compliance continuity lives in the ignored `_spec/rusty-bacnet-compliance-execution-plan/{Handoff.md,CURRENT_STATUS.md,NEXT_HANDOFF.md}` documents, with `codex-overnight-status.md` retained as an additional local historical log. Refresh live Git/GitHub state before acting on those snapshots. No external memory service, agent identity, namespace, or team assertion is a prerequisite.
+Use local Codebase Memory as the first structural code-intelligence layer. The canonical project is `Users-justin-Development-rusty-bacnet`, rooted at `/Users/justin/Development/rusty-bacnet`; verify it once with `list_projects` and `index_status` when entering a fresh repository source context, then use focused graph tools and check coverage for cited scopes. Codebase Memory is not a durable work ledger. The current roadmap and handoff live in the ignored `_spec/roadmap-0.15/` directory (start at its `README.md`), written after the 0.14.0 release. The older `_spec/rusty-bacnet-compliance-execution-plan/` documents and `codex-overnight-status.md` are kept as historical logs. Refresh live Git/GitHub state before acting on those snapshots. No external memory service, agent identity, namespace, or team assertion is a prerequisite.
 
 ## Repository hosting
 
@@ -23,7 +23,7 @@ Default behavior:
 - Keep PRs small: one BACnet layer, state-machine family, or measured hotspot per PR.
 - Do not add new CI unless explicitly requested.
 - Do not broaden README or public support claims without tests and evidence.
-- Use `_spec/rusty-bacnet-compliance-execution-plan/` for the current roadmap: read the current block of `NEXT_HANDOFF.md`, then relevant `CURRENT_STATUS.md`, `WORK_QUEUE.md`, `DECISIONS.md`, and packet/gate files. Historical blocks preserve evidence, not current instructions. The older `_spec/rusty_bacnet_compliance_specs_v1/` path is absent in this checkout. Locate the licensed Standard through `STANDARD_NAVIGATION.md` before protocol work; never infer a missing source.
+- Use `_spec/roadmap-0.15/` for the current roadmap: read its `README.md`, then `02-roadmap-0.15.md`, `04-open-decisions.md` and `07-gotchas.md`. `_spec/rusty-bacnet-compliance-execution-plan/` and its `NEXT_HANDOFF.md` are historical evidence, not current instructions. The licensed Standard (ASHRAE 135-2020, its addendum and errata) is in `_spec/` as PDFs; find pages with `.claude/skills/bacnet-spec-check/scripts/spec_overlap.py find` before protocol work, paraphrase only, and never infer a missing source.
 
 
 ## Pre-1.0 design and cleanup
