@@ -5,7 +5,8 @@
 //! client calls route it: they unicast to the router with the device's
 //! network and MAC in the NPDU (Clause 6.2.2). ReadProperty,
 //! ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, SubscribeCOV,
-//! GetEventInformation and ReadRange (including log paging) use routed calls.
+//! GetEventInformation, ReadRange (including log paging), AtomicReadFile and
+//! AtomicWriteFile use routed calls.
 //! Commands without a routed call take [`resolve_mac`], which refuses one.
 
 use std::time::Duration;
@@ -13,6 +14,7 @@ use std::time::Duration;
 use bacnet_client::client::{BACnetClient, DeviceEventKind};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_services::file::{AtomicReadFileAck, FileAccessMethod, FileWriteAccessMethod};
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest, ReadRangeValidation};
 use bacnet_services::rpm::ReadPropertyMultipleACK;
@@ -99,14 +101,14 @@ pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
                 "Device {instance} is behind a router; only read, readm, read-range, alarms, \
-                 write, writem and subscribe reach routed devices"
+                 file-read, file-write, write, writem and subscribe reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
             "'{text}' is a routed target; only read, readm, read-range, alarms, \
-             write, writem and subscribe reach routed devices"
+             file-read, file-write, write, writem and subscribe reach routed devices"
         )),
     }
 }
@@ -192,6 +194,39 @@ async fn find_routed<T: TransportPort + 'static>(
 }
 
 impl Destination {
+    /// One checked stream or record file window.
+    pub(crate) async fn atomic_read_file<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        file: ObjectIdentifier,
+        access: FileAccessMethod,
+    ) -> Result<AtomicReadFileAck, Error> {
+        match self {
+            Self::Mac(mac) => client.atomic_read_file_decoded(mac, file, access).await,
+            Self::Device(instance) => {
+                client
+                    .atomic_read_file_decoded_from_device(*instance, file, access)
+                    .await
+            }
+        }
+    }
+
+    /// AtomicWriteFile, retaining its raw service acknowledgement.
+    pub(crate) async fn atomic_write_file<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        file: ObjectIdentifier,
+        access: FileWriteAccessMethod,
+    ) -> Result<bytes::Bytes, Error> {
+        match self {
+            Self::Mac(mac) => client.atomic_write_file(mac, file, access).await,
+            Self::Device(instance) => {
+                client
+                    .atomic_write_file_from_device(*instance, file, access)
+                    .await
+            }
+        }
+    }
     /// GetEventInformation, retaining its raw service acknowledgement.
     pub(crate) async fn get_event_information<T: TransportPort + 'static>(
         &self,
