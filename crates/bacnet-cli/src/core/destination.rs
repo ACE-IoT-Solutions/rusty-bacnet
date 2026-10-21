@@ -3,16 +3,18 @@
 //! A local MAC is used as written. A device instance, or a device behind a
 //! router, goes through the client's discovery table, so the `*_from_device`
 //! client calls route it: they unicast to the router with the device's
-//! network and MAC in the NPDU (Clause 6.2.2). Only ReadProperty,
-//! ReadPropertyMultiple, WriteProperty, WritePropertyMultiple and
-//! SubscribeCOV have routed client calls today; every other command takes
-//! [`resolve_mac`], which refuses a routed target.
+//! network and MAC in the NPDU (Clause 6.2.2). ReadProperty,
+//! ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, SubscribeCOV,
+//! GetEventInformation and ReadRange (including log paging) use routed calls.
+//! Commands without a routed call take [`resolve_mac`], which refuses one.
 
 use std::time::Duration;
 
 use bacnet_client::client::{BACnetClient, DeviceEventKind};
 use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_client::log_reader::{LogCursor, LogPage};
 use bacnet_services::read_property::ReadPropertyACK;
+use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest, ReadRangeValidation};
 use bacnet_services::rpm::ReadPropertyMultipleACK;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_services::wpm::WriteAccessSpecification;
@@ -96,15 +98,15 @@ pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
         Target::Bip6(peer) => bip6_vmac(client.transport(), peer).await,
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
-                "Device {instance} is behind a router; only read, readm, write, \
-                 writem and subscribe reach routed devices"
+                "Device {instance} is behind a router; only read, readm, read-range, alarms, \
+                 write, writem and subscribe reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
-            "'{text}' is a routed target; only read, readm, write, writem and \
-             subscribe reach routed devices"
+            "'{text}' is a routed target; only read, readm, read-range, alarms, \
+             write, writem and subscribe reach routed devices"
         )),
     }
 }
@@ -190,6 +192,57 @@ async fn find_routed<T: TransportPort + 'static>(
 }
 
 impl Destination {
+    /// GetEventInformation, retaining its raw service acknowledgement.
+    pub(crate) async fn get_event_information<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        last: Option<ObjectIdentifier>,
+    ) -> Result<bytes::Bytes, Error> {
+        match self {
+            Self::Mac(mac) => client.get_event_information(mac, last).await,
+            Self::Device(instance) => {
+                client
+                    .get_event_information_from_device(*instance, last)
+                    .await
+            }
+        }
+    }
+
+    /// ReadRange with the selected acknowledgement validation.
+    pub(crate) async fn read_range<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        request: &ReadRangeRequest,
+        validation: ReadRangeValidation,
+    ) -> Result<ReadRangeReply, Error> {
+        match self {
+            Self::Mac(mac) => client.read_range_with(mac, request, validation).await,
+            Self::Device(instance) => {
+                client
+                    .read_range_from_device_with(*instance, request, validation)
+                    .await
+            }
+        }
+    }
+
+    /// One log page, including all metadata and range subrequests.
+    pub(crate) async fn read_log_page<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        log: ObjectIdentifier,
+        cursor: LogCursor,
+        page_size: u16,
+    ) -> Result<LogPage, Error> {
+        match self {
+            Self::Mac(mac) => client.read_log_page(mac, log, cursor, page_size).await,
+            Self::Device(instance) => {
+                client
+                    .read_log_page_from_device(*instance, log, cursor, page_size)
+                    .await
+            }
+        }
+    }
+
     /// ReadProperty.
     pub(crate) async fn read_property<T: TransportPort + 'static>(
         &self,
