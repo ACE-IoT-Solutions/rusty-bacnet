@@ -53,7 +53,7 @@ On-wire timing measurements are more informative than an average Rust function d
 
 Do not make a blanket claim either way. Determine the result on the target hardware under representative load. The project's timing-qualification issue tracks the evidence needed to decide whether ordinary Linux is sufficient or whether a different adapter, native UART, a dedicated execution mode, PREEMPT_RT, or a separate serial front-end is justified.
 
-On Linux, the Rust transport's dedicated thread and the CLI (`--mstp-rt-priority`, `--mstp-cpus`) can run the MS/TP loop under `SCHED_FIFO` and pin it to CPUs; the Python bindings don't expose these settings. The Rust API guide covers privileges and deployment.
+In the development branch after v{release}, on Linux, the Rust transport's dedicated thread and the CLI (`--mstp-rt-priority`, `--mstp-cpus`) can run the MS/TP loop under `SCHED_FIFO` and pin it to CPUs; the Python bindings don't expose these settings. The Rust API guide covers privileges and deployment.
 
 ## Stop and investigate
 

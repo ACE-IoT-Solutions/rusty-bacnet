@@ -3574,7 +3574,7 @@ server.add_binary_lighting_output(
 # Once started: the colour the output shows, as (source, (x, y)) or
 # (source, kelvin), following Color_Override; None without a colour object.
 source, colour = await server.lighting_color(ObjectIdentifier(ObjectType.LIGHTING_OUTPUT, 2))
-server.add_binary_lighting_output(instance=1, name="On/Off Light")
+server.add_binary_lighting_output(instance=2, name="On/Off Light")
 # Driven to its default at start; (0.0, 0.0) or 0 keeps the value from
 # before the restart, kept in storage_path (#1526).
 server.add_color(instance=2, name="Wall wash", default_color=(0.0, 0.0),
@@ -4163,7 +4163,7 @@ Standalone clients start UNKNOWN on transports that opt into local nonrouter Num
 
 Once `BACnetClient` has learned its network's number, a device its table holds as routed through a network with that number is on the client's own network (#1358). `read_property_from_device`, `write_property_to_device` and the other `_from_device` and `_to_device` methods send to it as a local request: a unicast to the device's own address with no DNET, not through the router it was heard through. An answer from that address completes the request, and so does one a router relays back with that number as its SNET and that address as its SADR (#1465): network numbers are unique, so both name the same device. While the number is unknown, these requests go through the router as before.
 
-SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization remains separate (#518). A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
+SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization is a native router policy (`ControlAuthContext::sending_peer_principal`, #518) with no Python binding. A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
 B/IP BBMD and configured foreign-mode owners without a registered Network Port start UNKNOWN; a registered port in either mode reports its configured number as above. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
 
@@ -4738,7 +4738,7 @@ except BacnetError as e:
 
 | Attribute | Set by | Value |
 |-----------|--------|-------|
-| `first_failed_element_number` | AddListElement/RemoveListElement ChangeList-Error, CreateObject-Error; a server's `write_local` of a list an object refuses one element of | Position, from 1, of the list element or initial value that failed; 0 when the request failed for another reason. From `write_local`, the element's position in the list written |
+| `first_failed_element_number` | AddListElement/RemoveListElement ChangeList-Error, CreateObject-Error; a server's `write_property_local` of a list an object refuses one element of | Position, from 1, of the list element or initial value that failed; 0 when the request failed for another reason. From `write_property_local`, the element's position in the list written |
 | `first_failed_write_attempt` | WritePropertyMultiple-Error | `{"object_identifier", "property_identifier", "property_array_index"}` of the first write that failed |
 | `first_failed_subscription` | SubscribeCOVPropertyMultiple-Error about one COV reference | The same dict for the refused reference; `None` for a general failure |
 | `vendor_id`, `service_number` | ConfirmedPrivateTransfer-Error | The private service the error answers |
@@ -4975,8 +4975,7 @@ Requests and raw ACKs must fit the configured unsegmented max APDU. Protocol,
 size, malformed/mismatched ACK and closed-owner failures raise `BacnetError`.
 Standalone RPM retains its broader selector profile but now rejects empty lists
 through the shared fallible encoder. Endpoint source Reporter configuration is
-still Rust-only; this method does not expose it in Python. The bundled server's
-known-scalar error-index producer correction remains separate (#789).
+still Rust-only; this method does not expose it in Python.
 
 ### Migration: separately-constructed client/server to endpoint
 
@@ -5039,7 +5038,8 @@ contents in status/errors.
 This is explicit installation policy under Annex AB.7.4. It does not authenticate
 relayed operations end to end, authorize operations, or secure direct SC ingress.
 Every Hub feeding a trusted router ingress must enforce the selected policy;
-#518/#524 remain separate. See the [native contract](rust-api.md#hub-certificate-bindings).
+router control authorization (#518) and the server's direct-SC principal
+(#524) are native Rust policies, neither configurable from Python. See the [native contract](rust-api.md#hub-certificate-bindings).
 
 ## ScHub
 
@@ -5177,8 +5177,7 @@ raw `TlsAcceptor` hub injection is retired by a Rust source-breaking change.
 Python uses that alias and now passes its required owned hub identity.
 Built-in Rust node APIs now require `ScNodeTlsConfig` too. This is an internal
 Python integration, not another certificate-less-access fix or a signature change.
-Issue #513 remains open for final acceptance assessment and remaining profile
-limits. Python nodes require the
+Python nodes require the
 explicit credentials described [below](#bacnetsc-secure-connect).
 
 ### Methods
@@ -5530,7 +5529,7 @@ claim. All positive values remain compatible, including very small/inverted
 pairs; positive floors and field relationship checks are deferred. Defaults,
 outgoing budgets and Python signatures/exception mapping remain unchanged.
 Generic Rust zero codec syntax and post-start public mutation exclusions remain.
-#519 stays open/partial and does not reopen the closed #517 identity acceptance.
+This does not reopen the closed #517 identity acceptance.
 
 #### Required operational credentials
 
@@ -5563,7 +5562,7 @@ Python interfaces and error categories remain unchanged. Normal TLS resumption i
 preserved and may not retransmit certificates. Credentials are offered if requested
 and compatible; a trusted server with no CertificateRequest can complete without
 receiving the node certificate. Local configuration does not attest an arbitrary
-remote hub's verification policy (#513 remains open/partial).
+remote hub's verification policy.
 
 ```python
 # Client connecting to a hub

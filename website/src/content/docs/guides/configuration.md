@@ -33,7 +33,7 @@ For standard same-subnet discovery, start with the intended BACnet network's por
 
 ## Configuration lives in the interface you use
 
-The reviewed CLI exposes command-line options and interactive session settings. These guides do not invent a global `bacnet.toml`, a `--config` flag, or a universal environment-variable layer.
+The reviewed CLI exposes command-line options and interactive session settings. These guides do not invent a global `bacnet.toml`, a `--config` flag, or a universal environment-variable layer. In the development branch after v0.13.0, the terminal UI also keeps named profiles as TOML files under its configuration directory (`BACNET_CONFIG_DIR` replaces it), chosen with `bacnet tui --profile NAME`.
 
 In Python, construct the client or server with the documented keyword arguments. In Rust, configure the corresponding builder and transport. An application's own JSON/TOML configuration can map to those APIs, but that is an application convention—not a built-in CLI contract.
 

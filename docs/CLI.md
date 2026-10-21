@@ -192,12 +192,11 @@ is no profile setting for one-shot commands.
 
 ## Commands
 
-### Offline SC credential inspection (development)
+### Offline SC credential inspection
 
 `bacnet sc-check --sc-cert node.pem [--sc-ca site-ca.pem] [--sc-key node.key]`
-inspects local files without creating a client or connecting to a hub. Build the
-development checkout with `--features sc-tls`; older release binaries may not
-include this command. `--at-unix <SECONDS>` selects a reproducible signed Unix
+inspects local files without creating a client or connecting to a hub. It needs
+the `sc-tls` feature and is new in 0.14.0; 0.13.0 binaries don't have it. `--at-unix <SECONDS>` selects a reproducible signed Unix
 time. The identity file is required; trust and key inputs are optional.
 
 Output is human-readable in a terminal and JSON through a pipe, with explicit
@@ -311,10 +310,10 @@ Who-Is cancellation cannot enter a command queue, its status shows the
 failure; Ctrl-C retries immediately and `x` disconnects. The queued Who-Is
 may still run until cancellation is accepted or the connection is retired.
 
-In the profile picker, Up/Down choose, Enter previews, `n` creates a B/IP
-profile, `s` creates a BACnet/SC profile and `r` reloads the list. In a
+In the profile picker, Up/Down choose, Enter previews, `n`, `s` or `m`
+creates a B/IP, BACnet/SC or MS/TP profile and `r` reloads the list. In a
 preview, `e` edits, `r` reloads the file and re-checks it, `p` returns to the
-list, `n` or `s` creates another profile, and `x` disconnects a live session
+list, `n`, `s` or `m` creates another profile, and `x` disconnects a live session
 while the dialog stays open. The editor uses Tab/Shift-Tab and Backspace;
 Enter saves without connecting. Once an SC profile has a VMAC and device UUID,
 the editor shows them read-only; change them only by editing the file. Save errors retain the draft.
@@ -649,8 +648,8 @@ rounding, so the first two bands are ordinary. `z` counts from now (the
 transport keeps its totals; the screen shows the change since), and Space
 pauses the screen or follows the counters again. After `z` the largest
 lateness is exact once a later one comes; until then it shows a bound, `<N ms`
-(the top of the highest band that moved) or `≤N ms` (the largest before). The
-frame view is a later screen (#971).
+(the top of the highest band that moved) or `≤N ms` (the largest before).
+Frames themselves are on the Capture screen (`7`).
 
 #### MS/TP monitor and safe join
 
@@ -942,8 +941,6 @@ and object. With `--json` it prints an array, empty when nothing answered:
 ```json
 [{ "device": 1234, "object": "ANALOG_INPUT:7", "name": "Zone Temp" }]
 ```
-
-The name goes in `--name`.
 
 ```bash
 bacnet whois-router                      # routers and the networks they reach
@@ -1563,8 +1560,8 @@ Available from [GitHub Releases](https://github.com/jscott3201/rusty-bacnet/rele
 
 | Binary | OS | Features |
 |--------|-----|----------|
-| `bacnet-linux-amd64` | Linux x86_64 | tui, pcap, sc-tls |
-| `bacnet-linux-arm64` | Linux aarch64 | tui, pcap, sc-tls |
+| `bacnet-linux-amd64` | Linux x86_64 | tui, pcap, sc-tls, serial |
+| `bacnet-linux-arm64` | Linux aarch64 | tui, pcap, sc-tls, serial |
 | `bacnet-macos-amd64` | macOS Intel | tui, sc-tls |
 | `bacnet-macos-arm64` | macOS Apple Silicon | tui, sc-tls |
 | `bacnet-windows-amd64.exe` | Windows x86_64 | tui, sc-tls |

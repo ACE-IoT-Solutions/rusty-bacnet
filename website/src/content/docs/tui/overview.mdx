@@ -82,7 +82,7 @@ Press `q`. If a write you made is still in effect, the exit guard asks first: `r
 `q` types a `q` in text fields (the filter, the Who-Is form, the editors), so it doesn't quit from there. The exit status is 0 after `q` or a second Ctrl-C, and 1 when the terminal or the TUI fails. A signal restores the terminal first, then exits with 128 plus the signal number.
 
 <Checkpoint title="Check the build">
-`bacnet tui --help` lists `--profile`, `--passive` and, with `serial`, `--mstp-monitor`. Plain `bacnet` in a terminal opens the profile dialog. `bacnet --no-tui` prints the usage and exits with status 2.
+`bacnet tui --help` lists `--profile`, `--passive` and `--mstp-monitor`. Plain `bacnet` in a terminal opens the profile dialog. `bacnet --no-tui` prints the usage and exits with status 2.
 </Checkpoint>
 
 ## Sources and release scope

@@ -17,9 +17,11 @@ The binary is called `bacnet`. Features:
 - `tui` (default): the full-screen terminal UI. `--no-default-features`
   builds the one-shot commands without it.
 - `sc-tls`: the BACnet/SC transport (WebSocket over TLS) and offline credential
-  inspection in the development checkout.
+  inspection (`bacnet sc-check`).
 - `pcap`: `bacnet capture`, live or from a pcap file. It needs libpcap and its
   headers (`libpcap-dev` on Debian and Ubuntu).
+- `serial`: MS/TP over a serial port (`--mstp`, `mstp-ports`,
+  `tui --mstp-monitor`). The Linux release binaries include it.
 
 Prebuilt binaries are attached to each
 [release](https://github.com/jscott3201/rusty-bacnet/releases).
@@ -30,12 +32,12 @@ Prebuilt binaries are attached to each
 bacnet discover
 bacnet read 192.168.1.100 ai:1 pv
 bacnet --json readm 192.168.1.100 ai:1 pv,object-name
-bacnet        # on a terminal: the TUI; create/select a B/IP or SC profile
+bacnet        # on a terminal: the TUI; create/select a B/IP, SC or MS/TP profile
 bacnet tui --profile plant-a
 bacnet tui --no-profile -i 127.0.0.1 -p 0 -b 127.0.0.255
 ```
 
-Named B/IP and BACnet/SC profiles preview resolved settings, check the files
+Named B/IP, BACnet/SC and MS/TP profiles preview resolved settings, check the files
 they name before anything is sent, and record an explicit first-use
 authorization. SC profiles store certificate and key paths only, and keep the
 device UUID they generate. Press `p` for profiles, `x` to disconnect and
@@ -55,10 +57,8 @@ status 4.
 The [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/main/docs/CLI.md)
 lists every command and option.
 
-Development builds also support `bacnet sc-check --sc-cert node.pem`, with
-optional `--sc-ca` and `--sc-key` files. Install from this checkout with
-`cargo install --path crates/bacnet-cli --locked --features sc-tls` for this new
-command. It reports local certificate observations without a network connection;
+With `sc-tls`, `bacnet sc-check --sc-cert node.pem` (new in 0.14.0) takes
+optional `--sc-ca` and `--sc-key` files. It reports local certificate observations without a network connection;
 exit 0 can include warnings and does not predict TLS acceptance. See the
 [SC check guide](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/sc-check.md)
 for human/JSON output and exit statuses.

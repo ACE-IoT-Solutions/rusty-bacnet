@@ -398,7 +398,7 @@ identifier; it replaces the earlier bare ObjectIdentifier payload.
 `bacnet_encoding::constructed::encode_value_source(&mut BytesMut, &BACnetValueSource)`
 returns `Result<(), Error>` and appends one framed CHOICE. Object-identifier widths
 are validated at construction. An address MAC longer than
-`BACnetAddress::MAX_MAC_LEN` (18) octets is refused with `Error::Encoding` before
+`BACnetAddress::MAX_MAC_LEN` (18) octets is refused with `Error::Encode` before
 the buffer changes, and the decoder refuses one as malformed (#1156).
 `decode_value_source(&[u8], offset)` returns `Result<(BACnetValueSource, usize), Error>`;
 the second value is the next absolute offset, and suffix bytes remain available.
@@ -592,7 +592,7 @@ use bacnet_npdu::{NetworkMessageType, NetworkPriority};
 DADR and SADR are capped at `bacnet_npdu::MAX_MAC_LEN` (18) octets, the same
 limit as `BACnetAddress::MAX_MAC_LEN` (#1141). No built-in data link uses more
 than 6; the bound is defensive. `encode_npdu` refuses a longer address with
-`Error::Encoding`. `decode_npdu` returns `NpduDecodeError`: a DLEN or SLEN past
+`Error::Range`. `decode_npdu` returns `NpduDecodeError`: a DLEN or SLEN past
 the cap is `AddressTooLong { field, length, dnet, source }`, checked before the
 address octets are read, and every other malformation is
 `Malformed(bacnet_npdu::Malformed)`. For an over-long DADR, `source` is the
@@ -623,7 +623,7 @@ use bacnet_services::wp::WritePropertyRequest;
 `WritePropertyRequest::encode` returns `Result<(), Error>` and validates its
 optional priority before modifying the destination buffer. Only omission or
 1–16 is accepted, including NULL and noncommandable writes. Direct and routed
-client WP paths propagate invalid input as a local `Error::Encoding` before
+client WP paths propagate invalid input as a local `Error::Encode` before
 transaction admission or traffic; device-based calls validate before lookup.
 This outbound contract does not change inbound semantic-error responses or
 remote commandability rules.
@@ -817,7 +817,7 @@ to 16. The colour alternatives frame the `encode_xy_color` and
 constructed alternative some octets hold, as a `ConstructedChannelValue`
 (`LightingCommand`, `XyColor` or `ColorCommand`), or `None` for anything else.
 `encode` is fallible: it rejects priorities outside 1 to 16, an empty change list and
-a value that is not a single BACnetChannelValue with `Error::Encoding`, leaving the
+a value that is not a single BACnetChannelValue with `Error::Encode`, leaving the
 buffer unchanged. `decode` enforces the same rules and rejects trailing data.
 The bundled server executes inbound WriteGroup on its Channel objects (see the
 Channel paragraphs under Lighting & Color), and `BACnetClient::write_group` sends one.
@@ -836,7 +836,7 @@ least one of those two must be present. Both `encode` methods are fallible and b
 `device_mac_address` is the MAC the matching device takes on the port the request
 arrived on (Clauses 16.11.3.1.5 and 16.11.4), so it is held to
 `BACnetAddress::MAX_MAC_LEN` (18 octets) in both directions (#1200): `decode`
-refuses a longer one and `encode` returns `Error::Encoding` without writing.
+refuses a longer one and `encode` returns `Error::Encode` without writing.
 
 ### Virtual Terminal
 
@@ -872,6 +872,19 @@ unqualified Clause 13.19 support claim.
 ## bacnet-transport
 
 Transport-layer implementations. All implement the `TransportPort` trait.
+
+### Throttled peer warnings
+
+A warning that a peer can set off once per frame or connection (a frame that
+won't decode, a refused registration, a reply that failed to go out) goes
+through `bacnet_transport::warn_throttle::WarnThrottle` (#1950). The first
+occurrence warns; later ones log at debug until `WARNING_INTERVAL` (10 s) has
+passed, and the next warning carries the count since the last one. The
+exported `bacnet_transport::warn_throttled!(throttle, fields..., "message")`
+logs one event through a throttle and returns `Some(count)` when it warned,
+`None` when it logged at debug. The transports, the client and the server use
+it, and an application with its own per-peer warnings can too. The throttle
+reads Tokio's clock, so a test can pause it.
 
 ### Local receive capacity and outgoing limits
 
@@ -3866,7 +3879,7 @@ framing, through the shared `bacnet-encoding` codecs.
   audit notifications and records, the GetEnrollmentSummary filter), the
   ValueSource codec and the AuditLogQuery address filters, sharing
   `check_decoded_mac_len`. Their encoders refuse a longer MAC with
-  `Error::Encoding` before writing, through `check_encoded_mac_len`, so
+  `Error::Encode` before writing, through `check_encoded_mac_len`, so
   `encode_recipient`, `encode_destination(_list)` and the
   `encode_cov_(multiple_)subscription(_list)` family return `Result`. The
   stack stores nothing it could not encode: COV admission refuses a subscriber
@@ -7210,7 +7223,7 @@ client.unsubscribe_cov(&mac, process_id, oid).await?;
 `SubscribeCOVPropertyMultipleRequest::encode` is fallible and validates the entire
 request before appending bytes. Invalid timing pairs, empty nested reference lists,
 prohibited property selectors and the cumulative reference limit return
-`Error::Encoding` without changing the destination buffer. The former `try_encode`
+`Error::Encode` without changing the destination buffer. The former `try_encode`
 and panicking `encode` split has been removed. An empty outer list remains encodable
 with omitted or valid finite timing; finite empty encoding does not establish that
 the bundled server materializes an empty subscription context.
@@ -8023,8 +8036,9 @@ Each decision context also carries the reassembled ingress snapshot
 `VerifiedChannel` (SC-TLS channel), or `VerifiedRelay` (SC-hub relayed
 origin). These enums are scope-only; `context.principal()` is the verified
 direct-SC leaf's `ScPrincipal` (`None` for hub-relayed and non-SC requests), and
-`context.direct_sc_identity()` adds its
-[connection incarnation](#accepted-direct-tls-identity).
+`context.direct_sc_identity()` is the immediate direct-SC hop's leaf (the
+`forwarding_peer_principal()` one: for a routed request, the router that
+forwarded it) with its [connection incarnation](#accepted-direct-tls-identity).
 Baseline-only profile: an unknown
 origin — including a hub-mediated unknown leaf, which arrives unverified —
 never satisfies a baseline-only allow rule, and receive-permission is never
@@ -8660,14 +8674,16 @@ All async operations return `Result<T, bacnet_types::error::Error>`. Key variant
 |---------|---------|
 | `Error::Protocol { class, code }` | Remote BACnet error response, as an `ErrorClass` and an `ErrorCode` |
 | `Error::Structured { class, code, detail }` | Remote error whose Clause 21 body adds fields (ChangeList-Error, CreateObject-Error, WritePropertyMultiple-Error and others): `detail` is the boxed `ErrorDetail` |
-| `Error::Timeout(msg)` | APDU retry exhausted |
+| `Error::Timeout(duration)` | APDU retry exhausted |
 | `Error::Reject { reason }` | Remote device rejected request, with its `RejectReason` |
 | `Error::Abort { reason }` | Remote device aborted request, with its `AbortReason` |
 | `Error::RoutedPathTooLong { dnet }` | Router rejected the active message as too long for DNET |
 | `Error::RoutedPathCapacityExceeded { capacity }` | No routed-path entry can be allocated without discarding protected safety state |
 | `Error::UnsupportedTransport { required, actual }` | The client's data link cannot carry the operation (a BBMD helper on a non-B/IP transport) |
-| `Error::Encoding(msg)` | Malformed packet |
-| `Error::Io(io_error)` | Transport I/O failure |
+| `Error::Decoding(DecodeError)` | Malformed received data, with its offset and `DecodingKind` |
+| `Error::Encode(EncodeError)`, `Error::Range(RangeError)` | A value an encoder, validator or constructor refused, with a static label |
+| `Error::Encoding(msg)` | A formatted local encoding or configuration error (transport, network, client and server) |
+| `Error::Transport(io_error)` | Transport I/O failure |
 
 ---
 
@@ -8987,6 +9003,12 @@ B/IP BBMD and configured foreign modes start UNKNOWN unless a Network Port is re
 B/IPv6 starts UNKNOWN unless a B/IPv6 Network Port is registered (#1579), which then supplies configured authority as on B/IP. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
 
 Linux Ethernet full servers and standalone Rust clients start UNKNOWN with no configured Ethernet Network Port authority. The AF_PACKET receive path admits only the bound MAC and all-FF broadcast, before UI, XID or TEST handling; of those, only all-FF is a logical group. As a destination, though, every MAC with the group bit (the low bit of its first octet) set is a group destination (`bacnet_transport::ethernet::is_group_mac`), so no confirmed request goes to a multicast MAC either (#1493). No station sends from a group address, so a frame whose source MAC has the group bit set is dropped before the XID and TEST handlers and before decoding, and counted in `EthernetTransport::group_source_drops()` (#1492): otherwise an answer to it, or to a confirmed request in it, would go to the whole group. This is the local single-link admission policy, not an additional quoted Clause 7 mandate. Existing self-source refusal remains. Actual isolated Docker Ethernet tests independently inspect destination/source, 802.3 length, LLC bytes, exact learned reply flag zero and padding, and verify stop/drop raw-FD release plus canceled transport-stop resumption. No privileged host interface or physical LAN is involved. The [opt-in fixture](../crates/bacnet-integration-tests/tests/ethernet_network_numbers/README.md) requires Linux and CAP_NET_RAW and is excluded from ordinary CI. There is no Ethernet endpoint builder or Python Ethernet API in this slice.
+
+`send_unicast` and `send_broadcast` return an error for a short send, one that
+wrote fewer octets than the frame ("short Ethernet send: N of M octets"), and
+retry an interrupted one (#1918). An XID or TEST reply that fails or goes out
+short is counted in `EthernetTransport::reply_send_failures()` and logged as a
+throttled warning.
 
 MS/TP starts UNKNOWN with no configured MS/TP Network Port API. The full server, shared endpoint and standalone client learn only broadcast DataNotExpectingReply announcements; either a local unicast or broadcast query receives a DataNotExpectingReply to station `0xFF` after token opportunity. Both Tokio and DedicatedThread modes use the existing serial/MAC owner. LoopbackSerial tests run all three owners in both modes. They independently decode complete standard frames, check precedence and invalid-control recovery with a later valid response as an ordering fence, and qualify application progress while the Number producer is held: the server and endpoint answer a peer's ReadProperty, and the client's own ReadProperty to the peer completes. Separate post-enqueue and serial-write gates prove canceled stop and drop release that producer without completing a held Number frame. Queue admission alone is not frame transmission; already completed bytes cannot be retracted. This simulator evidence does not qualify physical RS-485 timing, transceiver control or hardware interoperability.
 

@@ -7,7 +7,7 @@ These documents follow the `dev` branch. The latest release is **0.13.0**, and t
 | Question | Canonical document |
 |---|---|
 | Which crates, owners and packet paths compose the stack? | [Architecture](architecture.md) |
-| What is the exact Rust API or feature boundary? | [Rust API](rust-api.md) |
+| What is the exact Rust API or feature boundary? | [Rust API](rust-api.md); [encoding into caller-owned storage](encoding-sinks.md) |
 | How do I configure and close a Python owner? | [Python API](python-api.md) |
 | Which CLI arguments does the current checkout accept? | [CLI reference](CLI.md) |
 | Should I use a shared endpoint or a standalone owner? | [Endpoint roles and scope](rust-api.md#bacnet-endpoint) |
@@ -18,10 +18,15 @@ These documents follow the `dev` branch. The latest release is **0.13.0**, and t
 ## Policy and resource contracts
 
 - [Server authorization policy](mutation-policy.md) (mutations, LifeSafetyOperation, Audit receipt, SC principals), [Device Communication Control](dcc-policy.md) and [time synchronization](time-sync-policy.md).
-- [Request admission](request-admission.md), [ReadPropertyMultiple budgets](rpm-budget.md), [ReadRange budgets](read-range-budget.md).
+- [Request admission](request-admission.md), [ReadPropertyMultiple budgets](rpm-budget.md), [ReadRange budgets](read-range-budget.md) and [full-server segmentation timing](server-segmentation.md).
 - [AtomicReadFile](atomic-read-file-budget.md), [AtomicWriteFile](atomic-write-file-budget.md), [alarm summary](alarm-summary-budget.md), [enrollment summary](enrollment-summary-budget.md) and [event information](event-information-budget.md) response budgets.
 - [Target Audit Reporters](target-audit-reporters.md), [Device Audit recipient](device-audit-recipient.md), [delayed target Audit](delayed-target-audit.md) and [Audit Log forwarding](audit-log-forwarding.md).
 - [MS/TP qualification](mstp-qualification.md) separates simulator evidence from serial hardware acceptance.
+- Offline BACnet/SC credential checks: the [`bacnet sc-check` guide](sc-check.md) and [local credential inspection](sc-offline-inspection.md) from Rust and Python.
+
+## Design
+
+- [Terminal UI](design/tui.md): the `bacnet` TUI's architecture, screens, safety model and test strategy.
 
 ## Website and engineering docs
 
