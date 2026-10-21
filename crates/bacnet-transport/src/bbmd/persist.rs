@@ -35,7 +35,7 @@ use tracing::{debug, warn};
 
 use bacnet_types::error::Error;
 
-use super::{encode_bdt_entries, BbmdState, BdtEntry};
+use super::{BbmdState, BdtEntry, encode_bdt_entries};
 
 /// The NAT setting saved with the BDT: whether NAT traversal is on, and
 /// the global address, kept while it is off.

@@ -484,10 +484,10 @@ fn send_response<'a, T: TransportPort + 'static>(
             ),
         }
         .await;
-        if let Err(error) = &sent {
-            if log_errors {
-                warn!(%error, "Failed to send response");
-            }
+        if let Err(error) = &sent
+            && log_errors
+        {
+            warn!(%error, "Failed to send response");
         }
         sent.is_ok()
     }

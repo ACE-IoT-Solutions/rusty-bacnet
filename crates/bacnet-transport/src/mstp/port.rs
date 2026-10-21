@@ -2,7 +2,7 @@ use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{Duration as CoreDuration, QueueRefusal};
 use bacnet_time::HostClock;
 use bacnet_types::error::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use super::adapter::Task;
 use super::diagnostics::increment;
@@ -388,12 +388,12 @@ impl LoopbackSerial {
 
 impl SerialPort for LoopbackSerial {
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        if matches!(self.echo, Echo::Full { .. }) {
-            if let Some(own) = self.own.upgrade() {
-                own.send(data.to_vec())
-                    .await
-                    .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
-            }
+        if matches!(self.echo, Echo::Full { .. })
+            && let Some(own) = self.own.upgrade()
+        {
+            own.send(data.to_vec())
+                .await
+                .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
         }
         self.tx
             .send(data.to_vec())
@@ -463,8 +463,8 @@ impl SerialPort for NoSerial {
 #[cfg(test)]
 mod abort_tests {
     use std::future::pending;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::*;

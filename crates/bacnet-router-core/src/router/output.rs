@@ -15,7 +15,7 @@ use super::tasks::{Task, TaskKind};
 use super::{RejectOrigin, Storage};
 use crate::npdu::{NetworkMessageType, RejectMessageReason};
 use crate::npdu::{NetworkPriority, Npdu};
-use crate::{swap_apart, Mac, PortId};
+use crate::{Mac, PortId, swap_apart};
 
 /// What to do next. Poll [`Router::poll_action`](super::Router::poll_action)
 /// until [`Action::Idle`] after every call into the router.
@@ -333,14 +333,14 @@ impl Outputs {
 }
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-        const B: usize,
-    > Storage<P, R, H, D, N, G, B>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// Drop whatever the caller left unpolled, counting each output, a
     /// waiting congestion announcement included.
@@ -485,10 +485,10 @@ impl<
         let clogged = self.flows[..self.port_count]
             .get(port)
             .is_some_and(|flow| flow.clogged());
-        if let Some(origin) = self.out.current.reject_origin.as_option() {
-            if clogged {
-                self.queue_reject(origin, RejectMessageReason::ROUTER_BUSY);
-            }
+        if let Some(origin) = self.out.current.reject_origin.as_option()
+            && clogged
+        {
+            self.queue_reject(origin, RejectMessageReason::ROUTER_BUSY);
         }
     }
 

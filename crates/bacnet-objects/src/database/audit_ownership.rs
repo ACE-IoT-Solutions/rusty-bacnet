@@ -1,8 +1,8 @@
 //! Lifetime protection for one installed target Audit runtime.
 use super::*;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Weak,
+    atomic::{AtomicBool, Ordering},
 };
 
 /// A lease retained by the runtime and every task that can still use its profile.
@@ -83,10 +83,10 @@ impl ObjectDatabase {
         }
     }
     pub(super) fn audit_membership_changed(&self, oid: ObjectIdentifier, present: bool) {
-        if let Some(owner) = self.audit_owner.as_ref().and_then(Weak::upgrade) {
-            if let Some(association) = &owner.association {
-                association.membership_changed(oid, present);
-            }
+        if let Some(owner) = self.audit_owner.as_ref().and_then(Weak::upgrade)
+            && let Some(association) = &owner.association
+        {
+            association.membership_changed(oid, present);
         }
     }
     pub(super) fn check_audit_membership(

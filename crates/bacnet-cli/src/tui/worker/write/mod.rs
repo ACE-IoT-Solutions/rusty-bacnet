@@ -15,29 +15,29 @@
 mod send;
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::port::TransportPort;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
-use super::browse::limits::RateCap;
-use super::browse::read::{unreachable, Halt, Reader, Wanted};
 use super::EventSink;
+use super::browse::limits::RateCap;
+use super::browse::read::{Halt, Reader, Wanted, unreachable};
 use crate::core::class::Class;
 use crate::tui::message::WorkerEvent;
 use crate::tui::profile::{Safety, Writes};
-use crate::tui::safety::audit::{utc_now, Audit, Context};
+use crate::tui::safety::audit::{Audit, Context, utc_now};
 use crate::tui::safety::ledger::{Entry, Ledger};
-use crate::tui::safety::lock::{lock, WorkspaceLock};
-use crate::tui::safety::plan::{self, PreRead, PRE_READ, PRIORITY_6};
+use crate::tui::safety::lock::{WorkspaceLock, lock};
+use crate::tui::safety::plan::{self, PRE_READ, PRIORITY_6, PreRead};
 use crate::tui::safety::{
-    Gate, Level, Outcome, Planned, Preview, SafetyCommand, SafetyEvent, WriteSpec, MAX_MINUTES,
+    Gate, Level, MAX_MINUTES, Outcome, Planned, Preview, SafetyCommand, SafetyEvent, WriteSpec,
 };
 
 /// Why a passive session refuses anything that transmits.
@@ -293,10 +293,10 @@ impl<'a> Runner<'a> {
         if let (Some((_, reason)), Value::Object(map)) = (&self.armed, &mut fields) {
             map.entry("session_reason").or_insert(json!(reason));
         }
-        if let Some(audit) = &self.audit {
-            if let Err(error) = audit.record(level, event, fields).await {
-                tracing::error!("{error}");
-            }
+        if let Some(audit) = &self.audit
+            && let Err(error) = audit.record(level, event, fields).await
+        {
+            tracing::error!("{error}");
         }
     }
 
@@ -505,7 +505,7 @@ impl<'a> Runner<'a> {
             let rows = match read {
                 Ok((rows, _)) => rows,
                 Err(Halt::Device(error)) => {
-                    return Err(format!("reading {}: {error}", spec.object))
+                    return Err(format!("reading {}: {error}", spec.object));
                 }
                 Err(Halt::Cancelled) => return Err("cancelled".into()),
             };
@@ -522,7 +522,7 @@ impl<'a> Runner<'a> {
                     Some(match read {
                         Ok(bytes) => Ok(bytes),
                         Err(Halt::Device(error)) if unreachable(&error) => {
-                            return Err(format!("reading {}: {error}", spec.object))
+                            return Err(format!("reading {}: {error}", spec.object));
                         }
                         Err(Halt::Device(error)) => Err(error.to_string()),
                         Err(Halt::Cancelled) => return Err("cancelled".into()),

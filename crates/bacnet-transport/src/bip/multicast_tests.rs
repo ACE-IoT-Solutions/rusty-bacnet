@@ -9,7 +9,7 @@
     allow(dead_code, unused_imports)
 )]
 
-use super::ingress::{handle_datagram, Arrival as SocketArrival, IngressAddresses};
+use super::ingress::{Arrival as SocketArrival, IngressAddresses, handle_datagram};
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
 use bacnet_types::enums::ErrorCode;

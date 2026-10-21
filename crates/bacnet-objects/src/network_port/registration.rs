@@ -8,16 +8,15 @@ impl NetworkPortObject {
         &mut self,
         announcement: Option<(u16, u8)>,
     ) -> NetworkNumber {
-        if let Some((number, flag)) = announcement {
-            if self.network_number.observe(number, flag)
+        if let Some((number, flag)) = announcement
+            && self.network_number.observe(number, flag)
                 == bacnet_types::network_number::Observation::ConfiguredConflict
-            {
-                tracing::debug!(
-                    configured = self.network_number.snapshot().0,
-                    announced = number,
-                    "local Network Number configuration conflict"
-                );
-            }
+        {
+            tracing::debug!(
+                configured = self.network_number.snapshot().0,
+                announced = number,
+                "local Network Number configuration conflict"
+            );
         }
         self.network_number
     }

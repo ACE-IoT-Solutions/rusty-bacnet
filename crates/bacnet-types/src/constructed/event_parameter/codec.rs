@@ -269,9 +269,10 @@ pub(super) fn property_state_from_pv(pv: &PropertyValue) -> Result<BACnetPropert
     };
     let (data, marker) = match rest {
         [PropertyValue::OctetString(data)] => (data.clone(), None),
-        [PropertyValue::OctetString(data), PropertyValue::Boolean(marker)] => {
-            (data.clone(), Some(*marker))
-        }
+        [
+            PropertyValue::OctetString(data),
+            PropertyValue::Boolean(marker),
+        ] => (data.clone(), Some(*marker)),
         _ => return Err(Error::decoding(1, "property state data not octets")),
     };
     let tag =

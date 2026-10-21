@@ -287,7 +287,7 @@ fn value_profiles_read_with_exact_wire_bytes() {
             profile_name: Some(NAME.into()),
         };
         macro_rules! build {
-            ($object:expr) => {{
+            ($object:expr_2021) => {{
                 let mut object = $object.unwrap();
                 // Absent rows refuse both reads and writes before provisioning.
                 for property in [
@@ -378,7 +378,7 @@ fn input_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             profile_name: Some(NAME.into()),
         };
         macro_rules! build {
-            ($object:expr) => {{
+            ($object:expr_2021) => {{
                 let mut object = $object.unwrap();
                 for property in [
                     TAGS,
@@ -515,7 +515,7 @@ fn output_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             profile_name: Some(NAME.into()),
         };
         macro_rules! build {
-            ($object:expr) => {{
+            ($object:expr_2021) => {{
                 let mut object = $object.unwrap();
                 for property in [
                     TAGS,

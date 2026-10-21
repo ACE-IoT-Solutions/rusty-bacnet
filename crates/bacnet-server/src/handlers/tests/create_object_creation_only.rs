@@ -9,8 +9,8 @@
 
 use super::create_object_initial_values::{create, initial, read, text};
 use super::*;
-use bacnet_types::enums::EngineeringUnits;
 use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 const MULTI_STATE: [ObjectType; 3] = [
     ObjectType::MULTI_STATE_INPUT,

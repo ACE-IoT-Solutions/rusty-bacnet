@@ -42,13 +42,13 @@
 //! for an I-Am, and the binding table's guard is never held across a send or
 //! a wait.
 
-use super::binding_probes::{can_look_for, DeviceLookup, LookupMiss, LookupStart};
+use super::binding_probes::{DeviceLookup, LookupMiss, LookupStart, can_look_for};
 use super::device_bindings::{DeviceBindingTable, DeviceResolution};
 use super::event_recipient_route::{
     ConfirmedRecipientRoute, ConfirmedRouteRefusal, RecipientRoute,
 };
 use super::notification_transactions::{
-    run_attempts, Attempt, AttemptsEnd, NotificationReserveError,
+    Attempt, AttemptsEnd, NotificationReserveError, run_attempts,
 };
 use super::*;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
@@ -308,7 +308,7 @@ impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
         }
         let wait = match lookup.start(device).await {
             LookupStart::Resolved(resolution) => {
-                return self.confirmed(resolution, RemoteRequestError::Unbound)
+                return self.confirmed(resolution, RemoteRequestError::Unbound);
             }
             LookupStart::Waiting(wait) => wait,
             LookupStart::NotLooking => return Err(RemoteRequestError::Unbound),

@@ -8,25 +8,25 @@
 //! limits, once per lifetime.
 
 use std::num::NonZeroU32;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use bacnet_client::client::{
     BACnetClient, CovPropertySubscription, ManagedCOVSubscription, ManagedCOVSubscriptionOptions,
 };
 use bacnet_transport::port::TransportPort;
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{ErrorClass, PropertyIdentifier};
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 
 use super::sample::{self, Reading, RowFormat};
 use crate::tui::format::{RawRow, StateTexts};
 use crate::tui::watched::{Point, RowId};
 use crate::tui::worker::browse::limits::RateCap;
 use crate::tui::worker::browse::read::{
-    rpm_failure, unreachable, Halt, Reader, RpmFailure, Wanted,
+    Halt, Reader, RpmFailure, Wanted, rpm_failure, unreachable,
 };
 
 /// Rows read by one ReadPropertyMultiple when polling.
@@ -127,16 +127,16 @@ pub(crate) async fn start<T: TransportPort + 'static>(
     let mut read = reader
         .properties(point.object, Wanted::List(first_ask))
         .await;
-    if let (true, Err(Halt::Device(error))) = (named, &read) {
-        if name_may_explain(error) {
-            tracing::debug!(
-                "{}: first read failed ({error}); reading it again without Object_Name",
-                point.object
-            );
-            read = reader
-                .properties(point.object, Wanted::List(&unnamed))
-                .await;
-        }
+    if let (true, Err(Halt::Device(error))) = (named, &read)
+        && name_may_explain(error)
+    {
+        tracing::debug!(
+            "{}: first read failed ({error}); reading it again without Object_Name",
+            point.object
+        );
+        read = reader
+            .properties(point.object, Wanted::List(&unnamed))
+            .await;
     }
     let name = match &read {
         Ok((rows, _)) => crate::tui::format::object_name(rows),
@@ -337,7 +337,9 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
                 }
                 Err(error) => match rpm_failure(&error) {
                     RpmFailure::Refused => {
-                        tracing::info!("device {device} refused ReadPropertyMultiple ({error}); polling one property at a time");
+                        tracing::info!(
+                            "device {device} refused ReadPropertyMultiple ({error}); polling one property at a time"
+                        );
                         rpm = false;
                     }
                     RpmFailure::TooLarge | RpmFailure::Other => tracing::debug!(

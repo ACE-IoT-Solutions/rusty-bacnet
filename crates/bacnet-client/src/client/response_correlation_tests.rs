@@ -8,8 +8,8 @@
 //! Clause 20.1.5.4 numbers segments modulo 256, so a long enough response wraps
 //! onto segments already stored.
 
-use bacnet_encoding::apdu::{self, encode_apdu, AbortPdu, Apdu, ComplexAck, SegmentAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{self, AbortPdu, Apdu, ComplexAck, SegmentAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
@@ -17,7 +17,7 @@ use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetClient, ClientConfig};
 

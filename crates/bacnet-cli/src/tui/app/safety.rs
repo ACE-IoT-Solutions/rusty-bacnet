@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bacnet_types::enums::PropertyIdentifier;
 
 use super::browser::ViewState;
-use super::{App, Link, Overlay, FLASH_FOR};
+use super::{App, FLASH_FOR, Link, Overlay};
 use crate::core::class::Class;
 use crate::parse::{parse_property, parse_value};
 use crate::tui::message::Command;
@@ -18,8 +18,8 @@ use crate::tui::point::BrowseRead;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::ledger::Entry;
 use crate::tui::safety::{
-    Gate, Level, Outcome, Preview, SafetyCommand, SafetyEvent, Tier, WriteSpec, DEFAULT_MINUTES,
-    MAX_MINUTES,
+    DEFAULT_MINUTES, Gate, Level, MAX_MINUTES, Outcome, Preview, SafetyCommand, SafetyEvent, Tier,
+    WriteSpec,
 };
 
 /// How long after a preview opens its confirmation is ignored, so a
@@ -658,16 +658,16 @@ impl App {
     /// Read the open object again, so its priority pane shows the change.
     fn reread_object(&mut self, out: &mut Vec<Command>) {
         let req = self.next_req();
-        if let Some(browser) = self.browser.as_deref_mut() {
-            if let ViewState::Ready(view) = &browser.view {
-                let object = view.object;
-                browser.reading(req, object);
-                out.push(Command::Browse {
-                    req,
-                    device: browser.device,
-                    read: BrowseRead::Object(object),
-                });
-            }
+        if let Some(browser) = self.browser.as_deref_mut()
+            && let ViewState::Ready(view) = &browser.view
+        {
+            let object = view.object;
+            browser.reading(req, object);
+            out.push(Command::Browse {
+                req,
+                device: browser.device,
+                read: BrowseRead::Object(object),
+            });
         }
     }
 }
@@ -699,7 +699,7 @@ fn write_spec(
             _ => {
                 return Err(
                     "Priority: 1-16, or blank for a property that isn't commandable.".into(),
-                )
+                );
             }
         },
     };

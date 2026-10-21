@@ -12,8 +12,8 @@ mod common;
 use bacnet_mstp_codec::FrameType;
 use bacnet_mstp_core::{Duration, Instant, MstpCoreConfig};
 use bacnet_mstp_sim::{
-    AdapterSpec, CollisionClass, Fault, MasterSpec, ReplyPolicy, Sim, SimConfig, SimRng, Skew,
-    ViolationKind, WireFrame, WireTiming, MAX_SKEW_PPM,
+    AdapterSpec, CollisionClass, Fault, MAX_SKEW_PPM, MasterSpec, ReplyPolicy, Sim, SimConfig,
+    SimRng, Skew, ViolationKind, WireFrame, WireTiming,
 };
 
 use common::*;

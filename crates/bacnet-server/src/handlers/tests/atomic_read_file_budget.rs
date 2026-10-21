@@ -10,8 +10,8 @@ use bacnet_types::enums::{AbortReason, EngineeringUnits, FileAccessMethod as Met
 use std::{
     borrow::Cow,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 

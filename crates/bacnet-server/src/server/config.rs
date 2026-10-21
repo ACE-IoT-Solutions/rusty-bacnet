@@ -1,6 +1,6 @@
 use super::*;
-use crate::mutation::MutationPolicy;
 use crate::ServerPolicy;
+use crate::mutation::MutationPolicy;
 
 /// Server configuration.
 #[derive(Clone)]

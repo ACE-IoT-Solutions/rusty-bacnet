@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     elevator::{ElevatorGroupObject, EscalatorObject, LiftObject},
     traits::BACnetObject,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn elevator_objects(configured: bool) -> [Box<dyn BACnetObject>; 3] {
     let mut group = ElevatorGroupObject::new(7, "EG-7").unwrap();

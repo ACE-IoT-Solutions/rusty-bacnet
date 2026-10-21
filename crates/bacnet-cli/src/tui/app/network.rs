@@ -20,11 +20,11 @@ use bacnet_transport::bip::{ForeignRegistrationOutcome, ForeignRegistrationSnaps
 
 use super::objects::kebab;
 use super::watch::Screen;
-use super::{App, Link, FLASH_FOR};
+use super::{App, FLASH_FOR, Link};
 use crate::tui::message::Command;
 use crate::tui::network::matrix::Matrix;
 use crate::tui::network::routers::RouterMap;
-use crate::tui::network::{own_entry, BdtRow, FdtRow, Foreign, NetworkCommand, NetworkEvent};
+use crate::tui::network::{BdtRow, FdtRow, Foreign, NetworkCommand, NetworkEvent, own_entry};
 
 /// The table below the foreign-device panel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

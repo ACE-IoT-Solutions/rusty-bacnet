@@ -8,7 +8,7 @@ use bacnet_types::constructed::{BACnetEventLogRecord, BACnetLogMultipleRecord, B
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::codec::{self, Decoded, SnapshotRecord, MAX_SNAPSHOT_BYTES};
+use super::codec::{self, Decoded, MAX_SNAPSHOT_BYTES, SnapshotRecord};
 use super::{LogPersistence, LogSnapshot};
 
 /// Two-slot, versioned and checksummed file store for one log's snapshots,
@@ -101,13 +101,12 @@ impl FileLogPersistence {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
+            && !parent.exists()
         {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-                // The new directory's own entry has to be durable too, or a
-                // power loss could take the slot with it.
-                crate::durable::sync_parent_dir(parent);
-            }
+            std::fs::create_dir_all(parent)?;
+            // The new directory's own entry has to be durable too, or a
+            // power loss could take the slot with it.
+            crate::durable::sync_parent_dir(parent);
         }
         let (mut file, created) = match OpenOptions::new().write(true).create_new(true).open(path) {
             Ok(file) => (file, true),

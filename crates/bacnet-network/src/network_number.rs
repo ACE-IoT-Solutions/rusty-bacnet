@@ -3,8 +3,8 @@ use crate::layer::ReceivedNetworkControl;
 use bacnet_npdu::NetworkMessageType;
 use bacnet_router_core::message::NetworkNumberIs;
 use bacnet_types::network_number::NetworkNumber;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 /// A validated local control, independent of transport and configured authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

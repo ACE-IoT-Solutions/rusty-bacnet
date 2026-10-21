@@ -26,7 +26,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::buffer::{apply_change, written_buffer_size, Timestamp};
+use super::buffer::{Timestamp, apply_change, written_buffer_size};
 use super::*;
 use crate::durable::{
     DurableWrites, Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep,
@@ -293,17 +293,17 @@ impl AuditLogObject {
                 "Audit notification batch must not be empty".into(),
             ));
         }
-        if let Some(receipt) = &receipt {
-            if receipt::contains(
+        if let Some(receipt) = &receipt
+            && receipt::contains(
                 &self.completed_receipts,
                 receipt.key(),
                 receipt.completed_at_unix_millis(),
-            )? {
-                return Ok(AuditBatchStage::Done(
-                    ConfirmedAuditNotificationOutcome::Duplicate,
-                    false,
-                ));
-            }
+            )?
+        {
+            return Ok(AuditBatchStage::Done(
+                ConfirmedAuditNotificationOutcome::Duplicate,
+                false,
+            ));
         }
         let mut prospective = self.snapshot_for_next_generation()?;
         let changed =

@@ -1,8 +1,8 @@
 use super::*;
 use bacnet_transport::sc::{LoopbackWebSocket, ScReconnectConfig, WebSocketPort};
-use bacnet_transport::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage};
+use bacnet_transport::sc_frame::{ScFunction, ScMessage, decode_sc_message, encode_sc_message};
 use bytes::{Bytes, BytesMut};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[tokio::test]
 async fn sc_client_builder_sends_configured_vmac_and_device_uuid() {

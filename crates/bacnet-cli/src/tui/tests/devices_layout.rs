@@ -6,14 +6,14 @@
 //! where both fit (#1915). Frames at 80x24, 120x40 and 200x50.
 
 use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ObjectType, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 use insta::assert_snapshot;
 use ratatui::crossterm::event::KeyCode;
 
 use super::*;
-use crate::core::target::{parse_target, Target};
+use crate::core::target::{Target, parse_target};
 use crate::tui::network::discovery::{DiscoveryEvent, FoundRow};
 use crate::tui::worker::DeviceFeed;
 
@@ -336,9 +336,10 @@ fn who_has_shows_the_name_and_the_object_label() {
         let named = rows.clone().filter(|line| line.contains(LONG_NAME)).count();
         assert_eq!(named, if width >= 120 { 2 } else { 0 }, "{width}:\n{panel}");
         if width < 120 {
-            assert!(rows
-                .take(2)
-                .all(|line| line.contains("Building 4 ") && line.contains('…')));
+            assert!(
+                rows.take(2)
+                    .all(|line| line.contains("Building 4 ") && line.contains('…'))
+            );
         }
         assert_eq!(panel.contains(ROUTER), width >= 200, "{width}:\n{panel}");
     }

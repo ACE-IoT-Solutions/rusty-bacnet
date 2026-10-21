@@ -1,11 +1,11 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{schedule::ScheduleObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetObjectPropertyReference, BACnetSpecialEvent, BACnetTimeValue,
     PropertyReference, ReadAccessSpecification, SpecialEventPeriod,
 };
 use bacnet_types::primitives::{Date, PropertyValue, Time};
-use PropertyIdentifier as P;
 
 #[test]
 fn rpm_schedule_indexed_reads_and_reference_wire_bytes() {
@@ -244,7 +244,7 @@ fn rpm_schedule_indexed_reads_and_reference_wire_bytes() {
                 }
             }
         }
-        use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+        use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
         let budget = crate::server::ReadPropertyMultipleBudget {
             max_result_elements: cases.len(),
             max_service_ack_bytes: legacy.len(),

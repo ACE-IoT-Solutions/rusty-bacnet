@@ -11,7 +11,7 @@ use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue,
 use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
-use crate::event::{history::EventHistory, OutOfRangeDetector};
+use crate::event::{OutOfRangeDetector, history::EventHistory};
 use crate::traits::{BACnetObject, ReliabilityEvaluation};
 
 #[derive(Clone, Copy)]

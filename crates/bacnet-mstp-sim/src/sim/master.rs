@@ -8,7 +8,7 @@ use bacnet_mstp_core::{
     ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
 };
 
-use super::{decode_whole, describe, leak_core_storage, Event, NodeKind, Sim, SimCore};
+use super::{Event, NodeKind, Sim, SimCore, decode_whole, describe, leak_core_storage};
 use crate::app::{Answer, Outbox, Received};
 use crate::event::Class;
 use crate::line::Driver;

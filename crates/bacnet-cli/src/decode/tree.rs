@@ -11,14 +11,14 @@
 
 use std::ops::Range;
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::primitives::decode_application_value;
-use bacnet_encoding::tags::{decode_tag, TagClass, MAX_CONTEXT_NESTING_DEPTH};
+use bacnet_encoding::tags::{MAX_CONTEXT_NESTING_DEPTH, TagClass, decode_tag};
 use bacnet_npdu::{NetworkPriority, Npdu as NpduView};
 use bacnet_types::primitives::PropertyValue;
 use bytes::Bytes;
 
-use super::frame::{kebab, link, Framing, Link, Npdu};
+use super::frame::{Framing, Link, Npdu, kebab, link};
 
 /// One decoded field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,7 +273,7 @@ fn npdu(npdu: &[u8], base: usize) -> Vec<Field> {
             return vec![Field::leaf(
                 format!("NPDU: malformed ({error})"),
                 at(0..npdu.len()),
-            )]
+            )];
         }
     };
     let control = npdu.get(1).copied().unwrap_or_default();

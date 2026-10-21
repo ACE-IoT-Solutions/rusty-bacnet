@@ -30,10 +30,12 @@ async fn keyed_drop(peers: &mut [Peer], branch: LocalBranch, source: &[u8]) {
     peers[0].tx.send(arrival).await.unwrap();
     branch_forward(peers, branch, 0, 256).await;
     forwarding_progress(peers, 0).await;
-    assert!(timeout(Duration::from_secs(2), reply_rx)
-        .await
-        .expect("admission drop retained reply sender")
-        .is_err());
+    assert!(
+        timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("admission drop retained reply sender")
+            .is_err()
+    );
     assert_quiet(peers);
 }
 
@@ -51,10 +53,12 @@ async fn each_branch_caps_a_flood_and_same_mac_on_another_port_has_its_own_quota
             peers[0].tx.send(arrival).await.unwrap();
             branch_forward(&mut peers, branch, 0, id).await;
             if id >= 16 {
-                assert!(timeout(Duration::from_secs(2), reply_rx)
-                    .await
-                    .expect("fairness drop retained reply sender")
-                    .is_err());
+                assert!(
+                    timeout(Duration::from_secs(2), reply_rx)
+                        .await
+                        .expect("fairness drop retained reply sender")
+                        .is_err()
+                );
             }
         }
         barrier(&mut peers[0]).await;

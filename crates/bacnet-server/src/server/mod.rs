@@ -6,14 +6,14 @@
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 #[cfg(test)]
 pub(crate) use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tracing::{debug, warn};
@@ -21,14 +21,14 @@ use tracing::{debug, warn};
 use event_delivery::EventDelivery;
 
 use bacnet_encoding::apdu::{
-    self, encode_apdu, AbortPdu, Apdu, ComplexAck, ConfirmedRequest as ConfirmedRequestPdu,
-    ErrorPdu, RejectPdu, SegmentAck as SegmentAckPdu, SimpleAck,
-    UnconfirmedRequest as UnconfirmedRequestPdu,
+    self, AbortPdu, Apdu, ComplexAck, ConfirmedRequest as ConfirmedRequestPdu, ErrorPdu, RejectPdu,
+    SegmentAck as SegmentAckPdu, SimpleAck, UnconfirmedRequest as UnconfirmedRequestPdu,
+    encode_apdu,
 };
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_encoding::segmentation::{
-    duplicate_in_window, max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType,
+    SegmentReceiver, SegmentedPduType, duplicate_in_window, max_segment_payload, split_payload,
 };
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
@@ -45,17 +45,17 @@ use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 use bacnet_transport::port::TransportPort;
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, NotifyType,
     ObjectType, PropertyIdentifier, RejectReason, Segmentation, UnconfirmedServiceChoice,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use bacnet_types::MacAddr;
 
 use crate::audit_notification::{
-    AuditNotificationAuthorizationContext, UnconfirmedAuditNotificationAuthorizationContext,
-    MAX_AUDIT_NOTIFICATIONS, MAX_AUDIT_NOTIFICATION_BYTES,
+    AuditNotificationAuthorizationContext, MAX_AUDIT_NOTIFICATION_BYTES, MAX_AUDIT_NOTIFICATIONS,
+    UnconfirmedAuditNotificationAuthorizationContext,
 };
 pub use crate::cov::{CovCounters, CovPolicy};
 use crate::cov::{
@@ -67,17 +67,17 @@ use confirmed_request_tracker::{
     ConfirmedRequestAdmission, ConfirmedRequestTracker, PendingConfirmedRequest,
 };
 pub use device_bindings::DeviceBinding;
-use device_bindings::{register_configured_binding, DeviceBindingTable};
+use device_bindings::{DeviceBindingTable, register_configured_binding};
 use learned_router_cache::LearnedRouterCache;
 use lso_replay::{LsoAdmission, PendingLsoReplay};
 use notification_transactions::{
+    InitiationRestricted, NotificationTransactions, NotificationWorkerResult,
     canonical_direct_peer, canonical_routed_peer, run_notification_under_dcc,
-    run_notification_worker, InitiationRestricted, NotificationTransactions,
-    NotificationWorkerResult,
+    run_notification_worker,
 };
 use request_services::{DispatchContext, RequestOrigin, RequestServices, UnconfirmedServices};
-use requests::confirmed_response::ResponseTarget;
 use requests::ConfirmedRequestOwnership;
+use requests::confirmed_response::ResponseTarget;
 use segmentation::{ComplexAckParams, SegmentedSendResources};
 
 /// Maximum number of concurrent segmented reassembly sessions.
@@ -145,7 +145,7 @@ mod audit_reporter;
 mod audit_reporter_changes;
 mod audit_send_now;
 mod heap_futures;
-pub use audit_reporter::{valid_bip_audit_address, AuditReportersConfig};
+pub use audit_reporter::{AuditReportersConfig, valid_bip_audit_address};
 #[cfg(test)]
 mod audit_reporter_tests;
 
@@ -453,11 +453,11 @@ mod time_sync_policy;
 pub use reinitialize::EndpointReinitializeAudit as __endpoint_ReinitializeAudit;
 pub use reinitialize::{ReinitializeContext, ReinitializeHandler};
 mod write_group;
-#[cfg(test)]
-pub(crate) use clock::clocked_test_database;
 pub use clock::ClockConfig;
 use clock::ServerClock;
-use time_sync_policy::{request_limiters, TimeSyncLimiter};
+#[cfg(test)]
+pub(crate) use clock::clocked_test_database;
+use time_sync_policy::{TimeSyncLimiter, request_limiters};
 pub use time_sync_policy::{
     TimeSyncPolicy, TimeSyncRateLimit, TimeSyncSource, TimeSyncSourceRestriction,
 };
@@ -527,9 +527,6 @@ pub(crate) use remote_writes::RemoteRequestError;
 mod notification_transactions;
 #[doc(hidden)]
 pub use notification_transactions::{
-    canonical_direct_peer as __endpoint_canonical_direct_peer,
-    canonical_routed_peer as __endpoint_canonical_routed_peer,
-    run_notification_worker as __endpoint_run_notification_worker,
     AuditFailureContext as __endpoint_AuditFailureContext,
     AuditFailureQueue as __endpoint_AuditFailureQueue,
     AuditFailureTicket as __endpoint_AuditFailureTicket,
@@ -537,6 +534,9 @@ pub use notification_transactions::{
     NotificationReserveError as __endpoint_NotificationReserveError,
     NotificationTransactions as __endpoint_NotificationTransactions,
     NotificationWorkerResult as __endpoint_NotificationWorkerResult,
+    canonical_direct_peer as __endpoint_canonical_direct_peer,
+    canonical_routed_peer as __endpoint_canonical_routed_peer,
+    run_notification_worker as __endpoint_run_notification_worker,
 };
 mod requests;
 #[doc(hidden)]

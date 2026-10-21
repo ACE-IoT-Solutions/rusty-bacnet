@@ -1,7 +1,8 @@
 use super::dispatch_context::{DispatchContext, InboundApdu};
 use super::response_admission::{
-    admit_terminal_during_reassembly, complete_terminal_response, current_reassembly_owner,
-    log_coordinated_mismatch, take_current_reassembly, TerminalDispatchOutcome, TerminalResponse,
+    TerminalDispatchOutcome, TerminalResponse, admit_terminal_during_reassembly,
+    complete_terminal_response, current_reassembly_owner, log_coordinated_mismatch,
+    take_current_reassembly,
 };
 use super::segmentation_context::InboundSegmentSource;
 use super::*;
@@ -366,15 +367,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     TerminalDispatchOutcome::Completion(CoordinatedCompletion::Completed(
                         CompletionOutcome::Delivered
                     ))
-                ) {
-                    if let Some(owner) = reassembly_owner {
-                        if seg_state
-                            .get(&key)
-                            .is_some_and(|state| state.owner.same_as(&owner))
-                        {
-                            seg_state.remove(&key);
-                        }
-                    }
+                ) && let Some(owner) = reassembly_owner
+                    && seg_state
+                        .get(&key)
+                        .is_some_and(|state| state.owner.same_as(&owner))
+                {
+                    seg_state.remove(&key);
                 }
             }
             Apdu::ConfirmedRequest(req) => {

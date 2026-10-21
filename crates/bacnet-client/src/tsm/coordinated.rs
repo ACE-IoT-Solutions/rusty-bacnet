@@ -7,8 +7,8 @@ use bacnet_endpoint_core::coordinator::{
     Admission, AdmissionKind, AdmissionOutcome, CanonicalPeer, LeaseMetadata, LeaseOwner,
     LeaseToken, OutboundTransactionCoordinator, ReserveError, TerminalPolicy,
 };
-use bacnet_types::enums::ConfirmedServiceChoice;
 use bacnet_types::MacAddr;
+use bacnet_types::enums::ConfirmedServiceChoice;
 
 use super::{
     CompletionOutcome, FinalSegmentIssue, PendingTransaction, SegmentAckPhase,

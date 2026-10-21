@@ -12,17 +12,17 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use bacnet_transport::mstp::monitor::{MaxMaster, MonitorStats};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
-use ratatui::Frame;
 
 use super::columns::{self, Column};
 use super::watch::sparkline;
-use super::{ellipsize, more, text_width, Theme, WIDE_WIDTH};
+use super::{Theme, WIDE_WIDTH, ellipsize, more, text_width};
 use crate::tui::app::monitor::{MonitorState, MonitorTab, Wizard};
-use crate::tui::monitor::analysis::{self, millis, Role, Severity};
 use crate::tui::monitor::MonitorSample;
+use crate::tui::monitor::analysis::{self, Role, Severity, millis};
 
 /// The monitor screen.
 pub(super) fn draw(frame: &mut Frame, area: Rect, monitor: &MonitorState, theme: &Theme) {

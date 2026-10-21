@@ -44,7 +44,7 @@
 //!   the range bounds fail it.
 
 use bacnet_encoding::constructed::{
-    constructed_channel_value, decode_xy_color, ConstructedChannelValue,
+    ConstructedChannelValue, constructed_channel_value, decode_xy_color,
 };
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -110,7 +110,7 @@ impl MemberDatatype {
             P::COLOR_COMMAND => return Self::ColorCommand,
             P::DEFAULT_COLOR => return Self::XyColor,
             P::PRESENT_VALUE | P::TRACKING_VALUE if object_type == ObjectType::COLOR => {
-                return Self::XyColor
+                return Self::XyColor;
             }
             _ => {}
         }

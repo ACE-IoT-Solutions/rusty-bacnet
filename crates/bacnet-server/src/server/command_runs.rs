@@ -307,10 +307,10 @@ impl<T: TransportPort + 'static> RunHost for CommandRunner<T> {
             Ok(mut db) => {
                 // The COV table comes after the database in lock order, so a
                 // busy one only costs the timestamped capture.
-                if left.end(&mut db) {
-                    if let Ok(table) = self.cov_table.try_read() {
-                        table.timed_capture(source).run(&db);
-                    }
+                if left.end(&mut db)
+                    && let Ok(table) = self.cov_table.try_read()
+                {
+                    table.timed_capture(source).run(&db);
                 }
             }
             Err(_) => {

@@ -8,7 +8,7 @@ use tokio_serial::{SerialPort as _, SerialStream};
 
 use super::ReceiveOnlyPort;
 use crate::mstp::codec::FrameType;
-use crate::mstp::monitor::script::{analyse, ScriptedRing};
+use crate::mstp::monitor::script::{ScriptedRing, analyse};
 use crate::mstp::monitor::{MaxMaster, MonitorConfig, MstpMonitor};
 
 const BAUD: u32 = 38_400;

@@ -1,7 +1,7 @@
 //! Opening route survives request reassembly and every segmented reply path.
 use super::*;
 use crate::server::segmented_receive::{
-    check_opening_response_route, initial_state, RequestPayload,
+    RequestPayload, check_opening_response_route, initial_state,
 };
 use crate::server::segmented_send::{segmented_receive_key, segmented_transaction_key};
 use bacnet_types::enums::EngineeringUnits;
@@ -154,10 +154,12 @@ async fn r7_segment_capacity_abort_and_quiet_progress_expiry_keep_opening_route(
         .receive(2000, &Apdu::ConfirmedRequest(request.clone()), None)
         .await;
     let (key, mut state, _) = open(&received, &request);
-    assert!(state
-        .payload
-        .save_new(1, Bytes::from_static(&[1]), Some(usize::MAX))
-        .is_err());
+    assert!(
+        state
+            .payload
+            .save_new(1, Bytes::from_static(&[1]), Some(usize::MAX))
+            .is_err()
+    );
     BACnetServer::<TestTransport>::send_server_abort(
         &context.services.network,
         &state.source_mac,
@@ -417,9 +419,11 @@ async fn r7_segment_origin_comparison_keeps_implicit_and_local_port_isolation() 
     let local_peer = routed
         .receive_via(0, &[10], None, endpoint.clone(), &request, None)
         .await;
-    assert!(!local_a
-        .response_route()
-        .same_origin(&local_peer.response_route()));
+    assert!(
+        !local_a
+            .response_route()
+            .same_origin(&local_peer.response_route())
+    );
     let implicit = routed
         .receive_via(0, &[9], Some(address(9000, &[7])), None, &request, None)
         .await;
@@ -461,9 +465,11 @@ async fn r7_segment_origin_comparison_keeps_implicit_and_local_port_isolation() 
             None,
         )
         .await;
-    assert!(!remote
-        .response_route()
-        .same_origin(&different_remote.response_route()));
+    assert!(
+        !remote
+            .response_route()
+            .same_origin(&different_remote.response_route())
+    );
     let mut replacement = Routed::new().await;
     let other_router = replacement
         .receive_via(0, &[9], Some(address(9000, &[7])), endpoint, &request, None)

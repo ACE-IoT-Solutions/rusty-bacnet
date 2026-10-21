@@ -8,7 +8,7 @@ use bacnet_bip_core::node::{
 };
 use bacnet_bip_core::{Duration, Instant};
 
-use super::{Attempt, Expected, Registration, Summary, BBMD, ORIGIN, PEER, TTL};
+use super::{Attempt, BBMD, Expected, ORIGIN, PEER, Registration, Summary, TTL};
 use crate::tally::Sent;
 
 /// The hash over every datagram the port sends and where it goes. It was

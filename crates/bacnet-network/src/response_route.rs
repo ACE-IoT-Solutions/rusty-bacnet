@@ -1,6 +1,6 @@
 //! Original-ingress authority for an application response.
 use crate::layer::ReceivedApdu;
-use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, encode_npdu};
 use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{DirectResponse, TransportProvenance};
 use bacnet_types::error::Error;

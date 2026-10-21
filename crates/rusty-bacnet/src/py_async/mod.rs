@@ -25,7 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::panic::PanicException;
 use pyo3::prelude::*;
-use pyo3::{intern, IntoPyObjectExt};
+use pyo3::{IntoPyObjectExt, intern};
 use tokio::runtime::Runtime;
 use tokio::task::AbortHandle;
 

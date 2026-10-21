@@ -435,7 +435,9 @@ fn alert_to_normal_acknowledgment_cannot_be_cleared() {
     assert_eq!(alert.acked_transitions, EventTransitionBits::all());
 
     alert.set_event_detection_enable(false);
-    assert!(alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_NORMAL, false)
-        .is_err());
+    assert!(
+        alert
+            .set_acked_transitions_internal(EventTransitionBits::TO_NORMAL, false)
+            .is_err()
+    );
 }

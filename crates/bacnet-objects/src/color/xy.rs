@@ -12,7 +12,7 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::engine::Engine;
 use super::persistence::{ColorOutputPersistence, ColorOutputValue};
-use super::saving::{impl_color_durable, ColorOutputSaveCounters, OutputStorage};
+use super::saving::{ColorOutputSaveCounters, OutputStorage, impl_color_durable};
 use super::{
     command, metadata, milliseconds, noncommandable_audit_policy, written_transition,
     written_unsigned, written_xy, xy_value,
@@ -140,7 +140,7 @@ impl ColorObject {
             Some(_) => {
                 return Err(Error::Encoding(
                     "saved Color output is not a colour the object can hold".into(),
-                ))
+                ));
             }
             None => {}
         }
@@ -492,7 +492,7 @@ impl BACnetObject for ColorObject {
                     self.property_metadata().as_ref(),
                     property,
                     array_index,
-                ))
+                ));
             }
         }
         Ok(())

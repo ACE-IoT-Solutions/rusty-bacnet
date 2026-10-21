@@ -30,8 +30,8 @@
 
 use std::net::SocketAddr;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -46,11 +46,11 @@ use tracing::{debug, warn};
 
 use crate::port::ReceivedNpdu;
 use crate::sc::npdu_admission::{
-    ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts, SC_NPDU_QUEUE_CAPACITY,
+    SC_NPDU_QUEUE_CAPACITY, ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts,
 };
 use crate::sc_frame::{
-    decode_sc_message, encode_sc_message, validate_connect_request, ScFunction, ScMessage, Vmac,
-    BACNET_SC_DIRECT_SUBPROTOCOL,
+    BACNET_SC_DIRECT_SUBPROTOCOL, ScFunction, ScMessage, Vmac, decode_sc_message,
+    encode_sc_message, validate_connect_request,
 };
 use crate::warn_throttle::WarnThrottle;
 
@@ -778,7 +778,7 @@ impl Drop for RetireMember<'_> {
     }
 }
 
-use crate::sc::direct_receive::{direct_must_understand_decision, DirectMuDecision};
+use crate::sc::direct_receive::{DirectMuDecision, direct_must_understand_decision};
 fn direct_npdu(msg: &ScMessage, config: &DirectAcceptConfig) -> Option<Bytes> {
     crate::sc::direct_receive::direct_npdu(msg, config.max_apdu_length)
 }

@@ -12,8 +12,8 @@ use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, EventLogDatum, LogDatum};
 use std::sync::Arc;
 
-use bacnet_types::enums::EngineeringUnits;
 use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 fn tl1() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::TREND_LOG, 1).unwrap()

@@ -223,11 +223,13 @@ async fn direct_response_ready_websocket_controls_return_a_scheduling_turn() {
     let mut read = futures_util::stream::iter(frames).inspect(|_| {
         if count.fetch_add(1, Ordering::AcqRel) == 0 {
             // Enqueue while the adapter is already polling its ready input.
-            assert!(std::future::Future::poll(
-                send.as_mut(),
-                &mut std::task::Context::from_waker(std::task::Waker::noop()),
-            )
-            .is_pending());
+            assert!(
+                std::future::Future::poll(
+                    send.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                )
+                .is_pending()
+            );
         }
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

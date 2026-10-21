@@ -5,7 +5,7 @@
 //! the broadcasts sent to its subnet.
 
 use super::*;
-use crate::port_ownership::{lost_port, ATTEMPTS};
+use crate::port_ownership::{ATTEMPTS, lost_port};
 use socket::udp_socket;
 use tokio::time::timeout;
 

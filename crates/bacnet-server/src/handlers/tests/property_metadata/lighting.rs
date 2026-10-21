@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     lighting::{BinaryLightingOutputObject, LightingOutputObject},
     traits::BACnetObject,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn lighting_objects(configured: bool) -> [Box<dyn BACnetObject>; 2] {
     let mut lo = LightingOutputObject::new(7, "LO-7").unwrap();

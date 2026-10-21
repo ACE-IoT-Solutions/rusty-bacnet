@@ -167,7 +167,11 @@ fn subscriptions(oid: ObjectIdentifier) -> Vec<CovSubscription> {
 }
 fn assert_notifications(apdus: &[Apdu], oid: ObjectIdentifier, invoke_id: u8) {
     assert!(matches!(&apdus[0], Apdu::SimpleAck(ack) if ack.invoke_id == invoke_id));
-    assert_eq!(apdus.len(), 3, "ACK precedes exactly the whole-object and Tracking_Value COV; unchanged Silenced is silent");
+    assert_eq!(
+        apdus.len(),
+        3,
+        "ACK precedes exactly the whole-object and Tracking_Value COV; unchanged Silenced is silent"
+    );
     let mut payloads = Vec::new();
     for apdu in &apdus[1..] {
         let Apdu::UnconfirmedRequest(request) = apdu else {

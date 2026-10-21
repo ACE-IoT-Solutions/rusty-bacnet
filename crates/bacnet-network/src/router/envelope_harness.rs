@@ -9,14 +9,14 @@
 //! the full-queue cases still fill.
 
 use std::cell::Cell;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_npdu::NetworkMessageType;
 use bacnet_npdu::NpduLimits;
-use bacnet_router_core::router::Options;
 use bacnet_router_core::Instant;
+use bacnet_router_core::router::Options;
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportProvenance};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use super::control_policy::ControlGate;
 use super::dispatch::{Outputs, PortDispatch, Shared};
-use super::engine::{tokio_clock, Engine, OPTIONS};
+use super::engine::{Engine, OPTIONS, tokio_clock};
 use super::local_control::LocalControl;
 use super::port_groups::PortGroups;
 use super::send_queue;
@@ -287,9 +287,10 @@ impl Harness {
     pub(super) fn learned(&self, network: u16, port: u8, next_hop: &[u8]) {
         let now = self.now();
         let next_hop = Mac::from_slice(next_hop).unwrap();
-        assert!(self
-            .table()
-            .add_learned(network, PortId(port), next_hop, now));
+        assert!(
+            self.table()
+                .add_learned(network, PortId(port), next_hop, now)
+        );
     }
 
     /// Take claims under hardened convergence.

@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{command::CommandObject, traits::BACnetObject};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn command_object(configured: bool) -> CommandObject {
     let mut object = CommandObject::new(7, "CMD-7").unwrap();

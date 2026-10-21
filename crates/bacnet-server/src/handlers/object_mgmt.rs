@@ -374,8 +374,8 @@ fn initialize(
     command_origin: Option<&bacnet_objects::command_source::CommandOrigin>,
 ) -> Result<(), CreateObjectRefusal> {
     use super::write_property::{
-        check_and_prepare_name_write, check_write_array_index, commit_attempt,
-        decode_write_property_value, WriteTarget,
+        WriteTarget, check_and_prepare_name_write, check_write_array_index, commit_attempt,
+        decode_write_property_value,
     };
     let property = pv.property_identifier;
     let array_index = pv.property_array_index;

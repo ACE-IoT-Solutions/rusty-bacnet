@@ -3,7 +3,7 @@
 //! the handler and the password, and the guarded reply the full server and
 //! endpoint sessions share.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use bacnet_transport::port::{DirectScIdentity, TransportProvenance};
 use bacnet_types::enums::{AuditOperation, ReinitializedState};

@@ -17,7 +17,7 @@ use bacnet_encoding::primitives::decode_application_value;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::network_port::{Bip6PortConfig, NetworkPortObject};
 use bacnet_server::server::BACnetServer;
-use bacnet_transport::bip6::{decode_bvll6, Bip6ForeignDeviceConfig, Bip6Transport, Bvll6};
+use bacnet_transport::bip6::{Bip6ForeignDeviceConfig, Bip6Transport, Bvll6, decode_bvll6};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::BACnetHostNPort;
 use bacnet_types::enums::{ErrorCode, ObjectType, PropertyIdentifier as P, ReinitializedState};
@@ -25,7 +25,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const SERVER_INSTANCE: u32 = 1234;
 /// The VMAC of Device 1234 (Clause H.7.2).
@@ -413,9 +413,11 @@ async fn failed_start_and_stop() -> std::io::Result<()> {
     ))
     .unwrap();
     let mut unbindable = Bip6Transport::new(absent, 0, Some(SERVER_INSTANCE));
-    assert!(register_and_start(&mut db, port_2, &mut unbindable)
-        .await
-        .is_err());
+    assert!(
+        register_and_start(&mut db, port_2, &mut unbindable)
+            .await
+            .is_err()
+    );
     drop(unbindable);
     assert_eq!(db.registered_port_internal(), None);
     // A foreign device needs a Device instance, so this start fails after
@@ -426,13 +428,16 @@ async fn failed_start_and_stop() -> std::io::Result<()> {
         bbmd_port: 47808,
         ttl: 60,
     });
-    assert!(register_and_start(&mut db, port(), &mut failing)
-        .await
-        .is_err());
+    assert!(
+        register_and_start(&mut db, port(), &mut failing)
+            .await
+            .is_err()
+    );
     // While the failed transport lives it still holds the reservation.
-    assert!(db
-        .reserve_bip6_port_internal(port(), Ipv6Addr::LOCALHOST.octets(), 0)
-        .is_err());
+    assert!(
+        db.reserve_bip6_port_internal(port(), Ipv6Addr::LOCALHOST.octets(), 0)
+            .is_err()
+    );
     drop(failing);
     assert_eq!(db.registered_port_internal(), None);
 

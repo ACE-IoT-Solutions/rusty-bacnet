@@ -14,7 +14,7 @@ impl BACnetClient {
                     _ => {
                         return Err(PyRuntimeError::new_err(
                             "sc_npdu_drop_counts requires an SC client",
-                        ))
+                        ));
                     }
                 }
             };
@@ -35,7 +35,7 @@ impl BACnetClient {
                     _ => {
                         return Err(PyRuntimeError::new_err(
                             "sc_peer_info requires an SC client",
-                        ))
+                        ));
                     }
                 }
             };

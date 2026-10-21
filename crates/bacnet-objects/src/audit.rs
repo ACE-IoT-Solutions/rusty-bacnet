@@ -43,10 +43,10 @@ mod reporter_object;
 mod reporter_status;
 mod staging;
 pub use notification::AuditLogNotificationSink;
-use persistence::{validate_record, validate_snapshot};
 pub use persistence::{
     AuditLogPersistence, AuditLogSnapshot, FileAuditLogPersistence, MAX_AUDIT_RECORDS,
 };
+use persistence::{validate_record, validate_snapshot};
 pub use receipt::{
     CompletedAuditReceipt, ConfirmedAuditNotificationOutcome, MAX_AUDIT_RECEIPT_KEY_BYTES,
     MAX_COMPLETED_AUDIT_RECEIPTS,

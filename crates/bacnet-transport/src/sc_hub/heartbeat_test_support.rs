@@ -2,7 +2,7 @@ use super::heartbeat::HeartbeatIo;
 use super::*;
 use crate::sc_tls::boxed;
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::{client::ClientRequestBuilder, Error};
+use tokio_tungstenite::tungstenite::{Error, client::ClientRequestBuilder};
 
 type ClientWs = WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 type AckHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;

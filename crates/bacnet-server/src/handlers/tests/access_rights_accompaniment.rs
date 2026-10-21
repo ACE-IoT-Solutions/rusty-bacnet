@@ -6,13 +6,13 @@
 //! refused write leaves it as ReadProperty and ReadPropertyMultiple read it
 //! before.
 
-use super::access_control_arrays::{assert_reads, db_with, Expected};
+use super::access_control_arrays::{Expected, assert_reads, db_with};
 use super::property_metadata::assert_rpm_selector_bytes;
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::AccessRightsObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
-use PropertyIdentifier as P;
 
 /// Access User 3 in this device: object [1] alone.
 const USER: &[u8] = &[0x1C, 0x08, 0xC0, 0x00, 0x03];

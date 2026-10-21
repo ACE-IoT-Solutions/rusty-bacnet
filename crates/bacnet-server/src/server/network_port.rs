@@ -45,12 +45,12 @@ pub(super) fn prepare<T: TransportPort>(
                 "registered Network Port refused: a BBMD that also registers as a foreign \
                  device has no single B/IP mode"
                     .into(),
-            ))
+            ));
         }
         None => {
             return Err(Error::Encoding(
                 "registered port requires B/IP or B/IPv6".into(),
-            ))
+            ));
         }
     };
     let ip = *address.ip();
@@ -109,32 +109,35 @@ pub(super) fn publish<T: TransportPort + 'static>(
     };
     let transport = network.transport();
     let capacity = transport.local_receive_apdu_capacity() as u32;
-    if let Some(port) = transport.bip_port() {
-        db.publish_bip_port_internal(
-            oid,
-            port.endpoint.ip().octets(),
-            port.endpoint.port(),
-            capacity,
-            port.mode,
-        )?;
-        // A port that can use B/IP multicast serves its group (#941).
-        db.set_network_port_multicast_internal(oid, port.multicast)?;
-    } else {
-        let port = transport
-            .bip6_port()
-            .ok_or_else(|| Error::Encoding("registered B/IP mode changed during bind".into()))?;
-        let vmac = port
-            .vmac
-            .ok_or_else(|| Error::Encoding("started B/IPv6 port reports no VMAC".into()))?;
-        db.publish_bip6_port_internal(
-            oid,
-            port.endpoint.ip().octets(),
-            port.endpoint.port(),
-            vmac,
-            port.multicast_group.octets(),
-            capacity,
-            port.mode,
-        )?;
+    match transport.bip_port() {
+        Some(port) => {
+            db.publish_bip_port_internal(
+                oid,
+                port.endpoint.ip().octets(),
+                port.endpoint.port(),
+                capacity,
+                port.mode,
+            )?;
+            // A port that can use B/IP multicast serves its group (#941).
+            db.set_network_port_multicast_internal(oid, port.multicast)?;
+        }
+        _ => {
+            let port = transport.bip6_port().ok_or_else(|| {
+                Error::Encoding("registered B/IP mode changed during bind".into())
+            })?;
+            let vmac = port
+                .vmac
+                .ok_or_else(|| Error::Encoding("started B/IPv6 port reports no VMAC".into()))?;
+            db.publish_bip6_port_internal(
+                oid,
+                port.endpoint.ip().octets(),
+                port.endpoint.port(),
+                vmac,
+                port.multicast_group.octets(),
+                capacity,
+                port.mode,
+            )?;
+        }
     }
     // Written values activate only through a ReinitializeDevice handler.
     db.set_network_port_activation_internal(oid, activation)?;
@@ -261,15 +264,15 @@ pub(super) fn spawn_number_worker<T: TransportPort + 'static>(
         while let Some(control) = controls.recv().await {
             let before = network.local_network_number().get();
             let reply = owner.handle(control).await;
-            if network.local_network_number().get() != before {
-                if let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade) {
-                    audit.number_changed();
-                }
+            if network.local_network_number().get() != before
+                && let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade)
+            {
+                audit.number_changed();
             }
-            if let Some(npdu) = reply {
-                if let Err(error) = network.transport().send_broadcast(&npdu).await {
-                    tracing::debug!(%error, "Network-Number-Is broadcast failed");
-                }
+            if let Some(npdu) = reply
+                && let Err(error) = network.transport().send_broadcast(&npdu).await
+            {
+                tracing::debug!(%error, "Network-Number-Is broadcast failed");
             }
         }
     })

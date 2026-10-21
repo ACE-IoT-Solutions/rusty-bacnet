@@ -116,7 +116,7 @@ impl ObjectAuditPolicy {
         })
     }
 
-    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> {
+    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> + use<> {
         [
             (P::AUDIT_LEVEL, self.level.is_some()),
             (P::AUDITABLE_OPERATIONS, self.operations.is_some()),

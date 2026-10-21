@@ -8,7 +8,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use serde::Serialize;
 
 use super::class::Class;
-use super::target::{parse_target, Target};
+use super::target::{Target, parse_target};
 
 /// The process exit status of a refused one-shot command.
 /// 1 is a runtime error, 2 a usage error from clap, and 3 an `sc-check`
@@ -311,7 +311,9 @@ mod tests {
         assert_eq!(check("reinit", Some("1234"), ALLOW, &mut tty), Ok(()));
         assert_eq!(
             tty.prompts,
-            ["reinit is a device-management command. Type the device instance (1234) and Enter to send: "]
+            [
+                "reinit is a device-management command. Type the device instance (1234) and Enter to send: "
+            ]
         );
         // A routed target types its instance; an address types itself.
         let mut tty = Fake::new(true, &["77\n", "10.0.0.5:47808\n"]);

@@ -10,7 +10,7 @@ use super::cov_wire_test_support::*;
 use super::test_transport::SendLog;
 use super::*;
 use bacnet_encoding::apdu::encode_apdu;
-use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, encode_npdu};
 use bacnet_services::who_has::{IHaveRequest, WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};

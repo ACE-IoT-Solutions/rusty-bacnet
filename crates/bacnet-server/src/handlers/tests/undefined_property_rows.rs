@@ -6,6 +6,7 @@
 //! changing the object.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::{
     AccessCredentialObject, AccessPointObject, AccessRightsObject, AccessUserObject,
     AccessZoneObject,
@@ -19,7 +20,6 @@ use bacnet_objects::group::{GroupObject, StructuredViewObject};
 use bacnet_objects::load_control::LoadControlObject;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use PropertyIdentifier as P;
 
 const STATUS_ROWS: &[P] = &[P::STATUS_FLAGS, P::RELIABILITY, P::OUT_OF_SERVICE];
 
@@ -205,7 +205,7 @@ fn rp_rpm_and_wp_find_no_undefined_row() {
 
 #[test]
 fn undefined_rows_are_absent_from_property_list_rpm_all_and_the_pics() {
-    use crate::pics::{generate_pics, PicsConfig};
+    use crate::pics::{PicsConfig, generate_pics};
     use crate::server::ServerConfig;
 
     for (object, rows) in undefined_rows() {

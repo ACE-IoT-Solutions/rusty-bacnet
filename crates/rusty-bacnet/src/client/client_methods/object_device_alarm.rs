@@ -62,14 +62,16 @@ impl BACnetClient {
         let peers = PeerAddresses::for_transport(&self.transport_type);
 
         // Determine specifier type
-        let specifier = if let Ok(ot) = object_specifier.extract::<PyObjectType>() {
-            ObjectSpecifier::Type(ot.to_rust())
-        } else if let Ok(oid) = object_specifier.extract::<PyObjectIdentifier>() {
-            ObjectSpecifier::Identifier(oid.to_rust())
-        } else {
-            return Err(PyValueError::new_err(
-                "object_specifier must be ObjectType or ObjectIdentifier",
-            ));
+        let specifier = match object_specifier.extract::<PyObjectType>() {
+            Ok(ot) => ObjectSpecifier::Type(ot.to_rust()),
+            _ => match object_specifier.extract::<PyObjectIdentifier>() {
+                Ok(oid) => ObjectSpecifier::Identifier(oid.to_rust()),
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "object_specifier must be ObjectType or ObjectIdentifier",
+                    ));
+                }
+            },
         };
 
         let init_vals: Vec<BACnetPropertyValue> = initial_values

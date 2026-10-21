@@ -9,8 +9,8 @@ use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, LogData, LogValue};
 use std::sync::Arc;
 
-use bacnet_types::enums::EngineeringUnits;
 use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 fn tlm1() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::TREND_LOG_MULTIPLE, 1).unwrap()

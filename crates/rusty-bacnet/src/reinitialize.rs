@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_server::server::ReinitializeContext;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ReinitializedState};
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
@@ -184,8 +184,11 @@ impl PyReinitialize {
     /// The Rust handler that runs the callable.
     pub(crate) fn handler(
         self: &Arc<Self>,
-    ) -> impl Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error> + Send + Sync + 'static
-    {
+    ) -> impl Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error>
+    + Send
+    + Sync
+    + 'static
+    + use<> {
         let this = Arc::clone(self);
         move |context, _db| this.decide(context)
     }
@@ -243,10 +246,10 @@ fn answer(value: &Bound<'_, PyAny>) -> PyResult<Answer> {
             Answer::Refuse(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
         });
     }
-    if let Ok(tuple) = value.cast::<PyTuple>() {
-        if let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>() {
-            return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
-        }
+    if let Ok(tuple) = value.cast::<PyTuple>()
+        && let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>()
+    {
+        return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
     }
     let py = value.py();
     if py

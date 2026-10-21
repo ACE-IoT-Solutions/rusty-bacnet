@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::handlers::relinquish::null_in_datatype;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::{AccessCredentialObject, AccessRightsObject};
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::command_source::CommandOrigin;
@@ -18,7 +19,6 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::constructed::BACnetPortPermission;
 use bacnet_types::enums::EngineeringUnits;
-use PropertyIdentifier as P;
 
 /// One application NULL, the whole value.
 const NULL: &[u8] = &[0x00];

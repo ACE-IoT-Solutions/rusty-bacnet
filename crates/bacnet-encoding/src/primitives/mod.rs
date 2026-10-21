@@ -52,7 +52,7 @@ pub use strings::{
     encode_ctx_octet_string_to_sink,
 };
 pub use timestamp::{encode_timestamp_choice_to_sink, encode_timestamp_to_sink};
-pub use view::{decode_application_value_ref, ApplicationValueRef, CharacterStringRef};
+pub use view::{ApplicationValueRef, CharacterStringRef, decode_application_value_ref};
 
 #[cfg(feature = "alloc")]
 pub use scalar::{

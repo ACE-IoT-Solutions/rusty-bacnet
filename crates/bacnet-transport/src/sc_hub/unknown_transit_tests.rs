@@ -244,7 +244,9 @@ async fn unknown_transit_local_preregistered_and_invalid_envelopes_no_state_effe
                             &[0xE2, 0, 0, 0x1F, 0x7E, 0, 0][..],
                             &[0xE2, 0, 0, 0x1F, 0x7E, 0, 0, 0xFF][..],
                         ] {
-                            let case = format!("local registered={registered} function={function:#04x} id={id} origin={origin:02x?} dest={dest:02x?} body={body:02x?}");
+                            let case = format!(
+                                "local registered={registered} function={function:#04x} id={id} origin={origin:02x?} dest={dest:02x?} body={body:02x?}"
+                            );
                             send(&mut a, raw(function, id, origin, dest, 3, body)).await;
                             let eligible = (!registered || dest.is_none())
                                 && dest != Some(BROADCAST_VMAC)
@@ -399,7 +401,9 @@ async fn unknown_transit_result_ack_nak_routing_and_invalid_result_silence() {
                         ] {
                             let mut body = vec![0xFE, 0, 0, 0x1F]; // MU/MoreOptions/empty Header Data
                             body.extend_from_slice(&result);
-                            let case = format!("result registered={registered} function={function:#04x} id={id} origin={origin:02x?} dest={dest:02x?} body={body:02x?}");
+                            let case = format!(
+                                "result registered={registered} function={function:#04x} id={id} origin={origin:02x?} dest={dest:02x?} body={body:02x?}"
+                            );
                             send(&mut b, raw(0, id, origin, dest, 2, &body)).await;
                             if registered && origin.is_none() && dest == Some([0x42; 6]) {
                                 matrix_receive(

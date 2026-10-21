@@ -10,8 +10,8 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
 use bacnet_types::enums::EngineeringUnits;
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // ---- Integration: multiple enrollments ----
 

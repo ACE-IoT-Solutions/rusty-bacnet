@@ -25,9 +25,9 @@
 //! A [`Node`] keeps nothing but its counts, which it drains as the router
 //! and the link cores do ([`Node::take_counters`]).
 
-use crate::npdu::{Address, DecodeError, Npdu, GLOBAL_NETWORK};
-use crate::router::{bump, Discard};
 use crate::Mac;
+use crate::npdu::{Address, DecodeError, GLOBAL_NETWORK, Npdu};
+use crate::router::{Discard, bump};
 
 /// A frame that passed [`admit`]: its link source, stored, and its NPDU.
 #[derive(Debug, Clone, Copy)]
@@ -101,7 +101,7 @@ pub(crate) fn admit<'f>(source: &[u8], npdu: &'f [u8]) -> Result<Admitted<'f>, R
                 discard: Discard::AddressTooLong { field, length },
                 count: Count::AddressLength,
                 reject_to: Some((link_source, dnet, source)),
-            })
+            });
         }
         Err(DecodeError::Malformed(fault)) => {
             return Err(Refused::only(Discard::Malformed(fault), Count::Malformed));

@@ -61,7 +61,7 @@
 
 use std::time::Duration;
 
-use bacnet_mstp_codec::{StreamDecoder, MAX_COBS_FRAME_LENGTH};
+use bacnet_mstp_codec::{MAX_COBS_FRAME_LENGTH, StreamDecoder};
 use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -72,9 +72,9 @@ mod line;
 mod stats;
 
 pub use stats::{
-    octet_time, CountStats, DurationStats, FrameTypeCounts, LineErrorKind, LineErrors, LineEvent,
-    LostToken, MaxMaster, MonitorStats, SilenceHistogram, StationStats, TimingQuality,
-    NO_TOKEN_SILENCE, SILENCE_BUCKET_BOUNDS,
+    CountStats, DurationStats, FrameTypeCounts, LineErrorKind, LineErrors, LineEvent, LostToken,
+    MaxMaster, MonitorStats, NO_TOKEN_SILENCE, SILENCE_BUCKET_BOUNDS, SilenceHistogram,
+    StationStats, TimingQuality, octet_time,
 };
 
 /// [`MonitorConfig::timestamp_resolution`]'s default: 16 ms, the receive

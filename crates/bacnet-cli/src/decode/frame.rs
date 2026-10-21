@@ -7,11 +7,11 @@
 
 use std::ops::Range;
 
-use bacnet_transport::bip6::{decode_bvll6, format_vmac_text, Bvll6};
+use bacnet_transport::bip6::{Bvll6, decode_bvll6, format_vmac_text};
 use bacnet_transport::bvll::{self, BvlcFunction, BvlcResultCode, Bvll};
-use bacnet_transport::mstp::codec::{decode_frame, decode_frame_in_place, FrameType};
+use bacnet_transport::mstp::codec::{FrameType, decode_frame, decode_frame_in_place};
 use bacnet_transport::sc_frame::{
-    decode_sc_bvlc_result, decode_sc_message, is_broadcast_vmac, ScBvlcResult, ScFunction,
+    ScBvlcResult, ScFunction, decode_sc_bvlc_result, decode_sc_message, is_broadcast_vmac,
 };
 use bytes::Bytes;
 
@@ -194,10 +194,10 @@ fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
             | Bvll6::ForwardedNpdu { .. }
             | Bvll6::DistributeBroadcastToNetwork { .. }
     );
-    if let Bvll6::BvlcResult { code, .. } = message {
-        if code.to_raw() != 0 {
-            link.problem = Some(format!("NAK {}", kebab(code)));
-        }
+    if let Bvll6::BvlcResult { code, .. } = message
+        && code.to_raw() != 0
+    {
+        link.problem = Some(format!("NAK {}", kebab(code)));
     }
     if let Some(npdu) = message.npdu() {
         let start = offset_in(frame, npdu);

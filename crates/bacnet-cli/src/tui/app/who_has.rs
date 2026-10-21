@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use super::network::View;
 use super::watch::Screen;
-use super::{App, Link, FLASH_FOR};
+use super::{App, FLASH_FOR, Link};
 use crate::tui::message::Command;
 use crate::tui::network::discovery::{DiscoveryCommand, DiscoveryEvent, FoundRow};
 use crate::tui::network::routers::RouterMap;

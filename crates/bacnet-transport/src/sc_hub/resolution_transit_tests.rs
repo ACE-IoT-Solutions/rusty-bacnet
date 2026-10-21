@@ -115,7 +115,9 @@ async fn resolution_transit_local_preregistered_invalid_silence_and_state_matrix
                         // Two variants only per fresh preregistration deadline.
                         for (flags, body) in [(0, &b""[..]), (3, &b"\xE2\0\0\x1F\x7E\0\0\xFF"[..])]
                         {
-                            let case = format!("resolution registered={registered} function={function} id={id} origin={origin:02x?} dest={dest:02x?} flags={flags}");
+                            let case = format!(
+                                "resolution registered={registered} function={function} id={id} origin={origin:02x?} dest={dest:02x?} flags={flags}"
+                            );
                             send(&mut a, raw(function, id, origin, dest, flags, body)).await;
                             if function == 2
                                 && (!registered || dest.is_none())
@@ -181,7 +183,9 @@ async fn resolution_transit_result_for_2_and_3_relay_ack_nak_and_address_matrix(
                         ] {
                             let mut body = vec![0xFE, 0, 0, 0x1F];
                             body.extend_from_slice(&result);
-                            let case = format!("ResultFor={result_for} registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} result={result:02x?}");
+                            let case = format!(
+                                "ResultFor={result_for} registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} result={result:02x?}"
+                            );
                             send(&mut b, raw(0, id, origin, dest, 2, &body)).await;
                             if matches!(result_for, 2 | 3)
                                 && registered

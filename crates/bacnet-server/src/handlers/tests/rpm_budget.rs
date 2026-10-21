@@ -5,8 +5,8 @@ mod optional_fallback;
 use bacnet_types::constructed::ReadAccessSpecification;
 use std::borrow::Cow;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct Counting {
@@ -309,7 +309,9 @@ fn rpm_success_independent_scalar_golden() {
     // application unsigned 1, close value/results (independent vector).
     assert_eq!(
         &out[..],
-        &[0x0c, 0, 0, 0, 1, 0x1e, 0x29, 0x55, 0x4e, 0x21, 1, 0x4f, 0x1f]
+        &[
+            0x0c, 0, 0, 0, 1, 0x1e, 0x29, 0x55, 0x4e, 0x21, 1, 0x4f, 0x1f
+        ]
     );
 }
 

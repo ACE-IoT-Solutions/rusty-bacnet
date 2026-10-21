@@ -9,7 +9,7 @@ use bacnet_types::primitives::{Date, Time};
 use super::EventLogObject;
 use crate::log_buffer::LogRecordBuffer;
 use crate::log_persistence::store::{
-    fit_to_buffer_size, impl_durable_log, DurableLog, LogState, LogStore,
+    DurableLog, LogState, LogStore, fit_to_buffer_size, impl_durable_log,
 };
 use crate::log_persistence::{LogCommitCadence, LogPersistence};
 

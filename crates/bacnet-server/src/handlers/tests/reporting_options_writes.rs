@@ -5,11 +5,11 @@
 //! tables, takes no write at index 0.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_encoding::constructed::encode_object_property_reference;
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::EngineeringUnits;
-use PropertyIdentifier as P;
 
 fn ai() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap()

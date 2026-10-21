@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use bacnet_mstp_codec::{decode_frame, FrameType};
+use bacnet_mstp_codec::{FrameType, decode_frame};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::Instant;

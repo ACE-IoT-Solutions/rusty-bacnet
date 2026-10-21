@@ -212,9 +212,10 @@ impl Sim {
             .host
             .as_ref()
             .and_then(super::host::HostState::unread_until);
-        if let Some(before) = pending.activity_at_dispatch {
-            if clock.span(before, pending.dispatched) < turnaround {
-                self.violation(
+        if let Some(before) = pending.activity_at_dispatch
+            && clock.span(before, pending.dispatched) < turnaround
+        {
+            self.violation(
                     ViolationKind::Turnaround,
                     format!(
                         "station {station}'s core handed a frame over {} us after line activity at {}, Tturnaround {} us",
@@ -223,8 +224,7 @@ impl Sim {
                         turnaround.as_micros()
                     ),
                 );
-                return;
-            }
+            return;
         }
         let Some(last) = self.line.last_activity() else {
             return;

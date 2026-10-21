@@ -21,7 +21,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::limits::RateCap;
-use crate::tui::format::{decode_all, RawRow};
+use crate::tui::format::{RawRow, decode_all};
 use crate::tui::point::ReadVia;
 
 /// Elements a device's Object_List may claim before the browser stops
@@ -305,7 +305,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
                     objects: identifiers(&data),
                     indexed: false,
                     stopped: None,
-                })
+                });
             }
             // Element 0 would only time out too.
             Err(Halt::Device(error)) if unreachable(&error) => return Err(Halt::Device(error)),

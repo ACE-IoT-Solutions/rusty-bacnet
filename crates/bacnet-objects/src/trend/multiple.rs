@@ -19,11 +19,11 @@ use crate::clock::ClockReader;
 use crate::common::{self, read_property_list_property};
 use crate::device_reference;
 use crate::log_buffer::{
-    log_buffer_read_denied, LogBufferRecords, LogRecordBuffer, LogRecordIdentity,
+    LogBufferRecords, LogRecordBuffer, LogRecordIdentity, log_buffer_read_denied,
 };
 use crate::log_lifecycle::LogLifecycle;
 use crate::log_persistence::store::{DurableLog, LogStore};
-use crate::log_reporting::{impl_buffer_ready_reporting, BufferReadyReporting};
+use crate::log_reporting::{BufferReadyReporting, impl_buffer_ready_reporting};
 use crate::log_window::LogWindow;
 use crate::traits::BACnetObject;
 

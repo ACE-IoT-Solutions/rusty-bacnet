@@ -9,8 +9,8 @@ use insta::assert_snapshot;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
-use crate::tui::app::watch::Screen;
 use crate::tui::app::Overlay;
+use crate::tui::app::watch::Screen;
 use crate::tui::help::{screens, sections};
 use crate::tui::monitor::MonitorPlan;
 
@@ -549,10 +549,11 @@ fn a_session_reset_while_browsing_leaves_browse() {
         assert_eq!(app.screen, Screen::Main);
         press(&mut app, KeyCode::Char('2'));
         assert_eq!(app.screen, Screen::Main);
-        assert!(app
-            .flash
-            .as_ref()
-            .is_some_and(|f| f.text.starts_with("Open a device first")));
+        assert!(
+            app.flash
+                .as_ref()
+                .is_some_and(|f| f.text.starts_with("Open a device first"))
+        );
     }
 }
 

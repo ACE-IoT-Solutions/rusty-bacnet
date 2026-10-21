@@ -2,7 +2,7 @@ use super::*;
 use bacnet_types::enums::PropertyIdentifier;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::oneshot;
-use tokio::time::{sleep_until, Instant as TokioInstant};
+use tokio::time::{Instant as TokioInstant, sleep_until};
 
 const DEFAULT_COV_RENEWAL_MARGIN: Duration = Duration::from_secs(30);
 const DEFAULT_COV_RENEWAL_EVENT_CAPACITY: usize = 16;

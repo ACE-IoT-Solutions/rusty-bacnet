@@ -24,8 +24,8 @@
 //! (gate order from #398).
 
 use super::file_access_method::{
-    assert_file_access_denied, assert_invalid_access, file_oid, read_wire_for, record_file_db,
-    stream_file_db, write_wire_for, SENTINEL,
+    SENTINEL, assert_file_access_denied, assert_invalid_access, file_oid, read_wire_for,
+    record_file_db, stream_file_db, write_wire_for,
 };
 use super::*;
 use bacnet_objects::analog::AnalogInputObject;

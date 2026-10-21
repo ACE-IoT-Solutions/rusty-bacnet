@@ -124,7 +124,7 @@ impl CovSubscriptionTable {
                     error,
                     refused: Some(0),
                     committed: Vec::new(),
-                })
+                });
             }
             Some((position, _)) => subscriptions.truncate(position),
             None => {}
@@ -307,31 +307,34 @@ impl CovSubscriptionTable {
         }
         let peer = sub.recipient();
         let new_indefinite = sub.expires_at.is_none();
-        if let Some(old) = self.subs.insert(snapshot.key.clone(), snapshot.clone()) {
-            if !old.flight.same(&snapshot.flight) {
-                // The replaced incarnation's outstanding report stops retrying;
-                // the replacement reports for itself (#896).
-                old.flight.fence();
-            }
-            let old_indefinite = old.expires_at.is_none();
-            if old_indefinite != new_indefinite {
-                if new_indefinite {
-                    *self.peer_indefinite_counts.entry(peer).or_default() += 1;
-                } else if let Some(count) = self.peer_indefinite_counts.get_mut(&peer) {
-                    *count = count.saturating_sub(1);
-                    if *count == 0 {
-                        self.peer_indefinite_counts.remove(&peer);
+        match self.subs.insert(snapshot.key.clone(), snapshot.clone()) {
+            Some(old) => {
+                if !old.flight.same(&snapshot.flight) {
+                    // The replaced incarnation's outstanding report stops retrying;
+                    // the replacement reports for itself (#896).
+                    old.flight.fence();
+                }
+                let old_indefinite = old.expires_at.is_none();
+                if old_indefinite != new_indefinite {
+                    if new_indefinite {
+                        *self.peer_indefinite_counts.entry(peer).or_default() += 1;
+                    } else if let Some(count) = self.peer_indefinite_counts.get_mut(&peer) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.peer_indefinite_counts.remove(&peer);
+                        }
                     }
                 }
             }
-        } else {
-            *self.peer_counts.entry(peer.clone()).or_default() += 1;
-            if new_indefinite {
-                *self.peer_indefinite_counts.entry(peer).or_default() += 1;
+            _ => {
+                *self.peer_counts.entry(peer.clone()).or_default() += 1;
+                if new_indefinite {
+                    *self.peer_indefinite_counts.entry(peer).or_default() += 1;
+                }
+                self.counters
+                    .subscriptions_created
+                    .fetch_add(1, Ordering::Relaxed);
             }
-            self.counters
-                .subscriptions_created
-                .fetch_add(1, Ordering::Relaxed);
         }
         self.counters
             .subscriptions_active

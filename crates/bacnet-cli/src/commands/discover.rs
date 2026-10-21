@@ -7,7 +7,7 @@ use bacnet_transport::port::TransportPort;
 use serde::Serialize;
 
 use crate::core::target::AddressStyle;
-use crate::output::{self, device_info, DeviceInfo, OutputFormat};
+use crate::output::{self, DeviceInfo, OutputFormat, device_info};
 
 /// Collect device infos from the client's discovered device table,
 /// optionally filtering by instance range.

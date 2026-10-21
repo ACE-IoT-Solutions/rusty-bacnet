@@ -32,11 +32,9 @@ fn validate(request: &AuditLogQueryRequest) -> Result<(), Error> {
         target_priority: Some(priority),
         ..
     } = &request.query_parameters
-    {
-        if !(1..=16).contains(priority) {
+        && !(1..=16).contains(priority) {
             return Err(Error::encode("AuditLogQuery target-priority must be in 1..=16"));
         }
-    }
     let (address, filter) = match &request.query_parameters {
         BACnetAuditLogQueryParameters::ByTarget {
             target_device_address: address,

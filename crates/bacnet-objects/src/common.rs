@@ -118,7 +118,7 @@ pub fn read_property_list_property(
 /// The caller must provide `self` which has fields: `oid`, `name`,
 /// `description`.
 macro_rules! read_identity_properties {
-    ($self:expr, $property:expr, $array_index:expr) => {
+    ($self:expr_2021, $property:expr_2021, $array_index:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::OBJECT_IDENTIFIER => Some(Ok(
                 bacnet_types::primitives::PropertyValue::ObjectIdentifier($self.oid),
@@ -155,7 +155,7 @@ pub(crate) use read_identity_properties;
 /// `out_of_service` field, leaves OUT_OF_SERVICE to the caller's
 /// unknown-property fallback, and holds the OUT_OF_SERVICE flag FALSE.
 macro_rules! read_common_properties {
-    (@status $self:expr, $property:expr, $array_index:expr, $out_of_service:expr) => {{
+    (@status $self:expr_2021, $property:expr_2021, $array_index:expr_2021, $out_of_service:expr_2021) => {{
         let out_of_service: Option<bool> = $out_of_service;
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::STATUS_FLAGS => {
@@ -178,10 +178,10 @@ macro_rules! read_common_properties {
             _ => $crate::common::read_identity_properties!($self, $property, $array_index),
         }
     }};
-    ($self:expr, $property:expr, $array_index:expr, no_out_of_service) => {
+    ($self:expr_2021, $property:expr_2021, $array_index:expr_2021, no_out_of_service) => {
         $crate::common::read_common_properties!(@status $self, $property, $array_index, None)
     };
-    ($self:expr, $property:expr, $array_index:expr) => {
+    ($self:expr_2021, $property:expr_2021, $array_index:expr_2021) => {
         $crate::common::read_common_properties!(
             @status $self,
             $property,
@@ -537,7 +537,7 @@ pub(crate) fn current_command_priority<T>(
 
 /// Generic intrinsic-reporting read properties shared by every event detector.
 macro_rules! read_generic_event_properties {
-    ($self:expr, $property:expr) => {
+    ($self:expr_2021, $property:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::EVENT_STATE => {
                 Some(Ok(bacnet_types::primitives::PropertyValue::Enumerated(
@@ -594,7 +594,7 @@ pub(crate) use read_generic_event_properties;
 /// Event timestamps and message texts are served by `EventHistory::read`,
 /// invoked at every analog call site immediately after this macro.
 macro_rules! read_analog_event_properties {
-    ($self:expr, $property:expr) => {
+    ($self:expr_2021, $property:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::HIGH_LIMIT => Some(Ok(
                 bacnet_types::primitives::PropertyValue::Real($self.event_detector.high_limit),
@@ -631,7 +631,7 @@ pub(crate) use read_analog_event_properties;
 /// `Some(Err(...))` for type/validation errors,
 /// or `None` if the property is not an event property.
 macro_rules! write_analog_event_properties {
-    ($self:expr, $property:expr, $value:expr) => {
+    ($self:expr_2021, $property:expr_2021, $value:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::HIGH_LIMIT => {
                 if let bacnet_types::primitives::PropertyValue::Real(v) = $value {
@@ -695,7 +695,7 @@ pub(crate) use write_analog_event_properties;
 
 /// Generic intrinsic-reporting write properties shared by every event detector.
 macro_rules! write_generic_event_properties {
-    ($self:expr, $property:expr, $value:expr) => {
+    ($self:expr_2021, $property:expr_2021, $value:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::EVENT_ENABLE => {
                 // BACnetEventTransitionBits is a 3-bit production (Clause 21):
@@ -804,7 +804,7 @@ pub(crate) use write_generic_event_properties;
 ///
 /// `$wrap` is a closure/function that converts `T` into a `PropertyValue`.
 macro_rules! read_priority_array {
-    ($self:expr, $array_index:expr, $wrap:expr) => {{
+    ($self:expr_2021, $array_index:expr_2021, $wrap:expr_2021) => {{
         let wrap_fn = $wrap;
         match $array_index {
             None => {

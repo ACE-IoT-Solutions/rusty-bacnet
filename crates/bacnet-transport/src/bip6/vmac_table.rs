@@ -237,10 +237,10 @@ impl VmacTable {
             };
             self.entries.insert(vmac, entry);
         }
-        if let Some(entry) = self.entries.get_mut(&vmac) {
-            if heard == Heard::Direct {
-                entry.direct = Some(now);
-            }
+        if let Some(entry) = self.entries.get_mut(&vmac)
+            && heard == Heard::Direct
+        {
+            entry.direct = Some(now);
         }
         self.owners.insert(addr, vmac);
         true
@@ -259,10 +259,10 @@ impl VmacTable {
 
     /// Drop `vmac`'s entry, if there is one.
     pub(super) fn forget(&mut self, vmac: Bip6Vmac) {
-        if let Some(entry) = self.entries.remove(&vmac) {
-            if self.owners.get(&entry.addr) == Some(&vmac) {
-                self.owners.remove(&entry.addr);
-            }
+        if let Some(entry) = self.entries.remove(&vmac)
+            && self.owners.get(&entry.addr) == Some(&vmac)
+        {
+            self.owners.remove(&entry.addr);
         }
     }
 

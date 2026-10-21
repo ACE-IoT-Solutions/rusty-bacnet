@@ -104,17 +104,19 @@ async fn an_address_recipient_at_a_group_address_is_refused() {
     let recipient = PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT;
     let source = || crate::LocalCommandSource::ServerDevice;
     let server = &fixture.server;
-    assert!(server
-        .write_local(
-            &device,
-            recipient,
-            None,
-            change(&BROADCAST_IP_ELSEWHERE),
-            None,
-            source()
-        )
-        .await
-        .is_err());
+    assert!(
+        server
+            .write_local(
+                &device,
+                recipient,
+                None,
+                change(&BROADCAST_IP_ELSEWHERE),
+                None,
+                source()
+            )
+            .await
+            .is_err()
+    );
     let mut station = STATION;
     station[3] = 4;
     server

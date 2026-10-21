@@ -14,7 +14,7 @@ use super::codec::{self, SnapshotRecord};
 use super::{LogAcquisitionSettings, LogCommitCadence, LogPersistence, LogSnapshot};
 use crate::durable::{SaveWait, SaveWriter};
 use crate::log_buffer::{LogRecordBuffer, ResidentLogRecord};
-use crate::log_reporting::{records_between, BufferReadyReporting};
+use crate::log_reporting::{BufferReadyReporting, records_between};
 use crate::log_window::LogWindow;
 
 /// Everything a snapshot holds but the records themselves, plus how many
@@ -384,10 +384,10 @@ pub(crate) trait DurableLog {
             return;
         }
         let state = self.log_state();
-        if let (Some(store), buffer) = self.durable_parts() {
-            if store.changed(&state) {
-                store.queue(state, buffer.records());
-            }
+        if let (Some(store), buffer) = self.durable_parts()
+            && store.changed(&state)
+        {
+            store.queue(state, buffer.records());
         }
     }
 

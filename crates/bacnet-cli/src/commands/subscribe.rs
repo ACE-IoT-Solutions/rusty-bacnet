@@ -57,7 +57,7 @@ pub struct Subscription {
 /// subscription goes out, so an early signal still cancels it.
 #[cfg(unix)]
 pub(crate) fn stop_signal() -> impl Future<Output = ()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let interrupt = signal(SignalKind::interrupt());
     let terminate = signal(SignalKind::terminate());
     async move {
@@ -96,8 +96,8 @@ pub async fn subscribe_cmd<T: TransportPort + 'static>(
     } = subscription;
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let process_id = std::process::id(); // Use PID instead of hardcoded 1
-                                         // Absent with Issue Confirmed Notifications present is indefinite too
-                                         // (Clause 13.14.2), and is what the CLI has always sent for it.
+    // Absent with Issue Confirmed Notifications present is indefinite too
+    // (Clause 13.14.2), and is what the CLI has always sent for it.
     let wire_lifetime = (lifetime != 0).then_some(lifetime);
 
     let mut rx = client.cov_notifications();
@@ -151,15 +151,15 @@ pub async fn subscribe_cmd<T: TransportPort + 'static>(
         }
     };
 
-    if lifetime != 0 {
-        if let Err(error) = to.unsubscribe_cov(client, process_id, oid).await {
-            let message = format!("cancelling the subscription failed: {error}");
-            return Err(match watched {
-                Ok(()) => message,
-                Err(watch) => format!("{watch}; {message}"),
-            }
-            .into());
+    if lifetime != 0
+        && let Err(error) = to.unsubscribe_cov(client, process_id, oid).await
+    {
+        let message = format!("cancelling the subscription failed: {error}");
+        return Err(match watched {
+            Ok(()) => message,
+            Err(watch) => format!("{watch}; {message}"),
         }
+        .into());
     }
     watched
 }
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(renewal_interval(u32::MAX), secs(u64::from(u32::MAX) - 30));
         assert_eq!(renewal_interval(0), None);
     }
-    use crate::core::target::{parse_target, Target};
+    use crate::core::target::{Target, parse_target};
 
     /// A COV source on B/IPv6 prints as the `bip6:` VMAC a target takes back;
     /// other MACs print as hex.
@@ -311,9 +311,9 @@ mod tests {
     fn routed_cov_sources_print_as_targets() {
         use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
         use bacnet_services::cov::COVNotificationRequest;
+        use bacnet_types::MacAddr;
         use bacnet_types::enums::ObjectType;
         use bacnet_types::primitives::ObjectIdentifier;
-        use bacnet_types::MacAddr;
 
         use super::cov_notification_text;
         use crate::output::OutputFormat;

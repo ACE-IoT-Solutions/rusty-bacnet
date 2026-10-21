@@ -27,14 +27,14 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
-use bacnet_encoding::npdu::{decode_npdu, Npdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu};
 use bacnet_transport::port::{Bip6Port, BipPort, ReceivedNpdu, TransportPort};
+use bacnet_types::MacAddr;
 use bacnet_types::bip_port::BipPortMode;
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 use bytes::Bytes;
-use tokio::sync::{mpsc, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, mpsc};
 
 /// The boxed future a send or stop hook returns.
 type HookFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;

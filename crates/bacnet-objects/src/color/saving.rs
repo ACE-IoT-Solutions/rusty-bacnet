@@ -13,8 +13,8 @@
 //! storage's wait when the object has one. Dropping the object does the
 //! same, and the writer's drop waits for those saves.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -55,10 +55,9 @@ impl ColorOutputSaveCounters {
     }
 
     fn record_failure(&self) {
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
         let _ = self
             .failed_saves
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_add(1))
             });
     }

@@ -13,14 +13,14 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use bytes::Bytes;
 use bytes::BytesMut;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use crate::sc_frame::{BROADCAST_VMAC, ScFunction, Vmac, decode_sc_message, encode_sc_message};
 #[cfg(test)]
-use crate::sc_frame::{decode_sc_bvlc_result, ScMessage};
-use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, Vmac, BROADCAST_VMAC};
+use crate::sc_frame::{ScMessage, decode_sc_bvlc_result};
 use bacnet_npdu::NpduLimits;
 use bacnet_types::error::Error;
 
@@ -53,7 +53,7 @@ pub use peer_info::ScHubPeerInfo;
 mod lifecycle;
 mod loopback;
 mod observability;
-pub use observability::{ScActiveHub, ScDisconnectCause, ScEvent, ScLinkStatus, SC_EVENT_CAPACITY};
+pub use observability::{SC_EVENT_CAPACITY, ScActiveHub, ScDisconnectCause, ScEvent, ScLinkStatus};
 use observability::{ScDisconnectCause as Cause, ScObserver};
 pub(crate) mod npdu_admission;
 mod proprietary;
@@ -64,13 +64,13 @@ mod rejection;
 mod send;
 mod source_admission;
 mod tap;
-use tap::{tapped_connector, TappedSocket};
+use tap::{TappedSocket, tapped_connector};
 mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
 pub use connector::dial_within;
 #[cfg(feature = "sc-tls")]
 pub(crate) use connector::enter_dial_stage;
-use connector::{dial_failover_ws, WebSocketConnector};
+use connector::{WebSocketConnector, dial_failover_ws};
 pub use control_rate::ScControlRateLimit;
 pub use errors::{
     ScCertificateRejection, ScConnectError, ScDialStage, ScTlsAlert, ScTlsFailure,
@@ -264,31 +264,41 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 {
                     self.local_vmac = conn.lock().await.local_vmac;
                     return Err(primary_err);
-                } else if let Some(failover) = dial_failover_ws(
-                    &failover_connector,
-                    &mut failover_ws,
-                    self.connect_timeout_ms,
-                )
-                .await
-                {
-                    debug!("BACnet/SC primary connect failed, attempting failover");
-                    observer.failover_engaged();
-                    // Reset connection state for the retry.
-                    {
-                        let mut c = conn.lock().await;
-                        c.reset_for_connect_retry();
-                        state_tx.send_replace(c.state);
-                    }
-                    perform_handshake(&*failover, &conn, Some(&state_tx), self.connect_timeout_ms)
-                        .await
-                        .map(|()| (failover, ScActiveHub::Failover))
-                        .map_err(|e| {
-                            observer.connect_failed(ScActiveHub::Failover, &e);
-                            primary_err
-                        })?
                 } else {
-                    self.local_vmac = conn.lock().await.local_vmac;
-                    return Err(primary_err);
+                    match dial_failover_ws(
+                        &failover_connector,
+                        &mut failover_ws,
+                        self.connect_timeout_ms,
+                    )
+                    .await
+                    {
+                        Some(failover) => {
+                            debug!("BACnet/SC primary connect failed, attempting failover");
+                            observer.failover_engaged();
+                            // Reset connection state for the retry.
+                            {
+                                let mut c = conn.lock().await;
+                                c.reset_for_connect_retry();
+                                state_tx.send_replace(c.state);
+                            }
+                            perform_handshake(
+                                &*failover,
+                                &conn,
+                                Some(&state_tx),
+                                self.connect_timeout_ms,
+                            )
+                            .await
+                            .map(|()| (failover, ScActiveHub::Failover))
+                            .map_err(|e| {
+                                observer.connect_failed(ScActiveHub::Failover, &e);
+                                primary_err
+                            })?
+                        }
+                        _ => {
+                            self.local_vmac = conn.lock().await.local_vmac;
+                            return Err(primary_err);
+                        }
+                    }
                 }
             }
         };

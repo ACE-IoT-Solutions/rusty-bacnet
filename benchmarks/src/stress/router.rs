@@ -29,7 +29,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use crate::stress::harness::{
     make_bip_server_with_db, make_large_db, make_stress_client, stress_device_config,
 };
-use crate::stress::mstp::{station, SimWire};
+use crate::stress::mstp::{SimWire, station};
 use crate::stress::output::{DegradationPoint, LatencyRecorder};
 
 /// The network the clients are on.

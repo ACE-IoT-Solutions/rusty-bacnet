@@ -68,7 +68,7 @@ pub use algorithms::{
     encode_change_of_value_params, encode_floating_limit_params, encode_out_of_range_params,
 };
 pub use api::{
-    evaluate_event_enrollments, evaluate_event_enrollments_report, EventEnrollmentTransition,
+    EventEnrollmentTransition, evaluate_event_enrollments, evaluate_event_enrollments_report,
 };
 pub use commit::{
     EventEnrollmentEvaluationDiagnostic, EventEnrollmentEvaluationOutcome,
@@ -77,26 +77,27 @@ pub use commit::{
 };
 
 use algorithms::{
-    eval_change_of_bitstring_struct, eval_change_of_state_struct, eval_change_of_value_struct,
-    eval_floating_limit_struct, eval_legacy_le_arm, eval_none_arm, eval_out_of_range_struct,
-    extract_bitstring, extract_property_state_value, extract_real, inhibited_arm, ArmEvaluation,
+    ArmEvaluation, eval_change_of_bitstring_struct, eval_change_of_state_struct,
+    eval_change_of_value_struct, eval_floating_limit_struct, eval_legacy_le_arm, eval_none_arm,
+    eval_out_of_range_struct, extract_bitstring, extract_property_state_value, extract_real,
+    inhibited_arm,
 };
 #[cfg(test)]
 use commit::apply_updates;
 pub(crate) use commit::log_evaluation_report;
-use commit::{apply_updates_for_delivery, EnrollmentUpdate, FiredTransition};
 pub(crate) use commit::{
     CommittedEventEnrollmentDelivery, CommittedEventEnrollmentResult,
     EventEnrollmentEvaluationBatch,
 };
+use commit::{EnrollmentUpdate, FiredTransition, apply_updates_for_delivery};
 use fault::{
+    FaultAlgorithmEvaluation, MonitoredReliability, SupportedFaultAlgorithm,
     evaluate_fault_algorithm, read_event_parameters, read_fault_algorithm,
-    read_monitored_reliability, FaultAlgorithmEvaluation, MonitoredReliability,
-    SupportedFaultAlgorithm,
+    read_monitored_reliability,
 };
-pub(crate) use reference::decode_reference_value;
 #[cfg(test)]
 use reference::MonitoredReference;
+pub(crate) use reference::decode_reference_value;
 use reference::{params_fingerprint, read_object_property_ref};
 use support::*;
 
@@ -107,7 +108,7 @@ enum LocalConfigurationReadError {
 }
 
 use crate::server::event_notification_payload::{
-    capture_status_flags, CapturedReferencedValue, EventEnrollmentProjectionSnapshot,
+    CapturedReferencedValue, EventEnrollmentProjectionSnapshot, capture_status_flags,
 };
 use bacnet_objects::database::ObjectDatabase;
 #[cfg(test)]
@@ -556,12 +557,10 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
                 if let BACnetEventParameter::FloatingLimit {
                     setpoint_reference, ..
                 } = &params
-                {
-                    if let SetpointRead::Value(setpoint) =
+                    && let SetpointRead::Value(setpoint) =
                         read_setpoint(db, local_device, setpoint_reference)
-                    {
-                        projection_setpoint = Some(setpoint);
-                    }
+                {
+                    projection_setpoint = Some(setpoint);
                 }
                 (0, inhibited_arm(&params, &monitored_value, current_state))
             }

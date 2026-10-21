@@ -428,7 +428,7 @@ impl Request<'_> {
             let result = match result {
                 Ok(()) => Ok(()),
                 Err(handlers::CreateObjectRefusal::Malformed(error)) => {
-                    return self.error::<T>(&error)
+                    return self.error::<T>(&error);
                 }
                 Err(handlers::CreateObjectRefusal::Failed(error)) => Err(error),
             };
@@ -504,10 +504,10 @@ impl Request<'_> {
                     Ok(removed) => (Ok(()), Some(removed)),
                     Err(error) => (Err(error), None),
                 };
-            if result.is_ok() {
-                if let Some(status) = removed_status {
-                    status.set_configured(false);
-                }
+            if result.is_ok()
+                && let Some(status) = removed_status
+            {
+                status.set_configured(false);
             }
             audit.lifecycle_completed(&mut db, &result);
             let membership = crate::membership::settle(database, &mut db, cov_table).await;

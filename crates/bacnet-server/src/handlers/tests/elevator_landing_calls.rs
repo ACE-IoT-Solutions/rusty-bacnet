@@ -263,7 +263,9 @@ fn landing_calls_read_as_a_list_and_refuse_writes() {
     let bytes = read_wire(&db_with_calls, with_calls, LANDING_CALLS);
     assert_eq!(
         bytes,
-        [0x09, 0x02, 0x19, 0x04, 0x09, 0x09, 0x29, 0x01, 0x3A, 0x00, 0x4C]
+        [
+            0x09, 0x02, 0x19, 0x04, 0x09, 0x09, 0x29, 0x01, 0x3A, 0x00, 0x4C
+        ]
     );
     assert_eq!(
         bacnet_encoding::constructed::decode_landing_call_status_list(&bytes)

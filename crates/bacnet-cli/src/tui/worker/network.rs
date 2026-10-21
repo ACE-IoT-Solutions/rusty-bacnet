@@ -25,7 +25,7 @@ use super::EventSink;
 use crate::tui::message::WorkerEvent;
 use crate::tui::network::matrix::Probe;
 use crate::tui::network::{
-    address_of, mac, probe_error, read_error, BdtRow, FdtRow, NetworkCommand, NetworkEvent,
+    BdtRow, FdtRow, NetworkCommand, NetworkEvent, address_of, mac, probe_error, read_error,
 };
 
 /// How often the registration is polled; the countdown shows whole seconds.
@@ -72,11 +72,11 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     let mut job = None;
     let mut registered = false;
     loop {
-        if job.is_none() {
-            if let (Some(bip), Some(next)) = (bip, queue.pop_front()) {
-                running = Some(next);
-                job = Some(Box::pin(execute(bip, next, local)));
-            }
+        if job.is_none()
+            && let (Some(bip), Some(next)) = (bip, queue.pop_front())
+        {
+            running = Some(next);
+            job = Some(Box::pin(execute(bip, next, local)));
         }
         tokio::select! {
             biased;

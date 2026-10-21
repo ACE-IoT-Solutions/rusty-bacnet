@@ -4,11 +4,11 @@
 //! 12.31.10, 12.31.11, 12.31.14 and 12.31.33; #1307).
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::AccessPointObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::enums::AuthorizationMode;
-use PropertyIdentifier as P;
 
 /// One write: the property, its array index, the value and the priority.
 type Write = (P, Option<u32>, PropertyValue, Option<u8>);

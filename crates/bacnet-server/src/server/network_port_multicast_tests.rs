@@ -3,7 +3,7 @@
 //! WriteProperty, and put into effect by ReinitializeDevice, after which
 //! the node's broadcasts go to the new group; 0.0.0.0 ends multicast.
 
-use super::network_port_activation_tests::{reinitialize, wp, FALSE, TRUE};
+use super::network_port_activation_tests::{FALSE, TRUE, reinitialize, wp};
 use super::network_port_mode_tests::{port_oid, property_list, rp};
 use super::*;
 use bacnet_transport::bip::BipMulticast;
@@ -65,9 +65,11 @@ fn group_in_use(server: &BACnetServer<BipTransport>) -> Option<[u8; 4]> {
 async fn the_multicast_group_is_served_written_and_activated() {
     let group_port = free_port();
     let mut server = member_server(group_port).await;
-    assert!(property_list(&server)
-        .await
-        .contains(&P::BACNET_IP_MULTICAST_ADDRESS));
+    assert!(
+        property_list(&server)
+            .await
+            .contains(&P::BACNET_IP_MULTICAST_ADDRESS)
+    );
     assert_eq!(
         rp(&server, P::BACNET_IP_MULTICAST_ADDRESS).await.unwrap(),
         tagged(GROUP)

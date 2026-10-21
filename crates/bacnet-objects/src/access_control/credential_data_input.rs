@@ -6,7 +6,7 @@ use bacnet_encoding::constructed::{
 use bacnet_types::constructed::{BACnetAuthenticationFactor, BACnetAuthenticationFactorFormat};
 
 use super::credential_data_input_formats::{
-    drop_undeclared, is_declared, is_well_formed, undefined_factor, SupportedFormat,
+    SupportedFormat, drop_undeclared, is_declared, is_well_formed, undefined_factor,
 };
 use super::credential_data_input_out_of_service::Reading;
 use super::*;

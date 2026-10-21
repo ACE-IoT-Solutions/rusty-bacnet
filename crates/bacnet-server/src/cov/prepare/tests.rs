@@ -140,13 +140,15 @@ fn cov_sample_builtin_array_coordinates_and_pv_threshold_inheritance() {
         &crate::command_source::test_origin(),
     )
     .unwrap();
-    assert!(prepared(
-        &av,
-        PropertyIdentifier::PRIORITY_ARRAY,
-        None,
-        Some(f32::INFINITY)
-    )
-    .reports(Some(&full.sample)));
+    assert!(
+        prepared(
+            &av,
+            PropertyIdentifier::PRIORITY_ARRAY,
+            None,
+            Some(f32::INFINITY)
+        )
+        .reports(Some(&full.sample))
+    );
 }
 #[test]
 fn cov_sample_takes_event_message_texts_config_whole() {
@@ -172,13 +174,15 @@ fn cov_sample_structured_color_and_accumulator_ignore_increment() {
     color
         .set_present_value(bacnet_types::constructed::BACnetXyColor::new(0.1, 0.2))
         .unwrap();
-    assert!(prepared(
-        &color,
-        PropertyIdentifier::PRESENT_VALUE,
-        None,
-        Some(f32::INFINITY)
-    )
-    .reports(Some(&first.sample)));
+    assert!(
+        prepared(
+            &color,
+            PropertyIdentifier::PRESENT_VALUE,
+            None,
+            Some(f32::INFINITY)
+        )
+        .reports(Some(&first.sample))
+    );
     let mut accumulator = AccumulatorObject::new(1, "acc", EngineeringUnits::NO_UNITS).unwrap();
     accumulator.set_prescale(BACnetPrescale {
         multiplier: 1,
@@ -189,13 +193,15 @@ fn cov_sample_structured_color_and_accumulator_ignore_increment() {
         multiplier: 2,
         modulo_divide: 2,
     });
-    assert!(prepared(
-        &accumulator,
-        PropertyIdentifier::PRESCALE,
-        None,
-        Some(f32::NAN)
-    )
-    .reports(Some(&first.sample)));
+    assert!(
+        prepared(
+            &accumulator,
+            PropertyIdentifier::PRESCALE,
+            None,
+            Some(f32::NAN)
+        )
+        .reports(Some(&first.sample))
+    );
     let first = prepared(
         &accumulator,
         PropertyIdentifier::SCALE,
@@ -203,13 +209,15 @@ fn cov_sample_structured_color_and_accumulator_ignore_increment() {
         Some(f32::INFINITY),
     );
     accumulator.set_scale(BACnetScale::FloatScale(2.0));
-    assert!(prepared(
-        &accumulator,
-        PropertyIdentifier::SCALE,
-        None,
-        Some(f32::INFINITY)
-    )
-    .reports(Some(&first.sample)));
+    assert!(
+        prepared(
+            &accumulator,
+            PropertyIdentifier::SCALE,
+            None,
+            Some(f32::INFINITY)
+        )
+        .reports(Some(&first.sample))
+    );
 }
 const CUSTOM: PropertyIdentifier = PropertyIdentifier::from_raw(650);
 const VARIABLE: PropertyIdentifier = PropertyIdentifier::from_raw(651);

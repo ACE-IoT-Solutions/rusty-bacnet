@@ -11,7 +11,7 @@ use bacnet_types::primitives::{PropertyValue, StatusFlags};
 use tokio::time::Instant;
 
 use crate::tui::app::objects::kebab;
-use crate::tui::format::{decode_all, units, Floats, RawRow, StateTexts, ValueFormat};
+use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, units};
 use crate::tui::point::Health;
 use crate::tui::watched::{Point, Sample};
 

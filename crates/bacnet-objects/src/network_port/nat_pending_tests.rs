@@ -317,12 +317,14 @@ fn a_global_address_the_bbmd_cant_take_is_refused_when_written() {
     ] {
         assert!(write(&mut db, P::BACNET_IP_GLOBAL_ADDRESS, wrong).is_err());
     }
-    assert!(write(
-        &mut db,
-        P::BACNET_IP_NAT_TRAVERSAL,
-        PropertyValue::Unsigned(1)
-    )
-    .is_err());
+    assert!(
+        write(
+            &mut db,
+            P::BACNET_IP_NAT_TRAVERSAL,
+            PropertyValue::Unsigned(1)
+        )
+        .is_err()
+    );
     assert_eq!(
         read(&db, P::CHANGES_PENDING).unwrap(),
         PropertyValue::Boolean(false)

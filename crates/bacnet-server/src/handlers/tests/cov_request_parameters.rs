@@ -85,13 +85,15 @@ fn subscribe_cov_lifetime_only_on_empty_table_consumes_no_capacity() {
     let mut table = CovSubscriptionTable::new();
     let before = table.counters().snapshot();
     for lifetime in [0, 300] {
-        assert!(handle_subscribe_cov_with_initial(
-            &mut table,
-            &db,
-            &[1],
-            &raw(object(1), None, Some(lifetime))
-        )
-        .is_err());
+        assert!(
+            handle_subscribe_cov_with_initial(
+                &mut table,
+                &db,
+                &[1],
+                &raw(object(1), None, Some(lifetime))
+            )
+            .is_err()
+        );
         assert!(table.is_empty());
         assert_eq!(table.counters().snapshot(), before);
     }
@@ -119,14 +121,11 @@ async fn subscribe_cov_valid_renewal_expiry_and_nonexistent_cancel_remain_suppor
     .remove(0);
     assert!(renewed.expires_at.unwrap() > first.expires_at.unwrap() + Duration::from_secs(28000));
     assert_eq!(table.len(), 1);
-    assert!(handle_subscribe_cov_with_initial(
-        &mut table,
-        &db,
-        &[1],
-        &raw(object(999), None, None)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        handle_subscribe_cov_with_initial(&mut table, &db, &[1], &raw(object(999), None, None))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(table.len(), 1);
     handle_subscribe_cov_with_initial(&mut table, &db, &[1], &raw(object(1), Some(false), Some(1)))
         .unwrap();

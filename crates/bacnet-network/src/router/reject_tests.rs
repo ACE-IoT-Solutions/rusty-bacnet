@@ -12,9 +12,9 @@ use bacnet_transport::port::DataAttribute;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 
-use super::control_policy::ControlGate;
-use super::envelope_harness::{attributes, Harness, IngressContext, TableSeed, PORT_MACS};
 use super::SendRequest;
+use super::control_policy::ControlGate;
+use super::envelope_harness::{Harness, IngressContext, PORT_MACS, TableSeed, attributes};
 use crate::router_table::Reachability;
 
 /// Reason 1 for network 5000: the payload every reject below carries.

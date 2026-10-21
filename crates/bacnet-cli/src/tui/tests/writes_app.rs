@@ -6,8 +6,8 @@ use insta::assert_snapshot;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 use super::*;
-use crate::tui::app::safety::Modal;
 use crate::tui::app::Overlay;
+use crate::tui::app::safety::Modal;
 use crate::tui::profile::Safety;
 use crate::tui::safety::ledger::{Entry, State};
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent, Stored};

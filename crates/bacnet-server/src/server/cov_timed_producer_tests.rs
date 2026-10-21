@@ -439,7 +439,7 @@ impl bacnet_objects::traits::BACnetObject for WritablePoint {
                 return Err(Error::Protocol {
                     class: bacnet_types::enums::ErrorClass::PROPERTY,
                     code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
-                })
+                });
             }
         })
     }
@@ -462,7 +462,7 @@ impl bacnet_objects::traits::BACnetObject for WritablePoint {
                 return Err(Error::Protocol {
                     class: bacnet_types::enums::ErrorClass::PROPERTY,
                     code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
-                })
+                });
             }
         }
         Ok(())

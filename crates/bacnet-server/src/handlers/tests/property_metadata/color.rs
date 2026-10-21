@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     color::{ColorObject, ColorTemperatureObject},
     traits::BACnetObject,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn color_objects(configured: bool) -> [Box<dyn BACnetObject>; 2] {
     let mut color = ColorObject::new(7, "CLR-7").unwrap();

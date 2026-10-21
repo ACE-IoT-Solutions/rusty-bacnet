@@ -1,7 +1,7 @@
 //! Controlled send completions test return paths and feedback ownership.
 
-use super::priority_harness::*;
 use super::BACnetRouter;
+use super::priority_harness::*;
 use bacnet_types::error::Error;
 use std::sync::atomic::Ordering;
 

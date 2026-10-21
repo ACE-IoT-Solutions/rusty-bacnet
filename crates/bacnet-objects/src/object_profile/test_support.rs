@@ -3,7 +3,7 @@ use crate::durable::{PendingWrite, SaveWait, StageStep};
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 pub(super) const WAIT: Duration = Duration::from_secs(10);

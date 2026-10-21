@@ -3,7 +3,7 @@ use super::*;
 use crate::server::test_transport::{SendMode, TestTransport};
 use bacnet_encoding::{
     apdu::decode_apdu,
-    npdu::{decode_npdu, encode_npdu, Npdu},
+    npdu::{Npdu, decode_npdu, encode_npdu},
 };
 use bacnet_network::{
     layer::ReceivedApdu,

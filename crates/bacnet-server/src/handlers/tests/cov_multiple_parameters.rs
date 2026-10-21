@@ -132,9 +132,11 @@ fn subscribe_cov_property_multiple_context_delay_is_last_write_wins_per_form() {
     let pv = PropertyIdentifier::PRESENT_VALUE;
     let flags = PropertyIdentifier::STATUS_FLAGS;
     let accepted = subscribe(1, false, 300, 10, &[pv, flags]).unwrap();
-    assert!(accepted
-        .iter()
-        .all(|sub| sub.max_notification_delay() == Some(10)));
+    assert!(
+        accepted
+            .iter()
+            .all(|sub| sub.max_notification_delay() == Some(10))
+    );
     subscribe(1, true, 600, 20, &[pv]).unwrap();
     // An empty-spec finite request succeeds with no new reference and
     // refreshes only its own form's context; for an unknown context it

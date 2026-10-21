@@ -31,7 +31,7 @@ cargo build --locked
 
 To build the release itself, clone with `--branch v0.14.0` instead. A `dev` checkout may already hold changes past the release while its version still reads 0.14.0, so record the commit.
 
-The checked-in development toolchain is Rust 1.99.0; the declared minimum is 1.93. `cargo build` uses workspace default members, so select the CLI or Python binding explicitly when needed. Native prerequisites depend on the selected features and platform.
+The checked-in development toolchain is Rust 1.99.0. The 0.15 development workspace uses edition 2024 and requires Rust 1.95; the released v0.14.0 workspace requires Rust 1.93. The minimum increases only in minor releases, to a stable Rust release at least about six months old. `cargo build` uses workspace default members, so select the CLI or Python binding explicitly when needed. Native prerequisites depend on the selected features and platform.
 
 For the CLI, from this checkout:
 

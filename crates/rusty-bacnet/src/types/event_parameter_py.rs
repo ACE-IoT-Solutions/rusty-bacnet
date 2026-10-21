@@ -28,9 +28,9 @@ use bacnet_types::constructed::{
     BACnetEventParameter, BACnetPropertyStates, ChangeOfValueCriteria,
 };
 use bytes::BytesMut;
+use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use pyo3::IntoPyObjectExt;
 
 use super::constructed_py::property_reference_to_py;
 use crate::errors::to_py_err;

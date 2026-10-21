@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::mutation::{
     DeviceWriteAuthorizer, MutationAuthorizationContext, MutationTarget, MutationTrust,
@@ -390,29 +390,29 @@ impl EndpointResponder {
             encode_apdu(&mut encoded, &response)?;
         }
 
-        if !response_route.requires_direct_response() {
-            if let Some(reply_tx) = received.reply_tx.take() {
-                // An admitted ordinary DER request may still return its
-                // protocol refusal after role closure. Captured router replies
-                // additionally require this responder's original authority.
-                if checked_response {
-                    self.ensure_open()?;
-                }
-                if !self.egress.is_open() {
-                    return Err(shutdown_error());
-                }
-                let wrapped = response_route.encode_reply_npdu(
-                    &encoded,
-                    received.source_network.as_ref(),
-                    false,
-                    NetworkPriority::Normal,
-                )?;
-                // A ReinitializeDevice restart waits for the handoff (#1565).
-                if reply_tx.send(wrapped.freeze()).is_ok() {
-                    after_reply.run();
-                }
-                return Ok(true);
+        if !response_route.requires_direct_response()
+            && let Some(reply_tx) = received.reply_tx.take()
+        {
+            // An admitted ordinary DER request may still return its
+            // protocol refusal after role closure. Captured router replies
+            // additionally require this responder's original authority.
+            if checked_response {
+                self.ensure_open()?;
             }
+            if !self.egress.is_open() {
+                return Err(shutdown_error());
+            }
+            let wrapped = response_route.encode_reply_npdu(
+                &encoded,
+                received.source_network.as_ref(),
+                false,
+                NetworkPriority::Normal,
+            )?;
+            // A ReinitializeDevice restart waits for the handoff (#1565).
+            if reply_tx.send(wrapped.freeze()).is_ok() {
+                after_reply.run();
+            }
+            return Ok(true);
         }
 
         // Each send below completes when the transport has taken the reply;

@@ -32,8 +32,8 @@
 
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_types::error::Error;
 
@@ -320,10 +320,9 @@ impl AdmissionRuntime {
     /// Record one admin denial (saturating; statistics only, never an
     /// input to limiting decisions).
     pub(super) fn note_denied(&self) {
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
         let _ = self
             .denied
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 Some(value.saturating_add(1))
             });
     }

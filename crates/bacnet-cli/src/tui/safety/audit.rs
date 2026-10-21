@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Serialize, Serializer};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::Level;
 

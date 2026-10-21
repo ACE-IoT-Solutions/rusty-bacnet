@@ -9,7 +9,7 @@ use bacnet_types::enums::ObjectType;
 use bytes::BytesMut;
 
 use super::{Entry, Stored};
-use crate::tui::format::{decode_all, Floats, StateTexts, ValueFormat};
+use crate::tui::format::{Floats, StateTexts, ValueFormat, decode_all};
 
 /// The original array: `whole`, the whole write's pre-image, with each of
 /// `elements`' pre-images put back. `None` (unknown) when any of them is

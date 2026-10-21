@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     access_control::{
         AccessCredentialObject, AccessRightsObject, AccessUserObject, CredentialDataInputObject,
@@ -6,7 +7,6 @@ use bacnet_objects::{
     traits::BACnetObject,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn access_objects(configured: bool) -> [Box<dyn BACnetObject>; 4] {
     let mut credential = AccessCredentialObject::new(7, "CRED-7").unwrap();

@@ -1,13 +1,13 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
 use super::session::{ConnectPlan, SessionOptions, TransportKind};
-use super::write::{keep_offline, SafetyOptions};
-use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
+use super::write::{SafetyOptions, keep_offline};
+use super::{COMMAND_CHANNEL_CAPACITY, EventSink, session};
 use crate::tui::capture::worker::TAP;
-use crate::tui::capture::{pcap, CaptureEvent, ExportJob};
+use crate::tui::capture::{CaptureEvent, ExportJob, pcap};
 use crate::tui::message::{Command, OpId, WorkerEvent};
-use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::network::NetworkEvent;
+use crate::tui::network::discovery::DiscoveryEvent;
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
 use crate::tui::safety::{Level, SafetyCommand, SafetyEvent};
@@ -91,11 +91,11 @@ async fn run(
     let mut generation = 0;
     let mut active = None;
     let mut exports: Vec<JoinHandle<()>> = Vec::new();
-    if let Some(plan) = &plan {
-        if !plan.await_interface {
-            generation += 1;
-            active = start(plan, generation, &sink, &options).await;
-        }
+    if let Some(plan) = &plan
+        && !plan.await_interface
+    {
+        generation += 1;
+        active = start(plan, generation, &sink, &options).await;
     }
     loop {
         tokio::select! {
@@ -110,12 +110,11 @@ async fn run(
             }
             command = commands.recv() => {
                 let Some(command) = command else { break; };
-                if active.as_ref().is_some_and(|active| active.task.is_finished()) {
-                    if let Err(error) = retire(&mut active).await {
+                if active.as_ref().is_some_and(|active| active.task.is_finished())
+                    && let Err(error) = retire(&mut active).await {
                         sink.deliver(WorkerEvent::Fatal { error }).await;
                         break;
                     }
-                }
                 match command {
                     Command::Disconnect => {
                         if let Err(error) = retire(&mut active).await {
@@ -159,11 +158,10 @@ async fn run(
                     }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
-                        if let Some(active) = &active {
-                            if let Err(error) = active.commands.try_send(command) {
+                        if let Some(active) = &active
+                            && let Err(error) = active.commands.try_send(command) {
                                 tracing::debug!("browse stop not admitted: {error}");
                             }
-                        }
                     }
                     Command::Profile(request) => {
                         let Some(profiles) = &profiles else {
@@ -449,7 +447,9 @@ async fn forward_watch(
             source: Source::Failed("the session did not take the request".into()),
         },
         WatchCommand::Remove { row } => {
-            tracing::warn!("watch row {row}: the session did not take the remove; its subscription ends with the session");
+            tracing::warn!(
+                "watch row {row}: the session did not take the remove; its subscription ends with the session"
+            );
             return;
         }
         WatchCommand::Csv(_) => WatchEvent::Notice("The session did not take the request.".into()),

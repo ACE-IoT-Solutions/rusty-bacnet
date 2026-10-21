@@ -88,8 +88,8 @@
 //! (`ScControlRateLimit` in `bacnet-transport`).
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_transport::port::TransportProvenance;
 use tracing::debug;
@@ -282,7 +282,15 @@ impl ControlDecisions {
                 policy_deny_total: p,
             }
         });
-        let [i_am, init_ack, init_mgmt, busy, available, reject, i_could_be] = rows;
+        let [
+            i_am,
+            init_ack,
+            init_mgmt,
+            busy,
+            available,
+            reject,
+            i_could_be,
+        ] = rows;
         ControlDecisionCounters {
             i_am,
             init_ack,
@@ -303,8 +311,7 @@ impl ControlDecisions {
             return;
         };
         let inc = |col: usize| {
-            #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-            let _ = self.0[row][col].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            let _ = self.0[row][col].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_add(1))
             });
         };

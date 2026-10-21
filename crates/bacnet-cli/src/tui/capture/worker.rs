@@ -18,11 +18,11 @@ use std::time::{Duration, SystemTime};
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
+use bacnet_transport::mstp::MstpTransport;
 use bacnet_transport::mstp::codec::Frame;
 use bacnet_transport::mstp::monitor::{
     LineErrorKind, LineEvent, MonitorFrames, MonitorRecord, MstpMonitor,
 };
-use bacnet_transport::mstp::MstpTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_transport::tap::{FrameTap, FrameTapReceiver, TapDirection, TapPeer, TappedFrame};
 use bytes::Bytes;

@@ -1,8 +1,8 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{schedule::CalendarObject, traits::BACnetObject};
 use bacnet_types::constructed::{BACnetCalendarEntry, BACnetDateRange, BACnetWeekNDay};
 use bacnet_types::primitives::Date;
-use PropertyIdentifier as P;
 
 fn calendar_object(configured: bool) -> CalendarObject {
     let mut object = CalendarObject::new(7, "CAL-7").unwrap();
@@ -149,7 +149,7 @@ fn rpm_calendar_metadata_does_not_enable_create_object() {
 // PICS test file is capped; the pics:: filter still selects this test.
 mod pics {
     use super::*;
-    use crate::pics::{generate_pics, PicsConfig};
+    use crate::pics::{PicsConfig, generate_pics};
     use crate::server::ServerConfig;
 
     #[test]

@@ -4,7 +4,7 @@
 use super::*;
 use crate::server::test_transport::{SentFrame, TestTransport};
 use bacnet_encoding::apdu::encode_apdu;
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
@@ -21,8 +21,8 @@ use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use bacnet_types::constructed::PropertyReference;
 use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use bacnet_types::primitives::{Date, Time};
-use std::sync::atomic::AtomicBool;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::mpsc;
 
 pub(super) const PV: PropertyIdentifier = PropertyIdentifier::PRESENT_VALUE;

@@ -15,11 +15,11 @@ use tui_tree_widget::{TreeItem, TreeState};
 
 use super::devices::{DeviceTable, Movement};
 use super::watch::Screen;
-use super::{App, FilterKey, Link, FLASH_FOR};
-use crate::decode::tree::{decode_tree, Field};
+use super::{App, FLASH_FOR, FilterKey, Link};
+use crate::decode::tree::{Field, decode_tree};
 use crate::tui::capture::filter::Filter;
 use crate::tui::capture::ring::Ring;
-use crate::tui::capture::{CaptureCommand, CaptureEvent, ExportJob, DEFAULT_RING};
+use crate::tui::capture::{CaptureCommand, CaptureEvent, DEFAULT_RING, ExportJob};
 use crate::tui::message::Command;
 
 /// The focused pane.

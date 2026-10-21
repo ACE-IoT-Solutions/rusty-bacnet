@@ -271,7 +271,7 @@ impl TestTls {
 /// that is too low fails here instead of as EMFILE in some later socket call.
 #[cfg(unix)]
 pub(super) fn reserve_descriptors(needed: nix::sys::resource::rlim_t) {
-    use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
+    use nix::sys::resource::{Resource, getrlimit, rlim_t, setrlimit};
 
     const SIBLING_HEADROOM: rlim_t = 1024;
     let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).expect("getrlimit");

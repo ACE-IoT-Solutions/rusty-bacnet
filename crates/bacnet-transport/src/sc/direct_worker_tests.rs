@@ -3,10 +3,10 @@ use super::super::direct_membership::{DirectMembership, DirectRole};
 use super::*;
 use bacnet_types::error::Error;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::{Semaphore, oneshot};
 
 struct ReadyPeer {
     incoming: Vec<u8>,

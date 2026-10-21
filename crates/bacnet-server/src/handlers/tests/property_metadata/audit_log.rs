@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     audit::{AuditLogObject, AuditLogPersistence, AuditLogSnapshot},
     traits::BACnetObject,
 };
 use std::sync::{Arc, Mutex};
-use PropertyIdentifier as P;
 
 #[derive(Default)]
 struct MemoryPersistence(Mutex<Option<AuditLogSnapshot>>);

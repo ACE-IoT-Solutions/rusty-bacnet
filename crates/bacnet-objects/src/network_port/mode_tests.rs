@@ -262,15 +262,16 @@ fn a_bbmd_without_tables_is_refused_and_a_new_owner_starts_normal() {
         PropertyValue::Enumerated(0)
     );
     // A BBMD that has not started has no tables to lend.
-    assert!(db
-        .publish_bip_port_internal(
+    assert!(
+        db.publish_bip_port_internal(
             oid(),
             [127, 0, 0, 1],
             47808,
             1476,
             BipPortMode::Bbmd { tables: None },
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(db.registered_port_internal(), None);
     assert_eq!(
         read(&db, P::BACNET_IP_MODE).unwrap(),

@@ -270,7 +270,7 @@ pub use bacnet_time::{Duration, Instant};
 pub use router::{Router, RouterIn, Storage};
 
 // For the crate's own paths: the public ones are under `npdu`.
-use npdu::{Mac, MAX_MAC_LEN, MAX_NPDU};
+use npdu::{MAX_MAC_LEN, MAX_NPDU, Mac};
 
 /// A router port, by its index in the router's port list.
 ///
@@ -320,10 +320,10 @@ pub(crate) fn swap_apart<T>(slice: &mut [T], low: usize, high: usize) {
         low <= high && high < slice.len(),
         "swap_apart needs low <= high < len"
     );
-    if let Some((front, back)) = slice.split_at_mut_checked(high) {
-        if let (Some(first), Some(second)) = (front.get_mut(low), back.first_mut()) {
-            core::mem::swap(first, second);
-        }
+    if let Some((front, back)) = slice.split_at_mut_checked(high)
+        && let (Some(first), Some(second)) = (front.get_mut(low), back.first_mut())
+    {
+        core::mem::swap(first, second);
     }
 }
 

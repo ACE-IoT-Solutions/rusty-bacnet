@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject},
     traits::BACnetObject,
@@ -7,7 +8,6 @@ use bacnet_types::constructed::{
     BACnetDeviceObjectReference, PropertyReference, ReadAccessSpecification,
 };
 use bacnet_types::enums::{LifeSafetyMode, LifeSafetyState};
-use PropertyIdentifier as P;
 
 type ExpectedRead = Result<&'static [u8], ErrorCode>;
 
@@ -320,7 +320,7 @@ fn assert_indexed_cases(
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     let budget = crate::server::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
         max_service_ack_bytes: legacy.len(),

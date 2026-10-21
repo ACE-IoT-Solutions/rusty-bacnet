@@ -7,7 +7,7 @@ use bacnet_server::server::{BACnetServer, ServerConfig};
 use bacnet_transport::{
     any::AnyTransport, ethernet::EthernetTransport, mstp::LoopbackSerial, port::TransportPort,
 };
-use bacnet_types::{enums::NetworkType, MacAddr};
+use bacnet_types::{MacAddr, enums::NetworkType};
 use std::{future::Future, path::PathBuf, time::Duration};
 
 fn interface() -> String {

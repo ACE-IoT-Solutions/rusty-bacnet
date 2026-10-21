@@ -109,7 +109,7 @@ macro_rules! impl_builtin_intrinsic_reporting {
         [$($input_field:ident),+],
         $reliability_field:ident,
         $event_detection_enable_field:ident,
-        $algorithm:expr
+        $algorithm:expr_2021
     ) => {
         fn enrollment_summary_capability_internal(
             &self,

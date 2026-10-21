@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{averaging::AveragingObject, traits::BACnetObject};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn averaging_object(configured: bool) -> AveragingObject {
     let mut object = AveragingObject::new(7, "AVG-7").unwrap();

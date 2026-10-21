@@ -193,14 +193,16 @@ fn network_writes_re_evaluate_reliability() {
     let duplicate = vec![
         0x0E, 0xB4, 8, 0, 0, 0, 0x44, 0x41, 0xA8, 0, 0, 0xB4, 8, 0, 0, 0, 0x10, 0x0F,
     ];
-    assert!(sched
-        .write_property(
-            P::WEEKLY_SCHEDULE,
-            Some(1),
-            PropertyValue::ApplicationData(duplicate),
-            None,
-        )
-        .is_err());
+    assert!(
+        sched
+            .write_property(
+                P::WEEKLY_SCHEDULE,
+                Some(1),
+                PropertyValue::ApplicationData(duplicate),
+                None,
+            )
+            .is_err()
+    );
     assert_fault(&sched, false, "refused write");
 }
 

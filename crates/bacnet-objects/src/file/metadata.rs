@@ -1,4 +1,4 @@
-use super::{resize, FileObject};
+use super::{FileObject, resize};
 use std::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;

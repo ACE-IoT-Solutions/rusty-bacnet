@@ -41,7 +41,7 @@ use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlag
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::clock::{stamp_datetime, ClockReader, UNSPECIFIED_DATETIME};
+use crate::clock::{ClockReader, UNSPECIFIED_DATETIME, stamp_datetime};
 use crate::common::{self, read_common_properties};
 use crate::reference::{self, ReferenceFrame};
 use crate::traits::BACnetObject;

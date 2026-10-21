@@ -234,9 +234,10 @@ fn trendlog_set_description_convenience() {
 #[test]
 fn trendlog_description_in_property_list() {
     let tl = TrendLogObject::new(1, "TL-1", 100).unwrap();
-    assert!(tl
-        .property_list()
-        .contains(&PropertyIdentifier::DESCRIPTION));
+    assert!(
+        tl.property_list()
+            .contains(&PropertyIdentifier::DESCRIPTION)
+    );
 }
 
 #[test]
@@ -581,10 +582,12 @@ fn trend_logs_have_no_out_of_service_property() {
                 .contains(&PropertyIdentifier::OUT_OF_SERVICE),
             "{kind:?}"
         );
-        assert!(!object
-            .property_metadata()
-            .iter()
-            .any(|row| row.property_identifier == PropertyIdentifier::OUT_OF_SERVICE));
+        assert!(
+            !object
+                .property_metadata()
+                .iter()
+                .any(|row| row.property_identifier == PropertyIdentifier::OUT_OF_SERVICE)
+        );
         assert!(!object.is_writable_property(PropertyIdentifier::OUT_OF_SERVICE));
         let read = object
             .read_property(PropertyIdentifier::OUT_OF_SERVICE, None)

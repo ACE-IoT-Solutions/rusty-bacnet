@@ -6,10 +6,9 @@
 //! to the last octet, is left to the generic view.
 
 use bacnet_encoding::constructed::{
-    decode_calendar_entry, decode_daily_schedule, decode_date_range,
+    ConstructedElement, decode_calendar_entry, decode_daily_schedule, decode_date_range,
     decode_device_object_property_reference, decode_device_object_reference, decode_name_value,
     decode_object_property_reference_at, decode_special_event, decode_value_source, split_elements,
-    ConstructedElement,
 };
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_types::constructed::{
@@ -20,8 +19,8 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
-use super::primitive::{date_range, date_text, date_time, month_text, time_text, weekday};
 use super::ValueFormat;
+use super::primitive::{date_range, date_text, date_time, month_text, time_text, weekday};
 use crate::tui::app::objects::{kebab, object_label};
 
 /// The object instance an unset reference names: the standard keeps

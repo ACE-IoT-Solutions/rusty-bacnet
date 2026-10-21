@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_network::layer::{IssuedApdu, NetworkLayer, ReceivedApdu, RoutedTarget};
 use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{DataAttribute, TransportPort};
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -294,13 +294,13 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         ) {
             return Err(Error::Encoding("endpoint ingress is not running".into()));
         }
-        if self.lifecycle == Lifecycle::Starting {
-            if let Some(mut network) = self.network.take() {
-                self.session_task = Some(tokio::spawn(async move {
-                    network.stop().await?;
-                    Ok(ClassifierExit::Cancelled)
-                }));
-            }
+        if self.lifecycle == Lifecycle::Starting
+            && let Some(mut network) = self.network.take()
+        {
+            self.session_task = Some(tokio::spawn(async move {
+                network.stop().await?;
+                Ok(ClassifierExit::Cancelled)
+            }));
         }
         self.lifecycle = Lifecycle::Stopping;
         if let Some(open) = self.egress_open.take() {
@@ -498,7 +498,7 @@ async fn drive_network_service<T: TransportPort + 'static>(
                             _ => {
                                 return Err(Error::Encoding(
                                     "response requires a unicast destination".into(),
-                                ))
+                                ));
                             }
                         };
                         network

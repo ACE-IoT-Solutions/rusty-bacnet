@@ -34,21 +34,21 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex as StdMutex,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
 use crate::port::DataAttribute;
 use crate::sc_frame::{
-    address_resolution_message_error, decode_sc_bvlc_result, encode_sc_message, is_valid_wss_uri,
-    ScBvlcResult, ScFunction, ScMessage, Vmac, BROADCAST_VMAC,
+    BROADCAST_VMAC, ScBvlcResult, ScFunction, ScMessage, Vmac, address_resolution_message_error,
+    decode_sc_bvlc_result, encode_sc_message, is_valid_wss_uri,
 };
 
 use super::{ScConnection, ScConnectionState, WebSocketPort};

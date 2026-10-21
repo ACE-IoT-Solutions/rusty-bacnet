@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_encoding::constructed::{
     decode_event_log_record, decode_log_multiple_record, decode_log_record,
@@ -718,13 +718,17 @@ fn log_family_writability_matches_runtime_routes() {
         }
         // Tables 12-29, 12-35 and 12-31 define no Out_Of_Service (#985,
         // #1064), and Table 12-31 has no Log_Interval either.
-        assert!(!object
-            .object()
-            .is_writable_property(PropertyIdentifier::OUT_OF_SERVICE));
-        if matches!(kind, FamilyKind::Event) {
-            assert!(!object
+        assert!(
+            !object
                 .object()
-                .is_writable_property(PropertyIdentifier::LOG_INTERVAL));
+                .is_writable_property(PropertyIdentifier::OUT_OF_SERVICE)
+        );
+        if matches!(kind, FamilyKind::Event) {
+            assert!(
+                !object
+                    .object()
+                    .is_writable_property(PropertyIdentifier::LOG_INTERVAL)
+            );
         }
     }
 }

@@ -4,8 +4,8 @@ use std::fmt;
 
 use bacnet_router_core::router::{OriginateError, Request};
 
-use super::actions::drain;
 use super::BACnetRouter;
+use super::actions::drain;
 
 /// Why [`BACnetRouter::originate`] queued nothing.
 ///

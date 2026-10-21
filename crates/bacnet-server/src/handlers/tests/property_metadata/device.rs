@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::traits::BACnetObject;
@@ -6,7 +7,6 @@ use bacnet_types::bitstring::ServicesSupported;
 use bacnet_types::enums::{Segmentation, ServiceSupported};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 use std::sync::{Arc, Mutex};
-use PropertyIdentifier as P;
 
 struct TestClock(Mutex<Option<ClockFrame>>);
 

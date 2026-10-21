@@ -316,10 +316,9 @@ pub fn parse_value(s: &str) -> Result<PropertyValue, String> {
     if (s.contains('e') || s.contains('E'))
         && !s.eq_ignore_ascii_case("enumerated")
         && !s.starts_with("enumerated:")
+        && let Ok(val) = s.parse::<f32>()
     {
-        if let Ok(val) = s.parse::<f32>() {
-            return Ok(PropertyValue::Real(val));
-        }
+        return Ok(PropertyValue::Real(val));
     }
 
     // Try integer — negative is Signed, positive is Unsigned.

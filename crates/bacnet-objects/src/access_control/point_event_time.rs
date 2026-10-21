@@ -25,7 +25,7 @@ use bacnet_types::calendar::SpecificDate;
 use bacnet_types::primitives::{BACnetTimeStamp, Date, Time};
 
 use super::next_sequence;
-use crate::clock::{current_datetime, ClockReader};
+use crate::clock::{ClockReader, current_datetime};
 
 /// A date and time with every field given, ordered from the year down to
 /// the hundredths.

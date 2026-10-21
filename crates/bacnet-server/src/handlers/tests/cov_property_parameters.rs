@@ -119,14 +119,16 @@ async fn subscribe_cov_property_positive_renewal_expiry_and_nonexistent_cancel()
     assert!(renewed.issue_confirmed_notifications);
     assert_eq!(table.len(), 1);
     assert_eq!(table.peer_indefinite_count(&renewed.recipient()), 0);
-    assert!(handle_subscribe_cov_property_with_initial(
-        &mut table,
-        &db,
-        &[1],
-        &raw(object(999), None, None)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        handle_subscribe_cov_property_with_initial(
+            &mut table,
+            &db,
+            &[1],
+            &raw(object(999), None, None)
+        )
+        .unwrap()
+        .is_empty()
+    );
     assert_eq!(table.len(), 1);
     // A real one-second renewal must expire through the handler-created deadline.
     handle_subscribe_cov_property_with_initial(
@@ -139,14 +141,16 @@ async fn subscribe_cov_property_positive_renewal_expiry_and_nonexistent_cancel()
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert_eq!(table.purge_expired(), 1);
     assert!(table.is_empty());
-    assert!(handle_subscribe_cov_property_with_initial(
-        &mut table,
-        &db,
-        &[1],
-        &raw(object(1), None, None)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        handle_subscribe_cov_property_with_initial(
+            &mut table,
+            &db,
+            &[1],
+            &raw(object(1), None, None)
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 #[test]

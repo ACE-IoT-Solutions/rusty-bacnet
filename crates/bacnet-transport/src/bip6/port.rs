@@ -20,7 +20,7 @@ use super::reply_limit::ReplyLimiter;
 use super::resolver::{Driver, Resolver, UnresolvedSend};
 use super::socket::Bip6Socket;
 use super::vmac_table::{generate_random_vmac, vmac_from_device_instance};
-use super::{encode_bvll6, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES};
+use super::{Bip6Vmac, Bvll6, MAX_VMAC_RETRIES, encode_bvll6};
 
 /// BACnet/IPv6 multicast group (link-local): FF02::BAC0.
 pub const BACNET_IPV6_MULTICAST_LINK_LOCAL: Ipv6Addr =

@@ -150,9 +150,10 @@ fn device_set_description_convenience() {
 #[test]
 fn device_description_in_property_list() {
     let dev = make_device();
-    assert!(dev
-        .property_list()
-        .contains(&PropertyIdentifier::DESCRIPTION));
+    assert!(
+        dev.property_list()
+            .contains(&PropertyIdentifier::DESCRIPTION)
+    );
 }
 
 #[test]
@@ -443,9 +444,10 @@ fn active_cov_subscriptions_default_empty() {
 #[test]
 fn active_cov_subscriptions_in_property_list() {
     let dev = make_device();
-    assert!(dev
-        .property_list()
-        .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS));
+    assert!(
+        dev.property_list()
+            .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS)
+    );
 }
 
 #[test]

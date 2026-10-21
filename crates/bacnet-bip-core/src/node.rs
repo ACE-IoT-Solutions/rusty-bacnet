@@ -130,8 +130,8 @@ mod send;
 pub use actions::Action;
 pub use addressing::{Addressed, Groups, LocalAddresses};
 pub use config::{
-    ConfigError, Foreign, ForwardedTrust, Link, Mode, Retry, DEFAULT_RESPONSE_TIMEOUT,
-    MAX_DATAGRAM, MIN_BUDGET, MIN_RENEWAL,
+    ConfigError, DEFAULT_RESPONSE_TIMEOUT, Foreign, ForwardedTrust, Link, MAX_DATAGRAM, MIN_BUDGET,
+    MIN_RENEWAL, Mode, Retry,
 };
 pub use counters::{ExchangeCounters, NodeCounters, RegisterAttempt};
 pub use engine::{Inbound, Node};

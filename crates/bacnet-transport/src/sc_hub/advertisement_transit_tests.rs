@@ -136,7 +136,9 @@ async fn advertisement_transit_local_preregistered_invalid_silence_and_state_mat
                             (0, valid_body.clone(), 150u16),
                             (0, vec![], if function == 4 { 149 } else { 150 }),
                         ] {
-                            let case = format!("advertisement registered={registered} function={function} id={id} origin={origin:02x?} dest={dest:02x?} flags={flags} body={body:02x?}");
+                            let case = format!(
+                                "advertisement registered={registered} function={function} id={id} origin={origin:02x?} dest={dest:02x?} flags={flags} body={body:02x?}"
+                            );
                             send(&mut a, raw(function, id, origin, dest, flags, &body)).await;
                             if (!registered || dest.is_none())
                                 && dest != Some(BROADCAST_VMAC)
@@ -202,7 +204,9 @@ async fn advertisement_transit_result_for_4_and_5_relay_and_others_drop() {
                         ] {
                             let mut body = vec![0xFE, 0, 0, 0x1F];
                             body.extend_from_slice(&result);
-                            let case = format!("ResultFor={result_for} registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} result={result:02x?}");
+                            let case = format!(
+                                "ResultFor={result_for} registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} result={result:02x?}"
+                            );
                             send(&mut b, raw(0, id, origin, dest, 2, &body)).await;
                             if registered && origin.is_none() && dest == Some([0x42; 6]) {
                                 matrix_receive(

@@ -76,8 +76,8 @@ struct Clock((Date, Time));
 impl ClockReader for Clock {
     fn read_clock(&self) -> Option<ClockFrame> {
         Some(ClockFrame {
-            local_date: self.0 .0,
-            local_time: self.0 .1,
+            local_date: self.0.0,
+            local_time: self.0.1,
             utc_offset: 0,
             daylight_savings_status: false,
         })

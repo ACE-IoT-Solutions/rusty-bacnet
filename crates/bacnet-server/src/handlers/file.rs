@@ -363,13 +363,12 @@ fn write_file(
         file_record_data,
         ..
     } = &request.access
+        && *record_count as usize != file_record_data.len()
     {
-        if *record_count as usize != file_record_data.len() {
-            return Err(Error::Reject {
-                reason: RejectReason::MISSING_REQUIRED_PARAMETER,
-            }
-            .into());
+        return Err(Error::Reject {
+            reason: RejectReason::MISSING_REQUIRED_PARAMETER,
         }
+        .into());
     }
 
     let target = request.file_identifier;

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bacnet_npdu::NetworkMessageType;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::*;
 use crate::layer::QueueAdmissionSnapshot;
@@ -152,7 +152,13 @@ async fn rejects_to_the_router(
 
 #[tokio::test]
 async fn tracked_network_control_receiver_counts_its_high_water_mark_and_drops() {
-    let (ports, [(mut peer_a, _from_router_a), (mut peer_b, mut from_router_b)]) = ports().await;
+    let (
+        ports,
+        [
+            (mut peer_a, _from_router_a),
+            (mut peer_b, mut from_router_b),
+        ],
+    ) = ports().await;
     let options = RouterOptions::new().network_control_receiver_with_admission();
     let StartedRouter {
         mut router,

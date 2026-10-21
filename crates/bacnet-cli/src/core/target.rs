@@ -8,7 +8,7 @@ use std::any::Any;
 use std::net::{Ipv4Addr, SocketAddrV6};
 
 use bacnet_transport::bip6::{
-    parse_vmac_text, Bip6Transport, DEFAULT_BACNET6_PORT, VMAC_TEXT_PREFIX,
+    Bip6Transport, DEFAULT_BACNET6_PORT, VMAC_TEXT_PREFIX, parse_vmac_text,
 };
 use bacnet_transport::port::TransportPort;
 use bacnet_types::error::Error;

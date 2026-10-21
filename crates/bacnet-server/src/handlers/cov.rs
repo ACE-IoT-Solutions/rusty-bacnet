@@ -178,13 +178,13 @@ pub(crate) fn handle_subscribe_cov_property_with_initial_endpoint(
             return Err(Error::Protocol {
                 class: ErrorClass::SERVICES,
                 code: ErrorCode::VALUE_OUT_OF_RANGE,
-            })
+            });
         }
         (Some(_), Some(lifetime)) => Some(lifetime),
         _ => {
             return Err(Error::Reject {
                 reason: RejectReason::INCONSISTENT_PARAMETERS,
-            })
+            });
         }
     };
 
@@ -456,14 +456,14 @@ pub(crate) fn handle_subscribe_cov_property_multiple_request_endpoint(
     // A failed first reference leaves nothing processed, so nothing changes;
     // not even an existing context's lifetime is renewed.
     let validated = subscriptions.len();
-    if validated == 0 {
-        if let Some(error) = failure {
-            return Err(MultipleRefusal {
-                error,
-                refused: Some(0),
-                committed: Vec::new(),
-            });
-        }
+    if validated == 0
+        && let Some(error) = failure
+    {
+        return Err(MultipleRefusal {
+            error,
+            refused: Some(0),
+            committed: Vec::new(),
+        });
     }
     let (accepted, refusal) = match table.subscribe_multiple(
         &context,

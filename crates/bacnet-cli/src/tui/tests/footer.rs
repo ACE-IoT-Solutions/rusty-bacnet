@@ -106,10 +106,11 @@ fn a_notice_goes_when_a_dialog_opens_but_one_the_dialog_sets_stays() {
     // Ctrl-C closes the form and says so; that notice is this action's.
     press_with(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(app.overlay, Overlay::None);
-    assert!(app
-        .flash
-        .as_ref()
-        .is_some_and(|f| f.text.starts_with("Closed")));
+    assert!(
+        app.flash
+            .as_ref()
+            .is_some_and(|f| f.text.starts_with("Closed"))
+    );
     // The help overlay is a dialog too.
     flash(&mut app);
     press(&mut app, KeyCode::Char('?'));

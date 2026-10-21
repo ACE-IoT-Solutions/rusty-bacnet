@@ -20,10 +20,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
-    build_database, build_identity, build_pending_boxes, lifecycle_error, make_analog_input,
-    make_analog_value, make_binary_input, make_binary_value, parse_device_uuid, parse_ipv4,
-    parse_read_work_limit, parse_segmentation, parse_services, pending_group, with_bip_port,
-    PendingObject,
+    PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
+    make_analog_input, make_analog_value, make_binary_input, make_binary_value, parse_device_uuid,
+    parse_ipv4, parse_read_work_limit, parse_segmentation, parse_services, pending_group,
+    with_bip_port,
 };
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
@@ -269,16 +269,17 @@ impl PyBipEndpoint {
             crate::client::parse_min_request_interval_ms(min_request_interval_ms)?;
         let interface_ip = parse_ipv4(interface, "interface")?;
         let broadcast = parse_ipv4(broadcast_address, "broadcast_address")?;
-        if let Some(selected) = registered_network_port {
-            if !(1..=255).contains(&selected)
+        if let Some(selected) = registered_network_port
+            && (!(1..=255).contains(&selected)
                 || selected != network_port_instance
                 || interface_ip.is_unspecified()
                 || interface_ip.is_multicast()
                 || interface_ip.is_broadcast()
-                || interface_ip == broadcast
-            {
-                return Err(PyValueError::new_err("registered_network_port must select the declared 1..255 port on a concrete unicast interface"));
-            }
+                || interface_ip == broadcast)
+        {
+            return Err(PyValueError::new_err(
+                "registered_network_port must select the declared 1..255 port on a concrete unicast interface",
+            ));
         }
         let segmentation = parse_segmentation(segmentation);
         let service_list = parse_services(services);

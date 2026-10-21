@@ -20,9 +20,9 @@ use tracing::{debug, warn};
 
 use crate::bbmd::{self, BbmdState, BdtEntry};
 pub use crate::bbmd::{FdtCounters, ForeignDevicePolicy};
-use crate::bvll::encode_bip_mac;
 #[cfg(test)]
 use crate::bvll::BvllMessage;
+use crate::bvll::encode_bip_mac;
 #[cfg(test)]
 use crate::bvll::{
     decode_bip_mac, decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame,
@@ -66,8 +66,8 @@ mod multicast;
 pub use multicast::BipMulticast;
 mod socket;
 use bbmd_start::{
-    initial_bbmd_state, refresh_own_address, subnet_mask_of, warn_about_peers_on_the_group_subnet,
-    warn_if_broadcast_may_leave_another_interface, BbmdConfig, OwnAddressContext,
+    BbmdConfig, OwnAddressContext, initial_bbmd_state, refresh_own_address, subnet_mask_of,
+    warn_about_peers_on_the_group_subnet, warn_if_broadcast_may_leave_another_interface,
 };
 use client_snapshot::ClientRecord;
 #[cfg(test)]
@@ -81,9 +81,9 @@ mod rate_limit;
 mod receive_counters;
 pub use access::AsBip;
 pub use fanout::{FanoutCounters, FanoutPolicy};
-use ingress::{broadcast_is_own_address, receive_loop, IngressAddresses, Listeners};
 #[cfg(test)]
-use ingress::{handle_datagram, Arrival};
+use ingress::{Arrival, handle_datagram};
+use ingress::{IngressAddresses, Listeners, broadcast_is_own_address, receive_loop};
 use io::RecvContext;
 use own_broadcast::OwnBroadcastForwarder;
 pub use rate_limit::ManagementCounters;
@@ -93,7 +93,7 @@ use receive_counters::ReceiveDrops;
 pub use send_counters::SendCounters;
 use send_counters::SendRefusals;
 #[cfg(test)]
-use test_support::{admitted_delivery, handle_bvll_message, Delivery};
+use test_support::{Delivery, admitted_delivery, handle_bvll_message};
 
 /// The longest datagram the transport sends: a Forwarded-NPDU carrying a
 /// 1497-octet NPDU, the largest B/IP carries (Table 6-1). Longer NPDUs are
@@ -290,16 +290,6 @@ impl BipTransport {
             alone_on_subnet: false,
             nat: None,
         });
-    }
-
-    /// Enable foreign device registration on this BBMD with the given policy.
-    /// Must be called after `enable_bbmd()` and before `start()`.
-    pub fn enable_foreign_device_registration(&mut self, policy: ForeignDevicePolicy) {
-        if let Some(config) = &mut self.bbmd_config {
-            config.foreign_device_policy = Some(policy);
-        } else {
-            warn!("enable_foreign_device_registration called before enable_bbmd(); policy will be ignored");
-        }
     }
 
     /// Set foreign device registration policy on this BBMD.
@@ -730,12 +720,12 @@ impl TransportPort for BipTransport {
             }
         };
 
-        if let (Some(target), Some(used)) = (&self.foreign_device, &foreign_config) {
-            if let Err(error) = target.attach(&node, used) {
-                node.stop();
-                self.client_record.stop();
-                return Err(error);
-            }
+        if let (Some(target), Some(used)) = (&self.foreign_device, &foreign_config)
+            && let Err(error) = target.attach(&node, used)
+        {
+            node.stop();
+            self.client_record.stop();
+            return Err(error);
         }
         self.client_record.attach(&node);
         self.port = local_port;

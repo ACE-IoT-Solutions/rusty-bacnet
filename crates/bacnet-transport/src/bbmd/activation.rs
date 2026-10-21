@@ -19,8 +19,8 @@ use bacnet_types::constructed::{BACnetBDTEntry, BACnetHostAddress, BACnetHostNPo
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::Error;
 
-use super::nat::check_global;
 use super::BbmdState;
+use super::nat::check_global;
 
 /// The WriteProperty refusal of a value the BBMD can't take.
 fn out_of_range() -> Error {

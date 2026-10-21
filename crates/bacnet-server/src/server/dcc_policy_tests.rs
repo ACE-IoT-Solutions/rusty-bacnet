@@ -40,12 +40,14 @@ async fn dcc_disable_rate_validation_before_start() {
             .err()
             .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("DCC disable rate")));
-        assert!(BACnetServer::generic_builder()
-            .transport(never_start(&started))
-            .dcc_disable_rate_limit(Some(limit))
-            .build()
-            .await
-            .is_err());
+        assert!(
+            BACnetServer::generic_builder()
+                .transport(never_start(&started))
+                .dcc_disable_rate_limit(Some(limit))
+                .build()
+                .await
+                .is_err()
+        );
         assert!(!started.load(Ordering::Acquire));
         let error = BACnetServer::bip_builder()
             .dcc_disable_rate_limit(Some(limit))
@@ -116,27 +118,33 @@ fn dcc_source_restriction_configuration_bounds() {
         }
     }
     for network in [0, 65535] {
-        assert!(DccSourceRestriction::new(vec![DccSource::Routed {
-            network,
-            address: vec![1]
-        }])
-        .is_err());
+        assert!(
+            DccSourceRestriction::new(vec![DccSource::Routed {
+                network,
+                address: vec![1]
+            }])
+            .is_err()
+        );
     }
     assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![1]); 257]).is_err());
     assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![1; longest]); 256]).is_ok());
-    assert!(DccSourceRestriction::new(vec![
-        DccSource::Routed {
-            network: 65534,
-            address: vec![1; longest],
-        };
-        256
-    ])
-    .is_ok());
+    assert!(
+        DccSourceRestriction::new(vec![
+            DccSource::Routed {
+                network: 65534,
+                address: vec![1; longest],
+            };
+            256
+        ])
+        .is_ok()
+    );
     for entries in [vec![], vec![DccSource::Direct(vec![1])]] {
         let restriction = DccSourceRestriction::new(entries).unwrap();
-        assert!(restriction
-            .validate_policy(DccPolicy::RequirePassword)
-            .is_ok());
+        assert!(
+            restriction
+                .validate_policy(DccPolicy::RequirePassword)
+                .is_ok()
+        );
         for policy in [DccPolicy::DenyAll, DccPolicy::LegacyPermissive] {
             assert!(restriction.validate_policy(policy).is_err());
         }
@@ -183,13 +191,15 @@ async fn dcc_source_restriction_rejected_before_start() {
             .err()
             .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("source restriction")));
-        assert!(BACnetServer::generic_builder()
-            .transport(never_start(&started))
-            .dcc_policy(policy)
-            .dcc_source_restriction(restriction.clone())
-            .build()
-            .await
-            .is_err());
+        assert!(
+            BACnetServer::generic_builder()
+                .transport(never_start(&started))
+                .dcc_policy(policy)
+                .dcc_source_restriction(restriction.clone())
+                .build()
+                .await
+                .is_err()
+        );
         assert!(!started.load(Ordering::Acquire));
         let error = BACnetServer::bip_builder()
             .dcc_policy(policy)

@@ -445,14 +445,15 @@ fn date_value_relinquish_default_write_recaptures_present_value() {
         "with an empty priority array, PV must resolve to the written default"
     );
     // Wrong-typed write refuses and leaves state untouched.
-    assert!(dv
-        .write_property(
+    assert!(
+        dv.write_property(
             PropertyIdentifier::RELINQUISH_DEFAULT,
             None,
             PropertyValue::Unsigned(1241225),
             None,
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         dv.read_property(PropertyIdentifier::RELINQUISH_DEFAULT, None)
             .unwrap(),

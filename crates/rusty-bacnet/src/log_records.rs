@@ -21,8 +21,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyInt, PyList, PySequence, PyString, PyTuple};
 
 use crate::types::{
-    audit_log_record_to_py, date_value, time_value, PyBACnetTimeStamp, PyEventState, PyEventType,
-    PyObjectIdentifier, PyPropertyIdentifier,
+    PyBACnetTimeStamp, PyEventState, PyEventType, PyObjectIdentifier, PyPropertyIdentifier,
+    audit_log_record_to_py, date_value, time_value,
 };
 
 /// `(date, time)` as Python reads them.

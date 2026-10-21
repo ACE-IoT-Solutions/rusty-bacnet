@@ -1,11 +1,11 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{schedule::ScheduleObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetDateRange, BACnetObjectPropertyReference, BACnetSpecialEvent,
     BACnetTimeValue, SpecialEventPeriod,
 };
 use bacnet_types::primitives::{Date, PropertyValue, Time};
-use PropertyIdentifier as P;
 
 fn schedule_object(configuration: u8, out_of_service: bool) -> ScheduleObject {
     let mut object = ScheduleObject::new(7, "SCH-7", PropertyValue::Unsigned(42)).unwrap();

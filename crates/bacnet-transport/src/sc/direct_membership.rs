@@ -7,8 +7,8 @@ use super::direct_egress::{DirectEgress, DirectWrite};
 use crate::sc_frame::Vmac;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 use tokio::sync::watch;
@@ -98,9 +98,8 @@ impl DirectMembership {
         if peers.len() > cap {
             return Err(Refusal::Resources);
         }
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
         let generation = NEXT_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Refusal::Resources)?;
         let (retired, _) = watch::channel(false);
         state.reserved.insert(

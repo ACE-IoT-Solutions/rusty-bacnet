@@ -11,10 +11,10 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::algorithms::extract_real;
-use super::commit::{EnrollmentUpdate, ReliabilityUpdate};
 use super::EventEnrollmentReliabilityCause;
 use super::LocalConfigurationReadError;
+use super::algorithms::extract_real;
+use super::commit::{EnrollmentUpdate, ReliabilityUpdate};
 use crate::server::event_notification_payload::CapturedReferencedValue;
 
 pub(super) enum SetpointRead {

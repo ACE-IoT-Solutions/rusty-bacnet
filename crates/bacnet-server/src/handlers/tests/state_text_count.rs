@@ -4,12 +4,12 @@
 //! VALUE_OUT_OF_RANGE.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
-use PropertyIdentifier as P;
 
 fn octets(value: &PropertyValue) -> Vec<u8> {
     let mut bytes = BytesMut::new();

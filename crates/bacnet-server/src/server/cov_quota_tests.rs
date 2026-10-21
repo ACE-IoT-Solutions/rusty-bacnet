@@ -9,13 +9,13 @@ use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
 };
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::PropertyReference;
 use bacnet_types::enums::{
     EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 use super::cov_notifications_tests::recording_transport;
 use super::*;

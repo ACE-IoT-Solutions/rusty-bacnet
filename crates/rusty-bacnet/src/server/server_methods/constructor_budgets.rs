@@ -56,7 +56,7 @@ pub(super) fn dcc_configuration(
         _ => {
             return Err(PyValueError::new_err(
                 "dcc_policy must be 'deny_all', 'require_password', or 'legacy_permissive'",
-            ))
+            ));
         }
     };
     policy

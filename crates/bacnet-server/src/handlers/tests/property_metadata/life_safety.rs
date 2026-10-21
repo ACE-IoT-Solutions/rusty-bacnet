@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject},
     traits::BACnetObject,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn point_object(configured: bool, out_of_service: bool) -> LifeSafetyPointObject {
     let mut object = LifeSafetyPointObject::new(7, "LSP-7").unwrap();

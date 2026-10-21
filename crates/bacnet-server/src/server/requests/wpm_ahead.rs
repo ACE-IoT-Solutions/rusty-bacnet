@@ -19,8 +19,8 @@
 //! to the policy. A request with no such attempt asks nothing ahead and
 //! takes no read guard.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::wpm::WritePropertyAttempt;

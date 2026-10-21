@@ -564,12 +564,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // admitted. The replay is a local idempotency extension, not a
         // Standard mandate, and makes no physical-idempotency claim.
         // Lock → clone → unlock → send; never held across `.await`.
-        if service_choice == ConfirmedServiceChoice::LIFE_SAFETY_OPERATION {
-            if let Some(pending) = lso_pending {
-                let mut encoded = BytesMut::new();
-                encode_apdu(&mut encoded, &response).expect("valid APDU encoding");
-                pending.complete_with_response(encoded.freeze());
-            }
+        if service_choice == ConfirmedServiceChoice::LIFE_SAFETY_OPERATION
+            && let Some(pending) = lso_pending
+        {
+            let mut encoded = BytesMut::new();
+            encode_apdu(&mut encoded, &response).expect("valid APDU encoding");
+            pending.complete_with_response(encoded.freeze());
         }
         // Non-LSO callers pass `None` (or an untracked guard whose completion
         // is a no-op); dropping here is intentional.

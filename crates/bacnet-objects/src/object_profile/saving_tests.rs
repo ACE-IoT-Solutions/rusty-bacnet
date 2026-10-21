@@ -2,8 +2,8 @@ use super::test_support::*;
 use super::*;
 use crate::durable::{DurableWrites, StageStep};
 use crate::traits::BACnetObject;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[test]
@@ -204,13 +204,15 @@ fn refused_or_unrelated_write_does_not_steal_another_stage() {
     let wait = staged(state.stage_writes(std::slice::from_ref(&wanted)));
     started.recv_timeout(WAIT).unwrap();
     assert!(apply(&mut state, &whole("bad;name")).is_err());
-    assert!(state
-        .write(
-            P::DESCRIPTION,
-            None,
-            &PropertyValue::CharacterString("name".into())
-        )
-        .is_none());
+    assert!(
+        state
+            .write(
+                P::DESCRIPTION,
+                None,
+                &PropertyValue::CharacterString("name".into())
+            )
+            .is_none()
+    );
     assert!(state.provision(profile("bad;name")).is_err());
     assert!(state.has_staged_write());
     assert!(matches!(

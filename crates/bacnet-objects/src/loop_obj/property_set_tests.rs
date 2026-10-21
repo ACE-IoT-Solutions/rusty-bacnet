@@ -239,7 +239,9 @@ fn loop_priority_for_writing_is_application_set_in_one_to_sixteen() {
 fn loop_action_is_a_single_value_not_an_array() {
     // ACTION is BACnetARRAY[N] only on Command (Table 12-12).
     assert!(!new_loop().is_array_property(PropertyIdentifier::ACTION));
-    assert!(crate::command::CommandObject::new(1, "CMD-1")
-        .unwrap()
-        .is_array_property(PropertyIdentifier::ACTION));
+    assert!(
+        crate::command::CommandObject::new(1, "CMD-1")
+            .unwrap()
+            .is_array_property(PropertyIdentifier::ACTION)
+    );
 }

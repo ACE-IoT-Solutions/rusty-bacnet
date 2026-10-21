@@ -12,12 +12,12 @@ use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
+use super::super::SendRequest;
 use super::super::control_policy::ControlGate;
 use super::super::dispatch::Shared;
-use super::super::engine::{tokio_clock, Engine, OPTIONS};
+use super::super::engine::{Engine, OPTIONS, tokio_clock};
 use super::super::port_groups::PortGroups;
 use super::super::send_queue;
-use super::super::SendRequest;
 use bacnet_router_core::PortId;
 
 const REFILL_LIMIT: usize = 1024;
@@ -60,12 +60,12 @@ impl ReadyPort {
         }
         // Even the broken sender returns Pending after finite work. This
         // fixture cannot hang the runtime when testing its original behavior.
-        if count < REFILL_LIMIT {
-            if let Some(refill) = &self.refill {
-                refill
-                    .try_send(bacnet_npdu::NetworkPriority::Normal, request())
-                    .unwrap();
-            }
+        if count < REFILL_LIMIT
+            && let Some(refill) = &self.refill
+        {
+            refill
+                .try_send(bacnet_npdu::NetworkPriority::Normal, request())
+                .unwrap();
         }
     }
 }

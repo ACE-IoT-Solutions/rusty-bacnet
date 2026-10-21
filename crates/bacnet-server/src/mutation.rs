@@ -19,9 +19,9 @@ use bacnet_services::object_mgmt::{CreateObjectRequest, DeleteObjectRequest};
 use bacnet_services::wpm::WritePropertyAttempt;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::port::TransportProvenance;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 /// Channel/relay scope derived from ingress provenance, mirroring RB-09
 /// `ControlTrust`. Scope only, never leaf identity: a verified SC ingress
@@ -312,16 +312,27 @@ pub(crate) struct MutationDecisions([[AtomicU64; 3]; 11]);
 
 impl MutationDecisions {
     pub(crate) fn snapshot(&self) -> MutationDecisionCounters {
-        let [write_property, write_property_multiple, create_object, delete_object, add_list_element, remove_list_element, atomic_write_file, subscribe_cov, subscribe_cov_property, subscribe_cov_property_multiple, write_group] =
-            self.0.each_ref().map(|row| {
-                let [allow_total, deny_total, policy_deny_total] =
-                    row.each_ref().map(|n| n.load(Ordering::Relaxed));
-                MutationServiceCounters {
-                    allow_total,
-                    deny_total,
-                    policy_deny_total,
-                }
-            });
+        let [
+            write_property,
+            write_property_multiple,
+            create_object,
+            delete_object,
+            add_list_element,
+            remove_list_element,
+            atomic_write_file,
+            subscribe_cov,
+            subscribe_cov_property,
+            subscribe_cov_property_multiple,
+            write_group,
+        ] = self.0.each_ref().map(|row| {
+            let [allow_total, deny_total, policy_deny_total] =
+                row.each_ref().map(|n| n.load(Ordering::Relaxed));
+            MutationServiceCounters {
+                allow_total,
+                deny_total,
+                policy_deny_total,
+            }
+        });
         MutationDecisionCounters {
             write_property,
             write_property_multiple,
@@ -363,8 +374,7 @@ impl MutationDecisions {
 
     fn increment(&self, index: usize, decision: MutationDecision) {
         let increment = |column: usize| {
-            #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-            let _ = self.0[index][column].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            let _ = self.0[index][column].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_add(1))
             });
         };

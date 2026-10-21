@@ -10,19 +10,19 @@
 
 use std::time::Duration;
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, LineGauge, Paragraph, Row, Table, Wrap};
-use ratatui::Frame;
 
 use bacnet_transport::bip::ForeignRegistrationOutcome;
 
 use super::{Theme, WIDE_WIDTH};
+use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::network::{Fetched, NetworkState, View};
 use crate::tui::app::objects::kebab;
-use crate::tui::app::App;
 use crate::tui::network::matrix::{Cell, Matrix};
 
 /// Height of the foreign-device panel, borders included, with the
@@ -409,7 +409,7 @@ fn bdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 area,
                 format!("{} has an empty BDT.", read.bbmd),
                 theme,
-            )
+            );
         }
         Ok(_) => {}
         Err(error) => return note(frame, area, format!("BDT of {}: {error}", read.bbmd), theme),
@@ -436,7 +436,7 @@ fn fdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 area,
                 format!("{} has no foreign devices.", read.bbmd),
                 theme,
-            )
+            );
         }
         Ok(entries) => entries,
         Err(error) => return note(frame, area, format!("FDT of {}: {error}", read.bbmd), theme),
@@ -521,7 +521,9 @@ fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(legend_lines), legend_area);
     let lines: Vec<Line> = if matrix.consistent() {
         vec![Line::styled(
-            format!("All {n} BDTs agree: each BBMD lists itself, every entry is listed back, and masks match."),
+            format!(
+                "All {n} BDTs agree: each BBMD lists itself, every entry is listed back, and masks match."
+            ),
             theme.accent(),
         )]
     } else if matrix.findings.is_empty() {

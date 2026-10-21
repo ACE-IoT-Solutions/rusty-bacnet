@@ -14,7 +14,7 @@ use bacnet_types::constructed::{
 };
 use bytes::Bytes;
 use std::collections::hash_map::{Entry, HashMap};
-use std::mem::{discriminant, Discriminant};
+use std::mem::{Discriminant, discriminant};
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
     Error::Protocol { class, code }

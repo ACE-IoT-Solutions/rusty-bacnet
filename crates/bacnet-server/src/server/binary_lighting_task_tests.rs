@@ -388,7 +388,7 @@ fn multiple_notifications(sent: &SendLog, from: usize) -> Vec<COVNotificationMul
 
 #[tokio::test(start_paused = true)]
 async fn a_snapshot_report_times_a_timestamped_field_only_with_its_own_value() {
-    use super::cov_wire_test_support::{at, time, SharedClock};
+    use super::cov_wire_test_support::{SharedClock, at, time};
     let (mut server, oid, sent) = start_server(2).await;
     if let Some(task) = server.binary_lighting_operation_task.take() {
         task.abort();

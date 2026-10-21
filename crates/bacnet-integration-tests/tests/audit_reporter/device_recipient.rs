@@ -1,6 +1,6 @@
 //! Actual B/IP recipient changes notify the old Device route and new Address.
 use super::*;
-use bacnet_types::{constructed::BACnetAddress, MacAddr};
+use bacnet_types::{MacAddr, constructed::BACnetAddress};
 use bytes::BytesMut;
 
 #[tokio::test]

@@ -159,13 +159,15 @@ async fn direct_response_router_local_delivery_preserves_matching_capability() {
         );
         let mut missing = received.clone();
         missing.direct_response = None;
-        assert!(issue(
-            f.server.network.as_ref().unwrap(),
-            &missing.response_route(),
-            99
-        )
-        .await
-        .is_err());
+        assert!(
+            issue(
+                f.server.network.as_ref().unwrap(),
+                &missing.response_route(),
+                99
+            )
+            .await
+            .is_err()
+        );
         let retired_network = idle_network();
         retired_network.seal_responses();
         assert!(issue(&retired_network, &route, 98).await.is_err());

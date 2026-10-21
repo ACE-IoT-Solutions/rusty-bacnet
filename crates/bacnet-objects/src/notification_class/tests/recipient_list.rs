@@ -7,8 +7,8 @@
 
 use super::super::*;
 use super::{make_dest_device, make_time};
-use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 use bacnet_types::MacAddr;
+use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 
 /// Build an address destination with the given network number and MAC.
 fn make_dest_address(network_number: u16, mac: &[u8]) -> BACnetDestination {
@@ -412,13 +412,15 @@ fn recipient_list_flat_form_write_refused() {
     }
     let flat = PropertyValue::List(vec![flat_entry]);
     assert!(decode_destination_list_pv(&flat).is_err());
-    assert!(filter_recipient_list(
-        &flat,
-        EventTransition::ToOffnormal,
-        DaysOfWeek::MONDAY,
-        &make_time(12, 0),
-    )
-    .is_empty());
+    assert!(
+        filter_recipient_list(
+            &flat,
+            EventTransition::ToOffnormal,
+            DaysOfWeek::MONDAY,
+            &make_time(12, 0),
+        )
+        .is_empty()
+    );
 }
 
 #[test]

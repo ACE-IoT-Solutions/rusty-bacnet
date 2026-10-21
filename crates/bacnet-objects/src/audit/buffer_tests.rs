@@ -1,7 +1,7 @@
 //! Buffer_Size writes and the application's purge of an Audit Log (#1238).
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetAuditLogDatum, BACnetAuditLogQueryParameters};
@@ -15,7 +15,7 @@ use crate::durable::{DurableWrites, PendingWrite, StageStep};
 use crate::traits::BACnetObject;
 
 use super::staging_tests::{
-    block_on, log, notification, receipt, staged, staged_write, SlowPersistence, WAIT,
+    SlowPersistence, WAIT, block_on, log, notification, receipt, staged, staged_write,
 };
 use super::{
     AuditBatchStage, AuditLogNotificationSink, AuditLogObject, AuditLogSnapshot, AuditLogStorage,

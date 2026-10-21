@@ -4,11 +4,11 @@ use super::*;
 use bacnet_encoding::constructed::{
     encode_destination_list, encode_event_notification_subscription_list, encode_port_permission,
 };
+use bacnet_types::MacAddr;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::primitives::Time;
-use bacnet_types::MacAddr;
 
 mod fold_tests;
 mod persistence_tests;

@@ -14,8 +14,8 @@ use bacnet_types::enums::{
 };
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, PropertyValue, Time};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct FixedClock(ClockFrame);
 

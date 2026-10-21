@@ -405,10 +405,11 @@ fn a_record_the_log_ignores_still_serves_the_trigger() {
     log.trigger().unwrap();
     log.add_record(record()).unwrap();
     assert_eq!(trigger(&log), PropertyValue::Boolean(false));
-    assert!(log
-        .records()
-        .iter()
-        .all(|r| matches!(r.log_datum, LogDatum::LogStatus(_))));
+    assert!(
+        log.records()
+            .iter()
+            .all(|r| matches!(r.log_datum, LogDatum::LogStatus(_)))
+    );
 
     // Outside the window, the same.
     write(
@@ -422,10 +423,11 @@ fn a_record_the_log_ignores_still_serves_the_trigger() {
     log.trigger().unwrap();
     log.add_record(record()).unwrap();
     assert_eq!(trigger(&log), PropertyValue::Boolean(false));
-    assert!(log
-        .records()
-        .iter()
-        .all(|r| matches!(r.log_datum, LogDatum::LogStatus(_))));
+    assert!(
+        log.records()
+            .iter()
+            .all(|r| matches!(r.log_datum, LogDatum::LogStatus(_)))
+    );
 }
 
 #[test]

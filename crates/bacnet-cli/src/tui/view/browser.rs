@@ -13,19 +13,19 @@
 //! labels padded to the longest among the objects listed, and leaves the
 //! names out when fewer than [`MIN_NAME`] columns are left for them.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
-use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{
-    ellipsize, name_marker, sanitize, text_width, Names, Theme, FULL_WIDTH, MIN_NAME, WIDE_WIDTH,
+    FULL_WIDTH, MIN_NAME, Names, Theme, WIDE_WIDTH, ellipsize, name_marker, sanitize, text_width,
 };
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
-use crate::tui::app::objects::{kebab, object_label, ListRow};
-use crate::tui::point::{priority_label, ObjectView, PriorityView, ReadVia, PRIORITIES};
+use crate::tui::app::objects::{ListRow, kebab, object_label};
+use crate::tui::point::{ObjectView, PRIORITIES, PriorityView, ReadVia, priority_label};
 
 /// Width of the left column (card over objects) in the full layout.
 const LEFT_WIDTH: u16 = 46;

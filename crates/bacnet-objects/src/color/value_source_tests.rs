@@ -7,12 +7,12 @@ use crate::audit::ObjectAuditPolicy;
 use crate::command_source::{CommandDeviceBinding, CommandOrigin};
 use crate::property_metadata::PropertyPresenceCondition;
 use crate::traits::BACnetObject;
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{BACnetAddress, BACnetColorCommand, BACnetXyColor};
 use bacnet_types::enums::{
     AuditLevel, ColorOperation, ErrorCode, ObjectType, PropertyIdentifier as P,
 };
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 fn device(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap()

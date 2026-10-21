@@ -1,19 +1,19 @@
 use std::time::Instant;
 
-use bacnet_encoding::apdu::{self, encode_apdu, Apdu, SegmentAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::apdu::{self, Apdu, SegmentAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_transport::sc::{LoopbackWebSocket, ScReconnectConfig, ScTransport, WebSocketPort};
 use bacnet_transport::sc_frame::{
-    decode_sc_message, encode_sc_message, ScFunction, ScMessage, Vmac,
+    ScFunction, ScMessage, Vmac, decode_sc_message, encode_sc_message,
 };
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use crate::discovery::DiscoveredDevice;
 

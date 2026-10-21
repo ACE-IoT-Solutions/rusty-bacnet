@@ -25,7 +25,7 @@ fn assert_timestamp_array(actual: PropertyValue, expected: &[BACnetTimeStamp; 3]
 }
 
 macro_rules! assert_seeded_event_history {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         let expected_timestamps = [
             BACnetTimeStamp::Time(Time {

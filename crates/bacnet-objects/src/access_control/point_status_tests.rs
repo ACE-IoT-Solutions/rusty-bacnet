@@ -5,7 +5,7 @@
 use bacnet_types::enums::{ErrorCode, PropertyIdentifier as P};
 
 use super::credential_data_input_out_of_service_tests::stamp;
-use super::point_out_of_service_tests::{credential, CREDENTIAL_3, NO_CREDENTIAL};
+use super::point_out_of_service_tests::{CREDENTIAL_3, NO_CREDENTIAL, credential};
 use super::*;
 
 fn status(point: &AccessPointObject) -> PropertyValue {

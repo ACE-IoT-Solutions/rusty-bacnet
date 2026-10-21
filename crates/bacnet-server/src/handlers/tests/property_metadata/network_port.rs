@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{network_port::NetworkPortObject, traits::BACnetObject};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn network_port_object(configured: bool) -> NetworkPortObject {
     let mut object = NetworkPortObject::new_bip(

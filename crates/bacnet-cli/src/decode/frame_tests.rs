@@ -1,7 +1,7 @@
 use bacnet_transport::mstp::codec::FrameType;
 use bacnet_types::enums::ConfirmedServiceChoice;
 
-use super::{summarize_frame, Framing};
+use super::{Framing, summarize_frame};
 use crate::decode::testing::*;
 
 #[test]

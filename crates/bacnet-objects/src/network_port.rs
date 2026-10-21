@@ -14,10 +14,10 @@
 //! Other snapshots expose only the common application rows;
 //! they do not claim a complete transport-specific SC, Ethernet or MS/TP profile.
 
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{NetworkType, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
-use bacnet_types::MacAddr;
 use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
@@ -32,9 +32,9 @@ mod multicast;
 mod pending;
 mod registration;
 use bacnet_types::network_number::NetworkNumber;
+pub use bip_config::BipPortConfig;
 pub(crate) use bip6_config::Bip6Bind;
 pub use bip6_config::Bip6PortConfig;
-pub use bip_config::BipPortConfig;
 use ip_config::IpConfig;
 pub(crate) use ip_config::{PortAddress, PortBind};
 

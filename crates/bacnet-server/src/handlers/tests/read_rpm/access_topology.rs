@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     access_control::{AccessDoorObject, AccessPointObject, AccessZoneObject},
     traits::BACnetObject,
@@ -6,7 +7,6 @@ use bacnet_objects::{
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::AuthorizationMode;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 const EMPTY: &[u8] = &[];
 
@@ -81,7 +81,7 @@ fn assert_cases(
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     let budget = crate::server::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
         max_service_ack_bytes: legacy.len(),

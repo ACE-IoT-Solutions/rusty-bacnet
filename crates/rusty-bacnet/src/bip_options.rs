@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal, PrivateRange};
 use bacnet_transport::bip::{
-    BbmdOptions, BipMode, BipMulticast, ForeignDeviceConfig, ForeignRegistrationOutcome,
-    ForeignRegistrationSnapshot, DEFAULT_BACNET_PORT,
+    BbmdOptions, BipMode, BipMulticast, DEFAULT_BACNET_PORT, ForeignDeviceConfig,
+    ForeignRegistrationOutcome, ForeignRegistrationSnapshot,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

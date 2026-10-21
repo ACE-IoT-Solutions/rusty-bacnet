@@ -5,11 +5,11 @@ use bacnet_services::audit::{
     BACnetAuditLogQueryParameters, BACnetAuditNotification,
 };
 use bacnet_services::common::MAX_DECODED_ITEMS;
+use bacnet_types::MacAddr;
 use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::{AuditOperation, BACnetSuccessFilter};
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyList, PyMapping, PyTuple};

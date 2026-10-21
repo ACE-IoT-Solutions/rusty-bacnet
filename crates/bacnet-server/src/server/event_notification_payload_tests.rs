@@ -375,16 +375,18 @@ fn fault_recovery_requires_effective_reliability_type_and_none_is_not_projected(
             .is_some()
     );
     assert!(project_intrinsic_payload(&source, &recovery, EventType::OUT_OF_RANGE, None).is_none());
-    assert!(project_intrinsic_payload(
-        &source,
-        &EventStateChange {
-            from: EventState::NORMAL,
-            to: EventState::HIGH_LIMIT,
-        },
-        EventType::NONE,
-        None,
-    )
-    .is_none());
+    assert!(
+        project_intrinsic_payload(
+            &source,
+            &EventStateChange {
+                from: EventState::NORMAL,
+                to: EventState::HIGH_LIMIT,
+            },
+            EventType::NONE,
+            None,
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -392,16 +394,18 @@ fn malformed_required_builtin_data_fails_closed() {
     let mut source =
         BuiltInProjectionObject::new(1, ObjectType::ANALOG_INPUT, PropertyValue::Real(85.0), None);
     source.status_flags = PropertyValue::Unsigned(0);
-    assert!(project_intrinsic_payload(
-        &source,
-        &EventStateChange {
-            from: EventState::NORMAL,
-            to: EventState::HIGH_LIMIT,
-        },
-        EventType::OUT_OF_RANGE,
-        None,
-    )
-    .is_none());
+    assert!(
+        project_intrinsic_payload(
+            &source,
+            &EventStateChange {
+                from: EventState::NORMAL,
+                to: EventState::HIGH_LIMIT,
+            },
+            EventType::OUT_OF_RANGE,
+            None,
+        )
+        .is_none()
+    );
 }
 
 #[test]

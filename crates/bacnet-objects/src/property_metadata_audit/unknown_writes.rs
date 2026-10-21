@@ -76,10 +76,12 @@ fn unknown_writes_optional_staging_names_use_current_presence() {
     let mut config = staging_config();
     config.stage_names = None;
     let mut absent = StagingObject::new(1, "absent", config).unwrap();
-    assert!(!absent
-        .property_metadata()
-        .iter()
-        .any(|row| row.property_identifier == PropertyIdentifier::STAGE_NAMES));
+    assert!(
+        !absent
+            .property_metadata()
+            .iter()
+            .any(|row| row.property_identifier == PropertyIdentifier::STAGE_NAMES)
+    );
     for value in [PropertyValue::Null, PropertyValue::List(vec![])] {
         assert_eq!(
             code(

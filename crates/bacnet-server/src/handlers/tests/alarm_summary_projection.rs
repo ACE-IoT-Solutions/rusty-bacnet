@@ -254,10 +254,12 @@ fn excluded_state_and_notify_types_short_circuit_malformed_later_fields() {
     let mut encoded = BytesMut::new();
     handle_get_alarm_summary(&db, &mut encoded).unwrap();
     assert!(encoded.is_empty());
-    assert!(GetAlarmSummaryAck::decode(&encoded)
-        .unwrap()
-        .entries
-        .is_empty());
+    assert!(
+        GetAlarmSummaryAck::decode(&encoded)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
 }
 
 #[test]

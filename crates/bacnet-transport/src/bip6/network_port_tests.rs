@@ -75,9 +75,11 @@ async fn the_lease_is_retained_once_before_start_and_released_by_stop() {
     transport
         .retain_network_port_lease_internal(Arc::clone(&lease))
         .unwrap();
-    assert!(transport
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        transport
+            .retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
     let _rx = transport.start().await.unwrap();
     // The started transport reports its bind and VMAC.
     let port = transport.bip6_port().unwrap();
@@ -93,9 +95,11 @@ async fn the_lease_is_retained_once_before_start_and_released_by_stop() {
     transport.stop().await.unwrap();
     assert_eq!(Arc::strong_count(&lease), 1);
     // A transport that has started takes no lease.
-    assert!(transport
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        transport
+            .retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
 }
 
 #[tokio::test]

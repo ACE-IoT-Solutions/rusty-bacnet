@@ -115,11 +115,11 @@ impl BACnetObject for CustomDevice {
     ) -> Result<PropertyValue, Error> {
         match property {
             PropertyIdentifier::OBJECT_IDENTIFIER => {
-                return Ok(PropertyValue::ObjectIdentifier(oid(123)))
+                return Ok(PropertyValue::ObjectIdentifier(oid(123)));
             }
             PropertyIdentifier::VENDOR_IDENTIFIER => return Ok(PropertyValue::Unsigned(42)),
             PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED => {
-                return Ok(PropertyValue::Unsigned(1476))
+                return Ok(PropertyValue::Unsigned(1476));
             }
             _ => {}
         }

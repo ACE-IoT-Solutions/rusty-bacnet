@@ -735,7 +735,7 @@ flags-only session the same (#1831). The SC screen (#967) shows which hub is in 
 | skipped | color-eyre, better-panic, human-panic, template config stacks | | | the panic hook above already restores the terminal |
 
 - **MSRV.** The highest requirement is 1.88 (ratatui), against a workspace MSRV
-  of 1.93. ratatui has raised its MSRV in a patch release before, so the
+  of 1.95. ratatui has raised its MSRV in a patch release before, so the
   workspace uses `resolver = "3"`, which prefers dependency versions compatible
   with the declared `rust-version` when the lock file is updated. The committed
   lock file, `--locked`, and the MSRV CI job remain the backstop.
@@ -860,7 +860,7 @@ TSM counters; an opt-in SC hub admin view of connected nodes.
   `tui/` inside bacnet-cli with a shared `core/`.
 - **Terminal size:** 80x24 functional, 120x40 full layout, a notice below the
   minimum.
-- **MSRV and resolution:** `resolver = "3"` with MSRV 1.93; the MSRV CI job is
+- **MSRV and resolution:** `resolver = "3"` with MSRV 1.95; the MSRV CI job is
   the backstop.
 - **Profiles:** TOML in the platform config directory with an environment
   override; flags-only runs stay supported.

@@ -31,8 +31,8 @@ use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::read::{rpm_failure, unreachable, Halt, Reader, RpmFailure};
-use crate::tui::format::{name_text, MAX_NAME_CHARS};
+use super::read::{Halt, Reader, RpmFailure, rpm_failure, unreachable};
+use crate::tui::format::{MAX_NAME_CHARS, name_text};
 use crate::tui::point::{ReadName, ReqId};
 
 /// The most names one ReadPropertyMultiple asks for, however large the
@@ -356,7 +356,7 @@ async fn read_batch<T: TransportPort + 'static>(
                     reader.rpm = false;
                 }
                 RpmFailure::Other if unreachable(&error) => {
-                    return (Vec::new(), Some(Halt::Device(error)))
+                    return (Vec::new(), Some(Halt::Device(error)));
                 }
                 // Too large: later batches ask for fewer, and this one is
                 // read a name at a time.
@@ -378,7 +378,7 @@ async fn read_batch<T: TransportPort + 'static>(
         {
             Ok(data) => read.push((object, named(name_text(&data)))),
             Err(Halt::Device(error)) if unreachable(&error) => {
-                return (read, Some(Halt::Device(error)))
+                return (read, Some(Halt::Device(error)));
             }
             Err(Halt::Device(_)) => read.push((object, ReadName::Refused)),
             Err(Halt::Cancelled) => return (read, Some(Halt::Cancelled)),

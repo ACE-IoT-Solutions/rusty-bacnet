@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     group::{GlobalGroupObject, GroupObject, StructuredViewObject},
     traits::BACnetObject,
@@ -7,7 +8,6 @@ use bacnet_types::constructed::{
     AccessResult, BACnetDeviceObjectPropertyReference, PropertyReference, ReadAccessSpecification,
 };
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 const EMPTY: &[u8] = &[];
 
@@ -82,7 +82,7 @@ pub(super) fn assert_cases(
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     let members = group_member_rows(db, oid, cases.iter().map(|&(p, i, _)| (p, i)));
     let budget = crate::server::ReadPropertyMultipleBudget {
         max_result_elements: cases.len() + members,

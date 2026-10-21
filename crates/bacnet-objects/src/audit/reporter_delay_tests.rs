@@ -10,9 +10,11 @@ fn reporter_delay_pair_is_optional_typed_scalar_and_nonnullable_relinquishment()
     ] {
         assert!(!reporter.property_list().contains(&property));
         assert!(reporter.read_property(property, None).is_err());
-        assert!(reporter
-            .write_property(property, None, PropertyValue::Null, None)
-            .is_err());
+        assert!(
+            reporter
+                .write_property(property, None, PropertyValue::Null, None)
+                .is_err()
+        );
     }
     assert!(AuditSendDelay::new(3601).is_err());
     for seconds in [0, 1, 3600] {
@@ -48,14 +50,16 @@ fn reporter_delay_pair_is_optional_typed_scalar_and_nonnullable_relinquishment()
             reporter
                 .write_property(property, None, PropertyValue::Null, None)
                 .unwrap();
-            assert!(reporter
-                .write_property(
-                    property,
-                    None,
-                    PropertyValue::CharacterString("bad".into()),
-                    None
-                )
-                .is_err());
+            assert!(
+                reporter
+                    .write_property(
+                        property,
+                        None,
+                        PropertyValue::CharacterString("bad".into()),
+                        None
+                    )
+                    .is_err()
+            );
         }
         reporter.set_send_now(true).unwrap();
         reporter.set_send_now(true).unwrap();
@@ -67,7 +71,9 @@ fn reporter_delay_pair_is_optional_typed_scalar_and_nonnullable_relinquishment()
         );
     }
     reporter.set_maximum_send_delay(None).unwrap();
-    assert!(!reporter
-        .property_list()
-        .contains(&PropertyIdentifier::SEND_NOW));
+    assert!(
+        !reporter
+            .property_list()
+            .contains(&PropertyIdentifier::SEND_NOW)
+    );
 }

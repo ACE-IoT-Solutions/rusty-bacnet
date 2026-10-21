@@ -25,7 +25,7 @@ fn units(object: &dyn BACnetObject) -> PropertyValue {
 
 /// Run the Units checks on one freshly built numeric value object.
 macro_rules! assert_units_row {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         let kind = object.object_identifier().object_type();
         assert_eq!(
@@ -34,9 +34,11 @@ macro_rules! assert_units_row {
             "{kind:?}"
         );
         assert!(object.property_list().contains(&PropertyIdentifier::UNITS));
-        assert!(object
-            .required_properties()
-            .contains(&PropertyIdentifier::UNITS));
+        assert!(
+            object
+                .required_properties()
+                .contains(&PropertyIdentifier::UNITS)
+        );
         assert!(!object.is_array_property(PropertyIdentifier::UNITS));
 
         object.set_units(EngineeringUnits::DEGREES_CELSIUS).unwrap();

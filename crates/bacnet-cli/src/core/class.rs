@@ -99,11 +99,7 @@ const COMMANDS: &[(&str, Class)] = &[
 /// it stops, so it is a read; one of 0 never expires (Clause 13.14.1.1.4)
 /// and outlives the CLI, so it is a write.
 pub(crate) fn of_subscribe(lifetime: u32) -> Class {
-    if lifetime == 0 {
-        Write
-    } else {
-        Read
-    }
+    if lifetime == 0 { Write } else { Read }
 }
 
 /// The class of a subcommand, by name or alias;

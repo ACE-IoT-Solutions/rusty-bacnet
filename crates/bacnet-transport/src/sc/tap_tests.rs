@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bytes::{Bytes, BytesMut};
@@ -12,7 +12,7 @@ use bytes::{Bytes, BytesMut};
 use super::*;
 use crate::port::TransportPort;
 use crate::sc::LoopbackWebSocket;
-use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage, Vmac};
+use crate::sc_frame::{ScFunction, ScMessage, Vmac, decode_sc_message, encode_sc_message};
 use crate::tap::{FrameTapReceiver, TappedFrame};
 
 const NODE: Vmac = [0x01; 6];

@@ -17,9 +17,9 @@ use bacnet_types::constructed::{
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 use bytes::BytesMut;
+use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use pyo3::IntoPyObjectExt;
 
 use super::audit_projection::recipient_to_py;
 use super::date::date_value;
