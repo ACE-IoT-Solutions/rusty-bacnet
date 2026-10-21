@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{
-    next_from_router, recv, reject_of, wire, FromRouter, LONGEST, REMOTE, TOO_LONG,
+    next_from_router, pump, recv, reject_of, wire, FromRouter, LONGEST, REMOTE, TOO_LONG,
 };
 use crate::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 
@@ -137,6 +137,9 @@ async fn non_router_drops_and_counts_a_frame_from_an_over_long_source_mac() {
 
     let apdu = recv(&mut apdus).await;
     assert_eq!(apdu.source_mac, mac(LONGEST));
+    // The controls behind the last APDU reach their receiver once the
+    // APDU receiver is polled again (#1713).
+    pump(&mut apdus);
     let control = recv(&mut controls).await;
     assert_eq!(control.source_mac, mac(LONGEST));
     assert_eq!(network.address_length_drops(), 4);

@@ -91,7 +91,7 @@ fn db_with_analog(
 /// Receives one Confirmed ReadProperty, answers ComplexAck with the given
 /// Real value, returns (invoke_id, peer-observed endpoint MAC).
 async fn peer_respond_once(
-    rx: &mut mpsc::Receiver<bacnet_network::layer::ReceivedApdu>,
+    rx: &mut bacnet_network::layer::ApduReceiver,
     net: &NetworkLayer<BipTransport>,
     value: f32,
 ) -> (u8, MacAddr) {

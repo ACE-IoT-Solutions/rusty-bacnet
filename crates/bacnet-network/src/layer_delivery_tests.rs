@@ -83,6 +83,11 @@ async fn opted_in_network_control_stream_preserves_start_apdu_receiver() {
     .await
     .unwrap();
 
+    // Polling the APDU receiver decodes the message, which goes to the
+    // control receiver and yields no APDU (#1713).
+    assert!(timeout(Duration::from_millis(25), apdus.recv())
+        .await
+        .is_err());
     let received = timeout(Duration::from_secs(1), controls.recv())
         .await
         .unwrap()
@@ -94,9 +99,6 @@ async fn opted_in_network_control_stream_preserves_start_apdu_receiver() {
         received.npdu.message_type,
         Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
-    assert!(timeout(Duration::from_millis(25), apdus.recv())
-        .await
-        .is_err());
     assert!(network.enable_network_control_receiver().is_err());
 
     network.stop().await.unwrap();

@@ -132,7 +132,7 @@ async fn dial_node(hub_port: u16, node_tls: ScNodeTlsConfig) -> TlsWebSocket {
 /// Controlled SC peer (real hub relay) exposing provenance + source MAC.
 struct ControlledPeer {
     net: NetworkLayer<ScTransport<TlsWebSocket>>,
-    rx: tokio::sync::mpsc::Receiver<bacnet_network::layer::ReceivedApdu>,
+    rx: bacnet_network::layer::ApduReceiver,
     vmac: [u8; 6],
 }
 

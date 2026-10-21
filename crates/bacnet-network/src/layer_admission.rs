@@ -1,12 +1,9 @@
-use super::receive::{self, Inbound};
+use super::ingress::{ApduReceiver, Ingress};
 use super::*;
-use bacnet_router_core::node::Node;
-use bacnet_transport::warn_throttle::WarnThrottle;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::task::Poll;
 use tokio::sync::mpsc;
-use tracing::debug;
 
 const QUEUE_CAPACITY: usize = 256;
 const APDU_SOURCE_CAPACITY: usize = 16;
@@ -148,9 +145,10 @@ impl QueueAdmissionCounters {
 /// High-water/drop totals survive through an owned [`Self::counters`] handle.
 ///
 /// This wrapper deliberately does not expose the underlying receiver: all
-/// dequeues must update the snapshot. Use [`NetworkLayer::start`], or a router
-/// started without [`RouterOptions::track_admission`](crate::router::RouterOptions::track_admission),
-/// when a plain `mpsc::Receiver` is required instead, or
+/// dequeues must update the snapshot. Use [`NetworkLayer::start`] for the
+/// raw [`ApduReceiver`], a router started without
+/// [`RouterOptions::track_admission`](crate::router::RouterOptions::track_admission)
+/// for a plain `mpsc::Receiver`, or
 /// [`NetworkLayer::enable_network_control_receiver`] for raw controls.
 #[derive(Debug)]
 pub struct AdmissionReceiver<T> {
@@ -334,6 +332,25 @@ impl<T> AdmissionSender<T> {
         item: T,
         source: Option<AdmissionSource>,
     ) -> Result<(), mpsc::error::TrySendError<T>> {
+        if !self.track_depth {
+            // A raw receiver dequeues without accounting and has no quota, so
+            // only a refusal is counted, and only a refusal takes the lock: an
+            // admitted item costs the channel alone (#1713).
+            let result = self.tx.try_send(item);
+            if let Err(error) = &result {
+                let mut state = self
+                    .counters
+                    .0
+                    .lock()
+                    .expect("queue admission counters poisoned");
+                let drops = match error {
+                    mpsc::error::TrySendError::Full(_) => &mut state.snapshot.full_drops,
+                    mpsc::error::TrySendError::Closed(_) => &mut state.snapshot.closed_drops,
+                };
+                *drops = drops.saturating_add(1);
+            }
+            return result;
+        }
         // Serialize the admission and dequeue accounting, not asynchronous
         // waiting. Each queue has its own short critical section, and no lock
         // survives a poll/try operation. Closed keeps its lifecycle semantics;
@@ -449,7 +466,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         ),
         Error,
     > {
-        if self.dispatch_task.is_some() {
+        if self.started {
             return Err(Error::Encoding(
                 "network-control receiver must be enabled before NetworkLayer::start".into(),
             ));
@@ -465,30 +482,45 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         Ok((rx, counters))
     }
 
-    /// Start the network layer. Returns a receiver for incoming APDUs.
+    /// Start the network layer. Returns the receiver for incoming APDUs.
     ///
-    /// This starts the underlying transport and spawns a dispatch task that
-    /// decodes incoming NPDUs and extracts APDUs. The queue holds 256 items;
-    /// failed admission drops the arriving APDU with its payload, metadata and reply
-    /// sender without waiting for the consumer, sending reply bytes or generating
-    /// a wire rejection. Control capacity is independent. This raw receiver has
-    /// no per-source quota, admission snapshot or depth/high-water tracking;
-    /// Full/Closed drops are counted internally, with Closed > Full precedence.
+    /// This starts the underlying transport. The [`ApduReceiver`] decodes the
+    /// transport's NPDUs in the task that polls it, with no dispatch task or
+    /// second queue between them (#1713): the transport's queue is the only
+    /// buffer and bounds memory under overload, and the transport counts what
+    /// it drops. Network messages reach an opted-in control receiver only
+    /// while the APDU receiver is polled. Receive is cancel safe.
     ///
-    /// Close retains queued APDUs; drop discards them. Either ends dispatch on
-    /// the next APDU admission attempt, also ending control delivery.
-    /// [`Self::stop`] after start leaves queued items drainable. Use
-    /// [`Self::start_with_admission`] for snapshots and per-source fairness; see
-    /// the [receive-queue contract](crate::layer#receive-queue-admission) for the
-    /// raw/tracked matrix and ownership/lifecycle details.
-    pub async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedApdu>, Error> {
-        self.start_dispatch(false).await.map(|(rx, _)| rx)
+    /// Close retains the transport's queued NPDUs for draining; drop discards
+    /// them. [`Self::stop`] after start leaves them drainable too. Use
+    /// [`Self::start_with_admission`] for a tracked queue with snapshots and
+    /// per-source fairness, whose controls flow independently; see the
+    /// [receive-queue contract](crate::layer#receive-queue-admission).
+    pub async fn start(&mut self) -> Result<ApduReceiver, Error> {
+        if self.started {
+            return Err(Error::Encoding("NetworkLayer is already started".into()));
+        }
+        let npdu_rx = self.transport.start().await?;
+        self.started = true;
+        // Taken once the transport knows its own addresses.
+        self.local_broadcasts = self.transport.local_broadcast_destinations();
+        Ok(ApduReceiver::new(npdu_rx, self.ingress()))
+    }
+
+    /// The receive state for this layer's start: its totals and controls.
+    fn ingress(&mut self) -> Ingress {
+        Ingress::new(
+            Arc::clone(&self.node_totals),
+            self.network_control_tx.take(),
+            Arc::clone(&self.network_control_ingress_sequence),
+        )
     }
 
     /// Start with an APDU receiver that also exposes admission snapshots.
     ///
-    /// This is an alternative to [`Self::start`], with the same transport and
-    /// dispatch lifecycle. [`Self::stop`] closes admission but leaves
+    /// This is an alternative to [`Self::start`]. It runs a dispatch task that
+    /// decodes into its own queue, so controls flow whether or not this
+    /// receiver is polled. [`Self::stop`] closes admission but leaves
     /// queued items available to drain. Dropping the receiver discards those
     /// items and releases their reply channels without sending reply bytes.
     ///
@@ -523,90 +555,32 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// # Ok(()) }
     /// ```
     pub async fn start_with_admission(&mut self) -> Result<AdmissionReceiver<ReceivedApdu>, Error> {
-        let (rx, counters) = self.start_dispatch(true).await?;
+        let (rx, counters) = self.start_dispatch().await?;
         Ok(AdmissionReceiver::from_apdu_parts(rx, counters))
     }
 
     async fn start_dispatch(
         &mut self,
-        track_depth: bool,
     ) -> Result<(mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
+        if self.started {
+            return Err(Error::Encoding("NetworkLayer is already started".into()));
+        }
         let mut npdu_rx = self.transport.start().await?;
+        self.started = true;
         // Taken once the transport knows its own addresses.
         self.local_broadcasts = self.transport.local_broadcast_destinations();
-        let mut network_control_tx = self.network_control_tx.take();
-        let network_control_ingress_sequence = Arc::clone(&self.network_control_ingress_sequence);
-        let totals = Arc::clone(&self.node_totals);
-        let (apdu_tx, apdu_rx) = AdmissionSender::channel(track_depth);
+        let mut ingress = self.ingress();
+        let (apdu_tx, apdu_rx) = AdmissionSender::channel(true);
         let counters = apdu_tx.counters.clone();
 
         let dispatch_task = tokio::spawn(async move {
-            // The layer's receive rules are the router core's (#1795).
-            let mut node = Node::new();
-            let drop_warning = WarnThrottle::default();
-            while let Some(mut received) = npdu_rx.recv().await {
-                // Moved, not cloned: nothing below reads the frame again.
-                let frame = std::mem::take(&mut received.npdu);
-                let inbound = receive::admit(
-                    &mut node,
-                    &totals,
-                    &drop_warning,
-                    &received.source_mac,
-                    received.link_layer_group,
-                    frame,
-                    network_control_tx.is_some(),
-                );
-                match inbound {
-                    Inbound::Apdu {
-                        apdu,
-                        source_network,
-                        is_group,
-                        global_broadcast,
-                    } => {
-                        let apdu = ReceivedApdu {
-                            router_response: None,
-                            direct_response: received.direct_response.clone(),
-                            apdu,
-                            source_mac: received.source_mac,
-                            ingress_network: None,
-                            source_network,
-                            link_layer_group: received.link_layer_group,
-                            is_group,
-                            global_broadcast,
-                            data_attributes: received.data_attributes,
-                            provenance: received.provenance,
-                            reply_tx: received.reply_tx,
-                        };
-                        match apdu_tx.try_send_apdu(apdu) {
-                            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
-                            Err(mpsc::error::TrySendError::Closed(_)) => break,
-                        }
-                    }
-                    Inbound::Control(Some(npdu)) => {
-                        let Some(tx) = network_control_tx.as_ref() else {
-                            continue;
-                        };
-                        let ingress_sequence =
-                            next_ingress_sequence(network_control_ingress_sequence.as_ref());
-                        let control = ReceivedNetworkControl {
-                            npdu,
-                            source_mac: received.source_mac,
-                            link_layer_group: received.link_layer_group,
-                            data_attributes: received.data_attributes,
-                            provenance: received.provenance,
-                            ingress_sequence,
-                        };
-                        match tx.try_send(control) {
-                            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
-                            Err(mpsc::error::TrySendError::Closed(_)) => {
-                                network_control_tx = None;
-                                debug!(
-                                    "Network-control receiver closed; resuming discard behavior"
-                                );
-                            }
-                        }
-                    }
-                    Inbound::Control(None) | Inbound::Dropped => {}
+            while let Some(received) = npdu_rx.recv().await {
+                let Some(apdu) = ingress.take(received) else {
+                    continue;
+                };
+                match apdu_tx.try_send_apdu(apdu) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                 }
             }
         });

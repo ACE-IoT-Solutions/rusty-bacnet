@@ -8,7 +8,6 @@
 //! [`TransportPort::bip6_port`], and publishes its VMAC and multicast group
 //! too.
 use super::*;
-use bacnet_network::layer::ReceivedApdu;
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
     /// Select the concrete built-in Network Port for this owned B/IP or
@@ -201,7 +200,7 @@ pub(super) async fn start<T: TransportPort + 'static>(
 ) -> Result<
     (
         NetworkLayer<T>,
-        mpsc::Receiver<ReceivedApdu>,
+        bacnet_network::layer::ApduReceiver,
         Arc<super::audit_recipient_routes::AuditRoutes>,
         Option<mpsc::Receiver<bacnet_network::layer::ReceivedNetworkControl>>,
     ),

@@ -51,7 +51,10 @@ fn database(confirmed: bool) -> ObjectDatabase {
     db.add(Box::new(reporter)).unwrap();
     db
 }
-async fn network() -> (NetworkLayer<BipTransport>, mpsc::Receiver<ReceivedApdu>) {
+async fn network() -> (
+    NetworkLayer<BipTransport>,
+    bacnet_network::layer::ApduReceiver,
+) {
     let mut network = NetworkLayer::new(BipTransport::new(
         Ipv4Addr::LOCALHOST,
         0,
@@ -89,7 +92,7 @@ fn session(
         session
     }
 }
-async fn receive(receiver: &mut mpsc::Receiver<ReceivedApdu>) -> ReceivedApdu {
+async fn receive(receiver: &mut bacnet_network::layer::ApduReceiver) -> ReceivedApdu {
     timeout(WAIT, receiver.recv()).await.unwrap().unwrap()
 }
 async fn send(network: &NetworkLayer<BipTransport>, mac: &[u8], pdu: Apdu) {

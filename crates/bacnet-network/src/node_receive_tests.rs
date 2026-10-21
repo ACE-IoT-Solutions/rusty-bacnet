@@ -8,7 +8,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 
 use crate::layer::{Counters, NetworkLayer};
-use crate::loopback_fixture::{recv, wire, APDU};
+use crate::loopback_fixture::{pump, recv, wire, APDU};
 use bacnet_router_core::node::Node;
 
 #[tokio::test]
@@ -48,6 +48,9 @@ async fn npdus_for_another_network_reach_neither_receiver_and_are_counted() {
     );
     let global = recv(&mut apdus).await;
     assert!(global.is_group && global.global_broadcast);
+    // The controls behind the last APDU reach their receiver once the
+    // APDU receiver is polled again (#1713).
+    pump(&mut apdus);
 
     let local = recv(&mut controls).await;
     assert_eq!(local.npdu.destination, None, "the local message first");

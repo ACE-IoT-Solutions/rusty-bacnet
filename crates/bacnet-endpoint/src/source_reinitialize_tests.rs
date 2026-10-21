@@ -52,7 +52,7 @@ const FAIL: u8 = 3;
 async fn session_mac(
     session: &EndpointSession<BipTransport>,
     peer: &NetworkLayer<BipTransport>,
-    replies: &mut mpsc::Receiver<ReceivedApdu>,
+    replies: &mut bacnet_network::layer::ApduReceiver,
 ) -> MacAddr {
     session
         .egress
@@ -75,7 +75,7 @@ async fn session_mac(
 async fn reinitialize(
     peer: &NetworkLayer<BipTransport>,
     session: &[u8],
-    replies: &mut mpsc::Receiver<ReceivedApdu>,
+    replies: &mut bacnet_network::layer::ApduReceiver,
     state: ReinitializedState,
     password: Option<&str>,
     invoke_id: u8,

@@ -10,22 +10,33 @@
 //! [`NetworkLayer`] and [`BACnetRouter`](crate::router::BACnetRouter) use the
 //! same drop-arriving policy for application delivery. Each receive queue holds
 //! **256 items**. Admission never waits for a consumer and never evicts an older
-//! queued item. NetworkLayer APDU and opted-in control queues have independent
-//! capacities, so saturation of either does not stall admission to the other.
-//! All router ports share one local APDU queue; its saturation does not stop
-//! forwarding or inline network-message handling.
+//! queued item. A tracked NetworkLayer APDU queue and an opted-in control queue
+//! have independent capacities, so saturation of either does not stall
+//! admission to the other. All router ports share one local APDU queue; its
+//! saturation does not stop forwarding or inline network-message handling.
+//!
+//! The raw NetworkLayer receiver is different: [`ApduReceiver`] has no queue
+//! of its own (#1713). It decodes the transport's NPDUs in the task that polls
+//! it, so **network controls flow only while it is polled**, and the
+//! transport's queue (256 NPDUs on every built-in transport) is the only
+//! buffer. Under overload that queue bounds memory and the transport counts
+//! what it drops: B/IP and B/IPv6 report them as `npdu_channel_full` in their
+//! `receive_counters()`.
 //!
 //! ## Raw and tracked receivers
 //!
 //! | Receiver kind | Entry points | Capacity | Per-source quota | Accounting |
 //! | --- | --- | --- | --- | --- |
-//! | Raw APDU | [`NetworkLayer::start`], [`BACnetRouter::start`](crate::router::BACnetRouter::start) with [`RouterOptions::new`](crate::router::RouterOptions::new) | 256 | None | Full/Closed counted internally; no admission snapshot or depth/high-water tracking |
+//! | Raw APDU, NetworkLayer | [`NetworkLayer::start`] ([`ApduReceiver`]) | The transport's queue | None | Drops counted by the transport; no admission snapshot |
+//! | Raw APDU, router | [`BACnetRouter::start`](crate::router::BACnetRouter::start) with [`RouterOptions::new`](crate::router::RouterOptions::new) | 256 | None | Full/Closed counted internally; no admission snapshot or depth/high-water tracking |
 //! | Tracked APDU | [`NetworkLayer::start_with_admission`], [`RouterOptions::track_admission`](crate::router::RouterOptions::track_admission) | 256 | 16 queued APDUs per key, defined below | Exact depth/high-water and Full/fairness/Closed totals via [`AdmissionReceiver::counters`] |
 //! | Raw control | [`NetworkLayer::enable_network_control_receiver`], [`RouterOptions::network_control_receiver`](crate::router::RouterOptions::network_control_receiver) | 256, separate from APDUs | None | Full/Closed counted internally; no admission snapshot or depth/high-water tracking |
 //! | Tracked control | [`NetworkLayer::enable_network_control_receiver_with_admission`], [`RouterOptions::network_control_receiver_with_admission`](crate::router::RouterOptions::network_control_receiver_with_admission) | 256, separate from APDUs | None | Exact depth/high-water and Full/Closed totals; fairness always zero |
 //!
-//! Raw receivers remain `tokio::sync::mpsc::Receiver`; tracked receivers are the
-//! additive [`AdmissionReceiver`] alternatives. APDU and control opt-ins are
+//! The router's raw receivers and the raw control receiver are
+//! `tokio::sync::mpsc::Receiver`s; NetworkLayer's raw APDU receiver is an
+//! [`ApduReceiver`]; tracked receivers are the [`AdmissionReceiver`]
+//! alternatives. APDU and control opt-ins are
 //! independent. Routers process network messages inline; their control receiver
 //! gets only the Reject-Message-To-Network messages addressed to the router
 //! itself, and every closed admission attempt counts as Closed without
@@ -67,8 +78,10 @@
 //! Neither operation resets high-water/drop totals, and discarding queued items
 //! is not an admission drop.
 //!
-//! NetworkLayer ends its dispatcher on the first APDU admission attempt after
-//! that receiver closes/drops, also ending control delivery. A closed/dropped
+//! A tracked NetworkLayer ends its dispatcher on the first APDU admission
+//! attempt after that receiver closes/drops, also ending control delivery.
+//! Closing an [`ApduReceiver`] stops the transport handing up NPDUs while
+//! those it queued stay drainable; dropping it discards them. A closed/dropped
 //! control receiver instead disables only that stream on the first subsequent
 //! control admission attempt. Later discarded controls (like controls received
 //! without either opt-in) are not admission attempts. Router forwarding and
@@ -77,7 +90,7 @@
 //!
 //! [`NetworkLayer::stop`] after start and [`BACnetRouter::stop`](crate::router::BACnetRouter::stop)
 //! end dispatch without waiting for application queues to drain; queued items
-//! remain drainable. Stopping is not an admission drop. An independently owned
+//! remain drainable, for an [`ApduReceiver`] the NPDUs the transport queued. Stopping is not an admission drop. An independently owned
 //! [`QueueAdmissionCounters`] handle remains readable after the receiver, layer,
 //! or router is dropped; it keeps accounting alive, not the channel or tasks.
 //! [`snapshot`](QueueAdmissionCounters::snapshot) is consistent for one queue,
@@ -110,6 +123,10 @@ pub use network_message::{NetworkReport, ReceivedNetworkReport, SENDABLE_NETWORK
 #[path = "layer_receive.rs"]
 pub(crate) mod receive;
 pub use receive::Counters;
+
+#[path = "layer_ingress.rs"]
+mod ingress;
+pub use ingress::ApduReceiver;
 
 #[path = "layer_admission.rs"]
 mod admission;
@@ -336,6 +353,8 @@ pub struct NetworkLayer<T: TransportPort> {
     transport: T,
     response_scope: bacnet_transport::port::DirectResponseScope,
     dispatch_task: Option<JoinHandle<()>>,
+    /// Whether [`Self::start`] or [`Self::start_with_admission`] has run.
+    started: bool,
     network_control_tx: Option<AdmissionSender<ReceivedNetworkControl>>,
     network_control_ingress_sequence: Arc<AtomicU64>,
     /// What the dispatch task's node dropped, since the layer was made.
@@ -356,6 +375,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
             transport,
             response_scope: Default::default(),
             dispatch_task: None,
+            started: false,
             network_control_tx: None,
             network_control_ingress_sequence: Arc::new(AtomicU64::new(0)),
             node_totals: Arc::default(),

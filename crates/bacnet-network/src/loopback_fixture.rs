@@ -65,11 +65,41 @@ pub(crate) fn wire(
     out
 }
 
-pub(crate) async fn recv<T>(rx: &mut mpsc::Receiver<T>) -> T {
-    timeout(Duration::from_secs(2), rx.recv())
+pub(crate) async fn recv<R: Receive>(rx: &mut R) -> R::Item {
+    timeout(Duration::from_secs(2), rx.receive())
         .await
         .expect("timed out waiting for the network layer")
         .expect("channel closed")
+}
+
+/// Poll `apdus` once more, finding no APDU, so the network messages the
+/// transport queued after the last APDU are decoded and reach the control
+/// receiver: the layer decodes only while its APDU receiver is polled (#1713).
+pub(crate) fn pump(apdus: &mut crate::layer::ApduReceiver) {
+    assert!(matches!(
+        apdus.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+/// A receiver [`recv`] can wait on: a channel, or the layer's APDU receiver.
+pub(crate) trait Receive {
+    type Item;
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<Self::Item>>;
+}
+
+impl<T> Receive for mpsc::Receiver<T> {
+    type Item = T;
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<T>> {
+        self.recv()
+    }
+}
+
+impl Receive for crate::layer::ApduReceiver {
+    type Item = crate::layer::ReceivedApdu;
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<Self::Item>> {
+        self.recv()
+    }
 }
 
 /// What a router sends one peer: the frames, and the MAC each unicast among
