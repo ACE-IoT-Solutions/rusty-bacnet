@@ -1,7 +1,11 @@
 # Rusty BACnet benchmarks
 
-This page reports what rusty-bacnet 0.13.0 does on one machine, measured on
-2026-10-13: how fast it encodes and decodes, how long a request takes on each
+This page reports what rusty-bacnet does on one machine: the 0.14.0
+development branch after the round-trip performance pass of
+[#1713](https://github.com/jscott3201/rusty-bacnet/issues/1713), measured on
+2026-10-21, with an A/B comparison against 0.13.0 on the same machine
+([section 1.1](#11-what-changed-since-0130)). It covers how fast it encodes
+and decodes, how long a request takes on each
 transport, how many requests a server answers, what routing costs, how close
 MS/TP gets to the wire, and how small the embedded builds are. It also says
 how each number was measured, so you can repeat it, and where the numbers are
@@ -30,44 +34,42 @@ network adds its own delay, and a real field bus is far slower than the
 host.
 
 - **Request latency on IP transports.** One ReadProperty round trip, client
-  to server and back, takes a median of 35 microseconds over BACnet/IP
-  (B/IP, BACnet over UDP and IPv4), 31 microseconds over BACnet/IPv6
-  (B/IPv6), and 54 microseconds over BACnet Secure Connect (BACnet/SC,
+  to server and back, takes a median of 29 microseconds over BACnet/IP
+  (B/IP, BACnet over UDP and IPv4), 25 microseconds over BACnet/IPv6
+  (B/IPv6), and 48 microseconds over BACnet Secure Connect (BACnet/SC,
   BACnet over Transport Layer Security (TLS) WebSockets through a hub)
   with mutual TLS
   ([section 4](#4-transports)).
-- **Server throughput.** One B/IP server answered about 74,000
-  ReadProperty requests per second from 10 concurrent clients, and kept
-  65,000 to 70,000 requests per second from 25 to 100 clients. A weighted
+- **Server throughput.** One B/IP server answered about 82,000
+  ReadProperty requests per second from 10 concurrent clients, and 65,000
+  to 71,000 requests per second from 25 to 50 clients. Over B/IPv6 it
+  reached 101,000, and over BACnet/SC 93,000 with 50 clients. A weighted
   mix of reads, writes, ReadPropertyMultiple, change-of-value (COV)
-  subscriptions and Who-Is reached 76,800 operations per second with no
-  errors ([section 6](#6-scale-and-stress)). In a Linux container on the
-  same laptop, with 4 of its processors, the same scenarios ran 20% to 70%
-  faster: up to 117,000 requests per second
-  ([section 7.2](#72-stress-scenarios-inside-a-container)).
+  subscriptions and Who-Is reached 85,400 operations per second with no
+  errors ([section 6](#6-scale-and-stress)).
 - **Database size does not slow reads.** ReadProperty latency stayed at a
-  median of 33 to 34 microseconds from 100 to 10,000 objects; resident
-  memory grew by about 1.25 kilobytes per Analog Input object
+  median of 24 microseconds from 100 to 10,000 objects; resident memory
+  grew by about 1.3 kilobytes per Analog Input object
   ([section 6.2](#62-object-database-size)).
 - **Routing.** A request routed through `BACnetRouter` from one B/IP
-  network to another took a median of 49 microseconds against 31 direct,
-  so the router hop adds about 18 microseconds on loopback. Under load the
-  routed path delivered 57,000 requests per second, 84% of the direct
-  path's rate ([section 5](#5-routing)).
+  network to another took a median of 43 microseconds against 22 direct,
+  so the router hop adds about 21 microseconds on loopback. Under load the
+  routed path delivered 57,000 requests per second, 88% of the direct
+  path's rate at 50 clients ([section 5](#5-routing)).
 - **MS/TP efficiency.** Over a simulated RS-485 line, MS/TP (BACnet's
-  Master-Slave/Token-Passing serial link) reached 90% to 99% of the wire
+  Master-Slave/Token-Passing serial link) reached 90% to 100% of the wire
   limit for large replies at every baud rate from 9,600 to 115,200. For a
   small reply the fixed host overhead of about 7 milliseconds per request
-  matters more: 91% of the wire limit at 9,600 baud, 53% at 115,200
+  matters more: 93% of the wire limit at 9,600 baud, 52% at 115,200
   ([section 4.4](#44-mstp)).
 - **Embedded footprint.** Without an allocator, the MS/TP master node links
-  into 18.4 kilobytes of flash and 5.5 kilobytes of static RAM on a
+  into 17.9 kilobytes of flash and 5.5 kilobytes of static RAM on a
   Cortex-M3, the B/IP codec into 10.9 kilobytes of flash, and a two-port
-  B/IP-to-MS/TP router into 45.1 kilobytes of flash and 15.5 kilobytes of
+  B/IP-to-MS/TP router into 43.0 kilobytes of flash and 15.6 kilobytes of
   RAM ([section 8](#8-embedded-footprint)).
 - **Python.** A request through the Python package takes 70 to 100
-  microseconds, and one Python client reaches about 24,000 requests per
-  second with 10 in flight ([section 9](#9-python-bindings)).
+  microseconds, and one Python client reaches about 34,000 requests per
+  second with 10 in flight and 36,000 with 16 ([section 9](#9-python-bindings)).
 - **Resource limits by design.** A server accepts 64 COV subscriptions per
   subscriber by default, 16 confirmed requests in flight per client, a
   ReadPropertyMultiple answer of at most 256 results, and a BBMD (the B/IP
@@ -75,18 +77,68 @@ host.
   Some stress steps go past these limits on purpose; each place is noted
   where it shows.
 
+### 1.1 What changed since 0.13.0
+
+Since 0.13.0 the performance pass of
+[#1713](https://github.com/jscott3201/rusty-bacnet/issues/1713) cut the cost
+of a request round trip in several steps. The last of them, measured here,
+did three things:
+
+- The server's per-request handler state shrank from 3,248 to 976 bytes,
+  small enough for the memory allocator's fast path.
+- A received request carries its reply authority in one pointer each
+  instead of 88 bytes inline.
+- The network layer no longer runs a task between the transport and the
+  application: the receiver decodes each packet as it is read.
+
+Counted with callgrind (an instruction-counting profiler) on Linux, a B/IP
+ReadProperty round trip with client and server in one process went from
+47,610 to 41,454 instructions on one thread (13% fewer) and from 48,711 to
+42,775 on the multi-threaded runtime, with 22 heap allocations instead of 23
+and 2,316 bytes allocated instead of 4,588. Those counts compare the
+development branch just before this last step with it applied.
+
+**A/B against 0.13.0.** Each pair below ran back to back on this machine,
+alternating between the two builds. The 0.13.0 build ran with the
+benchmark harness of its own report (commit `deaeb745`); the new build ran
+with the current harness, which connects every client before a step's
+clock starts and keeps one latency record per client
+([#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714)). Both
+count one client's requests the same way.
+
+| Measure | 0.13.0 | This edition | Change |
+| --- | --- | --- | --- |
+| One stress client, ReadProperty (requests per second, two runs) | 29,289 and 29,432 | 40,294 and 39,666 | about 36% more |
+| One stress client, median latency (microseconds) | 33 | 22 to 23 | about a third less |
+| Routed B/IP to B/IP, 1 client (requests per second) | 17,693 | 22,755 | 29% more |
+| Routed B/IP to B/IP, 5 clients (requests per second) | 44,866 | 46,457 | 4% more |
+| Routed B/IP to B/IP, 10 clients (requests per second) | 50,004 | 52,928 | 6% more |
+| Routed B/IP to B/IP, 25 clients (requests per second) | 56,110 | 57,317 | 2% more |
+| Routed B/IP to B/IP, 50 clients (requests per second) | 54,812 | 57,605 | 5% more |
+| Routed B/IP to MS/TP at 115,200 baud, 1 client (requests per second) | 66 | 66 | the same: the serial line sets the rate |
+| Routed B/IP to MS/TP at 115,200 baud, 5 clients (requests per second) | 67 | 66 | the same |
+
+Against the 0.13.0 edition of this page, measured on 2026-10-13 on the same
+machine, the Criterion suites show the same direction: a B/IP ReadProperty
+round trip from 35.5 to 28.7 microseconds, B/IPv6 from 31.1 to 24.6, and
+BACnet/SC from 54.0 to 48.2; sequential B/IP ReadProperty from 29,300 to
+38,600 requests per second. Decoding a ReadProperty request fell from 19.9
+to 5.0 nanoseconds ([#1729](https://github.com/jscott3201/rusty-bacnet/issues/1729)).
+The router hop gained least: its own ports still hand packets between
+tasks, which this pass did not change.
+
 ## 2. Test environment
 
 | Item | Value |
 | --- | --- |
 | Machine | MacBook Pro (Mac17,2), Apple M5, 10 cores (4 performance, 6 efficiency), 16 gigabytes of memory |
-| Operating system | macOS 27.2 (build 26B5091g) |
+| Operating system | macOS 27.2 (build 26B5112a) |
 | Rust | rustc 1.99.0 (b940084d7 2026-09-28), release builds; Criterion suites use the `bench` profile |
 | TLS provider | rustls with aws-lc-rs |
-| Commit | The stack as released: `dev` at `497695c0` (the 0.13.0 release merge). The benchmark harness: commit `deaeb745`, which adds the scenarios and fixes this report describes and changes nothing outside `benchmarks/` but `Cargo.lock` |
-| Docker | Docker Desktop 29.8.2, Linux virtual machine with 4 processors and 4.8 gigabytes of memory; Alpine Linux 3.21 images with statically linked release binaries |
+| Commit | Branch `perf/round-trip-cuts`: `dev` at `f056aba2` with #1713's last cuts (commits `c5c780cb` to `85ee9cea`) and this report's harness fixes. The 0.13.0 A/B: tag `v0.13.0` with the harness of commit `deaeb745` |
+| Docker | Not re-run for this edition: [section 7](#7-docker-cross-network-results) is the 0.13.0 run, on Docker Desktop 29.8.2 |
 | Python | CPython 3.13.15, the `rusty-bacnet` package built with `maturin develop --release` |
-| Date | 2026-10-13 |
+| Date | 2026-10-21 (sections 6.6 and 7: 2026-10-13) |
 
 How the numbers were taken:
 
@@ -102,10 +154,11 @@ How the numbers were taken:
 - A laptop changes its clock speed with temperature and load. The
   efficiency cores also take some threads. Expect a server-class machine to
   give steadier numbers, not necessarily faster ones.
-- The previous edition of this page measured 0.8.0 on a machine of the same
-  model under macOS 26.4 and Rust 1.94. Those numbers are not comparable
-  with these; [section 10](#10-guidance-for-future-work) notes where they
-  differ most.
+- The 0.13.0 edition of this page was measured on this machine on
+  2026-10-13 with the same compiler and macOS 27.2 (build 26B5091g);
+  [section 1.1](#11-what-changed-since-0130) compares the two. The edition
+  before it measured 0.8.0 on a machine of the same model under macOS 26.4
+  and Rust 1.94, which is not comparable.
 
 ## 3. Encoding and the portable codecs
 
@@ -120,21 +173,24 @@ application protocol data unit.
 
 | Operation | Median time (nanoseconds) |
 | --- | --- |
-| Encode a ReadProperty request (service parameters only) | 22.6 |
-| Decode a ReadProperty request | 19.9 |
-| Encode an NPDU carrying 100 bytes | 15.5 |
-| Decode an NPDU carrying 100 bytes | 11.2 |
-| Encode a confirmed-request APDU header | 17.7 |
-| Decode a confirmed-request APDU header | 12.8 |
-| Encode a whole ReadProperty request: service, APDU and NPDU | 68.7 |
+| Encode a ReadProperty request (service parameters only) | 24.1 |
+| Decode a ReadProperty request | 5.0 |
+| Encode an NPDU carrying 100 bytes | 16.5 |
+| Decode an NPDU carrying 100 bytes | 15.6 |
+| Encode a confirmed-request APDU header | 18.4 |
+| Decode a confirmed-request APDU header | 10.3 |
+| Encode a whole ReadProperty request: service, APDU and NPDU | 82.1 |
 
-A complete request takes about 70 nanoseconds to build, so encoding is a
-fraction of a percent of the 35-microsecond round trip in
-[section 4](#4-transports).
+A complete request takes about 80 nanoseconds to build, so encoding is a
+fraction of a percent of the 29-microsecond round trip in
+[section 4](#4-transports). Decoding a ReadProperty request is four times
+faster than in 0.13.0 (19.9 nanoseconds then). Decoding an NPDU (11.2
+nanoseconds then) and building a whole request (68.7 then) are slower;
+[section 10](#10-guidance-for-future-work) lists them.
 
 ### 3.2 Portable `no_std` codecs and the router core
 
-Suite `codecs`, new in this edition. These crates build for
+Suite `codecs`. These crates build for
 microcontrollers without an allocator; the same code runs here on the host.
 CRC stands for cyclic redundancy check. A routed NPDU names its destination
 network and address (DNET and DADR); a router adds the source network and
@@ -142,34 +198,34 @@ address (SNET and SADR) when it forwards one.
 
 | Codec | Operation | Median time (nanoseconds) |
 | --- | --- | --- |
-| B/IP BACnet Virtual Link Layer (BVLL) | Encode an Original-Unicast-NPDU of 13 bytes | 4.2 |
-| B/IP BVLL | Decode it | 3.7 |
-| B/IP BVLL | Encode a Forwarded-NPDU of 1,497 bytes | 15.0 |
-| B/IP BVLL | Decode it (the NPDU is borrowed, not copied) | 3.7 |
-| MS/TP frame | Encode a Token frame | 4.4 |
-| MS/TP frame | Encode a standard data frame of 501 bytes | 845 |
-| MS/TP frame | Decode it | 821 |
-| MS/TP frame | Encode an extended data frame of 1,497 bytes | 5,982 |
-| MS/TP frame | Decode it (in place) | 4,980 |
-| MS/TP frame | CRC-16 over 501 bytes (the standard frame's data check) | 825 |
-| MS/TP frame | CRC-32K over 1,497 bytes (the extended frame's data check) | 4,719 |
-| Router core | Parse a routed ReadProperty NPDU (DNET, 6-byte DADR) | 6.8 |
-| Router core | Parse it and write the final-hop rewrite (DNET dropped, SNET and SADR added) | 9.0 |
-| `bacnet-encoding` | Decode the same routed NPDU into its owned form, for comparison | 16.5 |
+| B/IP BACnet Virtual Link Layer (BVLL) | Encode an Original-Unicast-NPDU of 13 bytes | 4.5 |
+| B/IP BVLL | Decode it | 3.8 |
+| B/IP BVLL | Encode a Forwarded-NPDU of 1,497 bytes | 15.7 |
+| B/IP BVLL | Decode it (the NPDU is borrowed, not copied) | 3.9 |
+| MS/TP frame | Encode a Token frame | 3.7 |
+| MS/TP frame | Encode a standard data frame of 501 bytes | 883 |
+| MS/TP frame | Decode it | 858 |
+| MS/TP frame | Encode an extended data frame of 1,497 bytes | 6,203 |
+| MS/TP frame | Decode it (in place) | 5,210 |
+| MS/TP frame | CRC-16 over 501 bytes (the standard frame's data check) | 871 |
+| MS/TP frame | CRC-32K over 1,497 bytes (the extended frame's data check) | 4,963 |
+| Router core | Parse a routed ReadProperty NPDU (DNET, 6-byte DADR) | 7.1 |
+| Router core | Parse it and write the final-hop rewrite (DNET dropped, SNET and SADR added) | 9.2 |
+| `bacnet-encoding` | Decode the same routed NPDU into its owned form, for comparison | 20.7 |
 
 What the table shows:
 
 - The B/IP codec costs a few nanoseconds whatever the size, because decoding
   only checks the header and borrows the payload.
 - The MS/TP frame cost is almost all checksum: the CRC-16 runs at about
-  1.6 nanoseconds per byte and the CRC-32K at about 3.2. The default
+  1.7 nanoseconds per byte and the CRC-32K at about 3.3. The default
   CRC-32K uses a 16-entry table to save flash; the `crc32k-table` feature
   trades about 1 kilobyte more flash for half the table lookups. Even the
   slowest case is far below the frame's time on the wire: a 1,497-byte
   extended frame takes 130 milliseconds to send at 115,200 baud.
-- The router core's borrowed NPDU view parses a routed NPDU in about 40% of
-  the time `bacnet-encoding`'s owned decoder takes, and rewrites it for the
-  next hop in 9 nanoseconds.
+- The router core's borrowed NPDU view parses a routed NPDU in about a
+  third of the time `bacnet-encoding`'s owned decoder takes, and rewrites it
+  for the next hop in 9 nanoseconds.
 
 ### 3.3 ReadRange of a full Trend Log
 
@@ -180,10 +236,10 @@ cost of finding the window.
 
 | Request kind | Median time, 10,000-record log (microseconds) | Median time, 100,000-record log (microseconds) |
 | --- | --- | --- |
-| By position | 7.4 | 7.5 |
-| By sequence number | 8.8 | 7.4 |
-| By time | 7.5 | 7.6 |
-| By time, in a log whose clock stepped back once | 31.0 | 152.8 |
+| By position | 7.6 | 7.5 |
+| By sequence number | 7.7 | 7.6 |
+| By time | 7.7 | 7.7 |
+| By time, in a log whose clock stepped back once | 30.9 | 152.7 |
 
 Position, sequence and time lookups cost the same at 10 times the log
 size. A log whose clock stepped back can't be searched by halving, so the
@@ -215,12 +271,14 @@ an Analog Output and a Binary Value.
 
 | Transport | ReadProperty median (microseconds) | WriteProperty median (microseconds) | ReadPropertyMultiple of 10 objects, median (microseconds) |
 | --- | --- | --- | --- |
-| B/IP | 35.5 | 34.9 | 39.8 |
-| B/IPv6 | 31.1 | 33.2 | 37.2 |
-| BACnet/SC with mutual TLS | 54.0 | 54.5 | 60.6 |
+| B/IP | 28.7 | 30.9 | 31.1 |
+| B/IPv6 | 24.6 | 29.5 | 32.7 |
+| BACnet/SC with mutual TLS | 48.2 | 49.1 | 54.9 |
 
-ReadPropertyMultiple of 10 objects costs only 4 to 6 microseconds more
+ReadPropertyMultiple of 10 objects costs only 2 to 8 microseconds more
 than one ReadProperty: the round trip, not the property reads, is the cost.
+In 0.13.0 the three ReadProperty figures were 35.5, 31.1 and 54.0
+microseconds.
 
 ### 4.3 Sequential throughput
 
@@ -228,19 +286,16 @@ The rate is the batch size divided by the batch's median time.
 
 | Transport | ReadProperty, 1,000 in a row (requests per second) | WriteProperty, 1,000 in a row (requests per second) | Median time for 1,000 ReadProperty requests (milliseconds) |
 | --- | --- | --- | --- |
-| B/IP | 29,300 | 28,600 | 34.2 |
-| B/IPv6 | 23,600 (30,200 for batches of 100) | 30,300 | 42.4 |
-| BACnet/SC with mutual TLS | 18,300 | 18,400 | 54.5 |
+| B/IP | 38,600 | 31,600 | 25.9 |
+| B/IPv6 | 40,500 | 35,700 | 24.7 |
+| BACnet/SC with mutual TLS | 20,800 | 20,400 | 48.1 |
 
-The B/IPv6 ReadProperty batch of 1,000 was noisy (its 95% confidence
-interval ran from 39.4 to 46.5 milliseconds); its batches of 100 and its
-WriteProperty batches ran at about 30,000 requests per second, so treat
-30,000 as typical.
+Batches of 10 and 100 ran at the same rates within 5%.
 
 ### 4.4 MS/TP
 
 MS/TP runs over RS-485 serial lines at low baud rates, where the wire, not
-the processor, limits throughput. The new `stress-test mstp` scenario
+the processor, limits throughput. The `stress-test mstp` scenario
 measures how close the stack gets to that limit.
 
 **Method.** A client station (MAC address 0) and a server station (MAC
@@ -271,18 +326,18 @@ the limit is time the stations spent between frames.
 
 | Baud rate | Reply | Requests per second | Wire limit (requests per second) | Share of the wire limit | Median latency (milliseconds) | 99th percentile latency (milliseconds) |
 | --- | --- | --- | --- | --- | --- | --- |
-| 9,600 | Small | 10.4 | 11.4 | 91% | 96.1 | 98.8 |
-| 38,400 | Small | 34.4 | 45.7 | 75% | 29.0 | 31.2 |
-| 76,800 | Small | 53.2 | 91.4 | 58% | 18.9 | 20.7 |
-| 115,200 | Small | 72.7 | 137.1 | 53% | 14.0 | 16.5 |
-| 9,600 | Standard | 1.8 | 1.8 | 98% | 570.4 | 572.9 |
-| 38,400 | Standard | 6.7 | 7.1 | 95% | 148.4 | 152.6 |
-| 76,800 | Standard | 12.8 | 14.2 | 90% | 78.1 | 80.8 |
-| 115,200 | Standard | 19.2 | 21.4 | 90% | 51.3 | 55.0 |
-| 9,600 | Extended | 0.6 | 0.6 | 99% | 1,600.5 | 1,604.6 |
-| 38,400 | Extended | 2.5 | 2.5 | 98% | 405.8 | 408.1 |
-| 76,800 | Extended | 4.8 | 5.0 | 96% | 207.4 | 210.3 |
-| 115,200 | Extended | 7.1 | 7.5 | 95% | 139.9 | 143.2 |
+| 9,600 | Small | 10.7 | 11.4 | 93% | 93.6 | 96.6 |
+| 38,400 | Small | 35.8 | 45.7 | 78% | 27.7 | 29.9 |
+| 76,800 | Small | 61.6 | 91.4 | 67% | 16.0 | 18.3 |
+| 115,200 | Small | 71.8 | 137.1 | 52% | 14.0 | 15.2 |
+| 9,600 | Standard | 1.8 | 1.8 | 99% | 568.3 | 570.4 |
+| 38,400 | Standard | 6.8 | 7.1 | 96% | 146.3 | 148.1 |
+| 76,800 | Standard | 13.1 | 14.2 | 92% | 76.2 | 78.1 |
+| 115,200 | Standard | 19.1 | 21.4 | 90% | 52.4 | 54.4 |
+| 9,600 | Extended | 0.6 | 0.6 | 100% | 1,598.5 | 1,599.5 |
+| 38,400 | Extended | 2.5 | 2.5 | 99% | 404.2 | 405.2 |
+| 76,800 | Extended | 4.9 | 5.0 | 97% | 205.2 | 206.8 |
+| 115,200 | Extended | 7.2 | 7.5 | 95% | 139.4 | 141.7 |
 
 What it shows:
 
@@ -291,7 +346,7 @@ What it shows:
   timer resolution: Tokio's timers wake on whole milliseconds, and the
   stations wait on a timer before every frame they send. For large replies
   the overhead is small next to the wire time, so the stack reaches 90% to
-  99% of the limit. For small replies at high baud rates the wire time
+  100% of the limit. For small replies at high baud rates the wire time
   shrinks to 7 milliseconds and the overhead is half the total.
 - One client gets no more from the line by sending concurrently: with one
   information frame per token (the default `max_info_frames` of 1), the
@@ -306,16 +361,18 @@ What it shows:
 
 | Transport | ReadProperty median latency (microseconds) | Sequential ReadProperty requests per second | Most requests per second measured with concurrent clients |
 | --- | --- | --- | --- |
-| B/IP | 35.5 | 29,300 | 75,700 (10 clients) |
-| B/IPv6 | 31.1 | about 30,000 | not measured |
-| BACnet/SC with mutual TLS | 54.0 | 18,300 | not measured |
-| MS/TP at 115,200 baud, small reply | 14,000 | 72.7 | 72.7 (one line, see above) |
-| MS/TP at 38,400 baud, small reply | 29,000 | 34.4 | 34.4 |
+| B/IP | 28.7 | 38,600 | 82,200 (10 clients) |
+| B/IPv6 | 24.6 | 40,500 | 101,400 (10 clients) |
+| BACnet/SC with mutual TLS | 48.2 | 20,800 | 92,900 (50 clients) |
+| MS/TP at 115,200 baud, small reply | 14,000 | 71.8 | 71.8 (one line, see above) |
+| MS/TP at 38,400 baud, small reply | 27,700 | 35.8 | 35.8 |
 
-BACnet/SC costs about 50% more per request than B/IP: the TLS record
-layer and the hub's extra hop. An MS/TP request takes several hundred
-times as long as one over IP because the serial line is that much slower;
-the stack's own share of an MS/TP request is a few milliseconds.
+BACnet/SC costs about 70% more per request than B/IP when one request is
+in flight: the TLS record layer and the hub's extra hop. With many clients
+the hub keeps up, and BACnet/SC passed B/IP from 25 clients on
+([section 6.1](#61-concurrent-clients)). An MS/TP request takes several
+hundred times as long as one over IP because the serial line is that much
+slower; the stack's own share of an MS/TP request is a few milliseconds.
 
 ## 5. Routing
 
@@ -332,17 +389,19 @@ requests one after another for 10 seconds at each step.
 
 | Concurrent clients | Direct: requests per second | Direct: median latency (microseconds) | Direct: 99th percentile latency (microseconds) | Routed: requests per second | Routed: median latency (microseconds) | Routed: 99th percentile latency (microseconds) | Routed rate as a share of direct |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 30,623 | 31 | 44 | 19,366 | 49 | 72 | 63% |
-| 5 | 70,724 | 68 | 124 | 42,187 | 113 | 208 | 60% |
-| 10 | 75,695 | 128 | 231 | 46,973 | 206 | 370 | 62% |
-| 25 | 70,613 | 350 | 599 | 55,874 | 435 | 727 | 79% |
-| 50 | 67,883 | 723 | 1,297 | 57,154 | 836 | 1,462 | 84% |
+| 1 | 42,831 | 22 | 34 | 22,053 | 43 | 61 | 51% |
+| 5 | 82,480 | 58 | 107 | 47,318 | 103 | 158 | 57% |
+| 10 | 84,271 | 115 | 222 | 53,307 | 184 | 293 | 63% |
+| 25 | 71,557 | 349 | 582 | 57,296 | 426 | 719 | 80% |
+| 50 | 65,381 | 778 | 1,270 | 57,212 | 836 | 1,484 | 88% |
 
-The router hop adds about 18 microseconds to an idle request: one more UDP
+The router hop adds about 21 microseconds to an idle request: one more UDP
 datagram each way through the loopback interface (four per request instead
 of two), and the router's receive, table lookup, rewrite and send. Under load the router is a
 separate set of tasks working in parallel with the server, so the gap
-narrows to 16% at 50 clients. No request failed on either path.
+narrows to 12% at 50 clients. No request failed on either path. The direct
+path gained more from #1713 than the routed one, so one idle client's
+routed rate is now about half of its direct rate (63% in 0.13.0).
 
 **B/IP to MS/TP.** Clients on B/IP network 1, the server on an MS/TP
 network at 115,200 baud behind the router (the router's MS/TP port is
@@ -351,12 +410,12 @@ station 0, the server station 1, over the simulated line of
 
 | Concurrent clients | Requests per second | Median latency (milliseconds) | 99th percentile latency (milliseconds) |
 | --- | --- | --- | --- |
-| 1 | 68 | 14.7 | 18.2 |
-| 5 | 67 | 75.0 | 80.6 |
+| 1 | 67 | 15.4 | 17.6 |
+| 5 | 67 | 75.0 | 80.1 |
 
-One client through the router got 68 requests per second against 72.7 for
+One client through the router got 67 requests per second against 71.8 for
 an MS/TP client on the line itself, so the B/IP side and the router add
-about 0.7 milliseconds to a request that the serial line already holds for
+about 1.4 milliseconds to a request that the serial line already holds for
 14. More clients only queue: the line carries one request per token
 rotation, and each client's latency grows with the queue.
 
@@ -381,31 +440,33 @@ per-step figures below were not affected.
 ### 6.1 Concurrent clients
 
 `stress-test clients`: N clients reading one Analog Input's Present_Value
-from a server with 100 Analog Inputs, 10 seconds per step. The table is
-B/IP. `--transport bip6` runs the same over B/IPv6 on the IPv6 loopback
-address, and `--transport sc` over BACnet/SC with mutual TLS, every client
-and the server connected to a hub in the same process; this report has no
-figures for those two yet.
+from a server with 100 Analog Inputs, 10 seconds per step. Every client
+connects before a step's clock starts and keeps its own latency record.
+`--transport bip6` runs the same over B/IPv6 on the IPv6 loopback address,
+and `--transport sc` over BACnet/SC with mutual TLS, every client and the
+server connected to a hub in the same process.
 
-Since this run, every client connects before a step's clock starts and
-records its latencies in its own histogram. Before, each client connected
-inside the 10 seconds and all of them shared one locked histogram, which
-may have held the rates with many clients a little low; re-run this table
-at the next refresh.
+| Concurrent clients | B/IP: requests per second | B/IP: median latency (microseconds) | B/IP: 99th percentile latency (microseconds) | B/IPv6: requests per second | B/IPv6: median latency (microseconds) | BACnet/SC: requests per second | BACnet/SC: median latency (microseconds) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 43,594 | 21 | 34 | 39,120 | 25 | 22,344 | 43 |
+| 5 | 81,012 | 59 | 109 | 93,581 | 51 | 64,610 | 75 |
+| 10 | 82,229 | 117 | 227 | 101,385 | 96 | 77,422 | 126 |
+| 25 | 70,966 | 352 | 589 | 91,842 | 270 | 88,105 | 281 |
+| 50 | 65,182 | 779 | 1,297 | 79,413 | 637 | 92,910 | 535 |
+| 100 | 52,598 | 1,077 | 2,012 | 65,660 | 899 | 68,653 | 797 |
 
-| Concurrent clients | Requests per second | Median latency (microseconds) | 99th percentile latency (microseconds) | Failed requests |
-| --- | --- | --- | --- | --- |
-| 1 | 30,502 | 32 | 44 | 0 |
-| 5 | 70,884 | 68 | 122 | 0 |
-| 10 | 73,750 | 132 | 236 | 0 |
-| 25 | 69,895 | 353 | 611 | 0 |
-| 50 | 65,016 | 749 | 1,366 | 0 |
-| 100 | 67,240 | 1,199 | 2,281 | 380 (0.06%) |
-
-Throughput peaks between 5 and 10 clients and holds within 10% of the peak
-up to 100; beyond that, more clients only lengthen the queue, and latency
-grows in proportion. At 100 clients 380 of 672,778 requests timed out.
-Peak resident memory was 32.6 megabytes.
+Throughput peaks at 5 to 10 clients on B/IP and B/IPv6 and falls by 20% to
+35% from there to 100; beyond the peak, more clients only lengthen the
+queue, and latency grows in proportion. BACnet/SC peaks later, at 50
+clients. No request failed up to 50 clients. At 100 clients some timed
+out: 3,355 of 638,181 on B/IP (0.5%), 2,153 on B/IPv6 (0.3%) and 289 on
+BACnet/SC (0.03%), and each 100-client step ran about 2 seconds past its
+10 seconds while the last requests waited for their timeouts. In 0.13.0,
+380 of 672,778 B/IP requests (0.06%) timed out at 100 clients. The `dev`
+branch before #1713's last cuts also timed out 1,700 to 3,200 requests at
+that step with the current harness, so this pass did not cause it;
+[section 10](#10-guidance-for-future-work) lists it. Peak resident memory
+was 49 megabytes on B/IP.
 
 ### 6.2 Object database size
 
@@ -415,72 +476,60 @@ per 10 objects in the database, at most 100), at each database size.
 
 | Objects | ReadProperty requests per second | ReadProperty median latency (microseconds) | ReadProperty 99th percentile latency (microseconds) | ReadPropertyMultiple of 10, median latency (microseconds) | Resident memory after the step (megabytes) |
 | --- | --- | --- | --- | --- | --- |
-| 100 | 28,078 | 34 | 52 | 41 | 13.8 |
-| 500 | 28,625 | 33 | 47 | 37 | 14.8 |
-| 1,000 | 28,603 | 33 | 48 | 41 | 15.5 |
-| 2,500 | 28,462 | 34 | 49 | 41 | 17.1 |
-| 5,000 | 28,584 | 33 | 48 | 39 | 21.2 |
-| 10,000 | 28,460 | 33 | 48 | 37 | 26.2 |
+| 100 | 38,042 | 24 | 39 | 36 | 14.2 |
+| 500 | 38,459 | 24 | 38 | 33 | 15.7 |
+| 1,000 | 38,527 | 24 | 38 | 31 | 16.3 |
+| 2,500 | 38,043 | 24 | 39 | 30 | 18.0 |
+| 5,000 | 38,351 | 24 | 38 | 31 | 22.0 |
+| 10,000 | 38,152 | 24 | 38 | 30 | 26.9 |
 
 Lookups are indexed, so latency does not change with the database size.
-From 100 to 10,000 objects resident memory grew by 12.4 megabytes, about
-1.25 kilobytes per Analog Input including the allocator's overhead. 10,000
+From 100 to 10,000 objects resident memory grew by 12.6 megabytes, about
+1.3 kilobytes per Analog Input including the allocator's overhead. 10,000
 objects is the server's default object limit.
 
 ### 6.3 COV subscriptions
 
-The table below is from the scenario's earlier form, in which one
-subscriber client subscribed to N Analog Outputs (unconfirmed
-notifications, 600-second lifetime) and a second client wrote their
-Present_Values in turn at 10 writes per second for 10 seconds.
+`stress-test cov`: each step's N subscriptions to Analog Outputs come from
+as many subscriber clients as the per-subscriber limit of 64 needs, each
+taking Analog Outputs 1 to 64 (or fewer), so 1,024 subscriptions come from
+16 subscribers. A writer client then writes their Present_Values in turn at
+10 writes per second for 10 seconds, and each write notifies every
+subscriber of that object. `--confirmed` asks for confirmed notifications,
+which each subscriber acknowledges.
 
-`stress-test cov` now spreads each step's N subscriptions over as many
-subscriber clients as the per-subscriber limit of 64 needs, each taking
-Analog Outputs 1 to 64 (or fewer), so 1,024 subscriptions come from 16
-subscribers and each write notifies all 16. `--confirmed` asks for
-confirmed notifications, which each subscriber acknowledges. Its default
-steps are 1, 10, 64, 256 and 1,024 subscriptions; re-run this section with
-them, with and without `--confirmed`, at the next refresh. A short trial
-run (2 seconds a step, on a loaded machine) had the server accept all
-1,024 subscriptions and deliver every expected notification, confirmed or
-not, and refuse the 64 subscriptions over 1,024 in a step of 1,088.
-
-| Subscriptions requested | Subscriptions accepted | Writes | Notifications received | Notifications expected |
-| --- | --- | --- | --- | --- |
-| 1 | 1 | 99 | 100 | 100 |
-| 10 | 10 | 98 | 108 | 108 |
-| 50 | 50 | 98 | 148 | 148 |
-| 100 | 64 | 98 | 128 | 128 |
-| 200 | 64 | 98 | 128 | 128 |
-| 255 | 64 | 98 | 128 | 128 |
+| Subscriptions | Subscribers | Accepted | Writes | Unconfirmed notifications received / expected | Confirmed notifications received / expected |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 1 | 97 to 98 | 98 / 98 | 99 / 99 |
+| 10 | 1 | 10 | 98 | 108 / 108 | 108 / 108 |
+| 64 | 1 | 64 | 98 | 162 / 162 | 162 / 162 |
+| 256 | 4 | 256 | 97 to 98 | 644 / 644 | 648 / 648 |
+| 1,024 | 16 | 1,024 | 98 | 2,592 / 2,592 | 2,592 / 2,592 |
 
 Expected notifications are one initial notification per accepted
-subscription plus one per write to a subscribed object. Every expected
-notification arrived.
-
-From 100 subscriptions up, the server accepted 64 and refused the rest with
-the error `RESOURCES` / `NO_SPACE_TO_ADD_LIST_ELEMENT`: by default the server
+subscription plus one per write for every subscriber of the written
+object. Every subscription was accepted and every expected notification
+arrived, confirmed or not, up to the server's total of 1,024. The server
 admits at most 64 subscriptions from one subscriber
-(`CovPolicy::max_subscriptions_per_peer`), and 1,024 in all. With one
-subscriber the table measures the per-subscriber limit; the scenario's
-several subscribers now reach the total.
+(`CovPolicy::max_subscriptions_per_peer`); a single subscriber asking for
+more is refused the rest with `RESOURCES` / `NO_SPACE_TO_ADD_LIST_ELEMENT`.
 
 ### 6.4 Segmentation
 
 `stress-test segmentation`: ReadPropertyMultiple of N Present_Values, 50
 requests at each size. The server and its Device support segmentation in
-both directions (this edition fixes the scenario, which before never
+both directions (the 0.13.0 edition fixed the scenario, which before never
 enabled it, so a reply too large for one APDU was refused).
 
 | Objects per request | Reply size and segments | Median latency (microseconds) | 99th percentile latency (microseconds) | Failed requests |
 | --- | --- | --- | --- | --- |
-| 10 | about 160 bytes, one APDU | 51 | 2,447 | 0 |
-| 50 | about 800 bytes, one APDU | 65 | 1,354 | 0 |
-| 100 | about 1.6 kilobytes, 2 segments | 131 | 1,424 | 0 |
-| 250 | about 4 kilobytes, 3 segments | 281 | 2,121 | 0 |
+| 10 | about 160 bytes, one APDU | 84 | 1,479 | 0 |
+| 50 | about 800 bytes, one APDU | 99 | 1,175 | 0 |
+| 100 | about 1.6 kilobytes, 2 segments | 183 | 486 | 0 |
+| 250 | about 4 kilobytes, 3 segments | 342 | 1,496 | 0 |
 
 Latency grows with the reply's size and its segments: 250 objects in 3
-segments take about four times as long as 50 in one APDU. With only 50
+segments take about three and a half times as long as 50 in one APDU. With only 50
 requests per size, the 99th percentile is the slowest one or two requests
 (typically the first), not a steady-state figure.
 
@@ -497,11 +546,12 @@ ReadProperty of the Device. The server holds 550 objects.
 
 | Clients | Operations per second | Median latency (microseconds) | 99th percentile latency (microseconds) | Failed operations | Peak resident memory (megabytes) |
 | --- | --- | --- | --- | --- | --- |
-| 10 | 76,769 | 130 | 240 | 0 | 18.0 |
+| 10 | 85,424 | 117 | 226 | 0 | 19.9 |
 
 ### 6.6 BBMD foreign devices
 
-The table below is from the scenario's earlier form: a BBMD, which relays
+This section was not re-run for this edition: its capacity scenario needs
+Linux (see below). The table below is from the scenario's earlier form: a BBMD, which relays
 broadcasts for B/IP devices, with N foreign devices registered in its
 Foreign Device Table (FDT), all on loopback. The foreign devices took
 turns sending a broadcast Who-Is through the BBMD for 10 seconds, with a
@@ -558,10 +608,10 @@ orchestrator's discovery scenario
 
 | Devices | Devices read | Time to read all (milliseconds) | Median read time (microseconds) | 99th percentile read time (microseconds) |
 | --- | --- | --- | --- | --- |
-| 5 | 5 | 2 | 125 | 1,484 |
-| 10 | 10 | under 1 | 84 | 209 |
-| 25 | 25 | 2 | 113 | 184 |
-| 50 | 50 | 6 | 116 | 1,312 |
+| 5 | 5 | 0.6 | 90 | 281 |
+| 10 | 10 | 1.9 | 66 | 1,250 |
+| 25 | 25 | 3.1 | 90 | 1,132 |
+| 50 | 50 | 5.7 | 92 | 1,211 |
 
 Every device answered. The first request to each new server is slower than
 the steady-state requests of [section 6.1](#61-concurrent-clients), and the
@@ -572,6 +622,9 @@ for a scan of under a millisecond. It has no duration option: each step
 is one pass over the devices.
 
 ## 7. Docker cross-network results
+
+This section is the 0.13.0 run of 2026-10-13, not re-run for this
+edition; its macOS columns are that run's.
 
 `examples/docker` runs the stack as separate Linux containers on Docker
 bridge networks, so packets cross real (virtual) network interfaces instead
@@ -747,8 +800,7 @@ The images:
   heap; the only image with an allocator.
 - `device`: a whole MS/TP device with no heap: the data link, the
   network layer and an application layer that answers Who-Is and
-  ReadProperty. It joined after the tables below were measured; its sizes
-  follow them.
+  ReadProperty.
 
 Flash is code, read-only data and the vector table. RAM is static RAM
 (initialized and zeroed data, the heap arena included), not the stack.
@@ -756,13 +808,14 @@ Sizes in bytes.
 
 | Image | Cortex-M0+ (`thumbv6m-none-eabi`) flash | Cortex-M3 (`thumbv7m-none-eabi`) flash | Cortex-M4F (`thumbv7em-none-eabihf`) flash | RISC-V (`riscv32imc-unknown-none-elf`) flash | Static RAM, all targets |
 | --- | --- | --- | --- | --- | --- |
-| `mstp` | 18,840 | 18,440 | 18,328 | 20,118 | 5,528 |
-| `mstp-extended` | 17,584 | 17,128 | 17,112 | 18,862 | 7,696 |
-| `bip` | 11,640 | 10,936 | 10,868 | 13,366 | 132 |
-| `node` | 14,252 | 13,496 | 13,392 | 14,570 | 64 |
-| `bbmd` | 10,648 | 9,800 | 9,752 | 11,202 | 240 |
-| `router` | 47,600 | 45,088 | 44,888 | 51,286 | 15,504 |
-| `apdu` | 45,176 | 43,616 | 43,528 | 51,182 | 1,056 |
+| `mstp` | 18,388 | 17,928 | 17,812 | 19,450 | 5,528 |
+| `mstp-extended` | 17,220 | 16,880 | 16,792 | 18,302 | 7,696 |
+| `bip` | 11,640 | 10,940 | 10,872 | 13,366 | 132 |
+| `node` | 15,268 | 14,576 | 14,564 | 16,118 | 240 |
+| `bbmd` | 13,288 | 12,056 | 12,000 | 14,274 | 240 |
+| `router` | 45,576 | 43,020 | 42,812 | 49,078 | 15,624 |
+| `device` | 30,872 | 30,140 | 30,096 | 33,822 | 3,496 |
+| `apdu` | 43,620 | 42,724 | 42,504 | 50,038 | 1,056 |
 
 The deepest stack each image reached, measured under QEMU emulation by the
 manual check `scripts/emu/emulate-firmware.sh` (Rust 1.99.0, QEMU 10.0.13;
@@ -778,17 +831,16 @@ bytes.
 | Netduino Plus 2 (`thumbv7em-none-eabihf`) | 1,832 | 2,868 | 2,100 | 4,972 | 2,260 | 4,456 | 2,536 |
 | SiFive E (`riscv32imc-unknown-none-elf`) | 1,712 | 2,732 | 2,020 | 4,808 | 2,132 | does not fit | 2,464 |
 
-The `device` image, measured when it joined (#1771) with the same
-toolchain and QEMU: 29,876 bytes of flash on Cortex-M0+, 28,776 on
-Cortex-M4F, and 3,496 bytes of static RAM on every target; its deepest
-stack was 2,652 bytes on the micro:bit board and 2,284 on the LM3S6965.
+The `device` image's deepest stack, measured when it joined (#1771) with
+the same toolchain and QEMU, was 2,652 bytes on the micro:bit board and
+2,284 on the LM3S6965.
 
 What an embedded project can expect:
 
-- An MS/TP device needs about 19 kilobytes of flash and 7.6 kilobytes of
+- An MS/TP device needs about 18 kilobytes of flash and 7.6 kilobytes of
   RAM (5.5 static, 2 of stack) for the data link; with extended frames,
   about 10.7 kilobytes of RAM.
-- The application layer image (`apdu`) is about 44 kilobytes of flash on
+- The application layer image (`apdu`) is about 43 kilobytes of flash on
   its own, plus its heap.
 - A whole MS/TP device that answers Who-Is and ReadProperty without a
   heap (`device`) needs about 30 kilobytes of flash and 6.2 kilobytes of
@@ -812,62 +864,47 @@ requests, one after another, after a warm-up; the concurrency tests run
 50 requests per concurrent task, with that many in flight at once from one
 client. These are single runs of small samples.
 
-The tables below come from the suites' earlier layout, whose file names
-dated from before all four started both the client and the server
-through the Python package, in one process; the three B/IP suites
-measured the same path three times, and agreed within 10%, which shows
-the run-to-run spread. Since
-[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714) one suite,
-`bench_bip.py`, replaces those three, and `bench_sc.py` stays. Their
-concurrency tests keep each client at or under the server's limit of 16
-confirmed requests in flight from one peer: `bench_bip.py` runs 1, 5, 10,
-16, 32 and 64 requests in flight, spread over up to 4 clients for the
-last two, and `bench_sc.py` runs 1, 5, 10 and 16 from one client. Re-run
-both tables with them at the next refresh.
+The two suites are `bench_bip.py`, with client and server both from
+Python over B/IP, and `bench_sc.py`, over BACnet/SC with mutual TLS through
+a hub. Their concurrency tests keep each client at or under the server's
+limit of 16 confirmed requests in flight from one peer: `bench_bip.py` runs
+1, 5, 10, 16, 32 and 64 requests in flight, spread over 2 and 4 clients for
+the last two, and `bench_sc.py` runs 1, 5, 10 and 16 from one client.
 
 | Suite | ReadProperty median (microseconds) | WriteProperty median (microseconds) | ReadPropertyMultiple of 3 objects and 2 properties, median (microseconds) | COV subscribe and cancel, median (microseconds) |
 | --- | --- | --- | --- | --- |
-| `bench_py_client_rust_server.py` (B/IP) | 102 | 72 | 73 | 159 |
-| `bench_rust_client_py_server.py` (B/IP) | 95 | 72 | 73 | 157 |
-| `bench_py_py.py` (B/IP) | 96 | 70 | 73 | 159 |
-| `bench_sc.py` (BACnet/SC with mutual TLS, through a hub) | 173 | 106 | 97 | 189 |
+| `bench_bip.py` (B/IP) | 98 | 89 | 71 | 144 |
+| `bench_sc.py` (BACnet/SC with mutual TLS, through a hub) | 155 | 91 | 87 | 179 |
 
-| Requests in flight from one client | `bench_py_client_rust_server.py`: requests per second | `bench_rust_client_py_server.py`: requests per second | `bench_py_py.py`: requests per second | `bench_sc.py`: requests per second |
-| --- | --- | --- | --- | --- |
-| 1 | 5,296 | 5,540 | 5,644 | 8,560 |
-| 5 | 14,918 | 12,499 | 12,986 | 26,711 |
-| 10 | 23,317 | 23,975 | 24,478 | 20,120 after the fix (50 before it, stalled; see below) |
-| 25 | failed (see below) | 33,963 | failed (see below) | 62 (stalled) |
+| Requests in flight | `bench_bip.py`: requests per second | `bench_sc.py`: requests per second |
+| --- | --- | --- |
+| 1 | 5,586 | 9,378 |
+| 5 | 17,940 | 27,927 |
+| 10 | 33,951 | 29,512 |
+| 16 | 36,446 | 37,145 |
+| 32, over 2 clients | 37,288 | not run |
+| 64, over 4 clients | 38,016 | not run |
 
 What it shows:
 
-- A request from Python costs 70 to 100 microseconds, against 35 from Rust
+- A request from Python costs 70 to 100 microseconds, against 29 from Rust
   ([section 4](#4-transports)): the asyncio event loop and the crossing
-  between Python and Rust add 35 to 65 microseconds per call.
-- Python reaches 23,000 to 24,000 requests per second with 10 requests in
-  flight, and 34,000 with 25 where that ran, about half of what Rust
-  clients reach on the same machine.
-- With 25 requests in flight from one client, some were aborted (out of
-  resources) in two of the three B/IP suites: by default a server admits
-  at most 16 confirmed requests in flight from one peer. Spread the
-  requests over several clients, or raise the server's limit, to go
-  further.
-- **BACnet/SC stalled with 10 or more requests in flight from one Python
-  client, until a fix:** most requests still took about 0.15 milliseconds,
-  but a few waited for the 5-second timeout, so the rate fell to 50 to 62
-  requests per second. The cause was the admission quota on a BACnet/SC
-  node's receive queue: it held at most 4 messages from any one peer and
-  dropped the rest of a burst without telling the sender, whose request
-  then timed out. [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712)
-  raised the quota to 32 messages, in a queue of 256. Measured again on
-  13 October 2026 after the fix, 10 requests in flight ran at 20,120
-  requests per second, with the slowest request under 2 milliseconds; four
-  runs ranged from 15,000 to 32,000 requests per second. With 25 in flight
-  the server now refuses the requests over its limit of 16 per peer
-  (aborted, out of resources), as on B/IP; the 25 row predates the fix.
+  between Python and Rust add 40 to 70 microseconds per call.
+- Python reaches 34,000 requests per second with 10 requests in flight on
+  B/IP and 36,000 to 38,000 from 16 on, about half of what Rust clients
+  reach on the same machine. In 0.13.0 the B/IP suites reached 23,000 to
+  24,000 with 10 in flight.
+- No request failed or stalled: every test kept within the server's limit
+  of 16 confirmed requests in flight per peer, and BACnet/SC with 10 or 16
+  in flight ran at 30,000 to 37,000 requests per second, its slowest
+  request under 1.5 milliseconds. Before
+  [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712), a
+  BACnet/SC node's receive queue admitted at most 4 messages from one peer
+  and silently dropped the rest of a burst, so 10 requests in flight from
+  one Python client stalled on timeouts; the quota is now 32.
 - The suites' Who-Is test waits a fixed 300 milliseconds for answers, so
   its 302-millisecond time measures the wait, not the stack; the test is
-  now named `test_bip_whois_fixed_wait` to say so.
+  named `test_bip_whois_fixed_wait` to say so.
 
 To run them:
 
@@ -887,35 +924,36 @@ Where the time goes, and what to measure next.
 **Bottlenecks seen in this run.**
 
 - **The IP round trip is the stack, not the encoding.** Encoding and
-  decoding a request take under 0.1 microseconds of a 31- to 35-microsecond
-  round trip. Most of the rest is likely task hand-offs between the
-  socket, network and application layers and the operating system's UDP
-  path, twice per request: a profile of one round trip is where to start.
+  decoding a request take under 0.1 microseconds of a 25- to
+  29-microsecond round trip. The profile of
+  [#1713](https://github.com/jscott3201/rusty-bacnet/issues/1713) puts most
+  of the rest in the allocator, Tokio's scheduler and I/O driver, the
+  operating system's UDP path, and locks; its remaining items, in order of
+  cost, are filed for 0.15.0: copying MAC addresses, Tokio lock
+  round trips on the client's transaction table and the server's database,
+  encoding the ReadProperty answer in place, the second box around the
+  other services' handlers, a buffer per B/IP send, and clock reads.
 - **macOS's datagram path is slow; Linux is the better guide.** The same
   binaries in a Linux container on 4 of the laptop's processors answered
-  20% to 70% more requests than on macOS, and up to twice as many routed
-  ([section 7.2](#72-stress-scenarios-inside-a-container)). Performance
-  work on the IP transports should be measured on Linux.
-- **The IP round trip is slower than in the 0.8.0 report.** The previous
-  edition measured a B/IP ReadProperty at 20.9 microseconds and one stress
-  client at 73,948 requests per second, on a machine of the same model.
-  This run measured 35.5 microseconds and 30,502. The operating system and
-  compiler differ between the two runs, so this is not yet a confirmed
-  regression. An A/B run of 0.8.0 against 0.13.0 on one machine
-  (`scripts/bench-ab.sh`) would settle it, and decode of a ReadProperty
-  request (4.3 nanoseconds then, 19.9 now) is a small place to start
-  ([#1713](https://github.com/jscott3201/rusty-bacnet/issues/1713)).
-- **BACnet/SC stalled with several requests in flight; now fixed.** From
-  Python, 10 or more concurrent requests from one client over BACnet/SC
-  left a few requests waiting for the 5-second timeout
-  ([section 9](#9-python-bindings)); B/IP did not. The cause was the
-  admission quota on a BACnet/SC node's receive queue, 4 messages from any
-  one peer, which dropped the rest of a burst without telling the sender.
-  [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712) raised it
-  to 32, and a dropped message now logs a warning, at most one every 10
-  seconds, with the count since the last one.
-- **Concurrency peaks early.** One server peaks at 5 to 10 clients, near
-  74,000 requests per second, and loses a little beyond that. Profiling the
+  20% to 70% more requests than on macOS in the 0.13.0 run, and up to twice
+  as many routed ([section 7.2](#72-stress-scenarios-inside-a-container)).
+  Performance work on the IP transports should be measured on Linux.
+- **The IP round trip is still slower than in the 0.8.0 report.** That
+  edition measured a B/IP ReadProperty at 20.9 microseconds on a machine of
+  the same model, under an older operating system and compiler; this run
+  measured 28.7. An A/B of 0.8.0 against the current branch on one machine
+  would show how much of the gap is left.
+- **Two encoding figures grew since 0.13.0.** Decoding an NPDU of 100
+  bytes went from 11.2 to 15.6 nanoseconds and building a whole
+  ReadProperty request from 68.7 to 82.1. Both are small next to the round
+  trip, but a bisect would find the change.
+- **Timeouts at 100 clients.** At 100 concurrent B/IP clients 0.5% of the
+  requests timed out, against 0.06% in 0.13.0, and the branch did the same
+  before #1713's last cuts. Under the same load B/IPv6 lost 0.3% and
+  BACnet/SC 0.03%. Profiling that step would show whether the server's
+  admission, the transport queue or the clients' timers are the limit.
+- **Concurrency peaks early.** One server peaks at 5 to 10 clients over
+  B/IP and B/IPv6 and loses up to a third beyond that. Profiling the
   server's dispatch under 25 to 100 clients would show whether the limit is
   a lock, the request admission control, or the single UDP socket.
 - **MS/TP's host overhead is per frame.** About 1.5 to 2 milliseconds per
@@ -924,9 +962,10 @@ Where the time goes, and what to measure next.
   or finer timers, would be the next thing to measure (see also
   [#501](https://github.com/jscott3201/rusty-bacnet/issues/501), a
   deterministic Linux execution mode).
-- **The router hop costs 13 to 18 microseconds**, about half of a direct
-  request. Most of it is two more datagrams; a profile of the router's
-  per-packet path would show what is left to cut.
+- **The router hop costs about 21 microseconds**, now nearly as much as a
+  direct request. Most of it is two more datagrams; the router's own ports
+  still hand each packet between tasks, which a profile of its per-packet
+  path would weigh.
 
 **What to measure next.**
 
@@ -934,35 +973,22 @@ Where the time goes, and what to measure next.
   with the simulated line.
 - Stack peaks re-measured under emulation after the next toolchain bump.
 
-**Harness changes awaiting a re-run.** The harness follow-ups of
-[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714) changed
-what these measure, so the next refresh should re-run them and replace
-their figures:
-
-- [Section 6.1](#61-concurrent-clients): every client now connects before
-  the clock starts; add rows for `--transport bip6` and `--transport sc`.
-- [Section 6.3](#63-cov-subscriptions): several subscribers up to the
-  server's total of 1,024, with and without `--confirmed`.
-- [Section 6.6](#66-bbmd-foreign-devices): capacity without pacing, run in
-  the Docker orchestrator container for one address per foreign device.
-- [Section 6.7](#67-device-scan): the device scan's rate at full
-  resolution (the per-device latencies are unchanged).
-- [Section 7.1](#71-cross-network-orchestrator): the new `foreign` and
-  `discovery` scenarios.
-- [Section 9](#9-python-bindings): `bench_bip.py` in place of the three
-  B/IP suites, and both suites' concurrency within 16 requests per client.
-- The mixed workload (`stress-test mixed`) and the router scenario
-  (`stress-test router`), in every section that quotes them: like the
-  concurrent-clients scenario, each now connects every client before the
-  clock starts, records each client's latencies in its own histogram and
-  divides by the measured step time rather than the nominal duration.
-- Any figure taken from a scenario's summary rather than its steps: the
-  summary now covers every step.
+**Not re-run for this edition.** The Docker run
+([section 7](#7-docker-cross-network-results)), with the `foreign` and
+`discovery` scenarios of
+[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714) still to
+add, and the BBMD capacity scenario of
+[section 6.6](#66-bbmd-foreign-devices), which needs the Linux container's
+one address per foreign device.
 
 ## 11. How to reproduce
 
 Run one suite at a time on an idle machine. Each Criterion suite takes 1 to
-2 minutes, each stress scenario 10 seconds per step.
+2 minutes, each stress scenario 10 seconds per step. For an A/B against
+0.13.0, build tag `v0.13.0` with the `benchmarks/` directory and
+`Cargo.lock` of commit `deaeb745` (its report's harness) in a separate
+checkout with its own target directory, and alternate runs of the two
+`stress-test` binaries.
 
 ```bash
 # Criterion suites
