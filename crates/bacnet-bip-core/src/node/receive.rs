@@ -290,7 +290,9 @@ impl Link {
     /// 4. on a broadcast listener: not sent to the broadcast address, or
     ///    arrived on another interface;
     /// 5. the BVLL header: length, type, Length field (Annex J.2);
-    /// 6. the function against the destination ([`Addressed`]);
+    /// 6. the function against the destination ([`Addressed`]); for a
+    ///    foreign device, a Forwarded-NPDU sent to its own address is
+    ///    unicast, even where that address is its broadcast one too;
     /// 7. on a broadcast listener, a function that arrived as unicast;
     /// 8. [`Policy::admit_management`], for the four requests it covers;
     /// 9. the payload against the function's layout.
@@ -329,9 +331,19 @@ impl Link {
             Ok(frame) => frame,
             Err(error) => return Received::Discarded(Discard::of_decode_error(&error)),
         };
-        let Some(arrival) = to.arrival(frame.function) else {
+        let Some(mut arrival) = to.arrival(frame.function) else {
             return Received::Discarded(Discard::DestinationMismatch);
         };
+        // A foreign device's BBMD sends it Forwarded-NPDUs by unicast. Where
+        // its broadcast address is also its own, as in a loopback test, each
+        // of them is flagged as both, and counts as the unicast it was
+        // (#1851). The trust rule still asks that the BBMD sent it.
+        if to.node
+            && frame.function == BvlcFunction::FORWARDED_NPDU
+            && matches!(self.mode, Mode::Foreign(_))
+        {
+            arrival = Arrival::Unicast;
+        }
         // Where the broadcast address is also the node's own, as in a
         // loopback test, a unicast function passes both checks above.
         if listener && arrival != Arrival::Broadcast {
