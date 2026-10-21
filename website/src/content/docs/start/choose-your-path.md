@@ -7,7 +7,7 @@ Rusty BACnet is a protocol stack with three user-facing entry points, not a desk
 
 ## Integrating more than a read?
 
-The [integration overview](/rusty-bacnet/development/overview/) covers shared endpoints, BACnet/SC setup, Network Port and Number controls, and building from source. The installation and start pages below target v0.14.0.
+The [integration overview](/rusty-bacnet/integrate/overview/) covers shared endpoints, BACnet/SC setup, Network Port and Number controls. For repository work, [build from source](/rusty-bacnet/development/build-from-source/). The installation and start pages below target v0.14.0.
 
 ## Start without hardware
 

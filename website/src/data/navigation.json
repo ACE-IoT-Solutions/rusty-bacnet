@@ -37,23 +37,15 @@
     "items": [
       {
         "label": "Integration overview",
-        "slug": "development/overview"
+        "slug": "integrate/overview"
       },
       {
         "label": "Shared endpoints",
-        "slug": "development/shared-endpoints"
+        "slug": "integrate/shared-endpoints"
       },
       {
         "label": "Network Port & Number controls",
-        "slug": "development/network-number"
-      },
-      {
-        "label": "Transport evidence",
-        "slug": "development/transports"
-      },
-      {
-        "label": "BACnet/SC setup",
-        "slug": "development/bacnet-sc"
+        "slug": "integrate/network-ports"
       }
     ]
   },
@@ -153,6 +145,19 @@
     ]
   },
   {
+    "label": "Contribute",
+    "items": [
+      {
+        "label": "Build from source",
+        "slug": "development/build-from-source"
+      },
+      {
+        "label": "Improve the documentation",
+        "slug": "development/documentation"
+      }
+    ]
+  },
+  {
     "label": "Help & project",
     "items": [
       {
@@ -166,10 +171,6 @@
       {
         "label": "Upgrade notes",
         "slug": "project/upgrading"
-      },
-      {
-        "label": "Contribute",
-        "slug": "project/contributing"
       }
     ]
   }

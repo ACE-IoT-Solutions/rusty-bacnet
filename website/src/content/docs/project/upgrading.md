@@ -124,7 +124,7 @@ New in the CLI: `--mstp PORT` joins an MS/TP trunk, in the Linux release binary 
 
 Exercise a known read, error handling, any routing or segmentation paths you depend on, subscription lifecycle, relevant server objects, and controlled cleanup. Rerun every script that drives the CLI: the shell is gone, writes need `--allow-write`, and routed stations print in a new form. Check any code that matched error text, since codec messages changed. On BACnet/SC, check that your certificates pass the CLI's pre-dial lint (`bacnet sc-check`) and that a router fronting many networks stays under the control-message rate limit.
 
-Retest your application's output parsing where it depends on CLI JSON keys, typed Python values or Rust models. Separate regressions from corrected behavior that an older integration may have depended on accidentally. The [integration guides](/rusty-bacnet/development/overview/) explain shared endpoints, Network Port registration and SC setup.
+Retest your application's output parsing where it depends on CLI JSON keys, typed Python values or Rust models. Separate regressions from corrected behavior that an older integration may have depended on accidentally. The [integration guides](/rusty-bacnet/integrate/overview/) explain shared endpoints, Network Port registration and SC setup.
 
 ## Sources and release scope
 

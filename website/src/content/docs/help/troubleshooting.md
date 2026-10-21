@@ -43,7 +43,7 @@ Reduce the request to one object/property. Investigate the peer's APDU limits, r
 
 ## BACnet/SC connection fails
 
-Check whether the binary includes SC support, then distinguish URL/connectivity, certificate trust, hostname/validity, client identity, hub acceptance, and BACnet target errors. The CLI trusts only the CA named by `--sc-ca`, and Python only `sc_ca_cert`; neither falls back to the system's root certificates. Follow the stage table in [BACnet/SC setup](/rusty-bacnet/development/bacnet-sc/#diagnose-the-stage-that-failed). Fix the trust deployment using approved procedures; do not disable verification.
+Check whether the binary includes SC support, then distinguish URL/connectivity, certificate trust, hostname/validity, client identity, hub acceptance, and BACnet target errors. The CLI trusts only the CA named by `--sc-ca`, and Python only `sc_ca_cert`; neither falls back to the system's root certificates. Follow the stage table in [BACnet/SC setup](/rusty-bacnet/guides/bacnet-sc/#diagnose-the-stage-that-failed). Fix the trust deployment using approved procedures; do not disable verification.
 
 ## The serial port opens but MS/TP is unstable
 
