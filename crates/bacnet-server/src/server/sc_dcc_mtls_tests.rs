@@ -11,6 +11,8 @@ use support::{bounded, run, Certificates, Outcome, PASSWORD, PEERS};
 
 #[path = "sc_policy_principal_tests.rs"]
 mod policy_principal;
+#[path = "sc_router_hub_tests.rs"]
+mod router_hub;
 
 #[tokio::test]
 async fn sc_dcc_mtls_requires_client_and_server_trust() {

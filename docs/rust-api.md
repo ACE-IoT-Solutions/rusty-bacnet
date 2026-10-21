@@ -2925,6 +2925,90 @@ let StartedRouter { router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
 ```
 
+#### Who may change routes (#518)
+
+SC mutual TLS authenticates a connection; it doesn't authorize a peer to change
+the routing table. With `control_policy(ControlPolicy::Hardened)` and a
+`control_authorizer()`, only the controls the authorizer allows can learn, mark
+busy or available, reject or initialize routes.
+
+`ControlAuthContext::sending_peer_principal()` is the `ScPrincipal` of the
+verified leaf certificate of the direct BACnet/SC peer that handed the message
+over: the last hop, even when the message carries an SNET. Trusting it trusts
+everything that peer forwards, and allowing it binds the routes it announces to
+the VMAC it sent them from, not to the certificate.
+
+Only **unicast** controls can carry one: Initialize-Routing-Table and its Ack,
+Reject-Message-To-Network, and a directed I-Could-Be-Router-To-Network. The
+route announcements are broadcasts (Clauses 6.6.3.2, 6.6.3.3):
+I-Am-Router-To-Network, and the ones marking a route busy or available again;
+and on BACnet/SC every broadcast goes
+through the hub, which relays it with its registration of the sender's VMAC and
+never the sender's certificate. A conforming SC router's announcements therefore
+carry no principal; that is a limit of BACnet/SC. B/IP, B/IPv6, MS/TP and
+Ethernet senders have none either.
+
+So scope the rule by message type and port. On a router whose ports 0 and 1 are
+BACnet/SC and port 2 is B/IP, this requires a configured router certificate for
+unicast controls on the SC ports, gates SC announcements on the hub-registered
+VMAC (a claim the hub vouches for, which hub certificate bindings, #800, can tie
+to certificates), and keeps the standard behaviour on B/IP:
+
+```rust
+use std::sync::Arc;
+use bacnet_network::router::control_policy::{ControlAuthContext, ControlAuthorizer, ControlPolicy};
+use bacnet_npdu::NetworkMessageType as Message;
+
+let routers: Vec<ScPrincipal> = configured_router_certificates();
+let announcers: Vec<MacAddr> = configured_router_vmacs();
+let authorizer: ControlAuthorizer = Arc::new(move |context: &ControlAuthContext| {
+    if ![0, 1].contains(&context.port_idx) {
+        return true; // B/IP: no certificates
+    }
+    let unicast = [
+        Message::INITIALIZE_ROUTING_TABLE,
+        Message::INITIALIZE_ROUTING_TABLE_ACK,
+        Message::REJECT_MESSAGE_TO_NETWORK,
+        Message::I_COULD_BE_ROUTER_TO_NETWORK,
+    ]
+    .contains(&context.message_type);
+    if unicast {
+        context.sending_peer_principal().is_some_and(|peer| routers.contains(&peer))
+    } else {
+        announcers.contains(&context.source_mac)
+    }
+});
+let options = RouterOptions::new()
+    .control_policy(ControlPolicy::Hardened)
+    .control_authorizer(authorizer);
+```
+
+The router stays `Permissive` unless a policy is configured, so routers that
+announce themselves as the standard expects keep working by default.
+Advertisements circulating in a looped topology are a separate problem, tracked
+in #1810. A relayed Who-Is-Router-To-Network keeps the requester's SNET/SADR, or
+gains the arrival network and sender when it had none (Clause 6.6.3.2), pinned
+by `envelope_discovery_tests`.
+
+Each BACnet/SC node also limits the network-layer messages one source may hand
+in (#518): `ScControlRateLimit` (`ScControlRateLimit::new(burst, per_second)`),
+set with `with_control_rate_limit()` on `ScTransport` or `DirectAcceptConfig`,
+gives each source a bucket of 256 messages refilling at 32 a second by default,
+about a quarter of the hub's own per-sender broadcast budget (#644). A direct
+peer's source is its verified certificate, so one certificate keeps one budget
+across VMACs and reconnects; a hub-relayed message's source is its originating
+VMAC, so a hub client that registers under several VMACs gets a budget for each.
+Messages over budget are dropped before they take a queue slot and counted in
+`ScNpduDropCounts::control_rate_drops`. APDUs are never charged, so a control
+flood starves neither that source's application traffic nor anyone else's. At
+most 256 sources keep their own bucket; once all are in use and none has
+refilled, new sources share one overflow bucket, so a sender holding all 256
+drained can hold new sources' control messages to that shared budget until a
+bucket refills. A site where one router legitimately sends more, such as one
+fronting many networks, raises the limit. `ScNpduAdmissionPolicy`,
+`ScNpduDropCounts` and `ScControlRateLimit` are `#[non_exhaustive]`: build them
+with `Default`, `new` or the builders.
+
 Every routing decision is `bacnet-router-core`'s engine (#1679), which the
 router keeps behind one lock: each port's dispatch task takes it for one
 frame at a time, as the aging sweep and `table()` do, and nothing holds it

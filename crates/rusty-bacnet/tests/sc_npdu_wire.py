@@ -14,7 +14,7 @@ import test_sc_hub_mtls as mtls
 ORIGIN = b"\x02\0\0\0\0\4"
 READ_BODY = b"\x0c\0\0\0\0\x19\x55"
 ACK_BODY = READ_BODY + b"\x3e\x44\x42\x91\0\0\x3f"
-ZERO = dict(fairness_drops=0, full_drops=0, closed_drops=0)
+ZERO = dict(control_rate_drops=0, fairness_drops=0, full_drops=0, closed_drops=0)
 
 
 def frame(payload):
