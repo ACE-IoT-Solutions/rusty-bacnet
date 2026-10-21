@@ -87,10 +87,9 @@ impl ForwardingBudget {
     /// that waited for its device's I-Am taking room from its own task
     /// included (#1368).
     pub(super) fn take(&self) -> bool {
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
         let taken = self
             .remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok();
         if !taken {
             self.dropped.fetch_add(1, Ordering::Relaxed);

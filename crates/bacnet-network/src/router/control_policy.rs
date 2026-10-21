@@ -303,8 +303,7 @@ impl ControlDecisions {
             return;
         };
         let inc = |col: usize| {
-            #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-            let _ = self.0[row][col].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            let _ = self.0[row][col].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_add(1))
             });
         };

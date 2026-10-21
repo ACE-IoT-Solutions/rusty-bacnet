@@ -1017,7 +1017,11 @@ The Lint job's "Check the pins" step fails when:
   plus 25%. Copy them into the file, and the peaks into its comments and
   that section's table.
 - **MSRV:** `Cargo.toml`'s `rust-version`, `RUST_MSRV` and
-  `scripts/ci/check-msrv.sh` together.
+  `scripts/ci/check-msrv.sh` together. The minimum increases only in minor
+  releases, to a stable Rust release at least about six months old. The 0.15
+  development workspace uses edition 2024 and requires Rust 1.95, released
+  on [2026-04-16](https://blog.rust-lang.org/2026/04/16/Rust-1.95.0/). The
+  pinned development toolchain remains separate from this minimum.
 - **Fuzz nightly:** `RUST_FUZZ_NIGHTLY`, normally to a nightly of the
   release `rust-toolchain.toml` pins (`rustc +nightly-<date> -V` names the
   version). Run `bash scripts/ci/fuzz.sh check` and `build` with it first:

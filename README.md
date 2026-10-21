@@ -78,7 +78,8 @@ published for CPython 3.11–3.14 on Linux (glibc 2.17 or newer; x86_64,
 aarch64), macOS (x86_64 on 10.12 or later, arm64 on 11.0 or later) and Windows
 (x64). Every wheel includes BACnet/IPv6, BACnet/SC and MS/TP. On any other
 Python version, platform or musl-based Linux, pip builds from source, which
-needs Rust 1.93 or newer and a C compiler. Add `--only-binary=:all:` to fail
+needs Rust 1.93 or newer for the 0.14 release and a C compiler; building this
+development checkout needs Rust 1.95 or newer. Add `--only-binary=:all:` to fail
 fast instead.
 
 ### Rust
@@ -94,7 +95,8 @@ bacnet-encoding = "0.14"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The minimum supported Rust version is **1.93**.
+The 0.14 release requires Rust **1.93**. The development workspace for 0.15
+uses edition 2024 and requires Rust **1.95**; source checkouts use that minimum.
 
 ### CLI
 
@@ -115,7 +117,8 @@ has the checksum command for each OS.
   Redistributable.
 
 `bacnet-cli` is also on crates.io, so Cargo can build it on any platform with
-Rust 1.93 or later. Add `,pcap` to the features for capture, which needs the
+Rust 1.93 or later for the 0.14 release (1.95 for this development checkout).
+Add `,pcap` to the features for capture, which needs the
 libpcap headers, and `,serial` for MS/TP; `--no-default-features` leaves out
 the terminal UI:
 

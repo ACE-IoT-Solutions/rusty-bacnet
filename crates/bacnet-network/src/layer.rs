@@ -878,9 +878,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 /// Advance a control ingress sequence, saturating at `u64::MAX`. Shared by
 /// [`NetworkLayer`] and the router's control receiver.
 pub(crate) fn next_ingress_sequence(sequence: &AtomicU64) -> u64 {
-    #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
     let previous = sequence
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
             value.checked_add(1)
         })
         .unwrap_or(u64::MAX);

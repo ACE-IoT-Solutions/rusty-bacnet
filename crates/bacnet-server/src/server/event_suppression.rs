@@ -181,8 +181,7 @@ impl EventSuppressions {
     pub(crate) fn record(&self, suppression: EventSuppression) {
         // Relaxed and independent, like the other server counters: no
         // ordering with the send path is promised.
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-        let _ = self.counts[suppression as usize].fetch_update(
+        let _ = self.counts[suppression as usize].try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |n| Some(n.saturating_add(1)),

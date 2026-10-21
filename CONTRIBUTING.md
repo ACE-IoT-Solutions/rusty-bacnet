@@ -19,7 +19,8 @@ Issues, pull requests and CI all live on
 ## Build and test
 
 `rust-toolchain.toml` pins the Rust release, which rustup selects in the
-checkout; published crates keep an MSRV of 1.93. Tests run with
+checkout; the development workspace requires Rust 1.95. The MSRV increases
+only in minor releases, to a stable release at least about six months old. Tests run with
 [cargo-nextest](https://nexte.st) 0.9.145 or later, which skips doctests, so
 run `cargo test --doc` as well. The block below picks the features CI uses on
 your OS. On Linux, install a C toolchain, `pkg-config` and `libpcap-dev` first
