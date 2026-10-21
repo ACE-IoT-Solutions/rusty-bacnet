@@ -362,8 +362,10 @@ mod tests {
         let a = std::sync::Arc::new(a);
 
         // Four threads send 300 unicasts between them, more than the peer
-        // queue holds, so some wait for room. Each goes to the MAC that
-        // matches its bytes.
+        // queue holds. Loopback drops a frame when the peer's queue is full
+        // (#1713), so wait for every send, then check that each delivered
+        // frame matches its recorded MAC in order, and that every frame was
+        // either delivered or counted as dropped.
         let threads: Vec<_> = (0..4u16)
             .map(|thread| {
                 let a = std::sync::Arc::clone(&a);
@@ -378,14 +380,21 @@ mod tests {
                 })
             })
             .collect();
-        for _ in 0..300 {
-            let frame = rx_b.recv().await.unwrap();
-            let mac = destinations.recv().await.unwrap();
-            assert_eq!(mac.as_slice(), &frame.npdu[..]);
-        }
         for thread in threads {
             thread.join().unwrap();
         }
+        let mut delivered = 0u64;
+        while let Ok(frame) = rx_b.try_recv() {
+            let mac = destinations.try_recv().unwrap();
+            assert_eq!(mac.as_slice(), &frame.npdu[..]);
+            delivered += 1;
+        }
+        assert!(
+            destinations.try_recv().is_err(),
+            "a dropped frame was recorded"
+        );
+        assert!(delivered > 0);
+        assert_eq!(delivered + b.receive_drops(), 300);
     }
 
     #[tokio::test]
