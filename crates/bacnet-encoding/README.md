@@ -5,16 +5,13 @@ BACnet tag, primitive, APDU and NPDU codecs for the
 Encoding a value produces bytes; it does not send a message or establish that a
 peer accepted it.
 
-## Quickstart from development source
+## Quickstart
 
-The tag-sink API below is development-source functionality. The workspace's
-`0.13.0` version does not establish that this API is in the published `0.13.0`
-crate. Use a checkout named `rusty-bacnet` beside your application directory,
-adjusting the relative path if needed:
+The tag-sink API below is new in 0.14.0:
 
 ```toml
 [dependencies]
-bacnet-encoding = { path = "../rusty-bacnet/crates/bacnet-encoding" }
+bacnet-encoding = "0.14"
 ```
 
 Write a Real tag header into caller-owned storage, then verify that a header

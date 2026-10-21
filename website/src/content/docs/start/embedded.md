@@ -5,7 +5,7 @@ description: "Which no_std crates an MS/TP device, a B/IP device or a router nee
 
 The portable crates run on a microcontroller with no operating system and no heap. Each one is a sans-IO core: it reads no clock and owns no UART or socket. Your firmware feeds it what the line does, stamped with the time, and carries out the actions it hands back. This page says which crates a product needs, how they share time, how much memory they take, and what the adapter between them and your hardware must do.
 
-Parts of this are newer than the v0.13.0 release: the allocation-free profile of `bacnet-types`, `bacnet-encoding` and `bacnet-services`, the `bacnet-npdu` crate, the MS/TP storage bundle, `bacnet_time::earliest` and the `device` firmware image. Until the next release, take them from the `dev` branch. Nothing here is a hardware qualification: the images are measured and checked natively, and run under emulation by hand.
+This page describes v0.14.0, the first release with the allocation-free profile of `bacnet-types`, `bacnet-encoding` and `bacnet-services`, the `bacnet-npdu` crate, the MS/TP storage bundle and `bacnet_time::earliest` (a new `bacnet-time` version that only adds API). The firmware images, the `device` image among them, live in the repository, not on crates.io. Nothing here is a hardware qualification: the images are measured and checked natively, and run under emulation by hand.
 
 ## Crates by product
 

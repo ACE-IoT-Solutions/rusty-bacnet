@@ -2,9 +2,9 @@
 
 Rusty BACnet is a workspace of library crates implementing the BACnet protocol stack (ASHRAE 135-2020). The [README crate table](../README.md#crates) lists which are on crates.io.
 
-This reference follows the `dev` branch. At the `v0.13.0` tag it describes the
-published 0.13.0 crates, which the site's tutorials also target; see
-[docs.rs](https://docs.rs/bacnet-client/0.13.0/bacnet_client/) and the
+This reference follows the `dev` branch. At the `v0.14.0` tag it describes the
+published 0.14.0 crates, which the site's tutorials also target; see
+[docs.rs](https://docs.rs/bacnet-client/0.14.0/bacnet_client/) and the
 [installation guidance](../README.md#install). Changes merged after the release
 wait in [`changelog.d/`](../changelog.d/); to use them, follow
 [Build from source](../README.md#build-from-source).

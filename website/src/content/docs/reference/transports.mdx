@@ -18,7 +18,7 @@ A transport appearing in the codebase is not the same as every package, CLI bina
 | BACnet/IP | CLI, Python client, or Rust client | Direct reads, discovery, and routed traffic are distinct tests |
 | BACnet/IPv6 | CLI `--ipv6`, Python, or Rust feature path | Requires appropriate IPv6 addressing/interface and network validation; targets are VMACs (`bip6:<instance>`), which the CLI resolves from `[ip]:port` and Python from `resolve_vmac` |
 | BACnet/SC | SC-enabled CLI, Python, or Rust | Certificate trust, local identities, and hub behavior must be configured |
-| MS/TP | Rust serial path, or Python `transport="mstp"` and `MstpEndpoint` | No CLI transport flag in v{release}; the development branch after it adds `--mstp` (the `serial` feature). Qualify the actual serial hardware |
+| MS/TP | Rust serial path, or Python `transport="mstp"` and `MstpEndpoint` | The CLI joins with `--mstp` in the Linux release executables, or a source build with the `serial` feature. Qualify the actual serial hardware |
 | Ethernet/802.3 | Advanced Rust transport path | Platform/privilege evidence is incomplete; not a general CLI tutorial |
 
 This is a guide to entry points, not a formal supported-platform or conformance matrix.
@@ -27,7 +27,7 @@ This is a guide to entry points, not a formal supported-platform or conformance 
 
 ## Features are package-specific
 
-The CLI manifest enables its IPv6 path and defines optional `sc-tls` and `pcap` features; the release executables enable `sc-tls` everywhere and `pcap` on Linux. In the development branch after v{release}, the terminal UI (`tui`) is a default feature and a `serial` feature adds MS/TP, which the Linux release executables will include. The Python binding manifest enables underlying SC, IPv6, and serial transport features, but a Cargo feature selection alone is not proof of an installable or qualified wheel on a particular host.
+The CLI manifest enables its IPv6 path and defines optional `sc-tls` and `pcap` features; the release executables enable `sc-tls` everywhere and `pcap` and `serial` on Linux. The terminal UI (`tui`) is a default feature, and a `serial` feature adds MS/TP, which the Linux release executables include. The Python binding manifest enables underlying SC, IPv6, and serial transport features, but a Cargo feature selection alone is not proof of an installable or qualified wheel on a particular host.
 
 Inspect the selected binary or wheel and its release build configuration. Do not turn a code-level table into five identical “fully supported” badges.
 

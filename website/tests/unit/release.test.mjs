@@ -16,8 +16,11 @@ const readRepo = path => readFile(new URL(path, repo), 'utf8');
 const series = release.split('.').slice(0, 2).join('.');
 // The release project/upgrading.md moves from. The upgrade guide and the lab's
 // recorded evidence may name it; nothing else may.
-const previous = '0.12.0';
+const previous = '0.13.0';
 const history = new Set(['project/upgrading.md', 'start/local-lab.mdx']);
+// Other versions the upgrade guide names: bacnet-time's, which moves on its own
+// (#1768), and the minimum Rustls for BACnet/SC (#1737).
+const upgradeOnly = ['0.13.1', '0.23.46'];
 // A 0.x.y version, alone or as v0.x.y, but not part of an address such as 0.0.0.0.
 const versions = text => [...new Set([...text.matchAll(/(?<![\w.])v?(0\.\d+\.\d+)(?!\.?\d)/g)].map(match => match[1]))];
 // A v0.x series such as "v0.12", not followed by a patch number.
@@ -31,7 +34,8 @@ test('every copy of the release version matches site.mjs', async () => {
   assert.ok(pages.length > 20);
   for (const name of pages) {
     const text = await read(`src/content/docs/${name}`);
-    const allowed = history.has(name) ? [release, previous] : [release];
+    const allowed = name === 'project/upgrading.md' ? [release, previous, ...upgradeOnly]
+      : history.has(name) ? [release, previous] : [release];
     // MDX takes the release from site.mjs ({release}), so it names none itself.
     const found = versions(text).filter(version => name.endsWith('.mdx') ? version !== previous || !history.has(name) : !allowed.includes(version));
     expect(`${name} names ${found.join(', ')}${name.endsWith('.mdx') ? '; use {release}' : ''}`, found.length === 0);

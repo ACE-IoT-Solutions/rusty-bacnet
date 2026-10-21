@@ -43,16 +43,16 @@ bacnet read 192.168.1.100 av:1 pv
 
 Relinquishing removes that slot's command. It does **not** promise a return to the previously observed number: another active priority or the relinquish default may now determine the effective value. If the slot was already occupied, clearing it is not a valid restoration of the prior command. Use the site's restoration procedure and retain the needed pre-change state.
 
-## The write guard after v0.13.0
+## The write guard
 
-In the development branch after v0.13.0, the CLI refuses a one-shot command that changes a device unless the command line has `--allow-write`. Communication control and reinitialize also need `--yes` when stdin is not a terminal; at a terminal they ask you to type the device instance instead, or the target exactly as you gave it when that was an address. A refused command exits with status 4 and sends nothing, and with `--json` its reason is one line of JSON on stderr. The interactive shell is removed there; the terminal UI ignores both flags and arms writes with its own time-boxed write session. With that build, the commands on this page become:
+The CLI refuses a one-shot command that changes a device unless the command line has `--allow-write`. Communication control and reinitialize also need `--yes` when stdin is not a terminal; at a terminal they ask you to type the device instance instead, or the target exactly as you gave it when that was an address. A refused command exits with status 4 and sends nothing, and with `--json` its reason is one line of JSON on stderr. The terminal UI ignores both flags and arms writes with its own time-boxed write session. With the flag, the commands on this page are:
 
 ```sh
 bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --priority 8
 bacnet --allow-write write 192.168.1.100 av:1 pv null --priority 8
 ```
 
-The v0.13.0 executable has no such flag and rejects it. Reads, discovery and an ordinary `subscribe` need neither flag; that build cancels its subscription when it stops, and only `--lifetime 0`, which never expires, needs `--allow-write`. Treat the flag as a statement of intent for one command, not as a setting to put in every script.
+Executables from earlier releases have no such flag and reject it. Reads, discovery and an ordinary `subscribe` need neither flag; `subscribe` cancels its subscription when it stops, and only `--lifetime 0`, which never expires, needs `--allow-write`. Treat the flag as a statement of intent for one command, not as a setting to put in every script.
 
 ## More consequential operations
 
@@ -62,6 +62,6 @@ Record what was requested, the response, readback, and cleanup outcome in the ap
 
 ## Sources and release scope
 
-These instructions target **v0.13.0**. Source review is not a claim of hardware qualification.
+These instructions target **v0.14.0**. Source review is not a claim of hardware qualification.
 
-[Write and relinquish grammar](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/docs/CLI.md) · [CLI arguments and acknowledgment inputs](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/crates/bacnet-cli/src/args.rs) · [Python typed values](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/docs/python-api.md).
+[Write and relinquish grammar](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/CLI.md) · [CLI arguments and acknowledgment inputs](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/crates/bacnet-cli/src/args.rs) · [Python typed values](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/python-api.md).
