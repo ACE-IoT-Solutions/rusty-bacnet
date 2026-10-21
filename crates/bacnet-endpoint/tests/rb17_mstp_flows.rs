@@ -342,9 +342,8 @@ async fn mstp_queue_and_admission_bounds_release() {
 
     // (c) Network-layer receive bound (raw receiver): the raw receiver holds
     // no queue of its own (#1713), so the transport's 256-NPDU queue is the
-    // bound. This loopback transport waits rather than drops when it is
-    // full, so 256 arrivals from one peer send without blocking and all 256
-    // are received.
+    // bound. 300 arrivals from one peer all send without blocking; exactly
+    // the bound is received, and the transport counts the 44 it dropped.
     let (endpoint_side, mut peer_side) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
     let mut layer = NetworkLayer::new(endpoint_side);
     let mut apdus = layer.start().await.expect("layer must start");
@@ -363,10 +362,10 @@ async fn mstp_queue_and_admission_bounds_release() {
     )
     .unwrap();
     let bytes = buf.freeze();
-    for _ in 0..256 {
+    for _ in 0..300 {
         tokio::time::timeout(WAIT, peer_side.send_unicast(&bytes, &[0x01]))
             .await
-            .expect("peer send must not block within the transport's bound")
+            .expect("peer send must not block on a full queue")
             .expect("peer send");
     }
     for _ in 0..256 {
@@ -375,6 +374,8 @@ async fn mstp_queue_and_admission_bounds_release() {
             .expect("bound item missing")
             .expect("layer closed");
     }
+    assert!(apdus.try_recv().is_err(), "only the bound is queued");
+    assert_eq!(layer.transport().receive_drops(), 44);
     layer.stop().await.unwrap();
     peer_side.stop().await.unwrap();
 }

@@ -416,7 +416,9 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     ///
     /// Call before either [`Self::start`] or [`Self::start_with_admission`], at
     /// most once across the two control-enable alternatives. Returns an encoding
-    /// error if dispatch has started or a control receiver is already enabled.
+    /// error if the layer has started or a control receiver is already enabled.
+    /// With [`Self::start`], controls arrive only while its [`ApduReceiver`] is
+    /// polled; with [`Self::start_with_admission`], whenever they arrive.
     /// The separate 256-item control queue has no per-source quota: Closed takes
     /// precedence over Full, with Full/Closed counted internally but no snapshot
     /// or depth/high-water tracking. Failed admission drops the control and its
@@ -504,6 +506,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         self.started = true;
         // Taken once the transport knows its own addresses.
         self.local_broadcasts = self.transport.local_broadcast_destinations();
+        let npdu_rx = Arc::new(Mutex::new(npdu_rx));
+        self.receiver_queue = Arc::downgrade(&npdu_rx);
         Ok(ApduReceiver::new(npdu_rx, self.ingress()))
     }
 

@@ -142,6 +142,9 @@ async fn rejects_to_the_router(
 ) {
     for _ in 0..count {
         peer_b.send_unicast(&REJECT_3000, &[0x02]).await.unwrap();
+        // The loopback link drops what finds the router's 256-frame queue
+        // full (#1713), so let the router take each frame as it goes.
+        tokio::task::yield_now().await;
     }
     peer_b.send_unicast(&TO_6000, &[0x02]).await.unwrap();
     while recv(from_router_b).await.npdu[..] != REJECT_6000 {}

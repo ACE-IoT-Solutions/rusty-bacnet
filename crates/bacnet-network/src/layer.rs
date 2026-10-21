@@ -17,11 +17,16 @@
 //!
 //! The raw NetworkLayer receiver is different: [`ApduReceiver`] has no queue
 //! of its own (#1713). It decodes the transport's NPDUs in the task that polls
-//! it, so **network controls flow only while it is polled**, and the
-//! transport's queue (256 NPDUs on every built-in transport) is the only
-//! buffer. Under overload that queue bounds memory and the transport counts
-//! what it drops: B/IP and B/IPv6 report them as `npdu_channel_full` in their
-//! `receive_counters()`.
+//! it, so **network controls flow only while it is polled**: while the
+//! consumer is busy in an inline await they wait in the transport's queue,
+//! which adds latency, not a deadlock. That queue is the only buffer. It
+//! holds 256 NPDUs on B/IP, B/IPv6, BACnet/SC, Ethernet and loopback, and 64
+//! on MS/TP, whose deliveries were buffered 64 + 256 deep before. Under
+//! overload it bounds memory and the transport counts what it drops: B/IP
+//! and B/IPv6 as `npdu_channel_full` in `receive_counters()`, MS/TP as
+//! `delivery_drops` in its diagnostics' MAC counters, BACnet/SC in
+//! `npdu_drop_counts()`, and loopback in `receive_drops()`. Ethernet has no
+//! drop counter, only throttled warnings.
 //!
 //! ## Raw and tracked receivers
 //!
@@ -181,7 +186,9 @@ pub struct ReceivedApdu {
     pub provenance: TransportProvenance,
     /// Sealed route back to this envelope's original verified direct socket.
     pub direct_response: Option<bacnet_transport::port::DirectResponse>,
-    /// Captured router endpoint and return-port authority for local delivery.
+    /// Captured router endpoint and return-port authority for local delivery
+    /// of a Confirmed-Request, the only APDU answered on its arrival route;
+    /// `None` for every other APDU (#1713).
     pub router_response: Option<crate::router::RouterResponse>,
     /// Optional reply channel for MS/TP DataExpectingReply flows.
     /// The application layer can send NPDU-wrapped reply bytes through this channel.
@@ -355,6 +362,11 @@ pub struct NetworkLayer<T: TransportPort> {
     dispatch_task: Option<JoinHandle<()>>,
     /// Whether [`Self::start`] or [`Self::start_with_admission`] has run.
     started: bool,
+    /// The [`ApduReceiver`]'s transport queue, which [`Self::stop`] and
+    /// drop close so its stream ends once drained.
+    receiver_queue: std::sync::Weak<
+        std::sync::Mutex<tokio::sync::mpsc::Receiver<bacnet_transport::port::ReceivedNpdu>>,
+    >,
     network_control_tx: Option<AdmissionSender<ReceivedNetworkControl>>,
     network_control_ingress_sequence: Arc<AtomicU64>,
     /// What the dispatch task's node dropped, since the layer was made.
@@ -376,6 +388,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
             response_scope: Default::default(),
             dispatch_task: None,
             started: false,
+            receiver_queue: std::sync::Weak::new(),
             network_control_tx: None,
             network_control_ingress_sequence: Arc::new(AtomicU64::new(0)),
             node_totals: Arc::default(),
@@ -846,12 +859,15 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     ///
     /// After start, aborts and awaits dispatch before stopping the transport;
     /// it does not wait for consumers, even with full APDU/control queues.
+    /// An [`ApduReceiver`] yields what the transport had queued, then `None`.
     /// Queued items remain drainable, retaining their reply senders until
     /// consumed or the receiver is dropped. Stop does not count as an admission
     /// drop or clear depth/high-water/drop totals. See the
     /// [receive-queue contract](self#receive-queue-admission).
     pub async fn stop(&mut self) -> Result<(), Error> {
         self.seal_responses();
+        // The raw receiver drains what the transport queued, then ends.
+        ingress::close_queue(&self.receiver_queue);
         if let Some(task) = self.abort_dispatch_task() {
             let _ = task.await;
         }
@@ -882,6 +898,7 @@ impl<T: TransportPort> NetworkLayer<T> {
 impl<T: TransportPort> Drop for NetworkLayer<T> {
     fn drop(&mut self) {
         self.response_scope.seal();
+        ingress::close_queue(&self.receiver_queue);
         let _ = self.abort_dispatch_task();
         self.transport.abort();
     }

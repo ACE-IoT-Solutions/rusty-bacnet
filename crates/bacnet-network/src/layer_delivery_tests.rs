@@ -5,6 +5,49 @@ use bacnet_transport::loopback::LoopbackTransport;
 use std::net::Ipv4Addr;
 use tokio::time::{timeout, Duration};
 
+/// Stopping the layer ends its raw receiver's stream even though the
+/// loopback peer keeps its sender (#1713): what was queued before the stop
+/// is drained, a later frame isn't taken, and then the stream ends.
+#[tokio::test]
+async fn stop_ends_the_raw_stream_after_what_was_queued() {
+    use crate::loopback_fixture::{wire, APDU};
+    let (transport, mut peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
+    let mut network = NetworkLayer::new(transport);
+    let mut apdus = network.start().await.unwrap();
+    let _peer_rx = peer.start().await.unwrap();
+    peer.send_unicast(&wire(None, None, None), &[0x01])
+        .await
+        .unwrap();
+    network.stop().await.unwrap();
+    // The peer's sender is still alive; its frame is refused or dropped.
+    let _ = peer.send_unicast(&wire(None, None, None), &[0x01]).await;
+    let queued = timeout(Duration::from_secs(1), apdus.recv())
+        .await
+        .unwrap()
+        .expect("the frame queued before the stop");
+    assert_eq!(queued.apdu, APDU[..]);
+    assert!(timeout(Duration::from_secs(1), apdus.recv())
+        .await
+        .expect("the stream ends")
+        .is_none());
+    peer.stop().await.unwrap();
+}
+
+/// Dropping the layer ends the stream too.
+#[tokio::test]
+async fn dropping_the_layer_ends_the_raw_stream() {
+    let (transport, mut peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
+    let mut network = NetworkLayer::new(transport);
+    let mut apdus = network.start().await.unwrap();
+    let _peer_rx = peer.start().await.unwrap();
+    drop(network);
+    assert!(timeout(Duration::from_secs(1), apdus.recv())
+        .await
+        .expect("the stream ends")
+        .is_none());
+    assert!(apdus.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn send_receive_apdu_unicast_is_not_marked_as_group_delivery() {
     let transport_a = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);

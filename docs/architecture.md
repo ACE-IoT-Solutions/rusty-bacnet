@@ -73,7 +73,8 @@ TransportPort::start() -> mpsc::Receiver<ReceivedNpdu>
     |  Decodes data-link framing (BVLL for BIP and BIP6, BVLC-SC for SC, MS/TP frames)
     |  Extracts NPDU bytes + source MAC + raw link-layer group provenance + attributes
     v
-NetworkLayer::start() -> mpsc::Receiver<ReceivedApdu>
+NetworkLayer::start() -> ApduReceiver
+    |  Decodes each NPDU when the receiver is polled, in the consumer's task (#1713)
     |  Decodes NPDU header (version, control, DNET/DADR/SNET/SADR)
     |  Local network controls -> owner control intake -> bounded Number worker
     |  Other raw controls retain their consumer (for example client Reject correlation)

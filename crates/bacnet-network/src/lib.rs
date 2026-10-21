@@ -20,6 +20,8 @@ mod group_dadr_tests;
 
 #[cfg(test)]
 mod link_source_bound_tests;
+#[cfg(test)]
+mod router_reply_capability_tests;
 
 #[cfg(test)]
 mod loopback_fixture;

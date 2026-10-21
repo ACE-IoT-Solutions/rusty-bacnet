@@ -86,7 +86,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// tests may omit ownership; production dispatch always supplies it.
     /// ReadProperty runs on its own path (see `read_property.rs`).
     pub(in crate::server) async fn handle_admitted_confirmed_request(
-        services: &RequestServices<T>,
+        services: &Arc<RequestServices<T>>,
         request_tasks: &super::request_tasks::RequestTaskSpawner,
         origin: RequestOrigin<'_>,
         req: bacnet_encoding::apdu::ConfirmedRequest,
@@ -95,7 +95,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     ) {
         if req.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
             let admitted = read_property::AdmittedRequest {
-                services: Arc::new(services.clone()),
+                services: Arc::clone(services),
                 request_tasks: request_tasks.clone(),
                 source_mac: MacAddr::from_slice(origin.mac),
                 source_network: origin.network,
@@ -125,7 +125,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             mutation_decisions,
             warnings: _,
             config,
-        } = services;
+        } = &**services;
         let RequestOrigin {
             mac: source_mac,
             network: source_network,

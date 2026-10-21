@@ -2415,6 +2415,8 @@ let (side_a, side_b) = LoopbackTransport::pair(
 
 In-process channel-based transport for composing a client and server without real network sockets (e.g. inside an HTTP gateway). `LoopbackTransport::pair()` creates two connected transports backed by `tokio::sync::mpsc` channels — sending on one delivers to the other. Available as `AnyTransport::Loopback` for use with the enum dispatch wrapper.
 
+A send never waits for the peer: a frame that finds the peer's 256-frame queue full is dropped and counted in the peer's `receive_drops()`, as on a real data link (#1713).
+
 The peer receives every frame, whatever MAC a unicast was sent to. For tests that need to know, `record_unicast_destinations()` returns a receiver of those MACs, in the order the peer receives the unicast frames (#1243). Call it before handing the transport to a router or network layer; dropping the receiver stops the record.
 
 By default the transport drops the data attributes given to `send_unicast_with_data_attributes` and `send_broadcast_with_data_attributes`, like a data link that cannot carry them. `carry_data_attributes()` makes that side hand them to the peer in `ReceivedNpdu::data_attributes`, so a test can feed a router or network layer frames that carry attributes and check the ones it sends back (#1289).
@@ -3002,6 +3004,13 @@ Network layer routing, router tables, and the multi-port router.
 use bacnet_network::layer::NetworkLayer;
 use bacnet_network::router::BACnetRouter;
 ```
+
+`NetworkLayer::start` returns an `ApduReceiver`, which decodes the
+transport's NPDUs in the task that polls it (#1713). Network controls reach
+the control receiver only while the `ApduReceiver` is polled, so keep polling
+it, as the server and client dispatch loops do, or use
+`start_with_admission()`, whose dispatch task decodes on its own. A stop, or
+dropping the layer, ends the stream once what was queued is drained.
 
 `BACnetRouter::start` takes the ports and a `RouterOptions` (#1220).
 `RouterOptions::new()` is the plain router: a raw `mpsc::Receiver` for local

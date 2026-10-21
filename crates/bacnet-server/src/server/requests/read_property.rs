@@ -194,14 +194,19 @@ mod tests {
         let read_property =
             future_size(BACnetServer::<BipTransport>::handle_admitted_read_property);
         let spawned = future_size(BACnetServer::<BipTransport>::run_admitted_confirmed_request);
+        const ADVICE: &str = "1,032 bytes is glibc's tcache maximum, not a budget; on a \
+            toolchain or dependency bump, shrink the future (box a rare path), don't raise the limit";
         eprintln!("ReadProperty handler future: {read_property} bytes; spawned: {spawned} bytes");
+        if spawned > LIMIT - 64 {
+            eprintln!("warning: the spawned future is within 64 bytes of {LIMIT}. {ADVICE}");
+        }
         assert!(
             read_property <= LIMIT,
-            "the ReadProperty handler future is {read_property} bytes, over {LIMIT}"
+            "the ReadProperty handler future is {read_property} bytes, over {LIMIT}: {ADVICE}"
         );
         assert!(
             spawned <= LIMIT,
-            "the spawned confirmed-request future is {spawned} bytes, over {LIMIT}"
+            "the spawned confirmed-request future is {spawned} bytes, over {LIMIT}: {ADVICE}"
         );
     }
 }
