@@ -319,6 +319,11 @@ full-conformance or BTL certification claim.
 
 ### Security
 
+- **Dependencies:** `Cargo.lock` takes `rustls-webpki` 0.103.16, which fixes
+  RUSTSEC-2026-0382: certificate verification could accept a distrusted
+  intermediate. It affects BACnet/SC TLS in the release binaries and wheels.
+  Library users should run `cargo update -p rustls-webpki` (#1987).
+
 - **Breaking (Rust API):** A hardened router's control authorizer sees the
   sending direct BACnet/SC peer's certificate principal for unicast controls (SC
   broadcasts arrive hub-relayed, with none), and SC nodes rate-limit
