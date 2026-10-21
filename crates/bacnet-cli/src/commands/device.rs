@@ -199,7 +199,7 @@ pub struct AcknowledgeAlarmArgs<'a> {
 /// Acknowledge an alarm on a remote device with exact caller-supplied timestamps.
 pub async fn acknowledge_alarm_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     args: AcknowledgeAlarmArgs<'_>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -223,7 +223,7 @@ pub async fn acknowledge_alarm_cmd<T: TransportPort + 'static>(
         time_of_acknowledgment,
     )?;
 
-    client.acknowledge_alarm_request(mac, &request).await?;
+    to.acknowledge_alarm_request(client, &request).await?;
 
     output::print_success("Alarm acknowledged", format);
     Ok(())
@@ -232,13 +232,13 @@ pub async fn acknowledge_alarm_cmd<T: TransportPort + 'static>(
 /// Delete an object on a remote device.
 pub async fn delete_object_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     object_type: ObjectType,
     instance: u32,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let oid = ObjectIdentifier::new(object_type, instance)?;
-    client.delete_object(mac, oid).await?;
+    to.delete_object(client, oid).await?;
     output::print_success(&format!("Deleted {}:{}", object_type, instance), format);
     Ok(())
 }
@@ -246,7 +246,7 @@ pub async fn delete_object_cmd<T: TransportPort + 'static>(
 /// Create an object on a remote device.
 pub async fn create_object_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     object_type: ObjectType,
     instance: u32,
     format: OutputFormat,
@@ -254,7 +254,7 @@ pub async fn create_object_cmd<T: TransportPort + 'static>(
     use bacnet_services::object_mgmt::ObjectSpecifier;
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let specifier = ObjectSpecifier::Identifier(oid);
-    let response = client.create_object(mac, specifier, vec![]).await?;
+    let response = to.create_object(client, specifier, vec![]).await?;
     let hex: String = response
         .iter()
         .map(|b| format!("{b:02x}"))
