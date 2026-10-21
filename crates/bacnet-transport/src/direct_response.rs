@@ -69,6 +69,13 @@ impl Drop for DirectResponseScope {
 /// ```
 #[derive(Clone)]
 pub struct DirectResponse {
+    /// Shared, so the capability is one pointer in every received NPDU and
+    /// APDU, and in a server's saved response route, and a clone is a
+    /// reference count (#1713). Every field is fixed at creation.
+    inner: Arc<DirectResponseInner>,
+}
+
+struct DirectResponseInner {
     member: Weak<Membership>,
     identity: DirectScIdentity,
     send: mpsc::Sender<ResponseWrite>,
@@ -88,27 +95,30 @@ impl DirectResponse {
     #[cfg(any(test, feature = "sc-tls"))]
     pub(crate) fn new(member: &Arc<Membership>, identity: DirectScIdentity) -> Self {
         Self {
-            member: Arc::downgrade(member),
-            identity,
-            send: member.egress.send.clone(),
-            next_message: member.egress.next_message.clone(),
-            peer_max_bvlc: member.egress.limits.0,
-            peer_max_npdu: member.egress.limits.1,
-            wait: member.egress.wait,
+            inner: Arc::new(DirectResponseInner {
+                member: Arc::downgrade(member),
+                identity,
+                send: member.egress.send.clone(),
+                next_message: member.egress.next_message.clone(),
+                peer_max_bvlc: member.egress.limits.0,
+                peer_max_npdu: member.egress.limits.1,
+                wait: member.egress.wait,
+            }),
         }
     }
 
     /// Immutable peer/incarnation associated with this exact writer.
     pub fn identity(&self) -> DirectScIdentity {
-        self.identity
+        self.inner.identity
     }
 
     /// Maximum response NPDU payload after the original peer's independent
     /// NPDU and complete BVLC receive limits. This immutable sizing snapshot
     /// does not check liveness or confer authority to send after retirement.
     pub fn max_npdu_length(&self) -> usize {
-        usize::from(self.peer_max_npdu)
-            .min(usize::from(self.peer_max_bvlc).saturating_sub(Self::encode_frame(&[], 0).len()))
+        usize::from(self.inner.peer_max_npdu).min(
+            usize::from(self.inner.peer_max_bvlc).saturating_sub(Self::encode_frame(&[], 0).len()),
+        )
     }
 
     fn encode_frame(npdu: &[u8], message_id: u16) -> BytesMut {
@@ -149,31 +159,32 @@ impl DirectResponse {
         scope: &DirectResponseScope,
         owner: Option<&ResponseScopeGuard>,
     ) -> Result<(), Error> {
+        let this = &*self.inner;
         if scope.0.load(Ordering::Acquire) || owner.is_some_and(|owner| !owner.is_open()) {
             return Err(unavailable());
         }
-        if npdu.len() > usize::from(self.peer_max_npdu) {
+        if npdu.len() > usize::from(this.peer_max_npdu) {
             return Err(Error::Encoding(
                 "direct response exceeds peer Max-NPDU-Length".into(),
             ));
         }
-        let bytes = Self::encode_frame(npdu, self.next_message.fetch_add(1, Ordering::Relaxed));
-        if bytes.len() > usize::from(self.peer_max_bvlc) {
+        let bytes = Self::encode_frame(npdu, this.next_message.fetch_add(1, Ordering::Relaxed));
+        if bytes.len() > usize::from(this.peer_max_bvlc) {
             return Err(Error::Encoding(
                 "direct response exceeds peer Max-BVLC-Length".into(),
             ));
         }
         let deadline = tokio::time::Instant::now()
-            .checked_add(self.wait)
+            .checked_add(this.wait)
             .ok_or_else(unavailable)?;
         let (done, recv) = oneshot::channel();
         // The temporary strong membership is dropped before awaiting. Saved
         // request/replay contexts must never keep a dead socket registered.
-        self.member
+        this.member
             .upgrade()
             .and_then(|member| {
                 member.with_current(|| {
-                    self.send.try_send(ResponseWrite {
+                    this.send.try_send(ResponseWrite {
                         bytes: bytes.freeze(),
                         done,
                         scopes: [Some(scope.guard()), owner.cloned()],
@@ -184,7 +195,7 @@ impl DirectResponse {
             })
             .ok_or_else(unavailable)?
             .map_err(|_| unavailable())?;
-        tokio::time::timeout(self.wait, recv)
+        tokio::time::timeout(this.wait, recv)
             .await
             .map_err(|_| unavailable())?
             .map_err(|_| unavailable())?

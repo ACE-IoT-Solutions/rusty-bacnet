@@ -171,3 +171,37 @@ fn generic_pending(
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_transport::bip::BipTransport;
+
+    /// The size of the future `make` returns, without making one.
+    fn future_size<A, F: std::future::Future>(_make: fn(A) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+
+    /// The future spawned for every admitted ReadProperty over B/IP is one
+    /// allocation per request. Kept within glibc's per-thread cache, whose
+    /// largest size class is 1,032 bytes, it is served on the allocator's fast
+    /// path; it was 3,248 bytes before #1713. A change that grows it past the
+    /// limit should shrink it again (box a rare path, borrow rather than
+    /// move, avoid `async fn` for large arguments) rather than raise it.
+    #[test]
+    fn read_property_handler_future_fits_the_allocator_fast_path() {
+        const LIMIT: usize = 1032;
+        let read_property =
+            future_size(BACnetServer::<BipTransport>::handle_admitted_read_property);
+        let spawned = future_size(BACnetServer::<BipTransport>::run_admitted_confirmed_request);
+        eprintln!("ReadProperty handler future: {read_property} bytes; spawned: {spawned} bytes");
+        assert!(
+            read_property <= LIMIT,
+            "the ReadProperty handler future is {read_property} bytes, over {LIMIT}"
+        );
+        assert!(
+            spawned <= LIMIT,
+            "the spawned confirmed-request future is {spawned} bytes, over {LIMIT}"
+        );
+    }
+}
