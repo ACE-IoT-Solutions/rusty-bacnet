@@ -9,17 +9,17 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 
 | Task | Command family | Operational note |
 |---|---|---|
-| Discover devices | `discover`, `devices` | `devices` is useful with a populated session cache; after v0.13.0 it is removed, so use `discover --json` or the terminal UI's device list |
-| Find an object | `find --name` | The name goes in `--name`; after v0.13.0 also as a plain word, `find "Zone Temp"` |
+| Discover devices | `discover` | Use `discover --json` in scripts, or the terminal UI's device list |
+| Find an object | `find --name` | The name goes in `--name` or as a plain word, `find "Zone Temp"` |
 | Read one or several properties | `read`, `readm` | Handle object/property errors individually |
 | Read log/list ranges | `read-range` | Bound request size and result volume |
 | Observe changes | `subscribe` | Creates remote subscription state |
-| Write a value | `write`; after v0.13.0 also `writem` | Requires explicit site authorization and cleanup; after v0.13.0 also `--allow-write` |
+| Write a value | `write`, `writem` | Requires explicit site authorization, cleanup and `--allow-write` |
 | Inspect BBMD tables | `bdt`, `fdt` | Table inspection is different from changing registration |
 | Packet analysis | `capture` | In the Linux release executables; a source build needs the `pcap` feature |
-| Join an MS/TP trunk | `--mstp PORT --mstp-mac N`, `mstp-ports` | After v0.13.0: in the Linux release executables; a source build needs the `serial` feature |
+| Join an MS/TP trunk | `--mstp PORT --mstp-mac N`, `mstp-ports` | In the Linux release executables; a source build needs the `serial` feature |
 | Alarm/device/file operations | See the full reference | Not ordinary read-only onboarding |
-| Interactive use | `shell` in v0.13.0; after v0.13.0 plain `bacnet` or `tui` | After v0.13.0 the shell is gone and plain `bacnet` on a terminal opens the terminal UI |
+| Interactive use | plain `bacnet` or `tui` | Plain `bacnet` on a terminal opens the terminal UI; the shell of earlier releases is gone |
 
 ## Exit status
 
@@ -27,9 +27,9 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 |---|---|
 | 0 | The command completed |
 | 1 | It failed while running, for example a timeout or an error from the device |
-| 2 | The arguments did not parse; nothing is sent. After v0.13.0 also plain `bacnet` where the terminal UI can't open |
+| 2 | The arguments did not parse; nothing is sent. Also plain `bacnet` where the terminal UI can't open |
 | 3 | `sc-check` could not complete |
-| 4 | After v0.13.0: the write guard refused the command (`--allow-write` or `--yes` missing); nothing is sent |
+| 4 | The write guard refused the command (`--allow-write` or `--yes` missing); nothing is sent |
 
 ## Names and aliases
 
@@ -39,11 +39,9 @@ Do not use an object-name string where an object identifier is required. Do not 
 
 ## Session behavior matters
 
-In v0.13.0, plain `bacnet` and `bacnet shell` open an interactive shell that keeps a default target and the discovered devices for its session. A new one-shot process starts with neither.
+Plain `bacnet` opens the terminal UI when stdin and stdout are terminals; in a pipe or a script, with `--no-tui`, or with `BACNET_NO_TUI` set, it prints the usage and exits with status 2. Scripts that piped commands into the shell call the one-shot commands instead, with `--json`, which also read better with a screen reader than the terminal UI. `writem`, once a shell command, is a one-shot command. The [terminal UI guide](/rusty-bacnet/tui/overview/) covers its screens, and its [key reference](/rusty-bacnet/tui/keys/) lists every key and command.
 
-In the development branch after v0.13.0, the shell is removed. Plain `bacnet` opens the terminal UI when stdin and stdout are terminals; in a pipe or a script, with `--no-tui`, or with `BACNET_NO_TUI` set, it prints the usage and exits with status 2. Scripts that piped commands into the shell call the one-shot commands instead, with `--json`, which also read better with a screen reader than the terminal UI. The shell's `writem` is a one-shot command there. The [terminal UI guide](/rusty-bacnet/tui/overview/) covers its screens, and its [key reference](/rusty-bacnet/tui/keys/) lists every key and command.
-
-A new one-shot process has its own lifecycle. In the development branch after v0.13.0, one-shot `read`, `readm`, `write`, `writem` and `subscribe` take a routed `DNET:instance` or `DNET:0xMAC` target: the CLI asks that network for the device with a Who-Is and sends the request through the router that answers. Other one-shot commands still refuse routed targets, and v0.13.0 refuses them everywhere.
+A new one-shot process has its own lifecycle and keeps no discovered devices. One-shot `read`, `readm`, `write`, `writem` and `subscribe` take a routed `DNET:instance` or `DNET:0xMAC` target: the CLI asks that network for the device with a Who-Is and sends the request through the router that answers. Other one-shot commands refuse routed targets.
 
 ## Machine-readable output
 
@@ -51,10 +49,10 @@ Use `--json` explicitly in automation. Preserve protocol errors and nonzero proc
 
 ## Full documentation
 
-[Read the versioned CLI guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/docs/CLI.md), but resolve discrepancies against the parser, dispatch, and actual installed command help, and report any conflict you find.
+[Read the versioned CLI guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/CLI.md), but resolve discrepancies against the parser, dispatch, and actual installed command help, and report any conflict you find.
 
 ## Sources and release scope
 
-These instructions target **v0.13.0**. Source review is not a claim of hardware qualification.
+These instructions target **v0.14.0**. Source review is not a claim of hardware qualification.
 
-[CLI documentation](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/docs/CLI.md) · [Argument source](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/crates/bacnet-cli/src/args.rs) · [Dispatch source](https://github.com/jscott3201/rusty-bacnet/blob/v0.13.0/crates/bacnet-cli/src/main.rs).
+[CLI documentation](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/CLI.md) · [Argument source](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/crates/bacnet-cli/src/args.rs) · [Dispatch source](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/crates/bacnet-cli/src/main.rs).

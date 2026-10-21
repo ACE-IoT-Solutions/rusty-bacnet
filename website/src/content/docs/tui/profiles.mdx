@@ -106,7 +106,7 @@ BACNET_CONFIG_DIR=/srv/bacnet/site-a bacnet tui
 
 Inside it, `profiles/NAME.toml` holds each profile and `workspaces/NAME/` holds that profile's session ledger (`ledger.json`), audit log (`audit.jsonl`) and watch-list CSV logs. Names are 1 to 64 ASCII letters, digits, `_` or `-`. If you change a file outside the TUI, press `r` in the dialog to reload it. A save that finds the file changed on disk is refused and leaves the file alone.
 
-A B/IP profile file looks like this; the [terminal UI reference](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/CLI.md#plain-bacnet) shows the SC and MS/TP tables:
+A B/IP profile file looks like this; the <a href={`${repository}/blob/v${release}/docs/CLI.md#plain-bacnet`}>terminal UI reference</a> shows the SC and MS/TP tables:
 
 ```toml
 version = 1
@@ -129,8 +129,8 @@ dangerous = false
 
 ## Sources and release scope
 
-These pages describe the `dev` branch after **v{release}**. Source review is not a claim of hardware qualification.
+These pages describe **v{release}**. Source review is not a claim of hardware qualification.
 
-<a href={`${repository}/blob/dev/docs/CLI.md#plain-bacnet`}>Profiles and connection lifecycle</a> · <a href={`${repository}/blob/dev/crates/bacnet-cli/src/tui/profile/store.rs`}>Profile store</a> · <a href={`${repository}/blob/dev/crates/bacnet-cli/src/paths.rs`}>Config directory</a>.
+<a href={`${repository}/blob/v${release}/docs/CLI.md#plain-bacnet`}>Profiles and connection lifecycle</a> · <a href={`${repository}/blob/v${release}/crates/bacnet-cli/src/tui/profile/store.rs`}>Profile store</a> · <a href={`${repository}/blob/v${release}/crates/bacnet-cli/src/paths.rs`}>Config directory</a>.
 
 <NextStep href="/rusty-bacnet/tui/discovery/" label="Discover devices" description="Send a scoped Who-Is, sort and filter the table, and find objects by name." />

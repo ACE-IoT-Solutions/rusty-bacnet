@@ -1,24 +1,22 @@
 ---
 title: "Use the terminal UI"
-description: "Install the bacnet terminal UI from the development branch, open it, read its layout, and quit cleanly."
+description: "Install the bacnet terminal UI, open it, read its layout, and quit cleanly."
 ---
 
+import { Code } from '@astrojs/starlight/components';
 import Checkpoint from '../../../components/Checkpoint.astro';
 import NextStep from '../../../components/NextStep.astro';
 import { release, repository } from '../../../lib/site.mjs';
 
 The `bacnet` command has a full-screen terminal UI (TUI). It discovers devices, browses their objects, watches values, and shows the B/IP, BACnet/SC and MS/TP diagnostics the one-shot commands can't. It is read-only until you arm a write session.
 
-**These pages describe the development branch after v{release}.** In v{release} the TUI is an opt-in build feature and plain `bacnet` opens the old interactive shell. On `dev`, the TUI is built by default, plain `bacnet` on a terminal opens it, and the shell is gone. The screenshots come from a loopback lab, not a real site.
+**These pages describe v{release}.** From this release the TUI is built by default, plain `bacnet` on a terminal opens it, and the old interactive shell is gone; the [upgrade guide](/rusty-bacnet/project/upgrading/#cli-and-tui) lists what that changes for scripts. The screenshots come from a loopback lab, not a real site.
 
-## Install a development build
+## Install it
 
-Build `bacnet` from the `dev` branch with Cargo. The TUI is on by default there; add `sc-tls` for BACnet/SC and `serial` for MS/TP:
+Every release executable includes the TUI, and the Linux ones also join MS/TP trunks; [install a CLI executable](/rusty-bacnet/start/installation/#install-a-cli-executable) covers the download and its checksum. To build it with Cargo instead, add `sc-tls` for BACnet/SC and `serial` for MS/TP:
 
-```sh
-cargo install --git https://github.com/jscott3201/rusty-bacnet --branch dev \
-  bacnet-cli --locked --features sc-tls,serial
-```
+<Code lang="sh" code={`cargo install bacnet-cli --version ${release} --locked --features sc-tls,serial`} />
 
 From a checkout, `cargo install --path crates/bacnet-cli --locked --features sc-tls,serial` does the same. The executable is `bacnet`. A build with `--no-default-features` leaves the TUI out: `bacnet tui` then says how to rebuild, and plain `bacnet` prints the usage.
 
@@ -87,8 +85,8 @@ Press `q`. If a write you made is still in effect, the exit guard asks first: `r
 
 ## Sources and release scope
 
-These pages describe the `dev` branch after **v{release}**, which can change before the next release. The screenshots show a loopback lab: a BBMD, a router, three devices and an SC hub on 127.0.0.1. Source review is not a claim of hardware qualification.
+These pages describe **v{release}**. The screenshots show a loopback lab: a BBMD, a router, three devices and an SC hub on 127.0.0.1. Source review is not a claim of hardware qualification.
 
-<a href={`${repository}/blob/dev/docs/CLI.md#terminal-ui`}>Terminal UI reference</a> · <a href={`${repository}/blob/dev/docs/design/tui.md`}>TUI design notes</a> · [TUI epic](https://github.com/jscott3201/rusty-bacnet/issues/975).
+<a href={`${repository}/blob/v${release}/docs/CLI.md#terminal-ui`}>Terminal UI reference</a> · <a href={`${repository}/blob/v${release}/docs/design/tui.md`}>TUI design notes</a> · [TUI epic](https://github.com/jscott3201/rusty-bacnet/issues/975).
 
 <NextStep href="/rusty-bacnet/tui/profiles/" label="Profiles and safety" description="Save a connection, attest to first use, and see what read-only means." />

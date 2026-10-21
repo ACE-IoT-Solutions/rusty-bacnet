@@ -1731,10 +1731,10 @@ To release:
    ```bash
    bash scripts/ci/fuzz.sh lock                # the fuzz crates' Cargo.lock files
    python3 scripts/changelog.py preview        # what the section will hold
-   python3 scripts/changelog.py assemble --version 0.13.0 [--date 2026-10-13]
+   python3 scripts/changelog.py assemble --version 0.14.0 [--date 2026-10-21]
    ```
 
-   `assemble` adds `## [0.13.0] - <date>` below `[Unreleased]`, with the
+   `assemble` adds `## [0.14.0] - <date>` below `[Unreleased]`, with the
    entries grouped by heading and ordered by issue number, and deletes the
    fragments it used. Each entry ends with a link to the GitHub commit that
    brought its fragment into dev, found along the first-parent history, so run
@@ -1746,8 +1746,8 @@ To release:
    not one inside a merged branch), once its CI has passed:
 
    ```bash
-   git tag -a v0.13.0 -m "Rusty BACnet 0.13.0"
-   git push origin v0.13.0
+   git tag -a v0.14.0 -m "Rusty BACnet 0.14.0"
+   git push origin v0.14.0
    ```
 
 The tag push also starts CI's heavy jobs on the tagged commit, and the release
