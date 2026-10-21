@@ -215,5 +215,5 @@ async fn mstp_extended_long_answer_tokio() {
 
 #[tokio::test]
 async fn mstp_extended_long_answer_dedicated() {
-    long_answer_impl(MstpExecutionMode::DedicatedThread).await;
+    long_answer_impl(MstpExecutionMode::dedicated_thread()).await;
 }

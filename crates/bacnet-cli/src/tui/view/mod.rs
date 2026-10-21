@@ -110,7 +110,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         Overlay::WhoIs(form) => dialogs::who_is(frame, area, app, form, &theme),
         Overlay::Picker(picker) => dialogs::picker(frame, area, picker, &theme),
         Overlay::Safety(modal) => safety::draw(frame, area, app, modal, &theme),
-        Overlay::Join(dialog) => mstp::join(frame, area, dialog, &theme),
+        Overlay::Join(dialog) => mstp::join(frame, area, dialog, &app.mstp_thread, &theme),
     }
 }
 

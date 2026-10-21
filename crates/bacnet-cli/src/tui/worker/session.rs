@@ -230,8 +230,9 @@ async fn connect(
         TransportKind::Mstp => {
             let mut handle = None;
             let lines = options.mstp.lines.clone();
+            let thread = options.mstp.thread.clone();
             let build = async {
-                let (client, diagnostics) = lines.participant(&args).await?;
+                let (client, diagnostics) = lines.participant(&args, &thread).await?;
                 handle = Some(diagnostics);
                 Ok(client)
             };
@@ -244,7 +245,8 @@ async fn connect(
                     station.port,
                     station.mac
                 );
-                let report = crate::tui::mstp::MstpReport::Joined(station);
+                let thread = crate::mstp_thread::status(handle.execution_status().as_ref());
+                let report = crate::tui::mstp::MstpReport::Joined(station, thread);
                 sink.deliver(WorkerEvent::Mstp(report)).await;
                 let sampler = crate::tui::mstp::sample(handle, sink.clone());
                 // The sampler never finishes, so the session always does,

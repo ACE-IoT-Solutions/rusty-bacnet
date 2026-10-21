@@ -192,7 +192,7 @@ UART + GPIO → DE/RE ─────────>│  GpioDirectionPort<S>    �
 
 These host-side guarantees are not physical UART timing qualification.
 
-`MstpTransport::with_execution_mode(MstpExecutionMode::DedicatedThread)` opts into
+`MstpTransport::with_execution_mode(MstpExecutionMode::dedicated_thread())` opts into
 an OS thread with a current-thread Tokio runtime for the MAC loop. The default
 `Tokio` mode retains the application-runtime spawn path. Both modes run the same
 core, adapter and 64-entry NPDU receive channel. Serial wrappers retain their existing drain
@@ -208,11 +208,15 @@ a blocking syscall or undo bytes already accepted by a driver; a stuck backend
 can delay shutdown. Fast or efficient execution is not guaranteed or measured
 deterministic timing. Neither execution mode qualifies real hardware timing.
 
-Deferred from this thread-isolation subset: RT scheduling policy/priority
-(`SCHED_FIFO`), CPU affinity/pinning and observable RT setup results; PREEMPT_RT,
-IRQ, mlock and buffer-tuning deployment guidance beyond this note; and on-wire
-hardware qualification (#502). These RT APIs are not implemented here, and #501
-remains open for its residual RT-policy/affinity and full documentation work.
+On Linux, `MstpExecutionMode::DedicatedThread(MstpThreadConfig)` can also put
+that thread under `SCHED_FIFO` and pin it to CPUs (#501). The thread applies
+both to itself before its runtime exists, so the blocking-pool threads it
+starts inherit them, and reads each back; `start` fails, keeping the serial
+port, when either can't be applied or reads back different. Other platforms
+refuse the settings. `MstpTransport::execution_status()` and the diagnostics
+handle report the outcome. The [Rust API guide](rust-api.md#real-time-scheduling-and-cpu-affinity-linux)
+covers privileges and deployment (PREEMPT_RT, threaded IRQs, memory locking);
+on-wire hardware qualification is #502.
 
 ### The B/IP BBMD and the portable core
 

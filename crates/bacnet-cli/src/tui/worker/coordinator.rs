@@ -189,11 +189,14 @@ async fn run(
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
                                         let kind = prepared.stored.transport.kind();
+                                        if kind != TransportKind::Mstp && options.mstp.thread != Default::default() {
+                                            crate::mstp_thread::warn_unused(kind.label());
+                                        }
                                         let workspace = profiles.workspace(&name);
                                         // The app sends an MS/TP profile's Connect only once
                                         // its join is confirmed: record that join first, and
                                         // change nothing when it can't be.
-                                        if let Err(error) = record_join(workspace.as_deref(), &name, options.safety.passive, &args).await {
+                                        if let Err(error) = record_join(workspace.as_deref(), &name, &options, &args).await {
                                             sink.deliver(WorkerEvent::Profile(Err(error))).await;
                                             continue;
                                         }
@@ -307,16 +310,16 @@ async fn export(job: ExportJob, dir: PathBuf, sink: EventSink) {
 async fn record_join(
     workspace: Option<&std::path::Path>,
     profile: &str,
-    passive: bool,
+    options: &SessionOptions,
     args: &crate::transport::TransportArgs,
 ) -> Result<(), String> {
     let (Some(settings), Some(dir)) = (&args.mstp, workspace) else {
         return Ok(());
     };
-    if passive {
+    if options.safety.passive {
         return Ok(());
     }
-    crate::tui::safety::audit::record_join(dir, profile, settings)
+    crate::tui::safety::audit::record_join(dir, profile, settings, &options.mstp.thread)
         .await
         .map_err(|error| format!("the join was not made: {error}"))
 }

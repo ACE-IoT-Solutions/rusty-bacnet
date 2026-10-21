@@ -88,6 +88,9 @@ pub(crate) struct MstpOptions {
     pub(crate) monitor: Option<MonitorPlan>,
     /// Where serial ports are opened.
     pub(crate) lines: Lines,
+    /// How a joined station's thread is scheduled (`--mstp-rt-priority`,
+    /// `--mstp-cpus`), whichever way it joins.
+    pub(crate) thread: bacnet_transport::mstp::MstpThreadConfig,
 }
 
 /// One reading of the monitor, for the screen.

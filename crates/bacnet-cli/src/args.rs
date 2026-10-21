@@ -206,6 +206,19 @@ pub(crate) struct Cli {
           default_value_t = 1, value_parser = crate::mstp::parse_max_info_frames)]
     pub(crate) mstp_max_info_frames: u8,
 
+    /// Run this station's MS/TP token handling under SCHED_FIFO at this
+    /// priority, 1 to 99 (Linux only). Needs CAP_SYS_NICE or an
+    /// RLIMIT_RTPRIO of at least N; joining fails if it can't be applied.
+    #[arg(long, global = true, value_name = "N",
+          value_parser = crate::mstp_thread::parse_rt_priority)]
+    pub(crate) mstp_rt_priority: Option<u8>,
+
+    /// Pin this station's MS/TP token handling to these CPUs, such as 2 or
+    /// 2,3 (Linux only); joining fails if the process may not use them.
+    #[arg(long, global = true, value_name = "CPUS", value_delimiter = ',',
+          value_parser = crate::mstp_thread::parse_cpu)]
+    pub(crate) mstp_cpus: Vec<usize>,
+
     /// Output format (table, json).
     #[arg(long, global = true)]
     pub(crate) format: Option<String>,

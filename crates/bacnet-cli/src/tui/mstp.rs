@@ -78,8 +78,10 @@ impl Sample {
 /// What the MS/TP worker reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MstpReport {
-    /// The session joined the trunk with these settings.
-    Joined(MstpArgs),
+    /// The session joined the trunk with these settings; the text says
+    /// how its loop runs, as the transport read it back
+    /// ([`crate::mstp_thread::status`]).
+    Joined(MstpArgs, String),
     /// A new reading.
     Sample(Box<Sample>),
 }

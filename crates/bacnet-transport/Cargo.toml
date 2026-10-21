@@ -42,9 +42,10 @@ getrandom = { workspace = true }
 x509-parser = { version = "0.18.1", default-features = false, features = ["verify-aws"], optional = true }
 
 # Safe recvmsg, sendmsg and socket options for UDP packet info and receive
-# stamps (#1882), on the targets where nix covers them.
+# stamps (#1882), on the targets where nix covers them; on Linux, the MS/TP
+# thread's CPU affinity (#501).
 [target.'cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
-nix = { workspace = true, features = ["socket", "uio", "net"] }
+nix = { workspace = true, features = ["socket", "uio", "net", "sched"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

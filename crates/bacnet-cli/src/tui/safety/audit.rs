@@ -136,11 +136,13 @@ pub(crate) const MSTP_JOIN: &str = "mstp-join";
 /// Record a confirmed MS/TP trunk join on profile `profile` (#1862):
 /// joining puts a new master in the token ring, a T2 change to a shared
 /// bus. Written before the port opens; the session is not armed, so the
-/// level is read-only.
+/// level is read-only. `thread` is how the station's thread is to run
+/// (#501): a join that can't apply it fails after this record.
 pub(crate) async fn record_join(
     workspace: &Path,
     profile: &str,
     settings: &crate::mstp::MstpArgs,
+    thread: &bacnet_transport::mstp::MstpThreadConfig,
 ) -> Result<(), String> {
     let context = Context {
         profile: Some(profile.into()),
@@ -153,6 +155,8 @@ pub(crate) async fn record_join(
         "baud": settings.baud,
         "max_master": settings.max_master,
         "max_info_frames": settings.max_info_frames,
+        "realtime_priority": thread.realtime_priority,
+        "cpu_affinity": thread.cpu_affinity,
     });
     Audit::open(workspace, context)?
         .record(Level::ReadOnly, MSTP_JOIN, fields)

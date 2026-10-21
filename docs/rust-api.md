@@ -1956,7 +1956,7 @@ let transport = MstpTransport::new(serial, MstpConfig {
     baud_rate: 76800,
     ..MstpConfig::default()
 })
-.with_execution_mode(MstpExecutionMode::DedicatedThread);
+.with_execution_mode(MstpExecutionMode::dedicated_thread());
 ```
 
 Call the builder before `start()`. Omitting it (or selecting `Tokio`) keeps the
@@ -1978,12 +1978,108 @@ or rollback of driver-accepted bytes. As before, stopping does not make a
 consumed serial transport restartable: construct a new transport to restart.
 
 Isolation is an execution option, not a real-time guarantee or measured timing
-claim: fast/efficient does not mean deterministic. RT policy/priority
-(`SCHED_FIFO`), CPU affinity/pinning and reporting RT setup success/failure are
-**deferred, not implemented**. PREEMPT_RT, IRQ, mlock and buffer-tuning deployment
-guidance beyond this note, plus on-wire hardware qualification (#502), remain
-out of scope. This is only the thread-isolation subset of #501; that issue remains
-open for the residual RT work and full documentation.
+claim: fast/efficient does not mean deterministic. On Linux the dedicated thread
+can also run under a real-time policy and be pinned to CPUs, below; on-wire
+hardware qualification is #502.
+
+#### Real-Time Scheduling and CPU Affinity (Linux)
+
+`MstpThreadConfig` says how the dedicated thread is scheduled. Both settings
+are off by default:
+
+```rust
+use bacnet_transport::mstp::{MstpExecutionMode, MstpThreadConfig};
+
+let thread = MstpThreadConfig::new()
+    .with_realtime_priority(40) // SCHED_FIFO, 1 to 99
+    .with_cpu_affinity([3]); // CPUs as Linux numbers them
+let mut transport = MstpTransport::new(serial, config)
+    .with_execution_mode(MstpExecutionMode::DedicatedThread(thread));
+let npdus = transport.start().await?; // fails if either can't be applied
+let status = transport.execution_status().expect("started");
+assert_eq!(status.realtime_priority, Some(40));
+assert_eq!(status.cpu_affinity, [3]);
+```
+
+- **Policy.** `realtime_priority` puts the thread under `SCHED_FIFO`. `SCHED_RR`
+  differs only in time-slicing between threads of equal priority, and the loop
+  spends nearly all its time blocked on a read or a timer, so it never runs long
+  enough for a slice to matter.
+- **Applied on the thread, then read back.** The thread sets its affinity
+  first, then its policy, before it builds its runtime or touches the serial
+  port, and reads both back from the kernel. Threads its runtime starts later
+  for blocking serial calls (the drain) inherit both from it.
+- **Failure is an error from `start`, for both settings.** Missing privilege
+  for the policy (`PermissionDenied`, with the capability, limit or cgroup
+  real-time budget it needs),
+  a CPU set the kernel refuses, or a read-back that differs from the request
+  (the kernel silently drops CPUs outside the process's cpuset) all fail
+  `start` with an error naming the setting. Nothing has gone on the wire by
+  then, and the transport keeps the serial port, so the caller can fix the host
+  or the settings and start again. A logged warning and a counter were the
+  alternative; we chose the error because whoever asks for real-time
+  scheduling is counting on it, and a station that joined the token ring
+  without it would show only as worse timing later.
+- **Linux only.** On every other OS, `MstpThreadConfig::validate` and `start`
+  refuse either setting with `Error::Transport` of kind `Unsupported`; neither
+  is ignored. The policy calls are `pthread_setschedparam` on the thread
+  itself, so they work with glibc and musl alike.
+- **The outcome.** `MstpTransport::execution_status()`, and
+  `MstpDiagnostics::execution_status()` on a handle taken before the transport
+  moved into a client or router, report whether the loop has its own thread and
+  the priority and CPUs read back. Both are `None` until a `start` succeeds.
+
+**Privilege.** `SCHED_FIFO` needs `CAP_SYS_NICE`, or an `RLIMIT_RTPRIO` at least
+as high as the priority: `ulimit -r`, `rtprio` in `/etc/security/limits.conf`,
+or `LimitRTPRIO=` (or `AmbientCapabilities=CAP_SYS_NICE`) in a systemd unit. A
+container needs `--cap-add SYS_NICE` as well, and on kernels built with
+real-time group scheduling its cgroup needs a real-time budget. Pinning to CPUs
+the process may use needs no privilege.
+
+**Deployment.** The settings shorten how long the scheduler keeps the loop
+waiting once its timer fires or its bytes arrive. They don't bound it, and they
+do nothing about where else the time goes:
+
+- **PREEMPT_RT.** On a stock kernel, long non-preemptible sections can delay
+  even the highest-priority thread. A PREEMPT_RT kernel (in mainline since
+  6.12; many distributions ship it as a `-rt` flavour) makes most of them
+  preemptible.
+- **Threaded IRQs.** PREEMPT_RT, or the `threadirqs` boot parameter, runs
+  interrupt handlers as kernel threads, by default at `SCHED_FIFO` 50. The
+  handler that delivers the MS/TP port's bytes (the UART's, or for a USB
+  adapter the host controller's) must not wait behind the MS/TP thread:
+  give the loop a lower priority than that IRQ thread, or raise the IRQ
+  thread (`ps -eLo pid,rtprio,comm | grep irq/` to find it, `chrt -f -p 60
+  PID` to set it). `/proc/irq/N/smp_affinity_list` steers the interrupt to the
+  same CPU, or a neighbour.
+- **CPU isolation.** `isolcpus=`, `nohz_full=` or a cpuset keeps other work off
+  the CPU the loop is pinned to.
+- **RT throttling.** By default the kernel lets real-time threads use only
+  950 ms of each second (`/proc/sys/kernel/sched_rt_runtime_us` against
+  `sched_rt_period_us`), keeping the rest for normal threads. The MS/TP loop
+  sleeps far more than that, so the limit only bites a thread that spins; leave
+  it on as a safety net.
+- **USB adapters.** RT scheduling can't remove what the adapter holds back: an
+  FTDI part keeps received octets for its latency timer, 16 ms by default
+  (`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`; 1 ms suits MS/TP), and
+  USB full speed moves data in 1 ms frames.
+- **Memory locking.** A page fault in the loop costs far more than a wake-up.
+  The transport doesn't lock memory itself, because `mlockall` covers the whole
+  process: the application calls it before starting, for example with nix's
+  `mlockall(MlockAllFlags::MCL_CURRENT | MlockAllFlags::MCL_FUTURE)` (nix's
+  `mman` feature), which needs
+  `CAP_IPC_LOCK` or a large enough `RLIMIT_MEMLOCK` (`LimitMEMLOCK=` in systemd).
+- **Preallocated buffers.** The token queues (512 slots in all) and the core's
+  frame buffers are reserved when the transport starts and never grow while it
+  runs. Each NPDU handed up to the application is copied into a new buffer as
+  it arrives; with `MCL_FUTURE` that memory is locked too.
+
+**Measure, don't assume.** This is configuration for lower latency, not a timing
+guarantee. Compare the loop's timer lateness before and after, under
+representative load: `MstpCounters::deadline_lateness` (bands under 1 ms, 1-2,
+2-5, 5-10, 10-25 and 25 ms or more, with the maximum) and `late_deadlines` in
+`MstpDiagnostics`' `mac` counters, which the CLI's MS/TP screen shows (#1897).
+The [qualification method](mstp-qualification.md) covers the rest of a run.
 
 #### Auto-Direction (USB RS-485 Adapters)
 

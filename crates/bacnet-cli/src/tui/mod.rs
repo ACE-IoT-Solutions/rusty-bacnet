@@ -163,6 +163,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         std::process::exit(1);
     }
     options.mstp.monitor.clone_from(&monitor);
+    options.mstp.thread = crate::mstp_thread::from_cli(&cli);
     let serial = matches!(kind, TransportKind::Mstp | TransportKind::MstpMonitor);
     if serial && !cfg!(feature = "serial") {
         eprintln!("Error: {}", crate::mstp::NO_SERIAL);
@@ -231,6 +232,15 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         // rather than naming B/IP before an SC or MS/TP profile (#1894).
         app.transport = "";
         app.overlay = Overlay::Connection;
+    }
+    let thread = &options.mstp.thread;
+    app.mstp_thread = crate::mstp_thread::describe(thread.realtime_priority, &thread.cpu_affinity);
+    // A profile session warns when its profile connects, if it isn't MS/TP.
+    if app.connection.is_none()
+        && crate::mstp_thread::given(&cli)
+        && !matches!(kind, TransportKind::Mstp | TransportKind::MstpMonitor)
+    {
+        crate::mstp_thread::warn_unused(kind.label());
     }
     if let Some(plan) = &monitor {
         app.start_monitor(plan, !options.safety.passive);

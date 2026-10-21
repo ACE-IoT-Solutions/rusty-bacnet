@@ -22,6 +22,7 @@ mod decode;
 mod entry;
 mod foreign;
 mod mstp;
+mod mstp_thread;
 mod multicast;
 mod output;
 mod parse;

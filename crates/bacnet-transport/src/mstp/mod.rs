@@ -15,6 +15,9 @@
 //!   deliver). The `adapter` module documents the details.
 //! - [`MstpConfig`], mapped onto [`MstpCoreConfig`] and validated by the
 //!   core's rules.
+//! - [`MstpExecutionMode`], where the loop runs: on the application's Tokio
+//!   runtime, or on a thread of its own, which on Linux can be given
+//!   `SCHED_FIFO` and CPU affinity ([`MstpThreadConfig`]).
 //! - [`MstpDiagnostics`], the core's counters added up ([`MstpCounters`])
 //!   plus counts kept at the transport boundary, and the node's place in
 //!   the token ring ([`MstpNodeState`]).
@@ -23,18 +26,23 @@
 
 use bacnet_mstp_core::{ConfigError, Duration as CoreDuration, MstpCoreConfig};
 use bacnet_types::error::Error;
-use tokio::sync::oneshot;
 
 pub use bacnet_mstp_codec as codec;
 mod adapter;
 mod diagnostics;
 mod echo;
+mod execution;
 pub mod monitor;
 mod queues;
 mod replies;
 mod totals;
 pub use bacnet_mstp_core::MasterState;
 pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot, MstpNodeState};
+use execution::DedicatedRuntime;
+pub use execution::{
+    MstpExecutionMode, MstpExecutionStatus, MstpThreadConfig, MAX_CPUS, MAX_REALTIME_PRIORITY,
+    MIN_REALTIME_PRIORITY,
+};
 pub use totals::{LatenessHistogram, MstpCounters, QueueCounters};
 
 // ---------------------------------------------------------------------------
@@ -159,70 +167,6 @@ pub trait SerialPort: Send + Sync + 'static {
     /// The default is [`Echo::None`].
     fn echo(&self) -> Echo {
         Echo::None
-    }
-}
-
-/// Execution placement for an MS/TP transport, independent of master-node settings.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum MstpExecutionMode {
-    /// Spawn the MAC loop on the caller's Tokio runtime (the existing default).
-    #[default]
-    Tokio,
-    /// Poll the same MAC loop on a dedicated OS thread with its own Tokio runtime.
-    /// Blocking drain work uses that runtime's blocking pool, not the application's.
-    /// This does not configure real-time scheduling or guarantee wire timing.
-    DedicatedThread,
-}
-
-/// Owns the isolated reactor. Dropping the shutdown sender also handles cancelled
-/// startup and abort; only `stop` waits for runtime and blocking-I/O completion.
-struct DedicatedRuntime {
-    handle: tokio::runtime::Handle,
-    shutdown: oneshot::Sender<()>,
-    finished: oneshot::Receiver<()>,
-}
-
-impl DedicatedRuntime {
-    async fn new() -> Result<Self, Error> {
-        let (started_tx, started_rx) = oneshot::channel();
-        let (shutdown, shutdown_rx) = oneshot::channel();
-        let (finished_tx, finished) = oneshot::channel();
-        std::thread::Builder::new()
-            .name("bacnet-mstp".into())
-            .spawn(move || {
-                match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => {
-                        if started_tx.send(Ok(runtime.handle().clone())).is_ok() {
-                            let _ = runtime.block_on(shutdown_rx);
-                        }
-                        // Drop on the OS thread, never in the caller's async context.
-                        // This waits for any already-started blocking drain calls.
-                        drop(runtime);
-                    }
-                    Err(error) => {
-                        let _ = started_tx.send(Err(error));
-                    }
-                }
-                let _ = finished_tx.send(());
-            })
-            .map_err(Error::Transport)?;
-        let handle = started_rx
-            .await
-            .map_err(|_| Error::Encoding("MS/TP execution thread failed to start".into()))?
-            .map_err(Error::Transport)?;
-        Ok(Self {
-            handle,
-            shutdown,
-            finished,
-        })
-    }
-
-    async fn stop(self) {
-        drop(self.shutdown);
-        let _ = self.finished.await;
     }
 }
 
@@ -531,3 +475,5 @@ mod reply_tests;
 mod slow_adapter_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod thread_config_tests;
