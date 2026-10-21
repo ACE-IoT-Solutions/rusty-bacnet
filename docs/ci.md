@@ -29,6 +29,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`), the `no_std` builds included |  | ✓ |  | ✓ |
 | Cargo Audit + Cargo Deny |  | ✓ |  | ✓ |
 | **CI OK**: fails if any job above failed | ✓ | ✓ | ✓ | ✓ |
+| Plan: whether a merge can [skip the Lean jobs](#skipping-identical-merge-runs) |  |  | ✓ |  |
 | Prune caches, after a green run on `dev` ([Caches](#caches)) |  |  | ✓ | weekly, and manual on `dev` |
 
 `CI OK` is the required check. MSRV and Cargo Audit + Deny count as passing
@@ -37,7 +38,9 @@ when their tier skips them; a skipped Lean job fails it.
 (Astro checks, unit tests, production build and Chromium tests) on PRs that
 change `website/**`.
 
-Merge pushes to `dev` run the Lean jobs, for two reasons (#904).
+Merge pushes to `dev` run the Lean jobs, for two reasons (#904), unless
+the merge's tree was already tested on its PR head
+([Skipping identical merge runs](#skipping-identical-merge-runs)).
 
 - **Caches.** Only runs on `dev` save the Rust caches. A cache saved by a
   `pull_request` run would be scoped to that PR, and a PR run restores from
@@ -124,6 +127,36 @@ interpreter with `Python::initialize()` first, since nothing enables pyo3's
 Use cargo-nextest 0.9.145 or later locally. Older releases on macOS could
 mark unrelated passing tests as leaky (#751), and the configuration warns
 about them.
+
+### Skipping identical merge runs
+
+A merge whose PR head already contained `dev`'s tip has exactly the head's
+tree, which both workflows tested on the PR. So on a push to `dev`, a
+**Plan** job in each workflow
+([`scripts/ci/plan-skip.sh`](../scripts/ci/plan-skip.sh), #1466) checks out
+the merge with both parents and skips the rest of that workflow when all of
+these hold:
+
+- the commit is a merge, and its tree equals its second parent's (the PR
+  head);
+- that workflow's aggregate, `CI OK` in `ci.yml` and `Native OK` in
+  `native-tests.yml`, passed on the PR head: the newest GitHub Actions check
+  run of that name there concluded `success`;
+- nothing that feeds a rust-cache key changed since the first parent: any
+  `Cargo.lock` or `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`,
+  anything under `.github/` (the feature lists and other key variables live
+  in the workflows and the pins) and `scripts/ci/local-macos.sh` (the native
+  feature list). When a key moves, the merge run saves the new caches PRs
+  restore.
+
+The aggregate still runs and passes when Plan skips, so the merge commit
+shows `CI OK` and `Native OK` green, and Prune caches still runs after it. A
+job skipped for any other reason still fails the aggregate. Any other event
+(PRs, `main`, tags, the schedule, manual runs) skips Plan itself and runs
+everything, and so does a merge that was behind `dev` (a different tree), a
+red, missing or still running aggregate on the PR head, or any error in
+Plan, such as a failed API call. Plan's job summary and log give the reason.
+Its token has `checks: read` and `contents: read` only.
 
 ### Samples
 
@@ -1031,7 +1064,9 @@ runs even when a job failed or was cancelled, so it always reports, like
 reads.
 
 **Trigger.** Every PR to `dev` or `main`, every push to them (merges), and a
-manual dispatch. Tag pushes don't run it.
+manual dispatch. Tag pushes don't run it. A merge to `dev` that has its PR
+head's tree, where `Native OK` passed, skips the four jobs as `ci.yml` skips
+its Lean ones ([Skipping identical merge runs](#skipping-identical-merge-runs)).
 
 **Steps.** `NATIVE_FEATURES` is the `features=` list in
 [`scripts/ci/local-macos.sh`](../scripts/ci/local-macos.sh), which the
@@ -1559,6 +1594,7 @@ cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-def
 cargo nextest run -p rusty-bacnet --locked # the PyO3 crate's Rust tests
 bash scripts/ci/check-file-size.sh
 bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
+bash scripts/ci/test-plan-skip.sh          # the merge-run skip (#1466)
 python3 scripts/ci/test-check-msrv.py
 python3 scripts/ci/test-firmware-size.py
 python3 scripts/ci/check-named-codes.py     # the named_codes! copies match
