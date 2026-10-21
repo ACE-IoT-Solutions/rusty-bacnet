@@ -16,17 +16,21 @@ impl NodeHandle {
     /// (Annex J.3). One of the link's group addresses is refused, unsent
     /// (#1677).
     pub(super) async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        let dest = codec::address_from_slice(mac).map_err(bvll_error)?;
-        let outgoing = self
-            .link()
-            .unicast(dest, npdu)
-            .map_err(|refusal| self.refuse_send(refusal))?;
-
-        let mut buf = BytesMut::with_capacity(4 + npdu.len());
-        encode_bvll(&mut buf, &outgoing.message)?;
+        // In a block, so only the datagram and its address are held across
+        // the send (#1713).
+        let (buf, to) = {
+            let dest = codec::address_from_slice(mac).map_err(bvll_error)?;
+            let outgoing = self
+                .link()
+                .unicast(dest, npdu)
+                .map_err(|refusal| self.refuse_send(refusal))?;
+            let mut buf = BytesMut::with_capacity(4 + npdu.len());
+            encode_bvll(&mut buf, &outgoing.message)?;
+            (buf, outgoing.to)
+        };
 
         self.socket()
-            .send_to(&buf, outgoing.to)
+            .send_to(&buf, to)
             .await
             .map_err(Error::Transport)?;
         Ok(())

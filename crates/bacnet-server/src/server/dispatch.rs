@@ -148,7 +148,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             learned_routers,
             notification_transactions,
             ..
-        } = services;
+        } = &**services;
         if notification_transactions
             .application_sealed
             .load(Ordering::Acquire)

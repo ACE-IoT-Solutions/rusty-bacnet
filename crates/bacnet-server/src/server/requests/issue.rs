@@ -56,14 +56,57 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// segmented, or draws an Abort when segmentation isn't available.
     /// Otherwise `read_audits` are admitted first, once the response exists
     /// and no database guard is held, then the response is sent.
-    pub(super) async fn issue_confirmed_response(
-        plan: ResponsePlan<'_, T>,
-        response: &Apdu,
-        audit: &WriteAudit<'_, T>,
+    ///
+    /// Every confirmed request's handler carries this future, so it is kept
+    /// small (#1713). It is not an `async fn`, which would copy each argument
+    /// into a local of its own, and `plan` is used in place, not taken apart:
+    /// a local moved into the send below keeps its space to the end.
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "an async fn would hold its moved arguments twice (#1713)"
+    )]
+    pub(super) fn issue_confirmed_response<'a>(
+        plan: ResponsePlan<'a, T>,
+        response: &'a Apdu,
+        audit: &'a WriteAudit<'a, T>,
         read_audits: Vec<ReadAuditIntent>,
         reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
         pending: Option<PendingConfirmedRequest>,
-    ) -> Issued {
+    ) -> impl std::future::Future<Output = Issued> + Send + 'a {
+        async move {
+            let encoded = confirmed_response::encoded_apdu(response);
+            if let Apdu::ComplexAck(ack) = response {
+                if encoded.len() > plan.ack.client_max_apdu as usize {
+                    // Rare, so boxed: this future stays the size of the
+                    // unsegmented send.
+                    Box::pin(Self::issue_oversized_ack(plan, ack, pending)).await;
+                    return Issued::Segmented;
+                }
+            }
+
+            // Read execution is observed under the DB read guard, but admission is
+            // deferred until the complete response exists and that guard is gone.
+            // Segmentation/post-execution transport divergence does not add records.
+            audit.admit_reads(&plan.services.db, read_audits).await;
+            let handed_off = confirmed_response::send_unsegmented_response(
+                &plan.services.network,
+                &encoded,
+                plan.target,
+                reply_tx,
+                pending,
+            )
+            .await;
+            Issued::Unsegmented { handed_off }
+        }
+    }
+
+    /// Send a ComplexAck longer than the effective APDU limit: segmented, or
+    /// an Abort when segmentation isn't available.
+    async fn issue_oversized_ack(
+        plan: ResponsePlan<'_, T>,
+        ack: &ComplexAck,
+        pending: Option<PendingConfirmedRequest>,
+    ) {
         let ResponsePlan {
             services,
             request_tasks,
@@ -72,75 +115,53 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             segmented_response_available,
         } = plan;
         let RequestServices {
-            db,
             network,
             seg_ack_senders,
             seg_send_permits,
             config,
             ..
         } = services;
-        let ResponseTarget {
-            source_mac,
-            source_network,
-            route,
-        } = target;
-        let encoded = confirmed_response::encoded_apdu(response);
-        if let Apdu::ComplexAck(ack) = response {
-            if encoded.len() > params.client_max_apdu as usize {
-                // Clause 5.4.5.3 CannotSendSegmentedComplexACK reads both
-                // sides of the exchange: case (a), no local capability to
-                // transmit segmented messages, and case
-                // (b), the client not accepting one. Either way the response
-                // fits neither an unsegmented nor a segmented send and draws the
-                // same Abort; SendSegmentedComplexACK is available only when
-                // the device supports transmitting segments (#381).
-                if !segmented_response_available {
-                    let abort = Apdu::Abort(AbortPdu {
-                        sent_by_server: true,
-                        invoke_id: params.invoke_id,
-                        abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-                    });
-                    let mut buf = BytesMut::new();
-                    encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
-                    if let Err(e) = Self::issue_terminal_response(
-                        network,
-                        &buf,
-                        source_mac,
-                        source_network,
-                        route,
-                        pending,
-                    )
-                    .await
-                    {
-                        warn!(error = %e, "Failed to send Abort for segmentation-not-supported");
-                    }
-                } else {
-                    Self::spawn_segmented_complex_ack(
-                        SegmentedSendResources {
-                            network,
-                            seg_ack_senders,
-                            seg_send_permits,
-                        },
-                        request_tasks,
-                        target,
-                        params,
-                        ack.service_ack.clone(),
-                        pending,
-                        Duration::from_millis(config.device.apdu_segment_timeout_ms()),
-                    );
-                }
-                return Issued::Segmented;
+        // Clause 5.4.5.3 CannotSendSegmentedComplexACK reads both
+        // sides of the exchange: case (a), no local capability to
+        // transmit segmented messages, and case
+        // (b), the client not accepting one. Either way the response
+        // fits neither an unsegmented nor a segmented send and draws the
+        // same Abort; SendSegmentedComplexACK is available only when
+        // the device supports transmitting segments (#381).
+        if !segmented_response_available {
+            let abort = Apdu::Abort(AbortPdu {
+                sent_by_server: true,
+                invoke_id: params.invoke_id,
+                abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
+            });
+            let mut buf = BytesMut::new();
+            encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
+            if let Err(e) = Self::issue_terminal_response(
+                network,
+                &buf,
+                target.source_mac,
+                target.source_network,
+                target.route,
+                pending,
+            )
+            .await
+            {
+                warn!(error = %e, "Failed to send Abort for segmentation-not-supported");
             }
+        } else {
+            Self::spawn_segmented_complex_ack(
+                SegmentedSendResources {
+                    network,
+                    seg_ack_senders,
+                    seg_send_permits,
+                },
+                request_tasks,
+                target,
+                params,
+                ack.service_ack.clone(),
+                pending,
+                Duration::from_millis(config.device.apdu_segment_timeout_ms()),
+            );
         }
-
-        // Read execution is observed under the DB read guard, but admission is
-        // deferred until the complete response exists and that guard is gone.
-        // Segmentation/post-execution transport divergence does not add records.
-        audit.admit_reads(db, read_audits).await;
-        let handed_off = confirmed_response::send_unsegmented_response(
-            network, encoded, target, reply_tx, pending,
-        )
-        .await;
-        Issued::Unsegmented { handed_off }
     }
 }

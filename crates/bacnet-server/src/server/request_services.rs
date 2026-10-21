@@ -97,7 +97,9 @@ pub(super) struct UnconfirmedServices<T: TransportPort + 'static> {
 /// confirmed-request handles, plus the state only admission needs (the
 /// confirmed-request tracker, clock, request limiters and request task set).
 pub(super) struct DispatchContext<T: TransportPort + 'static> {
-    pub(super) services: RequestServices<T>,
+    /// Shared, so an admitted request takes one reference count, not one
+    /// per handle (#1713).
+    pub(super) services: Arc<RequestServices<T>>,
     pub(super) confirmed_request_tracker: Arc<ConfirmedRequestTracker>,
     pub(super) clock: Option<Arc<ServerClock>>,
     pub(super) discovery_limiter: Arc<DiscoveryLimiter>,
@@ -219,7 +221,7 @@ impl<T: TransportPort + 'static> DispatchContext<T> {
     /// fresh confirmed-request tracker and a fresh request task set.
     pub(super) fn for_test(services: RequestServices<T>) -> Self {
         Self {
-            services,
+            services: Arc::new(services),
             confirmed_request_tracker: Arc::new(ConfirmedRequestTracker::default()),
             clock: None,
             discovery_limiter: Arc::new(DiscoveryLimiter::new(DiscoveryPolicy::default(), None)),
@@ -324,7 +326,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// The retained server's own dispatch context.
     pub(super) fn test_dispatch_context(&self) -> DispatchContext<T> {
         DispatchContext {
-            services: self.test_services(),
+            services: Arc::new(self.test_services()),
             confirmed_request_tracker: Arc::clone(&self.confirmed_request_tracker),
             clock: self._clock.clone(),
             discovery_limiter: Arc::clone(&self.discovery_limiter),

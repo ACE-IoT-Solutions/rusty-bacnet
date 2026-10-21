@@ -104,51 +104,70 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// nothing and drops the callback. The callback is owned by that queue and
     /// runs when its transport send starts, with the local issuance contract of
     /// [`Self::send_apdu_on_issuance`]; neither issuance nor success proves receipt.
-    pub async fn send_response_apdu_on_issuance(
-        &self,
-        issued: IssuedApdu<'_>,
-        route: &crate::response_route::ResponseRoute,
+    ///
+    /// A server's request handler carries this future for every reply, so it
+    /// is kept small (#1713): not an `async fn`, which would copy `issued`
+    /// and `on_issuance` into locals of their own, and `issued` is read in
+    /// place.
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "an async fn would hold its moved arguments twice (#1713)"
+    )]
+    pub fn send_response_apdu_on_issuance<'a>(
+        &'a self,
+        issued: IssuedApdu<'a>,
+        route: &'a crate::response_route::ResponseRoute,
         on_issuance: impl FnOnce() + Send + 'static,
-    ) -> Result<(), Error> {
-        let IssuedApdu {
-            apdu,
-            next_hop,
-            destination,
-            expecting_reply,
-            priority,
-        } = issued;
-        crate::response_route::check_response_destination(destination)?;
-        if destination.is_some_and(|destination| destination.mac_address.is_empty()) {
-            check_broadcast_apdu(apdu, "a destination with no DADR (a remote broadcast)")?;
-        }
-        let buf = route.encode(apdu, destination, expecting_reply, priority)?;
-        let direct = route.direct()?;
-        if let Some(router) = route.router() {
-            // Retire the router route before either authority path; the
-            // temporary lifetime owner holds no engine, queue or socket.
-            let lifetime = router.lifetime()?;
-            if let Some(direct) = direct {
-                on_issuance();
-                return direct
-                    .send_with_owner(&buf, &self.response_scope, &lifetime.direct.guard())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send + 'a {
+        async move {
+            let destination = issued.destination;
+            crate::response_route::check_response_destination(destination)?;
+            if destination.is_some_and(|destination| destination.mac_address.is_empty()) {
+                check_broadcast_apdu(
+                    issued.apdu,
+                    "a destination with no DADR (a remote broadcast)",
+                )?;
+            }
+            let buf = route.encode(
+                issued.apdu,
+                destination,
+                issued.expecting_reply,
+                issued.priority,
+            )?;
+            let direct = route.direct()?;
+            // The direct (BACnet/SC) sends are boxed: inline, each is larger
+            // than the transport send, and a server's request handler would
+            // carry it for every reply (#1713).
+            if let Some(router) = route.router() {
+                // Retire the router route before either authority path; the
+                // temporary lifetime owner holds no engine, queue or socket.
+                let lifetime = router.lifetime()?;
+                if let Some(direct) = direct {
+                    on_issuance();
+                    return Box::pin(direct.send_with_owner(
+                        &buf,
+                        &self.response_scope,
+                        &lifetime.direct.guard(),
+                    ))
+                    .await;
+                }
+                drop(lifetime);
+                return router
+                    .send(
+                        buf.freeze(),
+                        issued.priority,
+                        self.response_scope.guard(),
+                        on_issuance,
+                    )
                     .await;
             }
-            drop(lifetime);
-            return router
-                .send(
-                    buf.freeze(),
-                    priority,
-                    self.response_scope.guard(),
-                    on_issuance,
-                )
-                .await;
+            on_issuance();
+            if let Some(direct) = direct {
+                return Box::pin(direct.send(&buf, &self.response_scope)).await;
+            }
+            self.transport
+                .send_unicast_with_data_attributes(&buf, issued.next_hop, &[])
+                .await
         }
-        on_issuance();
-        if let Some(direct) = direct {
-            return direct.send(&buf, &self.response_scope).await;
-        }
-        self.transport
-            .send_unicast_with_data_attributes(&buf, next_hop, &[])
-            .await
     }
 }

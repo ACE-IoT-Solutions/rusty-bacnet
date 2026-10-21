@@ -11,7 +11,7 @@ use super::*;
 
 /// An admitted confirmed request and everything its handler owns.
 pub(in crate::server) struct AdmittedRequest<T: TransportPort + 'static> {
-    pub(in crate::server) services: RequestServices<T>,
+    pub(in crate::server) services: Arc<RequestServices<T>>,
     pub(in crate::server) request_tasks: super::super::request_tasks::RequestTaskSpawner,
     pub(in crate::server) source_mac: MacAddr,
     pub(in crate::server) source_network: Option<NpduAddress>,
@@ -67,93 +67,107 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Execute an admitted ReadProperty and send its response. The fields of
     /// `admitted` are borrowed where they sit, not moved into locals the
     /// future would hold a second copy of.
-    pub(super) async fn handle_admitted_read_property(mut admitted: AdmittedRequest<T>) {
-        let reply_tx = admitted.reply_tx.take();
-        let ownership = admitted.ownership.take();
-        let AdmittedRequest {
-            services,
-            request_tasks,
-            source_mac,
-            source_network,
-            route,
-            req,
-            ..
-        } = &admitted;
-        let RequestServices {
-            db,
-            network,
-            notification_transactions,
-            device_bindings,
-            config,
-            ..
-        } = services;
-        // Only a LifeSafetyOperation carries replay ownership; dropping one
-        // here completes nothing, as the general handler's drop did.
-        let pending = match ownership {
-            Some(ConfirmedRequestOwnership::Generic(pending)) => Some(pending),
-            _ => None,
-        };
-        let (effective_max_apdu, segmented_response_available) =
-            issue::response_limits(config, route, req, source_network.as_ref());
-        let invoke_id = req.invoke_id;
-        let local_network = network.local_network_number().get();
-        let audit = super::audit_reporter::WriteAudit::new(
-            config,
-            network,
-            notification_transactions,
-            device_bindings,
-            super::audit_reporter::RequestSource {
-                mac: source_mac,
-                network: source_network.as_ref(),
-                invoke_id,
-                local_network,
-            },
-        )
-        .await;
-        let mut read_audits = Vec::new();
-        let response = confirmed_response::read_property_response_observed(
-            db,
-            Some(services.live_tables()),
-            confirmed_response::ReadProfile {
-                execution: crate::device_view::DeviceExecution::FullServer,
-                registered_port: config.registered_network_port,
-                work_limit: config.read_property_multiple_budget.max_result_elements,
-                identity: Some(&config.device),
-            },
-            req,
-            |db, oid, req, result| {
-                let result = match result {
-                    Ok(()) => None,
-                    Err(Error::Timeout(_) | Error::Reject { .. } | Error::Abort { .. }) => return,
-                    Err(error) => Some(confirmed_response::error_fields(error)),
-                };
-                read_audits.extend(audit.read_intent(
-                    db,
-                    oid,
-                    req.property_identifier,
-                    req.property_array_index,
-                    result,
-                ));
-            },
-        )
-        .await;
-        let plan = ResponsePlan {
-            services,
-            request_tasks,
-            target: ResponseTarget {
-                source_mac,
-                source_network: source_network.as_ref(),
-                route,
-            },
-            ack: ComplexAckParams {
-                invoke_id,
-                service_choice: req.service_choice,
-                client_max_apdu: effective_max_apdu,
-                client_max_segments: req.max_segments,
-            },
-            segmented_response_available,
-        };
-        Self::issue_confirmed_response(plan, &response, &audit, read_audits, reply_tx, pending)
+    ///
+    /// Not an `async fn`: one moves its argument into a local of its own,
+    /// so its future held `admitted` twice. The block below captures it once
+    /// and uses it in place (#1713).
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "an async fn would hold its moved arguments twice (#1713)"
+    )]
+    pub(super) fn handle_admitted_read_property(
+        mut admitted: AdmittedRequest<T>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        async move {
+            // Fields are read where they sit in `admitted`, borrowed only for
+            // as long as each step needs them, and the reply sender and the
+            // ownership are taken at the send. Named borrows and early takes
+            // would each hold space in this future through the send.
+            let (effective_max_apdu, segmented_response_available) = issue::response_limits(
+                &admitted.services.config,
+                &admitted.route,
+                &admitted.req,
+                admitted.source_network.as_ref(),
+            );
+            let audit = super::audit_reporter::WriteAudit::new(
+                &admitted.services.config,
+                &admitted.services.network,
+                &admitted.services.notification_transactions,
+                &admitted.services.device_bindings,
+                super::audit_reporter::RequestSource {
+                    mac: &admitted.source_mac,
+                    network: admitted.source_network.as_ref(),
+                    invoke_id: admitted.req.invoke_id,
+                    local_network: admitted.services.network.local_network_number().get(),
+                },
+            )
             .await;
+            let mut read_audits = Vec::new();
+            let config = &admitted.services.config;
+            let response = confirmed_response::read_property_response_observed(
+                &admitted.services.db,
+                Some(admitted.services.live_tables()),
+                confirmed_response::ReadProfile {
+                    execution: crate::device_view::DeviceExecution::FullServer,
+                    registered_port: config.registered_network_port,
+                    work_limit: config.read_property_multiple_budget.max_result_elements,
+                    identity: Some(&config.device),
+                },
+                &admitted.req,
+                |db, oid, req, result| {
+                    let result = match result {
+                        Ok(()) => None,
+                        Err(Error::Timeout(_) | Error::Reject { .. } | Error::Abort { .. }) => {
+                            return
+                        }
+                        Err(error) => Some(confirmed_response::error_fields(error)),
+                    };
+                    read_audits.extend(audit.read_intent(
+                        db,
+                        oid,
+                        req.property_identifier,
+                        req.property_array_index,
+                        result,
+                    ));
+                },
+            )
+            .await;
+            Self::issue_confirmed_response(
+                ResponsePlan {
+                    services: &admitted.services,
+                    request_tasks: &admitted.request_tasks,
+                    target: ResponseTarget {
+                        source_mac: &admitted.source_mac,
+                        source_network: admitted.source_network.as_ref(),
+                        route: &admitted.route,
+                    },
+                    ack: ComplexAckParams {
+                        invoke_id: admitted.req.invoke_id,
+                        service_choice: admitted.req.service_choice,
+                        client_max_apdu: effective_max_apdu,
+                        client_max_segments: admitted.req.max_segments,
+                    },
+                    segmented_response_available,
+                },
+                &response,
+                &audit,
+                read_audits,
+                admitted.reply_tx.take(),
+                generic_pending(admitted.ownership.take()),
+            )
+            .await;
+        }
+    }
+}
+
+/// The pending request `ownership` releases at issuance. Only a
+/// LifeSafetyOperation carries replay ownership; dropping one here completes
+/// nothing, as the general handler's drop did.
+fn generic_pending(
+    ownership: Option<ConfirmedRequestOwnership>,
+) -> Option<PendingConfirmedRequest> {
+    match ownership {
+        Some(ConfirmedRequestOwnership::Generic(pending)) => Some(pending),
+        _ => None,
     }
 }

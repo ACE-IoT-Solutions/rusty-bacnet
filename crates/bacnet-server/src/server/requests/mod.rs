@@ -95,7 +95,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     ) {
         if req.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
             let admitted = read_property::AdmittedRequest {
-                services: services.clone(),
+                services: Arc::new(services.clone()),
                 request_tasks: request_tasks.clone(),
                 source_mac: MacAddr::from_slice(origin.mac),
                 source_network: origin.network,
