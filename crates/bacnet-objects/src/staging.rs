@@ -585,10 +585,10 @@ fn validate_config(config: &StagingConfig) -> Result<(), Error> {
     if !(1..=16).contains(&config.priority_for_writing) {
         return Err(common::value_out_of_range_error());
     }
-    if let Some(names) = &config.stage_names {
-        if names.len() != config.stages.len() {
-            return Err(common::value_out_of_range_error());
-        }
+    if let Some(names) = &config.stage_names
+        && names.len() != config.stages.len()
+    {
+        return Err(common::value_out_of_range_error());
     }
     validate_target_references(&config.target_references)?;
     validate_ladder(

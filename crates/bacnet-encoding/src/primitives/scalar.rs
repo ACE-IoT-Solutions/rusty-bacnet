@@ -527,13 +527,13 @@ fn write_tagged<S: EncodeSink + ?Sized>(
 }
 
 fn write_scalar<S: EncodeSink + ?Sized>(sink: &mut S, encoded: &[u8]) -> Result<usize, SinkFull> {
-    if let Some(available) = sink.remaining_capacity() {
-        if available < encoded.len() {
-            return Err(SinkFull {
-                needed: encoded.len(),
-                available,
-            });
-        }
+    if let Some(available) = sink.remaining_capacity()
+        && available < encoded.len()
+    {
+        return Err(SinkFull {
+            needed: encoded.len(),
+            available,
+        });
     }
     sink.write(encoded)?;
     Ok(encoded.len())

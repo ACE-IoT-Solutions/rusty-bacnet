@@ -148,7 +148,7 @@ impl Tasks {
                 }
                 Poll::Ready(Some(result)) => {
                     // A panic payload can run arbitrary Drop code. Release the
-                    // task-set lock before dropping it, as in before the edition migration.
+                    // task-set lock before dropping it, as before the edition migration.
                     drop(state);
                     drop(result);
                     Poll::Ready(())

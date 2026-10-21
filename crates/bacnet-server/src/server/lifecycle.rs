@@ -587,20 +587,21 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     }
                                 }
 
-                                if let Some(total) = final_total {
-                                    if let Some(state) = seg_receivers.remove(&key) {
-                                        if let Some(envelope) = received.as_mut() {
-                                            envelope.set_response_route(state.route.clone());
-                                        }
-                                        match state.payload.complete(total) {
-                                            Ok(reassembled) => {
-                                                debug!(
-                                                    invoke_id = reassembled.invoke_id,
-                                                    segments = total,
-                                                    payload_len = reassembled.service_request.len(),
-                                                    "Reassembled segmented ConfirmedRequest"
-                                                );
-                                                Self::dispatch(
+                                if let Some(total) = final_total
+                                    && let Some(state) = seg_receivers.remove(&key)
+                                {
+                                    if let Some(envelope) = received.as_mut() {
+                                        envelope.set_response_route(state.route.clone());
+                                    }
+                                    match state.payload.complete(total) {
+                                        Ok(reassembled) => {
+                                            debug!(
+                                                invoke_id = reassembled.invoke_id,
+                                                segments = total,
+                                                payload_len = reassembled.service_request.len(),
+                                                "Reassembled segmented ConfirmedRequest"
+                                            );
+                                            Self::dispatch(
                                                     &dispatch_context,
                                                     &source_mac,
                                                     Apdu::ConfirmedRequest(reassembled),
@@ -609,14 +610,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                     ),
                                                 )
                                                 .await;
-                                            }
-                                            Err(e) => {
-                                                warn_throttled!(
-                                                    segment_warning,
-                                                    error = %e,
-                                                    "Failed to reassemble segmented request"
-                                                );
-                                            }
+                                        }
+                                        Err(e) => {
+                                            warn_throttled!(
+                                                segment_warning,
+                                                error = %e,
+                                                "Failed to reassemble segmented request"
+                                            );
                                         }
                                     }
                                 }

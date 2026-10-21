@@ -173,12 +173,12 @@ impl TransportPort for ObservedBip {
         self.inner.send_unicast(npdu, mac).await
     }
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        if let Some(gates) = &self.gates {
-            if npdu.starts_with(&[1, 0x80, 0x13]) {
-                let _drop = Signal(&gates.dropped);
-                gates.entered.add_permits(1);
-                std::future::pending::<()>().await;
-            }
+        if let Some(gates) = &self.gates
+            && npdu.starts_with(&[1, 0x80, 0x13])
+        {
+            let _drop = Signal(&gates.dropped);
+            gates.entered.add_permits(1);
+            std::future::pending::<()>().await;
         }
         self.inner.send_broadcast(npdu).await
     }

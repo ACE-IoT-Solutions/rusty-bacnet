@@ -364,10 +364,10 @@ impl<'s> State<'s> {
 
     fn started(&mut self, id: RowId, started: Started) {
         let device = self.rows.get(&id).map(|row| row.point.device);
-        if started.refused_rpm {
-            if let Some(device) = device {
-                self.devices.entry(device).or_default().no_rpm = true;
-            }
+        if started.refused_rpm
+            && let Some(device) = device
+        {
+            self.devices.entry(device).or_default().no_rpm = true;
         }
         let Some(row) = self.rows.get_mut(&id) else {
             return;
@@ -445,12 +445,11 @@ impl<'s> State<'s> {
         match received {
             Ok(received) => {
                 let id = received.notification.subscriber_process_identifier;
-                if let Some(row) = self.rows.get_mut(&id) {
-                    if matches!(row.mode, Mode::Starting | Mode::Cov(_)) {
-                        if let Some(reading) = sample::from_notification(&row.point, &received) {
-                            push(self.sink, row, reading);
-                        }
-                    }
+                if let Some(row) = self.rows.get_mut(&id)
+                    && matches!(row.mode, Mode::Starting | Mode::Cov(_))
+                    && let Some(reading) = sample::from_notification(&row.point, &received)
+                {
+                    push(self.sink, row, reading);
                 }
                 true
             }
@@ -471,10 +470,10 @@ impl<'s> State<'s> {
                 _ => "polled",
             };
             for (sample, logged, at) in row.pending.drain(..) {
-                if let Some(log) = &self.csv {
-                    if !log.line(csv_line(&row.point, &sample, &logged, at, source)) {
-                        self.sink.add_dropped(1);
-                    }
+                if let Some(log) = &self.csv
+                    && !log.line(csv_line(&row.point, &sample, &logged, at, source))
+                {
+                    self.sink.add_dropped(1);
                 }
                 samples.push((*id, sample));
             }
@@ -494,34 +493,33 @@ impl<'s> State<'s> {
         for (id, row) in &mut self.rows {
             if let (Mode::Polled, Some((at, _)), false) =
                 (&row.mode, row.resubscribe, self.shutting_down)
+                && at <= now
             {
-                if at <= now {
-                    row.mode = Mode::Queued;
-                    let device = self.devices.entry(row.point.device).or_default();
-                    device.ops.push_back(Op::Start(*id));
-                }
+                row.mode = Mode::Queued;
+                let device = self.devices.entry(row.point.device).or_default();
+                device.ops.push_back(Op::Start(*id));
             }
-            if let Mode::Cov(managed) = &row.mode {
-                if managed.is_finished() {
-                    let reason = match managed.last_event() {
-                        Some(ManagedCOVSubscriptionEvent::RenewalFailed { error }) => {
-                            format!("renewal failed: {error}")
-                        }
-                        _ => "renewal stopped".to_string(),
-                    };
-                    let wait = RESUBSCRIBE_BACKOFF.0;
-                    tracing::warn!(
-                        "watch row {id}: {reason}; polling, and subscribing again in {} s",
-                        wait.as_secs()
-                    );
-                    row.mode = Mode::Polled;
-                    row.maybe_subscribed = true;
-                    row.resubscribe = Some((now + wait, wait));
-                    self.outbox.push_back(WatchEvent::Source {
-                        row: *id,
-                        source: Source::Polled(reason),
-                    });
-                }
+            if let Mode::Cov(managed) = &row.mode
+                && managed.is_finished()
+            {
+                let reason = match managed.last_event() {
+                    Some(ManagedCOVSubscriptionEvent::RenewalFailed { error }) => {
+                        format!("renewal failed: {error}")
+                    }
+                    _ => "renewal stopped".to_string(),
+                };
+                let wait = RESUBSCRIBE_BACKOFF.0;
+                tracing::warn!(
+                    "watch row {id}: {reason}; polling, and subscribing again in {} s",
+                    wait.as_secs()
+                );
+                row.mode = Mode::Polled;
+                row.maybe_subscribed = true;
+                row.resubscribe = Some((now + wait, wait));
+                self.outbox.push_back(WatchEvent::Source {
+                    row: *id,
+                    source: Source::Polled(reason),
+                });
             }
         }
         let stats = WatchStats {

@@ -184,41 +184,39 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         // Preserve the existing order: only primary exhaustion tries failover.
         // An untouched preconfigured failover is consumed once, never poisoned
         // merely because a different (primary) socket was retired.
-        if active_hub == ScActiveHub::Primary && self.conn.lock().await.connect_retry_allowed {
-            if let Some(failover) = dial_failover_ws(
+        if active_hub == ScActiveHub::Primary
+            && self.conn.lock().await.connect_retry_allowed
+            && let Some(failover) = dial_failover_ws(
                 self.failover_connector,
                 self.failover_ws,
                 self.connect_timeout_ms,
             )
             .await
+        {
+            warn!("SC primary reconnection exhausted, attempting failover hub");
+            self.observer.failover_engaged();
             {
-                warn!("SC primary reconnection exhausted, attempting failover hub");
-                self.observer.failover_engaged();
-                {
-                    let mut c = self.conn.lock().await;
-                    c.reset_for_connect_retry();
-                    self.state_tx.send_replace(c.state);
+                let mut c = self.conn.lock().await;
+                c.reset_for_connect_retry();
+                self.state_tx.send_replace(c.state);
+            }
+            let probe_conn = connect_probe_from(self.conn).await;
+            match perform_handshake(&*failover, &probe_conn, None, self.connect_timeout_ms).await {
+                Ok(()) => {
+                    self.publish(&failover, &probe_conn, ScActiveHub::Failover)
+                        .await;
+                    let suppressed = self.diagnostic_throttle.take_suppressed();
+                    info!(
+                        suppressed,
+                        "SC connected to failover hub after primary reconnect exhaustion (suppressed {suppressed} reconnect diagnostics)"
+                    );
+                    return Some((failover, ScActiveHub::Failover));
                 }
-                let probe_conn = connect_probe_from(self.conn).await;
-                match perform_handshake(&*failover, &probe_conn, None, self.connect_timeout_ms)
-                    .await
-                {
-                    Ok(()) => {
-                        self.publish(&failover, &probe_conn, ScActiveHub::Failover)
-                            .await;
-                        let suppressed = self.diagnostic_throttle.take_suppressed();
-                        info!(
-                            suppressed,
-                            "SC connected to failover hub after primary reconnect exhaustion (suppressed {suppressed} reconnect diagnostics)"
-                        );
-                        return Some((failover, ScActiveHub::Failover));
-                    }
-                    Err(e) => {
-                        self.observer.connect_failed(ScActiveHub::Failover, &e);
-                        absorb_failed_connect_probe(self.conn, &probe_conn).await;
-                        // The terminal exhaustion notice below reports suppression.
-                        warn!(%e, "SC failover connection failed");
-                    }
+                Err(e) => {
+                    self.observer.connect_failed(ScActiveHub::Failover, &e);
+                    absorb_failed_connect_probe(self.conn, &probe_conn).await;
+                    // The terminal exhaustion notice below reports suppression.
+                    warn!(%e, "SC failover connection failed");
                 }
             }
         }

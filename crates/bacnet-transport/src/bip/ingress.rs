@@ -75,10 +75,8 @@ impl Listener {
         arrival_stamp: bool,
     ) -> io::Result<Self> {
         let receiver = DestinationReceiver::configure(&socket, IpVersion::V4)?;
-        if arrival_stamp {
-            if let Err(error) = request_arrival_stamps(&socket) {
-                debug!(%error, "No receive timestamps; datagrams go up in the order they are read");
-            }
+        if arrival_stamp && let Err(error) = request_arrival_stamps(&socket) {
+            debug!(%error, "No receive timestamps; datagrams go up in the order they are read");
         }
         let socket = tokio::net::UdpSocket::from_std(socket.into())?;
         Ok(Self {

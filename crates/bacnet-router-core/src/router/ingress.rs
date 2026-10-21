@@ -195,24 +195,24 @@ impl<
                 bump(self.counters.slot(refused.count));
                 // A global broadcast draws no reject, and an NPDU without a
                 // DNET has no network to name.
-                if let Some((source_mac, Some(dnet), source)) = refused.reject_to {
-                    if dnet != GLOBAL_NETWORK {
-                        let at = Arrival {
-                            port: frame.port,
-                            network: config.network,
-                            source: frame.source,
-                            source_mac,
-                            link_group: frame.link_group,
-                            now,
-                        };
-                        self.reject(
-                            &at,
-                            source,
-                            dnet,
-                            RejectMessageReason::ADDRESSING_ERROR,
-                            host,
-                        );
-                    }
+                if let Some((source_mac, Some(dnet), source)) = refused.reject_to
+                    && dnet != GLOBAL_NETWORK
+                {
+                    let at = Arrival {
+                        port: frame.port,
+                        network: config.network,
+                        source: frame.source,
+                        source_mac,
+                        link_group: frame.link_group,
+                        now,
+                    };
+                    self.reject(
+                        &at,
+                        source,
+                        dnet,
+                        RejectMessageReason::ADDRESSING_ERROR,
+                        host,
+                    );
                 }
                 return Received::Discarded(refused.discard);
             }

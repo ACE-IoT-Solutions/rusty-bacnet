@@ -264,15 +264,15 @@ pub(super) fn spawn_number_worker<T: TransportPort + 'static>(
         while let Some(control) = controls.recv().await {
             let before = network.local_network_number().get();
             let reply = owner.handle(control).await;
-            if network.local_network_number().get() != before {
-                if let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade) {
-                    audit.number_changed();
-                }
+            if network.local_network_number().get() != before
+                && let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade)
+            {
+                audit.number_changed();
             }
-            if let Some(npdu) = reply {
-                if let Err(error) = network.transport().send_broadcast(&npdu).await {
-                    tracing::debug!(%error, "Network-Number-Is broadcast failed");
-                }
+            if let Some(npdu) = reply
+                && let Err(error) = network.transport().send_broadcast(&npdu).await
+            {
+                tracing::debug!(%error, "Network-Number-Is broadcast failed");
             }
         }
     })

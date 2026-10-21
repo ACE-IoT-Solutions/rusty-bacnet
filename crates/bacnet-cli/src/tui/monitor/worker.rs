@@ -243,13 +243,12 @@ impl Watcher {
         if npdu.is_network_message() {
             return;
         }
-        if let Ok(Apdu::UnconfirmedRequest(request)) = decode_apdu(npdu.payload) {
-            if request.service_choice == UnconfirmedServiceChoice::I_AM {
-                if let Ok(i_am) = IAmRequest::decode(&request.service_request) {
-                    let instance = i_am.object_identifier.instance_number();
-                    self.devices.insert(header.source, instance);
-                }
-            }
+        if let Ok(Apdu::UnconfirmedRequest(request)) = decode_apdu(npdu.payload)
+            && request.service_choice == UnconfirmedServiceChoice::I_AM
+            && let Ok(i_am) = IAmRequest::decode(&request.service_request)
+        {
+            let instance = i_am.object_identifier.instance_number();
+            self.devices.insert(header.source, instance);
         }
     }
 }

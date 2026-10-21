@@ -484,14 +484,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let segments = split_payload(service_data, max_seg_size)?;
         let total_segments = segments.len();
 
-        if let Some(max_seg) = remote_max_segments {
-            if total_segments > max_seg as usize {
-                return Err(bacnet_types::error::SegmentationError::PeerSegmentLimit {
-                    segments: total_segments,
-                    max: max_seg,
-                }
-                .into());
+        if let Some(max_seg) = remote_max_segments
+            && total_segments > max_seg as usize
+        {
+            return Err(bacnet_types::error::SegmentationError::PeerSegmentLimit {
+                segments: total_segments,
+                max: max_seg,
             }
+            .into());
         }
 
         debug!(

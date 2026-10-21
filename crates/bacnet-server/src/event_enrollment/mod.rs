@@ -557,12 +557,10 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
                 if let BACnetEventParameter::FloatingLimit {
                     setpoint_reference, ..
                 } = &params
-                {
-                    if let SetpointRead::Value(setpoint) =
+                    && let SetpointRead::Value(setpoint) =
                         read_setpoint(db, local_device, setpoint_reference)
-                    {
-                        projection_setpoint = Some(setpoint);
-                    }
+                {
+                    projection_setpoint = Some(setpoint);
                 }
                 (0, inhibited_arm(&params, &monitored_value, current_state))
             }

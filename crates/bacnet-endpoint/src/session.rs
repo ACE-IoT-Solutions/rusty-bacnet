@@ -634,12 +634,11 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             }
         }
         if !self.ingress_stopped {
-            if let Some(ingress) = self.ingress.as_mut() {
-                if let Err(error) = ingress.stop().await {
-                    if self.stop_exit.as_ref().is_some_and(Result::is_ok) {
-                        self.stop_exit = Some(Err(error));
-                    }
-                }
+            if let Some(ingress) = self.ingress.as_mut()
+                && let Err(error) = ingress.stop().await
+                && self.stop_exit.as_ref().is_some_and(Result::is_ok)
+            {
+                self.stop_exit = Some(Err(error));
             }
             self.ingress_stopped = true;
         }
@@ -663,10 +662,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.responder.take();
         self.client_handle = None;
         self.server_handle = None;
-        if self.durable_settlement.is_none() {
-            if let Some(db) = &self.database {
-                self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
-            }
+        if self.durable_settlement.is_none()
+            && let Some(db) = &self.database
+        {
+            self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
         }
         if let Some(task) = self.durable_settlement.as_mut() {
             // Keep the one settlement owner across canceled stop waiters.

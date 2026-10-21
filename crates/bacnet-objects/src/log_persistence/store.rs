@@ -384,10 +384,10 @@ pub(crate) trait DurableLog {
             return;
         }
         let state = self.log_state();
-        if let (Some(store), buffer) = self.durable_parts() {
-            if store.changed(&state) {
-                store.queue(state, buffer.records());
-            }
+        if let (Some(store), buffer) = self.durable_parts()
+            && store.changed(&state)
+        {
+            store.queue(state, buffer.records());
         }
     }
 

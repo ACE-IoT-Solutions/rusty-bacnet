@@ -195,10 +195,10 @@ impl World<'_> {
                 break;
             };
             self.now = self.now.max(next);
-            if step_at.is_some_and(|at| at <= self.now) {
-                if let Some((_, step)) = script.next() {
-                    self.step(step);
-                }
+            if step_at.is_some_and(|at| at <= self.now)
+                && let Some((_, step)) = script.next()
+            {
+                self.step(step);
             }
             if self.station_2.next.is_some_and(|(at, ..)| at <= self.now) {
                 self.station_2_sends();

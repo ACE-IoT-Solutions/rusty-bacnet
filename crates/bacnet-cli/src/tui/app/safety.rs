@@ -658,16 +658,16 @@ impl App {
     /// Read the open object again, so its priority pane shows the change.
     fn reread_object(&mut self, out: &mut Vec<Command>) {
         let req = self.next_req();
-        if let Some(browser) = self.browser.as_deref_mut() {
-            if let ViewState::Ready(view) = &browser.view {
-                let object = view.object;
-                browser.reading(req, object);
-                out.push(Command::Browse {
-                    req,
-                    device: browser.device,
-                    read: BrowseRead::Object(object),
-                });
-            }
+        if let Some(browser) = self.browser.as_deref_mut()
+            && let ViewState::Ready(view) = &browser.view
+        {
+            let object = view.object;
+            browser.reading(req, object);
+            out.push(Command::Browse {
+                req,
+                device: browser.device,
+                read: BrowseRead::Object(object),
+            });
         }
     }
 }

@@ -72,11 +72,11 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     let mut job = None;
     let mut registered = false;
     loop {
-        if job.is_none() {
-            if let (Some(bip), Some(next)) = (bip, queue.pop_front()) {
-                running = Some(next);
-                job = Some(Box::pin(execute(bip, next, local)));
-            }
+        if job.is_none()
+            && let (Some(bip), Some(next)) = (bip, queue.pop_front())
+        {
+            running = Some(next);
+            job = Some(Box::pin(execute(bip, next, local)));
         }
         tokio::select! {
             biased;

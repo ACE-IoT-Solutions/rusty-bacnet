@@ -20,10 +20,10 @@ impl App {
             self.names.refused(req);
             return;
         }
-        if let Command::Profile(_) = command {
-            if let Some(connection) = &mut self.connection {
-                connection.reply(Err(error.clone()));
-            }
+        if let Command::Profile(_) = command
+            && let Some(connection) = &mut self.connection
+        {
+            connection.reply(Err(error.clone()));
         }
         if let Command::WhoIs { op, .. } | Command::Cancel { op } = command {
             self.operation_rejected(op, matches!(command, Command::Cancel { .. }), error);
@@ -90,10 +90,10 @@ impl App {
             if card {
                 self.names.forget_failures(device, address);
             }
-            if let Some((object, name)) = free {
-                if let Some(object) = object.or_else(|| names::device_object(device)) {
-                    self.names.learn_name(device, address, object, name);
-                }
+            if let Some((object, name)) = free
+                && let Some(object) = object.or_else(|| names::device_object(device))
+            {
+                self.names.learn_name(device, address, object, name);
             }
             self.settle_objects();
         }
@@ -124,10 +124,10 @@ impl App {
                 }
             }
             WorkerEvent::Profile(result) => {
-                if let Err(error) = &result {
-                    if self.link == Link::Connecting {
-                        self.link = Link::Failed(Failure::text(error.clone()));
-                    }
+                if let Err(error) = &result
+                    && self.link == Link::Connecting
+                {
+                    self.link = Link::Failed(Failure::text(error.clone()));
                 }
                 if let Some(connection) = &mut self.connection {
                     connection.reply(result);

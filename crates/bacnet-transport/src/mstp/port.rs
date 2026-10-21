@@ -388,12 +388,12 @@ impl LoopbackSerial {
 
 impl SerialPort for LoopbackSerial {
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        if matches!(self.echo, Echo::Full { .. }) {
-            if let Some(own) = self.own.upgrade() {
-                own.send(data.to_vec())
-                    .await
-                    .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
-            }
+        if matches!(self.echo, Echo::Full { .. })
+            && let Some(own) = self.own.upgrade()
+        {
+            own.send(data.to_vec())
+                .await
+                .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
         }
         self.tx
             .send(data.to_vec())

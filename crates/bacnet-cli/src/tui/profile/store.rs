@@ -80,12 +80,11 @@ impl Store {
             let path = entry
                 .map_err(|e| format!("cannot read profile entry: {e}"))?
                 .path();
-            if path.extension().is_some_and(|ext| ext == "toml") {
-                if let Some(name) = path.file_stem().and_then(|v| v.to_str()) {
-                    if validate_name(name).is_ok() {
-                        names.push(name.to_owned());
-                    }
-                }
+            if path.extension().is_some_and(|ext| ext == "toml")
+                && let Some(name) = path.file_stem().and_then(|v| v.to_str())
+                && validate_name(name).is_ok()
+            {
+                names.push(name.to_owned());
             }
         }
         names.sort();

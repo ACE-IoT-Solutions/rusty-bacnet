@@ -340,10 +340,10 @@ pub fn run_capture(opts: CaptureOpts) -> Result<(), Box<dyn std::error::Error>> 
         if !running.load(Ordering::Relaxed) {
             break;
         }
-        if let Some(limit) = opts.count {
-            if packet_count >= limit {
-                break;
-            }
+        if let Some(limit) = opts.count
+            && packet_count >= limit
+        {
+            break;
         }
 
         // Get next packet

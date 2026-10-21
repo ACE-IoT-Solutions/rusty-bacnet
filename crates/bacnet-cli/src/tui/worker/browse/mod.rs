@@ -122,11 +122,10 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                             }
                             queue.want(req, address, max_apdu, objects)
                         });
-                        if waiting == Some(true) {
-                            if let Some(started) = scheduler.submit_names(device) {
+                        if waiting == Some(true)
+                            && let Some(started) = scheduler.submit_names(device) {
                                 jobs.push(start(started, &no_rpm, &queues));
                             }
-                        }
                     }
                     prune(&mut queues);
                 }

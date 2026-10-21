@@ -197,10 +197,11 @@ impl WhoIsForm {
                 self.scope = self.scope.step(true);
             }
             FormKey::Char(ch) => {
-                if let Some(text) = self.text_mut() {
-                    if text.chars().count() < 48 && !ch.is_control() {
-                        text.push(ch);
-                    }
+                if let Some(text) = self.text_mut()
+                    && text.chars().count() < 48
+                    && !ch.is_control()
+                {
+                    text.push(ch);
                 }
             }
             FormKey::Backspace => {
@@ -258,10 +259,10 @@ fn parse_directed(target: &str, style: AddressStyle) -> Result<DirectedTo, Strin
     if target.is_empty() {
         return Err("enter the address to send the Who-Is to".into());
     }
-    if style == AddressStyle::Hex {
-        if let Ok(vmac) = crate::transport::parse_sc_vmac_arg(target) {
-            return Ok(DirectedTo::Mac(vmac.to_vec()));
-        }
+    if style == AddressStyle::Hex
+        && let Ok(vmac) = crate::transport::parse_sc_vmac_arg(target)
+    {
+        return Ok(DirectedTo::Mac(vmac.to_vec()));
     }
     if target.starts_with(VMAC_TEXT_PREFIX) && style != AddressStyle::Bip6 {
         return Err(format!(

@@ -297,10 +297,10 @@ impl<
         let learned =
             self.table
                 .apply_claim(network, at.port, at.source_mac, at.now, &options.timing);
-        if let Learned::Moved { flaps, .. } = learned {
-            if learned.flapping() {
-                host.observe(Event::Flapping { network, flaps });
-            }
+        if let Learned::Moved { flaps, .. } = learned
+            && learned.flapping()
+        {
+            host.observe(Event::Flapping { network, flaps });
         }
         if learned.applied() {
             self.table.record_learned();

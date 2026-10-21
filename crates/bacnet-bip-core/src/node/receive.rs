@@ -464,10 +464,10 @@ impl Link {
         if function == BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK && self.is_own(source) {
             return Received::Discarded(Discard::OwnEcho);
         }
-        if self.mode == Mode::Bbmd {
-            if let Some(share) = ForBbmd::of_request(message, source) {
-                return Received::Bbmd(share);
-            }
+        if self.mode == Mode::Bbmd
+            && let Some(share) = ForBbmd::of_request(message, source)
+        {
+            return Received::Bbmd(share);
         }
         if !self.is_answerable(source) {
             return Received::Discarded(Discard::UnanswerableSource);

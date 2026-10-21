@@ -186,10 +186,10 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
         match tokio::time::timeout(Duration::from_millis(200), rx_a.recv()).await {
             Ok(recv) => {
                 let msg = recv.expect("closed");
-                if let Ok(Apdu::ComplexAck(a)) = decode_apdu(msg.apdu) {
-                    if a.invoke_id == 0 {
-                        saw_inbound_ack = true;
-                    }
+                if let Ok(Apdu::ComplexAck(a)) = decode_apdu(msg.apdu)
+                    && a.invoke_id == 0
+                {
+                    saw_inbound_ack = true;
                 }
             }
             _ => {

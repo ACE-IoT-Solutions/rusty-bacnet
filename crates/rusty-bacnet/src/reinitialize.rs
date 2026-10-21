@@ -246,10 +246,10 @@ fn answer(value: &Bound<'_, PyAny>) -> PyResult<Answer> {
             Answer::Refuse(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
         });
     }
-    if let Ok(tuple) = value.cast::<PyTuple>() {
-        if let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>() {
-            return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
-        }
+    if let Ok(tuple) = value.cast::<PyTuple>()
+        && let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>()
+    {
+        return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
     }
     let py = value.py();
     if py

@@ -160,19 +160,19 @@ impl<'a> ValueFormat<'a> {
     /// names for it when it has a renderer and the octets decode as those
     /// elements to the end, and otherwise as application values.
     pub(crate) fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
-        if let Some((element, shape)) = property_element(self.object_type, property) {
-            if let Some(texts) = constructed::elements(self, element, data) {
-                // Schedule days hold lists of their own, so `; ` parts them.
-                let separator = if element == ConstructedElement::DailySchedule {
-                    "; "
-                } else {
-                    ", "
-                };
-                return match (shape, texts.as_slice()) {
-                    (ElementShape::Single, [one]) => one.clone(),
-                    _ => list(texts, separator),
-                };
-            }
+        if let Some((element, shape)) = property_element(self.object_type, property)
+            && let Some(texts) = constructed::elements(self, element, data)
+        {
+            // Schedule days hold lists of their own, so `; ` parts them.
+            let separator = if element == ConstructedElement::DailySchedule {
+                "; "
+            } else {
+                ", "
+            };
+            return match (shape, texts.as_slice()) {
+                (ElementShape::Single, [one]) => one.clone(),
+                _ => list(texts, separator),
+            };
         }
         let Some(values) = decode_all(data) else {
             return primitive::raw(data);
@@ -230,10 +230,10 @@ impl<'a> ValueFormat<'a> {
 
     /// One application value of `property`.
     pub(crate) fn element(&self, property: PropertyIdentifier, value: &PropertyValue) -> String {
-        if holds_state(property) {
-            if let Some(state) = self.state(value) {
-                return state;
-            }
+        if holds_state(property)
+            && let Some(state) = self.state(value)
+        {
+            return state;
         }
         primitive::text(property, value, self.floats)
     }

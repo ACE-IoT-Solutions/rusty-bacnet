@@ -392,14 +392,14 @@ impl EndpointRequester {
         let destination = destination.localized(self.inner.egress.local_network_number().get());
         // A direct destination, as named or as localized, that reaches a group
         // of nodes is a local broadcast (#1479).
-        if let EndpointApduDestination::Direct { destination_mac } = &destination {
-            if self.inner.egress.is_group_destination(destination_mac) {
-                return Err(Error::Encoding(
-                    "endpoint requester cannot send confirmed requests to a broadcast or group \
+        if let EndpointApduDestination::Direct { destination_mac } = &destination
+            && self.inner.egress.is_group_destination(destination_mac)
+        {
+            return Err(Error::Encoding(
+                "endpoint requester cannot send confirmed requests to a broadcast or group \
                      address"
-                        .into(),
-                ));
-            }
+                    .into(),
+            ));
         }
         Ok(destination)
     }

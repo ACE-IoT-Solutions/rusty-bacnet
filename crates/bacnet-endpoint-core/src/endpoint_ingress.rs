@@ -294,13 +294,13 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         ) {
             return Err(Error::Encoding("endpoint ingress is not running".into()));
         }
-        if self.lifecycle == Lifecycle::Starting {
-            if let Some(mut network) = self.network.take() {
-                self.session_task = Some(tokio::spawn(async move {
-                    network.stop().await?;
-                    Ok(ClassifierExit::Cancelled)
-                }));
-            }
+        if self.lifecycle == Lifecycle::Starting
+            && let Some(mut network) = self.network.take()
+        {
+            self.session_task = Some(tokio::spawn(async move {
+                network.stop().await?;
+                Ok(ClassifierExit::Cancelled)
+            }));
         }
         self.lifecycle = Lifecycle::Stopping;
         if let Some(open) = self.egress_open.take() {

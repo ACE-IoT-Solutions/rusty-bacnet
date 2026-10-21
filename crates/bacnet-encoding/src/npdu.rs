@@ -218,13 +218,13 @@ fn encode_error(npdu: &Npdu, refused: EncodeError) -> Error {
 pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
     // Only hosted builds log; tracing is a std-only dependency.
     #[cfg(feature = "std")]
-    if let Some(&control) = data.get(1) {
-        if control & 0x50 != 0 {
-            tracing::warn!(
-                control_byte = control,
-                "NPDU control byte has reserved bits set (bits 4 or 6)"
-            );
-        }
+    if let Some(&control) = data.get(1)
+        && control & 0x50 != 0
+    {
+        tracing::warn!(
+            control_byte = control,
+            "NPDU control byte has reserved bits set (bits 4 or 6)"
+        );
     }
     let view = match bacnet_npdu::Npdu::decode(&data) {
         Ok(view) => view,

@@ -121,10 +121,10 @@ impl Tsm {
             return CompletionOutcome::Delivered;
         }
         let expected = entry.get().expected_service_choice;
-        if let Some(observed) = observed_service_choice {
-            if observed != expected {
-                return CompletionOutcome::ServiceChoiceMismatch { expected, observed };
-            }
+        if let Some(observed) = observed_service_choice
+            && observed != expected
+        {
+            return CompletionOutcome::ServiceChoiceMismatch { expected, observed };
         }
         let pending = entry.remove();
         let responder = pending.responder;

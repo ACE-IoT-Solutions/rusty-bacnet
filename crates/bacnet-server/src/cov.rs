@@ -230,12 +230,12 @@ impl CovSubscriptionTable {
                         self.peer_counts.remove(&peer);
                     }
                 }
-                if sub.expires_at.is_none() {
-                    if let Some(count) = self.peer_indefinite_counts.get_mut(&peer) {
-                        *count = count.saturating_sub(1);
-                        if *count == 0 {
-                            self.peer_indefinite_counts.remove(&peer);
-                        }
+                if sub.expires_at.is_none()
+                    && let Some(count) = self.peer_indefinite_counts.get_mut(&peer)
+                {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.peer_indefinite_counts.remove(&peer);
                     }
                 }
                 if was_cancelled {

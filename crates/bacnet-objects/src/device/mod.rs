@@ -648,10 +648,10 @@ impl BACnetObject for DeviceObject {
             return read_property_list_property(&self.property_list(), array_index);
         }
 
-        if property == PropertyIdentifier::CONFIGURATION_FILES {
-            if let Some(PropertyValue::List(files)) = self.properties.get(&property) {
-                return read_array(files.clone(), array_index);
-            }
+        if property == PropertyIdentifier::CONFIGURATION_FILES
+            && let Some(PropertyValue::List(files)) = self.properties.get(&property)
+        {
+            return read_array(files.clone(), array_index);
         }
 
         if matches!(

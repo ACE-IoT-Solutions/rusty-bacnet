@@ -172,13 +172,13 @@ impl ObjectDatabase {
         oid: &ObjectIdentifier,
         new_name: &str,
     ) -> Result<(), Error> {
-        if let Some(&owner) = self.name_index.get(new_name) {
-            if owner != *oid {
-                return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY,
-                    code: ErrorCode::DUPLICATE_NAME,
-                });
-            }
+        if let Some(&owner) = self.name_index.get(new_name)
+            && owner != *oid
+        {
+            return Err(Error::Protocol {
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::DUPLICATE_NAME,
+            });
         }
         Ok(())
     }

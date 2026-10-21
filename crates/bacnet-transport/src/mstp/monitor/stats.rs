@@ -317,10 +317,10 @@ impl MaxMaster {
 
 impl StationStats {
     fn record_poll(&mut self, source: u8, destination: u8) {
-        if destination == 0 {
-            if let Some(previous) = self.last_polled.filter(|previous| *previous > source) {
-                self.wrapped_at = Some(previous);
-            }
+        if destination == 0
+            && let Some(previous) = self.last_polled.filter(|previous| *previous > source)
+        {
+            self.wrapped_at = Some(previous);
         }
         self.last_polled = Some(destination);
         let highest = self

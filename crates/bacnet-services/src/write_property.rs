@@ -46,13 +46,12 @@ pub struct WritePropertyRequest {
 /// Omission is allowed; every supplied priority must be in 1..=16, including
 /// NULL writes. Returns a local encoding error for invalid typed input.
 pub fn validate_priority(priority: Option<u8>) -> Result<(), Error> {
-    if let Some(priority) = priority {
-        if !(1..=16).contains(&priority) {
+    if let Some(priority) = priority
+        && !(1..=16).contains(&priority) {
             return Err(EncodeError::new("WriteProperty priority must be 1-16, got {}")
                 .with_value(priority.into())
                 .into());
         }
-    }
     Ok(())
 }
 

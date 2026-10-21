@@ -293,17 +293,17 @@ impl AuditLogObject {
                 "Audit notification batch must not be empty".into(),
             ));
         }
-        if let Some(receipt) = &receipt {
-            if receipt::contains(
+        if let Some(receipt) = &receipt
+            && receipt::contains(
                 &self.completed_receipts,
                 receipt.key(),
                 receipt.completed_at_unix_millis(),
-            )? {
-                return Ok(AuditBatchStage::Done(
-                    ConfirmedAuditNotificationOutcome::Duplicate,
-                    false,
-                ));
-            }
+            )?
+        {
+            return Ok(AuditBatchStage::Done(
+                ConfirmedAuditNotificationOutcome::Duplicate,
+                false,
+            ));
         }
         let mut prospective = self.snapshot_for_next_generation()?;
         let changed =

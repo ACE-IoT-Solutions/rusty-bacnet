@@ -65,10 +65,10 @@ impl TransportArgs {
             );
         }
         let multicast = crate::multicast::from_cli(cli, interface)?;
-        if let (Some(failover), Some(primary)) = (&cli.sc_failover_url, &cli.sc_url) {
-            if same_hub_url(failover, primary) {
-                return Err("--sc-failover-url must differ from --sc-url".into());
-            }
+        if let (Some(failover), Some(primary)) = (&cli.sc_failover_url, &cli.sc_url)
+            && same_hub_url(failover, primary)
+        {
+            return Err("--sc-failover-url must differ from --sc-url".into());
         }
         Ok(Self {
             interface,

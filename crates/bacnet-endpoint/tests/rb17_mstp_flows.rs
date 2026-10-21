@@ -574,16 +574,15 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut routed_answered = false;
     let reply = h
         .wait_for("local ComplexAck", |f| {
-            if f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY {
-                if let Ok(npdu) = decode_npdu(f.data.clone()) {
-                    if let Ok(Apdu::ComplexAck(ack)) = decode_apdu(npdu.payload) {
-                        if ack.invoke_id == 77 {
-                            routed_answered = true;
-                        }
-                        if ack.invoke_id == 66 {
-                            return true;
-                        }
-                    }
+            if f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                && let Ok(npdu) = decode_npdu(f.data.clone())
+                && let Ok(Apdu::ComplexAck(ack)) = decode_apdu(npdu.payload)
+            {
+                if ack.invoke_id == 77 {
+                    routed_answered = true;
+                }
+                if ack.invoke_id == 66 {
+                    return true;
                 }
             }
             false

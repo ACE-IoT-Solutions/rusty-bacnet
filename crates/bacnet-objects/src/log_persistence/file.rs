@@ -101,13 +101,12 @@ impl FileLogPersistence {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
+            && !parent.exists()
         {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-                // The new directory's own entry has to be durable too, or a
-                // power loss could take the slot with it.
-                crate::durable::sync_parent_dir(parent);
-            }
+            std::fs::create_dir_all(parent)?;
+            // The new directory's own entry has to be durable too, or a
+            // power loss could take the slot with it.
+            crate::durable::sync_parent_dir(parent);
         }
         let (mut file, created) = match OpenOptions::new().write(true).create_new(true).open(path) {
             Ok(file) => (file, true),

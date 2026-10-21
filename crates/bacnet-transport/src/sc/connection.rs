@@ -143,24 +143,24 @@ impl ScConnection {
         if msg.function != ScFunction::ConnectAccept {
             return false;
         }
-        if let Some(expected_id) = self.pending_connect_message_id {
-            if msg.message_id != expected_id {
-                if self.malformed_diag.should_emit_now() {
-                    let suppressed = self.malformed_diag.take_suppressed();
-                    if suppressed > 0 {
-                        warn!(
-                            "ConnectAccept message_id {:#x} does not match request {:#x} (suppressed {suppressed} similar diagnostics)",
-                            msg.message_id, expected_id
-                        );
-                    } else {
-                        warn!(
-                            "ConnectAccept message_id {:#x} does not match request {:#x}",
-                            msg.message_id, expected_id
-                        );
-                    }
+        if let Some(expected_id) = self.pending_connect_message_id
+            && msg.message_id != expected_id
+        {
+            if self.malformed_diag.should_emit_now() {
+                let suppressed = self.malformed_diag.take_suppressed();
+                if suppressed > 0 {
+                    warn!(
+                        "ConnectAccept message_id {:#x} does not match request {:#x} (suppressed {suppressed} similar diagnostics)",
+                        msg.message_id, expected_id
+                    );
+                } else {
+                    warn!(
+                        "ConnectAccept message_id {:#x} does not match request {:#x}",
+                        msg.message_id, expected_id
+                    );
                 }
-                return false;
             }
+            return false;
         }
         if crate::sc_frame::connect_message_error(msg).is_some() {
             return false;
@@ -390,10 +390,10 @@ impl ScConnection {
                     }
                     return None;
                 }
-                if let Some(dest) = msg.destination_vmac {
-                    if !is_broadcast_vmac(&dest) {
-                        return None;
-                    }
+                if let Some(dest) = msg.destination_vmac
+                    && !is_broadcast_vmac(&dest)
+                {
+                    return None;
                 }
                 if msg.payload.len() > self.max_apdu_length as usize {
                     if self.malformed_diag.should_emit_now() {

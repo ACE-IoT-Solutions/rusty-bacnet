@@ -241,10 +241,10 @@ fn check_tags(tags: &[BACnetNameValue]) -> Result<(), Error> {
 
 /// Annex Y.1.4 keeps semicolons out of tag names, so names can be joined.
 fn check_tag(tag: &BACnetNameValue) -> Result<(), Error> {
-    if let Some(value) = &tag.value {
-        if !value.is_primitive() {
-            return Err(common::invalid_data_type_error());
-        }
+    if let Some(value) = &tag.value
+        && !value.is_primitive()
+    {
+        return Err(common::invalid_data_type_error());
     }
     if tag.name.contains(';') {
         return Err(common::value_out_of_range_error());

@@ -151,15 +151,15 @@ pub async fn subscribe_cmd<T: TransportPort + 'static>(
         }
     };
 
-    if lifetime != 0 {
-        if let Err(error) = to.unsubscribe_cov(client, process_id, oid).await {
-            let message = format!("cancelling the subscription failed: {error}");
-            return Err(match watched {
-                Ok(()) => message,
-                Err(watch) => format!("{watch}; {message}"),
-            }
-            .into());
+    if lifetime != 0
+        && let Err(error) = to.unsubscribe_cov(client, process_id, oid).await
+    {
+        let message = format!("cancelling the subscription failed: {error}");
+        return Err(match watched {
+            Ok(()) => message,
+            Err(watch) => format!("{watch}; {message}"),
         }
+        .into());
     }
     watched
 }

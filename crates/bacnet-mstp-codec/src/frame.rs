@@ -322,13 +322,13 @@ impl<'a> Frame<'a> {
     pub fn encode_to_sink<S: FrameSink + ?Sized>(self, sink: &mut S) -> Result<usize, FrameError> {
         let length = self.checked_length()?;
         let total = wire_length(length);
-        if let Some(available) = sink.remaining_capacity() {
-            if available < total {
-                return Err(FrameError::BufferExhausted {
-                    needed: total,
-                    available,
-                });
-            }
+        if let Some(available) = sink.remaining_capacity()
+            && available < total
+        {
+            return Err(FrameError::BufferExhausted {
+                needed: total,
+                available,
+            });
         }
         let fields = [
             self.header.frame_type.to_raw(),

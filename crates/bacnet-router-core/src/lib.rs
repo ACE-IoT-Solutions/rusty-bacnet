@@ -320,10 +320,10 @@ pub(crate) fn swap_apart<T>(slice: &mut [T], low: usize, high: usize) {
         low <= high && high < slice.len(),
         "swap_apart needs low <= high < len"
     );
-    if let Some((front, back)) = slice.split_at_mut_checked(high) {
-        if let (Some(first), Some(second)) = (front.get_mut(low), back.first_mut()) {
-            core::mem::swap(first, second);
-        }
+    if let Some((front, back)) = slice.split_at_mut_checked(high)
+        && let (Some(first), Some(second)) = (front.get_mut(low), back.first_mut())
+    {
+        core::mem::swap(first, second);
     }
 }
 

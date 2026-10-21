@@ -716,23 +716,22 @@ impl App {
             self.flash("Disconnect (x) before changing profiles.", FLASH_FOR);
             return;
         }
-        if let Some(connection) = &mut self.connection {
-            if let Some(command) = connection.key(key) {
-                // Joining an MS/TP trunk is confirmed first (T2).
-                let command = match self.hold_for_join(command) {
-                    Some(command) => command,
-                    None => return,
-                };
-                if let Command::Profile(super::profile::service::Request::Connect {
-                    profile, ..
-                }) = &command
-                {
-                    let kind = profile.transport.kind();
-                    (self.transport, self.style) = (kind.label(), kind.style());
-                    self.link = Link::Connecting;
-                }
-                out.push(command);
+        if let Some(connection) = &mut self.connection
+            && let Some(command) = connection.key(key)
+        {
+            // Joining an MS/TP trunk is confirmed first (T2).
+            let command = match self.hold_for_join(command) {
+                Some(command) => command,
+                None => return,
+            };
+            if let Command::Profile(super::profile::service::Request::Connect { profile, .. }) =
+                &command
+            {
+                let kind = profile.transport.kind();
+                (self.transport, self.style) = (kind.label(), kind.style());
+                self.link = Link::Connecting;
             }
+            out.push(command);
         }
     }
 }

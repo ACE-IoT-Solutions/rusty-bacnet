@@ -91,10 +91,10 @@ impl<V: TransitionLevel> Engine<V> {
     pub(super) fn start(&mut self, transition: Option<Transition<V>>) {
         self.controlled = true;
         self.run = transition.map(|transition| Run::start(transition, self.step()));
-        if self.run.is_some() {
-            if let Some(waker) = &self.deadline_waker {
-                waker();
-            }
+        if self.run.is_some()
+            && let Some(waker) = &self.deadline_waker
+        {
+            waker();
         }
     }
 

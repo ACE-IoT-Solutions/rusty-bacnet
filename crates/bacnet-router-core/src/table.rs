@@ -664,10 +664,10 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// Note that a learned route carried traffic `now`. Only `last_used`
     /// moves, so traffic never keeps a route alive.
     pub fn touch(&mut self, network: u16, now: Instant) {
-        if let Some(slot) = self.slot_mut(network) {
-            if !slot.route.direct {
-                slot.route.last_used = Some(now);
-            }
+        if let Some(slot) = self.slot_mut(network)
+            && !slot.route.direct
+        {
+            slot.route.last_used = Some(now);
         }
     }
 

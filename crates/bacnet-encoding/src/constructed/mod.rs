@@ -203,17 +203,17 @@ pub fn encode_property_state(
     state: &BACnetPropertyStates,
 ) -> Result<(), Error> {
     use BACnetPropertyStates as S;
-    if let S::Other(value) = state {
-        if value.is_constructed() {
-            validate_tlv_sequence(value.data(), "proprietary property-state body")?;
-            let mut framed = BytesMut::new();
-            tags::encode_opening_tag(&mut framed, value.tag());
-            let (_, body_start) = tags::decode_tag(&framed, 0)?;
-            framed.extend_from_slice(value.data());
-            tags::encode_closing_tag(&mut framed, value.tag());
-            let (_, end) = tags::extract_context_value(&framed, body_start, value.tag())?;
-            expect_end(&framed, end, end, "proprietary property-state body")?;
-        }
+    if let S::Other(value) = state
+        && value.is_constructed()
+    {
+        validate_tlv_sequence(value.data(), "proprietary property-state body")?;
+        let mut framed = BytesMut::new();
+        tags::encode_opening_tag(&mut framed, value.tag());
+        let (_, body_start) = tags::decode_tag(&framed, 0)?;
+        framed.extend_from_slice(value.data());
+        tags::encode_closing_tag(&mut framed, value.tag());
+        let (_, end) = tags::extract_context_value(&framed, body_start, value.tag())?;
+        expect_end(&framed, end, end, "proprietary property-state body")?;
     }
     match state {
         S::BooleanValue(v) => primitives::encode_ctx_boolean(buf, 0, *v),

@@ -76,10 +76,10 @@ impl Sim {
     pub(crate) fn host_finish_request(&mut self, node: usize) {
         let master = self.master_mut(node).unwrap();
         let answering = master.core.as_ref().unwrap().state() == MasterState::AnswerDataRequest;
-        if let Some(host) = master.host.as_mut() {
-            if !answering {
-                host.request = None;
-            }
+        if let Some(host) = master.host.as_mut()
+            && !answering
+        {
+            host.request = None;
         }
     }
 }

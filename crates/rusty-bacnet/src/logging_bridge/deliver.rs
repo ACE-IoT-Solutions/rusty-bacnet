@@ -63,10 +63,10 @@ fn deliver(batch: Vec<Message>, dropped: u64) {
     // Refused once the interpreter is exiting: the batch is dropped, and a
     // flush in it sees its answer's sender go.
     let _ = py_async::attach(|py| {
-        if dropped > 0 {
-            if let Err(err) = report_dropped(py, dropped) {
-                err.write_unraisable(py, None);
-            }
+        if dropped > 0
+            && let Err(err) = report_dropped(py, dropped)
+        {
+            err.write_unraisable(py, None);
         }
         for message in batch {
             match message {

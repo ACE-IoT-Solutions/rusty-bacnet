@@ -26,13 +26,13 @@ impl<W: WebSocketPort> ScTransport<W> {
         let mut dest_vmac = [0u8; 6];
         dest_vmac.copy_from_slice(mac);
 
-        if dest_vmac != BROADCAST_VMAC {
-            if let Some(route) = self.direct_membership.route(&dest_vmac) {
-                match route.send_npdu(npdu, data_attributes).await {
-                    Ok(()) => return Ok(()),
-                    Err(super::direct_egress::DirectSendError::Unavailable) => {}
-                    Err(error) => return Err(error.into_error()),
-                }
+        if dest_vmac != BROADCAST_VMAC
+            && let Some(route) = self.direct_membership.route(&dest_vmac)
+        {
+            match route.send_npdu(npdu, data_attributes).await {
+                Ok(()) => return Ok(()),
+                Err(super::direct_egress::DirectSendError::Unavailable) => {}
+                Err(error) => return Err(error.into_error()),
             }
         }
 

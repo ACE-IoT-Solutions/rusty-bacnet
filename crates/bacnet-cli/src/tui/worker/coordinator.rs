@@ -91,11 +91,11 @@ async fn run(
     let mut generation = 0;
     let mut active = None;
     let mut exports: Vec<JoinHandle<()>> = Vec::new();
-    if let Some(plan) = &plan {
-        if !plan.await_interface {
-            generation += 1;
-            active = start(plan, generation, &sink, &options).await;
-        }
+    if let Some(plan) = &plan
+        && !plan.await_interface
+    {
+        generation += 1;
+        active = start(plan, generation, &sink, &options).await;
     }
     loop {
         tokio::select! {
@@ -110,12 +110,11 @@ async fn run(
             }
             command = commands.recv() => {
                 let Some(command) = command else { break; };
-                if active.as_ref().is_some_and(|active| active.task.is_finished()) {
-                    if let Err(error) = retire(&mut active).await {
+                if active.as_ref().is_some_and(|active| active.task.is_finished())
+                    && let Err(error) = retire(&mut active).await {
                         sink.deliver(WorkerEvent::Fatal { error }).await;
                         break;
                     }
-                }
                 match command {
                     Command::Disconnect => {
                         if let Err(error) = retire(&mut active).await {
@@ -159,11 +158,10 @@ async fn run(
                     }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
-                        if let Some(active) = &active {
-                            if let Err(error) = active.commands.try_send(command) {
+                        if let Some(active) = &active
+                            && let Err(error) = active.commands.try_send(command) {
                                 tracing::debug!("browse stop not admitted: {error}");
                             }
-                        }
                     }
                     Command::Profile(request) => {
                         let Some(profiles) = &profiles else {

@@ -37,11 +37,11 @@ impl TransportPort for ObservedBip {
         Ok(self.input_override.take().unwrap_or(real))
     }
     async fn stop(&mut self) -> Result<(), Error> {
-        if let Some(gates) = &self.gates {
-            if gates.hold_stop.load(Ordering::SeqCst) {
-                gates.stop_entered.notify_one();
-                gates.stop_release.acquire().await.unwrap().forget();
-            }
+        if let Some(gates) = &self.gates
+            && gates.hold_stop.load(Ordering::SeqCst)
+        {
+            gates.stop_entered.notify_one();
+            gates.stop_release.acquire().await.unwrap().forget();
         }
         self.bip.stop().await?;
         if let Some(gates) = &self.gates {
@@ -66,11 +66,11 @@ impl TransportPort for ObservedBip {
         self.bip.send_unicast(mac, npdu).await
     }
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        if let Some(gates) = &self.gates {
-            if gates.hold_send.load(Ordering::SeqCst) {
-                gates.send_entered.notify_one();
-                gates.send_release.acquire().await.unwrap().forget();
-            }
+        if let Some(gates) = &self.gates
+            && gates.hold_send.load(Ordering::SeqCst)
+        {
+            gates.send_entered.notify_one();
+            gates.send_release.acquire().await.unwrap().forget();
         }
         self.bip.send_broadcast(npdu).await?;
         self.sent

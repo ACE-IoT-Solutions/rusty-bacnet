@@ -294,19 +294,18 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
     for _ in 0..20 {
         tokio::task::yield_now().await;
         while let Ok(req) = wire1.try_recv() {
-            if let SendRequest::Unicast { mac, .. } = req {
-                if mac.as_slice() == [2] {
-                    forwarded = true;
-                }
+            if let SendRequest::Unicast { mac, .. } = req
+                && mac.as_slice() == [2]
+            {
+                forwarded = true;
             }
         }
         while let Ok(req) = wire0.try_recv() {
-            if let SendRequest::Unicast { npdu, .. } = req {
-                if decode_npdu(npdu).unwrap().message_type
+            if let SendRequest::Unicast { npdu, .. } = req
+                && decode_npdu(npdu).unwrap().message_type
                     == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
-                {
-                    rejected = true;
-                }
+            {
+                rejected = true;
             }
         }
         if forwarded {

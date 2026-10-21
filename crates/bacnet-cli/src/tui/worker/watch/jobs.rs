@@ -127,16 +127,16 @@ pub(crate) async fn start<T: TransportPort + 'static>(
     let mut read = reader
         .properties(point.object, Wanted::List(first_ask))
         .await;
-    if let (true, Err(Halt::Device(error))) = (named, &read) {
-        if name_may_explain(error) {
-            tracing::debug!(
-                "{}: first read failed ({error}); reading it again without Object_Name",
-                point.object
-            );
-            read = reader
-                .properties(point.object, Wanted::List(&unnamed))
-                .await;
-        }
+    if let (true, Err(Halt::Device(error))) = (named, &read)
+        && name_may_explain(error)
+    {
+        tracing::debug!(
+            "{}: first read failed ({error}); reading it again without Object_Name",
+            point.object
+        );
+        read = reader
+            .properties(point.object, Wanted::List(&unnamed))
+            .await;
     }
     let name = match &read {
         Ok((rows, _)) => crate::tui::format::object_name(rows),

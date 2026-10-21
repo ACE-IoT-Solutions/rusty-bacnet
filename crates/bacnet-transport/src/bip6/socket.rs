@@ -158,10 +158,10 @@ fn classify(selection: Option<SelectedLink>, mut received: ReceivedDatagram) -> 
         if !admits(link, &received) {
             return Inbound::OffLink;
         }
-        if let SocketAddr::V6(peer) = &mut received.peer {
-            if peer.ip().is_unicast_link_local() {
-                peer.set_scope_id(link.index);
-            }
+        if let SocketAddr::V6(peer) = &mut received.peer
+            && peer.ip().is_unicast_link_local()
+        {
+            peer.set_scope_id(link.index);
         }
     }
     Inbound::Datagram(received)

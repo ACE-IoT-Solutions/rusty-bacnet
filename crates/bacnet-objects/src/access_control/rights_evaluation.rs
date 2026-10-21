@@ -600,13 +600,13 @@ impl Scope<'_> {
     /// The decision over the gathered rules (Clause 12.34.9.2).
     fn decide(&mut self, gathered: &[Gathered]) -> AccessRightsDecision {
         for (position, rule) in enabled_rules(gathered, AccessRuleKind::Negative) {
-            if let Some(place) = self.location(rule) {
-                if self.time_range(rule) == TimeRange::True {
-                    return AccessRightsDecision::Denied {
-                        access_event: place.denial(),
-                        rule: Some(position),
-                    };
-                }
+            if let Some(place) = self.location(rule)
+                && self.time_range(rule) == TimeRange::True
+            {
+                return AccessRightsDecision::Denied {
+                    access_event: place.denial(),
+                    rule: Some(position),
+                };
             }
         }
         let mut out_of_time = None;

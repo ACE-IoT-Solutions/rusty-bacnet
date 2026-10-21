@@ -593,11 +593,11 @@ impl<S: SerialPort> Mac<'_, S> {
         core.on_deadline(self.clock.now());
         // Leaving WAIT_FOR_REPLY at a deadline without an invalid frame (a
         // timed-out partial one) is the reply timeout.
-        if let Some(invalid) = invalid {
-            if core.state() != MasterState::WaitForReply && core.counters().parser_errors == invalid
-            {
-                increment(&self.counts.wait_for_reply_timeouts);
-            }
+        if let Some(invalid) = invalid
+            && core.state() != MasterState::WaitForReply
+            && core.counters().parser_errors == invalid
+        {
+            increment(&self.counts.wait_for_reply_timeouts);
         }
     }
 

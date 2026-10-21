@@ -485,10 +485,10 @@ impl<
         let clogged = self.flows[..self.port_count]
             .get(port)
             .is_some_and(|flow| flow.clogged());
-        if let Some(origin) = self.out.current.reject_origin.as_option() {
-            if clogged {
-                self.queue_reject(origin, RejectMessageReason::ROUTER_BUSY);
-            }
+        if let Some(origin) = self.out.current.reject_origin.as_option()
+            && clogged
+        {
+            self.queue_reject(origin, RejectMessageReason::ROUTER_BUSY);
         }
     }
 

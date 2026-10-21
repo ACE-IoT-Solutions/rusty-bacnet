@@ -732,12 +732,12 @@ impl TransportPort for BipTransport {
             }
         };
 
-        if let (Some(target), Some(used)) = (&self.foreign_device, &foreign_config) {
-            if let Err(error) = target.attach(&node, used) {
-                node.stop();
-                self.client_record.stop();
-                return Err(error);
-            }
+        if let (Some(target), Some(used)) = (&self.foreign_device, &foreign_config)
+            && let Err(error) = target.attach(&node, used)
+        {
+            node.stop();
+            self.client_record.stop();
+            return Err(error);
         }
         self.client_record.attach(&node);
         self.port = local_port;

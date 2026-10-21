@@ -269,18 +269,17 @@ impl PyBipEndpoint {
             crate::client::parse_min_request_interval_ms(min_request_interval_ms)?;
         let interface_ip = parse_ipv4(interface, "interface")?;
         let broadcast = parse_ipv4(broadcast_address, "broadcast_address")?;
-        if let Some(selected) = registered_network_port {
-            if !(1..=255).contains(&selected)
+        if let Some(selected) = registered_network_port
+            && (!(1..=255).contains(&selected)
                 || selected != network_port_instance
                 || interface_ip.is_unspecified()
                 || interface_ip.is_multicast()
                 || interface_ip.is_broadcast()
-                || interface_ip == broadcast
-            {
-                return Err(PyValueError::new_err(
-                    "registered_network_port must select the declared 1..255 port on a concrete unicast interface",
-                ));
-            }
+                || interface_ip == broadcast)
+        {
+            return Err(PyValueError::new_err(
+                "registered_network_port must select the declared 1..255 port on a concrete unicast interface",
+            ));
         }
         let segmentation = parse_segmentation(segmentation);
         let service_list = parse_services(services);

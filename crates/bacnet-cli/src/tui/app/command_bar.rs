@@ -250,10 +250,8 @@ fn value(word: &Word) -> Result<(String, Option<u8>), String> {
 fn find_name(rest: &str) -> String {
     let quoted = matches!(rest.chars().next(), Some(q @ ('"' | '\''))
         if rest.len() >= 2 && rest.ends_with(q));
-    if quoted {
-        if let Ok([word]) = words::split(rest).as_deref() {
-            return word.text.clone();
-        }
+    if quoted && let Ok([word]) = words::split(rest).as_deref() {
+        return word.text.clone();
     }
     rest.to_string()
 }

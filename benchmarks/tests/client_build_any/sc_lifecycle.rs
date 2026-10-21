@@ -120,11 +120,11 @@ async fn erased_sc_preserves_heartbeat_retry_spacing_and_stop_cancels_pending_tl
                 .await
                 .unwrap()
                 .unwrap();
-            if let Message::Binary(data) = message {
-                if data[0] == 10 {
-                    events.send(0).await.unwrap();
-                    break;
-                }
+            if let Message::Binary(data) = message
+                && data[0] == 10
+            {
+                events.send(0).await.unwrap();
+                break;
             }
         }
         let (mut retry, _) = bounded(listener.accept()).await.unwrap();

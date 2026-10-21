@@ -200,13 +200,14 @@ pub(crate) struct SourceKey {
 
 impl SourceKey {
     pub(crate) fn from_parts(source_mac: &MacAddr, source_network: Option<&NpduAddress>) -> Self {
-        if let Some(net) = source_network {
-            if (1..=0xFFFE).contains(&net.network) && !net.mac_address.is_empty() {
-                return Self {
-                    network: net.network,
-                    mac: MacAddr::from_slice(&net.mac_address),
-                };
-            }
+        if let Some(net) = source_network
+            && (1..=0xFFFE).contains(&net.network)
+            && !net.mac_address.is_empty()
+        {
+            return Self {
+                network: net.network,
+                mac: MacAddr::from_slice(&net.mac_address),
+            };
         }
         Self {
             network: 0,
@@ -567,10 +568,10 @@ impl DiscoveryLimiter {
                 state.global_byte_tokens = (state.global_byte_tokens - delta).max(0.0);
             }
             let key = SourceKey::from_parts(source_mac, source_network);
-            if let Some(src) = state.sources.get_mut(&key) {
-                if self.policy.max_bytes_per_sec_per_source != usize::MAX {
-                    src.byte_tokens = (src.byte_tokens - delta).max(0.0);
-                }
+            if let Some(src) = state.sources.get_mut(&key)
+                && self.policy.max_bytes_per_sec_per_source != usize::MAX
+            {
+                src.byte_tokens = (src.byte_tokens - delta).max(0.0);
             }
         }
         if !directed {

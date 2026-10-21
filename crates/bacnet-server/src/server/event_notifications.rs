@@ -235,10 +235,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
         // Local transition actions commit before Event_Enable or DCC can suppress
         // external distribution (Clauses 13.2.2.1.4 and 13.2.5).
-        if let Some(resolved) = resolved {
-            if resolved.distribute && resolved.event_values.is_some() {
-                Self::build_and_send_event_notification_with_bindings(ctx, oid, resolved).await;
-            }
+        if let Some(resolved) = resolved
+            && resolved.distribute
+            && resolved.event_values.is_some()
+        {
+            Self::build_and_send_event_notification_with_bindings(ctx, oid, resolved).await;
         }
     }
 

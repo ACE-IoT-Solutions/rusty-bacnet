@@ -147,10 +147,9 @@ async fn failed_attempt_keeps_coordinator_available_for_corrected_interface() {
             generation: 1,
             event,
         } = event(&mut events).await
+            && matches!(*event, WorkerEvent::ConnectFailed { .. })
         {
-            if matches!(*event, WorkerEvent::ConnectFailed { .. }) {
-                break;
-            }
+            break;
         }
     }
     commands

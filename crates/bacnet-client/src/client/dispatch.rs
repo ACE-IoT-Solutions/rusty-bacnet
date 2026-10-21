@@ -367,15 +367,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     TerminalDispatchOutcome::Completion(CoordinatedCompletion::Completed(
                         CompletionOutcome::Delivered
                     ))
-                ) {
-                    if let Some(owner) = reassembly_owner {
-                        if seg_state
-                            .get(&key)
-                            .is_some_and(|state| state.owner.same_as(&owner))
-                        {
-                            seg_state.remove(&key);
-                        }
-                    }
+                ) && let Some(owner) = reassembly_owner
+                    && seg_state
+                        .get(&key)
+                        .is_some_and(|state| state.owner.same_as(&owner))
+                {
+                    seg_state.remove(&key);
                 }
             }
             Apdu::ConfirmedRequest(req) => {

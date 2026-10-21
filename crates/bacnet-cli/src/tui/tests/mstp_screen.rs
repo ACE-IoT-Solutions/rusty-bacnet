@@ -532,11 +532,11 @@ async fn the_coordinator_joins_only_on_confirmation_and_on_the_port_chosen() {
         WorkerEvent::SessionStarted { generation: 1 }
     );
     loop {
-        if let WorkerEvent::Session { event, .. } = event(&mut events).await {
-            if let WorkerEvent::ConnectFailed { error } = *event {
-                assert!(error.detail.contains(&chosen), "{error}");
-                break;
-            }
+        if let WorkerEvent::Session { event, .. } = event(&mut events).await
+            && let WorkerEvent::ConnectFailed { error } = *event
+        {
+            assert!(error.detail.contains(&chosen), "{error}");
+            break;
         }
     }
     // The failed join cleared the wait; Reconnect and Connect still refuse.

@@ -194,10 +194,10 @@ fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
             | Bvll6::ForwardedNpdu { .. }
             | Bvll6::DistributeBroadcastToNetwork { .. }
     );
-    if let Bvll6::BvlcResult { code, .. } = message {
-        if code.to_raw() != 0 {
-            link.problem = Some(format!("NAK {}", kebab(code)));
-        }
+    if let Bvll6::BvlcResult { code, .. } = message
+        && code.to_raw() != 0
+    {
+        link.problem = Some(format!("NAK {}", kebab(code)));
     }
     if let Some(npdu) = message.npdu() {
         let start = offset_in(frame, npdu);

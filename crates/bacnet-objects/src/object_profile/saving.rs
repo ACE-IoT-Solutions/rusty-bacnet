@@ -64,10 +64,10 @@ impl ProfileState {
         profile.check()?;
         // Validate first: refusal must not release another request's stage.
         self.with_storage(Storage::drop_staged);
-        if profile.tags.is_some() {
-            if let Some(saved) = &self.saved {
-                profile.tags = Some(saved.clone());
-            }
+        if profile.tags.is_some()
+            && let Some(saved) = &self.saved
+        {
+            profile.tags = Some(saved.clone());
         }
         self.profile = profile;
         self.writes = self.writes.wrapping_add(1);

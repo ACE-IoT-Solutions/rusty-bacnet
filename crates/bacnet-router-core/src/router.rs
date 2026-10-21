@@ -347,10 +347,10 @@ where
                 return Err(ConfigError::Limit(id));
             }
         }
-        if let Some(cap) = options.route_cap {
-            if usize::from(cap) > R {
-                return Err(ConfigError::RouteCap { cap, capacity: R });
-            }
+        if let Some(cap) = options.route_cap
+            && usize::from(cap) > R
+        {
+            return Err(ConfigError::RouteCap { cap, capacity: R });
         }
         if options.sweep.as_nanos() == 0 {
             return Err(ConfigError::ZeroSweep);

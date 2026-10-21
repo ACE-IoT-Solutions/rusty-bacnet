@@ -324,10 +324,10 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
             received = signals.recv() => { signal.get_or_insert(received); }
         }
     }
-    if let Some(wire) = wire {
-        if let Err(error) = wire.await {
-            app.fail(format!("packet capture failed: {error}"), 1);
-        }
+    if let Some(wire) = wire
+        && let Err(error) = wire.await
+    {
+        app.fail(format!("packet capture failed: {error}"), 1);
     }
     let (error, code) = match (result, signal) {
         (Err(error), _) => (Some(error.to_string()), 1),

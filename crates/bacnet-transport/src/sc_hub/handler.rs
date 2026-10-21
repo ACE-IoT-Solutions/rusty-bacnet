@@ -127,11 +127,11 @@ pub(super) async fn run(
             break;
         }
 
-        if let Some(registered_vmac) = lease.vmac {
-            if !registered_client_matches_sink(&clients, registered_vmac, &write).await {
-                debug!("Hub: client {peer_addr} (vmac={registered_vmac:02x?}) was superseded");
-                break;
-            }
+        if let Some(registered_vmac) = lease.vmac
+            && !registered_client_matches_sink(&clients, registered_vmac, &write).await
+        {
+            debug!("Hub: client {peer_addr} (vmac={registered_vmac:02x?}) was superseded");
+            break;
         }
 
         // This accepting hub neither initiates Connect nor waits for a
@@ -146,11 +146,11 @@ pub(super) async fn run(
         }
 
         if let Err(nak) = crate::sc_frame::validate_connect_request(&sc_msg, &data) {
-            if let Some(nak) = nak {
-                if let Err(e) = write.lock().await.send(Message::Binary(nak)).await {
-                    warn!("Hub: failed to send Connect NAK to {peer_addr}: {e}");
-                    break;
-                }
+            if let Some(nak) = nak
+                && let Err(e) = write.lock().await.send(Message::Binary(nak)).await
+            {
+                warn!("Hub: failed to send Connect NAK to {peer_addr}: {e}");
+                break;
             }
             // Preserve the existing pre-registration rejection lifecycle;
             // a malformed repeat must not retire an established connection.
@@ -165,11 +165,11 @@ pub(super) async fn run(
             &data,
             crate::sc_frame::ControlRecipient::AcceptingHub,
         ) {
-            if let Some(nak) = nak {
-                if let Err(e) = write.lock().await.send(Message::Binary(nak)).await {
-                    warn!("Hub: failed to send control NAK to {peer_addr}: {e}");
-                    break;
-                }
+            if let Some(nak) = nak
+                && let Err(e) = write.lock().await.send(Message::Binary(nak)).await
+            {
+                warn!("Hub: failed to send control NAK to {peer_addr}: {e}");
+                break;
             }
             continue;
         }
@@ -236,16 +236,13 @@ pub(super) async fn run(
                     break;
                 }
             } else {
-                match super::unknown_transit::local_nak(&sc_msg) {
-                    Some(nak) => {
-                        let mut buf = BytesMut::new();
-                        encode_sc_message(&mut buf, &nak);
-                        // Same socket only, including supplied response address metadata.
-                        // Retain the fallback's ignored immediate send error and existing
-                        // supervised retirement/absolute pre-registration deadline.
-                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-                    }
-                    _ => {}
+                if let Some(nak) = super::unknown_transit::local_nak(&sc_msg) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only, including supplied response address metadata.
+                    // Retain the fallback's ignored immediate send error and existing
+                    // supervised retirement/absolute pre-registration deadline.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
                 }
             }
             continue;
@@ -284,15 +281,12 @@ pub(super) async fn run(
                     break;
                 }
             } else {
-                match super::resolution_transit::local_nak(&sc_msg) {
-                    Some(nak) => {
-                        let mut buf = BytesMut::new();
-                        encode_sc_message(&mut buf, &nak);
-                        // Same socket only. Keep ignored immediate write failures and
-                        // the existing retirement/absolute Connect deadline owners.
-                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-                    }
-                    _ => {}
+                if let Some(nak) = super::resolution_transit::local_nak(&sc_msg) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only. Keep ignored immediate write failures and
+                    // the existing retirement/absolute Connect deadline owners.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
                 }
             }
             continue;
@@ -332,15 +326,12 @@ pub(super) async fn run(
                     break;
                 }
             } else {
-                match super::advertisement_transit::local_nak(&sc_msg, &data) {
-                    Some(nak) => {
-                        let mut buf = BytesMut::new();
-                        encode_sc_message(&mut buf, &nak);
-                        // Same socket only. Keep ignored immediate write failures and
-                        // the existing retirement/absolute Connect deadline owners.
-                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-                    }
-                    _ => {}
+                if let Some(nak) = super::advertisement_transit::local_nak(&sc_msg, &data) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only. Keep ignored immediate write failures and
+                    // the existing retirement/absolute Connect deadline owners.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
                 }
             }
             continue;
@@ -383,15 +374,12 @@ pub(super) async fn run(
                     break;
                 }
             } else {
-                match super::proprietary_transit::local_nak(&sc_msg, &data) {
-                    Some(nak) => {
-                        let mut buf = BytesMut::new();
-                        encode_sc_message(&mut buf, &nak);
-                        // Same socket only. Keep ignored immediate write failures and
-                        // the existing retirement/absolute Connect deadline owners.
-                        let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
-                    }
-                    _ => {}
+                if let Some(nak) = super::proprietary_transit::local_nak(&sc_msg, &data) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only. Keep ignored immediate write failures and
+                    // the existing retirement/absolute Connect deadline owners.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
                 }
             }
             continue;

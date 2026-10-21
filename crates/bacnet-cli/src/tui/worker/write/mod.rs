@@ -293,10 +293,10 @@ impl<'a> Runner<'a> {
         if let (Some((_, reason)), Value::Object(map)) = (&self.armed, &mut fields) {
             map.entry("session_reason").or_insert(json!(reason));
         }
-        if let Some(audit) = &self.audit {
-            if let Err(error) = audit.record(level, event, fields).await {
-                tracing::error!("{error}");
-            }
+        if let Some(audit) = &self.audit
+            && let Err(error) = audit.record(level, event, fields).await
+        {
+            tracing::error!("{error}");
         }
     }
 

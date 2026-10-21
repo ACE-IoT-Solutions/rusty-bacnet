@@ -18,10 +18,10 @@ pub(super) fn spawn<T: TransportPort + 'static>(
                     network.local_network_number().publish(state);
                 }
                 NumberControl::WhatIs => {
-                    if let Some(npdu) = number_is_reply(state) {
-                        if let Err(error) = network.transport().send_broadcast(&npdu).await {
-                            debug!(%error, "Network-Number-Is broadcast failed");
-                        }
+                    if let Some(npdu) = number_is_reply(state)
+                        && let Err(error) = network.transport().send_broadcast(&npdu).await
+                    {
+                        debug!(%error, "Network-Number-Is broadcast failed");
                     }
                 }
             }

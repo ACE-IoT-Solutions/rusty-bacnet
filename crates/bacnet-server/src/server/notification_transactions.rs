@@ -340,10 +340,10 @@ impl NotificationTransactions {
 
     #[doc(hidden)]
     pub fn observe(result: Option<Result<(), JoinError>>) {
-        if let Some(Err(error)) = result {
-            if !error.is_cancelled() {
-                tracing::warn!(%error, "Confirmed notification worker failed");
-            }
+        if let Some(Err(error)) = result
+            && !error.is_cancelled()
+        {
+            tracing::warn!(%error, "Confirmed notification worker failed");
         }
     }
 

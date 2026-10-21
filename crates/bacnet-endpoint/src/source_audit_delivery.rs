@@ -119,10 +119,10 @@ pub(super) fn admit(
     owner.spawn(async move {
         let _permit = permit;
         let sent = admit_encoded(&egress, mac, encoded, confirmed, deadline);
-        if matches!(sent, Err(EndpointEgressAdmissionError::QueueFull)) {
-            if let (Some(source), Some(owner)) = (source.upgrade(), weak_owner.upgrade()) {
-                failures::record_drop(&source, &owner, failure, timestamp);
-            }
+        if matches!(sent, Err(EndpointEgressAdmissionError::QueueFull))
+            && let (Some(source), Some(owner)) = (source.upgrade(), weak_owner.upgrade())
+        {
+            failures::record_drop(&source, &owner, failure, timestamp);
         }
         completion.finish(finish_send(sent, reserved, deadline).await);
     });

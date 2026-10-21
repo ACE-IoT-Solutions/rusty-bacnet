@@ -78,10 +78,10 @@ impl Injector {
             Vec::new(),
             None,
         );
-        if self.sent.try_send(frame).is_ok() {
-            if let Some(mac) = unicast {
-                let _ = self.unicast_macs.send(MacAddr::from_slice(mac));
-            }
+        if self.sent.try_send(frame).is_ok()
+            && let Some(mac) = unicast
+        {
+            let _ = self.unicast_macs.send(MacAddr::from_slice(mac));
         }
     }
 }
