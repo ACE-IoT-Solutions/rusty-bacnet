@@ -1041,8 +1041,9 @@ per A/C in AC, CA, AC order, using the same frozen executables and flags:
 The service and NPDU encoder results point to narrower investigation; APDU
 pairs have mixed directions. These standalone workloads use different buffer
 sizes and payload/copy arrangements from the composite, so their costs cannot
-be added to establish the composite's cause. The NPDU decode commit bracket
-and precise encode attribution remain open in
+be added to establish the composite's cause. Section 10.2 adds a bounded
+historical NPDU decode attribution; later-current-head decode differences and
+precise encode attribution remain open in
 [#1979](https://github.com/jscott3201/rusty-bacnet/issues/1979).
 
 **One hundred B/IP clients.** A sanity curve at 1, 10, 50 and 100 clients ran
@@ -1089,6 +1090,62 @@ stable throughput improvement. No OS UDP sampling or Linux repeat was needed
 to classify the observed terminal failures, and neither was performed. Causal
 attribution and any production optimization remain separate work under #1979
 and [#1978](https://github.com/jscott3201/rusty-bacnet/issues/1978).
+
+### 10.2 NPDU owned-decode attribution
+
+A separate fixed experiment brackets the historical owned-decoder transition.
+P is parent `eab0b4e7`, Q is child `a5192b89`, and R is Q with the parent's
+parsing algorithm adapted to Q's owned representation and error contract.
+Only the experimental R parser differs between Q/R; all controls live in
+scratch historical checkouts. No production parser or benchmark default changes.
+[The dataset and reproduction controls](benchmarks/results/1979-npdu/README.md)
+include full revisions, exact locks/source/binary hashes, all 54 estimates and
+5,400 samples, compiler-unit profiles, independent oracles and measured assembly.
+
+On the same Apple M5/macOS platform with Rust/Cargo 1.99.0, the predetermined
+`P Q R R Q P` order ran three times. Each complete invocation used 100 Criterion
+samples, a three-second warm-up and five-second measurement per workload. The
+original retained shared-`Bytes` clone/decode/owned-result-drop closure is
+unchanged. Untimed literal guards prepromote the retained allocation equally;
+this excludes first-clone promotion and uniquely owned input behavior. Values
+below are the median and range of six invocation medians, not pooled samples.
+
+| Workload | P median [range], ns | Q median [range], ns | R median [range], ns |
+| --- | --- | --- | --- |
+| Owned NPDU decode, 100-byte payload | 11.899 [11.839–11.940] | 14.662 [14.651–14.725] | 11.925 [11.725–12.008] |
+| Borrowed decode diagnostic | 4.513 [4.470–4.516] | 4.511 [4.506–4.513] | 4.513 [4.510–4.516] |
+| Shared buffer clone/drop diagnostic | 3.530 [3.518–3.533] | 3.531 [3.528–3.542] | 3.539 [3.528–3.549] |
+
+Pairing equal invocation ordinals gives owned Q/P median ratio 1.234
+[1.229–1.238], R/Q 0.813 [0.800–0.818], and R/P 1.000 [0.989–1.010].
+The historical child is consistently slower; the direct-parser control returns
+to the parent's range while retaining Q's ABI. Standalone borrowed decode and
+clone/drop paired medians remain near one. Their diagnostic costs cannot be
+added or subtracted to assign an owned-reconstruction cost.
+
+In the actual measured Q executable, the owned adapter calls the borrowed
+decoder out of line, materializes its 88-byte result and reconstructs the
+128-byte owned result. R parses directly into the same Q result/error types.
+Q/R's successful caller instructions match after relocation normalization, and
+both retain slice-related ownership bookkeeping. Owned decoder stack reservations
+are 336/368/304 bytes for P/Q/R. P's error representation differs from Q/R despite
+equal owned-result size, so P/Q alone is not an ABI-controlled comparison.
+
+This supports a bounded attribution to the compiled borrowed-view/owned-adapter
+strategy under Q's representation, rather than a causal claim about one call,
+layout or instruction. Code placement also changes with the direct parser. All
+variants passed 688 codec tests and 21 doctests, plus independent literal/error
+oracles (4 tests on P, 7 on Q/R); all timed invocations succeeded. The earlier
+preparation-only test-wrapper failure is preserved in provenance. This does not
+establish arbitrary-packet equivalence or a current-head production optimization.
+
+The earlier current-stack value of 16.061 ns in section 10.1 came from a different
+revision and experiment. Historical Q's 14.662 ns does not explain that entire
+gap, and subtracting the datasets would not quantify a later residual. Later
+current-head decode changes, full ReadProperty encoding attribution and admission
+refusal frequency remain open under
+[#1979](https://github.com/jscott3201/rusty-bacnet/issues/1979). This PR contains
+no production tuning, extra timing bracket or cross-platform performance claim.
 
 ## 11. How to reproduce
 
