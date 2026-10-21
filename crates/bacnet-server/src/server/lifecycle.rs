@@ -154,6 +154,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 confirmed_event_repeats: Arc::default(),
                 received_event_log: Arc::default(),
                 mutation_decisions: Arc::clone(&mutation_decisions),
+                warnings: Arc::default(),
                 config: Arc::clone(&config_dispatch),
             },
             confirmed_request_tracker: Arc::clone(&confirmed_request_tracker),
@@ -172,7 +173,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let mut notifications_open = true;
             let mut ingress_open = true;
             // A peer's flood warns once per interval, the rest at debug (#1950).
-            let (decode_warning, segment_warning) = <(WarnThrottle, WarnThrottle)>::default();
+            let warnings = Arc::clone(&dispatch_context.services.warnings);
+            let (decode_warning, segment_warning) = (&warnings.decode, &warnings.segment);
 
             // While ingress is open, finished handlers are joined at the top
             // of each turn, not awaited below (IdleReap, #1713).
@@ -373,6 +375,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 state,
                                                 req.invoke_id,
                                                 seq,
+                                                segment_warning,
                                             );
                                     } else {
                                         // In-order NEW segment: duplicates
@@ -608,7 +611,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 .await;
                                             }
                                             Err(e) => {
-                                                warn!(
+                                                warn_throttled!(
+                                                    segment_warning,
                                                     error = %e,
                                                     "Failed to reassemble segmented request"
                                                 );

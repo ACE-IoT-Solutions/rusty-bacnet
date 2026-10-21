@@ -69,9 +69,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 match handle.segment_ack_tx.try_send(ack) {
                     Ok(()) => true,
                     Err(mpsc::error::TrySendError::Full(_)) => {
-                        warn!(
+                        warn_throttled!(
+                            seg_ack_senders.warning,
                             invoke_id,
-                            seq, "Dropping SegmentAck because segmented-send queue is full"
+                            seq,
+                            "Dropping SegmentAck because segmented-send queue is full"
                         );
                         true
                     }

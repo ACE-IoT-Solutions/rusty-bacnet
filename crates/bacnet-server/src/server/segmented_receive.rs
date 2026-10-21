@@ -350,10 +350,12 @@ pub(super) fn reassembled_confirmed_request(
 }
 
 /// Apply the Clause 5.4.5.2 duplicate or out-of-order receive transition.
+/// Its warnings go through `warning`, the server's segment throttle (#1950).
 pub(super) fn classify_non_next_segment(
     state: &mut SegmentedRequestState,
     invoke_id: u8,
     sequence_number: u8,
+    warning: &WarnThrottle,
 ) -> Option<SegmentAckPdu> {
     let is_duplicate = duplicate_in_window(
         sequence_number,
@@ -372,13 +374,15 @@ pub(super) fn classify_non_next_segment(
     }
 
     if is_duplicate {
-        warn!(
+        warn_throttled!(
+            warning,
             invoke_id,
             seq = sequence_number,
             "Duplicate allowance exhausted, sending negative SegmentAck"
         );
     } else {
-        warn!(
+        warn_throttled!(
+            warning,
             invoke_id,
             expected = state.expected_seq,
             received = sequence_number,

@@ -54,8 +54,9 @@ pub use tracing as __tracing;
 /// `occurrences` field counting the occurrences since the last warning (this
 /// one included), at most once per [`WARNING_INTERVAL`], and at debug level
 /// otherwise. The first argument is the throttle, or a reference to it; the
-/// rest are fields and a message, as `tracing::warn!` takes them. The
-/// event's target is the caller's module. Evaluates to what
+/// rest are fields and a message, written as `tracing::warn!` takes them.
+/// `target:` and `parent:` aren't accepted: the event's target is the
+/// caller's module. Evaluates to what
 /// [`WarnThrottle::note`] returned, so a test can see whether it warned.
 ///
 /// ```

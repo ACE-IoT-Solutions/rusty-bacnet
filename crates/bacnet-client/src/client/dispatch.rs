@@ -28,6 +28,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             i_have_tx,
             seg_ack_senders,
             decode_warning,
+            response_warning,
         } = context;
         let InboundApdu {
             source_mac,
@@ -97,7 +98,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 .await
                 {
                     TerminalDispatchOutcome::Completion(outcome) => {
-                        log_coordinated_mismatch(&outcome, ack.invoke_id, "SimpleAck");
+                        log_coordinated_mismatch(
+                            &outcome,
+                            ack.invoke_id,
+                            "SimpleAck",
+                            response_warning,
+                        );
                     }
                     TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
                         Self::send_client_abort(
@@ -121,6 +127,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             mac: source_mac,
                             network: source_network,
                             provenance,
+                            warning: response_warning,
                         },
                         ack,
                         limits,
@@ -174,7 +181,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     .await
                     {
                         TerminalDispatchOutcome::Completion(outcome) => {
-                            log_coordinated_mismatch(&outcome, ack.invoke_id, "ComplexAck");
+                            log_coordinated_mismatch(
+                                &outcome,
+                                ack.invoke_id,
+                                "ComplexAck",
+                                response_warning,
+                            );
                         }
                         TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
                             Self::send_client_abort(

@@ -569,6 +569,9 @@ pub struct BACnetClient<T: TransportPort> {
     /// The dispatch task's decode-warning throttle, for tests to read.
     #[cfg(test)]
     decode_warning: Arc<WarnThrottle>,
+    /// The dispatch task's response-warning throttle, for tests to read.
+    #[cfg(test)]
+    response_warning: Arc<WarnThrottle>,
     local_mac: MacAddr,
     routed_path_limits: Arc<RoutedPathLimits>,
     /// See [`Self::group_source_request_drops`].

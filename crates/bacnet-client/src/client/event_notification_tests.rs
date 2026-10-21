@@ -22,6 +22,9 @@ const SUFFIX: &[u8] = &[
 const PEER: &[u8] = &[0x12];
 const INVOKE: u8 = 37;
 
+#[path = "response_warning_tests.rs"]
+mod response_warnings;
+
 fn remote() -> Option<NpduAddress> {
     Some(NpduAddress {
         network: 200,

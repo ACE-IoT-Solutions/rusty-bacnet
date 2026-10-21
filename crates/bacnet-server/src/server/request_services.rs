@@ -24,7 +24,23 @@ pub(super) struct RequestServices<T: TransportPort + 'static> {
     pub(super) confirmed_event_repeats: Arc<super::event_forwarding_repeats::ConfirmedEventRepeats>,
     pub(super) received_event_log: Arc<super::received_event_log::ReceivedEventLog>,
     pub(super) mutation_decisions: Arc<crate::mutation::MutationDecisions>,
+    /// The server's throttles on warnings a peer can set off.
+    pub(super) warnings: Arc<InboundWarnings>,
     pub(super) config: Arc<ServerConfig>,
+}
+
+/// The server's throttles on warnings a peer can set off once per packet
+/// (#1950), one set per server: each warns at most once per
+/// [`WARNING_INTERVAL`](bacnet_transport::warn_throttle::WARNING_INTERVAL)
+/// with the occurrences since the last warning, and the rest log at debug.
+#[derive(Debug, Default)]
+pub(super) struct InboundWarnings {
+    /// APDUs and unconfirmed requests that fail to decode.
+    pub(super) decode: WarnThrottle,
+    /// Segmented requests refused, or received out of order.
+    pub(super) segment: WarnThrottle,
+    /// I-Am observations ignored because the device binding table is full.
+    pub(super) binding_capacity: WarnThrottle,
 }
 
 impl<T: TransportPort + 'static> Clone for RequestServices<T> {
@@ -46,6 +62,7 @@ impl<T: TransportPort + 'static> Clone for RequestServices<T> {
             confirmed_event_repeats: Arc::clone(&self.confirmed_event_repeats),
             received_event_log: Arc::clone(&self.received_event_log),
             mutation_decisions: Arc::clone(&self.mutation_decisions),
+            warnings: Arc::clone(&self.warnings),
             config: Arc::clone(&self.config),
         }
     }
@@ -72,6 +89,8 @@ pub(super) struct UnconfirmedServices<T: TransportPort + 'static> {
     pub(super) tasks: request_tasks::RequestTaskSpawner,
     /// Counts the WriteGroup Channel-write decisions (#1319).
     pub(super) mutation_decisions: Arc<crate::mutation::MutationDecisions>,
+    /// The server's throttles on warnings a peer can set off.
+    pub(super) warnings: Arc<InboundWarnings>,
 }
 
 /// Everything the dispatch loop hands to [`BACnetServer::dispatch`]: the
@@ -106,6 +125,7 @@ impl<T: TransportPort + 'static> DispatchContext<T> {
             cov_in_flight: Arc::clone(&self.services.cov_in_flight),
             tasks: self.request_tasks.spawner(),
             mutation_decisions: Arc::clone(&self.services.mutation_decisions),
+            warnings: Arc::clone(&self.services.warnings),
         }
     }
 }
@@ -187,6 +207,7 @@ impl<T: TransportPort + 'static> RequestServices<T> {
             confirmed_event_repeats: Arc::default(),
             received_event_log: Arc::default(),
             mutation_decisions: Arc::new(crate::mutation::MutationDecisions::default()),
+            warnings: Arc::default(),
             config: config.into(),
         }
     }
@@ -235,6 +256,7 @@ impl<T: TransportPort + 'static> UnconfirmedServices<T> {
             cov_table: Arc::new(RwLock::new(CovSubscriptionTable::new())),
             cov_in_flight: Arc::new(Semaphore::new(1)),
             tasks: Arc::new(request_tasks::RequestTasks::default()).spawner(),
+            warnings: Arc::default(),
         }
     }
 }
@@ -271,6 +293,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             confirmed_event_repeats: Arc::default(),
             received_event_log: Arc::default(),
             mutation_decisions: Arc::clone(&self.mutation_decisions),
+            warnings: Arc::default(),
             config: Arc::clone(&self.config),
         }
     }
@@ -294,6 +317,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             cov_in_flight: Arc::clone(&self.cov_in_flight),
             tasks: self.request_tasks.spawner(),
             mutation_decisions: Arc::clone(&self.mutation_decisions),
+            warnings: Arc::default(),
         }
     }
 
