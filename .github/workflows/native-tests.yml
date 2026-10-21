@@ -12,8 +12,9 @@ name: Native tests
 #
 # It runs on every PR to dev or main, on pushes to them (merges), whose runs
 # save the caches PRs restore, and by hand. Tag pushes don't run it. On a
-# push to dev, Plan skips both jobs when the merge has its PR head's tree,
-# Native OK passed on that head and no cache-key input changed; Native OK
+# push to dev, Plan skips both jobs when the merge could have been a
+# fast-forward to its PR head, whose own run of this workflow (testing that
+# same tree) passed Native OK, and no cache-key input changed; Native OK
 # still passes then (#1466; scripts/ci/plan-skip.sh).
 
 on:
@@ -60,7 +61,9 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # Workflow runs, check runs and the compare API, read only.
     permissions:
+      actions: read
       checks: read
       contents: read
     outputs:
@@ -71,11 +74,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      - name: Skip if the PR head already passed this tree
+      - name: Skip if the PR's run already tested this tree
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci/plan-skip.sh "Native OK"
+        run: bash scripts/ci/plan-skip.sh "Native OK" .github/workflows/native-tests.yml
 
   tests:
     name: Tests (${{ matrix.name }})
@@ -335,7 +338,7 @@ jobs:
   # reports, the same pattern as ci.yml's CI OK. A skipped job fails it, unless
   # plan succeeded and said skip (#1466): then it still runs and passes, so a
   # skipped merge's commit shows Native OK green like any other, as its tree
-  # is the PR head's, where Native OK passed. Plan's own result counts for
+  # is the one the PR's run tested. Plan's own result counts for
   # nothing else: if it failed, the native jobs ran.
   native-ok:
     name: Native OK
@@ -350,7 +353,7 @@ jobs:
         run: |
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$NEEDS" | jq -r 'if .plan.result == "success" and .plan.outputs.skip == "true"
-            then "plan: skipped the native jobs; the PR head passed this tree" else empty end'
+            then "plan: skipped the native jobs; the PR run tested this tree" else empty end'
           echo "$NEEDS" | jq -e '(.plan.result == "success" and .plan.outputs.skip == "true") as $planned
             | all(to_entries[] | select(.key != "plan");
               .value.result == "success" or (.value.result == "skipped" and $planned))' >/dev/null

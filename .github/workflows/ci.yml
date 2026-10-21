@@ -32,8 +32,9 @@ name: CI
 # Prune caches deletes the entries no run will restore again, so the Linux and
 # native caches stay under the repository's 10 GB (#1471).
 #
-# Plan — pushes to dev only: when the merge has its PR head's tree, CI OK
-#        passed on that head and no cache-key input changed, the Lean jobs
+# Plan — pushes to dev only: when the merge could have been a fast-forward
+#        to its PR head, the PR's own ci.yml run tested that same tree, so
+#        if its CI OK passed and no cache-key input changed, the Lean jobs
 #        skip and CI OK still passes (#1466; scripts/ci/plan-skip.sh).
 
 on:
@@ -91,7 +92,9 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # Workflow runs, check runs and the compare API, read only.
     permissions:
+      actions: read
       checks: read
       contents: read
     outputs:
@@ -102,11 +105,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      - name: Skip if the PR head already passed this tree
+      - name: Skip if the PR's run already tested this tree
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci/plan-skip.sh "CI OK"
+        run: bash scripts/ci/plan-skip.sh "CI OK" .github/workflows/ci.yml
 
   lint:
     name: Lint
@@ -500,7 +503,7 @@ jobs:
       # Only the Heavy jobs may be skipped, by their tier; a skipped Lean job
       # fails it, unless plan succeeded and said skip (#1466). Then this job
       # still runs and passes, so a skipped merge's commit shows CI OK green
-      # like any other: its tree is the PR head's, where CI OK passed. Plan's
+      # like any other: its tree is the one the PR's run tested. Plan's
       # own result counts for nothing else: if it failed, the Lean jobs ran.
       - name: All required jobs succeeded or were skipped by tier or plan
         env:
@@ -508,7 +511,7 @@ jobs:
         run: |
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$NEEDS" | jq -r 'if .plan.result == "success" and .plan.outputs.skip == "true"
-            then "plan: skipped the Lean jobs; the PR head passed this tree" else empty end'
+            then "plan: skipped the Lean jobs; the PR run tested this tree" else empty end'
           echo "$NEEDS" | jq -e '(.plan.result == "success" and .plan.outputs.skip == "true") as $planned
             | all(to_entries[] | select(.key != "plan");
               .value.result == "success"

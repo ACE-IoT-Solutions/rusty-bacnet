@@ -39,7 +39,7 @@ when their tier skips them; a skipped Lean job fails it.
 change `website/**`.
 
 Merge pushes to `dev` run the Lean jobs, for two reasons (#904), unless
-the merge's tree was already tested on its PR head
+the merge could have been a fast-forward, so the PR's runs tested its tree
 ([Skipping identical merge runs](#skipping-identical-merge-runs)).
 
 - **Caches.** Only runs on `dev` save the Rust caches. A cache saved by a
@@ -130,33 +130,55 @@ about them.
 
 ### Skipping identical merge runs
 
-A merge whose PR head already contained `dev`'s tip has exactly the head's
-tree, which both workflows tested on the PR. So on a push to `dev`, a
-**Plan** job in each workflow
+A PR run tests `refs/pull/<n>/merge`: the head merged with `dev` as `dev`
+stood when the run started. When the PR head already contains `dev`'s
+current tip, so that the `--no-ff` merge could have been a fast-forward,
+every `dev` a PR run used is in the head's history (`dev` only moves
+forward), each of those runs tested exactly the head's tree, and the merge
+has that tree too. So on a push to `dev`, a **Plan** job in each workflow
 ([`scripts/ci/plan-skip.sh`](../scripts/ci/plan-skip.sh), #1466) checks out
 the merge with both parents and skips the rest of that workflow when all of
 these hold:
 
-- the commit is a merge, and its tree equals its second parent's (the PR
-  head);
-- that workflow's aggregate, `CI OK` in `ci.yml` and `Native OK` in
-  `native-tests.yml`, passed on the PR head: the newest GitHub Actions check
-  run of that name there concluded `success`;
+- the commit merges exactly two parents, and its tree equals the second's
+  (the PR head);
+- the first parent, `dev` before the merge, is an ancestor of the PR head
+  (the compare API's `behind_by` is 0). Tree equality alone isn't enough: a
+  commit on `dev` that a PR run merged in and that `dev` then reverted would
+  be in the tested tree but not in the merge's;
+- in the newest `pull_request` run of that same workflow file on the PR head
+  from this repository, the aggregate (`CI OK` in `ci.yml`, `Native OK` in
+  `native-tests.yml`) concluded `success`, its latest attempt counting;
 - nothing that feeds a rust-cache key changed since the first parent: any
-  `Cargo.lock` or `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`,
-  anything under `.github/` (the feature lists and other key variables live
-  in the workflows and the pins) and `scripts/ci/local-macos.sh` (the native
-  feature list). When a key moves, the merge run saves the new caches PRs
-  restore.
+  `Cargo.lock` or `Cargo.toml`, `rust-toolchain` or `rust-toolchain.toml`,
+  `.cargo/config` or `.cargo/config.toml`, anything under `.github/` (the
+  feature lists and other key variables live in the workflows and the pins)
+  and `scripts/ci/local-macos.sh` (the native feature list). This condition
+  is about caches only; the first two make a skip correct. When a key moves,
+  the merge run saves the new caches PRs restore.
 
 The aggregate still runs and passes when Plan skips, so the merge commit
 shows `CI OK` and `Native OK` green, and Prune caches still runs after it. A
 job skipped for any other reason still fails the aggregate. Any other event
 (PRs, `main`, tags, the schedule, manual runs) skips Plan itself and runs
-everything, and so does a merge that was behind `dev` (a different tree), a
-red, missing or still running aggregate on the PR head, or any error in
-Plan, such as a failed API call. Plan's job summary and log give the reason.
-Its token has `checks: read` and `contents: read` only.
+everything, and so does a merge that was behind `dev`, an octopus merge, a
+red, missing or still running aggregate, or any error in Plan, such as a
+failed API call. Plan's job summary and log give the reason. Its token has
+`actions: read`, `checks: read` and `contents: read` only.
+
+Limits:
+
+- **Evicted caches.** A skipped merge saves no caches. If GitHub evicted
+  `dev`'s entries (the 10 GB cap, or seven days unused), PRs build cold until
+  a merge that runs, or the weekly `ci.yml` run, saves them again;
+  `native-tests.yml` has no scheduled run. The same holds when a runner image
+  update changes the toolchains in the native jobs' key, which no diff sees.
+- **A PR into `main` from the same commit.** GitHub empties a run's
+  `pull_requests` once its PR merges, so Plan can't tell runs by their PR's
+  base. If the PR head was also the head of a PR into `main` and that run is
+  the newer one, its result counts, though it tested a merge with `main`.
+  Release flow PRs into `main` have `dev`'s tip as their head, which is never
+  a later `dev` merge's second parent.
 
 ### Samples
 
@@ -1064,9 +1086,10 @@ runs even when a job failed or was cancelled, so it always reports, like
 reads.
 
 **Trigger.** Every PR to `dev` or `main`, every push to them (merges), and a
-manual dispatch. Tag pushes don't run it. A merge to `dev` that has its PR
-head's tree, where `Native OK` passed, skips the four jobs as `ci.yml` skips
-its Lean ones ([Skipping identical merge runs](#skipping-identical-merge-runs)).
+manual dispatch. Tag pushes don't run it. A merge to `dev` that could have
+been a fast-forward to a PR head whose run passed `Native OK` skips the four
+jobs as `ci.yml` skips its Lean ones
+([Skipping identical merge runs](#skipping-identical-merge-runs)).
 
 **Steps.** `NATIVE_FEATURES` is the `features=` list in
 [`scripts/ci/local-macos.sh`](../scripts/ci/local-macos.sh), which the

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # plan-skip.sh regressions (#1466), in a throwaway repository with a stub for
-# gh's check-runs call. No network.
+# gh's API calls. No network.
 set -euo pipefail
 
 plan="$(cd "$(dirname "$0")" && pwd)/plan-skip.sh"
@@ -10,47 +10,82 @@ export GIT_CEILING_DIRECTORIES=$fixture
 trap 'rm -rf "$fixture"' EXIT
 cd "$fixture"
 
-# The stub prints $STUB_JSON, or fails when it is unset, and logs its
-# arguments so the tests can check the query.
+# The stub answers by endpoint: compare with $STUB_COMPARE, workflow runs
+# with $STUB_RUNS and a check suite's check runs with $STUB_CHECKS, each
+# printed as given (several JSON documents stand for --paginate's pages), or
+# fails when that variable is empty. It applies --jq as gh would and logs
+# its arguments so the tests can check the queries.
 cat >stub-gh <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB_LOG"
-[ -n "${STUB_JSON:-}" ] || { echo "HTTP 502" >&2; exit 1; }
-printf '%s\n' "$STUB_JSON"
+filter='' url=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --jq) filter=$2; shift 2 ;;
+    api | --paginate) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+case $url in
+  */compare/*) body=${STUB_COMPARE:-} ;;
+  */actions/runs\?*) body=${STUB_RUNS:-} ;;
+  */check-suites/*/check-runs\?*) body=${STUB_CHECKS:-} ;;
+  *) body='' ;;
+esac
+[ -n "$body" ] || { echo "HTTP 502" >&2; exit 1; }
+if [ -n "$filter" ]; then jq -r "$filter" <<<"$body"; else printf '%s\n' "$body"; fi
 EOF
 chmod +x stub-gh
 export PLAN_SKIP_GH=$fixture/stub-gh STUB_LOG=$fixture/gh.log
 export GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/dev GITHUB_REPOSITORY=owner/repo
 export GITHUB_OUTPUT=$fixture/output GITHUB_STEP_SUMMARY=$fixture/summary
 
-green='{"check_runs":[{"id":1,"started_at":"2026-10-20T10:00:00Z","conclusion":"success","app":{"slug":"github-actions"}}]}'
-red='{"check_runs":[{"id":1,"started_at":"2026-10-20T10:00:00Z","conclusion":"failure","app":{"slug":"github-actions"}}]}'
-none='{"check_runs":[]}'
-# A failed attempt, then a green re-run.
-rerun='{"check_runs":[{"id":2,"started_at":"2026-10-20T11:00:00Z","conclusion":"success","app":{"slug":"github-actions"}},{"id":1,"started_at":"2026-10-20T10:00:00Z","conclusion":"failure","app":{"slug":"github-actions"}}]}'
-# A green run, then a re-run still in progress.
-pending='{"check_runs":[{"id":1,"started_at":"2026-10-20T10:00:00Z","conclusion":"success","app":{"slug":"github-actions"}},{"id":2,"started_at":"2026-10-20T11:00:00Z","conclusion":null,"app":{"slug":"github-actions"}}]}'
-# Another app's check run with the same name.
-other_app='{"check_runs":[{"id":1,"started_at":"2026-10-20T10:00:00Z","conclusion":"success","app":{"slug":"someone-else"}}]}'
+# run <path> <event> <head repository> <started> <check suite id>: one
+# workflow run object.
+run() {
+  printf '{"path":"%s","event":"%s","head_repository":{"full_name":"%s"},"run_started_at":"%s","id":%s,"check_suite_id":%s,"pull_requests":[]}' \
+    "$1" "$2" "$3" "$4" "$5" "$5"
+}
+runs() { local IFS=,; echo "{\"workflow_runs\":[$*]}"; }
+ci_run=$(run .github/workflows/ci.yml pull_request owner/repo 2026-10-20T10:00:00Z 11)
+native_run=$(run .github/workflows/native-tests.yml pull_request owner/repo 2026-10-20T10:00:00Z 22)
+# check <conclusion> <started> <id> [app]: one check run object.
+check() {
+  local conclusion=\"$1\"
+  [ "$1" = null ] && conclusion=null
+  printf '{"id":%s,"started_at":"%s","conclusion":%s,"app":{"slug":"%s"}}' "$3" "$2" "$conclusion" "${4:-github-actions}"
+}
+checks() { local IFS=,; echo "{\"check_runs\":[$*]}"; }
 
+good_compare='{"behind_by":0,"ahead_by":1,"status":"ahead"}'
+good_runs=$(runs "$ci_run" "$native_run")
+green=$(checks "$(check success 2026-10-20T10:00:00Z 1)")
+export STUB_COMPARE=$good_compare STUB_RUNS=$good_runs STUB_CHECKS=$green
+
+cases=0
 fail() {
   echo "FAIL: plan-skip regression: $1" >&2
   [ -f result.log ] && cat result.log >&2
   exit 1
 }
 
-# expect <true|false> <case> [check name]: runs plan-skip.sh in repo/ and
-# checks the one skip= line it wrote and that it exited 0.
+# expect <true|false> <case> [check name] [workflow]: runs plan-skip.sh in
+# repo/ and checks the one skip= line it wrote and that it exited 0.
 expect() {
   : >"$GITHUB_OUTPUT"
   : >"$GITHUB_STEP_SUMMARY"
   : >"$STUB_LOG"
-  (cd repo && bash "$plan" "${3:-CI OK}") >result.log 2>&1 || fail "$2: exited non-zero"
+  (cd repo && bash "$plan" "${3:-CI OK}" "${4:-.github/workflows/ci.yml}") >result.log 2>&1 \
+    || fail "$2: exited non-zero"
   [ "$(cat "$GITHUB_OUTPUT")" = "skip=$1" ] || fail "$2: expected skip=$1, wrote '$(cat "$GITHUB_OUTPUT")'"
   grep -q "^skip=$1: " result.log || fail "$2: no log line"
   grep -q '^### Plan: ' "$GITHUB_STEP_SUMMARY" || fail "$2: no summary"
+  cases=$((cases + 1))
   echo "ok: $2 -> skip=$1"
 }
+# reason <text>: the last case's log names it.
+reason() { grep -qF -- "$1" result.log || fail "reason should say '$1'"; }
+queried() { grep -qF -- "$1" "$STUB_LOG" || fail "no query with '$1'"; }
 
 # A dev history with a crate, then a PR branch off it.
 reset_repo() {
@@ -81,32 +116,65 @@ merge_pr() {
   (cd repo && git checkout -q dev && git merge -q --no-ff --no-edit pr)
 }
 
-# A PR that changes only code, updated to dev's tip, then merged: the merge
-# tree is the PR head's.
+# A PR that changes only code, up to date with dev, then merged: the merge
+# could have been a fast-forward.
 reset_repo
 pr_commit crates/a/src/main.rs '// change'
 merge_pr
-export STUB_JSON=$green
-expect true 'tree-equal merge, green CI OK on HEAD^2'
+expect true 'tree-equal descendant merge, green CI OK on HEAD^2'
+first=$(cd repo && git rev-parse 'HEAD^1')
 pr_head=$(cd repo && git rev-parse 'HEAD^2')
-grep -qF "api repos/owner/repo/commits/$pr_head/check-runs?check_name=CI%20OK&filter=all&per_page=100" "$STUB_LOG" \
-  || fail 'query names HEAD^2 and the encoded check name'
-expect true 'Native OK is the check native-tests.yml names' 'Native OK'
-grep -qF 'check_name=Native%20OK' "$STUB_LOG" || fail 'Native OK query'
+queried "repos/owner/repo/compare/$first...$pr_head"
+queried "--paginate repos/owner/repo/actions/runs?head_sha=$pr_head&event=pull_request&per_page=100"
+queried "--paginate repos/owner/repo/check-suites/11/check-runs?check_name=CI%20OK&filter=latest&per_page=100"
 grep -qF 'Plan: skip the heavy jobs' "$GITHUB_STEP_SUMMARY" || fail 'skip summary'
+expect true 'Native OK reads native-tests.yml'"'"'s run' 'Native OK' .github/workflows/native-tests.yml
+queried 'check-suites/22/check-runs?check_name=Native%20OK'
 
-STUB_JSON=$rerun expect true 'a failed attempt, then a green re-run'
-STUB_JSON=$red expect false 'red aggregate on HEAD^2'
-grep -qF 'CI OK on the PR head' result.log || fail 'red reason names the check'
-grep -qF 'is failure' result.log || fail 'red reason'
-STUB_JSON=$none expect false 'missing aggregate on HEAD^2'
-grep -qF 'is missing' result.log || fail 'missing reason'
-STUB_JSON=$pending expect false 'newest aggregate run still in progress'
-STUB_JSON=$other_app expect false 'same-named check from another app'
-grep -qF 'is missing' result.log || fail 'other-app reason'
-STUB_JSON='not json' expect false 'unparseable check-runs response'
-STUB_JSON='' expect false 'check-runs API call fails'
-grep -qF 'Could not read the check runs' result.log || fail 'API failure reason'
+# Ancestry: dev's tip before the merge must be in the PR head's history.
+STUB_COMPARE='{"behind_by":2,"ahead_by":1,"status":"diverged"}' \
+  expect false 'PR head not a descendant of dev (trees equal)'
+reason 'not a descendant'
+STUB_COMPARE='' expect false 'compare API call fails'
+reason 'Could not compare'
+STUB_COMPARE='{"status":"ahead"}' expect false 'compare response without behind_by'
+
+# Which workflow run counts.
+STUB_RUNS=$(runs "$native_run") expect false 'only another workflow ran on HEAD^2'
+reason 'No pull_request run of .github/workflows/ci.yml'
+STUB_RUNS=$(runs "$(run .github/workflows/ci.yml pull_request fork/repo 2026-10-20T10:00:00Z 11)") \
+  expect false 'only a fork'"'"'s run'
+STUB_RUNS=$(runs "$(run .github/workflows/ci.yml push owner/repo 2026-10-20T10:00:00Z 11)") \
+  expect false 'only a push run'
+STUB_RUNS='{"workflow_runs":[]}' expect false 'no runs on HEAD^2'
+STUB_RUNS=$(runs "$ci_run" "$(run .github/workflows/ci.yml pull_request owner/repo 2026-10-20T12:00:00Z 33)") \
+  expect true 'the newest of two runs counts'
+queried 'check-suites/33/check-runs'
+# --paginate prints one JSON document per page.
+STUB_RUNS="$(runs "$native_run")
+$(runs "$ci_run")" expect true 'the run is on the second page'
+queried 'check-suites/11/check-runs'
+STUB_RUNS='' expect false 'workflow runs API call fails'
+STUB_RUNS='not json' expect false 'unparseable workflow runs'
+
+# The aggregate's check run in that run.
+STUB_CHECKS=$(checks "$(check failure 2026-10-20T10:00:00Z 1)") expect false 'red aggregate on HEAD^2'
+reason 'CI OK on the PR head'
+reason 'is failure'
+STUB_CHECKS='{"check_runs":[]}' expect false 'missing aggregate on HEAD^2'
+reason 'is missing'
+STUB_CHECKS=$(checks "$(check success 2026-10-20T11:00:00Z 2)" "$(check failure 2026-10-20T10:00:00Z 1)") \
+  expect true 'a failed attempt, then a green re-run'
+STUB_CHECKS=$(checks "$(check success 2026-10-20T10:00:00Z 1)" "$(check null 2026-10-20T11:00:00Z 2)") \
+  expect false 'newest aggregate run still in progress'
+STUB_CHECKS=$(checks "$(check success 2026-10-20T10:00:00Z 1 someone-else)") \
+  expect false 'same-named check from another app'
+reason 'is missing'
+STUB_CHECKS="$(checks "$(check success 2026-10-20T10:00:00Z 1)")
+$(checks "$(check failure 2026-10-20T11:00:00Z 2)")" expect false 'a newer red attempt on the second page'
+STUB_CHECKS='not json' expect false 'unparseable check runs'
+STUB_CHECKS='' expect false 'check runs API call fails'
+reason 'Could not read the check runs'
 grep -qF 'Plan: run every job' "$GITHUB_STEP_SUMMARY" || fail 'run summary'
 
 GITHUB_EVENT_NAME=pull_request expect false 'pull_request event'
@@ -122,24 +190,33 @@ pr_commit crates/a/src/main.rs '// change'
 (cd repo && git checkout -q dev && echo '// dev moved' >>crates/a/src/lib.rs && git add -A && git commit -q -m 'dev moves')
 merge_pr
 expect false 'behind merge (trees differ)'
-grep -qF 'different tree' result.log || fail 'behind reason'
+reason 'different tree'
 [ ! -s "$STUB_LOG" ] || fail 'behind merge must not call the API'
 
 # A plain commit pushed to dev.
 reset_repo
 (cd repo && git checkout -q dev && echo '// direct' >>crates/a/src/main.rs && git commit -q -am direct)
 expect false 'non-merge push'
-grep -qF 'is not a merge commit' result.log || fail 'non-merge reason'
+reason 'is not a merge commit'
+
+# An octopus merge whose tree equals its second parent's.
+reset_repo
+pr_commit crates/a/src/main.rs '// change'
+(cd repo && git checkout -q -b empty dev && git commit -q --allow-empty -m empty \
+  && git checkout -q dev && git merge -q --no-ff --no-edit pr empty) >/dev/null
+expect false 'octopus merge'
+reason 'more than two parents'
 
 # Tree-equal merges whose PR changed a cache-key input.
-for input in Cargo.lock crates/a/Cargo.toml rust-toolchain.toml .cargo/config.toml \
-  .github/workflows/ci.yml .github/ci-pins.env scripts/ci/local-macos.sh; do
+for input in Cargo.lock crates/a/Cargo.toml rust-toolchain rust-toolchain.toml \
+  .cargo/config .cargo/config.toml .github/workflows/ci.yml .github/ci-pins.env \
+  scripts/ci/local-macos.sh; do
   reset_repo
   (cd repo && mkdir -p "$(dirname "$input")")
   pr_commit "$input" 'changed = true'
   merge_pr
   expect false "cache-key input $input changed"
-  grep -qF "$input" result.log || fail "reason names $input"
+  reason "$input"
 done
 
 # A file outside the cache inputs, beside them, still skips.
@@ -152,4 +229,4 @@ expect true 'non-key script change, tree-equal merge'
 rm -rf repo && mkdir repo
 expect false 'no git repository'
 
-echo "plan-skip regressions passed"
+echo "plan-skip regressions passed ($cases cases)"
