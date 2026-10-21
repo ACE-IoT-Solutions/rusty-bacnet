@@ -7,7 +7,7 @@ Use the website for tasks and the canonical references for exact methods, parame
 
 ## Release references
 
-Start with the [integration overview](/rusty-bacnet/development/overview/) and [engineering documentation map](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/README.md).
+Start with the [integration overview](/rusty-bacnet/integrate/overview/) and [engineering documentation map](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/README.md).
 
 | Reference | Use it for |
 |---|---|
@@ -31,7 +31,7 @@ docs.rs builds the rustdoc of each library crate on crates.io when a version is 
 
 `bacnet-cli` is a program; use the CLI reference above for it. A crate added on `dev` after the release gets a docs.rs page once a release publishes it.
 
-For source checkout rustdoc, select the features used by your application. Do not assume every workspace crate is published or that a published documentation page matches the current checkout. Use the [shared endpoint guide](/rusty-bacnet/development/shared-endpoints/) to compare requester, responder and source Audit scope before choosing that owner.
+For source checkout rustdoc, select the features used by your application. Do not assume every workspace crate is published or that a published documentation page matches the current checkout. Use the [shared endpoint guide](/rusty-bacnet/integrate/shared-endpoints/) to compare requester, responder and source Audit scope before choosing that owner.
 
 A type constant alone does not prove that a bundled server implements an object family.
 

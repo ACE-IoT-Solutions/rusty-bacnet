@@ -11,18 +11,20 @@ test('integration navigation resolves task guides with release-pinned source lin
   const group = navigation.find(group => group.label === 'Build and integrate');
   assert.ok(group);
   const slugs = group.items.map(item => item.slug);
-  assert.deepEqual(slugs, ['development/overview', 'development/shared-endpoints', 'development/network-number', 'development/transports', 'development/bacnet-sc']);
+  assert.deepEqual(slugs, ['integrate/overview', 'integrate/shared-endpoints', 'integrate/network-ports']);
+  assert.deepEqual(navigation.find(group => group.label === 'Contribute').items.map(item => item.slug),
+    ['development/build-from-source', 'development/documentation']);
   assert.equal(new Set(navigation.flatMap(group => group.items.map(item => item.slug))).size,
     navigation.reduce((sum, group) => sum + group.items.length, 0));
-  for (const slug of slugs) {
-    const path = fileURLToPath(new URL(`src/content/docs/${slug}.md`, root));
+  for (const slug of [...slugs, 'guides/bacnet-sc', 'reference/transports']) {
+    const path = fileURLToPath(new URL(`src/content/docs/${slug}.${slug === 'reference/transports' ? 'mdx' : 'md'}`, root));
     const source = await readFile(path, 'utf8');
     const page = frontmatter(source);
     assert.ok(page.title && page.description, slug);
     const body = await plainBody(page.body, path, []);
     assert.ok(body.includes(`https://github.com/jscott3201/rusty-bacnet/blob/v${release}/docs/`), slug);
     assert.ok(!body.includes('https://github.com/jscott3201/rusty-bacnet/blob/dev/'), slug);
-    assert.ok(body.includes('## Next steps'), slug);
+    assert.ok(body.includes(slug === 'reference/transports' ? '## Which guide next?' : '## Next steps'), slug);
     assert.ok(!body.includes('cargo install bacnet-cli --version'), slug);
   }
 });
@@ -37,4 +39,15 @@ test('release CLI source path is pinned while the lab remains release-scoped', a
   const lab = await readFile(new URL('src/content/docs/start/local-lab.mdx', root), 'utf8');
   assert.match(lab, /rusty-bacnet==\{release\}/);
   assert.match(lab, /loopback_lab\.py\?raw/);
+});
+
+
+test('source builds preserve release and development requirements separately', async () => {
+  const build = await readFile(new URL('src/content/docs/development/build-from-source.md', root), 'utf8');
+  assert.match(build, /git clone --branch dev/);
+  assert.match(build, /git rev-parse HEAD/);
+  assert.match(build, /edition 2024 and requires Rust 1\.95/);
+  assert.match(build, /released v0\.14\.0 workspace requires Rust 1\.93/);
+  assert.match(build, /maturin develop --manifest-path crates\/rusty-bacnet\/Cargo.toml --locked/);
+  assert.match(build, /Native compilation alone does not exercise the Python API/);
 });

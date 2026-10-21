@@ -3,6 +3,7 @@ import { readdir, readFile, mkdir, writeFile, rm, copyFile } from 'node:fs/promi
 import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { frontmatter, plainBody, isGuideFile } from './content.mjs';
+import legacyRoutes from '../src/data/legacy-routes.json' with { type: 'json' };
 import { release } from '../src/lib/site.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const docs = join(root, 'src/content/docs');
@@ -16,7 +17,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await mkdir(join(root, 'public/examples'), { recursive: true });
 await copyFile(join(root, 'examples/python/loopback_lab.py'), join(root, 'public/examples/loopback_lab.py'));
-const links = ['# Rusty BACnet', '', `> Guides for the v${release} release; pre-1.0 APIs and partial conformance.`, '', `Use start/ to install and make a first read, development/ to integrate (shared endpoints, Network Port and Number controls, transports, BACnet/SC, source builds), guides/ to operate the CLI, tui/ for the terminal UI on the development branch, and project/upgrading for the move from the previous release. A dev checkout may differ from v${release}; record its commit. The local lab is loopback-only.`, '', '## Guides', ''];
+const links = ['# Rusty BACnet', '', `> Guides for the v${release} release; pre-1.0 APIs and partial conformance.`, '', `Use start/ to install and make a first read, integrate/ for application owners, shared endpoints and Network Port and Number controls, development/ for source builds and documentation contributions, reference/transports for transport evidence, guides/ for operations and BACnet/SC setup, tui/ for the terminal UI on the development branch, and project/upgrading for the move from the previous release. A dev checkout may differ from v${release}; record its commit. The local lab is loopback-only.`, '', '## Guides', ''];
 let count = 0;
 for (const file of await walk(docs)) {
   if (!isGuideFile(file)) continue;
@@ -26,7 +27,11 @@ for (const file of await walk(docs)) {
   const target = join(output, name);
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, `# ${page.title}\n\n${await plainBody(page.body, file, downloads)}\n`);
-  links.push(`- [${name.startsWith('development/') ? 'Integration: ' : ''}${page.title}](https://jscott3201.github.io/rusty-bacnet/raw/${name})`);
+  const slug = name.replace(/\.md$/, '');
+  if (!legacyRoutes.some(route => route.from === slug)) {
+    const category = slug.startsWith('integrate/') ? 'Integration: ' : slug.startsWith('development/') ? 'Contribution: ' : '';
+    links.push(`- [${category}${page.title}](https://jscott3201.github.io/rusty-bacnet/raw/${name})`);
+  }
   count++;
 }
 await writeFile(join(root, 'public/llms.txt'), links.join('\n') + '\n');
