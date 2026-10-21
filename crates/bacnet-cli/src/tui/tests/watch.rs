@@ -299,7 +299,8 @@ async fn devices_without_cov_are_polled_within_the_rate_cap() {
 
 /// A device that stops answering is polled again after a wait that
 /// doubles, not every interval: over 300 s at a 1 s interval it gets a
-/// handful of polls rather than one every nine seconds.
+/// handful of reads rather than one every nine seconds. Retrying the
+/// initial subscription adds its own first reads at the separate backoff.
 #[tokio::test(start_paused = true)]
 async fn a_silent_device_is_polled_with_a_growing_wait() {
     const RPM: u8 = 14;
@@ -319,8 +320,14 @@ async fn a_silent_device_is_polled_with_a_growing_wait() {
     site.run_for(Duration::from_secs(300)).await;
     let to = tokio::time::Instant::now();
     // Each poll is sent four times (three retries) before it times out.
-    let polls = requests_in(&site, 100, Some(RPM), from, to) / 4;
-    assert!((4..=10).contains(&polls), "{polls} polls in 300 s");
+    let reads = requests_in(&site, 100, Some(RPM), from, to) / 4;
+    // Preserve the ten-poll ceiling, allowing the three first reads from
+    // subscription retries: waits 30, 60 and 120 s, each ending 8 s later.
+    // The next 240 s wait cannot finish within this 300 s observation.
+    assert!(
+        (4..=10 + 3).contains(&reads),
+        "{reads} read transactions in 300 s"
+    );
     let row = &site.app.watch.rows()[0];
     assert!(row.value.as_ref().unwrap().is_err(), "{:?}", row.value);
     site.stop().await;
@@ -427,3 +434,6 @@ async fn csv_logging_writes_samples_to_the_workspace() {
     assert!(flash.text.contains("profile workspace"), "{}", flash.text);
     site.stop().await;
 }
+
+#[path = "watch_initial_retry.rs"]
+mod initial_retry;

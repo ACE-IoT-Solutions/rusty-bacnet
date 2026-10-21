@@ -64,6 +64,9 @@ pub(crate) struct Refusal {
     /// The subscription may exist on the device anyway (the request timed
     /// out), so removing the row or quitting still sends a cancel.
     pub(crate) maybe_subscribed: bool,
+    /// A later start may recover from this failure; independent of whether
+    /// a subscription might already exist.
+    pub(crate) retryable: bool,
     /// Nothing can watch it: the row goes.
     pub(crate) fatal: bool,
 }
@@ -99,6 +102,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
             outcome: Err(Refusal {
                 reason: format!("device {} is not in the device table", point.device),
                 maybe_subscribed: false,
+                retryable: false,
                 fatal: true,
             }),
             refused_rpm: false,
@@ -159,11 +163,13 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         Err(Halt::Device(error)) if unreachable(&error) => Err(Refusal {
             reason: format!("no answer: {error}"),
             maybe_subscribed: false,
+            retryable: device.source_network.is_none(),
             fatal: false,
         }),
         _ if device.source_network.is_some() => Err(Refusal {
             reason: "routed device".into(),
             maybe_subscribed: false,
+            retryable: false,
             fatal: false,
         }),
         _ => {
@@ -264,6 +270,7 @@ async fn subscribe<T: TransportPort + 'static>(
     };
     managed.map_err(|error| Refusal {
         maybe_subscribed: unreachable(&error),
+        retryable: unreachable(&error),
         reason: format!("COV refused: {error}"),
         fatal: false,
     })
@@ -474,3 +481,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "job_retry_tests.rs"]
+mod retry_tests;

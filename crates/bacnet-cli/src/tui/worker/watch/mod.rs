@@ -59,7 +59,7 @@ pub(crate) const DEFAULT_REQUEST_BUDGET: Duration = Duration::from_secs(24);
 /// answering again.
 const POLL_BACKOFF: (Duration, Duration) = (Duration::from_secs(2), Duration::from_secs(60));
 /// The first and the longest wait before subscribing again after a
-/// renewal failed.
+/// start or renewal failed transiently.
 const RESUBSCRIBE_BACKOFF: (Duration, Duration) =
     (Duration::from_secs(30), Duration::from_secs(300));
 
@@ -116,7 +116,7 @@ struct Row {
     removing: bool,
     /// A subscription may exist although the row isn't subscribed.
     maybe_subscribed: bool,
-    /// After a renewal failed: when to subscribe again, and the wait that
+    /// After a transient start or renewal failure: when to retry, and the wait that
     /// led there.
     resubscribe: Option<(Instant, Duration)>,
     /// How its values are written, from its first read.
@@ -278,7 +278,7 @@ impl<'s> State<'s> {
         };
         let held = match row.mode {
             Mode::Cov(managed) => Some(Some(managed)),
-            Mode::Polled if row.maybe_subscribed => Some(None),
+            _ if row.maybe_subscribed => Some(None),
             _ => None,
         };
         if let (Some(managed), Some(mac)) = (held, row.mac) {
@@ -372,7 +372,9 @@ impl<'s> State<'s> {
         let Some(row) = self.rows.get_mut(&id) else {
             return;
         };
-        row.mac = started.mac.clone();
+        // A retry can fail before discovering an address; retain the one
+        // needed to cancel a possible subscription from an earlier attempt.
+        row.mac = started.mac.or_else(|| row.mac.take());
         let read_first = started.first.is_some();
         if let Some((reading, format)) = started.first {
             row.format = format;
@@ -385,10 +387,11 @@ impl<'s> State<'s> {
         }
         let leaving = row.removing || self.shutting_down;
         let point = row.point;
+        let mac = row.mac.clone();
         match started.outcome {
             Ok(managed) if leaving => {
                 self.rows.remove(&id);
-                if let Some(mac) = started.mac {
+                if let Some(mac) = mac {
                     self.cancel(id, point, mac, Some(managed));
                 }
             }
@@ -404,23 +407,23 @@ impl<'s> State<'s> {
                 );
                 self.source(id, Source::Cov { lifetime });
             }
-            Err(refusal) if leaving => {
+            Err(refusal) if leaving || refusal.fatal => {
+                let cancel = row.maybe_subscribed || refusal.maybe_subscribed;
                 self.rows.remove(&id);
-                if let (true, Some(mac)) = (refusal.maybe_subscribed, started.mac) {
+                if let (true, Some(mac)) = (cancel, mac) {
                     self.cancel(id, point, mac, None);
+                }
+                if !leaving {
+                    self.source(id, Source::Failed(refusal.reason));
                 }
             }
             Err(Refusal {
                 reason,
                 maybe_subscribed,
-                fatal,
+                retryable,
+                fatal: _,
             }) => {
                 tracing::info!("watch row {id}: {reason}");
-                if fatal {
-                    self.rows.remove(&id);
-                    self.source(id, Source::Failed(reason));
-                    return;
-                }
                 row.mode = Mode::Polled;
                 row.maybe_subscribed |= maybe_subscribed;
                 if read_first {
@@ -428,12 +431,13 @@ impl<'s> State<'s> {
                     let device = self.devices.entry(point.device).or_default();
                     device.last_polled.get_or_insert_with(Instant::now);
                 }
-                // A row that was subscribed once keeps trying, ever more
-                // slowly; a device that refuses COV outright is only polled.
-                if let Some((_, wait)) = row.resubscribe {
-                    let wait = backoff(wait, RESUBSCRIBE_BACKOFF);
-                    row.resubscribe = Some((Instant::now() + wait, wait));
-                }
+                // Transient failures retry even before the first subscription;
+                // a permanent refusal stops retries without erasing cancellation.
+                row.resubscribe = retryable.then(|| {
+                    let previous = row.resubscribe.map_or(Duration::ZERO, |(_, wait)| wait);
+                    let wait = backoff(previous, RESUBSCRIBE_BACKOFF);
+                    (Instant::now() + wait, wait)
+                });
                 self.source(id, Source::Polled(reason));
             }
         }
@@ -764,3 +768,6 @@ pub(crate) async fn run<T: TransportPort + 'static>(
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod retry_support;

@@ -54,6 +54,8 @@ pub(super) struct Quirks {
     /// Reject SubscribeCOV and SubscribeCOVProperty as unknown services: a
     /// device without COV.
     pub(super) refuse_cov: bool,
+    /// Swallow the first COV subscription requests of either flavor, retries included.
+    pub(super) swallow_first_cov: u8,
     /// After the first SubscribeCOV, swallow this many more, retries
     /// included: a renewal that times out.
     pub(super) lose_cov_after_first: u8,
@@ -100,6 +102,18 @@ pub(super) struct Hub {
 }
 
 impl Hub {
+    /// Stop answering confirmed requests after the device's initial behavior was observed.
+    pub(super) fn silence(&self, mac: &[u8]) {
+        let mut inner = self.inner.lock().unwrap();
+        inner
+            .ports
+            .iter_mut()
+            .find(|port| port.mac.as_slice() == mac)
+            .expect("known test device")
+            .quirks
+            .silent = true;
+    }
+
     /// The most confirmed requests that were ever outstanding at once to
     /// the port with `mac`.
     pub(super) fn most_outstanding(&self, mac: &[u8]) -> usize {
@@ -213,6 +227,10 @@ impl HubPort {
                     }
                     if port.quirks.swallow_first > 0 {
                         port.quirks.swallow_first -= 1;
+                        return;
+                    }
+                    if cov && port.quirks.swallow_first_cov > 0 {
+                        port.quirks.swallow_first_cov -= 1;
                         return;
                     }
                     if service == ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw() {
