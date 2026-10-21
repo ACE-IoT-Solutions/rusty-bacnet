@@ -1,4 +1,4 @@
-//! Turn a [`Target`] into something a confirmed request can go to.
+//! Turn a [`Target`] into a service destination.
 //!
 //! A local MAC is used as written. A device instance, or a device behind a
 //! router, goes through the client's discovery table, so the `*_from_device`
@@ -6,7 +6,8 @@
 //! network and MAC in the NPDU (Clause 6.2.2). ReadProperty,
 //! ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, SubscribeCOV,
 //! GetEventInformation, ReadRange (including log paging), AtomicReadFile and
-//! AtomicWriteFile use routed calls.
+//! AtomicWriteFile, DeviceCommunicationControl, ReinitializeDevice and both
+//! time synchronization services use routed calls.
 //! Commands without a routed call take [`resolve_mac`], which refuses one.
 
 use std::time::Duration;
@@ -46,7 +47,7 @@ pub(crate) fn routed_wait() -> Duration {
         .map_or(ROUTED_DISCOVERY_WAIT, Duration::from_millis)
 }
 
-/// Where a confirmed request goes.
+/// Where a service request goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Destination {
     /// A MAC on this network.
@@ -101,14 +102,14 @@ pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
                 "Device {instance} is behind a router; only read, readm, read-range, alarms, \
-                 file-read, file-write, write, writem and subscribe reach routed devices"
+                 file-read, file-write, write, writem, subscribe, control, reinit and time-sync reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
             "'{text}' is a routed target; only read, readm, read-range, alarms, \
-             file-read, file-write, write, writem and subscribe reach routed devices"
+             file-read, file-write, write, writem, subscribe, control, reinit and time-sync reach routed devices"
         )),
     }
 }
@@ -227,6 +228,69 @@ impl Destination {
             }
         }
     }
+    /// Dispatch device_communication_control through the resolved device or local MAC.
+    pub(crate) async fn device_communication_control<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        state: bacnet_types::enums::EnableDisable,
+        duration: Option<u16>,
+        password: Option<String>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Mac(mac) => {
+                client
+                    .device_communication_control(mac, state, duration, password)
+                    .await
+            }
+            Self::Device(instance) => {
+                client
+                    .device_communication_control_from_device(*instance, state, duration, password)
+                    .await
+            }
+        }
+    }
+
+    /// Dispatch reinitialize_device through the resolved device or local MAC.
+    pub(crate) async fn reinitialize_device<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        state: bacnet_types::enums::ReinitializedState,
+        password: Option<String>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Mac(mac) => client.reinitialize_device(mac, state, password).await,
+            Self::Device(instance) => {
+                client
+                    .reinitialize_device_from_device(*instance, state, password)
+                    .await
+            }
+        }
+    }
+
+    /// Send the selected unconfirmed time service once.
+    pub(crate) async fn time_synchronization<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        date: bacnet_types::primitives::Date,
+        time: bacnet_types::primitives::Time,
+        utc: bool,
+    ) -> Result<(), Error> {
+        match (self, utc) {
+            (Self::Mac(mac), false) => client.time_synchronization(mac, date, time).await,
+            (Self::Mac(mac), true) => client.utc_time_synchronization(mac, date, time).await,
+            (Self::Device(instance), false) => {
+                client
+                    .time_synchronization_from_device(*instance, date, time)
+                    .await
+            }
+            (Self::Device(instance), true) => {
+                client
+                    .utc_time_synchronization_from_device(*instance, date, time)
+                    .await
+            }
+        }
+    }
+
     /// GetEventInformation, retaining its raw service acknowledgement.
     pub(crate) async fn get_event_information<T: TransportPort + 'static>(
         &self,
