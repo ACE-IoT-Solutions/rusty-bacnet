@@ -231,10 +231,10 @@ async fn execute_command<T: TransportPort + 'static>(
             duration,
             password,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
+            let to = resolve_destination(client, target).await?;
             commands::device::control_cmd(
                 client,
-                &mac,
+                &to,
                 action,
                 *duration,
                 password.as_deref(),
@@ -247,8 +247,8 @@ async fn execute_command<T: TransportPort + 'static>(
             state,
             password,
         } => {
-            let mac = resolve_target_mac(client, target).await?;
-            commands::device::reinit_cmd(client, &mac, state, password.as_deref(), format).await?;
+            let to = resolve_destination(client, target).await?;
+            commands::device::reinit_cmd(client, &to, state, password.as_deref(), format).await?;
         }
         Command::Alarms { target } => {
             let to = resolve_destination(client, target).await?;
@@ -358,8 +358,8 @@ async fn execute_command<T: TransportPort + 'static>(
             return Err("capture command should be handled before client setup".into());
         }
         Command::TimeSync { target, utc } => {
-            let mac = resolve_target_mac(client, target).await?;
-            commands::device::time_sync_cmd(client, &mac, *utc, format).await?;
+            let to = resolve_destination(client, target).await?;
+            commands::device::time_sync_cmd(client, &to, *utc, format).await?;
         }
     }
     Ok(())

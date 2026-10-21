@@ -38,6 +38,20 @@ async fn site() -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
 async fn site_with_database(
     database: bacnet_objects::database::ObjectDatabase,
 ) -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
+    site_with_config(
+        database,
+        bacnet_server::server::ServerConfig {
+            device: lab_identity(INSTANCE),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+async fn site_with_config(
+    database: bacnet_objects::database::ObjectDatabase,
+    config: bacnet_server::server::ServerConfig,
+) -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
     for _ in 0..8 {
         let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .unwrap()
@@ -63,11 +77,7 @@ async fn site_with_database(
         if let Ok(StartedRouter { router, .. }) =
             BACnetRouter::start(ports, RouterOptions::new()).await
         {
-            let server = BACnetServer::generic_builder()
-                .device(lab_identity(INSTANCE))
-                .transport(station)
-                .database(database)
-                .build()
+            let server = BACnetServer::start(config, database, station)
                 .await
                 .unwrap();
             return (router, server, port);
@@ -167,9 +177,9 @@ async fn routed_targets_fail_clearly() {
         "--port",
         "0",
         "--json",
-        "reinit",
+        "delete-object",
         &format!("{DNET}:{INSTANCE}"),
-        "warmstart",
+        "av:1",
         "--allow-write",
         "--yes",
     ])
@@ -186,3 +196,6 @@ mod read_services;
 mod file_fixture;
 #[path = "cli_routed/file_services.rs"]
 mod file_services;
+
+#[path = "cli_routed/device_admin.rs"]
+mod device_admin;

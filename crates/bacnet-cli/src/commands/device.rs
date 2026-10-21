@@ -13,7 +13,7 @@ use crate::output::{self, OutputFormat};
 /// Synchronize time with a remote device.
 pub async fn time_sync_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     utc: bool,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -60,13 +60,9 @@ pub async fn time_sync_cmd<T: TransportPort + 'static>(
         hundredths,
     };
 
-    if utc {
-        client.utc_time_synchronization(mac, date, time).await?;
-    } else {
-        // For local time sync we also use UTC since we don't have
-        // a timezone library. Document this limitation.
-        client.time_synchronization(mac, date, time).await?;
-    }
+    // Both choices retain the existing UTC-derived fields; there is no
+    // timezone library here to calculate local civil time.
+    to.time_synchronization(client, date, time, utc).await?;
     output::print_success("Time synchronized", format);
     Ok(())
 }
@@ -104,7 +100,7 @@ fn parse_reinit_state(state: &str) -> Result<ReinitializedState, String> {
 /// Send a DeviceCommunicationControl request.
 pub async fn control_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     action: &str,
     duration: Option<u16>,
     password: Option<&str>,
@@ -112,14 +108,13 @@ pub async fn control_cmd<T: TransportPort + 'static>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let enable_disable = parse_enable_disable(action)?;
 
-    client
-        .device_communication_control(
-            mac,
-            enable_disable,
-            duration,
-            password.map(|s| s.to_string()),
-        )
-        .await?;
+    to.device_communication_control(
+        client,
+        enable_disable,
+        duration,
+        password.map(|s| s.to_string()),
+    )
+    .await?;
 
     output::print_success("OK", format);
     Ok(())
@@ -128,15 +123,14 @@ pub async fn control_cmd<T: TransportPort + 'static>(
 /// Send a ReinitializeDevice request.
 pub async fn reinit_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     state: &str,
     password: Option<&str>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reinit_state = parse_reinit_state(state)?;
 
-    client
-        .reinitialize_device(mac, reinit_state, password.map(|s| s.to_string()))
+    to.reinitialize_device(client, reinit_state, password.map(|s| s.to_string()))
         .await?;
 
     output::print_success("OK", format);
