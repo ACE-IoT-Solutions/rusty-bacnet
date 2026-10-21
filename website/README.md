@@ -92,8 +92,7 @@ workflow `34003656261`, artifact `9980479931`, tag `v0.11.0` at
 The release `bacnet-macos-arm64` executable also read value 72.5 and units 64
 from a 30-second loopback server that then stopped. This is bounded tutorial
 evidence, not PyPI, general wheel/platform, or physical-network qualification.
-That evidence is for v0.11.0; the lab has not yet run against a later
-release's wheels.
+That evidence is for v0.11.0.
 
 ## Displayed Python first-read verification
 
