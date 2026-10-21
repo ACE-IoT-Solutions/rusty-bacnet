@@ -38,6 +38,8 @@ use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::{TransportPort, TransportProvenance};
+use bacnet_transport::warn_throttle::WarnThrottle;
+use bacnet_transport::warn_throttled;
 use bacnet_types::enums::{ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -564,6 +566,9 @@ pub struct BACnetClient<T: TransportPort> {
     segmented_post_wait_cleanup: Arc<SegmentedPostWaitCleanupHook>,
     #[cfg(test)]
     segmented_cleanup: Arc<SegmentedCleanupHook>,
+    /// The dispatch task's decode-warning throttle, for tests to read.
+    #[cfg(test)]
+    decode_warning: Arc<WarnThrottle>,
     local_mac: MacAddr,
     routed_path_limits: Arc<RoutedPathLimits>,
     /// See [`Self::group_source_request_drops`].

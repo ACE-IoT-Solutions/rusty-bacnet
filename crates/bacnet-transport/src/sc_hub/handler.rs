@@ -82,7 +82,10 @@ pub(super) async fn run(
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,
             Ok(_) => {
-                warn!("Hub: non-binary frame from {peer_addr}, closing with 1003");
+                crate::warn_throttled!(
+                    admission.connection_warning,
+                    "Hub: non-binary frame from {peer_addr}, closing with 1003"
+                );
                 let mut w = write.lock().await;
                 let _ = w
                     .send(Message::Close(Some(
@@ -95,7 +98,10 @@ pub(super) async fn run(
                 break;
             }
             Err(e) => {
-                warn!("Hub: recv error from {peer_addr}: {e}");
+                crate::warn_throttled!(
+                    admission.connection_warning,
+                    "Hub: recv error from {peer_addr}: {e}"
+                );
                 break;
             }
         };

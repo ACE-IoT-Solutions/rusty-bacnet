@@ -310,6 +310,7 @@ mod ack_window;
 mod control_limits;
 mod duplicate_window;
 mod get_event_information;
+mod refusal_warnings;
 mod request_byte_budget;
 mod request_byte_budget_failures;
 mod request_payload_detachment;

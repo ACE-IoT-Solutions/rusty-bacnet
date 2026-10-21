@@ -171,6 +171,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let mut seg_receivers: HashMap<SegRecvKey, SegmentedRequestState> = HashMap::new();
             let mut notifications_open = true;
             let mut ingress_open = true;
+            // A peer's flood warns once per interval, the rest at debug (#1950).
+            let (decode_warning, segment_warning) = <(WarnThrottle, WarnThrottle)>::default();
 
             // While ingress is open, finished handlers are joined at the top
             // of each turn, not awaited below (IdleReap, #1713).
@@ -289,7 +291,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     )
                                 {
                                     seg_receivers.remove(&conflict);
-                                    warn!(
+                                    warn_throttled!(
+                                        segment_warning,
                                         invoke_id = req.invoke_id,
                                         "Aborting segmented request on provenance mismatch (fail-closed)"
                                     );
@@ -387,7 +390,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                             // Clause 18.10's BUFFER_OVERFLOW
                                             // fits a reassembly that exceeds
                                             // available buffer capacity (#364).
-                                            warn!(
+                                            warn_throttled!(
+                                                segment_warning,
                                                 invoke_id = req.invoke_id,
                                                 accepted = state.accepted_segments,
                                                 "Segmented request exceeds reassembly capacity, aborting"
@@ -414,7 +418,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                             // it dangling told the peer
                                             // nothing while this side could
                                             // never complete (#364).
-                                            warn!(error = %e, "Rejecting unsaveable segment");
+                                            warn_throttled!(
+                                                segment_warning,
+                                                error = %e,
+                                                "Rejecting unsaveable segment"
+                                            );
                                             seg_receivers.remove(&key);
                                             Self::send_server_abort(
                                                 &network_dispatch,
@@ -459,7 +467,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     let proposed_window_size =
                                         req.proposed_window_size.unwrap_or(0);
                                     if !(1..=127).contains(&proposed_window_size) {
-                                        warn!(
+                                        warn_throttled!(
+                                            segment_warning,
 	                                            invoke_id = req.invoke_id,
 	                                            proposed_window_size,
 	                                            "Rejecting segmented request with invalid proposed window size"
@@ -506,7 +515,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                         // path; the Abort is what tells the
                                         // peer instead of leaving it to time
                                         // out (#364).
-                                        warn!(error = %e, "Rejecting unsaveable segment");
+                                        warn_throttled!(
+                                            segment_warning,
+                                            error = %e,
+                                            "Rejecting unsaveable segment"
+                                        );
                                         Self::send_server_abort(
                                             &network_dispatch,
                                             &source_mac,
@@ -532,7 +545,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     }
                                     seg_receivers.insert(key.clone(), state);
                                 } else {
-                                    warn!(
+                                    warn_throttled!(
+                                        segment_warning,
 	                                        invoke_id = req.invoke_id,
 	                                        seq = seq,
 	                                        "Received non-initial segment without prior segment 0, aborting"
@@ -616,31 +630,19 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 &dispatch_context,
                                 &source_mac,
                                 decoded,
-                                received.take().unwrap_or_else(|| {
-                                    warn!("received consumed twice — using empty fallback");
-                                    bacnet_network::layer::ReceivedApdu {
-                                        router_response: None,
-                                        direct_response: None,
-                                        apdu: bytes::Bytes::new(),
-                                        source_mac: bacnet_types::MacAddr::new(),
-                                        ingress_network: None,
-                                        source_network: None,
-                                        link_layer_group: false,
-                                        is_group: false,
-                                        global_broadcast: false,
-                                        data_attributes: Vec::new(),
-                                        provenance:
-                                            bacnet_transport::port::TransportProvenance::unverified(
-                                            ),
-                                        reply_tx: None,
-                                    }
-                                }),
+                                received.take().unwrap_or_else(
+                                    super::segmented_receive::empty_reassembled_envelope,
+                                ),
                             )
                             .await;
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Server failed to decode received APDU");
+                        warn_throttled!(
+                            decode_warning,
+                            error = %e,
+                            "Server failed to decode received APDU"
+                        );
                     }
                 }
             }

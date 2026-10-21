@@ -1,7 +1,7 @@
 //! Records this crate's warnings on the test's thread, so a test can show a
-//! code path was reached when nothing else observes it. Install it on a
-//! current-thread runtime, the `#[tokio::test]` default, so the tasks the
-//! test spawns log to it too.
+//! code path was reached when nothing else observes it, or count how often
+//! a throttled warning went out. Install it on a current-thread runtime, the
+//! `#[tokio::test]` default, so the tasks the test spawns log to it too.
 
 use std::sync::{Arc, Mutex};
 
@@ -9,11 +9,13 @@ use tracing::field::{Field, Visit};
 use tracing::subscriber::DefaultGuard;
 use tracing::{span, Event, Level, Metadata, Subscriber};
 
-/// One warning: its message and its `error` field, if any.
+/// One warning: its message, its `error` field, if any, and the
+/// `occurrences` a throttled warning reports.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Warning {
     pub(crate) message: String,
     pub(crate) error: String,
+    pub(crate) occurrences: Option<u64>,
 }
 
 /// The warnings `bacnet_server` logged while the guard was installed.
@@ -35,6 +37,11 @@ impl WarnSpy {
 struct Fields<'a>(&'a mut Warning);
 
 impl Visit for Fields<'_> {
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "occurrences" {
+            self.0.occurrences = Some(value);
+        }
+    }
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         match field.name() {
             "message" => self.0.message = format!("{value:?}"),

@@ -53,19 +53,29 @@ async fn a_lagging_collector_keeps_the_newest() {
 }
 
 /// With nobody subscribed, an I-Have is not decoded, so a malformed one
-/// costs nothing; a subscriber gets the decoded one.
-#[test]
-fn delivery_reaches_subscribers_only() {
+/// costs nothing; a subscriber gets the decoded one. A malformed one with a
+/// subscriber warns through the client's decode throttle (#1950).
+#[tokio::test(start_paused = true)]
+async fn delivery_reaches_subscribers_only() {
     let (tx, _) = broadcast::channel(4);
+    let throttle = WarnThrottle::default();
     let mut encoded = BytesMut::new();
     reply(40, "Supply Air Temp")
         .i_have
         .encode(&mut encoded)
         .unwrap();
-    deliver(&tx, &[5], &None, &encoded);
+    deliver(&tx, &[5], &None, &[0xFF], &throttle);
+    deliver(&tx, &[5], &None, &encoded, &throttle);
     let mut rx = tx.subscribe();
-    deliver(&tx, &[5], &None, &[0xFF]);
+    deliver(&tx, &[5], &None, &[0xFF], &throttle);
     assert!(rx.try_recv().is_err());
-    deliver(&tx, &[5], &None, &encoded);
+    deliver(&tx, &[5], &None, &encoded, &throttle);
     assert_eq!(rx.try_recv().unwrap(), reply(40, "Supply Air Temp"));
+    assert_eq!(
+        throttle.note(),
+        None,
+        "the malformed one with a subscriber warned, and only it"
+    );
+    tokio::time::advance(bacnet_transport::warn_throttle::WARNING_INTERVAL).await;
+    assert_eq!(throttle.note(), Some(2), "the check above, and this one");
 }

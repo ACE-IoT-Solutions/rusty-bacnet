@@ -40,12 +40,14 @@ impl ReceivedIHave {
 }
 
 /// Decode an I-Have and hand it to the subscribers. A malformed one is
-/// logged and dropped; with no subscriber nothing is decoded.
+/// logged through `decode_warning` and dropped; with no subscriber nothing
+/// is decoded.
 pub(super) fn deliver(
     i_have_tx: &broadcast::Sender<ReceivedIHave>,
     source_mac: &[u8],
     source_network: &Option<NpduAddress>,
     service_request: &[u8],
+    decode_warning: &WarnThrottle,
 ) {
     if i_have_tx.receiver_count() == 0 {
         return;
@@ -58,7 +60,9 @@ pub(super) fn deliver(
                 source_network: source_network.clone(),
             });
         }
-        Err(e) => warn!(error = %e, "Failed to decode IHave"),
+        Err(e) => {
+            warn_throttled!(decode_warning, error = %e, "Failed to decode IHave");
+        }
     }
 }
 
