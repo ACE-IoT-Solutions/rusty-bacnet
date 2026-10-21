@@ -5,7 +5,7 @@
     "B": "f056aba22cff95ec98f77511238711a93ce82da4",
     "C": "5b6f541322cac7b346e8fdb749689b0c5c4b2239"
   },
-  "candidate_source": "C is the listed production revision plus the benchmark-only source overlay hashed below; no production files or lockfiles changed. Final report/data additions were made after measurement.",
+  "candidate_source": "C is production revision5b6f541322cac7b346e8fdb749689b0c5c4b2239 plus the benchmark overlay at measured_overlay_commit. source_sha256 records the original measured snapshot, not every final PR byte. Production files and lockfiles are unchanged.",
   "environment": {
     "cpu": "Apple M5",
     "physical_and_logical_cpus": 10,
@@ -634,8 +634,8 @@
   "raw_archive": "_spec/roadmap-0.15/archive/perf-1979-2026-10-21 (local-only; not a public download)",
   "raw_inputs_sha256": "33e7d9adba869d69818e0034daa5e03a03bd1f089f64172ad6df8c78cf0ddfb3",
   "derived_csv_sha256": {
-    "encoding.csv": "ad9c55479254065544632f09e2267ab96f11ebb328939af531d3ef0ac6f4ff39",
-    "clients.csv": "3109b1aa73fb0a3af15668e1de11b65d3adbb6c812611f6470be3b7ac5448885"
+    "encoding.csv": "5b251ec2b9626195e65aead9727432832312b8134d26f939dedde5d3d619220d",
+    "clients.csv": "ee665ea7eb527bc6820d27e26b0e3b837699a6759541ca4102178acde658c733"
   },
   "orders": {
     "encoding": [
@@ -721,5 +721,22 @@
     "The original stock A/B binaries are preserved separately; measured stress uses the same normalized local-module driver across all three versions.",
     "Cargo build/bench can overwrite target aliases. Only immutable copied executables whose hashes appear here were measured; superseded smoke associations and their correction are preserved.",
     "No OS UDP counters, Linux repeats, causal commit bracket or production tuning were performed."
-  ]
+  ],
+  "archived_generated_crlf_csv_sha256": {
+    "encoding.csv": "ad9c55479254065544632f09e2267ab96f11ebb328939af531d3ef0ac6f4ff39",
+    "clients.csv": "3109b1aa73fb0a3af15668e1de11b65d3adbb6c812611f6470be3b7ac5448885"
+  },
+  "archived_generated_crlf_csv_directory": "derived-original-crlf/ within raw_archive",
+  "measured_overlay_commit": "4d5ccc2121297e6abe0d3442ccdd564f95d8b34d",
+  "post_measurement_changes": {
+    "source_paths": [
+      "benchmarks/src/stress/clients.rs",
+      "benchmarks/src/stress/client_bip6_setup.rs",
+      "benchmarks/src/stress/client_bip6_setup_tests.rs"
+    ],
+    "behavior": "B/IPv6 setup failures retain the attempted client index; server address failure has no client attribution. Focused regression only; no new timing.",
+    "measured_snapshot_retained": "The original source_sha256 entries, selected-artifact hashes and raw experiment evidence are unchanged. Reproduce the original source overlay from measured_overlay_commit.",
+    "timed_path_scope": "The repaired B/IPv6 setup path is not called by the normalized B/IP driver or original encoding workloads. Their source files and frozen executables are unchanged. The package library can compile clients.rs; final compilation closure and rebuilt binary byte identity are not claimed.",
+    "derived_data": "Only CRLF-to-LF normalization of derived CSV bytes; parsed rows and statistics unchanged. derived_csv_sha256 verifies the distributed LF files; original CRLF hashes/files are separately archived."
+  }
 }

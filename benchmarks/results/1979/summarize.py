@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Summarize the checked-in #1979 run-level CSVs without pooling requests."""
 import csv
+import hashlib
 import json
 from pathlib import Path
 import statistics
 
 root = Path(__file__).resolve().parent
+provenance = json.loads((root / "provenance.json").read_text())
+for name, expected in provenance["derived_csv_sha256"].items():
+    assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected, name
 
 def distribution(values):
     return {"median": statistics.median(values), "min": min(values), "max": max(values)}

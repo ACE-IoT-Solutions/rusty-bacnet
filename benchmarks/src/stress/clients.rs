@@ -17,6 +17,9 @@ use std::net::Ipv6Addr;
 use std::time::Duration;
 const DEVICE_INSTANCE: u32 = 1234;
 
+#[path = "client_bip6_setup.rs"]
+mod bip6_setup;
+
 /// The data link shared by clients and server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientTransport {
@@ -99,40 +102,34 @@ async fn bip6_step(db: ObjectDatabase, index: usize, count: u64, duration: Durat
         }
     };
     let mut clients = Vec::new();
-    let setup = async {
-        let address = server
-            .transport()
-            .and_then(Bip6Transport::local_address)
-            .ok_or_else(|| Error::Encoding("the B/IPv6 server is not running".into()))?;
-        let mut mac = Vec::new();
-        for _ in 0..count {
-            clients.push(
-                BACnetClient::<Bip6Transport>::generic_builder()
-                    .transport(Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, None))
-                    .apdu_timeout_ms(5000)
-                    .build()
-                    .await?,
-            );
-            let vmac = clients
-                .last()
-                .unwrap()
+    let address = server
+        .transport()
+        .and_then(Bip6Transport::local_address)
+        .ok_or_else(|| Error::Encoding("the B/IPv6 server is not running".into()));
+    let setup = bip6_setup::setup(
+        address,
+        count,
+        &mut clients,
+        async || {
+            BACnetClient::<Bip6Transport>::generic_builder()
+                .transport(Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, None))
+                .apdu_timeout_ms(5000)
+                .build()
+                .await
+        },
+        async |client: &BACnetClient<Bip6Transport>, address| {
+            client
                 .transport()
                 .resolve_virtual_address(address)
-                .await?;
-            mac = vmac.octets().to_vec();
-        }
-        Ok::<_, Error>(mac)
-    }
+                .await
+                .map(|vmac| vmac.octets().to_vec())
+        },
+        &mut report,
+    )
     .await;
     match setup {
-        Ok(mac) => drive(clients, mac, duration, |_| None, &mut report).await,
-        Err(error) => {
-            report.diagnostics.started_clients = clients.len();
-            report
-                .diagnostics
-                .fail("client_setup", Some(clients.len()), error);
-            stop_clients(&mut clients, &mut report).await;
-        }
+        Some(mac) => drive(clients, mac, duration, |_| None, &mut report).await,
+        None => stop_clients(&mut clients, &mut report).await,
     }
     if let Err(error) = server.stop().await {
         report.diagnostics.fail("server_stop", None, error);

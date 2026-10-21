@@ -10,13 +10,19 @@ It is part of #1979; causal attribution and #1978 optimization remain open.
 | B | `f056aba22cff95ec98f77511238711a93ce82da4` | current adapter |
 | C | `5b6f541322cac7b346e8fdb749689b0c5c4b2239` | current adapter |
 
-C includes this PR's benchmark-only overlay, hashed before measurement. A/B include
-only a generated normalized-clients entrypoint, with absolute includes of that
+C's measured benchmark overlay is pinned to
+`4d5ccc2121297e6abe0d3442ccdd564f95d8b34d`, with source hashes recorded before
+measurement. A/B include only a generated normalized-clients entrypoint, with
+absolute includes of that
 same overlay and the selected adapter. Production files and all three lockfiles
 are unchanged. A root comparison of the benchmark's transitive inputs confirmed
 that the intervening TUI change from research base `7d77d81c` to C did not affect
-them. The measured driver sources remained unchanged while this report and data
-were added afterward.
+them. The normalized B/IP driver and original encoding workload sources remain
+unchanged. A later B/IPv6 setup-diagnostic correction changes clients.rs and adds
+a private helper/regression; it does not run in those timed paths. The package
+library can still compile clients.rs, so this does not claim an identical final
+compilation closure or byte-identical rebuilt executables. Original source hashes
+and frozen binaries are preserved; the final tree is not the measured snapshot.
 
 ## Files and interpretation
 
@@ -30,13 +36,15 @@ were added afterward.
 - `runs.json`: all 51 invocations in order, exact arguments, UTC timestamps,
   load/space observations, status and stdout/stderr hashes.
 - `provenance.json`: compiler, environment, original locks, artifact hashes,
-  measured-source hashes and feature/profile controls with residuals.
+  measured-source hashes and feature/profile controls with residuals. Its
+  derived_csv_sha256 values verify the distributed LF bytes; original generated
+  CRLF files/hashes are separately retained in the local raw archive.
 - `raw-sha256.json`: hashes for the unedited raw manifests, stdout/stderr and
   Criterion estimates/samples. The local archive path is in provenance; those
   large local-only files and binaries are not a public artifact download.
 - `summarize.py`: recomputes median/range and paired comparisons from these CSVs.
-  Run with Python 3.10 or later. It checks row counts, client accounting, error
-  denominators and the observed admission correspondence before summarizing.
+  Run with Python 3.10 or later. It checks distributed CSV byte hashes, row
+  counts, client accounting, error denominators and the observed admission correspondence before summarizing.
 
 This is an issue-specific dataset, not a change to the existing result-row JSON
 schema. Run `python3 benchmarks/results/1979/summarize.py` to inspect its summary.
@@ -48,9 +56,12 @@ stress/curve step was valid.
 
 ## Reproduction
 
-Prepare three isolated checkouts at the revisions above, each with a private
-target directory. Apply only this PR's benchmark overlay to C. Use
-[the compatibility instructions](../../compat/README.md) to generate A/B wrappers.
+Prepare isolated A/B checkouts at the production revisions above. For exact
+measured-source reproduction, check out C at the immutable measured overlay
+commit `4d5ccc2121297e6abe0d3442ccdd564f95d8b34d`; its production inputs are
+those of `5b6f5413`. Use that overlay's source files and compatibility generator,
+not the later repaired final tree. Keep a private target directory per checkout.
+Use [the compatibility instructions](../../compat/README.md) to generate A/B wrappers.
 Qualify all common-driver tests and independent encoding/value guards first.
 A's original benchmark library has no tests; its original nextest no-tests exit
 is retained as unavailable evidence, not a passing test suite.

@@ -994,7 +994,11 @@ one address per foreign device.
 This follow-up uses one Apple M5 (10 cores, 16 GiB), macOS 27.2 build
 26B5112a, Rust/Cargo 1.99.0 and isolated locked builds. A is v0.13.0
 `dca94f7f`; B is `f056aba2`, before #1713's final cuts; C is `5b6f5413`,
-the current production stack plus the benchmark-only diagnostic driver.
+the production stack plus the measured benchmark overlay `4d5ccc21`.
+The final PR also repairs a B/IPv6 setup diagnostic after measurement. That path
+is not called by the normalized B/IP or encoding workloads; their timed sources
+and frozen binaries are retained unchanged. Rebuilt binary identity and an
+unchanged final compilation closure are not claimed.
 The [run-level data and provenance](benchmarks/results/1979/README.md) retain
 full revisions, measured-source and executable hashes, commands, environment,
 original locks, raw-output hashes and qualification limitations.
