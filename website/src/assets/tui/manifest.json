@@ -500,7 +500,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "93125c060"
+   "commit": "f9025d9b1"
   },
   {
    "name": "mstp-participant-join",
@@ -510,7 +510,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "93125c060"
+   "commit": "f9025d9b1"
   },
   {
    "name": "mstp-participant",
@@ -520,7 +520,7 @@
    "source": "snapshot",
    "command": "(insta snapshot)",
    "keys": "",
-   "commit": "93125c060"
+   "commit": "f9025d9b1"
   },
   {
    "name": "troubleshoot-narrow",
