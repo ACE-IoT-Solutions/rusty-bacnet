@@ -311,7 +311,7 @@ fn action_command_to_py<'py>(
 
 /// An object reference: an `ObjectIdentifier`, or a `(device, object)` pair
 /// when it names a device, the forms `door_members` takes.
-fn object_reference_to_py(
+pub(super) fn object_reference_to_py(
     py: Python<'_>,
     reference: &BACnetDeviceObjectReference,
 ) -> PyResult<Py<PyAny>> {

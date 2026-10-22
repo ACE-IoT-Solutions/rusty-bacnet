@@ -22,6 +22,7 @@ use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums as bacnet_enums;
 use bacnet_types::primitives;
 
+mod access_credential;
 mod access_rule;
 mod action_list;
 mod address;
@@ -46,6 +47,9 @@ mod rpm_wpm;
 mod schedule;
 mod timestamp;
 
+pub(crate) use access_credential::{
+    AccessRightsValue, assigned_access_rights_from_py, authorization_exemptions_from_py,
+};
 pub(crate) use access_rule::{access_rules_from_py, device_object_reference};
 pub(crate) use action_list::action_lists_from_py;
 pub use address::parse_address;
