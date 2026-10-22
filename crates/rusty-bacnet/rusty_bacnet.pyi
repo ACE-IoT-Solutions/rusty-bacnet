@@ -6366,3 +6366,113 @@ class MstpEndpoint:
     def device_instance(self) -> int: ...
     @property
     def vendor_id(self) -> int: ...
+
+# ---------------------------------------------------------------------------
+# Owned B/IP routing (#1858)
+# ---------------------------------------------------------------------------
+
+class BipRouterPort:
+    """Immutable unopened B/IP port configuration; network_number is 1..65534.
+
+    Port 0 requests an ephemeral UDP port. Mode is normal unless bbmd or
+    foreign_device is explicitly supplied; supplying both raises ValueError.
+    Bbmd's default refusal of foreign-device registrations is unchanged.
+    Invalid IPv4 addresses raise ValueError; out-of-range integers raise
+    OverflowError. Construction opens no socket.
+    """
+    def __init__(self, network_number: int, *, interface: str = "0.0.0.0", port: int = 47808, broadcast_address: str = "255.255.255.255", bbmd: Bbmd | None = None, foreign_device: ForeignDevice | None = None) -> None: ...
+    @property
+    def network_number(self) -> int: ...
+    @property
+    def interface(self) -> str: ...
+    @property
+    def port(self) -> int: ...
+    @property
+    def broadcast_address(self) -> str: ...
+    @property
+    def mode(self) -> Literal["normal", "bbmd", "foreign_device"]: ...
+
+class RouterPortInfo:
+    """Frozen owned snapshot of an actual started B/IP port."""
+    @property
+    def index(self) -> int: ...
+    @property
+    def network_number(self) -> int: ...
+    @property
+    def mac(self) -> bytes: ...
+    @property
+    def address(self) -> str: ...
+
+class RouterRoute:
+    """Frozen copied route; reachability is effective when captured."""
+    @property
+    def network_number(self) -> int: ...
+    @property
+    def port_index(self) -> int: ...
+    @property
+    def is_direct(self) -> bool: ...
+    @property
+    def next_hop(self) -> bytes | None: ...
+    @property
+    def reachability(self) -> Literal["reachable", "busy", "unreachable"]: ...
+
+class RouterCleanupFailure:
+    """Frozen cause details from the retained native cleanup outcome."""
+    @property
+    def network_number(self) -> int | None: ...
+    @property
+    def port_index(self) -> int | None: ...
+    @property
+    def kind(self) -> Literal["transport", "worker"]: ...
+    @property
+    def message(self) -> str: ...
+    @property
+    def errno(self) -> int | None: ...
+    @property
+    def error_class(self) -> int | None: ...
+    @property
+    def error_code(self) -> int | None: ...
+    @property
+    def reason(self) -> int | None: ...
+    @property
+    def worker(self) -> str | None: ...
+
+class BacnetRouterCloseError(BacnetError):
+    """A settled cleanup failure. The router retains it and prevents restart."""
+    failures: tuple[RouterCleanupFailure, ...]
+
+class BACnetRouter:
+    """Own B/IP forwarding across one to 255 uniquely numbered ports.
+
+    This binding has no local application role, other transport types, or
+    route administration. It uses native RouterOptions defaults, including
+    their permissive wire-control policy. The first asynchronous method binds
+    the object to the running asyncio loop; another loop raises RuntimeError.
+
+    Successful awaited close/context exit joins router and transport cleanup.
+    Cancellation removes only a waiter: await close to observe the barrier.
+    A cleanup failure raises BacnetRouterCloseError with retained cause details;
+    subsequent close/start calls re-expose the failure without retry. Restart
+    is supported only after successful cleanup. Destruction requests best-effort
+    cleanup on the shared runtime; it is not an awaited cleanup guarantee.
+    """
+    def __init__(self, ports: Sequence[BipRouterPort]) -> None: ...
+    def start(self) -> Awaitable[None]:
+        """Start; duplicate start raises RuntimeError. Native startup errors
+        retain their exception class and errno. An unsuccessful native start
+        finishes rollback before reporting its original error."""
+        ...
+    def close(self) -> Awaitable[None]: ...
+    def __aenter__(self) -> Awaitable[BACnetRouter]: ...
+    def __aexit__(self, exc_type: Any = None, exc_value: Any = None, traceback: Any = None) -> Awaitable[None]:
+        """Await cleanup and preserve a context-body exception as primary.
+        A secondary cleanup failure remains observable through later close."""
+        ...
+    def ports(self) -> Awaitable[list[RouterPortInfo]]:
+        """Copy actual addresses in input order; raises RuntimeError before
+        start or after close begins. Snapshots survive close."""
+        ...
+    def routes(self) -> Awaitable[list[RouterRoute]]:
+        """Copy direct/learned routes; raises RuntimeError before start or
+        after close begins. No lock or wall-clock timestamp is exposed."""
+        ...
