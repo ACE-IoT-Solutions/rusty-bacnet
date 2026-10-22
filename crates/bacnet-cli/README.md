@@ -46,7 +46,23 @@ device UUID they generate. Press `p` for profiles, `x` to disconnect and
 nonpersistent connection flow; B/IPv6 uses only that flow. The TUI is
 read-only until `W` arms a time-boxed write session on a profile; every write
 is previewed, kept in a revertible ledger and recorded in an audit log.
-`--passive` transmits nothing.
+`--passive` binds a receive-only B/IP UDP listener on the chosen interface and
+port. The status bar says listening only after the bind succeeds. Router
+announcements populate Networks; `:find NAME` filters retained and newly overheard
+I-Haves by exact name, without sending Who-Has. Names are learned from those
+observations. Foreign-device settings are ignored: there is no registration,
+renewal, responder or BACnet send path. Multicast, IPv6, SC and participant MS/TP
+are explicitly unsupported in this mode; the separate MS/TP monitor still works.
+
+This listener sees only UDP traffic delivered to this host. It cannot see unrelated
+switched unicast traffic, and peers may never repeat an announcement. It is not
+promiscuous packet capture or physical-network qualification. Startup router
+announcements and unsolicited I-Haves follow Clauses 6.6.2/6.6.3.3 and 16.9/16.9.4.
+The session keeps at most 4,096 recent I-Have observations/results and 4 MiB of
+strings in each collection, refreshing repeated
+station/object identities, plus at most 128 routers and 128 networks per router.
+Oldest entries are evicted deterministically; names retain their existing LRU
+limit. Disconnect, replacement and UI closure release the owned listener.
 
 One-shot commands refuse anything that changes a device unless
 given `--allow-write`; communication control and reinitialize also need

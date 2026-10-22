@@ -132,7 +132,7 @@ async fn connect(
         };
     }
     if options.safety.passive {
-        return Box::pin(passive::serve(&sink, commands, &options.safety)).await;
+        return Box::pin(passive::serve(&plan, &sink, commands, &options.safety)).await;
     }
     let args = plan.args;
     // The CLI's clients keep bacnet-client's default of three retries.

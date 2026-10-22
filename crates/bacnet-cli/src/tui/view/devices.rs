@@ -388,6 +388,9 @@ fn empty_text(app: &App) -> String {
         (Link::Picking, _) => String::new(),
         (Link::Connecting, _) => "Connecting...".to_string(),
         (Link::Failed(error), _) => format!("Connection failed: {}", error.detail),
+        (Link::Passive, _) if app.passive_listener.is_some() => {
+            "Listening: :find NAME searches overheard I-Haves; Networks shows routers.".into()
+        }
         (Link::Passive, _) => {
             "Passive: no network client; nothing is transmitted. u shows the ledger.".into()
         }

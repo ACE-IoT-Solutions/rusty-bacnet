@@ -186,9 +186,8 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     {
         (None, Some(service), Some(connection), None, None)
     } else {
-        // A passive session or a monitor binds nothing, so there is no
-        // interface to pick.
-        let (interface, broadcast, picker) = if options.safety.passive || monitor.is_some() {
+        // A serial monitor needs no IP interface selection.
+        let (interface, broadcast, picker) = if monitor.is_some() {
             let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);
             (interface, cli.broadcast, None)
         } else {

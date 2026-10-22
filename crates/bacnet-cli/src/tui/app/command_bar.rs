@@ -14,7 +14,8 @@
 //! - `bbmd [ADDRESS]`: show and read that BBMD's tables on the Network screen
 //!   (`ip` or `ip:port`, port 47808 by default); `bbmd` alone goes back to
 //!   the tables of the BBMD the session registers with.
-//! - `find NAME`: broadcast a Who-Has for the object named NAME, the rest
+//! - `find NAME`: in active mode broadcast Who-Has; in passive mode search
+//!   local observed names. NAME is the rest
 //!   of the line as typed (one quoted word is unwrapped), and list the
 //!   answers below the device table; `find` alone, or `find ""`, closes the
 //!   list.
@@ -56,6 +57,17 @@ pub(crate) struct Syntax {
     pub(crate) usage: &'static [&'static str],
     /// What it does, in a few words.
     pub(crate) what: &'static str,
+}
+
+impl Syntax {
+    /// The command description for the session policy.
+    pub(crate) fn description(&self, passive: bool) -> &'static str {
+        if passive && self.name == "find" {
+            "Search local observed object names; alone, close the list"
+        } else {
+            self.what
+        }
+    }
 }
 
 /// Every command the bar takes.

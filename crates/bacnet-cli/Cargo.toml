@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 bacnet-npdu = { workspace = true }
+bacnet-bip-core = { workspace = true, optional = true }
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-services = { workspace = true, features = ["std"] }
@@ -90,6 +91,7 @@ default = ["tui"]
 # (#974). On by default since 0.14.0; `--no-default-features` builds the
 # one-shot commands without it (and without ratatui and crossterm).
 tui = [
+    "dep:bacnet-bip-core",
     "dep:ratatui",
     "dep:crossterm",
     "dep:futures-util",

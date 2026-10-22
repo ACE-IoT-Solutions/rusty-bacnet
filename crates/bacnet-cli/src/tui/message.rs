@@ -374,6 +374,13 @@ pub(crate) enum WorkerEvent {
     Safety(super::safety::SafetyEvent),
     /// A passive session started: there is no client.
     Passive,
+    /// A receive-only B/IP socket has successfully bound.
+    PassiveListening {
+        /// Selected interface and actual port.
+        local: String,
+        /// Configured foreign registration is deliberately inactive.
+        foreign_ignored: bool,
+    },
     /// The client holds, or keeps asking for, an entry in this BBMD's
     /// foreign-device table.
     ForeignDevice(super::network::Foreign),

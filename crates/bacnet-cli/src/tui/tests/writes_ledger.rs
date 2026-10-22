@@ -167,20 +167,17 @@ fn the_exit_guard_waits_for_a_pending_request() {
 /// Keep in a passive session flags the entries and records it.
 #[tokio::test(start_paused = true)]
 async fn keep_in_a_passive_session_flags_and_records() {
-    use crate::tui::worker::session::{ConnectPlan, TransportKind, spawn};
+    use crate::tui::worker::session::spawn;
     let dir = tempfile::tempdir().unwrap();
     leave_ledger(dir.path(), &[earlier(State::Applied)]);
-    let plan = ConnectPlan {
-        kind: TransportKind::Bip,
-        args: crate::tui::profile::Profile::default()
-            .transport_args()
-            .unwrap(),
-        await_interface: false,
-    };
+    let plan = super::network::plan(None);
     let (sink, mut events_rx) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let (commands, rx) = tokio::sync::mpsc::channel(16);
     let task = spawn(plan, sink, rx, options(dir.path(), Safety::default(), true));
-    assert_eq!(events_rx.recv().await, Some(WorkerEvent::Passive));
+    assert!(matches!(
+        events_rx.recv().await,
+        Some(WorkerEvent::PassiveListening { .. })
+    ));
     commands
         .send(Command::Safety(SafetyCommand::Keep))
         .await

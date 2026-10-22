@@ -149,7 +149,11 @@ impl App {
             }
             // The footer shows its summary with the recovery keys; the
             // device screen and the log have the whole error.
-            WorkerEvent::ConnectFailed { error } => self.link = Link::Failed(error),
+            WorkerEvent::ConnectFailed { error } => {
+                // Keep the last listener address and observations for inspection.
+                // Link::Failed means they have no live input; reset_session clears them.
+                self.link = Link::Failed(error);
+            }
             WorkerEvent::Discovered(row) | WorkerEvent::Updated(row) => {
                 if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
                     op.replies += usize::from(op.spec.wants(row.instance));
@@ -218,6 +222,16 @@ impl App {
                 self.link = Link::Passive;
                 // The monitor's session captures; a plain passive one can't.
                 self.start_capture(out);
+            }
+            WorkerEvent::PassiveListening {
+                local,
+                foreign_ignored,
+            } => {
+                self.link = Link::Passive;
+                self.passive_listener = Some(local);
+                if foreign_ignored {
+                    self.flash("Listening only: foreign-device settings ignored; no registration or renewal.", FLASH_FOR);
+                }
             }
             WorkerEvent::ForeignDevice(foreign) => self.network.foreign_device(foreign),
             WorkerEvent::Network(event) => self.network_event(event),

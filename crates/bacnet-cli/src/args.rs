@@ -276,8 +276,8 @@ pub(crate) enum Command {
         /// connecting.
         #[arg(long, value_name = "NAME", conflicts_with = "no_profile")]
         profile: Option<String>,
-        /// Transmit nothing: no client is built, so no discovery, reads,
-        /// subscriptions, registrations or writes.
+        /// Listen for B/IP announcements without sending. :find searches
+        /// overheard I-Haves locally. No reads, registrations or writes.
         #[arg(long)]
         passive: bool,
         /// Listen to an MS/TP trunk on this serial port without transmitting:
