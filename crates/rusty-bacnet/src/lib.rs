@@ -25,6 +25,7 @@ mod object_options;
 mod py_async;
 mod read_range;
 mod reinitialize;
+mod router;
 mod sc_events;
 mod sc_identity;
 mod sc_inspection;
@@ -76,6 +77,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     discovery::register(m)?;
     sc_inspection::register(m)?;
     endpoint::register(m)?;
+    router::register(m)?;
     reinitialize::register(m)?;
     m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
     m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;

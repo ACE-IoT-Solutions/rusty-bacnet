@@ -160,6 +160,32 @@ pub struct RouterPort<T: TransportPort> {
     pub network_number: u16,
 }
 
+/// An owned address snapshot captured after a router port starts.
+///
+/// This contains no transport or socket owner. Its index is the configured
+/// input position and the MAC is the transport's actual post-start address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RouterPortInfo {
+    index: u8,
+    network_number: u16,
+    mac: MacAddr,
+}
+
+impl RouterPortInfo {
+    /// Zero-based configured input position, also the route's egress port ID.
+    pub fn index(&self) -> u8 {
+        self.index
+    }
+    /// The directly attached BACnet network number.
+    pub fn network_number(&self) -> u16 {
+        self.network_number
+    }
+    /// The actual local MAC captured after successful transport startup.
+    pub fn local_mac(&self) -> &[u8] {
+        &self.mac
+    }
+}
+
 /// BACnet router connecting multiple networks.
 ///
 /// The router holds multiple ports, each bound to a different BACnet network.
@@ -185,6 +211,7 @@ pub struct BACnetRouter {
     /// The engine, the gate and the ports' groups.
     shared: Arc<Shared>,
     lifecycle: shutdown::Lifecycle,
+    port_info: Vec<RouterPortInfo>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
 }
@@ -380,6 +407,14 @@ impl BACnetRouter {
     /// group at another UDP port, another B/IP network, is counted.
     pub fn group_dadr_drops(&self) -> u64 {
         self.counters().group_dadr_drops
+    }
+
+    /// Immutable post-start address snapshots in configured-port order.
+    ///
+    /// Copies retain no live transport resources. The snapshots remain readable
+    /// after stop and describe that generation, not a new bind or live lookup.
+    pub fn ports(&self) -> &[RouterPortInfo] {
+        &self.port_info
     }
 
     /// The routing table, locked for local management: read routes, or
