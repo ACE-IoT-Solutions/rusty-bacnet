@@ -58,9 +58,13 @@ pub(crate) async fn serve(
 /// The receive-only I/O boundary, permitting deterministic receive-error tests.
 trait ReceiveOnly {
     fn local_addr(&self) -> io::Result<SocketAddrV4>;
+    fn groups(&self) -> io::Result<bacnet_bip_core::node::Groups>;
     async fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddrV4)>;
 }
 impl ReceiveOnly for PassiveBip {
+    fn groups(&self) -> io::Result<bacnet_bip_core::node::Groups> {
+        self.groups()
+    }
     fn local_addr(&self) -> io::Result<SocketAddrV4> {
         self.local_addr()
     }
@@ -75,6 +79,13 @@ async fn listen(
     mut commands: mpsc::Receiver<Command>,
     options: &SafetyOptions,
 ) {
+    let groups = match listener.groups() {
+        Ok(groups) => groups,
+        Err(error) => {
+            failed(sink, error).await;
+            return;
+        }
+    };
     let local = match listener.local_addr() {
         Ok(local) => local.to_string(),
         Err(error) => {
@@ -108,7 +119,7 @@ async fn listen(
                 Some(command) => refuse(sink, command).await,
             },
             received = listener.recv_from(&mut buffer) => match received {
-                Ok((len, peer)) => if let Some(event) = super::passive_decode::decode(&buffer[..len], peer) {
+                Ok((len, peer)) => if let Some(event) = super::passive_decode::decode(&buffer[..len], peer, &groups) {
                     sink.offer(WorkerEvent::Discovery(event));
                 },
                 Err(error) => { failed(sink, error).await; break; }
@@ -195,6 +206,12 @@ mod tests {
         drops: Arc<AtomicUsize>,
     }
     impl ReceiveOnly for Broken {
+        fn groups(&self) -> io::Result<bacnet_bip_core::node::Groups> {
+            Ok(bacnet_bip_core::node::Groups::new(
+                "255.255.255.255:12345".parse().unwrap(),
+                *self.local_addr()?.ip(),
+            ))
+        }
         fn local_addr(&self) -> io::Result<SocketAddrV4> {
             Ok("127.0.0.1:12345".parse().unwrap())
         }

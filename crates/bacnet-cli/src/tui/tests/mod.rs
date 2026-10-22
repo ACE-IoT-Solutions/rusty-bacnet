@@ -80,6 +80,7 @@ mod network;
 mod network_frames;
 mod passive_discovery;
 mod passive_lifecycle;
+mod passive_repairs;
 mod passive_retention;
 /// Reruns a test whose freed ephemeral port another process takes (#1877).
 #[path = "../../../../bacnet-endpoint/tests/support/port_retry.rs"]

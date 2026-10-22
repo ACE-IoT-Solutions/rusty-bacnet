@@ -290,7 +290,9 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
     let mut parts = Vec::new();
     match app.screen {
         Screen::Network if app.networks_tab() => {
-            parts.push(h(6, "r", "ask routers"));
+            if !app.safety.passive {
+                parts.push(h(6, "r", "ask routers"));
+            }
             parts.push(h(5, "Tab", "tables"));
             parts.push(h(3, ":find", "NAME"));
             parts.push(h(8, "Esc", "back"));

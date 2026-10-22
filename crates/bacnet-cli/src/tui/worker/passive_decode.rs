@@ -18,12 +18,19 @@ use std::net::SocketAddrV4;
 
 /// Original and forwarded data only; management/distribution requests are not
 /// deliveries. Forwarded origin and routed SNET/SADR retain their claimed identity.
-pub(super) fn decode(bytes: &[u8], peer: SocketAddrV4) -> Option<DiscoveryEvent> {
+pub(super) fn decode(
+    bytes: &[u8],
+    peer: SocketAddrV4,
+    groups: &bacnet_bip_core::node::Groups,
+) -> Option<DiscoveryEvent> {
+    if groups.contains_ip(*peer.ip()) {
+        return None;
+    }
     let frame = decode_bvll(bytes).ok()?;
     let (payload, origin, group) = match frame.message().ok()? {
         Bvll::OriginalUnicastNpdu(npdu) => (npdu, peer, false),
         Bvll::OriginalBroadcastNpdu(npdu) => (npdu, peer, true),
-        Bvll::ForwardedNpdu { origin, npdu } => (npdu, origin, true),
+        Bvll::ForwardedNpdu { origin, npdu } if !groups.contains(origin) => (npdu, origin, true),
         _ => return None,
     };
     let npdu = decode_npdu(Bytes::copy_from_slice(payload)).ok()?;

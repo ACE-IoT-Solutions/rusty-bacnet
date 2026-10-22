@@ -310,7 +310,8 @@ pub(crate) struct App {
     pub(crate) capture: capture::CaptureState,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
-    /// Successful receive-only B/IP bind; absent for monitors and failed sessions.
+    /// Last successful receive-only B/IP bind, retained after failure until reset.
+    /// Only `passive_listening()` means this endpoint still supplies input.
     pub(crate) passive_listener: Option<String>,
     /// Recent I-Haves, bounded and refreshed by station/object identity.
     pub(crate) overheard: who_has::Observations,
@@ -695,7 +696,8 @@ impl App {
     }
 
     fn disconnect(&mut self, out: &mut Vec<Command>) {
-        let monitoring = self.link == Link::Passive && self.monitor.is_some();
+        let monitoring = self.link == Link::Passive
+            && (self.monitor.is_some() || self.passive_listener.is_some());
         if monitoring
             || matches!(
                 self.link,

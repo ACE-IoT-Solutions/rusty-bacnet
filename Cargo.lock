@@ -288,6 +288,7 @@ dependencies = [
 name = "bacnet-cli"
 version = "0.14.0"
 dependencies = [
+ "bacnet-bip-core",
  "bacnet-client",
  "bacnet-encoding",
  "bacnet-network",

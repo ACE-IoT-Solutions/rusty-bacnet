@@ -389,3 +389,33 @@ async fn passive_zero_send_attempts_with_active_positive_control_and_hostile_tra
         std::io::ErrorKind::WouldBlock
     );
 }
+
+#[tokio::test]
+async fn passive_runtime_discards_group_origins_before_valid_observation_marker() {
+    let mut net = Passive::start(super::network::plan(None)).await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    for npdu in [vec![1, 0x80, 1, 0, 2], i_have("invalid origin", false)] {
+        for origin in ["239.1.2.3:47808", "255.255.255.255:47809"] {
+            peer.send_to(
+                &wire(Bvll::ForwardedNpdu {
+                    origin: origin.parse().unwrap(),
+                    npdu: &npdu,
+                }),
+                net.address,
+            )
+            .await
+            .unwrap();
+        }
+    }
+    let marker = i_have("valid marker", false);
+    peer.send_to(&wire(Bvll::OriginalUnicastNpdu(&marker)), net.address)
+        .await
+        .unwrap();
+    assert!(
+        matches!(net.observation().await, DiscoveryEvent::IHave(row) if row.name == "valid marker")
+    );
+    assert_eq!(net.app.overheard.0.len(), 1);
+    assert_eq!(net.app.names.len(), 1);
+    assert!(net.app.network.routers.is_empty());
+    net.stop().await;
+}

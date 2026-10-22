@@ -76,6 +76,15 @@ impl PassiveBip {
             self.socket.local_addr()?.port(),
         ))
     }
+    /// Pure native address rules using the selected interface's known subnet.
+    /// Wildcard binds have no selected subnet, so only universal groups are
+    /// known; a remote directed broadcast is never guessed from its suffix.
+    pub fn groups(&self) -> io::Result<bacnet_bip_core::node::Groups> {
+        Ok(bacnet_bip_core::node::Groups::new(
+            SocketAddrV4::new(self.broadcast, self.socket.local_addr()?.port()),
+            self.interface,
+        ))
+    }
     /// Receive one datagram and its UDP peer into `buffer`, ignoring traffic for
     /// other selected interfaces. Supply 65,535 bytes to avoid UDP truncation.
     pub async fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddrV4)> {

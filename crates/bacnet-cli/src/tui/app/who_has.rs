@@ -90,6 +90,11 @@ impl WhoHasSearch {
 }
 
 impl App {
+    /// A bound passive listener is still supplying observations.
+    pub(crate) fn passive_listening(&self) -> bool {
+        self.passive_listener.is_some() && self.link == Link::Passive
+    }
+
     /// `:find NAME`: search for the object, or with no name close the
     /// search panel.
     pub(super) fn find(&mut self, name: String, out: &mut Vec<Command>) {
@@ -97,7 +102,7 @@ impl App {
             self.who_has = None;
             return;
         }
-        let passive = self.passive_listener.is_some() && self.link == Link::Passive;
+        let passive = self.passive_listening();
         if !passive && !self.discovery_ready() {
             return;
         }
@@ -150,7 +155,7 @@ impl App {
                 // Every I-Have names an object, asked for or not.
                 self.names
                     .learn_name(row.device, &row.address, row.object, row.name.clone());
-                if self.passive_listener.is_some() {
+                if self.passive_listening() {
                     self.overheard.record(row.clone());
                 }
                 if let Some(search) = &mut self.who_has {
@@ -175,7 +180,11 @@ impl App {
             DiscoveryEvent::Refused { command, reason } => {
                 match command {
                     DiscoveryCommand::WhoHas { name } => {
-                        if let Some(search) = self.who_has.as_mut().filter(|s| s.name == name) {
+                        if let Some(search) = self
+                            .who_has
+                            .as_mut()
+                            .filter(|s| !s.passive && s.name == name)
+                        {
                             search.failed = Some(reason.clone());
                         }
                     }

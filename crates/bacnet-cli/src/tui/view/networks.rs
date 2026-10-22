@@ -31,8 +31,10 @@ pub(super) fn subtitle(app: &App) -> String {
         Some((network, false)) => format!(" | local network {network} (learned)"),
         None => String::new(),
     };
-    let asked = if app.passive_listener.is_some() {
+    let asked = if app.passive_listening() {
         "listening for announcements".into()
+    } else if app.passive_listener.is_some() {
+        "stopped; no live input".into()
     } else {
         match state.routers_asked {
             Some(at) => format!("asked {} ago", age_label(app.now, at)),
@@ -47,8 +49,10 @@ pub(super) fn subtitle(app: &App) -> String {
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let map = &app.network.routers;
     if map.is_empty() {
-        let text = if app.passive_listener.is_some() {
+        let text = if app.passive_listening() {
             "Listening: no router announcement overheard yet."
+        } else if app.passive_listener.is_some() {
+            "Listener stopped; no live input. No router announcement retained."
         } else {
             "No router heard yet. r asks every router for the networks it reaches."
         };

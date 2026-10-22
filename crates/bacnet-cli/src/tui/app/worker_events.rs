@@ -150,7 +150,8 @@ impl App {
             // The footer shows its summary with the recovery keys; the
             // device screen and the log have the whole error.
             WorkerEvent::ConnectFailed { error } => {
-                self.passive_listener = None;
+                // Keep the last listener address and observations for inspection.
+                // Link::Failed means they have no live input; reset_session clears them.
                 self.link = Link::Failed(error);
             }
             WorkerEvent::Discovered(row) | WorkerEvent::Updated(row) => {
