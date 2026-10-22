@@ -23,6 +23,7 @@ struct Resource {
     start_error: bool,
     stop_error: Option<Arc<String>>,
     panic_stop: bool,
+    dropped: Option<oneshot::Sender<()>>,
 }
 impl Resource {
     fn new(counts: &Arc<Counts>) -> Self {
@@ -36,12 +37,16 @@ impl Resource {
             start_error: false,
             stop_error: None,
             panic_stop: false,
+            dropped: None,
         }
     }
 }
 impl Drop for Resource {
     fn drop(&mut self) {
         self.counts.live.fetch_sub(1, Ordering::SeqCst);
+        if let Some(dropped) = self.dropped.take() {
+            let _ = dropped.send(());
+        }
     }
 }
 impl Session for Resource {
@@ -78,7 +83,12 @@ fn starts(
     resource: Resource,
 ) -> tokio::task::JoinHandle<Result<u64, StartError<&'static str, Arc<String>>>> {
     let owner = owner.clone();
-    tokio::spawn(async move { owner.start(false, move || resource).await })
+    tokio::spawn(async move {
+        owner
+            .start(false, move || resource)
+            .await
+            .map(|receipt| receipt.publish(|_| {}))
+    })
 }
 
 #[tokio::test]
@@ -230,7 +240,8 @@ async fn old_publication_cleanup_cannot_close_a_new_generation() {
         owner
             .start(true, || panic!("reentry does not rebuild"))
             .await
-            .unwrap(),
+            .unwrap()
+            .publish(|_| {}),
         first
     );
     assert!(matches!(
@@ -307,4 +318,104 @@ async fn worker_panic_never_becomes_success_or_admits_a_restart() {
         Err(StartError::Cleanup(CloseError::WorkerEnded))
     ));
     assert_eq!(counts.stops.load(Ordering::SeqCst), 1);
+}
+
+async fn unread_start_result_cleanup(fail: bool) {
+    let counts = Arc::new(Counts::default());
+    let owner = Owner::new();
+    let error = Arc::new("unread startup cleanup failed".to_string());
+    let mut resource = Resource::new(&counts);
+    let (entered, stopping) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let (dropped, done) = oneshot::channel();
+    resource.stopping = Some(entered);
+    resource.stop_gate = Some(gate);
+    resource.dropped = Some(dropped);
+    resource.stop_error = fail.then(|| error.clone());
+    let mut start = Box::pin(owner.start(false, move || resource));
+    std::future::poll_fn(|cx| {
+        assert!(start.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    // Admission remains locked until the retained worker has queued success.
+    // This task never polls the receiver again after that independent barrier.
+    assert_eq!(owner.inspect(|_| ()).await, Some(()));
+    assert_eq!(counts.stops.load(Ordering::SeqCst), 0);
+    drop(start);
+    tokio::time::timeout(std::time::Duration::from_secs(5), stopping)
+        .await
+        .expect("unread successful startup must enter cleanup")
+        .unwrap();
+    assert_eq!(counts.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.live.load(Ordering::SeqCst), 1);
+    release.send(()).unwrap();
+    done.await.unwrap();
+    assert_eq!(counts.live.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.stops.load(Ordering::SeqCst), 1);
+    // Only after entry, completion and destruction are proved may close run.
+    if fail {
+        for _ in 0..2 {
+            let Err(CloseError::Stop(actual)) = owner.close().await else {
+                panic!("lost original unread-result cleanup failure")
+            };
+            assert!(Arc::ptr_eq(&actual, &error));
+        }
+        let Err(StartError::Cleanup(CloseError::Stop(actual))) = owner
+            .start(false, || panic!("failed cleanup must fence restart"))
+            .await
+        else {
+            panic!("restart discarded failed cleanup")
+        };
+        assert!(Arc::ptr_eq(&actual, &error));
+    } else {
+        assert!(owner.inspect(|_| ()).await.is_none());
+        owner.close().await.unwrap();
+    }
+    assert_eq!(counts.stops.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn unread_successful_start_result_owns_cleanup() {
+    unread_start_result_cleanup(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unread_successful_start_result_retains_cleanup_failure() {
+    unread_start_result_cleanup(true).await;
+}
+
+#[tokio::test]
+async fn receipt_failed_send_and_panicking_transfer_keep_cleanup_authority() {
+    for panic_transfer in [false, true] {
+        let counts = Arc::new(Counts::default());
+        let owner = Owner::new();
+        let mut resource = Resource::new(&counts);
+        let (entered, stopping) = oneshot::channel();
+        let (dropped, done) = oneshot::channel();
+        resource.stopping = Some(entered);
+        resource.dropped = Some(dropped);
+        let receipt = owner.start(false, move || resource).await.unwrap();
+        if panic_transfer {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    receipt.publish(|_| panic!("guard transfer failed"));
+                }))
+                .is_err()
+            );
+        } else {
+            // Drop the failed send on a thread with no current Tokio runtime.
+            let (tx, rx) = oneshot::channel();
+            drop(rx);
+            std::thread::spawn(move || drop(tx.send(receipt).unwrap_err()))
+                .join()
+                .unwrap();
+        }
+        stopping.await.unwrap();
+        done.await.unwrap();
+        assert_eq!(counts.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.live.load(Ordering::SeqCst), 0);
+        assert!(owner.inspect(|_| ()).await.is_none());
+        owner.close().await.unwrap();
+    }
 }

@@ -1,5 +1,6 @@
 //! A successful startup result lost in asyncio only closes its own generation.
-use super::lifecycle::Lifecycle;
+use super::config::PortConfig;
+use super::lifecycle::{Lifecycle, StartError};
 use super::session::NativeSession;
 use crate::py_async::{PutBack, Via};
 use pyo3::prelude::*;
@@ -25,7 +26,20 @@ impl Publication {
             completed: std::sync::Mutex::new(None),
         })
     }
-    pub fn arm(&self, generation: u64) {
+    pub async fn start(
+        &self,
+        reenter: bool,
+        configs: Vec<PortConfig>,
+    ) -> Result<(), StartError<bacnet_types::error::Error, bacnet_network::router::RouterStopError>>
+    {
+        let receipt = self
+            .owner
+            .start(reenter, move || NativeSession::new(configs))
+            .await?;
+        receipt.publish(|generation| self.arm(generation));
+        Ok(())
+    }
+    fn arm(&self, generation: u64) {
         self.generation.store(generation, Ordering::SeqCst);
     }
     fn cleanup(&self) {

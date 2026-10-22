@@ -92,11 +92,10 @@ impl PyBACnetRouter {
         crate::py_async::future_into_py_or_put_back(
             py,
             async move {
-                let generation = owner
-                    .start(false, move || NativeSession::new(config))
+                publication
+                    .start(false, config)
                     .await
                     .map_err(|e| errors::start_error(e, &networks))?;
-                publication.arm(generation);
                 crate::py_async::attach(|py| Ok(py.None()))
             },
             hook,
@@ -135,11 +134,10 @@ impl PyBACnetRouter {
         crate::py_async::future_into_py_or_put_back(
             py,
             async move {
-                let generation = owner
-                    .start(true, move || NativeSession::new(config))
+                publication
+                    .start(true, config)
                     .await
                     .map_err(|e| errors::start_error(e, &networks))?;
-                publication.arm(generation);
                 Ok(self_ref)
             },
             hook,

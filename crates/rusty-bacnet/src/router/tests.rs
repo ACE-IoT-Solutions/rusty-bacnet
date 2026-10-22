@@ -83,7 +83,11 @@ async fn native_cleanup_causes_survive_repeated_python_conversion_and_context_bo
     ])
     .await;
     let owner = Lifecycle::new();
-    owner.start(false, move || Running(router)).await.unwrap();
+    owner
+        .start(false, move || Running(router))
+        .await
+        .unwrap()
+        .publish(|_| {});
     // The context helper awaits this same retained failure. Returning None
     // with a body exception leaves Python's original exception primary.
     errors::context_outcome(owner.close().await, true, &[1, 5, 9]).unwrap();

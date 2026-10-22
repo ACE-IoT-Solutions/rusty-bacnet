@@ -40,6 +40,8 @@ enum Phase<S: Session> {
 struct State<S: Session> {
     generation: u64,
     phase: Phase<S>,
+    #[cfg(test)]
+    cleanup_completed: Option<oneshot::Sender<()>>,
 }
 
 pub(crate) struct Lifecycle<S: Session> {
@@ -58,6 +60,48 @@ impl<S: Session> Clone for Lifecycle<S> {
     }
 }
 
+/// Cleanup authority travels with success, including while it is unread.
+pub(crate) struct StartupReceipt<S: Session> {
+    owner: Option<Lifecycle<S>>,
+    generation: u64,
+    runtime: tokio::runtime::Handle,
+}
+impl<S: Session> std::fmt::Debug for StartupReceipt<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartupReceipt")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl<S: Session> StartupReceipt<S> {
+    fn new(owner: Lifecycle<S>, generation: u64) -> Self {
+        Self {
+            owner: Some(owner),
+            generation,
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    /// Arm the next guard before releasing this receipt's cleanup authority.
+    pub(crate) fn publish(mut self, arm: impl FnOnce(u64)) -> u64 {
+        arm(self.generation);
+        self.owner.take();
+        self.generation
+    }
+}
+impl<S: Session> Drop for StartupReceipt<S> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            let generation = self.generation;
+            // Drop may run outside a runtime thread. The startup runtime owns
+            // this retained cleanup and no Python attachment is required.
+            self.runtime.spawn(async move {
+                let _ = owner.close_generation(generation).await;
+            });
+        }
+    }
+}
+
 struct CloseIntent(Arc<AtomicUsize>);
 impl Drop for CloseIntent {
     fn drop(&mut self) {
@@ -71,6 +115,8 @@ impl<S: Session> Lifecycle<S> {
             state: Arc::new(Mutex::new(State {
                 generation: 0,
                 phase: Phase::Idle,
+                #[cfg(test)]
+                cleanup_completed: None,
             })),
             closing: Arc::new(AtomicUsize::new(0)),
             disposed: Arc::new(AtomicBool::new(false)),
@@ -89,10 +135,19 @@ impl<S: Session> Lifecycle<S> {
             state: Arc::new(Mutex::new(State {
                 generation: 1,
                 phase: Phase::Running(running),
+                cleanup_completed: None,
             })),
             closing: Arc::new(AtomicUsize::new(0)),
             disposed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code, reason = "only the binding fixture observes native cleanup")]
+    pub(crate) async fn observe_cleanup_for_test(&self) -> oneshot::Receiver<()> {
+        let (completed, waiter) = oneshot::channel();
+        self.state.lock().await.cleanup_completed = Some(completed);
+        waiter
     }
 
     /// Prevent queued or future starts before a destructor schedules cleanup.
@@ -104,7 +159,7 @@ impl<S: Session> Lifecycle<S> {
         &self,
         reenter: bool,
         build: F,
-    ) -> Result<u64, StartError<S::StartError, S::StopError>>
+    ) -> Result<StartupReceipt<S>, StartError<S::StartError, S::StopError>>
     where
         F: FnOnce() -> S + Send + 'static,
     {
@@ -115,7 +170,7 @@ impl<S: Session> Lifecycle<S> {
         match &state.phase {
             Phase::Running(_) => {
                 return if reenter {
-                    Ok(state.generation)
+                    Ok(StartupReceipt::new(self.clone(), state.generation))
                 } else {
                     Err(StartError::AlreadyStarted)
                 };
@@ -129,6 +184,7 @@ impl<S: Session> Lifecycle<S> {
         state.generation += 1;
         let generation = state.generation;
         state.phase = Phase::Starting;
+        let owner = self.clone();
         let closing = self.closing.clone();
         let disposed = self.disposed.clone();
         let (result, waiter) = oneshot::channel();
@@ -153,13 +209,10 @@ impl<S: Session> Lifecycle<S> {
                 return;
             }
             state.phase = Phase::Running(running);
-            if result.send(Ok(generation)).is_err() {
-                let Phase::Running(running) = std::mem::replace(&mut state.phase, Phase::Closing)
-                else {
-                    unreachable!()
-                };
-                let _ = settle(&mut state, running).await;
-            }
+            let receipt = StartupReceipt::new(owner, generation);
+            // A failed send and a successfully queued but unread value both
+            // drop the same receipt. Neither is a delivery acknowledgment.
+            let _ = result.send(Ok(receipt));
         });
         waiter
             .await
@@ -237,7 +290,7 @@ async fn settle<S: Session>(
     mut running: S,
 ) -> Result<(), CloseError<S::StopError>> {
     state.phase = Phase::Closing;
-    match running.stop().await {
+    let outcome = match running.stop().await {
         Ok(()) => {
             state.phase = Phase::Idle;
             Ok(())
@@ -247,5 +300,11 @@ async fn settle<S: Session>(
             state.phase = Phase::Failed(error.clone());
             Err(error)
         }
+    };
+    drop(running);
+    #[cfg(test)]
+    if let Some(completed) = state.cleanup_completed.take() {
+        let _ = completed.send(());
     }
+    outcome
 }
