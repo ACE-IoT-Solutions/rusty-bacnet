@@ -140,26 +140,50 @@ class CredentialRightsTests(unittest.IsolatedAsyncioTestCase):
             cases.append(({"authorization_exemptions": [0, bad]}, OverflowError))
         for bad in [7, 63, 256, 2**32 - 1]:
             cases.append(({"authorization_exemptions": [0, bad]}, BacnetProtocolError))
-        server = make_server()
-        server.add_access_point(1, "Lobby")
-        server.add_access_rights(1, "Allow", positive_access_rules=[{"enable": True}])
+        def reject(server, index, kwargs, error):
+            with self.assertRaises(error) as raised:
+                server.add_access_credential(index, f"Invalid {index}", **kwargs)
+            if error is BacnetProtocolError:
+                self.assert_protocol(raised.exception, ErrorClass.PROPERTY, ErrorCode.VALUE_OUT_OF_RANGE)
+
+        rejected = make_server()
+        rejected.add_access_point(1, "Lobby")
+        rejected.add_access_rights(1, "Allow", positive_access_rules=[{"enable": True}])
         for index, (kwargs, error) in enumerate(cases, 1):
-            with self.subTest(kwargs=kwargs):
-                with self.assertRaises(error) as raised:
-                    server.add_access_credential(index, f"Invalid {index}", **kwargs)
-                if error is BacnetProtocolError:
-                    self.assert_protocol(raised.exception, ErrorClass.PROPERTY, ErrorCode.VALUE_OUT_OF_RANGE)
-                # Same identifier is valid only if the rejected object was never queued.
-                server.add_access_credential(index, f"Valid {index}", assigned_access_rights=[assigned()])
-        await server.start()
+            with self.subTest(phase="reject", kwargs=kwargs):
+                reject(rejected, index, kwargs, error)
+        # No valid registration may replace and hide a partially queued credential.
+        await rejected.start()
         try:
             for index in range(1, len(cases) + 1):
                 oid = ObjectIdentifier(ObjectType.ACCESS_CREDENTIAL, index)
-                self.assertEqual((await server.read_property(oid, P.OBJECT_NAME)).value, f"Valid {index}")
-                self.assertEqual(await server.evaluate_access_rights(oid, POINT),
+                with self.subTest(phase="absent", credential=index):
+                    with self.assertRaises(BacnetProtocolError) as read_error:
+                        await rejected.read_property(oid, P.OBJECT_NAME)
+                    self.assert_protocol(read_error.exception, ErrorClass.OBJECT, ErrorCode.UNKNOWN_OBJECT)
+                    with self.assertRaises(BacnetProtocolError) as evaluation_error:
+                        await rejected.evaluate_access_rights(oid, POINT)
+                    self.assert_protocol(evaluation_error.exception, ErrorClass.OBJECT, ErrorCode.UNKNOWN_OBJECT)
+        finally:
+            await rejected.stop()
+
+        # Recovery is a separate fixture, after absence has been checked directly.
+        recovery = make_server()
+        recovery.add_access_point(1, "Lobby")
+        recovery.add_access_rights(1, "Allow", positive_access_rules=[{"enable": True}])
+        for index, (kwargs, error) in enumerate(cases, 1):
+            with self.subTest(phase="recover", kwargs=kwargs):
+                reject(recovery, index, kwargs, error)
+                recovery.add_access_credential(index, f"Valid {index}", assigned_access_rights=[assigned()])
+        await recovery.start()
+        try:
+            for index in range(1, len(cases) + 1):
+                oid = ObjectIdentifier(ObjectType.ACCESS_CREDENTIAL, index)
+                self.assertEqual((await recovery.read_property(oid, P.OBJECT_NAME)).value, f"Valid {index}")
+                self.assertEqual(await recovery.evaluate_access_rights(oid, POINT),
                                  outcome("granted", rule=position()))
         finally:
-            await server.stop()
+            await recovery.stop()
 
     async def test_decisions_provenance_and_repeated_evaluations_are_pure(self):
         server = make_server()
