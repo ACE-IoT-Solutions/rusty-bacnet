@@ -85,7 +85,7 @@ async fn router_forwards_between_networks() {
     assert!(table.lookup(2000).unwrap().is_direct());
     drop(table);
 
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -124,7 +124,7 @@ async fn router_table_populated_on_start() {
     assert_eq!(table.lookup(300).unwrap().port().0, 2);
     drop(table);
 
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -148,7 +148,7 @@ async fn local_message_delivered_to_application() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]

@@ -51,7 +51,7 @@ async fn r7_endpoint_queued_and_prompt_replies_keep_target_and_reject_retired_co
     );
     let (tx, rx) = oneshot::channel();
     let received = routed.receive(2000, &read(10), Some(tx)).await;
-    routed.router.stop().await;
+    routed.router.stop().await.unwrap();
     assert!(responder.handle(received).await.is_err());
     assert!(rx.await.is_err());
     let queued = ingress
@@ -100,7 +100,7 @@ async fn r7_endpoint_retirement_during_read_prevents_prompt_der_handoff() {
         if close_responder {
             endpoint.stop().await.unwrap();
         }
-        routed.router.stop().await;
+        routed.router.stop().await.unwrap();
     }
 }
 
@@ -123,6 +123,6 @@ async fn r7_server_scope_retirement_and_cancel_release_pending_der_owner_without
         assert!(rx.await.is_err());
         assert!(routed.wire.try_recv().is_err());
         assert_eq!(context.request_tasks.counters().confirmed_active, 0);
-        routed.router.stop().await;
+        routed.router.stop().await.unwrap();
     }
 }

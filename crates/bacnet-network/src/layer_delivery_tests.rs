@@ -268,7 +268,7 @@ async fn router_preserves_link_group_for_ultimate_network_unicast() {
     assert!(received.link_layer_group);
     assert!(!received.is_group);
 
-    router.stop().await;
+    router.stop().await.unwrap();
     peer.stop().await.unwrap();
 }
 

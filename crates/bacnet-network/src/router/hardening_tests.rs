@@ -35,7 +35,7 @@ async fn a_repeated_global_broadcast_is_dropped_when_asked() {
     until(&router, |router| router.counters().duplicate_drops == 1).await;
     assert!(peers[1].sent.try_recv().is_err(), "not relayed again");
     assert!(apdus.try_recv().is_err(), "not delivered again");
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -47,7 +47,7 @@ async fn by_default_a_repeat_goes_through() {
         assert_eq!(apdus.recv().await.unwrap().apdu.as_ref(), [0x10, 0x08]);
     }
     assert_eq!(router.counters().duplicate_drops, 0);
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 /// Network 3000 learned through node 7 on port 1, then a reject naming it
@@ -75,7 +75,7 @@ async fn off_path_reject(options: RouterOptions) -> (Option<Reachability>, u64) 
         .lookup(3000)
         .map(|route| route.reachability());
     let counted = router.counters().not_next_hop;
-    router.stop().await;
+    router.stop().await.unwrap();
     (reachability, counted)
 }
 

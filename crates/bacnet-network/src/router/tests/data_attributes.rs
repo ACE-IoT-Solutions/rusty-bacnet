@@ -233,5 +233,5 @@ async fn sc_to_sc_forwarding_preserves_data_attributes_as_data_options() {
     assert!(!msg.data_options[1].must_understand);
     assert_eq!(msg.data_options[1].data, vec![0x12, 0x34, 0x56]);
 
-    router.stop().await;
+    router.stop().await.unwrap();
 }

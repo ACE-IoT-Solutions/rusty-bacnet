@@ -314,7 +314,7 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
     }
     assert!(forwarded, "expected forward after discovery");
     assert!(!rejected, "no reject once the route is known");
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -357,6 +357,6 @@ async fn stop_cancels_pending_discovery() {
         }
     }
     assert_eq!(router.searches(), (1, false));
-    router.stop().await;
+    router.stop().await.unwrap();
     assert_eq!(router.searches(), (0, true));
 }

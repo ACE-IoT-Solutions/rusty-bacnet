@@ -137,7 +137,7 @@ async fn routed_control_and_reinit_reach_password_protected_handlers() {
             Some(&ReinitializedState::WARMSTART)
         );
         server.stop().await.unwrap();
-        router.stop().await;
+        router.stop().await.unwrap();
     }
 }
 
@@ -179,7 +179,7 @@ async fn routed_local_and_utc_time_sync_are_observed_at_remote_clock() {
         }
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -228,7 +228,7 @@ async fn routed_admin_rejects_malformed_and_unresolved_targets() {
         failure(&output, "not found");
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]

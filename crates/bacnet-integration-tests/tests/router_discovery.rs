@@ -259,7 +259,7 @@ async fn the_router_and_its_remote_network_are_found_and_reached() {
 
     client.stop().await.unwrap();
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 /// The Who-Has is a global broadcast, so the router passes it on to network
@@ -280,7 +280,7 @@ async fn who_has_finds_an_object_behind_the_router() {
     );
     client.stop().await.unwrap();
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -299,7 +299,7 @@ async fn a_reject_for_an_unknown_network_is_surfaced() {
     );
     client.stop().await.unwrap();
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 /// The router knows network 1's number, configured, and says so when asked.
@@ -324,5 +324,5 @@ async fn the_router_answers_what_is_network_number() {
     );
     client.stop().await.unwrap();
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }

@@ -236,7 +236,7 @@ async fn routed_object_create_and_delete_change_only_the_selected_object() {
         let (mut router, mut server, port) = site_with_database(database()).await;
         object_lifecycle(&server, Some(port), &target).await;
         server.stop().await.unwrap();
-        router.stop().await;
+        router.stop().await.unwrap();
     }
 }
 
@@ -246,7 +246,7 @@ async fn routed_alarm_ack_correlates_exact_history_and_is_idempotent() {
         let (mut router, mut server, port) = site_with_database(database()).await;
         acknowledge(&server, Some(port), &target).await;
         server.stop().await.unwrap();
-        router.stop().await;
+        router.stop().await.unwrap();
     }
 }
 

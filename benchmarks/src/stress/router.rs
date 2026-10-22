@@ -82,11 +82,11 @@ impl Running {
                 let _ = server.stop().await;
             }
             Self::Bip(mut router, mut server) => {
-                router.stop().await;
+                router.stop().await.unwrap();
                 let _ = server.stop().await;
             }
             Self::Mstp(mut router, mut server) => {
-                router.stop().await;
+                router.stop().await.unwrap();
                 let _ = server.stop().await;
             }
         }

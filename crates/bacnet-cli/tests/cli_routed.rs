@@ -125,7 +125,7 @@ async fn a_routed_read_reaches_the_device_behind_the_router() {
         );
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 /// `whois-router` (#960) lists the router, at its B/IP address, with the
@@ -161,7 +161,7 @@ async fn whois_router_lists_the_router_and_its_network() {
     assert_eq!(whois_router(&["--dnet", "2"]).await, expected);
     assert_eq!(whois_router(&["--dnet", "77"]).await, json!([]));
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 /// A routed target that nothing answers fails with the network named, and
@@ -183,7 +183,7 @@ async fn routed_targets_fail_clearly() {
     .await;
     failure(&output, "is a routed target");
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[path = "cli_routed/read_services.rs"]
