@@ -1220,6 +1220,47 @@ class AccessRule(TypedDict):
     ]
 
 
+class AssignedAccessRights(TypedDict):
+    """One credential assignment; both keys are required.
+
+    The reference names Access Rights locally or as a (Device, object) pair.
+    Instance 4194303 retains the native unused-marker semantics.
+    """
+
+    assigned_access_rights: ObjectIdentifier | tuple[ObjectIdentifier, ObjectIdentifier]
+    enable: bool
+
+
+class AccessRulePosition(TypedDict):
+    """A rule's original one-based position within its positive or negative array."""
+
+    access_rights: ObjectIdentifier
+    kind: Literal["positive", "negative"]
+    index: int
+
+
+class UnresolvedAccessRights(TypedDict):
+    """An unresolved assignment, retaining its reference and original one-based index."""
+
+    index: int
+    reference: ObjectIdentifier | tuple[ObjectIdentifier, ObjectIdentifier]
+    reason: Literal["remote", "wildcard_device", "not_access_rights", "missing", "unreadable"]
+
+
+class AccessRightsEvaluation(TypedDict):
+    """Plain mapping of the native rights stage; every key is always present.
+
+    A grant may coexist with unresolved assignments. It is not a final
+    authorization result. Nullable rule and denial-event evidence use None.
+    These TypedDicts describe values; no result classes are exported at runtime.
+    """
+
+    decision: Literal["granted", "denied", "exempt"]
+    access_event: int | None
+    rule: AccessRulePosition | None
+    unresolved: list[UnresolvedAccessRights]
+
+
 # One Access Point Authentication_Policy_List element
 # (``BACnetAuthenticationPolicy``): the ``(credential_data_input, index)``
 # entries, each Credential Data Input an ``ObjectIdentifier`` in this device
@@ -4729,7 +4770,54 @@ class BACnetServer:
         VALUE_OUT_OF_RANGE, and nothing is registered.
         """
         ...
-    def add_access_credential(self, instance: int, name: str) -> None: ...
+    def add_access_credential(
+        self,
+        instance: int,
+        name: str,
+        *,
+        assigned_access_rights: Optional[list[AssignedAccessRights]] = None,
+        authorization_exemptions: Optional[list[int]] = None,
+    ) -> None:
+        """Configure a credential before starting; invalid input registers nothing.
+
+        Assignments default to an empty array. Each mapping needs its reference
+        and an actual bool enable flag. Missing/unknown keys or a non-Device
+        device member raise ValueError; incorrect Python types raise TypeError.
+        Wrong object kinds raise BacnetProtocolError PROPERTY/VALUE_OUT_OF_RANGE,
+        except instance 4194303, the existing unused marker.
+
+        Omitted/None exemptions leave the optional row absent; [] serves an
+        empty row. Integers 0..6 and 64..255 are accepted by the Rust setter.
+        Bool/non-int elements raise TypeError; values outside u32 raise
+        OverflowError; reserved values within u32 raise BacnetProtocolError
+        PROPERTY/VALUE_OUT_OF_RANGE. Value 2 exempts this rights criterion only.
+        """
+        ...
+    def evaluate_access_rights(
+        self,
+        credential: ObjectIdentifier,
+        point: ObjectIdentifier,
+    ) -> Awaitable[AccessRightsEvaluation]:
+        """Inspect the native local rights stage (Clause 12.34.9.2).
+
+        Returns a plain mapping. Every key is present; access_event and rule
+        are None where inapplicable. A rule index is its one-based position
+        in the positive/negative array. Unresolved assignments retain their
+        original one-based indices, order, duplicates and device references;
+        skipped entries do not compact later indices. Granted may coexist
+        with unresolved rights; exempt has no unresolved entries.
+
+        Granted means this stage passed, not final authorization. Exempt
+        applies only to this criterion (Clause 12.35.25). The denial event
+        is evidence, not a recorded Access_Event. No remote reads, COV/event
+        reports or physical actions occur. Credential validity, point health,
+        threat, accompaniment, passback and occupancy remain separate checks.
+
+        Requires a started server (RuntimeError otherwise). Missing or wrong
+        object types raise BacnetProtocolError OBJECT/UNKNOWN_OBJECT, checking
+        the credential first. Future unmapped result variants raise RuntimeError.
+        """
+        ...
     def add_access_point(
         self,
         instance: int,
@@ -4805,8 +4893,8 @@ class BACnetServer:
         anything but an Access Point or Access Zone raises BacnetProtocolError
         with VALUE_OUT_OF_RANGE, and so does a list of more than 1024 rules
         (NO_SPACE_TO_WRITE_PROPERTY). Nothing is registered after any of
-        them. The server stores and serves the rules but doesn't evaluate
-        them.
+        them. The server stores and serves the rules. Applications can call
+        ``evaluate_access_rights`` to inspect the local rights stage.
 
         ``accompaniment`` serves the optional Accompaniment row: the Access
         Rights, Access Credential or Access User object that a second

@@ -3879,7 +3879,72 @@ one rule at an `array_index`, or the size at index 0. A grown array gets
 disabled SPECIFIED rules with unspecified references, and a shrunk one loses
 its last rules. Writes get the same checks as the keywords, and a refused
 write leaves the array unchanged. The server stores and serves the rules and
-the flag; it doesn't evaluate them.
+the flag. Applications can explicitly inspect the local rights stage with
+`evaluate_access_rights`, described below.
+
+
+`add_access_credential` accepts keyword-only `assigned_access_rights` and
+`authorization_exemptions`. Configure the credential and rights before starting:
+
+```python
+from rusty_bacnet import ObjectIdentifier, ObjectType
+
+rights = ObjectIdentifier(ObjectType.ACCESS_RIGHTS, 1)
+badge = ObjectIdentifier(ObjectType.ACCESS_CREDENTIAL, 1)
+lobby = ObjectIdentifier(ObjectType.ACCESS_POINT, 1)
+server.add_access_point(1, "Lobby")
+server.add_access_rights(1, "Lobby rights", positive_access_rules=[
+    {"enable": True, "location": lobby},
+])
+server.add_access_credential(1, "Badge", assigned_access_rights=[
+    {"assigned_access_rights": rights, "enable": True},
+], authorization_exemptions=[])
+await server.start()
+try:
+    result = await server.evaluate_access_rights(badge, lobby)
+    # {"decision": "granted", "access_event": None,
+    #  "rule": {"access_rights": rights, "kind": "positive", "index": 1},
+    #  "unresolved": []}
+finally:
+    await server.stop()
+```
+
+Each assignment requires both keys shown above. Its reference is a local
+`ObjectIdentifier` or a `(Device, object)` pair; `enable` must be an actual
+bool. Assignment order and duplicates are retained. Omitted, `None` or empty
+assignments mean no rights. The native unused marker, instance 4194303, remains
+accepted. A missing/unknown mapping key or a non-Device device member raises
+`ValueError`; a wrong Python type raises `TypeError`; an unsuitable object
+kind raises `BacnetProtocolError` with PROPERTY / VALUE_OUT_OF_RANGE. A rejected
+configuration registers nothing.
+
+Omitted or `None` exemptions leave Authorization_Exemptions absent: it is not
+in Property_List and reading it raises UNKNOWN_PROPERTY. `[]` serves an empty
+row. Exemption numbers 0–6 and 64–255 are accepted by the Rust setter. Reserved
+values within unsigned32 raise PROPERTY / VALUE_OUT_OF_RANGE; values below zero
+or above 4294967295 raise `OverflowError`; bool or non-int elements raise
+`TypeError`. Exemption 2 skips only the rights criterion (Clause 12.35.25).
+
+The returned `AccessRightsEvaluation` is a plain dictionary described by the
+installed type stub; no result classes need importing at runtime. Every key is
+present. `decision` is `"granted"`, `"denied"` or `"exempt"`; `access_event` is
+a numeric denial reason or `None`; `rule` is its provenance mapping or `None`.
+The rule's `index` is its one-based position in the positive or negative array.
+`unresolved` retains ordered mappings with `index`, `reference` and `reason`;
+indices refer to original assignments, including gaps left by skipped entries.
+Reasons are `"remote"`, `"wildcard_device"`, `"not_access_rights"`, `"missing"`
+or `"unreadable"`. References retain an explicit device member when supplied.
+A grant can coexist with unresolved assignments; callers receive both pieces
+of evidence. Exemption returns no unresolved entries.
+
+A rights-stage grant (Clause 12.34.9.2) is not final authorization. This method
+reads local state once and leaves the objects unchanged. It does not resolve
+remote rights, record a GRANTED or denial event, emit event/COV reports or
+operate a door. Credential validity, point mode/health, threat, accompaniment,
+passback and occupancy remain separate checks. The server must be started;
+before start or after stop it raises `RuntimeError`. Missing or wrong-type
+identifiers raise OBJECT / UNKNOWN_OBJECT, checking the credential first.
+An unmapped future result variant fails explicitly instead of losing evidence.
 
 `accompaniment` serves the object's optional Accompaniment row: the Access
 Rights, Access Credential or Access User object a second credential,
