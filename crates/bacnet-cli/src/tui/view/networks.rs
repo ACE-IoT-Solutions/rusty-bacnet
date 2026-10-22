@@ -31,9 +31,13 @@ pub(super) fn subtitle(app: &App) -> String {
         Some((network, false)) => format!(" | local network {network} (learned)"),
         None => String::new(),
     };
-    let asked = match state.routers_asked {
-        Some(at) => format!("asked {} ago", age_label(app.now, at)),
-        None => "r asks the routers".to_string(),
+    let asked = if app.passive_listener.is_some() {
+        "listening for announcements".into()
+    } else {
+        match state.routers_asked {
+            Some(at) => format!("asked {} ago", age_label(app.now, at)),
+            None => "r asks the routers".to_string(),
+        }
     };
     format!("| {routers}{local} | {asked} ")
 }
@@ -43,7 +47,11 @@ pub(super) fn subtitle(app: &App) -> String {
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let map = &app.network.routers;
     if map.is_empty() {
-        let text = "No router heard yet. r asks every router for the networks it reaches.";
+        let text = if app.passive_listener.is_some() {
+            "Listening: no router announcement overheard yet."
+        } else {
+            "No router heard yet. r asks every router for the networks it reaches."
+        };
         frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), area);
         return;
     }
@@ -85,8 +93,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Constraint::Length(HEARD),
         Constraint::Length(FLAG),
     ];
-    let text = "DUPLICATE: several routers claim one network number: a shared \
-                number, a loop, or a moved route (r asks again).";
+    let text = if app.passive_listener.is_some() {
+        "DUPLICATE: several overheard routers claim one network number; a shared number, loop or moved route."
+    } else {
+        "DUPLICATE: several routers claim one network number: a shared \
+                number, a loop, or a moved route (r asks again)."
+    };
     let note_height = if map.duplicates().is_empty() {
         0
     } else if text.len() <= usize::from(area.width) {

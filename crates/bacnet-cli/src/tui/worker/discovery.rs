@@ -21,7 +21,7 @@ use crate::tui::message::WorkerEvent;
 use crate::tui::network::discovery::{DiscoveryCommand, DiscoveryEvent, FoundRow};
 
 /// What an I-Have reports, as the UI shows it.
-fn found(reply: &ReceivedIHave, style: AddressStyle) -> FoundRow {
+pub(super) fn found(reply: &ReceivedIHave, style: AddressStyle) -> FoundRow {
     let routed = reply
         .source_network
         .as_ref()
@@ -38,7 +38,10 @@ fn found(reply: &ReceivedIHave, style: AddressStyle) -> FoundRow {
 }
 
 /// What a network report says, as the UI shows it.
-fn report(received: ReceivedNetworkReport, style: AddressStyle) -> Option<DiscoveryEvent> {
+pub(super) fn report(
+    received: ReceivedNetworkReport,
+    style: AddressStyle,
+) -> Option<DiscoveryEvent> {
     let from = style.format(&received.source_mac);
     Some(match received.report {
         NetworkReport::IAmRouterToNetwork(networks) => DiscoveryEvent::Router {

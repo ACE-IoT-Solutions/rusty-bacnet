@@ -310,6 +310,10 @@ pub(crate) struct App {
     pub(crate) capture: capture::CaptureState,
     /// The `:find` search shown below the device table.
     pub(crate) who_has: Option<who_has::WhoHasSearch>,
+    /// Successful receive-only B/IP bind; absent for monitors and failed sessions.
+    pub(crate) passive_listener: Option<String>,
+    /// Recent I-Haves, bounded and refreshed by station/object identity.
+    pub(crate) overheard: who_has::Observations,
     /// Object and device names learned this session (#1896).
     pub(crate) names: names::NameCache,
     /// The screen in the body.
@@ -383,6 +387,8 @@ impl App {
             monitor: None,
             capture: capture::CaptureState::default(),
             who_has: None,
+            passive_listener: None,
+            overheard: Default::default(),
             names: names::NameCache::default(),
             screen: Screen::Main,
             next_req: 0,
@@ -669,6 +675,8 @@ impl App {
         self.sc = sc::ScState::default();
         self.mstp = mstp::MstpState::default();
         self.who_has = None;
+        self.passive_listener = None;
+        self.overheard = Default::default();
         self.names = names::NameCache::default();
         // Captured frames stay; the session's tap went with it.
         self.capture.sources.retain(|(_, session)| !session);

@@ -12,6 +12,7 @@ pub(crate) mod coordinator;
 pub(crate) mod discovery;
 pub(crate) mod network;
 pub(crate) mod passive;
+mod passive_decode;
 #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
 pub(crate) mod sc;
 pub(crate) mod session;

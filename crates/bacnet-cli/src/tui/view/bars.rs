@@ -71,6 +71,7 @@ fn status_parts(app: &App, theme: &Theme, bar: Style) -> Vec<Part> {
         Link::Up { .. } => "up",
         Link::Failed(_) => "failed",
         Link::Passive if app.monitor.is_some() => "listen only",
+        Link::Passive if app.passive_listener.is_some() => "listening",
         Link::Passive => "no client",
     };
     let level = match app.level() {
@@ -94,6 +95,14 @@ fn status_parts(app: &App, theme: &Theme, bar: Style) -> Vec<Part> {
     parts.push(match &app.link {
         Link::Up { local } => Part::new(address, vec![span(format!("{transport} {local}"), bar)])
             .or(8, vec![span(transport, bar)]),
+        Link::Passive if app.passive_listener.is_some() => Part::new(
+            address,
+            vec![span(
+                format!("{transport} {}", app.passive_listener.as_deref().unwrap()),
+                bar,
+            )],
+        )
+        .or(8, vec![span(transport, bar)]),
         _ => Part::new(8, vec![span(transport, bar)]),
     });
     parts.push(Part::new(ALWAYS, vec![span(state, bar)]));

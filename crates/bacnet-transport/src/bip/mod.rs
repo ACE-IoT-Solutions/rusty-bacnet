@@ -64,6 +64,9 @@ mod fanout;
 mod groups;
 mod multicast;
 pub use multicast::BipMulticast;
+mod passive;
+#[cfg(any(test, feature = "test-support"))]
+mod send_observer;
 mod socket;
 use bbmd_start::{
     BbmdConfig, OwnAddressContext, initial_bbmd_state, refresh_own_address, subnet_mask_of,
@@ -73,6 +76,9 @@ use client_snapshot::ClientRecord;
 #[cfg(test)]
 use exchange::{decode_bvlc_result_code, unexpected_response};
 use node::NodeHandle;
+pub use passive::PassiveBip;
+#[cfg(feature = "test-support")]
+pub use send_observer::SendAttemptObserver;
 use socket::BipSocket;
 mod ingress;
 mod io;

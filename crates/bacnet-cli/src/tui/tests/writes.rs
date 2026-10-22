@@ -614,21 +614,17 @@ async fn a_passive_session_puts_nothing_on_the_wire() {
 /// In production a passive session builds no client at all.
 #[tokio::test(start_paused = true)]
 async fn a_passive_session_builds_no_client() {
-    use crate::tui::worker::session::{ConnectPlan, TransportKind, spawn};
+    use crate::tui::worker::session::spawn;
     use crate::tui::worker::{EVENT_CHANNEL_CAPACITY, EventSink};
     let dir = tempfile::tempdir().unwrap();
-    let plan = ConnectPlan {
-        kind: TransportKind::Bip,
-        // 47808 on every interface: binding it would be visible.
-        args: crate::tui::profile::Profile::default()
-            .transport_args()
-            .unwrap(),
-        await_interface: false,
-    };
+    let plan = super::network::plan(None);
     let (sink, mut events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let (commands, rx) = tokio::sync::mpsc::channel(16);
     let task = spawn(plan, sink, rx, options(dir.path(), Safety::default(), true));
-    assert_eq!(events.recv().await, Some(WorkerEvent::Passive));
+    assert!(matches!(
+        events.recv().await,
+        Some(WorkerEvent::PassiveListening { .. })
+    ));
     assert!(matches!(
         events.recv().await,
         Some(WorkerEvent::Safety(SafetyEvent::Ready {

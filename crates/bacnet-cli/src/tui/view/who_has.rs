@@ -66,6 +66,12 @@ fn title(search: &WhoHasSearch, age: &str) -> String {
         1 => "1 found".to_string(),
         n => format!("{n} found"),
     };
+    if search.passive {
+        return format!(
+            " Listening for \"{}\" | {found} overheard | :find closes ",
+            search.name
+        );
+    }
     format!(
         " Who-Has \"{}\" | {found} | sent {age} ago | :find closes ",
         search.name
@@ -232,6 +238,7 @@ mod tests {
         let search = WhoHasSearch {
             name: name.into(),
             sent: app.now,
+            passive: false,
             found: vec![FoundRow {
                 device: 1001,
                 object: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 3).unwrap(),
