@@ -105,6 +105,12 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// Schedule pure Rust best-effort destruction on the shared binding runtime.
+/// The cleanup future must never attach Python or block its dropping thread.
+pub(crate) fn spawn_cleanup(future: impl Future<Output = ()> + Send + 'static) {
+    runtime().spawn(future);
+}
+
 /// Run `fut` on the bindings' runtime and return an asyncio future, on the
 /// running event loop, that resolves to its output.
 ///

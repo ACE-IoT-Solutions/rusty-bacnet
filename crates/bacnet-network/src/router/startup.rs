@@ -40,6 +40,7 @@ impl BACnetRouter {
 
         // Start each transport, and note what the engine and its hooks need.
         let mut port_receivers = Vec::new();
+        let mut port_info = Vec::new();
         let mut configs = Vec::new();
         let mut networks = Vec::new();
         let mut limit_changes = Vec::new();
@@ -60,6 +61,11 @@ impl BACnetRouter {
                         bacnet_npdu::MAX_MAC_LEN
                     ))
                 })?;
+                port_info.push(RouterPortInfo {
+                    index: index as u8,
+                    network_number: port.network_number,
+                    mac: MacAddr::from_slice(mac.as_slice()),
+                });
                 // Read once the transport has started: MS/TP's grows with the
                 // extended frames routing turned on, and BACnet/SC's comes from
                 // its hub connection.
@@ -207,6 +213,7 @@ impl BACnetRouter {
                     stop_senders,
                 }),
                 network_control_ingress_sequence,
+                port_info,
             },
             local_rx,
             counters,

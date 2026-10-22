@@ -531,7 +531,7 @@ pub(crate) fn parse_address(text: &str, what: &str) -> PyResult<SocketAddrV4> {
     Ok(address)
 }
 
-fn parse_ip(text: &str, what: &str) -> PyResult<Ipv4Addr> {
+pub(crate) fn parse_ip(text: &str, what: &str) -> PyResult<Ipv4Addr> {
     text.parse()
         .map_err(|_| PyValueError::new_err(format!("{what}: '{text}' is not an IPv4 address")))
 }

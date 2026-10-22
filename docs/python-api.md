@@ -78,6 +78,76 @@ asyncio.run(main())
 
 ---
 
+## B/IP router
+
+`BACnetRouter` owns forwarding across configured B/IP networks (Clause 6).
+This source-build API provides B/IP ports, router discovery, and copied route
+inspection. It has no local application role: host applications with
+`BACnetServer` or an endpoint on an attached network. Other link types, local
+origination, route administration, and the full native `RouterOptions` surface
+are outside this binding. Native router defaults apply, including the permissive
+wire-control policy; this API does not add an authorization policy.
+
+```python
+from rusty_bacnet import BACnetRouter, BipRouterPort
+
+router = BACnetRouter([
+    BipRouterPort(1, interface="192.0.2.10", port=47808,
+                  broadcast_address="192.0.2.255"),
+    BipRouterPort(5, interface="198.51.100.10", port=47809,
+                  broadcast_address="198.51.100.255"),
+])
+async with router:
+    for port in await router.ports():
+        print(port.index, port.network_number, port.address, port.mac)
+    for route in await router.routes():
+        print(route.network_number, route.port_index, route.is_direct,
+              route.next_hop, route.reachability)
+```
+
+Each immutable `BipRouterPort` has a unique network number from 1 through 65534,
+IPv4 interface, UDP port, and broadcast address. A router accepts one through
+255 ports. Port zero requests an ephemeral port: `ports()` reports its actual
+post-start address and six-byte MAC in configured order. Constructor validation
+opens no socket. Invalid addresses, reserved or duplicate networks and invalid
+mode combinations raise `ValueError`; integers outside their representation
+raise `OverflowError`.
+
+Ports default to normal B/IP. The existing `bbmd=Bbmd(...)` and
+`foreign_device=ForeignDevice(...)` options select explicit modes (Annex J).
+They are mutually exclusive. `Bbmd()` continues to refuse foreign registrations
+by default; opt in with `Bbmd(accept_foreign_devices=True)` when intended. The
+router does not implicitly enable that option. B/IP deployment still needs the
+correct interface, port, broadcast and BBMD topology for each attached network.
+
+`routes()` returns frozen `RouterRoute` objects with destination network, egress
+index, direct/learned identity, next-hop MAC (`None` for a direct route), and
+`reachable`, `busy`, or `unreachable` evaluated at capture time. Snapshots own
+their data and remain usable after close; they expose neither a live table lock
+nor a relative clock as a wall-clock timestamp. Both snapshot methods raise
+`RuntimeError` before start and once close begins.
+
+`start()`, `close()`, and the snapshot methods return `Awaitable` values. Explicit
+duplicate start raises `RuntimeError`; context entry can reuse a running router.
+The first async operation binds the owner to its running asyncio loop. Operations
+from a different loop raise `RuntimeError`, including after a successful close.
+The same configuration can restart on its original loop after successful cleanup.
+
+Successful awaited `close()` or context exit joins router workers and transport
+cleanup, making the actual bound ports reusable. Cancellation removes a waiter,
+while admitted startup or cleanup remains owned: await `close()` afterward to
+observe its barrier. A startup failure completes native rollback before raising
+its original exception, including the original transport errno. A failed cleanup
+raises `BacnetRouterCloseError`; its immutable `failures` records retain the port
+index/network, error kind/message, and applicable errno, protocol class/code,
+reject/abort reason or worker identity. Later close/start calls expose the same
+settled failure without retrying or admitting a fresh generation.
+
+Context exit waits for cleanup and preserves an exception from the body as the
+primary exception; a secondary cleanup error remains observable through a later
+`close()`. Destruction requests best-effort cleanup on the shared runtime. Use
+an awaited close or context exit when resource release must be established.
+
 ## Enums
 
 All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` for raw access. They support `==`, `hash()`, and `repr()`, and `copy.copy`, `copy.deepcopy` and `pickle`, which rebuild a value with `from_raw(value.to_raw())` (#1456).

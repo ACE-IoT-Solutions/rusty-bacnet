@@ -66,11 +66,21 @@ async fn rebind_after_stop(bbmd: bool) {
         .unwrap();
     let address = address.await.unwrap();
     assert_ne!(address.port(), 0);
+    let snapshots = started.router.ports().to_vec();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        (snapshots[0].index(), snapshots[0].network_number()),
+        (0, 1)
+    );
+    let mut expected_mac = address.ip().octets().to_vec();
+    expected_mac.extend_from_slice(&address.port().to_be_bytes());
+    assert_eq!(snapshots[0].local_mac(), expected_mac);
     assert!(
         UdpSocket::bind(address).is_err(),
         "the running ephemeral port is exclusive"
     );
     started.router.stop().await.unwrap();
+    assert_eq!(started.router.ports(), snapshots);
     // No retries or scheduling waits: an awaited successful stop is the barrier.
     let rebound = UdpSocket::bind(address)
         .expect("awaited router stop must release the exclusive B/IP endpoint");
