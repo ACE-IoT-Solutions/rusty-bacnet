@@ -263,5 +263,5 @@ async fn the_networks_tab_maps_a_real_router() {
     assert_eq!(rows[0].routers, [bbmd.to_string()]);
     assert_eq!(net.app.screen, Screen::Network);
     net.stop().await;
-    router.stop().await;
+    router.stop().await.unwrap();
 }

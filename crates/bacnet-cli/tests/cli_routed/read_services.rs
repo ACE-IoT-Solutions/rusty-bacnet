@@ -114,7 +114,7 @@ async fn routed_alarms_preserves_the_direct_response_for_both_target_forms() {
     }
     direct.stop().await.unwrap();
     remote.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 /// Independently expected records and complete output schema for this fixture.
@@ -162,7 +162,7 @@ async fn routed_read_range_keeps_strict_and_lenient_page_output() {
     }
     direct.stop().await.unwrap();
     remote.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -191,7 +191,7 @@ async fn routed_read_range_all_reads_metadata_and_each_page_then_resumes() {
     }
     direct.stop().await.unwrap();
     remote.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]

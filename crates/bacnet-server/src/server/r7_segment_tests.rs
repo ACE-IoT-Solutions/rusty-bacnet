@@ -136,7 +136,7 @@ async fn r7_segment_opening_context_drives_ack_reassembly_and_retarget_abort() {
         matches!(routed.response(2000,4).await.0,Apdu::Abort(x) if x.abort_reason==AbortReason::INVALID_APDU_IN_THIS_STATE)
     );
     assert!(routed.wire.try_recv().is_err());
-    routed.router.stop().await;
+    routed.router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -202,7 +202,7 @@ async fn r7_segment_capacity_abort_and_quiet_progress_expiry_keep_opening_route(
         states.is_empty() && routed.wire.try_recv().is_err(),
         "protocol inactivity expiry stays silent"
     );
-    routed.router.stop().await;
+    routed.router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -278,7 +278,7 @@ async fn r7_segmented_ack_retry_and_terminal_abort_use_one_saved_route() {
         bacnet_transport::port::TransportProvenance::unverified(),
     );
     assert!(!registry.lock().contains_key(&key));
-    routed.router.stop().await;
+    routed.router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -395,7 +395,7 @@ async fn r7_segment_alternate_return_paths_keep_opening_reply_plan() {
             matches!(routed.response(2000,17).await.0,Apdu::Abort(x) if x.abort_reason==AbortReason::OTHER)
         );
         assert!(states.is_empty() && routed.wire.try_recv().is_err());
-        routed.router.stop().await;
+        routed.router.stop().await.unwrap();
     }
 }
 
@@ -480,6 +480,6 @@ async fn r7_segment_origin_comparison_keeps_implicit_and_local_port_isolation() 
             .same_origin(&other_router.response_route()),
         "a new router instance cannot inherit an opening context"
     );
-    routed.router.stop().await;
-    replacement.router.stop().await;
+    routed.router.stop().await.unwrap();
+    replacement.router.stop().await.unwrap();
 }

@@ -75,7 +75,7 @@ async fn a_request_is_routed_by_the_table_and_its_reply_comes_home() {
         (source.network, source.mac_address.as_slice()),
         (3000, &[5][..])
     );
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -92,7 +92,7 @@ async fn no_route_searches_and_refuses() {
         search.complete.send(Ok(())).unwrap();
     }
     assert_eq!(router.counters().originated, 0);
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn a_full_queue_refuses_and_a_stopped_router_refuses_everything() {
     assert_eq!(router.originate(&request), Err(OriginateFailure::QueueFull));
     assert_eq!(router.counters().refused, 1);
 
-    router.stop().await;
+    router.stop().await.unwrap();
     assert_eq!(router.originate(&request), Err(OriginateFailure::Stopped));
 }
 
@@ -156,5 +156,5 @@ async fn a_busy_refused_in_the_same_drain_doesnt_fail_a_queued_request() {
         router.originate(&to_port(2000)),
         Err(OriginateFailure::QueueFull)
     );
-    router.stop().await;
+    router.stop().await.unwrap();
 }

@@ -202,5 +202,5 @@ async fn router_drops_and_counts_a_frame_from_an_over_long_source_mac() {
     assert!(local.try_recv().is_err());
     assert_eq!(router.address_length_drops(), 3);
 
-    router.stop().await;
+    router.stop().await.unwrap();
 }

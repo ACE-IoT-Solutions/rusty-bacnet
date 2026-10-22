@@ -290,6 +290,6 @@ async fn mstp_six_byte_bip_group_destinations_reach_the_bip_port_only_as_broadca
         router.group_dadr_drops(),
         (groups.len() + elsewhere.len()) as u64
     );
-    router.stop().await;
+    router.stop().await.unwrap();
     peer.stop().await.unwrap();
 }

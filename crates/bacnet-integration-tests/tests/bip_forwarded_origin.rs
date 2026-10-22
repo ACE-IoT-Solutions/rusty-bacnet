@@ -112,6 +112,6 @@ async fn forwarded_origin_and_priority_survive_routing() {
         .unwrap();
     assert_eq!(to.as_slice(), [0x05]);
 
-    router.stop().await;
+    router.stop().await.unwrap();
     station.stop().await.unwrap();
 }

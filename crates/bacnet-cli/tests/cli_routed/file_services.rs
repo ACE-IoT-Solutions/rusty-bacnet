@@ -87,7 +87,7 @@ async fn routed_stream_file_reads_every_window_and_final_eof() {
         observations.lock().unwrap().clear();
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn routed_record_file_keeps_empty_binary_and_unequal_records() {
         observations.lock().unwrap().clear();
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -219,7 +219,7 @@ async fn routed_file_write_preserves_json_and_remote_bytes_and_refusal() {
         );
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -273,7 +273,7 @@ async fn routed_later_file_window_failure_removes_partial_stream_and_record_outp
         }
     }
     server.stop().await.unwrap();
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]

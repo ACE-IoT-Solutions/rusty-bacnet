@@ -251,7 +251,7 @@ impl RouterFixture {
     }
 
     pub(crate) async fn stop(mut self) {
-        self.router.stop().await;
+        self.router.stop().await.unwrap();
         self.peer_a.stop().await.unwrap();
         self.peer_b.stop().await.unwrap();
     }

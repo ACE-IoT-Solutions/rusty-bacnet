@@ -438,8 +438,8 @@ async fn chained_routers_carry_a_reject_back_to_the_originating_device() {
         [0x01, 0x88, 0x07, 0xD0, 0x01, 0x03, 0x03, 0x01, 0x13, 0x88]
     );
 
-    r1.stop().await;
-    r2.stop().await;
+    r1.stop().await.unwrap();
+    r2.stop().await.unwrap();
     device.stop().await.unwrap();
     far.stop().await.unwrap();
 }

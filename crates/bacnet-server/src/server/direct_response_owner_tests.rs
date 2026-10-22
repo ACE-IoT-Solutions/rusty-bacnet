@@ -192,7 +192,7 @@ async fn direct_response_router_local_delivery_preserves_matching_capability() {
     }
     assert!(generic.try_recv().is_err());
     assert!(generic_b.try_recv().is_err());
-    router.stop().await;
+    router.stop().await.unwrap();
     assert!(
         issue(f.server.network.as_ref().unwrap(), &saved.unwrap(), 97)
             .await

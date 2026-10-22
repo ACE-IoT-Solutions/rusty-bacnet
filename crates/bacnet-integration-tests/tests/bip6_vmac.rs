@@ -202,7 +202,7 @@ async fn a_router_carries_a_bip6_nodes_vmac_as_sadr_and_dadr() {
         next_unicast(&peer).await,
         original_unicast([0x00, 0x00, 0x0A], PEER_VMAC, &forwarded)
     );
-    router.stop().await;
+    router.stop().await.unwrap();
     node.stop().await.unwrap();
 }
 
@@ -241,7 +241,7 @@ async fn a_routers_bip6_port_does_not_stall_behind_an_unknown_vmac() {
         start.elapsed()
     );
     assert_eq!(&arrived[7..10], PEER_VMAC);
-    router.stop().await;
+    router.stop().await.unwrap();
     node.stop().await.unwrap();
 }
 

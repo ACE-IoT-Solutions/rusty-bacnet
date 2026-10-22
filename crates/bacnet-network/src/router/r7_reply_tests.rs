@@ -140,7 +140,7 @@ async fn r7_response_matches_addressed_endpoint_and_invoke_id() {
     );
     assert!(response.destination.is_none());
     assert!(wire_b.try_recv().is_err());
-    started.router.stop().await;
+    started.router.stop().await.unwrap();
 }
 
 fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<F::Output> {
@@ -266,7 +266,7 @@ async fn r7_clone_retains_owned_route_and_slice_without_repeating_der_authority(
         rx.await.is_err(),
         "only the original envelope held DER authority"
     );
-    started.router.stop().await;
+    started.router.stop().await.unwrap();
     assert!(
         network
             .send_response_apdu_on_issuance(issued(), &route, || {})

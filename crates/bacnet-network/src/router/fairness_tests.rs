@@ -108,7 +108,7 @@ async fn each_branch_caps_a_flood_and_same_mac_on_another_port_has_its_own_quota
         }
         assert_eq!(counters.snapshot().current_depth, 0);
         assert_quiet(&mut peers); // Only pre-existing broadcast forwarding occurred.
-        router.stop().await;
+        router.stop().await.unwrap();
     }
 }
 
@@ -182,7 +182,7 @@ async fn recv_and_try_recv_replenish_only_the_exact_port_mac_key_one_for_one() {
     assert_eq!(counters.snapshot().fairness_drops, 4);
     assert_keyed_apdu(&retained[0], LocalBranch::NoDnet, 0, &[2], 0);
     assert_keyed_apdu(&retained[1], LocalBranch::NoDnet, 0, &[2], 1);
-    router.stop().await;
+    router.stop().await.unwrap();
     for port in 0..2 {
         for id in 32..48 {
             assert_keyed_apdu(
@@ -234,7 +234,7 @@ async fn closed_precedes_fairness_which_precedes_full_in_all_local_branches() {
         drop(apdus);
         assert!(accepted_reply.await.is_err());
         assert_eq!(counters.snapshot().current_depth, 0);
-        router.stop().await;
+        router.stop().await.unwrap();
     }
 }
 
@@ -257,5 +257,5 @@ async fn legacy_local_queue_accepts_256_from_one_port_mac_without_a_quota() {
     for id in 0..256 {
         assert_keyed_apdu(&apdus.try_recv().unwrap(), LocalBranch::NoDnet, 0, &[2], id);
     }
-    router.stop().await;
+    router.stop().await.unwrap();
 }
