@@ -98,6 +98,16 @@ pub fn evaluate_accompaniment(
 ) -> Result<AccompanimentEvaluation, Error> {
     let original_rights =
         evaluate_access_rights(db, request.original.credential, request.original.point)?;
+    Ok(evaluate_with_rights(db, request, original_rights))
+}
+
+/// Internal composition seam: only a rights result computed in this database
+/// borrow by a trusted sibling evaluator reaches here. No public grant input.
+pub(super) fn evaluate_with_rights(
+    db: &ObjectDatabase,
+    request: AccompanimentRequest<'_>,
+    original_rights: super::AccessRightsEvaluation,
+) -> AccompanimentEvaluation {
     let mut result = AccompanimentEvaluation {
         original: request.original,
         original_rights,
@@ -107,10 +117,10 @@ pub fn evaluate_accompaniment(
         events: Vec::new(),
     };
     let selected = match result.original_rights.decision {
-        AccessRightsDecision::Denied { .. } => return Ok(result),
+        AccessRightsDecision::Denied { .. } => return result,
         AccessRightsDecision::Exempt => {
             result.outcome = AccompanimentOutcome::NotRequired;
-            return Ok(result);
+            return result;
         }
         AccessRightsDecision::Granted { rule } => rule.access_rights,
     };
@@ -118,7 +128,7 @@ pub fn evaluate_accompaniment(
         Ok(outcome) => outcome,
         Err(problem) => AccompanimentOutcome::Unresolved(problem),
     };
-    Ok(result)
+    result
 }
 
 fn witness(
