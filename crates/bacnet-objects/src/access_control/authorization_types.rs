@@ -319,6 +319,13 @@ pub struct AuthorizationEvaluation {
     pub credentials: Vec<AuthorizationCredentialEvidence>,
     /// Known invalid companion prerequisites; no child events are generated.
     pub companion_diagnostics: Vec<CompanionAuthorizationDiagnostic>,
+    /// Why optional SOFT reporting could not be established during a visited
+    /// PASSBACK-exempt check. This API retains unknown/malformed/failed evidence
+    /// here without making exempt reporting a required authorization criterion.
+    /// It neither invents a detection nor permits a failed read to use fallback.
+    /// None means no reporting problem was encountered, including when that
+    /// criterion was not visited or its known mode needed no reporting evidence.
+    pub passback_reporting_problem: Option<AuthorizationProblem>,
     /// At most four root intents: soft passback, accompaniment BY, external
     /// phase, and terminal event. Their actual order follows the check order;
     /// a terminal grant/denial is always last. Re-evaluation repeats these intents.

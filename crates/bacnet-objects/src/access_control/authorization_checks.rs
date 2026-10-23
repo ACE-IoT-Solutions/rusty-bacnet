@@ -17,7 +17,6 @@ pub(super) fn check(
 ) -> Outcome {
     let exemption = match criterion {
         AuthorizationCheck::Occupancy => Some(AuthorizationExemption::OCCUPANCY_CHECK),
-        AuthorizationCheck::Passback => Some(AuthorizationExemption::PASSBACK),
         AuthorizationCheck::Lockout => Some(AuthorizationExemption::LOCKOUT),
         AuthorizationCheck::Mode if mode == AuthorizationMode::DENY_ALL => {
             Some(AuthorizationExemption::DENY)
@@ -30,7 +29,21 @@ pub(super) fn check(
     match criterion {
         AuthorizationCheck::Threat => threat(db, request),
         AuthorizationCheck::Occupancy => occupancy(db, request),
-        AuthorizationCheck::Passback => passback(db, request, result),
+        AuthorizationCheck::Passback => {
+            if exemptions.contains(&AuthorizationExemption::PASSBACK) {
+                // Exemption removes enforcement, but an established SOFT
+                // detection remains reportable (Clauses 12.35.25/12.32.21).
+                // Unknown optional reporting evidence is diagnostic only.
+                if let Err(problem) = passback(db, request, result, true) {
+                    result.passback_reporting_problem = Some(problem);
+                }
+                Ok(AuthorizationCheckOutcome::Exempt(
+                    AuthorizationExemption::PASSBACK,
+                ))
+            } else {
+                passback(db, request, result, false)
+            }
+        }
         AuthorizationCheck::Lockout => Ok(denial_if(
             read::boolean(
                 db,
@@ -233,6 +246,7 @@ fn passback(
     db: &ObjectDatabase,
     request: &AuthorizationRequest<'_>,
     result: &mut AuthorizationEvaluation,
+    report_only: bool,
 ) -> Outcome {
     let (zone, fallback_mode, fallback_timeout, observation) = match request.passback {
         AuthorizationPassback::NotApplicable => {
@@ -268,6 +282,11 @@ fn passback(
     };
     match mode {
         AccessPassbackMode::PASSBACK_OFF => return Ok(AuthorizationCheckOutcome::NotApplicable),
+        AccessPassbackMode::HARD_PASSBACK if report_only => {
+            // There is no HARD informational event. An exempt presentation
+            // needs neither its enforcement observation nor its timeout.
+            return Ok(AuthorizationCheckOutcome::NotApplicable);
+        }
         AccessPassbackMode::HARD_PASSBACK | AccessPassbackMode::SOFT_PASSBACK => (),
         _ => {
             return Err(AuthorizationProblem::UnsupportedValue {
@@ -289,6 +308,10 @@ fn passback(
         return Err(AuthorizationProblem::Context(
             "passback observation belongs to another presentation or zone",
         ));
+    }
+    if report_only && !observation.violation {
+        // A matching known nonviolation needs no expiry evidence for reporting.
+        return Ok(AuthorizationCheckOutcome::Passed);
     }
     if observation
         .last_successful_entry

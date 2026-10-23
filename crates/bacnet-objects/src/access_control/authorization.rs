@@ -34,6 +34,13 @@ mod rights;
 /// and credential prerequisites are additionally checked; child transactions or
 /// recursive whole-controller authorization are not created.
 ///
+/// PASSBACK exemption removes enforcement while preserving a known SOFT
+/// detection (Clauses 12.35.25/12.32.21). As this API's evidence contract, missing
+/// or unusable optional reporting facts retain
+/// [`AuthorizationEvaluation::passback_reporting_problem`] without blocking an
+/// exempt check. This does not define a standard-wide unknown-evidence policy;
+/// unknown facts for required criteria still stop the pass.
+///
 /// Only [`AuthorizationOutcome::Granted`] permits access. Returned root intents
 /// are deterministic for fixed reads/evidence and contain at most four events,
 /// with terminal grant/denial last. The application owns publication, exactly-once
@@ -42,7 +49,7 @@ mod rights;
 ///
 /// # Errors
 /// An original identifier that does not name a local Access Credential or Access
-/// Point returns OBJECT / UNKNOWN_OBJECT. Other missing/malformed/unsupported
+/// Point returns OBJECT / UNKNOWN_OBJECT. Missing/malformed/unsupported required
 /// evidence is retained in an Unresolved evaluation rather than a fabricated
 /// DENIED_OTHER. Request ordering and reason priority are validated at construction.
 pub fn evaluate_authorization(
@@ -64,6 +71,7 @@ pub fn evaluate_authorization(
         accompaniment: None,
         credentials: Vec::new(),
         companion_diagnostics: Vec::new(),
+        passback_reporting_problem: None,
         events: Vec::new(),
     };
     let mode = match read::mode(db, request.original.point) {

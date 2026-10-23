@@ -169,7 +169,7 @@ fn served_passback_mode_and_timeout_win_without_malformed_fallback() {
     unresolved(&eval(&db, req));
 }
 #[test]
-fn passback_exemption_only_bypasses_passback_and_suppresses_soft_event() {
+fn passback_exemption_only_bypasses_enforcement_and_preserves_soft_reporting() {
     let mut db = database(None);
     add_zone(&mut db, 1, 0, 10);
     let mut req = request();
@@ -181,7 +181,15 @@ fn passback_exemption_only_bypasses_passback_and_suppresses_soft_event() {
     exempt(&mut db, 1, &[Exemption::PASSBACK]);
     granted(&eval(&db, req));
     req.passback = passback(Passback::SOFT_PASSBACK, None, true, None);
-    assert_eq!(events(&eval(&db, req)), [AccessEvent::GRANTED]);
+    assert_eq!(
+        events(&eval(&db, req)),
+        [AccessEvent::PASSBACK_DETECTED, AccessEvent::GRANTED]
+    );
     req.fallback_lockout = AuthorizationFact::Known(true);
-    denied(&eval(&db, req), AccessEvent::DENIED_LOCKOUT);
+    let result = eval(&db, req);
+    denied(&result, AccessEvent::DENIED_LOCKOUT);
+    assert_eq!(
+        events(&result),
+        [AccessEvent::PASSBACK_DETECTED, AccessEvent::DENIED_LOCKOUT]
+    );
 }

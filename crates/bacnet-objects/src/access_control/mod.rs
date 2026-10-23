@@ -274,3 +274,6 @@ mod authorization_phase_tests;
 mod authorization_companion_tests;
 #[cfg(test)]
 mod authorization_rights_tests;
+
+#[cfg(test)]
+mod authorization_passback_reporting_tests;

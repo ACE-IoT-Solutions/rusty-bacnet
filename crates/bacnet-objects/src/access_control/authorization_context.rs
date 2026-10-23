@@ -67,6 +67,10 @@ pub struct AuthorizationPassbackObservation {
 }
 
 /// Passback applicability and missing-property inputs (Clauses 12.32.21–22).
+/// A PASSBACK-exempt credential still reports an established SOFT violation.
+/// Unusable optional reporting evidence is retained in
+/// [`super::AuthorizationEvaluation::passback_reporting_problem`] without
+/// imposing enforcement or another required criterion on the exempt request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationPassback {
     /// The application establishes no relevant passback check for this presentation.
@@ -83,7 +87,8 @@ pub enum AuthorizationPassback {
         /// optional fallback allows application configuration where the property
         /// is absent; None and zero both mean no expiry, in minutes.
         fallback_timeout_minutes: Option<u32>,
-        /// Required for HARD/SOFT; OFF needs no violation observation.
+        /// Required for unexempted HARD/SOFT enforcement/reporting. Exempt SOFT
+        /// reporting uses it when available; exempt HARD and OFF do not need it.
         observation: AuthorizationFact<AuthorizationPassbackObservation>,
     },
 }
