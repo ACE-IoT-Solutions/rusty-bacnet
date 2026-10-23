@@ -650,9 +650,13 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   session owns the receive-only port and the `MstpMonitor` (#958, #970), and
   stops the monitor before it returns, so the coordinator opens a joining
   participant only after the port is closed. The Capture screen (#971) takes
-  its own lossy subscription to the monitor's frame stream: a pump joined
-  beside the monitor's watcher, which hands it the session's capture
-  commands. A client session finds the transport's frame tap (#957) by
+  its own lossy subscription to the monitor's frame stream. The watcher
+  creates that owned subscription on the first capture request. At retirement,
+  input stop and final capture delivery are polled together while scan
+  cancellation remains live. Producer shutdown bounds the remaining records;
+  the pump drains that tail and any unobserved broadcast lag before final
+  accounting and Ended. Both accounting and acknowledged input release must
+  finish before a replacement opens. A client session finds the transport's frame tap (#957) by
   downcasting the concrete transport the CLI built (B/IP, B/IPv6, SC,
   MS/TP) and subscribes when the screen first asks, so an SC session's
   handshake comes before it. libpcap (`--capture-device`, `pcap` feature)

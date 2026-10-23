@@ -76,6 +76,7 @@ mod mstp_scan_capture;
 mod mstp_scan_lifecycle;
 #[cfg(all(target_os = "linux", feature = "serial"))]
 mod mstp_scan_native;
+mod mstp_scan_retirement;
 mod mstp_screen;
 mod multicast_profile;
 mod names;

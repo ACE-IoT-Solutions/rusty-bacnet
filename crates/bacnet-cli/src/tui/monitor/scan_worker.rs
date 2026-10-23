@@ -135,6 +135,25 @@ impl Control {
             std::task::Poll::Pending => self.close(monitor, sink, commands).await,
         }
     }
+    /// Keep matching cancellation live while both input close and finite
+    /// capture accounting are retained by the ordinary session's future.
+    async fn retire(
+        &mut self,
+        retiring: impl Future<Output = Result<(), String>>,
+        sink: &EventSink,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> Result<(), String> {
+        tokio::pin!(retiring);
+        loop {
+            tokio::select! {
+                biased;
+                () = sink.cancelled(), if !self.exit => self.exit = true,
+                () = sink.closed(), if !self.exit => self.exit = true,
+                command = commands.recv(), if !self.exit => self.command(command, sink).await,
+                result = &mut retiring => return result,
+            }
+        }
+    }
     async fn close(
         &mut self,
         monitor: &mut MstpMonitor,
@@ -156,7 +175,7 @@ impl Control {
 /// Retire the ordinary owner, measure candidates, and restore only the original.
 /// An error prohibits any replacement; the coordinator owns the fatal outcome.
 pub(super) async fn run(
-    mut original: MstpMonitor,
+    retiring: impl Future<Output = Result<(), String>>,
     plan: &MonitorPlan,
     lines: &Lines,
     sink: &EventSink,
@@ -173,13 +192,15 @@ pub(super) async fn run(
         manual: false,
         exit: false,
     };
-    control.report(&scan, sink, commands).await;
-    if let Err(error) = control.close(&mut original, sink, commands).await {
+    // Poll close and final capture delivery together while retaining command
+    // handling. Do not park one queued sink sender behind another progress
+    // send: the App already shows Retiring from its accepted start request.
+    let retired = control.retire(retiring, sink, commands).await;
+    if let Err(error) = retired {
         scan.phase = ScanPhase::Stopped(error.clone());
         control.report(&scan, sink, commands).await;
         return Err(error);
     }
-    drop(original);
     scan.phase = ScanPhase::Candidates;
     for index in 0..scan.rows.len() {
         control.pending(sink, commands).await;

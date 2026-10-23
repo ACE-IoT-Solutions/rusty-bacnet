@@ -219,7 +219,13 @@ impl AsyncRead for Reader {
                 .push(Step::Drained(self.index));
             self.changed.notify_waiters();
         }
-        Pin::new(self.stream.as_mut().unwrap()).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let result = Pin::new(self.stream.as_mut().unwrap()).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            // The next read is a causal receipt after these bytes were decoded.
+            self.drained = false;
+        }
+        result
     }
 }
 impl MonitorRead for Reader {

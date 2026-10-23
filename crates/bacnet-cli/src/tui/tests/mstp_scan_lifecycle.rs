@@ -18,14 +18,14 @@ fn join() -> Command {
         },
     }
 }
-fn opened(run: &Run) -> usize {
+pub(super) fn opened(run: &Run) -> usize {
     run.line
         .steps()
         .iter()
         .filter(|s| matches!(s, Step::Open(..)))
         .count()
 }
-fn inner(event: &WorkerEvent) -> &WorkerEvent {
+pub(super) fn inner(event: &WorkerEvent) -> &WorkerEvent {
     if let WorkerEvent::Session { event, .. } = event {
         event
     } else {
@@ -289,7 +289,7 @@ async fn mstp_scan_stale_session_reports_and_outer_queue_refusal_cannot_change_c
     run.quit().await;
 }
 
-async fn line_step(line: &ScanLine, step: Step) {
+pub(super) async fn line_step(line: &ScanLine, step: Step) {
     bounded(async {
         loop {
             let changed = line.changed.notified();
