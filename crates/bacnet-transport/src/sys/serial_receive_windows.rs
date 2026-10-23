@@ -1,4 +1,6 @@
 //! Synchronous GENERIC_READ serial ownership; all native calls stay here.
+use crate::mstp::monitor::MonitorAdmissionError;
+use bacnet_types::error::Error;
 use std::io::{self, Read};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use windows_sys::Win32::Devices::Communication::*;
@@ -12,12 +14,16 @@ pub(crate) struct Input {
     handle: Option<OwnedHandle>,
 }
 impl Input {
-    pub(crate) fn open(path: &str, baud: u32, rts: Option<bool>) -> io::Result<Self> {
+    pub(crate) fn open(
+        path: &str,
+        baud: u32,
+        rts: Option<bool>,
+    ) -> Result<Self, MonitorAdmissionError> {
         if baud == 0 {
-            return Err(io::Error::new(
+            return Err(MonitorAdmissionError::unopened(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "zero baud rate",
-            ));
+            )));
         }
         let path = if path.starts_with(r"\\.\") {
             path.to_owned()
@@ -25,10 +31,13 @@ impl Input {
             format!(r"\\.\{path}")
         };
         let mut input = Self {
-            handle: Some(open_readonly(&path)?),
+            handle: Some(open_readonly(&path).map_err(MonitorAdmissionError::unopened)?),
         };
         if let Err(error) = configure(&mut Native(input.handle()), baud, rts) {
-            return crate::mstp::monitor::combine(Err(error), input.close()).map(|()| input);
+            return Err(MonitorAdmissionError::after_close(
+                Error::Transport(error),
+                input.close(),
+            ));
         }
         Ok(input)
     }

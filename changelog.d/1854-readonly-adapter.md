@@ -1,4 +1,4 @@
 ---
 section: Fixed
 ---
-- **Breaking (Rust API):** The passive MS/TP monitor opens serial devices with native read-only access and awaits ownership release on stop. Cancelled stops retain their cleanup state (#1854).
+- **Breaking (Rust API):** Passive MS/TP serial monitoring uses native read-only access and awaited release. Failed cleanup blocks CLI replacement, cancelled stops retain progress, and Unix preserves inherited hangup policy (#1854).

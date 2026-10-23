@@ -66,7 +66,11 @@ async fn input_is_purged_before_open_returns() {
 async fn unsupported_or_custom_rate_is_truthful() {
     let (_master, mut config) = pair();
     config.baud_rate = 0;
-    assert!(ReceiveOnlyPort::open(&config, None).is_err());
+    assert!(
+        ReceiveOnlyPort::open(&config, None)
+            .unwrap_err()
+            .release_confirmed()
+    );
     config.baud_rate = 76_800;
     #[cfg(target_os = "linux")]
     {
@@ -75,10 +79,19 @@ async fn unsupported_or_custom_rate_is_truthful() {
         input.close().await.unwrap();
     }
     #[cfg(target_vendor = "apple")]
-    assert!(
-        ReceiveOnlyPort::open(&config, None).is_err(),
-        "PTY does not implement IOSSIOSPEED"
-    );
+    {
+        let error = ReceiveOnlyPort::open(&config, None).unwrap_err();
+        assert!(
+            error.release_confirmed(),
+            "failed configuration released the acquired descriptor"
+        );
+        config.baud_rate = 38_400;
+        ReceiveOnlyPort::open(&config, None)
+            .unwrap()
+            .close()
+            .await
+            .unwrap();
+    }
 }
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -136,4 +149,32 @@ fn trace(marker: String) {
         .lock()
         .write_all(bytes.as_bytes())
         .unwrap();
+}
+
+async fn inherited_hupcl(set: bool) {
+    use crate::sys::serial_receive_probe::hupcl;
+    let (mut master, config) = pair();
+    let setup = std::fs::File::open(&config.port_name).unwrap();
+    assert_eq!(hupcl(&setup, Some(set)), set);
+    // Keep the setup descriptor alive: macOS resets PTY termios when its
+    // final slave descriptor closes. This controls inherited state at open.
+    assert_eq!(hupcl(&setup, None), set);
+    let mut input = ReceiveOnlyPort::open(&config, None).unwrap();
+    assert_eq!(hupcl(input.input.as_ref().unwrap().get_ref(), None), set);
+    master.write_all(b"raw").await.unwrap();
+    let mut bytes = [0; 3];
+    input.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"raw");
+    input.close().await.unwrap();
+    let mut reopened = ReceiveOnlyPort::open(&config, None).unwrap();
+    assert_eq!(hupcl(reopened.input.as_ref().unwrap().get_ref(), None), set);
+    reopened.close().await.unwrap();
+}
+#[tokio::test]
+async fn inherited_hupcl_set_survives_open_read_close_and_reopen() {
+    inherited_hupcl(true).await;
+}
+#[tokio::test]
+async fn inherited_hupcl_unset_survives_open_read_close_and_reopen() {
+    inherited_hupcl(false).await;
 }

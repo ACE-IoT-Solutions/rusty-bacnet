@@ -1,4 +1,4 @@
 ---
 section: Migration notes
 ---
-- **MS/TP monitor (Rust API, #1854):** Await `MstpMonitor::start`, pass a `MonitorRead` input, and retain a mutable monitor for `stop(&mut self)`. Wrap synchronously dropped in-memory readers in `DropOnClose`; deferred native readers must implement awaited close. Resume cancelled stops before reopening a port; Drop alone does not confirm release.
+- **MS/TP monitor (Rust API, #1854):** Await `MstpMonitor::start`, pass `MonitorRead`, and retain a mutable monitor for `stop`. Use `DropOnClose` only for synchronous in-memory owners. Open/start errors now use `MonitorAdmissionError`; check `release_confirmed()` before retrying. Resume cancelled stops before reopening; Drop or failed stop does not confirm release.

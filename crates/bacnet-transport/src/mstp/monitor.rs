@@ -38,7 +38,7 @@
 //! use tokio::io::AsyncWriteExt;
 //!
 //! # #[tokio::main(flavor = "current_thread")]
-//! # async fn main() -> Result<(), bacnet_types::error::Error> {
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // A stand-in for the line: the monitor gets only the read side.
 //! let (mut line, monitor_end) = tokio::io::duplex(1024);
 //! let (reader, _writer) = tokio::io::split(monitor_end);
@@ -64,6 +64,8 @@ use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
+mod admission;
+pub use admission::MonitorAdmissionError;
 mod reader;
 pub use reader::{DropOnClose, MonitorRead};
 pub(crate) use reader::{Failure, combine, context};
@@ -247,24 +249,21 @@ impl MstpMonitor {
     /// # Errors
     ///
     /// The errors of [`MonitorConfig::validate`] and closing rejected input.
+    /// Check [`MonitorAdmissionError::release_confirmed`] before reopening.
     ///
     /// # Panics
     ///
     /// Outside a Tokio runtime.
-    pub async fn start<R>(mut reader: R, config: MonitorConfig) -> Result<Self, Error>
+    pub async fn start<R>(
+        mut reader: R,
+        config: MonitorConfig,
+    ) -> Result<Self, MonitorAdmissionError>
     where
         R: MonitorRead + 'static,
     {
         if let Err(error) = config.validate() {
-            return match std::future::poll_fn(|cx| reader.poll_close(cx)).await {
-                Ok(()) => Err(error),
-                Err(close) => combine(
-                    Err(std::io::Error::other(error)),
-                    Err(context(close, "closing rejected input failed".into())),
-                )
-                .map_err(Error::Transport)
-                .map(|()| unreachable!()),
-            };
+            let closed = std::future::poll_fn(|cx| reader.poll_close(cx)).await;
+            return Err(MonitorAdmissionError::after_close(error, closed));
         }
         let (statistics_tx, statistics) = watch::channel(MonitorStats::new(
             config.baud_rate,

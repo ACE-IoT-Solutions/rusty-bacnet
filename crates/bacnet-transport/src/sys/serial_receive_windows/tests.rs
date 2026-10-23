@@ -36,6 +36,12 @@ fn native_readonly_access_denies_write_and_release_allows_immediate_reopen() {
     };
     input.close().unwrap();
     drop(open_readonly(path.to_str().unwrap()).unwrap());
+    // A regular file is acquired by the production open, then rejected by
+    // GetCommState. Its successful cleanup must remain safely retryable.
+    let error = Input::open(path.to_str().unwrap(), 38_400, None).unwrap_err();
+    assert!(error.release_confirmed());
+    assert!(error.to_string().contains("GetCommState"), "{error}");
+    drop(open_readonly(path.to_str().unwrap()).unwrap());
     std::fs::remove_file(path).unwrap();
 }
 
@@ -125,7 +131,11 @@ fn every_configuration_failure_is_preserved() {
         );
         assert_eq!(api.calls.last(), Some(&phase));
     }
-    assert!(Input::open("invalid\0path", 38_400, None).is_err());
+    assert!(
+        Input::open("invalid\0path", 38_400, None)
+            .unwrap_err()
+            .release_confirmed()
+    );
 }
 
 #[test]

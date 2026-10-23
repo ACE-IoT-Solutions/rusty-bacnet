@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 struct Active {
     cancel: watch::Sender<bool>,
     commands: mpsc::Sender<Command>,
-    task: JoinHandle<()>,
+    task: JoinHandle<Result<(), String>>,
 }
 
 /// The coordinator lives until the UI drops its command channel. It never
@@ -69,12 +69,14 @@ async fn retire(active: &mut Option<Active>) -> Result<(), String> {
         cancel.send_replace(true);
         drop(commands);
         task.await
-            .map_err(|error| format!("network session panicked: {error}"))?;
+            .map_err(|error| format!("network session panicked: {error}"))??;
     }
     Ok(())
 }
 
-async fn completed(active: &mut Option<Active>) -> Result<(), tokio::task::JoinError> {
+async fn completed(
+    active: &mut Option<Active>,
+) -> Result<Result<(), String>, tokio::task::JoinError> {
     match active {
         Some(active) => (&mut active.task).await,
         None => std::future::pending().await,
@@ -101,8 +103,9 @@ async fn run(
         tokio::select! {
             done = completed(&mut active), if active.is_some() => {
                 active = None;
-                if let Err(error) = done {
-                    sink.deliver(WorkerEvent::Fatal { error: format!("network worker failed: {error}") }).await;
+                let result = done.map_err(|error| format!("network worker failed: {error}")).and_then(|result| result);
+                if let Err(error) = result {
+                    sink.deliver(WorkerEvent::Fatal { error }).await;
                     break;
                 }
                 // A failed attempt already reported its error. Keep the

@@ -70,6 +70,7 @@ mod mstp_layout;
 mod mstp_monitor;
 #[cfg(all(target_os = "linux", feature = "serial"))]
 mod mstp_monitor_pty;
+mod mstp_release;
 mod mstp_screen;
 mod multicast_profile;
 mod names;

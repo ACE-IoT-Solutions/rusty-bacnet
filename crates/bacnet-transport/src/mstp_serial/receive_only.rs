@@ -2,7 +2,8 @@
 use super::SerialConfig;
 #[cfg(unix)]
 use crate::mstp::monitor::Failure;
-use crate::mstp::monitor::MonitorRead;
+use crate::mstp::monitor::{MonitorAdmissionError, MonitorRead};
+#[cfg(unix)]
 use bacnet_types::error::Error;
 use std::io;
 use std::pin::Pin;
@@ -43,26 +44,33 @@ impl ReceiveOnlyPort {
     ///
     /// # Errors
     /// Returns native open, exclusivity, configuration or purge failures.
-    pub fn open(config: &SerialConfig, request_to_send: Option<bool>) -> Result<Self, Error> {
+    /// Check [`MonitorAdmissionError::release_confirmed`] before reopening.
+    pub fn open(
+        config: &SerialConfig,
+        request_to_send: Option<bool>,
+    ) -> Result<Self, MonitorAdmissionError> {
         Self::open_native(config, request_to_send).map_err(|error| {
-            Error::Transport(crate::mstp::monitor::context(
-                error,
-                format!(
-                    "receive-only serial {} at {} baud",
-                    config.port_name, config.baud_rate
-                ),
+            error.context(format!(
+                "receive-only serial {} at {} baud",
+                config.port_name, config.baud_rate
             ))
         })
     }
+
     #[cfg(unix)]
-    fn open_native(config: &SerialConfig, rts: Option<bool>) -> io::Result<Self> {
+    fn open_native(
+        config: &SerialConfig,
+        rts: Option<bool>,
+    ) -> Result<Self, MonitorAdmissionError> {
         let input = Input::open(&config.port_name, config.baud_rate, rts)?;
         let input = match AsyncFd::try_with_interest(input, tokio::io::Interest::READABLE) {
             Ok(input) => input,
             Err(error) => {
                 let (mut input, error) = error.into_parts();
-                return crate::mstp::monitor::combine(Err(error), input.close())
-                    .map(|()| unreachable!());
+                return Err(MonitorAdmissionError::after_close(
+                    Error::Transport(error),
+                    input.close(),
+                ));
             }
         };
         Ok(Self {
@@ -71,7 +79,10 @@ impl ReceiveOnlyPort {
         })
     }
     #[cfg(windows)]
-    fn open_native(config: &SerialConfig, rts: Option<bool>) -> io::Result<Self> {
+    fn open_native(
+        config: &SerialConfig,
+        rts: Option<bool>,
+    ) -> Result<Self, MonitorAdmissionError> {
         let input = crate::sys::serial_receive_windows::Input::open(
             &config.port_name,
             config.baud_rate,

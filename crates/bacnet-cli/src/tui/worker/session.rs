@@ -102,13 +102,14 @@ pub(crate) struct SessionOptions {
 const WATCH_CHANNEL_CAPACITY: usize = 128;
 
 /// Start the worker task. Boxed so the transport futures never sit on a
-/// small stack.
+/// small stack. An error means monitor input release is unproven and
+/// the coordinator must refuse any replacement.
 pub(crate) fn spawn(
     plan: ConnectPlan,
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
     options: SessionOptions,
-) -> JoinHandle<()> {
+) -> JoinHandle<Result<(), String>> {
     tokio::spawn(Box::pin(connect(plan, sink, commands, options)))
 }
 
@@ -117,7 +118,7 @@ async fn connect(
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
     mut options: SessionOptions,
-) {
+) -> Result<(), String> {
     // The monitor transmits nothing, so it runs with `--passive` too.
     if plan.kind == TransportKind::MstpMonitor {
         return match options.mstp.monitor.clone() {
@@ -128,11 +129,15 @@ async fn connect(
                 ))
                 .await
             }
-            None => failed(&sink, Error::Encoding("no MS/TP port to monitor".into())).await,
+            None => {
+                failed(&sink, Error::Encoding("no MS/TP port to monitor".into())).await;
+                Ok(())
+            }
         };
     }
     if options.safety.passive {
-        return Box::pin(passive::serve(&plan, &sink, commands, &options.safety)).await;
+        Box::pin(passive::serve(&plan, &sink, commands, &options.safety)).await;
+        return Ok(());
     }
     let args = plan.args;
     // The CLI's clients keep bacnet-client's default of three retries.
@@ -154,7 +159,7 @@ async fn connect(
                         if let Err(error) = client.stop().await {
                             tracing::warn!("client stop: {error}");
                         }
-                        return;
+                        return Ok(());
                     };
                     match outcome {
                         Ok(()) => tracing::info!(
@@ -263,6 +268,7 @@ async fn connect(
         // Handled above, before the passive check.
         TransportKind::MstpMonitor => {}
     }
+    Ok(())
 }
 
 /// What an SC session dials, for the SC screen. `build_sc_client` needs the

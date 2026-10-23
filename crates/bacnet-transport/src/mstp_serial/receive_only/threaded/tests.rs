@@ -283,7 +283,9 @@ async fn rejected_startup_awaits_close_and_preserves_cleanup_failure() {
     control.closing.await.unwrap();
     assert!(!control.closed.load(Ordering::Acquire));
     control.release_close.send(()).unwrap();
-    let error = starting.await.unwrap_err().to_string();
+    let error = starting.await.unwrap_err();
+    assert!(!error.release_confirmed());
+    let error = error.to_string();
     assert!(error.contains("closing rejected input failed"));
     assert!(error.contains("scripted close failure"));
     assert!(control.closed.load(Ordering::Acquire));

@@ -183,7 +183,7 @@ async fn keep_in_a_passive_session_flags_and_records() {
         .await
         .unwrap();
     drop(commands);
-    super::site::bounded(task).await.unwrap();
+    super::site::bounded(task).await.unwrap().unwrap();
     assert!(Ledger::open(dir.path()).unwrap().entries()[0].kept);
     let records = audit(dir.path());
     assert_eq!(records[0]["event"], "kept");

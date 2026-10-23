@@ -633,7 +633,7 @@ async fn a_passive_session_builds_no_client() {
         }))
     ));
     drop(commands);
-    site_bounded(task).await.unwrap();
+    site_bounded(task).await.unwrap().unwrap();
 }
 
 async fn site_bounded<T>(future: impl std::future::Future<Output = T>) -> T {

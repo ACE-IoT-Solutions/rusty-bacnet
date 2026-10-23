@@ -2299,7 +2299,7 @@ joining it (#958). Its `MonitorRead` input combines asynchronous reads with
 an explicit close barrier (#1854). With the `serial` feature,
 `mstp_serial::ReceiveOnlyPort::open` requests exclusive native read-only access,
 raw binary 8N1 and input purge, with no kernel RS-485 transmit setup or GPIO.
-Unix uses a nonblocking read-only descriptor. Windows uses a synchronous
+Unix uses a nonblocking read-only descriptor and preserves inherited HUPCL. Windows uses a synchronous
 read-only handle owned by one reader thread; awaited close joins that thread.
 Driver/open transitions can still change modem lines, including before an
 explicit RTS level is applied; this is not an electrical-silence guarantee. The monitor decodes the stream with the codec's `StreamDecoder`
@@ -2332,9 +2332,15 @@ let present: Vec<u8> = stats.borrow().present_stations().collect();
 monitor.stop().await?; // ownership released before reopening the adapter
 ```
 
-`start` is async so rejected inputs can also be closed. `stop(&mut self)` retains
+`open` and `start` return `MonitorAdmissionError` on failure. Its
+`release_confirmed()` permits retry only when no owner was acquired or cleanup
+succeeded; otherwise refuse replacement and retain the error. `start` is async
+so rejected inputs can also be closed. `stop(&mut self)` retains
 shutdown and join progress if its future is cancelled; call it again to await
-the same barrier. Repeated failures remain failures. EOF and read errors also
+the same barrier. Repeated failures remain failures. The CLI terminates its
+coordinator with a visible error on unproven admission cleanup or any failed
+stop, so queued joins cannot open a replacement. This conservatively includes
+a read error followed by successful close. EOF and read errors also
 run the close epilogue before task completion. Drop only requests shutdown and
 is not a reopening barrier. Ordinary in-memory readers explicitly opt into
 `DropOnClose::new(reader)`; do not use this adapter for deferred native cleanup.

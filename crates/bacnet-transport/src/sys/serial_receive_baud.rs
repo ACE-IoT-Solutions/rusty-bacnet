@@ -12,10 +12,11 @@ pub(super) fn configure(fd: RawFd, baud: u32) -> io::Result<()> {
     let mut settings: libc::termios2 = unsafe { std::mem::zeroed() };
     // SAFETY: settings is writable and sized for TCGETS2; fd is borrowed live.
     check(unsafe { libc::ioctl(fd, libc::TCGETS2, &mut settings) })?;
+    let hupcl = settings.c_cflag & libc::HUPCL;
     settings.c_iflag = 0;
     settings.c_oflag = 0;
     settings.c_lflag = 0;
-    settings.c_cflag = libc::BOTHER | libc::CS8 | libc::CREAD | libc::CLOCAL;
+    settings.c_cflag = hupcl | libc::BOTHER | libc::CS8 | libc::CREAD | libc::CLOCAL;
     settings.c_ispeed = baud;
     settings.c_ospeed = baud;
     settings.c_cc[libc::VMIN] = 1;
@@ -35,8 +36,9 @@ pub(super) fn configure(fd: RawFd, baud: u32) -> io::Result<()> {
                 | libc::CSTOPB
                 | libc::CRTSCTS
                 | libc::CREAD
-                | libc::CLOCAL)
-            != (libc::CS8 | libc::CREAD | libc::CLOCAL)
+                | libc::CLOCAL
+                | libc::HUPCL)
+            != (libc::CS8 | libc::CREAD | libc::CLOCAL | hupcl)
     {
         return Err(io::Error::other(
             "serial driver did not retain raw 8N1 receive settings or requested baud",
@@ -57,10 +59,11 @@ pub(super) fn configure(fd: RawFd, baud: u32) -> io::Result<()> {
     let mut settings: libc::termios = unsafe { std::mem::zeroed() };
     // SAFETY: writable termios and borrowed live descriptor.
     check(unsafe { libc::tcgetattr(fd, &mut settings) })?;
+    let hupcl = settings.c_cflag & libc::HUPCL;
     settings.c_iflag = 0;
     settings.c_oflag = 0;
     settings.c_lflag = 0;
-    settings.c_cflag = libc::CS8 | libc::CREAD | libc::CLOCAL;
+    settings.c_cflag = hupcl | libc::CS8 | libc::CREAD | libc::CLOCAL;
     settings.c_cc[libc::VMIN] = 1;
     settings.c_cc[libc::VTIME] = 0;
     #[cfg(target_vendor = "apple")]
@@ -115,8 +118,9 @@ pub(super) fn configure(fd: RawFd, baud: u32) -> io::Result<()> {
                 | libc::CSTOPB
                 | libc::CRTSCTS
                 | libc::CREAD
-                | libc::CLOCAL)
-            != (libc::CS8 | libc::CREAD | libc::CLOCAL)
+                | libc::CLOCAL
+                | libc::HUPCL)
+            != (libc::CS8 | libc::CREAD | libc::CLOCAL | hupcl)
     {
         return Err(io::Error::other(
             "serial driver did not retain raw 8N1 receive settings or requested baud",

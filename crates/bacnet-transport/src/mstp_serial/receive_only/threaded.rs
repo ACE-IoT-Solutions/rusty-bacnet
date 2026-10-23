@@ -1,5 +1,6 @@
 //! The synchronous Windows input owner, also exercised by portable fixtures.
-use crate::mstp::monitor::{Failure, MonitorRead, combine};
+use crate::mstp::monitor::{Failure, MonitorAdmissionError, MonitorRead, combine};
+use bacnet_types::error::Error;
 use std::io::{self, Read};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -27,10 +28,13 @@ pub(crate) struct Reader {
 }
 
 impl Reader {
-    pub(crate) fn start<I: Input>(input: I) -> io::Result<Self> {
+    pub(crate) fn start<I: Input>(input: I) -> Result<Self, MonitorAdmissionError> {
         Self::start_with_stop(input, Arc::new(AtomicBool::new(false)))
     }
-    fn start_with_stop<I: Input>(mut input: I, stop: Arc<AtomicBool>) -> io::Result<Self> {
+    fn start_with_stop<I: Input>(
+        mut input: I,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Self, MonitorAdmissionError> {
         let (sender, receiver) = mpsc::channel(SLOTS);
         let worker_stop = Arc::clone(&stop);
         // Retain input until the OS thread exists, so spawn failure can close it.
@@ -49,16 +53,20 @@ impl Reader {
                 combine(read, input.close())
             }) {
             Ok(thread) => thread,
-            Err(error) => return combine(Err(error), input.close()).map(|()| unreachable!()),
+            Err(error) => {
+                return Err(MonitorAdmissionError::after_close(
+                    Error::Transport(error),
+                    input.close(),
+                ));
+            }
         };
         if let Err(mut error) = admit.send(input) {
             let close = error.0.close();
             let joined = join(thread);
-            return combine(
-                combine(Err(io::Error::other("input admission failed")), close),
-                joined,
-            )
-            .map(|()| unreachable!());
+            return Err(MonitorAdmissionError::after_close(
+                Error::Transport(io::Error::other("input admission failed")),
+                combine(close, joined),
+            ));
         }
         Ok(Self {
             stop,

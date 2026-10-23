@@ -47,3 +47,22 @@ pub(crate) fn queued(fd: &impl AsRawFd) -> usize {
     assert_eq!(result, 0);
     count as usize
 }
+
+/// Seed or inspect the inherited terminal hangup policy on a live test fd.
+pub(crate) fn hupcl(fd: &impl AsRawFd, set: Option<bool>) -> bool {
+    // SAFETY: zeroed termios is writable storage for tcgetattr.
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: live borrowed fd and correctly sized output.
+    assert_eq!(unsafe { libc::tcgetattr(fd.as_raw_fd(), &mut settings) }, 0);
+    if let Some(set) = set {
+        if set {
+            settings.c_cflag |= libc::HUPCL;
+        } else {
+            settings.c_cflag &= !libc::HUPCL;
+        }
+        // SAFETY: valid initialized settings and live borrowed fd.
+        let result = unsafe { libc::tcsetattr(fd.as_raw_fd(), libc::TCSANOW, &settings) };
+        assert_eq!(result, 0);
+    }
+    settings.c_cflag & libc::HUPCL != 0
+}
