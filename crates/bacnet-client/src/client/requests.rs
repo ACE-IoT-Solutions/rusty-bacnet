@@ -290,7 +290,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let (invoke_id, registration) = {
             let mut tsm = self.tsm.lock().await;
             tsm.register_coordinated_transaction_with_progress(
-                tsm_mac.clone(),
+                MacAddr::from_slice(&tsm_mac),
                 transaction_peer.canonical,
                 service_choice,
                 false,
@@ -302,7 +302,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let mut guard = TransactionGuard::new(
             Arc::clone(&self.tsm),
             self.cleanup_tx.clone(),
-            tsm_mac.clone(),
+            MacAddr::from_slice(&tsm_mac),
             invoke_id,
             owner.clone(),
             None,
