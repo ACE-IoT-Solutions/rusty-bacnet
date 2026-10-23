@@ -117,3 +117,12 @@ fn an_extension_function_runs_only_on_its_own_socket() {
 #[cfg(test)]
 #[path = "fence_tests.rs"]
 mod fence_tests;
+
+#[cfg(all(feature = "serial", unix))]
+mod serial_receive_baud;
+#[cfg(all(feature = "serial", unix, test))]
+pub(crate) mod serial_receive_probe;
+#[cfg(all(feature = "serial", unix))]
+pub(crate) mod serial_receive_unix;
+#[cfg(all(feature = "serial", windows))]
+pub(crate) mod serial_receive_windows;

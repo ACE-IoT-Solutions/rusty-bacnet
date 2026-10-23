@@ -8,14 +8,14 @@
 //! didn't wait for the monitor to close the port fails in tests too.
 
 use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::monitor::MonitorRead;
 use bacnet_transport::mstp::{Echo, MstpDiagnostics, MstpThreadConfig, MstpTransport, SerialPort};
 use bacnet_types::error::Error;
-use tokio::io::AsyncRead;
 
 use crate::transport::TransportArgs;
 
 /// What the monitor reads from: a reader and nothing else.
-pub(crate) type MonitorReader = Box<dyn AsyncRead + Unpin + Send>;
+pub(crate) type MonitorReader = Box<dyn MonitorRead>;
 
 /// The serial port of a participant session.
 pub(crate) enum CliSerial {
@@ -189,10 +189,12 @@ pub(crate) mod test_line {
             let stream =
                 stream.ok_or_else(|| Error::Encoding("test line: no monitor end".into()))?;
             self.held.store(true, Ordering::SeqCst);
-            Ok(Box::new(Held {
-                stream,
-                held: Arc::clone(&self.held),
-            }))
+            Ok(Box::new(bacnet_transport::mstp::monitor::DropOnClose::new(
+                Held {
+                    stream,
+                    held: Arc::clone(&self.held),
+                },
+            )))
         }
 
         /// Whether the monitor's reader is still alive.

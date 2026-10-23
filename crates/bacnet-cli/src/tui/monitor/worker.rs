@@ -40,10 +40,11 @@ pub(crate) async fn serve(
     commands: mpsc::Receiver<Command>,
 ) {
     let config = MonitorConfig::new(plan.baud).with_timestamp_resolution(plan.resolution);
-    let started = lines
-        .open_monitor(&plan.port, plan.baud)
-        .and_then(|reader| MstpMonitor::start(reader, config));
-    let monitor = match started {
+    let started = match lines.open_monitor(&plan.port, plan.baud) {
+        Ok(reader) => MstpMonitor::start(reader, config).await,
+        Err(error) => Err(error),
+    };
+    let mut monitor = match started {
         Ok(monitor) => monitor,
         Err(error) => {
             tracing::error!("MS/TP monitor on {}: {error}", plan.port);
