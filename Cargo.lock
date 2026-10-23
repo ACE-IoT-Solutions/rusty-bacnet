@@ -407,6 +407,7 @@ dependencies = [
  "bacnet-bip-codec",
  "bacnet-client",
  "bacnet-encoding",
+ "bacnet-endpoint",
  "bacnet-mstp-codec",
  "bacnet-network",
  "bacnet-npdu",

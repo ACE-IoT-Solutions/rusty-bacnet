@@ -1,12 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import navigation from '../../src/data/navigation.json' with { type: 'json' };
 import { frontmatter, plainBody } from '../../scripts/content.mjs';
 import { fileURLToPath } from 'node:url';
 import { release } from '../../src/lib/site.mjs';
 
 const root = new URL('../../', import.meta.url);
+async function guidePath(slug) {
+  const matches = [];
+  for (const extension of ['md', 'mdx']) {
+    const path = fileURLToPath(new URL(`src/content/docs/${slug}.${extension}`, root));
+    try {
+      await access(path);
+      matches.push(path);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  assert.equal(matches.length, 1, `${slug}: exactly one Markdown or MDX source`);
+  return matches[0];
+}
 test('integration navigation resolves task guides with release-pinned source links', async () => {
   const group = navigation.find(group => group.label === 'Build and integrate');
   assert.ok(group);
@@ -17,7 +31,7 @@ test('integration navigation resolves task guides with release-pinned source lin
   assert.equal(new Set(navigation.flatMap(group => group.items.map(item => item.slug))).size,
     navigation.reduce((sum, group) => sum + group.items.length, 0));
   for (const slug of [...slugs, 'guides/bacnet-sc', 'reference/transports']) {
-    const path = fileURLToPath(new URL(`src/content/docs/${slug}.${slug === 'reference/transports' ? 'mdx' : 'md'}`, root));
+    const path = await guidePath(slug);
     const source = await readFile(path, 'utf8');
     const page = frontmatter(source);
     assert.ok(page.title && page.description, slug);
