@@ -15,6 +15,7 @@ mod dialogs;
 mod fit;
 mod help;
 mod monitor;
+mod monitor_scan;
 mod mstp;
 mod network;
 mod networks;

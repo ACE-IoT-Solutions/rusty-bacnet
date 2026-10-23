@@ -73,6 +73,9 @@ pub(crate) enum Lines {
     /// The system's serial ports (the `serial` feature).
     #[default]
     System,
+    /// Reopenable rate-aware scripted scanner input.
+    #[cfg(test)]
+    Scan(std::sync::Arc<super::scan_fixture::ScanLine>),
     /// An in-memory line.
     #[cfg(test)]
     Test(std::sync::Arc<test_line::TestLine>),
@@ -82,6 +85,8 @@ impl std::fmt::Debug for Lines {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::System => f.write_str("System"),
+            #[cfg(test)]
+            Self::Scan(_) => f.write_str("Scan"),
             #[cfg(test)]
             Self::Test(_) => f.write_str("Test"),
         }
@@ -97,6 +102,8 @@ impl Lines {
     ) -> Result<MonitorReader, MonitorAdmissionError> {
         match self {
             Self::System => system_monitor(port, baud),
+            #[cfg(test)]
+            Self::Scan(line) => line.monitor(baud),
             #[cfg(test)]
             Self::Test(line) => line.monitor(),
         }
@@ -116,6 +123,11 @@ impl Lines {
             .ok_or_else(|| Error::Encoding("no MS/TP settings to join with".into()))?;
         let (serial, mode) = match self {
             Self::System => (system_serial(mstp)?, crate::mstp_thread::mode(thread)),
+            #[cfg(test)]
+            Self::Scan(line) => (
+                line.participant()?,
+                bacnet_transport::mstp::MstpExecutionMode::Tokio,
+            ),
             #[cfg(test)]
             Self::Test(line) => {
                 // Paused time needs the loop on the test's runtime; the

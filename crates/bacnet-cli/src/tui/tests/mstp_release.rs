@@ -77,6 +77,7 @@ fn start(baud: u32, reader: bool) -> Run {
     let line = TestLine::with_reader(input, held, None);
     let options = SessionOptions {
         mstp: MstpOptions {
+            scan: Default::default(),
             monitor: Some(MonitorPlan::new("fixture".into(), baud, 1)),
             lines: Lines::Test(line.clone()),
             thread: Default::default(),

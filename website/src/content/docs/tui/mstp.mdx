@@ -61,6 +61,57 @@ Each comes with a suggestion. The two 8s are rules of thumb, not values from the
 
 Header and data CRC errors, malformed or oversize frames, partial frames, noise, lost tokens with when and who started the ring again, and extended (COBS) frames, which are decoded but not interpreted (Clause 9.10). Timestamps are only as good as the adapter: the screen shows the 16 ms a USB adapter can add.
 
+## Development: receive-only baud scan
+
+The scan commands in this section are on the development branch and are **not
+part of v{release}**. Refreshed development screenshots may also show the Scan
+tab beside the four released monitor views.
+
+From a live monitor, enter `:mstp scan SECS`, using 1 to 3600 whole seconds for
+each of 9600, 19200, 38400, 57600, 76800 and 115200 baud (Clause 9.2.3).
+The worker closes each input before opening the next, with fresh receive-only
+configuration, purged input and separate decoder counters. No participant is
+constructed. The Scan tab shows progress, actual measured duration, valid frames,
+decoder errors and noise. Up/Down selects a row's error components on a narrow
+screen; a wide screen shows them together.
+
+![A receive-only scan measuring the first of six baud rates, with cancellation available.](../../../assets/tui/mstp-scan-progress.webp)
+
+The score is `valid / (valid + header CRC + data CRC + malformed + aborted)`.
+Noise octets remain separate. At least one valid frame is needed for a suggestion;
+equal best ratios remain ambiguous regardless of frame count. No valid frames
+means insufficient traffic. Partial scans and saturated counters withhold a global
+best. Counts remain visible because a sparse sample does not establish confidence
+in a physical baud rate or qualify UART, USB-adapter or electrical behavior.
+
+![The scan suggests 38400 baud from scripted traffic and restores the original 19200 baud monitor.](../../../assets/tui/mstp-scan-result.webp)
+
+Completion and `:mstp scan cancel` restore the **original configured baud rate**
+with fresh ordinary monitor counters. The suggestion is retained for inspection;
+it never applies itself, joins a trunk or writes a profile. Disconnect and quit
+close without reopening. A restoration failure leaves Stopped visible, and failed
+or unproven release prevents any replacement input.
+
+Scanning clears safe-join proposals, refuses joins, and ends the ordinary capture
+subscription with final accounting. Existing captured rows remain historical;
+candidate frames are kept out of that ring. Reopen Capture after restoration to
+start capturing explicitly.
+
+The following examples come from actual operator-path tests with encoded scripted
+traffic. Rate-dependent fixtures qualify the selection logic; pseudo-terminal
+observations exercise native access and release without simulating a physical
+baud mismatch. These examples do not add hardware qualification.
+
+![Two rates have equal best ratios, so the scan reports ambiguity.](../../../assets/tui/mstp-scan-ambiguous.webp)
+
+![A scan with no valid decoded frames reports insufficient traffic.](../../../assets/tui/mstp-scan-insufficient.webp)
+
+![A rejected candidate keeps the completed scan partial, with no global best.](../../../assets/tui/mstp-scan-partial.webp)
+
+![Manual cancellation retains partial evidence and restores the original monitor.](../../../assets/tui/mstp-scan-cancelled.webp)
+
+![Failed original-rate restoration leaves the monitor stopped while retaining its scan evidence.](../../../assets/tui/mstp-scan-stopped.webp)
+
 ## Safe join
 
 `J` starts the safe join from the monitor. It listens for 10 s (`:mstp listen SECS` changes that), then proposes:
@@ -125,7 +176,7 @@ The monitor and the participant have hardware evidence only on Linux. On macOS a
 
 ## Sources and release scope
 
-These pages describe **v{release}**. Source review is not a claim of hardware qualification. MS/TP is ASHRAE 135 Clause 9.
+Except for the explicitly marked development scan section, these pages describe **v{release}**. Source review is not a claim of hardware qualification. MS/TP is ASHRAE 135 Clause 9.
 
 <a href={`${repository}/blob/v${release}/docs/CLI.md#mstp-monitor-and-safe-join`}>MS/TP monitor and safe join reference</a> · <a href={`${repository}/blob/v${release}/docs/CLI.md#mstp`}>MS/TP flags and adapters</a> · [On-wire qualification work](https://github.com/jscott3201/rusty-bacnet/issues/502).
 

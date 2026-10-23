@@ -18,6 +18,7 @@ async fn full_inner_queue_reports_cancel_refusal_after_outer_admission() {
         Ok(())
     });
     let active = Active {
+        scan: Default::default(),
         cancel,
         commands,
         task,
@@ -211,6 +212,7 @@ async fn a_watch_command_waits_for_room_in_a_full_session_queue() {
     let (commands, mut held) = mpsc::channel(1);
     let (cancel, _) = watch::channel(false);
     let active = Active {
+        scan: Default::default(),
         cancel,
         commands,
         task: tokio::spawn(std::future::pending::<Result<(), String>>()),

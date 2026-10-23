@@ -141,6 +141,7 @@ impl Run {
         let plan = MonitorPlan::new(port.into(), BAUD, 1);
         let mut options = SessionOptions {
             mstp: MstpOptions {
+                scan: Default::default(),
                 monitor: Some(plan.clone()),
                 lines,
                 thread: Default::default(),
@@ -705,9 +706,15 @@ async fn the_monitor_session_closes_the_port_before_it_returns() {
     commands.send(Command::Disconnect).await.unwrap();
     let plan = MonitorPlan::new(PORT.into(), BAUD, 1);
     let lines = Lines::Test(Arc::clone(&line));
-    bounded(crate::tui::monitor::worker::serve(plan, &lines, &sink, rx))
-        .await
-        .unwrap();
+    bounded(crate::tui::monitor::worker::serve(
+        plan,
+        &lines,
+        &sink,
+        rx,
+        &Default::default(),
+    ))
+    .await
+    .unwrap();
     assert!(!line.held(), "the port is still open");
     assert_eq!(events.recv().await, Some(WorkerEvent::Passive));
 }

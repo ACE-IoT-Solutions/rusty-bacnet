@@ -152,6 +152,13 @@ pub(crate) fn transmits(command: &Command) -> bool {
 /// Answer a command a passive session won't carry out, so nothing waits
 /// for it.
 pub(crate) async fn refuse(sink: &EventSink, command: Command) {
+    if let Some(event) = refusal(command) {
+        sink.deliver(event).await;
+    }
+}
+
+/// Build a refusal without making cancellation wait for an event queue slot.
+pub(crate) fn refusal(command: Command) -> Option<WorkerEvent> {
     let reason = PASSIVE.to_string();
     let event = match command {
         Command::WhoIs { op, .. } => WorkerEvent::OpFinished {
@@ -185,13 +192,23 @@ pub(crate) async fn refuse(sink: &EventSink, command: Command) {
         }
         // Capturing transmits nothing, but without a client there is no
         // transport to tap.
+        Command::MonitorScan(request) => {
+            WorkerEvent::MonitorScan(crate::tui::monitor::scan::ScanReport::Rejected {
+                id: request.id(),
+                cancel: matches!(
+                    request,
+                    crate::tui::monitor::scan::ScanCommand::Cancel { .. }
+                ),
+                reason: "only a receive-only MS/TP monitor can scan".into(),
+            })
+        }
         Command::Capture(_) => WorkerEvent::Capture(CaptureEvent::Ended {
             what: crate::tui::capture::worker::TAP.into(),
             why: "a passive session has no transport to tap".into(),
         }),
-        _ => return,
+        _ => return None,
     };
-    sink.deliver(event).await;
+    Some(event)
 }
 
 #[cfg(test)]

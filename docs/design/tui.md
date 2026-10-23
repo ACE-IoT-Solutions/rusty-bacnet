@@ -279,6 +279,32 @@ no accessibility layer. Mitigations:
 - `NO_COLOR` is respected: styles fall back to bold, dim and reverse video.
 - `--fps` lowers the frame rate.
 
+### Receive-only MS/TP baud scan (#1873)
+
+An explicit `:mstp scan SECS` reserves one operation identity at the coordinator
+before its command is forwarded. That reservation excludes a queued JoinTrunk
+through ordinary-monitor retirement, six fresh candidate inputs and original-rate
+restoration. The monitor worker is the serial owner throughout; it never builds
+a client or participant. Repeated Start delivery for the same active identity is
+idempotent; another start and stale cancellation are refused. Session generations
+and scan identities both guard reports applied to the screen.
+
+Each candidate uses new decoder counters and a monotonic window. Reliable phase
+and final-row reports plus at most one first-observation report per candidate
+bound progress traffic. A superseded progress report cannot prevent cancellation
+from initiating close, even when the UI queue is full. Pending close retains its
+owner and cancellation intent. Only confirmed release permits the next open;
+read, task or close failure preserves the conservative fatal session result.
+
+Selection compares exact rational scores without cross-product overflow. Valid
+frames form the numerator; the denominator adds four decoder error counts. Noise
+is separate, zero valid frames cannot win, equal ratios remain ambiguous, and
+partial or saturated evidence cannot identify a global best. Scanning retires
+ordinary capture with final accounting and preserves historical rows. Completed
+or manually cancelled scans restore the original plan only; session cancellation
+never restores. Scan state survives that restoration, ordinary station counters
+start afresh, and capture restarts only on an explicit operator action.
+
 ## 5. Safety model
 
 The project README asks for authorization before use on a network. The
@@ -624,9 +650,13 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   session owns the receive-only port and the `MstpMonitor` (#958, #970), and
   stops the monitor before it returns, so the coordinator opens a joining
   participant only after the port is closed. The Capture screen (#971) takes
-  its own lossy subscription to the monitor's frame stream: a pump joined
-  beside the monitor's watcher, which hands it the session's capture
-  commands. A client session finds the transport's frame tap (#957) by
+  its own lossy subscription to the monitor's frame stream. The watcher
+  creates that owned subscription on the first capture request. At retirement,
+  input stop and final capture delivery are polled together while scan
+  cancellation remains live. Producer shutdown bounds the remaining records;
+  the pump drains that tail and any unobserved broadcast lag before final
+  accounting and Ended. Both accounting and acknowledged input release must
+  finish before a replacement opens. A client session finds the transport's frame tap (#957) by
   downcasting the concrete transport the CLI built (B/IP, B/IPv6, SC,
   MS/TP) and subscribes when the screen first asks, so an SC session's
   handshake comes before it. libpcap (`--capture-device`, `pcap` feature)

@@ -125,7 +125,11 @@ async fn connect(
             Some(monitor) => {
                 let lines = &options.mstp.lines;
                 Box::pin(crate::tui::monitor::worker::serve(
-                    monitor, lines, &sink, commands,
+                    monitor,
+                    lines,
+                    &sink,
+                    commands,
+                    &options.mstp.scan,
                 ))
                 .await
             }
@@ -498,6 +502,9 @@ async fn serve_with<T: TransportPort + 'static>(
                             if capture.send(command).await.is_err() {
                                 tracing::debug!("the capture has ended");
                             }
+                        }
+                        Some(Command::MonitorScan(request)) => {
+                            sink.deliver(WorkerEvent::MonitorScan(crate::tui::monitor::scan::ScanReport::Rejected { id: request.id(), cancel: matches!(request, crate::tui::monitor::scan::ScanCommand::Cancel { .. }), reason: "only a receive-only MS/TP monitor can scan".into() })).await;
                         }
                         Some(Command::Disconnect) => break,
                         Some(Command::Connect { .. } | Command::JoinTrunk { .. } | Command::Reconnect | Command::Profile(_) | Command::CaptureExport(_)) => {}

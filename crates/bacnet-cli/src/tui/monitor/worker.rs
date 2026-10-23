@@ -16,8 +16,7 @@ use bacnet_npdu::NetworkMessageType;
 use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::mstp::codec::FrameType;
 use bacnet_transport::mstp::monitor::{
-    DurationStats, LineEvent, LostToken, MonitorConfig, MonitorFrames, MonitorRecord, MonitorStats,
-    MstpMonitor,
+    DurationStats, LineEvent, LostToken, MonitorFrames, MonitorRecord, MonitorStats,
 };
 use bacnet_types::enums::UnconfirmedServiceChoice;
 use tokio::sync::{mpsc, watch};
@@ -37,17 +36,12 @@ pub(crate) async fn serve(
     plan: MonitorPlan,
     lines: &Lines,
     sink: &EventSink,
-    commands: mpsc::Receiver<Command>,
+    mut commands: mpsc::Receiver<Command>,
+    gate: &super::scan::ScanGate,
 ) -> Result<(), String> {
-    let config = MonitorConfig::new(plan.baud).with_timestamp_resolution(plan.resolution);
-    let started = match lines.open_monitor(&plan.port, plan.baud) {
-        Ok(reader) => MstpMonitor::start(reader, config).await,
-        Err(error) => Err(error),
-    };
-    let mut monitor = match started {
+    let mut monitor = match super::scan_worker::open(&plan, lines).await {
         Ok(monitor) => monitor,
         Err(error) => {
-            tracing::error!("MS/TP monitor on {}: {error}", plan.port);
             sink.deliver(WorkerEvent::ConnectFailed {
                 error: crate::tui::message::Failure::within(&plan.port, error.error()),
             })
@@ -62,51 +56,90 @@ pub(crate) async fn serve(
             };
         }
     };
-    tracing::info!(
-        "MS/TP monitor listening on {} at {} baud; nothing is transmitted",
-        plan.port,
-        plan.baud
-    );
-    let report = MonitorReport::Started {
-        port: plan.port.clone(),
-        baud: plan.baud,
-    };
-    let mut ended = None;
-    if sink.deliver(WorkerEvent::Passive).await && sink.deliver(WorkerEvent::Monitor(report)).await
-    {
+    loop {
+        let report = MonitorReport::Started {
+            port: plan.port.clone(),
+            baud: plan.baud,
+        };
         let mut watcher = Watcher::new(monitor.statistics(), monitor.frames());
-        // The Capture screen's own subscription (#971) runs beside the
-        // watcher, which hands it the session's capture commands; it ends
-        // when the watcher drops that channel.
-        let (capture, capture_rx) = mpsc::channel(4);
-        let started = watcher.started;
-        let capturing = capture::worker::run_monitor(&monitor, sink, capture_rx, started);
-        (ended, ()) = tokio::join!(
-            Box::pin(watcher.run(sink, commands, capture)),
-            Box::pin(capturing)
-        );
+        let (capture, capture_rx) = mpsc::channel(1);
+        let mut capturing = Box::pin(capture::worker::run_monitor(
+            sink,
+            capture_rx,
+            watcher.started,
+        ));
+        let mut captured = false;
+        let next = if sink.deliver(WorkerEvent::Passive).await
+            && sink.deliver(WorkerEvent::Monitor(report)).await
+        {
+            let watching = watcher.run(sink, &mut commands, capture, &monitor);
+            tokio::pin!(watching);
+            tokio::select! {
+                next = &mut watching => next,
+                () = &mut capturing => {
+                    captured = true;
+                    watching.await
+                }
+            }
+        } else {
+            drop(capture);
+            Next::Exit
+        };
+        // Closing the original producer is independent of a full UI queue.
+        // Its finite subscription tail and final accounting remain owned until
+        // delivery completes; neither candidate nor restored input can overlap.
+        let retiring = async {
+            let capture = async {
+                if !captured {
+                    capturing.await;
+                }
+            };
+            let (stopped, ()) = tokio::join!(monitor.stop(), capture);
+            stopped
+                .map(|_| ())
+                .map_err(|error| format!("MS/TP input release unproven on {}: {error}", plan.port))
+        };
+        if let Next::Scan(request) = next {
+            match super::scan_worker::run(
+                retiring,
+                &plan,
+                lines,
+                sink,
+                &mut commands,
+                gate,
+                request,
+            )
+            .await?
+            {
+                Some(restored) => {
+                    monitor = restored;
+                    continue;
+                }
+                None => return Ok(()),
+            }
+        }
+        let stopped = retiring.await;
+        let retirement = stopped.clone();
+        let error = match stopped {
+            Err(error) => Some(error),
+            Ok(_) if matches!(next, Next::Ended) => Some("the port closed".into()),
+            Ok(_) => None,
+        };
+        if let Some(error) = error {
+            sink.deliver(WorkerEvent::Monitor(MonitorReport::Ended(format!(
+                "{}: {error}",
+                plan.port
+            ))))
+            .await;
+        }
+        return retirement;
     }
-    // Only a successful stop acknowledges release. A scoped event may be
-    // cancelled, so refusal also travels through the session's task result.
-    let stopped = monitor.stop().await;
-    if stopped.is_ok() {
-        tracing::info!("MS/TP monitor on {} closed", plan.port);
-    }
-    let retirement = stopped
-        .as_ref()
-        .map(|_| ())
-        .map_err(|error| format!("MS/TP input release unproven on {}: {error}", plan.port));
-    let error = match (ended, stopped) {
-        (_, Err(error)) => Some(error.to_string()),
-        (Some(()), Ok(_)) => Some("the port closed".into()),
-        (None, Ok(_)) => None,
-    };
-    if let Some(error) = error {
-        tracing::warn!("MS/TP monitor on {} ended: {error}", plan.port);
-        let report = MonitorReport::Ended(format!("{}: {error}", plan.port));
-        sink.deliver(WorkerEvent::Monitor(report)).await;
-    }
-    retirement
+}
+
+enum Next {
+    Exit,
+    Ended,
+    Scan(super::scan::ScanCommand),
 }
 
 /// What the worker follows between samples.
@@ -143,22 +176,29 @@ impl Watcher {
     async fn run(
         &mut self,
         sink: &EventSink,
-        mut commands: mpsc::Receiver<Command>,
-        capture: mpsc::Sender<CaptureCommand>,
-    ) -> Option<()> {
+        commands: &mut mpsc::Receiver<Command>,
+        capture: mpsc::Sender<MonitorFrames>,
+        monitor: &bacnet_transport::mstp::monitor::MstpMonitor,
+    ) -> Next {
+        let mut capture_started = false;
         let mut every = tokio::time::interval(SAMPLE_EVERY);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
-                () = sink.cancelled() => return None,
+                () = sink.cancelled() => return Next::Exit,
+                () = sink.closed() => return Next::Exit,
                 command = commands.recv() => match command {
-                    None | Some(Command::Disconnect) => return None,
+                    None | Some(Command::Disconnect) => return Next::Exit,
+                    Some(Command::MonitorScan(request @ super::scan::ScanCommand::Start { window, .. })) if super::scan_worker::valid_window(window) => return Next::Scan(request),
                     // Polled beside this loop, so waiting for room can't
                     // deadlock; it fails only once the capture has ended.
-                    Some(Command::Capture(command)) => {
-                        if capture.send(command).await.is_err() {
-                            tracing::debug!("the monitor capture has ended");
+                    Some(Command::Capture(CaptureCommand::Start)) => {
+                        if !capture_started {
+                            capture_started = true;
+                            if capture.send(monitor.frames()).await.is_err() {
+                                tracing::debug!("the monitor capture has ended");
+                            }
                         }
                     }
                     // Listen only: answer whatever would transmit.
@@ -166,7 +206,7 @@ impl Watcher {
                 },
                 changed = self.stats.changed() => {
                     if changed.is_err() {
-                        return Some(());
+                        return Next::Ended;
                     }
                     // Copy out the little it needs: the monitor waits for
                     // a borrow to end before its next update.
@@ -175,13 +215,13 @@ impl Watcher {
                 }
                 record = self.frames.recv() => match record {
                     Some(record) => self.note(&record),
-                    None => return Some(()),
+                    None => return Next::Ended,
                 },
                 _ = every.tick() => {
                     let sample = self.sample();
                     let report = WorkerEvent::Monitor(MonitorReport::Sample(Box::new(sample)));
                     if let Offer::Closed = sink.offer(report) {
-                        return None;
+                        return Next::Exit;
                     }
                 }
             }

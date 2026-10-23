@@ -346,7 +346,11 @@ impl App {
 
     /// Ask the session for a capture, when one is up to give it.
     pub(crate) fn start_capture(&mut self, out: &mut Vec<Command>) {
-        let monitoring = self.link == Link::Passive && self.monitor.is_some();
+        let monitoring = self.link == Link::Passive
+            && self
+                .monitor
+                .as_ref()
+                .is_some_and(|m| m.live && m.scan.as_ref().is_none_or(|scan| !scan.active()));
         if self.capture.wanted && (matches!(self.link, Link::Up { .. }) || monitoring) {
             out.push(Command::Capture(CaptureCommand::Start));
         }

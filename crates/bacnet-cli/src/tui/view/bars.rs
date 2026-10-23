@@ -335,7 +335,14 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
         }
         Screen::Mstp if app.monitor.is_some() => {
             parts.push(h(6, "Tab", "view"));
-            parts.push(h(7, "J", "safe join"));
+            if app
+                .monitor
+                .as_ref()
+                .is_some_and(|m| m.live && m.scan.as_ref().is_none_or(|scan| !scan.active()))
+            {
+                parts.push(h(7, "J", "safe join"));
+            }
+            parts.push(h(2, ":", "scan commands"));
             parts.push(h(3, "z", "clear"));
             parts.push(h(4, "Space", "pause"));
             parts.push(h(5, "x", "stop"));
