@@ -139,7 +139,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     // Clause 5.4.4.4
                     // UnexpectedPDU_Received list: the transaction's answer
                     // is the segmented ComplexACK already under reassembly.
-                    let key = (MacAddr::from_slice(&tsm_mac), ack.invoke_id, provenance);
+                    let key = (tsm_mac.clone(), ack.invoke_id, provenance);
                     let coordinator_apdu = Apdu::ComplexAck(ack.clone());
                     admit_terminal_during_reassembly(
                         tsm,

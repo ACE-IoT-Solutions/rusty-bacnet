@@ -9,7 +9,7 @@ use bacnet_types::enums::ConfirmedServiceChoice;
 const INVOKE_ID_COUNT: usize = 256;
 
 /// Stable peer identity used to correlate a received response.
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CanonicalPeer {
     /// A device reached directly on the attached data link.
     Direct(MacAddr),
@@ -20,15 +20,6 @@ pub enum CanonicalPeer {
         /// Originating address on that network.
         address: MacAddr,
     },
-}
-
-impl Clone for CanonicalPeer {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Direct(mac) => Self::direct(mac),
-            Self::Routed { network, address } => Self::routed(*network, address),
-        }
-    }
 }
 
 impl CanonicalPeer {

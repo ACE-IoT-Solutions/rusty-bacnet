@@ -17,7 +17,7 @@ impl TransactionPeer {
     /// share trailing bytes.
     pub(crate) fn of(canonical: CanonicalPeer) -> Self {
         let tsm_mac = match &canonical {
-            CanonicalPeer::Direct(mac) => MacAddr::from_slice(mac),
+            CanonicalPeer::Direct(mac) => mac.clone(),
             CanonicalPeer::Routed { network, address } => routed_tsm_mac(*network, address),
         };
         Self { tsm_mac, canonical }
@@ -204,44 +204,5 @@ mod tests {
         let identity = TransactionPeer::of_answer(&[7, 8], Some(&address(99, &[])), None);
         assert_eq!(identity.tsm_mac, MacAddr::from_slice(&[7, 8]));
         assert_eq!(identity.canonical, CanonicalPeer::direct(&[7, 8]));
-    }
-
-    #[test]
-    fn transaction_keys_preserve_full_addresses_and_independent_owners() {
-        let mut keys = HashMap::new();
-        for len in [0, 1, 3, 6, 7, 18, 23, 64] {
-            let bytes: Vec<u8> = (0..len).map(|index| index as u8).collect();
-            let mut direct = TransactionPeer::of(CanonicalPeer::direct(&bytes));
-            assert_eq!(direct.tsm_mac.as_slice(), bytes);
-            assert_eq!(direct.tsm_mac.spilled(), len > 6);
-            assert!(keys.insert(direct.tsm_mac.clone(), len).is_none());
-            let CanonicalPeer::Direct(address) = &mut direct.canonical else {
-                unreachable!();
-            };
-            address.push(0xff);
-            assert_eq!(direct.tsm_mac.as_slice(), bytes);
-            assert_eq!(keys.get(&direct.tsm_mac), Some(&len));
-            direct.tsm_mac.push(0xfe);
-            assert_eq!(address.last(), Some(&0xff));
-
-            for network in [42_u16, 43] {
-                let mut routed = TransactionPeer::of(CanonicalPeer::routed(network, &bytes));
-                let [high, low] = network.to_be_bytes();
-                let mut expected = vec![0xff, b'R', high, low, len as u8];
-                expected.extend_from_slice(&bytes);
-                assert_eq!(routed.tsm_mac.as_slice(), expected);
-                assert_eq!(routed.tsm_mac.len(), len + 5);
-                assert!(keys.insert(routed.tsm_mac.clone(), len).is_none());
-                let CanonicalPeer::Routed { address, .. } = &mut routed.canonical else {
-                    unreachable!();
-                };
-                address.push(0xff);
-                assert_eq!(routed.tsm_mac.as_slice(), expected);
-                assert_eq!(keys.get(&routed.tsm_mac), Some(&len));
-                routed.tsm_mac.push(0xfe);
-                assert_eq!(address.last(), Some(&0xff));
-            }
-        }
-        assert_eq!(keys.len(), 24);
     }
 }

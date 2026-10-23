@@ -1,4 +1,4 @@
 ---
 section: Changed
 ---
-- Reduce address-copy work on the measured BACnet/IP ReadProperty path while preserving independently owned peer identities (#1978).
+- Document a bounded address-copy experiment; retain production behavior because native nonregression did not meet its fixed acceptance criteria (#1978).

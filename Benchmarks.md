@@ -1147,6 +1147,14 @@ refusal frequency remain open under
 [#1979](https://github.com/jscott3201/rusty-bacnet/issues/1979). This PR contains
 no production tuning, extra timing bracket or cross-platform performance claim.
 
+### 10.3 Address-copy experiment (#1978)
+
+The [address-copy experiment](benchmarks/results/1978-macaddr/README.md) reduced
+ReadProperty instruction counts in the measured Linux environment, but did not
+meet its fixed native latency acceptance criteria. The candidate was rejected
+and production source restored. The report retains every observation, the rejected
+patch and data-reconstruction tools; it does not qualify a production speedup.
+
 ## 11. How to reproduce
 
 Run one suite at a time on an idle machine. Each Criterion suite takes 1 to
