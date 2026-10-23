@@ -1,6 +1,6 @@
 use std::net::SocketAddrV6;
 
-use bacnet_transport::bip6::{parse_vmac_text, VMAC_TEXT_PREFIX};
+use bacnet_transport::bip6::{VMAC_TEXT_PREFIX, parse_vmac_text};
 use bacnet_types::error::Error;
 
 use super::*;
@@ -114,6 +114,7 @@ impl PeerAddresses {
 fn value_error(error: Error) -> PyErr {
     match error {
         Error::Encoding(message) | Error::OutOfRange(message) => PyValueError::new_err(message),
+        Error::Range(refused) => PyValueError::new_err(refused.message().to_string()),
         other => PyValueError::new_err(other.to_string()),
     }
 }

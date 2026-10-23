@@ -1,13 +1,13 @@
-use crate::handlers::rpm_budget::{handle_rpm_budgeted, handle_rpm_budgeted_observed};
 use crate::handlers::ReadFailure;
+use crate::handlers::rpm_budget::{handle_rpm_budgeted, handle_rpm_budgeted_observed};
 use bacnet_objects::property_metadata::{
     PropertyConformance, PropertyMetadata, PropertyWriteCapability,
 };
 use std::{
     borrow::Cow,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -133,8 +133,8 @@ impl BACnetObject for Declared {
         };
         if let Some(code) = error {
             return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: code.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code,
             });
         }
         Ok(PropertyValue::Unsigned(if index == Some(0) {

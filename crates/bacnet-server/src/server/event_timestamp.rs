@@ -78,7 +78,7 @@ mod tests {
     use bacnet_encoding::constructed::decode_event_notification;
     use std::sync::Arc;
 
-    use bacnet_encoding::apdu::{decode_apdu, Apdu};
+    use bacnet_encoding::apdu::{Apdu, decode_apdu};
     use bacnet_encoding::npdu::decode_npdu;
     use bacnet_network::layer::NetworkLayer;
     use bacnet_objects::analog::AnalogInputObject;
@@ -98,6 +98,7 @@ mod tests {
     use super::super::{BACnetServer, LearnedRouterCache, NotificationTransactions};
     use super::*;
     use crate::server::test_transport::TestTransport;
+    use bacnet_types::enums::EngineeringUnits;
 
     struct FixedClock(ClockFrame);
 
@@ -206,8 +207,10 @@ mod tests {
             .unwrap(),
         ))
         .unwrap();
-        db.add(Box::new(AnalogInputObject::new(1, "AI-1", 0).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogInputObject::new(1, "AI-1", EngineeringUnits::SQUARE_METERS).unwrap(),
+        ))
+        .unwrap();
         let mut notification_class = NotificationClass::new(0, "NC-0").unwrap();
         for _ in 0..recipients {
             notification_class

@@ -15,9 +15,10 @@
 //! `mutation_*` suites; LifeSafety keeps its own authorizer without
 //! provenance (noted gap, out of scope).
 
-use super::mutation_tests::{apdu, assert_denied, cases, oid, route, Fixture, SOURCE};
+use super::mutation_tests::MutationAuthorizer;
+use super::mutation_tests::{Fixture, SOURCE, apdu, assert_denied, cases, oid, route};
 use super::*;
-use crate::mutation::{MutationAuthorizationContext, MutationAuthorizer, MutationTrust};
+use crate::mutation::{MutationAuthorizationContext, MutationTrust};
 use crate::server::test_transport::TestTransport;
 use bacnet_services::file::{AtomicWriteFileRequest, FileWriteAccessMethod};
 use bacnet_transport::port::TransportProvenance;
@@ -51,14 +52,14 @@ async fn dispatch_admitted(
 ) -> Option<Bytes> {
     let (tx, rx) = oneshot::channel();
     BACnetServer::<TestTransport>::handle_admitted_confirmed_request(
-        &RequestServices {
+        &Arc::new(RequestServices {
             db: Arc::clone(&fixture.db),
             cov_table: Arc::clone(&fixture.table),
             comm_state: Arc::clone(&fixture.state),
             dcc_timer: Arc::new(Mutex::new(Default::default())),
             mutation_decisions: Arc::clone(decisions),
             ..RequestServices::for_test(Arc::clone(&fixture.network), fixture.config.clone())
-        },
+        }),
         &Arc::new(crate::server::request_tasks::RequestTasks::default()).spawner(),
         RequestOrigin {
             mac: SOURCE,
@@ -179,12 +180,16 @@ async fn wpm_elements_share_one_reassembled_snapshot() {
         // element contexts carry the identical snapshot.
         let contexts = seen.lock().unwrap();
         assert_eq!(contexts.len(), 2);
-        assert!(contexts
-            .iter()
-            .all(|context| context.provenance == provenance));
-        assert!(contexts
-            .iter()
-            .all(|context| context.trust == MutationTrust::from_provenance(provenance)));
+        assert!(
+            contexts
+                .iter()
+                .all(|context| context.provenance == provenance)
+        );
+        assert!(
+            contexts
+                .iter()
+                .all(|context| context.trust == MutationTrust::from_provenance(provenance))
+        );
     }
 }
 
@@ -342,8 +347,8 @@ async fn debug_and_counters_carry_no_secrets_or_inputs() {
 /// fixture; the relay admission evidence is the hub's, not the test's.
 async fn relayed_origin_provenance() -> TransportProvenance {
     use bacnet_transport::sc::{LoopbackWebSocket, ScTransport, WebSocketPort};
-    use bacnet_transport::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage};
-    use tokio::time::{timeout, Duration};
+    use bacnet_transport::sc_frame::{ScFunction, ScMessage, decode_sc_message, encode_sc_message};
+    use tokio::time::{Duration, timeout};
 
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let mut transport = ScTransport::new(ws_client, [0x01; 6]).with_device_uuid([1; 16]);

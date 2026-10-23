@@ -299,8 +299,8 @@ impl BACnetObject for MultiStateValueObject {
     ) -> Result<(), Error> {
         if !self.event_detection_enable {
             return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::NO_ALARM_CONFIGURED,
             });
         }
         self.event_history.acknowledge_correlated(
@@ -719,9 +719,10 @@ mod detection_enable_tests {
             msv.event_detector.pending.is_none(),
             "evaluate/tick re-armed a countdown while detection is disabled"
         );
-        assert!(msv
-            .property_list()
-            .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE));
+        assert!(
+            msv.property_list()
+                .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE)
+        );
         assert!(msv.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
     }
 }

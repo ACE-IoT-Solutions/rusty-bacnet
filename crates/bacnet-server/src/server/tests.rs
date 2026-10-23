@@ -10,7 +10,7 @@ fn server_config_cov_retry_timeout_default() {
 fn server_config_time_sync_callback_default_is_none() {
     let config = ServerConfig::default();
     assert!(config.on_time_sync.is_none());
-    assert!(config.life_safety_operation_authorizer.is_none());
+    assert!(config.policy.is_none());
 }
 
 #[tokio::test]
@@ -82,19 +82,20 @@ async fn default_and_clockless_start_bind_truthful_device_clock() {
 }
 
 #[test]
-fn all_builders_assign_life_safety_operation_authorizer() {
-    let generic =
-        BACnetServer::<BipTransport>::generic_builder().life_safety_operation_authorizer(|_| true);
-    assert!(generic.config.life_safety_operation_authorizer.is_some());
+fn all_builders_assign_the_policy() {
+    let generic = BACnetServer::<BipTransport>::generic_builder()
+        .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
+    assert!(generic.config.policy.is_some());
 
-    let bip =
-        BACnetServer::<BipTransport>::bip_builder().life_safety_operation_authorizer(|_| true);
-    assert!(bip.config.life_safety_operation_authorizer.is_some());
+    let bip = BACnetServer::<BipTransport>::bip_builder()
+        .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
+    assert!(bip.config.policy.is_some());
 
     #[cfg(feature = "sc-tls")]
     {
-        let sc = BACnetServer::sc_builder().life_safety_operation_authorizer(|_| true);
-        assert!(sc.config.life_safety_operation_authorizer.is_some());
+        let sc = BACnetServer::sc_builder()
+            .policy(crate::FnPolicy::new().life_safety_operation(|_| true));
+        assert!(sc.config.policy.is_some());
     }
 }
 
@@ -243,6 +244,7 @@ async fn server_enrollment_task_evaluates_at_startup_on_its_configured_interval(
     use bacnet_objects::event_enrollment::EventEnrollmentObject;
     use bacnet_objects::traits::BACnetObject;
     use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
+    use bacnet_types::enums::EngineeringUnits;
     use bacnet_types::enums::{EventState, EventType, PropertyIdentifier};
 
     // Exercises the spawned task, not `tokio::time::interval` in isolation. Two
@@ -251,7 +253,7 @@ async fn server_enrollment_task_evaluates_at_startup_on_its_configured_interval(
     // the period so the config field is silently ignored.
     let mut db = ObjectDatabase::new();
 
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(150.0); // above high_limit
     let ai_oid = ai.object_identifier();
     db.add(Box::new(ai)).unwrap();
@@ -367,9 +369,11 @@ async fn server_runs_fault_detection_without_enrollment() {
 
 #[test]
 fn identity_rejects_below_minimum_local_apdu_capacity() {
-    assert!(bacnet_objects::DeviceIdentity::default()
-        .with_max_apdu(49)
-        .is_err());
+    assert!(
+        bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(49)
+            .is_err()
+    );
 }
 
 fn test_mac(byte: u8) -> MacAddr {
@@ -522,7 +526,7 @@ fn service_reject_error_preserves_reason_on_wire_response() {
         0x31,
         ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY,
         &Error::Reject {
-            reason: RejectReason::UNDEFINED_ENUMERATION.to_raw(),
+            reason: RejectReason::UNDEFINED_ENUMERATION,
         },
     );
     assert_eq!(

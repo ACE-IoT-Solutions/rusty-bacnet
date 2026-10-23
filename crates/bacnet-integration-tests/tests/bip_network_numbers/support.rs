@@ -12,6 +12,7 @@ use bacnet_transport::{
     mstp::LoopbackSerial,
     port::{ReceivedNpdu, TransportPort},
 };
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -20,7 +21,7 @@ use std::{
 };
 use tokio::{
     net::UdpSocket,
-    sync::{mpsc, Semaphore},
+    sync::{Semaphore, mpsc},
 };
 
 pub const BROADCAST: Ipv4Addr = Ipv4Addr::new(127, 255, 255, 255);
@@ -172,12 +173,12 @@ impl TransportPort for ObservedBip {
         self.inner.send_unicast(npdu, mac).await
     }
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        if let Some(gates) = &self.gates {
-            if npdu.starts_with(&[1, 0x80, 0x13]) {
-                let _drop = Signal(&gates.dropped);
-                gates.entered.add_permits(1);
-                std::future::pending::<()>().await;
-            }
+        if let Some(gates) = &self.gates
+            && npdu.starts_with(&[1, 0x80, 0x13])
+        {
+            let _drop = Signal(&gates.dropped);
+            gates.entered.add_permits(1);
+            std::future::pending::<()>().await;
         }
         self.inner.send_broadcast(npdu).await
     }
@@ -215,7 +216,8 @@ pub async fn start(transport: BipTransport, gates: Option<Arc<Gates>>) -> (Serve
         .unwrap(),
     ))
     .unwrap();
-    let mut analog = AnalogInputObject::new(1, "Number progress", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(1, "Number progress", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(42.0);
     db.add(Box::new(analog)).unwrap();
     let server = bounded(BACnetServer::start(
@@ -248,8 +250,11 @@ pub fn observer() -> (UdpSocket, u16) {
     let port = socket.local_addr().unwrap().port();
     (socket, port)
 }
-pub async fn stopped(mut server: Server, local: SocketAddrV4) {
+/// Stops `server`, and rebinds its port to show it released its wildcard
+/// socket. Run under `rerun_on_lost_port`: another process can take the
+/// freed port first (#1419).
+pub async fn stopped(mut server: Server, local: SocketAddrV4) -> std::io::Result<()> {
     bounded(server.stop()).await.unwrap();
     drop(server);
-    let _rebound = std::net::UdpSocket::bind(local).expect("server released wildcard socket");
+    std::net::UdpSocket::bind(local).map(drop)
 }

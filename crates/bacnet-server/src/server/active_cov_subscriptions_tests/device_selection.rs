@@ -2,7 +2,7 @@
 //! and discovery-limiter rebinding are deliberately outside this contract.
 use super::*;
 use bacnet_encoding::apdu::decode_apdu;
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::encode_app_object_id;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
@@ -204,7 +204,7 @@ async fn device_selection_preserves_no_device_and_wildcard_only_reads() {
             );
             assert!(
                 matches!(wire.server.read_local(&wildcard(), property, None).await,
-                Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_OBJECT.to_raw() as u32)
+                Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_OBJECT)
             );
             assert!(wire.server.broadcast_i_am().await.is_err());
         } else {

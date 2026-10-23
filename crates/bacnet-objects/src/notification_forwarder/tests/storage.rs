@@ -4,7 +4,7 @@ use super::*;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 

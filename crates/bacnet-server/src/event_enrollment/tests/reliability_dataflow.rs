@@ -1,11 +1,11 @@
-use super::integration::{indexed_reference_value, ReferenceValueObject};
+use super::integration::{ReferenceValueObject, indexed_reference_value};
 use super::*;
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::FaultParameters;
-use bacnet_types::enums::Reliability;
+use bacnet_types::enums::{EngineeringUnits, Reliability};
 use bacnet_types::primitives::BACnetTimeStamp;
 use std::sync::atomic::Ordering;
 
@@ -54,7 +54,12 @@ fn source_rejection_does_not_suppress_changed_reliability_fault_reentry() {
     notification_class.ack_required = EventTransitionBits::TO_FAULT;
     db.add(Box::new(notification_class)).unwrap();
 
-    let mut target = AnalogValueObject::new(307, "AV-reliability-source", 62).unwrap();
+    let mut target = AnalogValueObject::new(
+        307,
+        "AV-reliability-source",
+        EngineeringUnits::DEGREES_CELSIUS,
+    )
+    .unwrap();
     target
         .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
@@ -93,13 +98,15 @@ fn source_rejection_does_not_suppress_changed_reliability_fault_reentry() {
         first.reliability_results[0].new_reliability,
         Reliability::UNDER_RANGE
     );
-    assert!(first
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::EvaluationSource,
-            outcome: EventEnrollmentEvaluationOutcome::Rejected,
-        }));
+    assert!(
+        first
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::EvaluationSource,
+                outcome: EventEnrollmentEvaluationOutcome::Rejected,
+            })
+    );
     assert_eq!(
         timestamp_at(&db, enrollment_oid, 2),
         BACnetTimeStamp::SequenceNumber(0)
@@ -141,13 +148,15 @@ fn source_rejection_does_not_suppress_changed_reliability_fault_reentry() {
             to: EventState::FAULT,
         })
     );
-    assert!(second
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::EvaluationSource,
-            outcome: EventEnrollmentEvaluationOutcome::Rejected,
-        }));
+    assert!(
+        second
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::EvaluationSource,
+                outcome: EventEnrollmentEvaluationOutcome::Rejected,
+            })
+    );
     assert_eq!(reliability(&db, enrollment_oid), Reliability::OVER_RANGE);
     assert_eq!(
         timestamp_at(&db, enrollment_oid, 2),

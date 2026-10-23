@@ -2,12 +2,13 @@
 
 use super::{ClientInner, CoreClient};
 use crate::errors::to_py_err;
+use bacnet_transport::sc::ScEvent;
 use bacnet_types::error::Error;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::PyResult;
+use pyo3::exceptions::PyRuntimeError;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, broadcast};
 use tokio::task::JoinHandle;
 
 #[cfg(test)]
@@ -20,6 +21,29 @@ pub(super) struct ClientState {
     client: RwLock<Option<CoreClient>>,
     closing: AtomicBool,
     shutdown: Mutex<Option<JoinHandle<Result<(), Error>>>>,
+    /// An SC client's event receiver, subscribed while it was built, so it
+    /// holds the first `Connected` (#1908). The first `connection_events()`
+    /// call takes it. A leaf lock: never held across an await.
+    first_sc_events: StdMutex<Option<broadcast::Receiver<ScEvent>>>,
+}
+
+impl ClientState {
+    /// Keep the receiver an SC build subscribed, for the first
+    /// `connection_events()` caller. Called before the client is published.
+    pub(super) fn keep_first_sc_events(&self, events: broadcast::Receiver<ScEvent>) {
+        *self.first_sc_events() = Some(events);
+    }
+
+    /// The build's receiver, once; `None` after the first call.
+    pub(super) fn take_first_sc_events(&self) -> Option<broadcast::Receiver<ScEvent>> {
+        self.first_sc_events().take()
+    }
+
+    fn first_sc_events(&self) -> MutexGuard<'_, Option<broadcast::Receiver<ScEvent>>> {
+        self.first_sc_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 fn closing() -> pyo3::PyErr {
@@ -91,5 +115,7 @@ async fn stop_native(state: ClientInner) -> Result<(), Error> {
         client.stop().await?;
     }
     *client = None;
+    // A receiver nobody took ends with the client; a restart subscribes anew.
+    drop(state.take_first_sc_events());
     Ok(())
 }

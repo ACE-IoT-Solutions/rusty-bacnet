@@ -1,12 +1,13 @@
 //! Complete human inventory using the same projection and diagnostics as JSON.
 
+use super::HUB_NAME_NOTE;
 use super::{
-    projection::{Extension, Inspection},
     Document,
+    projection::{Extension, Inspection},
 };
 use std::io::{self, Write};
 
-pub(super) fn date(seconds: i64) -> String {
+pub(crate) fn date(seconds: i64) -> String {
     let formatted = time::OffsetDateTime::from_unix_timestamp(seconds)
         .ok()
         .and_then(|value| {
@@ -128,6 +129,14 @@ pub(super) fn human(
         inspection.peer_trust_supplied
     )?;
     writeln!(output, "Key consistency: {}", inspection.key_consistency)?;
+    match inspection.direct_issuer_index {
+        Some(index) => writeln!(
+            output,
+            "Direct issuer: {} (peer_trust[{index}])",
+            inspection.direct_issuer
+        )?,
+        None => writeln!(output, "Direct issuer: {}", inspection.direct_issuer)?,
+    }
     match &inspection.key_file_permissions {
         Some(bits) => writeln!(
             output,
@@ -149,5 +158,9 @@ pub(super) fn human(
         }
         writeln!(output, " {}: {}", diagnostic.code, diagnostic.message)?;
     }
-    writeln!(output, "\nNot assessed: issuer authorization, certificate path validation, expected peer name, revocation, and remote acceptance.")
+    writeln!(
+        output,
+        "\nNot assessed: issuer authorization by remote peers, certificate path validation, expected peer name, revocation, and remote acceptance."
+    )?;
+    writeln!(output, "{HUB_NAME_NOTE}")
 }

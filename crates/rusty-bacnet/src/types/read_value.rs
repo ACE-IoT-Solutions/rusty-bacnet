@@ -10,10 +10,11 @@
 //! - When the property is one of the constructed collections the binding
 //!   also writes as typed values (a Recipient_List, a Group's members and
 //!   results, a Command's Action and others; see
-//!   [`constructed_read::element`]), and the octets decode as that
-//!   collection's elements, the value is a typed read (#1310): each element
-//!   keeps its octets, and `.value` gives the shape the typed write takes. A
-//!   value that doesn't decode that way goes on to the rules below.
+//!   [`bacnet_encoding::constructed::property_element()`]), and the
+//!   octets decode as that collection's elements, the value is a typed read
+//!   (#1310): each element keeps its octets, and `.value` gives the shape
+//!   the typed write takes. A value that doesn't decode that way goes on to
+//!   the rules below.
 //! - When any element carries a context tag, the value is a constructed
 //!   production (a timestamp CHOICE, a list of COV subscriptions and so on).
 //!   Nothing in the octets says where one list element ends and the next
@@ -35,15 +36,15 @@
 //!   Time, for example).
 
 use bacnet_encoding::primitives::decode_application_value;
-use bacnet_encoding::tags::{self, app_tag, TagClass};
+use bacnet_encoding::tags::{self, TagClass, app_tag};
 use bacnet_objects::traits::{standard_array_property, standard_list_property};
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
-use super::constructed_read;
 use super::PyPropertyValue;
+use super::constructed_read;
 
 /// Decode the value octets read from `property` of an object of
 /// `object_type`, with the read's `array_index`, by the rules in the module

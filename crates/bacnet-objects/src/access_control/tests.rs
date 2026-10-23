@@ -591,8 +591,8 @@ fn access_door_relinquish_default_write_recaptures_present_value() {
             .expect_err("out-of-production Relinquish_Default must refuse")
         {
             Error::Protocol { class, code: c } => {
-                assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-                assert_eq!(c, code.to_raw() as u32);
+                assert_eq!(class, ErrorClass::PROPERTY);
+                assert_eq!(c, code);
             }
             other => panic!("expected protocol error, got {other:?}"),
         }
@@ -611,9 +611,10 @@ fn access_door_relinquish_default_write_recaptures_present_value() {
 
     // The local setter shares the validation domain.
     assert!(door.set_relinquish_default(DoorValue::from_raw(4)).is_err());
-    assert!(door
-        .set_relinquish_default(DoorValue::EXTENDED_PULSE_UNLOCK)
-        .is_err());
+    assert!(
+        door.set_relinquish_default(DoorValue::EXTENDED_PULSE_UNLOCK)
+            .is_err()
+    );
     door.set_relinquish_default(DoorValue::LOCK).unwrap();
     assert_eq!(
         door.read_property(PropertyIdentifier::PRESENT_VALUE, None)

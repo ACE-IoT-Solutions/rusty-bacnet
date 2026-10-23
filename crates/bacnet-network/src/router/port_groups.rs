@@ -30,15 +30,16 @@ impl GroupClassifier for PortGroups {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
 
+    use bacnet_npdu::Mac;
+    use bacnet_npdu::NpduLimits;
+    use bacnet_router_core::PortId;
     use bacnet_router_core::router::{Action, Dest, Discard, Frame, Permissive, Received};
-    use bacnet_router_core::{Mac, PortId};
-    use bacnet_transport::port::NpduLimits;
 
     use super::*;
-    use crate::router::engine::{Engine, RouterClock};
+    use crate::router::engine::{Engine, tokio_clock};
 
     #[tokio::test]
     async fn engine_keeps_custom_transport_predicates_live_after_installation() {
@@ -63,7 +64,8 @@ mod tests {
                     PortGroups::default(),
                 ),
             ],
-            RouterClock::start(),
+            tokio_clock(),
+            super::super::engine::OPTIONS,
         )
         .unwrap();
         let npdu = [1, 0x20, 0, 1, 1, 42, 255, 0x10, 8];
@@ -100,8 +102,11 @@ mod tests {
                 );
             }
             assert!(matches!(router.poll_action(), Action::Idle));
-            assert_eq!(router.counters().group_dadr_drops, drops);
-            assert_eq!(router.counters().refused, 0);
+            drop(router);
+            // The totals since start, which dropping the guard published.
+            let totals = engine.counters();
+            assert_eq!(totals.group_dadr_drops, drops);
+            assert_eq!(totals.refused, 0);
         }
     }
 }

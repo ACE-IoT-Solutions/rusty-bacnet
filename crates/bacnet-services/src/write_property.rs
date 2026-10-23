@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{EncodeError, Error};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
@@ -46,13 +46,12 @@ pub struct WritePropertyRequest {
 /// Omission is allowed; every supplied priority must be in 1..=16, including
 /// NULL writes. Returns a local encoding error for invalid typed input.
 pub fn validate_priority(priority: Option<u8>) -> Result<(), Error> {
-    if let Some(priority) = priority {
-        if !(1..=16).contains(&priority) {
-            return Err(Error::Encoding(format!(
-                "WriteProperty priority must be 1-16, got {priority}"
-            )));
+    if let Some(priority) = priority
+        && !(1..=16).contains(&priority) {
+            return Err(EncodeError::new("WriteProperty priority must be 1-16, got {}")
+                .with_value(priority.into())
+                .into());
         }
-    }
     Ok(())
 }
 
@@ -122,8 +121,8 @@ impl WritePropertyRequest {
         if let Some(prio) = prio {
             if !(1..=16).contains(&prio) {
                 return Err(Error::Protocol {
-                    class: ErrorClass::SERVICES.to_raw() as u32,
-                    code: ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32,
+                    class: ErrorClass::SERVICES,
+                    code: ErrorCode::PARAMETER_OUT_OF_RANGE,
                 });
             }
             priority = Some(prio as u8);
@@ -194,7 +193,7 @@ mod tests {
             let mut output = BytesMut::from(&b"prefix"[..]);
             assert!(matches!(
                 request.encode(&mut output),
-                Err(Error::Encoding(_))
+                Err(Error::Encode(_))
             ));
             assert_eq!(
                 &output[..],
@@ -395,8 +394,8 @@ mod tests {
             let error = WritePropertyRequest::decode(&buf).unwrap_err();
             assert!(
                 matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::SERVICES.to_raw() as u32
-                        && code == ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32),
+                    if class == ErrorClass::SERVICES
+                        && code == ErrorCode::PARAMETER_OUT_OF_RANGE),
                 "priority {value} must fail semantic range validation, got {error:?}"
             );
         }
@@ -406,7 +405,7 @@ mod tests {
             buf.extend_from_slice(&vec![0; length as usize]);
             assert!(matches!(
                 WritePropertyRequest::decode(&buf),
-                Err(Error::Decoding { .. })
+                Err(Error::Decoding(_))
             ));
         }
     }

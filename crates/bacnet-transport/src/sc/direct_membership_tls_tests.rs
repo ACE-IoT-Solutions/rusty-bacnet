@@ -1,7 +1,7 @@
 //! Real TLS cross-role membership, outbound publication and teardown.
 use super::*;
 use crate::port::ReceivedNpdu;
-use crate::sc_frame::{decode_sc_message, ScBvlcResult};
+use crate::sc_frame::{ScBvlcResult, decode_sc_message};
 use crate::sc_tls::direct_accept::direct_accept_tests::TestCa;
 use crate::sc_tls::{DirectAcceptConfig, DirectListener, TlsWebSocket};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
@@ -240,10 +240,11 @@ async fn expiry_eviction_disable_release_membership_and_close_workers() {
     f.send().await.unwrap();
     receive(&mut f.remote_rx, LOCAL).await;
     let old = f.direct.pooled_get(&REMOTE, Instant::now()).unwrap();
-    assert!(f
-        .direct
-        .pooled_get(&REMOTE, Instant::now() + DIRECT_POOL_IDLE_TTL + WAIT)
-        .is_none());
+    assert!(
+        f.direct
+            .pooled_get(&REMOTE, Instant::now() + DIRECT_POOL_IDLE_TTL + WAIT)
+            .is_none()
+    );
     assert!(!old.member.is_current());
     f.send().await.unwrap();
     receive(&mut f.remote_rx, LOCAL).await;

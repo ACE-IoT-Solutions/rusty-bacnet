@@ -13,7 +13,7 @@ use super::receive_counters::ReceiveDrops;
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// An NPDU carrying I-Am for Device 7.
 const I_AM: &[u8] = &[
@@ -257,6 +257,7 @@ async fn receive_from(
         destination: destination.into(),
         arrival_index: None,
         os_group_delivery: None,
+        arrival_stamp: None,
     };
     let local = IngressAddresses {
         unicast_ips: vec![LOCAL],

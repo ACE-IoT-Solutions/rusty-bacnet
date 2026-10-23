@@ -287,10 +287,12 @@ fn set_bdt_auto_inserts_self() {
     }];
     state.set_bdt(entries).unwrap();
     assert_eq!(state.bdt().len(), 2);
-    assert!(state
-        .bdt()
-        .iter()
-        .any(|e| e.ip == [192, 168, 1, 1] && e.port == 47808));
+    assert!(
+        state
+            .bdt()
+            .iter()
+            .any(|e| e.ip == [192, 168, 1, 1] && e.port == 47808)
+    );
 }
 
 #[test]
@@ -325,7 +327,7 @@ fn set_local_address_moves_the_appended_self_row_and_keeps_both_tables() {
 
     bbmd.set_local_address([192, 168, 1, 2], 0xBAC0).unwrap();
 
-    assert_eq!(bbmd.local_address(), ([192, 168, 1, 2], 0xBAC0));
+    assert_eq!(bbmd.local_pair(), ([192, 168, 1, 2], 0xBAC0));
     assert_eq!(
         bbmd.bdt(),
         &[peer.clone(), unicast_row([192, 168, 1, 2])],
@@ -374,7 +376,7 @@ fn set_local_address_refuses_to_overflow_the_bdt() {
 
     assert!(bbmd.set_local_address([192, 168, 1, 2], 0xBAC0).is_err());
 
-    assert_eq!(bbmd.local_address(), ([192, 168, 1, 1], 0xBAC0));
+    assert_eq!(bbmd.local_pair(), ([192, 168, 1, 1], 0xBAC0));
     assert_eq!(bbmd.bdt(), before.as_slice());
 }
 

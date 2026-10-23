@@ -7,10 +7,11 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::Bvll;
 use bacnet_bip_core::node::{
-    Cast, ConfigError, Foreign, ForwardedTrust, Link, Mode, Retry, SendRefusal, MAX_DATAGRAM,
-    MAX_NPDU, MIN_RENEWAL,
+    Cast, ConfigError, Foreign, ForwardedTrust, Link, MAX_DATAGRAM, MIN_RENEWAL, Mode, Retry,
+    SendRefusal,
 };
 use bacnet_bip_core::{Duration, LocalSubnet};
+use bacnet_npdu::MAX_NPDU;
 use node_support::*;
 
 const NPDU: &[u8] = &[0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];

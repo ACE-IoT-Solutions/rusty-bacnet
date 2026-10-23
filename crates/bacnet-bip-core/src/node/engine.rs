@@ -5,11 +5,13 @@
 use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
-use bacnet_time::{Duration, Instant};
+use bacnet_time::{Duration, Instant, earliest};
+
+use crate::LocalSubnet;
 
 use super::actions::{Action, Actions};
-use super::config::{ConfigError, Link, Mode, Retry};
-use super::counters::{add, bump, NodeCounters, RegisterAttempt};
+use super::config::{ConfigError, Foreign, Link, Mode, Retry};
+use super::counters::{NodeCounters, RegisterAttempt, add, bump};
 use super::exchange::{
     Early, ExchangeId, ExchangeRefusal, Exchanges, Key, LocalFailure, Operation, Phase,
 };
@@ -247,15 +249,14 @@ impl<const X: usize> Node<X> {
         if code.is_some() {
             self.counters.last_unmatched_result = code;
         }
-        if code == Some(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK) {
-            if let (Mode::Foreign(foreign), Some(lifecycle)) =
+        if code == Some(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK)
+            && let (Mode::Foreign(foreign), Some(lifecycle)) =
                 (&self.link.mode, &mut self.lifecycle)
-            {
-                if foreign.bbmd == peer && foreign.retry == Retry::Backoff {
-                    bump(&mut self.counters.renewal_hints);
-                    lifecycle.hint(now);
-                }
-            }
+            && foreign.bbmd == peer
+            && foreign.retry == Retry::Backoff
+        {
+            bump(&mut self.counters.renewal_hints);
+            lifecycle.hint(now);
         }
         Inbound::Unmatched { peer, code, late }
     }
@@ -357,10 +358,11 @@ impl<const X: usize> Node<X> {
     ) -> Result<(ExchangeId, Outgoing<'r>), ExchangeRefusal> {
         self.advance(now);
         let operation = Operation::of(request.function()).ok_or(ExchangeRefusal::NotARequest)?;
-        if let Mode::Foreign(foreign) = &self.link.mode {
-            if foreign.bbmd == peer && operation.answered_by_success() {
-                return Err(ExchangeRefusal::ManagedRegistration);
-            }
+        if let Mode::Foreign(foreign) = &self.link.mode
+            && foreign.bbmd == peer
+            && operation.answered_by_success()
+        {
+            return Err(ExchangeRefusal::ManagedRegistration);
         }
         let ttl = match request {
             Bvll::RegisterForeignDevice { ttl } => ttl,
@@ -419,10 +421,8 @@ impl<const X: usize> Node<X> {
         };
         let (operation, automatic, early) = (slot.operation, slot.automatic, slot.early.take());
         bump(&mut self.counters.exchange_mut(operation).sent);
-        if automatic {
-            if let Some(lifecycle) = &mut self.lifecycle {
-                lifecycle.sent();
-            }
+        if automatic && let Some(lifecycle) = &mut self.lifecycle {
+            lifecycle.sent();
         }
         let settled = early.is_some();
         if let Some(early) = early {
@@ -481,12 +481,12 @@ impl<const X: usize> Node<X> {
         outcome: AttemptOutcome,
         result: Option<BvlcResultCode>,
     ) {
-        if let Some((latest, attempt)) = &mut self.latest_register {
-            if *latest == exchange {
-                attempt.outcome = outcome;
-                attempt.result = result;
-                self.counters.last_registration_attempt = Some(*attempt);
-            }
+        if let Some((latest, attempt)) = &mut self.latest_register
+            && *latest == exchange
+        {
+            attempt.outcome = outcome;
+            attempt.result = result;
+            self.counters.last_registration_attempt = Some(*attempt);
         }
     }
 
@@ -510,14 +510,11 @@ impl<const X: usize> Node<X> {
     pub fn next_deadline(&self) -> Option<Instant> {
         let exchange = self.exchanges.next_deadline().map(|(_, deadline)| deadline);
         let lifecycle = self.lifecycle.as_ref();
-        [
+        earliest([
             exchange,
             lifecycle.and_then(Lifecycle::lapse_at),
             lifecycle.and_then(Lifecycle::due_at),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        ])
     }
 
     /// Do what is due at `now`, the time the caller actually woke.
@@ -542,10 +539,7 @@ impl<const X: usize> Node<X> {
             let lifecycle = self.lifecycle.as_ref();
             let lapse = lifecycle.and_then(Lifecycle::lapse_at);
             let due = lifecycle.and_then(Lifecycle::due_at).filter(|_| start_due);
-            let first = [timeout.map(|(_, at)| at), lapse, due]
-                .into_iter()
-                .flatten()
-                .min();
+            let first = earliest([timeout.map(|(_, at)| at), lapse, due]);
             match first {
                 Some(at) if at <= now => {}
                 _ => return now,
@@ -603,6 +597,59 @@ impl<const X: usize> Node<X> {
         }
     }
 
+    /// Register a foreign device with `foreign` from `now` on: another
+    /// BBMD, time-to-live or timing. The lifecycle restarts with an attempt
+    /// to the new BBMD due at once, which the next
+    /// [`poll_action`](Node::poll_action) hands out. The automatic attempt
+    /// in flight ends as cancelled, so a late answer to it counts as
+    /// unmatched. A lease proven by the same BBMD stands, since its entry
+    /// does; one from another BBMD is dropped, and broadcasts are held
+    /// again, as at start, until that BBMD's first answer
+    /// ([`admit_broadcast`](Node::admit_broadcast)). Manual exchanges carry
+    /// on.
+    ///
+    /// Refused, changing nothing, outside foreign mode
+    /// ([`ConfigError::NotForeign`]) or with a registration
+    /// [`Link::validate`] refuses.
+    pub fn retarget(&mut self, foreign: Foreign, now: Instant) -> Result<(), ConfigError> {
+        let Mode::Foreign(old) = self.link.mode else {
+            return Err(ConfigError::NotForeign);
+        };
+        let mut link = self.link;
+        link.mode = Mode::Foreign(foreign);
+        link.validate()?;
+        // Timeouts and a lapse due by now happen on the old registration; an
+        // attempt due by now is not started for it.
+        let now = self.catch_up(now, false);
+        if let Some(index) = self.exchanges.automatic() {
+            let exchange = self.exchanges.id(index);
+            self.exchanges.retire(index, now);
+            self.actions.forget_register(exchange);
+            self.record_register(exchange, AttemptOutcome::Cancelled, None);
+        }
+        if let Some(lifecycle) = &mut self.lifecycle {
+            lifecycle.retarget(&foreign, now, old.bbmd == foreign.bbmd);
+        }
+        self.link = link;
+        self.advance(now);
+        Ok(())
+    }
+
+    /// Move the node to another [`LocalSubnet`]: where its broadcasts go
+    /// and which destination counts as one. A B/IP-M node that joins,
+    /// changes or leaves its multicast group (Annex J.8) does this, and so
+    /// must every copy of the link the host decides on. Nothing else
+    /// changes: exchanges and a foreign device's registration carry on.
+    ///
+    /// Refused, changing nothing, with a link [`Link::validate`] refuses.
+    pub fn set_subnet(&mut self, subnet: LocalSubnet) -> Result<(), ConfigError> {
+        let mut link = self.link;
+        link.subnet = subnet;
+        link.validate()?;
+        self.link = link;
+        Ok(())
+    }
+
     /// The next thing to do, or [`Action::Idle`].
     pub fn poll_action(&mut self) -> Action {
         self.actions.poll()
@@ -617,10 +664,20 @@ impl<const X: usize> Node<X> {
             .map(|lifecycle| lifecycle.snapshot(now.max(self.now)))
     }
 
-    /// The counts since the last call, which start again from zero: add
-    /// them to the host's own totals, as wide as it needs. Each count is a
-    /// `u32` that saturates between calls.
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to the host's own totals, as wide as it
+    /// needs. Each count is a `u32` that saturates between takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
     pub fn take_counters(&mut self) -> NodeCounters {
         core::mem::take(&mut self.counters)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them: for a look between takes. A node whose counters are
+    /// never taken counts from its start.
+    #[must_use]
+    pub const fn counters(&self) -> NodeCounters {
+        self.counters
     }
 }

@@ -1,24 +1,25 @@
 //! Initialize-Routing-Table and its Ack (Clauses 6.4.7, 6.4.8, 6.6.3.8,
 //! 6.6.3.9).
 
+use super::Storage;
 use super::config::Options;
 use super::control::Claimed;
 use super::host::{ControlClass, Event, Host, Targets};
 use super::ingress::{Arrival, Discard, Received};
 use super::tasks::Task;
-use super::Storage;
-use crate::message::RoutingEntries;
-use crate::npdu::{Npdu, GLOBAL_NETWORK};
 use crate::PortId;
+use crate::message::RoutingEntries;
+use crate::npdu::{GLOBAL_NETWORK, Npdu};
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// Initialize-Routing-Table. A count of 0 is a query, answered with the
     /// whole table in Acks of at most 124 entries, ascending, each network
@@ -69,9 +70,7 @@ impl<
                 });
                 continue;
             };
-            if self.table.len() >= usize::from(options.route_cap)
-                && self.table.lookup(network).is_none()
-            {
+            if self.table.len() >= options.cap(R) && self.table.lookup(network).is_none() {
                 self.table.record_learning_cap();
                 host.observe(Event::RouteCap {
                     class: ControlClass::InitMgmt,

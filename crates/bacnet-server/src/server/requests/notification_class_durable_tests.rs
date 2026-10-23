@@ -7,11 +7,11 @@
 //! DEVICE 0; OPERATIONAL_PROBLEM 25.
 
 use super::durable_write_wire_tests::{
-    destination, while_saving, HeldStorage, ERROR_PDU, SIMPLE_ACK_ADD, SIMPLE_ACK_DELETE,
-    SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE, WAIT,
+    ERROR_PDU, HeldStorage, SIMPLE_ACK_ADD, SIMPLE_ACK_DELETE, SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE,
+    WAIT, destination, while_saving,
 };
-use super::mutation_list_wire_tests::{change_list_error, list_request, wire, ADD, REMOVE};
-use super::mutation_tests::{wpm, Fixture};
+use super::mutation_list_wire_tests::{ADD, REMOVE, change_list_error, list_request, wire};
+use super::mutation_tests::{Fixture, wpm};
 use super::*;
 use crate::server::test_transport::TestTransport;
 use bacnet_encoding::constructed::encode_destination_list;
@@ -342,7 +342,10 @@ async fn a_list_that_cannot_be_saved_is_refused_on_every_path_and_the_old_list_s
 
     let (server, nc) = local_server(&storage).await;
     match write_local(&server, nc, &refused).await {
-        Err(Error::Protocol { class, code }) => assert_eq!((class, code), (0, 25)),
+        Err(Error::Protocol { class, code }) => assert_eq!(
+            (class, code),
+            (ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
+        ),
         other => panic!("expected DEVICE / OPERATIONAL_PROBLEM, got {other:?}"),
     }
     stop(server).await;

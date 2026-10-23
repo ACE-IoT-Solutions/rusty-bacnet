@@ -5,30 +5,32 @@
 //! bad tail changes nothing and sends nothing. A protected message then
 //! goes to [`Host::authorize`], and a refusal drops it silently.
 
+use super::Group;
+use super::Storage;
 use super::config::Options;
 use super::counters::bump;
 use super::host::{Claim, ControlClass, Event, Host, Targets};
 use super::ingress::{Arrival, Discard, Received};
 use super::output::Kind;
 use super::tasks::Task;
-use super::Group;
-use super::Storage;
 use crate::message::{
-    DisconnectConnection, EstablishConnection, ICouldBeRouter, MessageType, NetworkNumberIs,
-    Networks, Reject, RejectReason, WhoIsRouter,
+    DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks,
+    WhoIsRouter,
 };
-use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
+use crate::npdu::{Address, GLOBAL_NETWORK, Npdu};
+use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use crate::swap_apart;
-use crate::table::Learned;
+use crate::table::{Learned, RejectEffect};
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// A network message. What-Is, Number-Is and Reject are always handled
     /// here. Any other that names a DNET besides 0xFFFF and the arrival
@@ -39,15 +41,15 @@ impl<
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
-        kind: MessageType,
+        kind: NetworkMessageType,
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
         let always_here = matches!(
             kind,
-            MessageType::WHAT_IS_NETWORK_NUMBER
-                | MessageType::NETWORK_NUMBER_IS
-                | MessageType::REJECT_MESSAGE_TO_NETWORK
+            NetworkMessageType::WHAT_IS_NETWORK_NUMBER
+                | NetworkMessageType::NETWORK_NUMBER_IS
+                | NetworkMessageType::REJECT_MESSAGE_TO_NETWORK
         );
         let elsewhere = npdu.destination.filter(|destination| {
             destination.network != GLOBAL_NETWORK && destination.network != at.network
@@ -63,23 +65,27 @@ impl<
             return self.forward(at, npdu, &route, host);
         }
         match kind {
-            MessageType::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, host),
-            MessageType::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
-            MessageType::I_COULD_BE_ROUTER_TO_NETWORK => {
+            NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, host),
+            NetworkMessageType::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
+            NetworkMessageType::I_COULD_BE_ROUTER_TO_NETWORK => {
                 self.i_could_be_router(at, npdu, options, host)
             }
-            MessageType::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
-            MessageType::ROUTER_BUSY_TO_NETWORK => self.flow_control(at, npdu, true, options, host),
-            MessageType::ROUTER_AVAILABLE_TO_NETWORK => {
+            NetworkMessageType::REJECT_MESSAGE_TO_NETWORK => {
+                self.received_reject(at, npdu, options, host)
+            }
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK => {
+                self.flow_control(at, npdu, true, options, host)
+            }
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK => {
                 self.flow_control(at, npdu, false, options, host)
             }
-            MessageType::INITIALIZE_ROUTING_TABLE => {
+            NetworkMessageType::INITIALIZE_ROUTING_TABLE => {
                 self.initialize_routing_table(at, npdu, options, host)
             }
-            MessageType::INITIALIZE_ROUTING_TABLE_ACK => {
+            NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK => {
                 self.routing_table_ack(at, npdu, options, host)
             }
-            MessageType::ESTABLISH_CONNECTION_TO_NETWORK => {
+            NetworkMessageType::ESTABLISH_CONNECTION_TO_NETWORK => {
                 let Ok(request) = EstablishConnection::parse(npdu.payload) else {
                     return self.bad_message();
                 };
@@ -89,7 +95,7 @@ impl<
                 });
                 Received::Handled
             }
-            MessageType::DISCONNECT_CONNECTION_TO_NETWORK => {
+            NetworkMessageType::DISCONNECT_CONNECTION_TO_NETWORK => {
                 let Ok(request) = DisconnectConnection::parse(npdu.payload) else {
                     return self.bad_message();
                 };
@@ -99,7 +105,7 @@ impl<
                 self.table.record_disconnect_removal_ignored();
                 Received::Handled
             }
-            MessageType::WHAT_IS_NETWORK_NUMBER => {
+            NetworkMessageType::WHAT_IS_NETWORK_NUMBER => {
                 // Never routed, and with no data (Clause 6.4.19).
                 if npdu.source.is_some() || npdu.destination.is_some() || !npdu.payload.is_empty() {
                     return self.bad_message();
@@ -107,7 +113,7 @@ impl<
                 self.out.push(Task::number_is(at.port));
                 Received::Handled
             }
-            MessageType::NETWORK_NUMBER_IS => self.network_number_is(at, npdu, host),
+            NetworkMessageType::NETWORK_NUMBER_IS => self.network_number_is(at, npdu, host),
             _ if kind.is_removed_security() => {
                 host.observe(Event::SecurityMessage { message_type: kind });
                 Received::Handled
@@ -116,7 +122,13 @@ impl<
                 // A reserved type, or a proprietary one without a DNET to
                 // route it by (Clause 6.6.3.5).
                 host.observe(Event::UnknownMessage { message_type: kind });
-                self.reject(at, npdu.source, 0, RejectReason::UNKNOWN_MESSAGE_TYPE, host);
+                self.reject(
+                    at,
+                    npdu.source,
+                    0,
+                    RejectMessageReason::UNKNOWN_MESSAGE_TYPE,
+                    host,
+                );
                 Received::Handled
             }
         }
@@ -145,7 +157,9 @@ impl<
             port_network: at.network,
             source: at.source,
             // Only a network message is protected, and it has a type.
-            message_type: npdu.message_type.unwrap_or(MessageType::from_raw(u8::MAX)),
+            message_type: npdu
+                .message_type
+                .unwrap_or(NetworkMessageType::from_raw(u8::MAX)),
             vendor_id: npdu.vendor_id,
             snet: npdu.source.map(|source| source.network),
             dnet: npdu.destination.map(|destination| destination.network),
@@ -198,7 +212,7 @@ impl<
             vendor_id: None,
             ..*npdu
         };
-        let kind = Kind::Relay(MessageType::WHO_IS_ROUTER_TO_NETWORK);
+        let kind = Kind::Relay(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK);
         if self.write_fan_out(&relay, kind, at.port, host) {
             Received::Handled
         } else {
@@ -212,7 +226,7 @@ impl<
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
-        kind: MessageType,
+        kind: NetworkMessageType,
         host: &mut impl Host,
     ) -> Received<'f> {
         let relay = Npdu::message(kind, npdu.payload);
@@ -248,7 +262,7 @@ impl<
                 break;
             }
         }
-        self.rebroadcast(at, npdu, MessageType::I_AM_ROUTER_TO_NETWORK, host)
+        self.rebroadcast(at, npdu, NetworkMessageType::I_AM_ROUTER_TO_NETWORK, host)
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
@@ -271,7 +285,7 @@ impl<
         host: &mut impl Host,
     ) -> bool {
         let route = self.table.lookup(network);
-        if self.table.len() >= usize::from(options.route_cap) && route.is_none() {
+        if self.table.len() >= options.cap(R) && route.is_none() {
             self.table.record_learning_cap();
             host.observe(Event::RouteCap { class });
             return false;
@@ -283,10 +297,10 @@ impl<
         let learned =
             self.table
                 .apply_claim(network, at.port, at.source_mac, at.now, &options.timing);
-        if let Learned::Moved { flaps, .. } = learned {
-            if learned.flapping() {
-                host.observe(Event::Flapping { network, flaps });
-            }
+        if let Learned::Moved { flaps, .. } = learned
+            && learned.flapping()
+        {
+            host.observe(Event::Flapping { network, flaps });
         }
         if learned.applied() {
             self.table.record_learned();
@@ -325,7 +339,7 @@ impl<
         }
         let network = offer.network;
         let new = network != 0 && network != GLOBAL_NETWORK && self.table.lookup(network).is_none();
-        let at_cap = self.table.len() >= usize::from(options.route_cap);
+        let at_cap = self.table.len() >= options.cap(R);
         if new && at_cap {
             self.table.record_learning_cap();
             host.observe(Event::RouteCap {
@@ -347,7 +361,9 @@ impl<
 
     /// A received reject (Clause 6.6.3.5): applied to the table, then for
     /// the router itself or passed on, whatever its reason. A reason other
-    /// than 1 or 2 changes no route.
+    /// than 1 or 2 changes no route, and under
+    /// [`Options::next_hop_rejects`] neither does one from a router other
+    /// than the route's next.
     fn received_reject<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -355,7 +371,7 @@ impl<
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Ok(reject) = Reject::parse(npdu.payload) else {
+        let Ok(reject) = RejectMessageToNetwork::decode(npdu.payload) else {
             return self.bad_message();
         };
         let named = Networks::parse(&npdu.payload[1..]).unwrap_or(Networks::EMPTY);
@@ -368,13 +384,27 @@ impl<
         ) {
             return Received::Discarded(Discard::Denied);
         }
-        let effect = self.table.apply_reject(
-            reject.network,
-            at.port,
-            reject.reason,
-            at.now,
-            &options.timing,
-        );
+        // Under the next-hop policy, only the route's next router may
+        // change it; a direct route no reject changes anyway.
+        let off_path = options.next_hop_rejects
+            && self.table.lookup(reject.network).is_some_and(|route| {
+                !route.is_direct()
+                    && !self
+                        .table
+                        .is_served_via_peer(reject.network, at.port, at.source)
+            });
+        let effect = if off_path {
+            bump(&mut self.counters.not_next_hop);
+            RejectEffect::NotNextHop
+        } else {
+            self.table.apply_reject(
+                reject.network,
+                at.port,
+                reject.reason,
+                at.now,
+                &options.timing,
+            )
+        };
         host.observe(Event::RejectReceived {
             network: reject.network,
             reason: reject.reason,
@@ -437,13 +467,21 @@ impl<
             for network in list.iter() {
                 if self.table.is_served_via_peer(network, at.port, at.source) {
                     mark(&mut self.table, network);
+                } else if self
+                    .table
+                    .lookup(network)
+                    .is_some_and(|route| !route.is_direct())
+                {
+                    // Learned through another router: not the sender's
+                    // to curtail.
+                    bump(&mut self.counters.not_next_hop);
                 }
             }
         }
         let kind = if busy {
-            MessageType::ROUTER_BUSY_TO_NETWORK
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK
         } else {
-            MessageType::ROUTER_AVAILABLE_TO_NETWORK
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
         };
         self.rebroadcast(at, npdu, kind, host)
     }

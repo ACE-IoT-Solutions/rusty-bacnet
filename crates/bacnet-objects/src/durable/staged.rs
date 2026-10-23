@@ -64,7 +64,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
 use super::{
-    Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep, STAGED_WRITE_LIFETIME,
+    Event, PendingWrite, STAGED_WRITE_LIFETIME, SaveTicket, SaveWait, SaveWriter, StageStep,
 };
 
 /// One write of a staged save, and the state `N` it leaves.
@@ -113,9 +113,7 @@ fn relinquishes_nothing(value: &PropertyValue, error: &Error) -> bool {
     let (Error::Protocol { class, code } | Error::Structured { class, code, .. }) = error else {
         return false;
     };
-    is_null(value)
-        && *class == ErrorClass::PROPERTY.to_raw() as u32
-        && *code == ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
+    is_null(value) && *class == ErrorClass::PROPERTY && *code == ErrorCode::INVALID_DATA_TYPE
 }
 
 /// Whether `value` encodes as one application NULL: `Null` itself, the raw

@@ -4,11 +4,11 @@
 //! 12.31.10, 12.31.11, 12.31.14 and 12.31.33; #1307).
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::AccessPointObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::enums::AuthorizationMode;
-use PropertyIdentifier as P;
 
 /// One write: the property, its array index, the value and the priority.
 type Write = (P, Option<u32>, PropertyValue, Option<u8>);
@@ -132,8 +132,8 @@ fn served(db: &ObjectDatabase, oid: ObjectIdentifier) -> [Vec<u8>; 4] {
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(
         matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected PROPERTY / {expected:?}, got {result:?}"
     );
 }

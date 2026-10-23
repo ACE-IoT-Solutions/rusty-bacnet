@@ -7,6 +7,7 @@
 use super::cov_wire_test_support::*;
 use super::*;
 use bacnet_objects::analog::AnalogValueObject;
+use bacnet_types::enums::EngineeringUnits;
 
 #[tokio::test]
 async fn initial_report_carries_admission_time() {
@@ -16,9 +17,11 @@ async fn initial_report_carries_admission_time() {
     h.subscribe(false).await;
     let initial = h.notification().await;
     assert_eq!(pv_rows(&initial), vec![(real(0.0), Some(time(1)))]);
-    assert!(rows(&initial)
-        .iter()
-        .all(|(_, _, time_of_change)| *time_of_change == Some(time(1))));
+    assert!(
+        rows(&initial)
+            .iter()
+            .all(|(_, _, time_of_change)| *time_of_change == Some(time(1)))
+    );
     assert_eq!(envelope(&initial), Some((at(1).local_date, time(1))));
     h.server.stop().await.unwrap();
 }
@@ -57,9 +60,11 @@ async fn write_property_change_reports_commit_time_not_preparation_time() {
             vec![(real(42.0), Some(time(10)))],
             "confirmed={confirmed}"
         );
-        assert!(rows(&report)
-            .iter()
-            .all(|(_, _, time_of_change)| *time_of_change == Some(time(10))));
+        assert!(
+            rows(&report)
+                .iter()
+                .all(|(_, _, time_of_change)| *time_of_change == Some(time(10)))
+        );
         assert_eq!(envelope(&report), Some((at(10).local_date, time(10))));
         assert_eq!(
             *h.clock.0.lock().unwrap(),
@@ -258,8 +263,10 @@ fn av2() -> ObjectIdentifier {
 #[tokio::test]
 async fn any_notification_to_the_context_conveys_every_pending_timestamped_change() {
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
-        db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
     })
     .await;
     h.subscribe_specs(
@@ -420,8 +427,10 @@ async fn a_timestamped_companion_keeps_its_time_over_an_unchanged_selector() {
 #[tokio::test]
 async fn the_header_names_each_notifications_own_newest_change_even_if_older() {
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
-        db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
     })
     .await;
     h.set_clock(1);

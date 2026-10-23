@@ -9,8 +9,8 @@
 
 use super::create_object_initial_values::{create, initial, read, text};
 use super::*;
-use bacnet_types::enums::EngineeringUnits;
 use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 const MULTI_STATE: [ObjectType; 3] = [
     ObjectType::MULTI_STATE_INPUT,
@@ -52,8 +52,8 @@ fn denied(result: Result<(), Error>) -> bool {
     matches!(
         result,
         Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     )
 }
 

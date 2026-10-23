@@ -1,13 +1,12 @@
 //! Outputs that wait in the queue, and how each is written when polled.
 
+use super::Storage;
 use super::config::PortConfig;
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
-use super::Storage;
-use crate::message::{
-    MessageType, NetworkNumberIs, Networks, Reject, RejectReason, RoutingEntries,
-};
-use crate::npdu::{Address, Npdu};
+use crate::message::{NetworkNumberIs, Networks, RoutingEntries};
+use crate::npdu::{Address, NetworkPriority, Npdu};
+use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
 use crate::table::{Reachability, Table};
 use crate::{Mac, PortId};
 
@@ -42,7 +41,7 @@ pub(super) struct Task {
     pub(super) kind: TaskKind,
     port: PortId,
     network: u16,
-    reason: RejectReason,
+    reason: RejectMessageReason,
     to: Mac,
     origin_network: u16,
     origin: Mac,
@@ -54,7 +53,7 @@ impl Task {
         kind: TaskKind::Empty,
         port: PortId(0),
         network: 0,
-        reason: RejectReason::OTHER,
+        reason: RejectMessageReason::OTHER,
         to: Mac::EMPTY,
         origin_network: 0,
         origin: Mac::EMPTY,
@@ -83,7 +82,7 @@ impl Task {
         to: &[u8],
         origin: Option<Address<'_>>,
         network: u16,
-        reason: RejectReason,
+        reason: RejectMessageReason,
     ) -> Self {
         // A parsed address is never over the bound.
         let mac = |octets: &[u8]| Mac::from_slice(octets).unwrap_or(Mac::EMPTY);
@@ -149,14 +148,14 @@ const ACK_ENTRIES: usize = (501 - 3 - 1) / RoutingEntries::ENTRY_LEN;
 /// the three-octet header, then the data `data` writes behind it.
 fn write_message(
     scratch: &mut [u8],
-    kind: MessageType,
+    kind: NetworkMessageType,
     data: impl FnOnce(&mut [u8]) -> Option<usize>,
 ) -> Option<usize> {
     let header = Npdu::message(kind, &[]);
     let at = header.encoded_len();
     let (head, rest) = scratch.split_at_mut_checked(at)?;
     let len = data(rest)?;
-    header.write(head).ok()?;
+    header.encode_into(head).ok()?;
     Some(at + len)
 }
 
@@ -185,19 +184,20 @@ fn other_networks<G>(
 }
 
 impl<
-        const P: usize,
-        const R: usize,
-        const H: usize,
-        const D: usize,
-        const N: usize,
-        G: super::GroupClassifier,
-    > Storage<P, R, H, D, N, G>
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize,
+    const N: usize,
+    G: super::GroupClassifier,
+    const B: usize,
+> Storage<P, R, H, D, N, G, B>
 {
     /// Write the front task's next output into the scratch as the current
     /// one. `false` when no task is left.
     pub(super) fn write_task(&mut self) -> bool {
         let Some(task) = self.out.front() else {
-            return false;
+            return self.write_announcement();
         };
         let mut next = None;
         // The output's length (`None`: the writer refused it), kind, cause
@@ -206,8 +206,8 @@ impl<
             TaskKind::Empty => None,
             TaskKind::Solicit => {
                 let data = task.network.to_be_bytes();
-                let npdu = Npdu::message(MessageType::WHO_IS_ROUTER_TO_NETWORK, &data);
-                let len = npdu.write(&mut self.scratch).ok();
+                let npdu = Npdu::message(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK, &data);
+                let len = npdu.encode_into(&mut self.scratch).ok();
                 Some((
                     len,
                     Kind::Solicit,
@@ -216,19 +216,19 @@ impl<
                 ))
             }
             TaskKind::Reject => {
-                let data = Reject {
+                let data = RejectMessageToNetwork {
                     reason: task.reason,
                     network: task.network,
                 }
                 .to_bytes();
-                let mut npdu = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
+                let mut npdu = Npdu::message(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &data);
                 if task.origin_network != 0 {
                     npdu.destination = Some(Address {
                         network: task.origin_network,
                         mac: task.origin.as_slice(),
                     });
                 }
-                let len = npdu.write(&mut self.scratch).ok();
+                let len = npdu.encode_into(&mut self.scratch).ok();
                 let target = Target::Unicast(task.port, task.to.as_slice());
                 Some((len, Kind::Reject(task.reason), Cause::Ingress, target))
             }
@@ -242,9 +242,9 @@ impl<
                     })
                     .map(|(network, _)| network)
                     .peekable();
-                let kind = Kind::Answer(MessageType::I_AM_ROUTER_TO_NETWORK);
+                let kind = Kind::Answer(NetworkMessageType::I_AM_ROUTER_TO_NETWORK);
                 let target = Target::Broadcast(task.port);
-                let message = MessageType::I_AM_ROUTER_TO_NETWORK;
+                let message = NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
                 if task.network != 0 {
                     let len = write_message(&mut self.scratch, message, |data| {
                         Networks::write([task.network], data).ok()
@@ -261,9 +261,9 @@ impl<
                 }
             }
             TaskKind::UpdateAck => {
-                let npdu = Npdu::message(MessageType::INITIALIZE_ROUTING_TABLE_ACK, &[]);
-                let len = npdu.write(&mut self.scratch).ok();
-                let kind = Kind::Answer(MessageType::INITIALIZE_ROUTING_TABLE_ACK);
+                let npdu = Npdu::message(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK, &[]);
+                let len = npdu.encode_into(&mut self.scratch).ok();
+                let kind = Kind::Answer(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK);
                 let target = Target::Unicast(task.port, task.to.as_slice());
                 Some((len, kind, Cause::Ingress, target))
             }
@@ -275,7 +275,7 @@ impl<
                 if task.cursor != 0 && last.is_none() {
                     None
                 } else {
-                    let message = MessageType::INITIALIZE_ROUTING_TABLE_ACK;
+                    let message = NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK;
                     let len = write_message(&mut self.scratch, message, |data| {
                         RoutingEntries::write(entries, data).ok()
                     });
@@ -291,7 +291,7 @@ impl<
             }
             TaskKind::NumberIs => {
                 let len = self.write_number_is(task.port);
-                let kind = Kind::Answer(MessageType::NETWORK_NUMBER_IS);
+                let kind = Kind::Answer(NetworkMessageType::NETWORK_NUMBER_IS);
                 Some((len, kind, Cause::Ingress, Target::Broadcast(task.port)))
             }
             TaskKind::Announce | TaskKind::AnnouncePort => {
@@ -303,9 +303,9 @@ impl<
                 self.next_announcement(task.cursor).map(|(at, len)| {
                     next = Some(at + 1).filter(|&cursor| cursor < end);
                     let kind = if at & 1 == 0 {
-                        Kind::Announce(MessageType::NETWORK_NUMBER_IS)
+                        Kind::Announce(NetworkMessageType::NETWORK_NUMBER_IS)
                     } else {
-                        Kind::Announce(MessageType::I_AM_ROUTER_TO_NETWORK)
+                        Kind::Announce(NetworkMessageType::I_AM_ROUTER_TO_NETWORK)
                     };
                     // At most 255 ports, so the index fits in a u8.
                     let port = PortId((at >> 1) as u8);
@@ -316,7 +316,8 @@ impl<
         if let Some((len, kind, cause, target)) = output {
             match len {
                 Some(len) => {
-                    let mut current = Current::new(len, kind, cause, 0, target);
+                    let mut current =
+                        Current::new(len, kind, cause, NetworkPriority::Normal, target);
                     current.table_ack = task.kind == TaskKind::TableAck;
                     self.out.current = current;
                 }
@@ -338,8 +339,8 @@ impl<
             flag: NetworkNumberIs::CONFIGURED,
         }
         .to_bytes();
-        Npdu::message(MessageType::NETWORK_NUMBER_IS, &data)
-            .write(&mut self.scratch)
+        Npdu::message(NetworkMessageType::NETWORK_NUMBER_IS, &data)
+            .encode_into(&mut self.scratch)
             .ok()
     }
 
@@ -363,7 +364,7 @@ impl<
                 let others = other_networks(&self.ports[..self.port_count], port);
                 let len = write_message(
                     &mut self.scratch,
-                    MessageType::I_AM_ROUTER_TO_NETWORK,
+                    NetworkMessageType::I_AM_ROUTER_TO_NETWORK,
                     |data| Networks::write(others, data).ok(),
                 );
                 return Some((at, len));

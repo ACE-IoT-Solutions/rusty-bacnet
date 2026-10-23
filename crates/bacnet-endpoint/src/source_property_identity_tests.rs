@@ -158,7 +158,7 @@ async fn source_read_alias_failure_keeps_requested_identity_without_trusting_bad
             match failure {
                 5 => assert!(matches!(result, Err(Error::Protocol { .. }))),
                 6 => assert!(matches!(result, Err(Error::Timeout(_)))),
-                _ => assert!(matches!(result, Err(Error::Decoding { .. }))),
+                _ => assert!(matches!(result, Err(Error::Decoding(_)))),
             }
             let (record, _) = notification(&receive(&mut records).await, false);
             value_free(&record);
@@ -236,9 +236,11 @@ async fn source_read_alias_cancelled_retry_resolves_identity_on_original_recipie
         Some(BACnetTimeStamp::SequenceNumber(0))
     );
     released(&session).await;
-    assert!(timeout(Duration::from_millis(30), old_records.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(30), old_records.recv())
+            .await
+            .is_err()
+    );
     // Subsequent admitted work uses the new route and concrete peer identity.
     let read = start_alias(&session, peer.local_mac(), ObjectType::NETWORK_PORT);
     let envelope = receive(&mut requests).await;

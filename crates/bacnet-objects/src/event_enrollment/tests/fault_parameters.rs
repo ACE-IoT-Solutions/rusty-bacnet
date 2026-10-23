@@ -239,14 +239,15 @@ fn fault_properties_are_advertised_together() {
     assert!(props.contains(&PropertyIdentifier::FAULT_TYPE));
     assert!(props.contains(&PropertyIdentifier::FAULT_PARAMETERS));
     assert!(!ee.is_writable_property(PropertyIdentifier::FAULT_TYPE));
-    assert!(ee
-        .write_property(
+    assert!(
+        ee.write_property(
             PropertyIdentifier::FAULT_TYPE,
             None,
             PropertyValue::Enumerated(FaultType::FAULT_LISTED.to_raw()),
             None,
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
@@ -283,14 +284,15 @@ fn fault_parameters_flat_malformed_proprietary_body_rejected() {
         )],
     };
 
-    assert!(ee
-        .write_property(
+    assert!(
+        ee.write_property(
             PropertyIdentifier::FAULT_PARAMETERS,
             None,
             malformed.encode_property_value(),
             None,
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         ee.read_property(PropertyIdentifier::FAULT_PARAMETERS, None)
             .unwrap(),
@@ -320,9 +322,10 @@ fn fault_parameters_flat_life_safety_overflow_rejected() {
     };
     values[0] = PropertyValue::Unsigned(u64::from(u32::MAX) + 1);
 
-    assert!(ee
-        .write_property(PropertyIdentifier::FAULT_PARAMETERS, None, malformed, None,)
-        .is_err());
+    assert!(
+        ee.write_property(PropertyIdentifier::FAULT_PARAMETERS, None, malformed, None,)
+            .is_err()
+    );
     assert_eq!(
         ee.read_property(PropertyIdentifier::FAULT_PARAMETERS, None)
             .unwrap(),
@@ -420,8 +423,8 @@ fn fault_parameters_application_null_is_another_datatype() {
         .unwrap_err();
     assert!(
         matches!(err, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::INVALID_DATA_TYPE.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::INVALID_DATA_TYPE),
         "{err:?}"
     );
     let val = ee

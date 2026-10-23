@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::integration::{
-    indexed_reference_value, setup_qualified_reference, ReferenceValueObject,
+    ReferenceValueObject, indexed_reference_value, setup_qualified_reference,
 };
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::binary::BinaryInputObject;
@@ -14,9 +14,12 @@ use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
     ChangeOfValueCriteria, FaultParameters,
 };
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use std::borrow::Cow;
 use std::sync::atomic::Ordering;
+
+const CELSIUS: EngineeringUnits = EngineeringUnits::DEGREES_CELSIUS;
 
 fn stale_state() -> EventEnrollmentEvalState {
     EventEnrollmentEvalState {
@@ -111,13 +114,15 @@ fn assert_observation_gap(
 ) {
     assert!(report.transitions.is_empty());
     assert!(report.reliability_results.is_empty());
-    assert!(report
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::Reliability,
-            outcome: EventEnrollmentEvaluationOutcome::ObservationUnavailable,
-        }));
+    assert!(
+        report
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::Reliability,
+                outcome: EventEnrollmentEvaluationOutcome::ObservationUnavailable,
+            })
+    );
 }
 
 fn assert_private_reset(db: &ObjectDatabase, enrollment_oid: ObjectIdentifier) {
@@ -162,7 +167,7 @@ fn add_out_of_range_enrollment(
 #[test]
 fn removed_same_target_clears_all_continuity_and_restarts_full_delay() {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogInputObject::new(320, "AI-remove-restore", 62).unwrap();
+    let mut target = AnalogInputObject::new(320, "AI-remove-restore", CELSIUS).unwrap();
     target.set_present_value(90.0);
     let target_oid = target.object_identifier();
     db.add(Box::new(target)).unwrap();
@@ -202,11 +207,11 @@ fn removed_same_target_clears_all_continuity_and_restarts_full_delay() {
 #[test]
 fn cov_restore_and_valid_retarget_each_establish_a_fresh_baseline() {
     let mut db = ObjectDatabase::new();
-    let mut first = AnalogInputObject::new(321, "AI-COV-first", 62).unwrap();
+    let mut first = AnalogInputObject::new(321, "AI-COV-first", CELSIUS).unwrap();
     first.set_present_value(10.0);
     let first_oid = first.object_identifier();
     db.add(Box::new(first)).unwrap();
-    let mut second = AnalogInputObject::new(322, "AI-COV-second", 62).unwrap();
+    let mut second = AnalogInputObject::new(322, "AI-COV-second", CELSIUS).unwrap();
     second.set_present_value(100.0);
     let second_oid = second.object_identifier();
     db.add(Box::new(second)).unwrap();
@@ -315,7 +320,7 @@ fn change_of_state_does_not_reuse_pre_gap_last_offnormal_identity() {
 #[test]
 fn retarget_to_missing_then_restore_clears_old_owner_and_restarts_delay() {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogInputObject::new(324, "AI-retarget-missing", 62).unwrap();
+    let mut target = AnalogInputObject::new(324, "AI-retarget-missing", CELSIUS).unwrap();
     target.set_present_value(90.0);
     let target_oid = target.object_identifier();
     db.add(Box::new(target)).unwrap();
@@ -379,7 +384,8 @@ struct ObservationTarget {
 
 impl ObservationTarget {
     fn new(instance: u32, fail_reliability: bool, fail_indexed_value: bool) -> Self {
-        let mut inner = AnalogValueObject::new(instance, format!("AV-gap-{instance}"), 62).unwrap();
+        let mut inner =
+            AnalogValueObject::new(instance, format!("AV-gap-{instance}"), CELSIUS).unwrap();
         inner
             .write_property_from(
                 PropertyIdentifier::PRESENT_VALUE,
@@ -514,7 +520,7 @@ fn transient_monitored_reliability_read_clears_continuity() {
 #[test]
 fn missing_fault_status_flags_observation_clears_continuity() {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogInputObject::new(328, "AI-fault-flags", 62).unwrap();
+    let mut target = AnalogInputObject::new(328, "AI-fault-flags", CELSIUS).unwrap();
     target.set_present_value(90.0);
     let target_oid = target.object_identifier();
     db.add(Box::new(target)).unwrap();
@@ -560,7 +566,7 @@ fn missing_fault_status_flags_observation_clears_continuity() {
 #[test]
 fn floating_setpoint_gap_overwrites_queued_ownership_and_resets_once() {
     let mut db = ObjectDatabase::new();
-    let mut monitored = AnalogInputObject::new(329, "AI-floating-gap", 62).unwrap();
+    let mut monitored = AnalogInputObject::new(329, "AI-floating-gap", CELSIUS).unwrap();
     monitored.set_present_value(65.0);
     let monitored_oid = monitored.object_identifier();
     db.add(Box::new(monitored)).unwrap();
@@ -611,7 +617,7 @@ fn floating_setpoint_gap_overwrites_queued_ownership_and_resets_once() {
 #[test]
 fn ownerless_floating_gap_discards_staged_ownership_without_source_write() {
     let mut db = ObjectDatabase::new();
-    let mut monitored = AnalogInputObject::new(333, "AI-ownerless-floating-gap", 62).unwrap();
+    let mut monitored = AnalogInputObject::new(333, "AI-ownerless-floating-gap", CELSIUS).unwrap();
     monitored.set_present_value(65.0);
     let monitored_oid = monitored.object_identifier();
     db.add(Box::new(monitored)).unwrap();
@@ -682,20 +688,24 @@ fn rejected_gap_resets_remain_visible_alongside_observation_diagnostic() {
 
     let report = evaluate_event_enrollments_report(&mut db, 1);
     assert_observation_gap(&report, enrollment_oid);
-    assert!(report
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::EvaluationSource,
-            outcome: EventEnrollmentEvaluationOutcome::Rejected,
-        }));
-    assert!(report
-        .diagnostics
-        .contains(&EventEnrollmentEvaluationDiagnostic {
-            enrollment_oid,
-            stage: EventEnrollmentEvaluationStage::EvaluationState,
-            outcome: EventEnrollmentEvaluationOutcome::Rejected,
-        }));
+    assert!(
+        report
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::EvaluationSource,
+                outcome: EventEnrollmentEvaluationOutcome::Rejected,
+            })
+    );
+    assert!(
+        report
+            .diagnostics
+            .contains(&EventEnrollmentEvaluationDiagnostic {
+                enrollment_oid,
+                stage: EventEnrollmentEvaluationStage::EvaluationState,
+                outcome: EventEnrollmentEvaluationOutcome::Rejected,
+            })
+    );
     assert_eq!(writes.load(Ordering::SeqCst), 1);
     assert!(db.enrollment_eval_state_invalidated(&enrollment_oid));
 }
@@ -724,23 +734,5 @@ fn ownerless_gap_skips_redundant_rejected_source_reset() {
     assert!(!db.enrollment_eval_state_invalidated(&enrollment_oid));
 }
 
-#[test]
-fn invalid_indexed_configuration_remains_configuration_error() {
-    let mut db = ObjectDatabase::new();
-    let target = ObservationTarget::new(332, false, false);
-    let target_oid = target.object_identifier();
-    db.add(Box::new(target)).unwrap();
-    let enrollment = ReferenceValueObject::new(Some(indexed_reference_value(target_oid, 17)));
-    db.add(Box::new(enrollment)).unwrap();
-
-    let report = evaluate_event_enrollments_report(&mut db, 1);
-    assert!(report.transitions.is_empty());
-    assert_eq!(report.reliability_results.len(), 1);
-    assert_eq!(
-        report.reliability_results[0].new_reliability,
-        bacnet_types::enums::Reliability::CONFIGURATION_ERROR
-    );
-    assert!(!report.diagnostics.iter().any(|diagnostic| {
-        diagnostic.outcome == EventEnrollmentEvaluationOutcome::ObservationUnavailable
-    }));
-}
+#[path = "continuity_configuration.rs"]
+mod configuration;

@@ -2,8 +2,8 @@ use super::{
     CompletionOutcome, PendingRelease, PendingTransaction, TransactionOwner, TransactionPhase, Tsm,
     TsmResponse,
 };
-use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
 use std::collections::hash_map::Entry;
 
 impl Tsm {
@@ -121,10 +121,10 @@ impl Tsm {
             return CompletionOutcome::Delivered;
         }
         let expected = entry.get().expected_service_choice;
-        if let Some(observed) = observed_service_choice {
-            if observed != expected {
-                return CompletionOutcome::ServiceChoiceMismatch { expected, observed };
-            }
+        if let Some(observed) = observed_service_choice
+            && observed != expected
+        {
+            return CompletionOutcome::ServiceChoiceMismatch { expected, observed };
         }
         let pending = entry.remove();
         let responder = pending.responder;
@@ -147,7 +147,7 @@ impl Tsm {
             PendingRelease::Release,
         );
         let _ = responder.send(TsmResponse::Abort {
-            reason: AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw(),
+            reason: AbortReason::INVALID_APDU_IN_THIS_STATE,
         });
     }
 }

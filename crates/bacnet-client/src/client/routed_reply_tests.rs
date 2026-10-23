@@ -13,10 +13,10 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
 use bytes::Bytes;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
-use super::tests::send_routed_response;
 use super::BACnetClient;
+use super::tests::send_routed_response;
 
 /// Every SegmentACK for a router-mediated segmented ComplexACK carries the
 /// peer's network and address as DNET/DADR, and the exchange completes.

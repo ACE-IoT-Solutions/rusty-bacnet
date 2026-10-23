@@ -10,11 +10,11 @@ use tokio::{
     time::Instant,
 };
 use tokio_tungstenite::{
-    tungstenite::{
-        handshake::server::{ErrorResponse, Request, Response},
-        Message,
-    },
     WebSocketStream,
+    tungstenite::{
+        Message,
+        handshake::server::{ErrorResponse, Request, Response},
+    },
 };
 
 type Socket = WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>;
@@ -94,7 +94,7 @@ async fn eof(mut tcp: TcpStream) {
                         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
                     ) =>
                 {
-                    break
+                    break;
                 }
                 Err(e) => panic!("unexpected TCP read error: {e}"),
             }
@@ -120,11 +120,11 @@ async fn erased_sc_preserves_heartbeat_retry_spacing_and_stop_cancels_pending_tl
                 .await
                 .unwrap()
                 .unwrap();
-            if let Message::Binary(data) = message {
-                if data[0] == 10 {
-                    events.send(0).await.unwrap();
-                    break;
-                }
+            if let Message::Binary(data) = message
+                && data[0] == 10
+            {
+                events.send(0).await.unwrap();
+                break;
             }
         }
         let (mut retry, _) = bounded(listener.accept()).await.unwrap();

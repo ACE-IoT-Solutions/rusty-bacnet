@@ -1,11 +1,11 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{schedule::CalendarObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetDateRange, BACnetWeekNDay, PropertyReference,
     ReadAccessSpecification,
 };
 use bacnet_types::primitives::Date;
-use PropertyIdentifier as P;
 
 #[test]
 fn rpm_calendar_indexed_reads_and_date_list_wire_bytes() {
@@ -164,12 +164,12 @@ fn rpm_calendar_indexed_reads_and_date_list_wire_bytes() {
                     assert!(result.property_value.is_none());
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
                     assert!(matches!(rp, Err(Error::Protocol { class, code })
-                        if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                        if class == ErrorClass::PROPERTY && code == expected));
                     assert!(response.is_empty());
                 }
             }
         }
-        use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+        use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
         let budget = crate::server::ReadPropertyMultipleBudget {
             max_result_elements: cases.len(),
             max_service_ack_bytes: legacy.len(),

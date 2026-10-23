@@ -65,6 +65,36 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         .await
     }
 
+    /// Get event information from a discovered device, routing when needed.
+    ///
+    /// The continuation object and raw acknowledgement have the same meaning as
+    /// [`Self::get_event_information`]. A missing device fails before sending.
+    pub async fn get_event_information_from_device(
+        &self,
+        device_instance: u32,
+        last_received_object_identifier: Option<bacnet_types::primitives::ObjectIdentifier>,
+    ) -> Result<Bytes, Error> {
+        let (mac, routing) = self.resolve_device(device_instance).await?;
+        if let Some((network, address)) = routing {
+            let request = bacnet_services::alarm_event::GetEventInformationRequest {
+                last_received_object_identifier,
+            };
+            let mut buf = BytesMut::new();
+            request.encode(&mut buf);
+            self.confirmed_request_routed(
+                &mac,
+                network,
+                &address,
+                ConfirmedServiceChoice::GET_EVENT_INFORMATION,
+                &buf,
+            )
+            .await
+        } else {
+            self.get_event_information(&mac, last_received_object_identifier)
+                .await
+        }
+    }
+
     /// Send a caller-supplied AcknowledgeAlarm request without fabricating fields.
     pub async fn acknowledge_alarm_request(
         &self,
@@ -83,6 +113,33 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .await?;
 
         Ok(())
+    }
+
+    /// Send exact caller-supplied alarm acknowledgment fields to a discovered device.
+    ///
+    /// Routes when needed and preserves both timestamps, confirmation and errors
+    /// from [`Self::acknowledge_alarm_request`]. A missing device fails before sending.
+    pub async fn acknowledge_alarm_request_from_device(
+        &self,
+        device_instance: u32,
+        request: &bacnet_services::alarm_event::AcknowledgeAlarmRequest,
+    ) -> Result<(), Error> {
+        let (mac, routing) = self.resolve_device(device_instance).await?;
+        if let Some((network, address)) = routing {
+            let mut buf = BytesMut::new();
+            request.encode(&mut buf)?;
+            self.confirmed_request_routed(
+                &mac,
+                network,
+                &address,
+                ConfirmedServiceChoice::ACKNOWLEDGE_ALARM,
+                &buf,
+            )
+            .await?;
+            Ok(())
+        } else {
+            self.acknowledge_alarm_request(&mac, request).await
+        }
     }
 
     /// Acknowledge an alarm on a remote device.
@@ -161,6 +218,58 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         Ok(ack)
     }
 
+    /// Read raw file acknowledgement bytes from a discovered device.
+    ///
+    /// Routes stream and record access when needed. The device address is
+    /// resolved once for this request; a missing device fails before sending.
+    /// Use [`Self::atomic_read_file_decoded_from_device`] for a checked ACK.
+    pub async fn atomic_read_file_from_device(
+        &self,
+        device_instance: u32,
+        file_identifier: bacnet_types::primitives::ObjectIdentifier,
+        access: bacnet_services::file::FileAccessMethod,
+    ) -> Result<Bytes, Error> {
+        let (mac, routing) = self.resolve_device(device_instance).await?;
+        if let Some((network, address)) = routing {
+            let request = bacnet_services::file::AtomicReadFileRequest {
+                file_identifier,
+                access,
+            };
+            let mut buf = BytesMut::new();
+            request.encode(&mut buf);
+            self.confirmed_request_routed(
+                &mac,
+                network,
+                &address,
+                ConfirmedServiceChoice::ATOMIC_READ_FILE,
+                &buf,
+            )
+            .await
+        } else {
+            self.atomic_read_file(&mac, file_identifier, access).await
+        }
+    }
+
+    /// Read one checked file window from a discovered device, routing if needed.
+    ///
+    /// Preserves the access-arm and window checks of
+    /// [`Self::atomic_read_file_decoded`]. Successive calls resolve separately;
+    /// a sequence of windows is not an atomic snapshot of the remote file.
+    pub async fn atomic_read_file_decoded_from_device(
+        &self,
+        device_instance: u32,
+        file_identifier: bacnet_types::primitives::ObjectIdentifier,
+        access: bacnet_services::file::FileAccessMethod,
+    ) -> Result<bacnet_services::file::AtomicReadFileAck, Error> {
+        let requested_access = access.clone();
+        let response = self
+            .atomic_read_file_from_device(device_instance, file_identifier, access)
+            .await?;
+        let ack = bacnet_services::file::AtomicReadFileAck::decode(&response)?;
+        validate_atomic_read_file_ack(&requested_access, &ack)?;
+        Ok(ack)
+    }
+
     /// Write file data to a remote device (stream or record access).
     pub async fn atomic_write_file(
         &self,
@@ -183,6 +292,37 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             &buf,
         )
         .await
+    }
+
+    /// Write stream or record data to a discovered device, routing if needed.
+    ///
+    /// Returns the raw acknowledgement, as in [`Self::atomic_write_file`].
+    /// A missing device fails before sending.
+    pub async fn atomic_write_file_from_device(
+        &self,
+        device_instance: u32,
+        file_identifier: bacnet_types::primitives::ObjectIdentifier,
+        access: bacnet_services::file::FileWriteAccessMethod,
+    ) -> Result<Bytes, Error> {
+        let (mac, routing) = self.resolve_device(device_instance).await?;
+        if let Some((network, address)) = routing {
+            let request = bacnet_services::file::AtomicWriteFileRequest {
+                file_identifier,
+                access,
+            };
+            let mut buf = BytesMut::new();
+            request.encode(&mut buf);
+            self.confirmed_request_routed(
+                &mac,
+                network,
+                &address,
+                ConfirmedServiceChoice::ATOMIC_WRITE_FILE,
+                &buf,
+            )
+            .await
+        } else {
+            self.atomic_write_file(&mac, file_identifier, access).await
+        }
     }
 
     /// Add elements to a list property on a remote device.
@@ -257,3 +397,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 #[cfg(test)]
 #[path = "file_list_decoded_tests.rs"]
 mod decoded_tests;
+
+#[cfg(test)]
+#[path = "routed_file_tests.rs"]
+mod routed_tests;

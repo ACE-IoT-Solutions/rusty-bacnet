@@ -8,14 +8,14 @@
 //! asks for. Its records are the [`ReceivedNetworkControl`] a non-router
 //! [`NetworkLayer`](crate::layer::NetworkLayer) hands its own consumer.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_transport::port::ReceivedNpdu;
 
 use super::BACnetRouter;
-use crate::layer::{next_ingress_sequence, AdmissionSender, ReceivedNetworkControl};
+use crate::layer::{AdmissionSender, ReceivedNetworkControl, next_ingress_sequence};
 
 /// Where network controls addressed to this router go.
 #[derive(Default)]

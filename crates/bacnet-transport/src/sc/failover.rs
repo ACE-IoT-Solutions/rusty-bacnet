@@ -7,23 +7,17 @@ use std::time::Duration;
 
 use bacnet_types::error::Error;
 use bytes::BytesMut;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::warn;
 
-use crate::sc_frame::{encode_sc_message, ScMessage};
+use crate::sc_frame::{ScMessage, encode_sc_message};
 
 use super::{
-    connector::dial_connector, handshake::perform_handshake, HubLimits, ScConnection,
-    ScConnectionState, WebSocketConnector, WebSocketPort,
+    HubLimits, ScActiveHub, ScConnection, ScConnectionState, WebSocketConnector, WebSocketPort,
+    connector::dial_connector, handshake::perform_handshake, observability::ScObserver,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ActiveHub {
-    Primary,
-    Failover,
-}
 
 /// The cadence of primary-restore attempts while the failover hub is active,
 /// first due one `period` from now (#1555).
@@ -82,6 +76,7 @@ pub(super) struct PrimaryRestoreContext<'a, W> {
     pub(super) state_tx: &'a watch::Sender<ScConnectionState>,
     pub(super) connect_timeout_ms: u64,
     pub(super) hub_limits: &'a HubLimits,
+    pub(super) observer: &'a ScObserver,
 }
 
 pub(super) async fn publish_primary_restore<W: WebSocketPort>(
@@ -108,8 +103,11 @@ pub(super) async fn publish_primary_restore<W: WebSocketPort>(
     *current = restored_ws.clone();
     ctx.hub_limits.publish(&c);
     ctx.state_tx.send_replace(c.state);
+    let hub_vmac = c.hub_vmac;
     drop(c);
     drop(current);
+    ctx.observer.primary_restored();
+    ctx.observer.connected(ScActiveHub::Primary, hub_vmac);
 
     let disconnect_ws = current_ws.clone();
     let timeout = ctx.connect_timeout_ms;
@@ -190,6 +188,7 @@ mod tests {
                     state_tx: &state,
                     connect_timeout_ms: 500,
                     hub_limits: &limits,
+                    observer: &ScObserver::new(),
                 },
                 &live,
                 candidate,
@@ -207,7 +206,7 @@ mod tests {
             assert_eq!(limits.apdu(), super::super::DEFAULT_MAX_APDU_LENGTH);
             assert_eq!(
                 *limits.npdu_changes().borrow(),
-                crate::port::NpduLimits::STANDARD
+                bacnet_npdu::NpduLimits::STANDARD
             );
             assert!(disconnect.lock().unwrap().is_none());
         }

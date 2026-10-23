@@ -150,9 +150,10 @@ fn device_set_description_convenience() {
 #[test]
 fn device_description_in_property_list() {
     let dev = make_device();
-    assert!(dev
-        .property_list()
-        .contains(&PropertyIdentifier::DESCRIPTION));
+    assert!(
+        dev.property_list()
+            .contains(&PropertyIdentifier::DESCRIPTION)
+    );
 }
 
 #[test]
@@ -355,8 +356,8 @@ fn clockless_device_omits_clock_properties_and_sync_services() {
         assert!(matches!(
             dev.read_property(property, None),
             Err(Error::Protocol { class, code })
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::UNKNOWN_PROPERTY
         ));
     }
 
@@ -443,9 +444,10 @@ fn active_cov_subscriptions_default_empty() {
 #[test]
 fn active_cov_subscriptions_in_property_list() {
     let dev = make_device();
-    assert!(dev
-        .property_list()
-        .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS));
+    assert!(
+        dev.property_list()
+            .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS)
+    );
 }
 
 #[test]
@@ -488,8 +490,8 @@ fn active_cov_multiple_subscriptions_standalone_optional_read_only_list() {
         None,
     );
     assert!(matches!(denied, Err(Error::Protocol { class, code })
-        if class == ErrorClass::PROPERTY.to_raw() as u32
-            && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+        if class == ErrorClass::PROPERTY
+            && code == ErrorCode::WRITE_ACCESS_DENIED));
 }
 
 #[test]
@@ -617,8 +619,8 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
             }
             assert!(
                 matches!(device.read_property(P::PROPERTY_LIST, Some(wire.len() as u32 + 1)),
-                Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32)
+                Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::INVALID_ARRAY_INDEX)
             );
             let metadata = metadata.into_owned();
             for row in metadata {
@@ -638,8 +640,8 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
                     result.unwrap();
                 } else {
                     assert!(matches!(result, Err(Error::Protocol { class, code })
-                        if class == ErrorClass::PROPERTY.to_raw() as u32
-                            && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+                        if class == ErrorClass::PROPERTY
+                            && code == ErrorCode::WRITE_ACCESS_DENIED));
                 }
                 assert_eq!(device.read_property(p, None).unwrap(), before);
             }

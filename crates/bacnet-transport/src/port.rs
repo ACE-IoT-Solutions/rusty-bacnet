@@ -8,9 +8,11 @@
 //! - MS/TP (Clause 9): 1 byte (station address 0-254)
 //! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
-pub use crate::direct_response::{DirectResponse, DirectResponseScope};
-use bacnet_types::error::Error;
+pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseScopeGuard};
+pub use crate::principal::ScPrincipal;
+use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -94,6 +96,12 @@ impl DirectScIdentity {
     /// as an identity across processes; no ordering contract is exposed.
     pub fn incarnation(self) -> u64 {
         self.incarnation
+    }
+
+    /// This hop's leaf-certificate principal, without the connection
+    /// incarnation. For a routed request it is the forwarding router's.
+    pub fn principal(self) -> ScPrincipal {
+        ScPrincipal::from_leaf_sha256(self.leaf_sha256)
     }
 
     // Only the sc-tls direct accept and dial paths mint verified identities.
@@ -187,6 +195,14 @@ impl TransportProvenance {
         }
     }
 
+    /// The immediate direct-SC hop's leaf-certificate principal: for a routed
+    /// request, the router that forwarded it. `None` for every other ingress,
+    /// a hub's relayed origins and its own channel included. The server's
+    /// policy contexts withhold it from `principal()` for routed requests.
+    pub fn principal(self) -> Option<ScPrincipal> {
+        self.direct_sc_identity().map(DirectScIdentity::principal)
+    }
+
     /// True only for the unverified legacy variant.
     pub fn is_unverified(self) -> bool {
         self.kind == ProvenanceKind::Unverified
@@ -216,9 +232,15 @@ impl TransportProvenance {
     pub fn scope(self) -> &'static str {
         match self.kind {
             ProvenanceKind::Unverified => "unverified legacy origin (no assertion)",
-            ProvenanceKind::DirectPeer(_) => "authenticated immediate direct SC-TLS peer and connection incarnation",
-            ProvenanceKind::HubChannel => "authenticated Hub admission TLS-client channel (scope only)",
-            ProvenanceKind::RelayedOrigin => "independently validated SC-hub relayed origin (post source_admission; hub peer is not the leaf)",
+            ProvenanceKind::DirectPeer(_) => {
+                "authenticated immediate direct SC-TLS peer and connection incarnation"
+            }
+            ProvenanceKind::HubChannel => {
+                "authenticated Hub admission TLS-client channel (scope only)"
+            }
+            ProvenanceKind::RelayedOrigin => {
+                "independently validated SC-hub relayed origin (post source_admission; hub peer is not the leaf)"
+            }
         }
     }
 }
@@ -325,44 +347,75 @@ impl std::fmt::Debug for ReceivedNpdu {
 
 /// What a B/IP transport reports for registration as a Network Port
 /// ([`TransportPort::bip_port`]).
-#[derive(Debug, Clone)]
+///
+/// It is `#[non_exhaustive]`: outside this crate, build it with
+/// [`BipPort::new`] and add what the port lends with the `with_` methods.
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct BipPort {
     /// The IPv4 address and UDP port: configured before start, announced
     /// after.
     pub endpoint: std::net::SocketAddrV4,
     /// The B/IP mode, with what its Network Port properties need.
     pub mode: bacnet_types::bip_port::BipPortMode,
+    /// The port's B/IP multicast group (Annex J.8), lent when the transport
+    /// can use multicast at all, on or off: the Network Port then serves
+    /// BACnet_IP_Multicast_Address. `None` for a port that can't.
+    pub multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
 }
 
-/// The longest NPDU a link carries, in octets, to one node and to every
-/// node on it ([`TransportPort::max_npdu`]; Table 6-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NpduLimits {
-    /// To one node.
-    pub unicast: u16,
-    /// To every node on the link.
-    pub broadcast: u16,
-}
-
-impl NpduLimits {
-    /// 1,497 octets each way: what B/IP, B/IPv6, Ethernet and MS/TP with
-    /// extended frames carry (Table 6-1).
-    pub const STANDARD: Self = Self::both(1497);
-
-    /// The same limit both ways.
-    pub const fn both(octets: u16) -> Self {
+impl BipPort {
+    /// A port at `endpoint` in `mode`, lending no multicast group.
+    pub fn new(
+        endpoint: std::net::SocketAddrV4,
+        mode: bacnet_types::bip_port::BipPortMode,
+    ) -> Self {
         Self {
-            unicast: octets,
-            broadcast: octets,
+            endpoint,
+            mode,
+            multicast: None,
         }
     }
+
+    /// This port, lending `multicast` as its B/IP multicast group.
+    pub fn with_multicast(
+        self,
+        multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+    ) -> Self {
+        Self { multicast, ..self }
+    }
 }
 
-/// [`NpduLimits::STANDARD`].
-impl Default for NpduLimits {
-    fn default() -> Self {
-        Self::STANDARD
+impl std::fmt::Debug for BipPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let group = self
+            .multicast
+            .as_ref()
+            .map(|multicast| std::net::Ipv4Addr::from(multicast.group()));
+        f.debug_struct("BipPort")
+            .field("endpoint", &self.endpoint)
+            .field("mode", &self.mode)
+            .field("multicast", &group)
+            .finish()
     }
+}
+
+/// What a B/IPv6 transport reports for registration as a Network Port
+/// ([`TransportPort::bip6_port`]).
+#[derive(Debug, Clone)]
+pub struct Bip6Port {
+    /// The IPv6 address and UDP port: configured before start, bound
+    /// after. The scope ID and flow label are not part of the port's
+    /// identity and are zero.
+    pub endpoint: std::net::SocketAddrV6,
+    /// The node's 3-octet VMAC (Annex U.1.3): known before start only when
+    /// it comes from a configured Device instance, always after.
+    pub vmac: Option<[u8; 3]>,
+    /// The multicast group broadcasts go to; the transport sends them to
+    /// it at its own UDP port.
+    pub multicast_group: std::net::Ipv6Addr,
+    /// The B/IPv6 mode, with what its Network Port properties need.
+    pub mode: bacnet_types::bip_port::BipPortMode,
 }
 
 /// Trait for BACnet data-link transports.
@@ -406,9 +459,19 @@ pub trait TransportPort: Send + Sync {
         None
     }
 
+    /// Explicit capability for registration as one IPv6 Network Port, with
+    /// the B/IPv6 mode the port reports (Clause 12.56.39): the B/IPv6
+    /// counterpart of [`bip_port`](Self::bip_port), under the same
+    /// contract. A transport should report at most one of the two; when
+    /// one reports both, registration takes the B/IP port and ignores this
+    /// one. The default refuses registration.
+    fn bip6_port(&self) -> Option<Bip6Port> {
+        None
+    }
+
     /// Retain selected Network Port protection through the last socket owner.
     /// Must be installed once before start, only on a transport that reports
-    /// a [`bip_port`](Self::bip_port).
+    /// a [`bip_port`](Self::bip_port) or a [`bip6_port`](Self::bip6_port).
     /// Successful stop releases it after quiescence; abort/drop must retain it
     /// in every surviving socket worker. Custom implementors own this contract.
     #[doc(hidden)]
@@ -451,6 +514,13 @@ pub trait TransportPort: Send + Sync {
 
     /// Send NPDU bytes to a specific MAC address (unicast).
     ///
+    /// When [`Error::SendTooLong`] is returned, the NPDU or its encoded link
+    /// frame exceeded a bound before any bytes were sent or queued for
+    /// writing. BACnet/SC uses it for NPDU and frame-length checks; other
+    /// transports may return their existing error variants. Wrappers must
+    /// preserve `SendTooLong`. Other variants do not identify a definite
+    /// length refusal for the router.
+    ///
     /// B/IP refuses a MAC that is one of its group addresses
     /// ([`Self::is_group_destination`]) with an error, sending nothing
     /// (#1677): its receivers drop an Original-Unicast-NPDU that wasn't sent
@@ -473,10 +543,14 @@ pub trait TransportPort: Send + Sync {
         mac: &'a [u8],
         _data_attributes: &'a [DataAttribute],
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send + 'a {
-        async move { self.send_unicast(npdu, mac).await }
+        // The send's own future, not one wrapping it: every response future
+        // above this carries its size (#1713).
+        self.send_unicast(npdu, mac)
     }
 
     /// Broadcast NPDU bytes on the local network.
+    /// [`Error::SendTooLong`], when returned, has the same meaning as in
+    /// [`Self::send_unicast`].
     fn send_broadcast(
         &self,
         npdu: &[u8],
@@ -545,8 +619,9 @@ pub trait TransportPort: Send + Sync {
     /// it is published: every frame it routes after that goes by it, so an
     /// NPDU too long for the new limit draws reason 4. A send already on
     /// the port's queue when the limit falls can still be refused by the
-    /// transport as too long; the router counts that refusal as
-    /// `egress_too_long` too.
+    /// transport as too long; [`Error::SendTooLong`] lets the router count
+    /// it and return reason 4 to an eligible origin. Forwarded rejects and
+    /// fan-outs never draw another reject.
     ///
     /// BACnet/SC returns one: its limit comes from the hub connection, and
     /// it publishes the new one whenever it connects to a hub that carries

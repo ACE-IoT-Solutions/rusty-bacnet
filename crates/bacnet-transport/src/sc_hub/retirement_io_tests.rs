@@ -5,8 +5,8 @@ use super::retirement_tests::{heartbeat_wire, unicast_wire};
 use super::shutdown_blocked_tests::ControlledPeer;
 use super::*;
 use tokio_tungstenite::tungstenite::{
-    error::{CapacityError, ProtocolError},
     Error,
+    error::{CapacityError, ProtocolError},
 };
 
 struct Failure(std::sync::Mutex<Option<Error>>);

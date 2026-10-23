@@ -7,8 +7,8 @@
 
 use super::super::*;
 use super::{make_dest_device, make_time};
-use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 use bacnet_types::MacAddr;
+use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 
 /// Build an address destination with the given network number and MAC.
 fn make_dest_address(network_number: u16, mac: &[u8]) -> BACnetDestination {
@@ -118,13 +118,10 @@ fn recipient_list_indexed_write_rejected_list_unchanged() {
     );
     match result.unwrap_err() {
         Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-            );
+            assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
             assert_eq!(
                 code,
-                bacnet_types::enums::ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32
+                bacnet_types::enums::ErrorCode::PROPERTY_IS_NOT_AN_ARRAY
             );
         }
         other => panic!("expected PROPERTY/PROPERTY_IS_NOT_AN_ARRAY, got {other:?}"),
@@ -207,8 +204,8 @@ fn routing_skips_delivery_when_stored_recipient_list_is_malformed() {
                 Ok(PropertyValue::ApplicationData(bytes))
             } else {
                 Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                    class: bacnet_types::enums::ErrorClass::PROPERTY,
+                    code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
                 })
             }
         }
@@ -220,8 +217,8 @@ fn routing_skips_delivery_when_stored_recipient_list_is_malformed() {
             _priority: Option<u8>,
         ) -> Result<(), Error> {
             Err(Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                class: bacnet_types::enums::ErrorClass::PROPERTY,
+                code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
             })
         }
         fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -404,8 +401,8 @@ fn recipient_list_flat_form_write_refused() {
             Err(Error::Protocol { class, code }) => assert_eq!(
                 (class, code),
                 (
-                    bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
+                    bacnet_types::enums::ErrorClass::PROPERTY,
+                    bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE
                 ),
                 "{what}"
             ),
@@ -415,13 +412,15 @@ fn recipient_list_flat_form_write_refused() {
     }
     let flat = PropertyValue::List(vec![flat_entry]);
     assert!(decode_destination_list_pv(&flat).is_err());
-    assert!(filter_recipient_list(
-        &flat,
-        EventTransition::ToOffnormal,
-        DaysOfWeek::MONDAY,
-        &make_time(12, 0),
-    )
-    .is_empty());
+    assert!(
+        filter_recipient_list(
+            &flat,
+            EventTransition::ToOffnormal,
+            DaysOfWeek::MONDAY,
+            &make_time(12, 0),
+        )
+        .is_empty()
+    );
 }
 
 #[test]

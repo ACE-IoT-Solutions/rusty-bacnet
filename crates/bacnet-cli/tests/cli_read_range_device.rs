@@ -7,9 +7,9 @@ mod support;
 
 use std::net::SocketAddr;
 
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu, ComplexAck};
+use bacnet_encoding::apdu::{Apdu, ComplexAck, decode_apdu, encode_apdu};
 use bacnet_encoding::constructed::encode_log_record;
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest};
 use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
 use bacnet_types::enums::ConfirmedServiceChoice;
@@ -228,7 +228,10 @@ async fn all_prints_what_it_read_and_where_to_resume_before_an_error() {
     assert_eq!(json["pages"], serde_json::json!(1));
     assert_eq!(json["next"], serde_json::json!("--sequence 3"));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Abort { reason: 10 }"), "{stderr}");
+    assert!(
+        stderr.contains("Abort { reason: AbortReason::TSM_TIMEOUT }"),
+        "{stderr}"
+    );
     task.abort();
 }
 

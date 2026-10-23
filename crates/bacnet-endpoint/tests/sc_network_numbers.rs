@@ -12,7 +12,7 @@ use bacnet_transport::{
     any::AnyTransport,
     mstp::LoopbackSerial,
     sc::{ScConnection, ScConnectionState, ScTransport, WebSocketPort},
-    sc_frame::{decode_sc_message, encode_sc_message, ScFunction, BROADCAST_VMAC},
+    sc_frame::{BROADCAST_VMAC, ScFunction, decode_sc_message, encode_sc_message},
     sc_hub::ScHub,
     sc_tls::{DirectAcceptConfig, TlsWebSocket},
 };
@@ -130,8 +130,10 @@ async fn real_tls(server: bool) {
     let mut connect = BytesMut::new();
     encode_sc_message(&mut connect, &connection.build_connect_request());
     bounded(ws.send(&connect)).await.unwrap();
-    assert!(connection
-        .handle_connect_accept(&decode_sc_message(&bounded(ws.recv()).await.unwrap()).unwrap()));
+    assert!(
+        connection
+            .handle_connect_accept(&decode_sc_message(&bounded(ws.recv()).await.unwrap()).unwrap())
+    );
     let mut peer = Peer { ws, connection };
     // UNKNOWN has no configured SC authority, even with unrelated B/IP999.
     peer.send(NODE, &[1, 0x80, 0x13, 3, 0xe7, 1]).await;

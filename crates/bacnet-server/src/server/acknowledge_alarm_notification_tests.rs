@@ -1,7 +1,7 @@
 use super::super::*;
 use bacnet_encoding::constructed::decode_event_notification;
 
-use crate::server::test_transport::{SendLog, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, TestTransport};
 use bacnet_encoding::apdu::decode_apdu;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_objects::analog::AnalogInputObject;
@@ -13,7 +13,7 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_services::alarm_event::{AcknowledgeAlarmRequest, EventNotificationRequest};
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
-use bacnet_types::enums::{EventState, EventType};
+use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, Time};
 use bytes::Bytes;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
@@ -152,7 +152,8 @@ impl Harness {
         ))
         .unwrap();
 
-        let mut object = AnalogInputObject::new(1, "AI-ack", 62).unwrap();
+        let mut object =
+            AnalogInputObject::new(1, "AI-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         object
             .write_property(
                 PropertyIdentifier::NOTIFICATION_CLASS,

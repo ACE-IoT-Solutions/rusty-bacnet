@@ -30,8 +30,8 @@
 
 use std::net::SocketAddr;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -46,12 +46,13 @@ use tracing::{debug, warn};
 
 use crate::port::ReceivedNpdu;
 use crate::sc::npdu_admission::{
-    ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts, SC_NPDU_QUEUE_CAPACITY,
+    SC_NPDU_QUEUE_CAPACITY, ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts,
 };
 use crate::sc_frame::{
-    decode_sc_message, encode_sc_message, validate_connect_request, ScFunction, ScMessage, Vmac,
-    BACNET_SC_DIRECT_SUBPROTOCOL,
+    BACNET_SC_DIRECT_SUBPROTOCOL, ScFunction, ScMessage, Vmac, decode_sc_message,
+    encode_sc_message, validate_connect_request,
 };
+use crate::warn_throttle::WarnThrottle;
 
 use super::ScNodeTlsConfig;
 
@@ -162,9 +163,18 @@ impl DirectAcceptConfig {
     /// the aggregate cap stays the fixed channel capacity. The peer VMAC is
     /// a scheduling key, never identity.
     pub fn with_npdu_per_origin_limit(mut self, limit: usize) -> Self {
-        self.npdu_admission_policy = ScNpduAdmissionPolicy {
-            per_origin_limit: limit,
-        };
+        self.npdu_admission_policy.per_origin_limit = limit;
+        self
+    }
+
+    /// Set the per-peer limit on inbound network-layer messages
+    /// (builder-style; default [`ScControlRateLimit::default`](crate::sc::ScControlRateLimit::default), #518).
+    /// Each verified peer certificate has one budget, whatever VMAC it uses
+    /// and however often it reconnects. A message over budget is dropped silently and counted in
+    /// `control_rate_drops`; APDUs are never charged. [`DirectListener::start`]
+    /// validates it before binding.
+    pub fn with_control_rate_limit(mut self, limit: crate::sc::ScControlRateLimit) -> Self {
+        self.npdu_admission_policy.control_rate = limit;
         self
     }
 }
@@ -253,13 +263,16 @@ impl DirectListener {
         let task = tokio::spawn(accept_loop(AcceptLoop {
             listener,
             config,
-            npdu_tx,
             shutdown: shutdown_rx,
             active: Arc::clone(&active),
             stopped: ListenerStopped(shutdown.clone()),
-            npdu_admission: Arc::clone(&npdu_admission),
             pending: Arc::clone(&pending),
-            membership: Arc::clone(&membership),
+            shared: ListenerShared {
+                npdu_tx,
+                npdu_admission: Arc::clone(&npdu_admission),
+                membership: Arc::clone(&membership),
+                warnings: Arc::default(),
+            },
         }));
         debug!("BACnet/SC direct listener on {local_addr}");
         Ok((
@@ -392,27 +405,23 @@ fn direct_subprotocol_response(
 struct AcceptLoop {
     listener: TcpListener,
     config: DirectAcceptConfig,
-    npdu_tx: mpsc::Sender<ReceivedNpdu>,
     shutdown: watch::Receiver<bool>,
     active: Arc<AtomicUsize>,
     /// Signals listener stop to the handle when the loop ends.
     stopped: ListenerStopped,
-    npdu_admission: Arc<ScNpduAdmission>,
     pending: Arc<AtomicUsize>,
-    membership: Arc<DirectMembership>,
+    shared: ListenerShared,
 }
 
 async fn accept_loop(state: AcceptLoop) {
     let AcceptLoop {
         listener,
         config,
-        npdu_tx,
         mut shutdown,
         active,
         stopped: _stopped,
-        npdu_admission,
         pending,
-        membership,
+        shared,
     } = state;
     let mut peers = tokio::task::JoinSet::new();
     loop {
@@ -430,7 +439,10 @@ async fn accept_loop(state: AcceptLoop) {
             }
         };
         let Some(_guard) = AcceptGuard::acquire(&active, config.max_established_peers * 2) else {
-            warn!("direct accept at cap, refusing {peer_addr}");
+            crate::warn_throttled!(
+                shared.warnings.connection,
+                "direct accept at cap, refusing {peer_addr}"
+            );
             drop(tcp);
             continue;
         };
@@ -442,18 +454,16 @@ async fn accept_loop(state: AcceptLoop) {
         let guard = _guard;
         crate::sc_tls::disable_nagle(&tcp);
         let peer_config = config.clone();
-        let peer_tx = npdu_tx.clone();
+        let peer_shared = shared.clone();
         let mut peer_shutdown = shutdown.clone();
         let peer_active = Arc::clone(&active);
-        let peer_admission = Arc::clone(&npdu_admission);
-        let peer_membership = Arc::clone(&membership);
         peers.spawn(async move {
             let _guard = guard;
             let _active = peer_active;
             tokio::select! {
                 biased;
                 _ = async { if !*peer_shutdown.borrow_and_update() { let _ = peer_shutdown.changed().await; } } => {},
-                _ = serve_connection(tcp, peer_addr, peer_config, peer_tx, peer_admission, peer_membership, pending_guard) => {},
+                _ = serve_connection(tcp, peer_addr, peer_config, peer_shared, pending_guard) => {},
             }
         });
     }
@@ -481,11 +491,15 @@ async fn serve_connection(
     tcp: tokio::net::TcpStream,
     peer_addr: SocketAddr,
     config: DirectAcceptConfig,
-    npdu_tx: mpsc::Sender<ReceivedNpdu>,
-    npdu_admission: Arc<ScNpduAdmission>,
-    membership: Arc<DirectMembership>,
+    shared: ListenerShared,
     pending: AcceptGuard,
 ) {
+    let ListenerShared {
+        npdu_tx,
+        npdu_admission,
+        membership,
+        warnings,
+    } = shared;
     let tls_deadline = tokio::time::Instant::now() + config.connect_timeout;
     let tls_stream = match super::boxed(|| {
         let accept = config.tls.acceptor().accept(tcp).into_fallible();
@@ -495,7 +509,10 @@ async fn serve_connection(
     {
         Ok(Ok(s)) => s,
         Ok(Err((e, tcp))) => {
-            warn!("direct TLS handshake failed for {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct TLS handshake failed for {peer_addr}: {e}"
+            );
             crate::tls_reject::close_after_alert(tcp, tls_deadline).await;
             return;
         }
@@ -522,7 +539,10 @@ async fn serve_connection(
     {
         Ok(Ok(ws)) => ws,
         Ok(Err(e)) => {
-            warn!("direct WebSocket upgrade failed for {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct WebSocket upgrade failed for {peer_addr}: {e}"
+            );
             return;
         }
         Err(_) => {
@@ -534,7 +554,14 @@ async fn serve_connection(
     let (member, _limits) = match super::boxed(|| {
         tokio::time::timeout(
             config.connect_timeout,
-            serve_handshake(&mut write, &mut read, &config, peer_addr, &membership),
+            serve_handshake(
+                &mut write,
+                &mut read,
+                &config,
+                peer_addr,
+                &membership,
+                &warnings,
+            ),
         )
     })
     .await
@@ -559,6 +586,7 @@ async fn serve_connection(
                 member: &member,
                 identity,
                 response,
+                warnings: &warnings,
             },
             &npdu_tx,
             &npdu_admission,
@@ -574,6 +602,7 @@ async fn serve_handshake<W>(
     config: &DirectAcceptConfig,
     peer_addr: SocketAddr,
     membership: &Arc<DirectMembership>,
+    warnings: &DirectWarnings,
 ) -> Option<(Arc<Membership>, (u16, u16))>
 where
     W: DirectWs,
@@ -581,7 +610,10 @@ where
     let data = match tokio::time::timeout(config.connect_timeout, read.next_data()).await {
         Ok(Some(Ok(data))) => data,
         Ok(Some(Err(e))) => {
-            warn!("direct handshake recv error from {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct handshake recv error from {peer_addr}: {e}"
+            );
             return None;
         }
         Ok(None) => return None,
@@ -591,13 +623,19 @@ where
         }
     };
     if data.len() > config.max_bvlc_length as usize {
-        warn!("direct handshake frame exceeds local Max-BVLC-Length, closing {peer_addr}");
+        crate::warn_throttled!(
+            warnings.connection,
+            "direct handshake frame exceeds local Max-BVLC-Length, closing {peer_addr}"
+        );
         return None;
     }
     let msg = match decode_sc_message(&data) {
         Ok(msg) => msg,
         Err(e) => {
-            warn!("direct handshake decode error from {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct handshake decode error from {peer_addr}: {e}"
+            );
             return None;
         }
     };
@@ -708,6 +746,29 @@ struct AdmittedDirectPeer<'a> {
     member: &'a Membership,
     identity: crate::port::DirectScIdentity,
     response: crate::port::DirectResponse,
+    warnings: &'a DirectWarnings,
+}
+
+/// The throttles on one listener's warnings about its peers (#1950), shared
+/// by all its connections, so a peer that floods bad frames or reconnects
+/// over and over warns once per
+/// [`WARNING_INTERVAL`](crate::warn_throttle::WARNING_INTERVAL) for each,
+/// and the rest log at debug.
+#[derive(Debug, Default)]
+pub(super) struct DirectWarnings {
+    /// Connections refused, or lost before the handshake completed.
+    pub(super) connection: WarnThrottle,
+    /// Frames dropped, and reads failed, on established connections.
+    pub(super) frame: WarnThrottle,
+}
+
+/// What every connection of one listener shares.
+#[derive(Clone)]
+struct ListenerShared {
+    npdu_tx: mpsc::Sender<ReceivedNpdu>,
+    npdu_admission: Arc<ScNpduAdmission>,
+    membership: Arc<DirectMembership>,
+    warnings: Arc<DirectWarnings>,
 }
 
 struct RetireMember<'a>(&'a Membership);
@@ -717,7 +778,7 @@ impl Drop for RetireMember<'_> {
     }
 }
 
-use crate::sc::direct_receive::{direct_must_understand_decision, DirectMuDecision};
+use crate::sc::direct_receive::{DirectMuDecision, direct_must_understand_decision};
 fn direct_npdu(msg: &ScMessage, config: &DirectAcceptConfig) -> Option<Bytes> {
     crate::sc::direct_receive::direct_npdu(msg, config.max_apdu_length)
 }

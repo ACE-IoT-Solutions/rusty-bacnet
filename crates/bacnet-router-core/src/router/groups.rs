@@ -36,8 +36,9 @@ pub enum Group {
 /// can represent links with different rules.
 ///
 /// ```
-/// use bacnet_router_core::router::{Group, GroupClassifier, Limits, Options, PortConfig};
-/// use bacnet_router_core::{Instant, Mac, Router, Storage};
+/// use bacnet_router_core::npdu::{Mac, NpduLimits};
+/// use bacnet_router_core::router::{Group, GroupClassifier, Options, PortConfig};
+/// use bacnet_router_core::{Instant, Router, Storage};
 ///
 /// #[derive(Clone, Copy)]
 /// struct CustomLink { broadcast: Option<u8> }
@@ -51,12 +52,10 @@ pub enum Group {
 ///         }
 ///     }
 /// }
-/// let port = PortConfig::new(1, Mac::from_array([1]), Limits::both(1497),
+/// let port = PortConfig::new(1, Mac::from_array([1]), NpduLimits::both(1497),
 ///     CustomLink { broadcast: Some(254) });
 /// let mut storage = Storage::<1, 8, 8, 4, 1497, CustomLink>::new();
-/// let mut options = Options::HOSTED;
-/// options.route_cap = 8;
-/// let router = Router::new(&mut storage, &[port], options, Instant::ZERO)?;
+/// let router = Router::new(&mut storage, &[port], Options::STANDARD, Instant::ZERO)?;
 /// assert_eq!(router.ports()[0].groups.classify(&[254]), Group::Broadcast);
 /// # Ok::<(), bacnet_router_core::router::ConfigError>(())
 /// ```
@@ -100,16 +99,18 @@ impl GroupClassifier for Groups {
         match self {
             Self::None => Group::No,
             #[cfg(feature = "bip")]
-            Self::Bip { destinations, port } => match bacnet_bip_codec::address_from_slice(mac) {
-                Ok(address) if destinations.contains(address) => {
-                    if address.port() == *port {
-                        Group::Broadcast
-                    } else {
-                        Group::Refuse
+            Self::Bip { destinations, port } => {
+                match bacnet_bip_core::codec::address_from_slice(mac) {
+                    Ok(address) if destinations.contains(address) => {
+                        if address.port() == *port {
+                            Group::Broadcast
+                        } else {
+                            Group::Refuse
+                        }
                     }
+                    _ => Group::No,
                 }
-                _ => Group::No,
-            },
+            }
             #[cfg(feature = "mstp")]
             Self::Mstp if mac == [bacnet_mstp_core::codec::BROADCAST_MAC] => Group::Broadcast,
             #[cfg(feature = "mstp")]

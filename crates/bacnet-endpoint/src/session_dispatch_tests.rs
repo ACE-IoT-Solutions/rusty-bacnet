@@ -1,5 +1,5 @@
 use super::*;
-use bacnet_encoding::apdu::{encode_apdu, SimpleAck};
+use bacnet_encoding::apdu::{SimpleAck, encode_apdu};
 use bacnet_endpoint_core::coordinator::CanonicalPeer;
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::enums::ConfirmedServiceChoice;
@@ -16,6 +16,7 @@ fn envelope(invoke_id: u8) -> ReceivedApdu {
     )
     .unwrap();
     ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: bytes.freeze(),
         source_mac: [2].into_iter().collect(),

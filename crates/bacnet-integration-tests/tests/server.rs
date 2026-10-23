@@ -1,8 +1,10 @@
 //! End-to-end integration tests: real BACnetClient ↔ real BACnetServer over loopback UDP.
+#![forbid(unsafe_code)]
 
 use bacnet_client::client::BACnetClient;
-use bacnet_encoding::apdu::{encode_apdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu};
+use bacnet_encoding::apdu::{Apdu, ConfirmedRequest as ConfirmedRequestPdu, encode_apdu};
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::database::ObjectDatabase;
@@ -10,12 +12,12 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
+    AbortReason, ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
     Segmentation,
 };
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -43,7 +45,7 @@ async fn make_server_with_dcc_policy(
     .unwrap();
 
     // AnalogInput (instance 1, present-value = 72.5)
-    let mut ai = AnalogInputObject::new(1, "Zone Temp", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(72.5);
 
     // BinaryValue (instance 1, default = inactive)

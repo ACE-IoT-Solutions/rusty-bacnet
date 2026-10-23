@@ -62,14 +62,16 @@ fn encode_bvlc6_oversized_payload_errors() {
     let source = vmac([0x01; 3]);
     let npdu = vec![0; u16::MAX as usize - (HEADER_LENGTH + VMAC_LENGTH) + 1];
     let mut buf = BytesMut::new();
-    assert!(encode_bvll6(
-        &mut buf,
-        &Bvll6::OriginalBroadcastNpdu {
-            source,
-            npdu: &npdu
-        }
-    )
-    .is_err());
+    assert!(
+        encode_bvll6(
+            &mut buf,
+            &Bvll6::OriginalBroadcastNpdu {
+                source,
+                npdu: &npdu
+            }
+        )
+        .is_err()
+    );
     assert!(buf.is_empty());
 }
 
@@ -332,6 +334,6 @@ fn bvlc6_function_codes_are_the_codecs() {
     assert!(!Bvlc6Function::from_raw(0x0B).is_defined());
     assert!(matches!(
         decode_bvll6(&raw_frame(0x0B, &[1, 2, 3])),
-        Err(bacnet_types::error::Error::Decoding { .. })
+        Err(bacnet_types::error::Error::Decoding(_))
     ));
 }

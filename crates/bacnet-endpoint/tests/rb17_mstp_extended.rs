@@ -75,12 +75,14 @@ async fn the_option_lifts_the_identity_bound_to_1476() {
     let (serial, _peer) = LoopbackSerial::pair();
     let id = identity(Frames::Extended);
     assert_eq!(id.max_apdu_length(), 1476);
-    assert!(MstpEndpointBuilder::new(serial, SESSION_MAC)
-        .extended_frames(true)
-        .database(db_with_analog(&id, 1, 1.0))
-        .device(id)
-        .build_session()
-        .is_ok());
+    assert!(
+        MstpEndpointBuilder::new(serial, SESSION_MAC)
+            .extended_frames(true)
+            .database(db_with_analog(&id, 1, 1.0))
+            .device(id)
+            .build_session()
+            .is_ok()
+    );
 }
 
 /// The endpoint's transport, with the option, and a peer with extended
@@ -215,5 +217,5 @@ async fn mstp_extended_long_answer_tokio() {
 
 #[tokio::test]
 async fn mstp_extended_long_answer_dedicated() {
-    long_answer_impl(MstpExecutionMode::DedicatedThread).await;
+    long_answer_impl(MstpExecutionMode::dedicated_thread()).await;
 }

@@ -6,6 +6,9 @@ use tokio_rustls::TlsAcceptor;
 #[path = "connect_accept_tests.rs"]
 mod connect_accept_tests;
 
+#[path = "dial_failure_tests.rs"]
+mod dial_failure_tests;
+
 #[path = "mu_liveness_tests.rs"]
 mod mu_liveness_tests;
 

@@ -11,11 +11,11 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::EventEnrollmentTransition;
 use crate::server::event_notification_payload::{
-    project_event_enrollment_payload, CapturedReferencedValue, CommittedNotificationPayload,
-    EventEnrollmentProjectionSnapshot,
+    CapturedReferencedValue, CommittedNotificationPayload, EventEnrollmentProjectionSnapshot,
+    project_event_enrollment_payload,
 };
 use crate::server::event_timestamp::{
-    confirm_event_timestamp, stage_event_timestamp, SampledEventClock,
+    SampledEventClock, confirm_event_timestamp, stage_event_timestamp,
 };
 
 /// Stage at which an Event Enrollment observation or commit was evaluated.
@@ -439,7 +439,10 @@ pub(super) fn apply_updates_for_delivery(
                 coordinate,
                 ack_required: reliability.ack_required,
                 timestamp: staged_timestamp.sample.timestamp.clone(),
-                message_text: None,
+                // The server has no text of its own for an enrollment, so
+                // the slot is empty unless Event_Message_Texts_Config
+                // supplies one (#1507).
+                message_text: Some(String::new()),
             };
             let commit = EventEnrollmentReliabilityCommit {
                 reliability: reliability.desired,
@@ -539,7 +542,8 @@ pub(super) fn apply_updates_for_delivery(
             coordinate,
             ack_required: fired.ack_required,
             timestamp: staged_timestamp.sample.timestamp.clone(),
-            message_text: None,
+            // As for the Reliability commit above.
+            message_text: Some(String::new()),
         };
         let commit_result = db
             .get_mut(&oid)

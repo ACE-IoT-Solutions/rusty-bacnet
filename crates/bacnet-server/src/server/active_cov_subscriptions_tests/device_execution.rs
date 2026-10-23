@@ -335,11 +335,13 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
         .await,
     );
     for property in [ACTIVE, MULTIPLE] {
-        assert!(!wire
-            .read(device(), property, None)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            !wire
+                .read(device(), property, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(wire.read(other, property, None).await.unwrap().is_empty());
         assert_eq!(
             wire.server
@@ -358,16 +360,20 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
             ack.list_of_read_access_results[0].object_identifier,
             device()
         );
-        assert!(!ack.list_of_read_access_results[0].list_of_results[0]
-            .property_value
-            .as_ref()
-            .unwrap()
-            .is_empty());
-        assert!(ack.list_of_read_access_results[1].list_of_results[0]
-            .property_value
-            .as_ref()
-            .unwrap()
-            .is_empty());
+        assert!(
+            !ack.list_of_read_access_results[0].list_of_results[0]
+                .property_value
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            ack.list_of_read_access_results[1].list_of_results[0]
+                .property_value
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
     }
     assert_profile(&mut wire, other, true).await;
     wire.server.stop().await.unwrap();
@@ -475,7 +481,7 @@ fn device_execution_view_keeps_context_free_helpers_on_raw_declared_profile() {
     }
     .encode(&mut request);
     assert!(
-        matches!(crate::handlers::handle_read_property(&db, &request, &mut BytesMut::new()), Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+        matches!(crate::handlers::handle_read_property(&db, &request, &mut BytesMut::new()), Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY)
     );
     let mut request = BytesMut::new();
     bacnet_services::rpm::ReadPropertyMultipleRequest {
@@ -493,9 +499,11 @@ fn device_execution_view_keeps_context_free_helpers_on_raw_declared_profile() {
     crate::handlers::handle_read_property_multiple(&db, &request, &mut raw).unwrap();
     let ack = bacnet_services::rpm::ReadPropertyMultipleACK::decode(&raw).unwrap();
     let rows = &ack.list_of_read_access_results[0].list_of_results;
-    assert!(!rows
-        .iter()
-        .any(|row| [ACTIVE, MULTIPLE].contains(&row.property_identifier)));
+    assert!(
+        !rows
+            .iter()
+            .any(|row| [ACTIVE, MULTIPLE].contains(&row.property_identifier))
+    );
     let services = rows
         .iter()
         .find(|row| row.property_identifier == SERVICES)

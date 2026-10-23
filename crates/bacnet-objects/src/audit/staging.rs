@@ -26,7 +26,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::buffer::{apply_change, written_buffer_size, Timestamp};
+use super::buffer::{Timestamp, apply_change, written_buffer_size};
 use super::*;
 use crate::durable::{
     DurableWrites, Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep,
@@ -118,8 +118,8 @@ pub(super) struct Settled {
 
 pub(super) fn operational_problem() -> Error {
     Error::Protocol {
-        class: ErrorClass::DEVICE.to_raw() as u32,
-        code: ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32,
+        class: ErrorClass::DEVICE,
+        code: ErrorCode::OPERATIONAL_PROBLEM,
     }
 }
 
@@ -284,8 +284,8 @@ impl AuditLogObject {
         }
         if !self.log_enable {
             return Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+                class: ErrorClass::SERVICES,
+                code: ErrorCode::SERVICE_REQUEST_DENIED,
             });
         }
         if notifications.is_empty() {
@@ -293,17 +293,17 @@ impl AuditLogObject {
                 "Audit notification batch must not be empty".into(),
             ));
         }
-        if let Some(receipt) = &receipt {
-            if receipt::contains(
+        if let Some(receipt) = &receipt
+            && receipt::contains(
                 &self.completed_receipts,
                 receipt.key(),
                 receipt.completed_at_unix_millis(),
-            )? {
-                return Ok(AuditBatchStage::Done(
-                    ConfirmedAuditNotificationOutcome::Duplicate,
-                    false,
-                ));
-            }
+            )?
+        {
+            return Ok(AuditBatchStage::Done(
+                ConfirmedAuditNotificationOutcome::Duplicate,
+                false,
+            ));
         }
         let mut prospective = self.snapshot_for_next_generation()?;
         let changed =

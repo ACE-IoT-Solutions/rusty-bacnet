@@ -9,14 +9,16 @@
 
 #![allow(dead_code)]
 
-use bacnet_router_core::message::{MessageType, RejectReason};
-use bacnet_router_core::npdu::{Address, Npdu};
+use bacnet_router_core::npdu::Mac;
+use bacnet_router_core::npdu::NpduLimits;
+use bacnet_router_core::npdu::{Address, NetworkPriority, Npdu};
+use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_router_core::router::{
     Action, Cause, Claim, ControlClass, Counters, Dest, Discard, Event, Frame, GroupClassifier,
-    Groups, Host, Kind, Limits, Options, PortConfig, Received, SendRefusal,
+    Groups, Host, Kind, Options, PortConfig, Received, SendRefusal,
 };
 use bacnet_router_core::table::ClaimCounters;
-use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
+use bacnet_router_core::{Duration, Instant, PortId, Router, Storage};
 
 /// Up to 4 ports, with the hosted router's table and discovery sizes: 256
 /// routes, 1,024 hold-down records, 256 searches.
@@ -75,7 +77,7 @@ pub fn port_on(network: u16, mac: &[u8]) -> PortConfig {
     PortConfig::new(
         network,
         Mac::from_slice(mac).unwrap(),
-        Limits::both(1497),
+        NpduLimits::both(1497),
         Groups::None,
     )
 }
@@ -102,7 +104,7 @@ pub struct Asked {
     pub port: PortId,
     pub port_network: u16,
     pub source: Vec<u8>,
-    pub message_type: MessageType,
+    pub message_type: NetworkMessageType,
     pub vendor_id: Option<u16>,
     pub snet: Option<u16>,
     pub dnet: Option<u16>,
@@ -150,7 +152,7 @@ pub struct Sent {
     /// `None` for a broadcast.
     pub to: Option<Vec<u8>>,
     pub npdu: Vec<u8>,
-    pub priority: u8,
+    pub priority: NetworkPriority,
     pub kind: Kind,
     pub cause: Cause,
 }
@@ -158,7 +160,7 @@ pub struct Sent {
 impl Sent {
     /// The NPDU, parsed.
     pub fn parsed(&self) -> Npdu<'_> {
-        Npdu::parse(&self.npdu).unwrap()
+        Npdu::decode(&self.npdu).unwrap()
     }
 
     /// Whether it went out as a broadcast.
@@ -177,7 +179,7 @@ pub enum Outcome {
         group: bool,
         global: bool,
         expecting_reply: bool,
-        priority: u8,
+        priority: NetworkPriority,
     },
     ToRouter(Vec<u8>),
     Handled,
@@ -200,7 +202,7 @@ impl Outcome {
             },
             Received::ToRouter(npdu) => {
                 let mut out = vec![0; npdu.encoded_len()];
-                npdu.write(&mut out).unwrap();
+                npdu.encode_into(&mut out).unwrap();
                 Self::ToRouter(out)
             }
             Received::Handled => Self::Handled,
@@ -308,7 +310,7 @@ pub fn deliver_frame<G: GroupClassifier>(
 /// `npdu`, written.
 pub fn bytes(npdu: &Npdu<'_>) -> Vec<u8> {
     let mut out = vec![0; npdu.encoded_len()];
-    let len = npdu.write(&mut out).unwrap();
+    let len = npdu.encode_into(&mut out).unwrap();
     assert_eq!(len, out.len());
     out
 }
@@ -331,7 +333,7 @@ pub fn apdu_to(dnet: u16, dadr: &[u8], apdu: &[u8]) -> Vec<u8> {
 }
 
 /// A network message of `kind` with `data` and no addresses.
-pub fn message(kind: MessageType, data: &[u8]) -> Vec<u8> {
+pub fn message(kind: NetworkMessageType, data: &[u8]) -> Vec<u8> {
     bytes(&Npdu::message(kind, data))
 }
 
@@ -344,22 +346,22 @@ pub fn networks(list: &[u16]) -> Vec<u8> {
 
 /// An I-Am-Router for `list`.
 pub fn i_am(list: &[u16]) -> Vec<u8> {
-    message(MessageType::I_AM_ROUTER_TO_NETWORK, &networks(list))
+    message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &networks(list))
 }
 
 /// A reject's data.
-pub fn reject_data(reason: RejectReason, network: u16) -> Vec<u8> {
+pub fn reject_data(reason: RejectMessageReason, network: u16) -> Vec<u8> {
     let [high, low] = network.to_be_bytes();
     vec![reason.to_raw(), high, low]
 }
 
 /// The reject the router sends: reason and network, with the destination
 /// it carries.
-pub fn sent_reject(sent: &Sent) -> (RejectReason, u16, Option<(u16, Vec<u8>)>) {
+pub fn sent_reject(sent: &Sent) -> (RejectMessageReason, u16, Option<(u16, Vec<u8>)>) {
     let npdu = sent.parsed();
     assert_eq!(
         npdu.message_type,
-        Some(MessageType::REJECT_MESSAGE_TO_NETWORK)
+        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
     assert_eq!(npdu.hop_count, 255, "a reject starts with a full hop count");
     assert!(npdu.source.is_none());
@@ -367,7 +369,7 @@ pub fn sent_reject(sent: &Sent) -> (RejectReason, u16, Option<(u16, Vec<u8>)>) {
         panic!("a reject's data is three octets");
     };
     (
-        RejectReason::from_raw(reason),
+        RejectMessageReason::from_raw(reason),
         u16::from_be_bytes([high, low]),
         npdu.destination.map(|d| (d.network, d.mac.to_vec())),
     )
@@ -384,7 +386,9 @@ pub fn listed(sent: &Sent) -> Vec<u16> {
 
 /// R7 serving network 9 through port 1, learned at `now`.
 pub fn learn_9_via_r7<G: GroupClassifier>(router: &mut TestRouter<G>, now: Instant) {
-    assert!(router
-        .table_mut()
-        .add_learned(9, PortId(1), Mac::from_slice(R7).unwrap(), now));
+    assert!(
+        router
+            .table_mut()
+            .add_learned(9, PortId(1), Mac::from_slice(R7).unwrap(), now)
+    );
 }

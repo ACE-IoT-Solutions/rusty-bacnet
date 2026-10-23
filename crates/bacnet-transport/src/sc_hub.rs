@@ -13,22 +13,22 @@
 //! 3. **Heartbeat** — responds to `HeartbeatRequest` with `HeartbeatAck`.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bytes::{Bytes, BytesMut};
-use futures_util::stream::SplitSink;
 use futures_util::SinkExt;
 #[cfg(test)]
 use futures_util::StreamExt;
+use futures_util::stream::SplitSink;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 #[cfg(test)]
 use tokio_rustls::TlsAcceptor;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
 
 pub(super) mod admission;
@@ -41,11 +41,13 @@ mod context;
 mod deadlines;
 mod graceful;
 mod handler;
+mod handler_fallback;
 mod heartbeat;
 mod helpers;
 mod malformed_diag;
 mod opaque_relay;
 mod outcomes;
+mod peer_warnings;
 mod proprietary_transit;
 mod relay;
 mod relay_send;
@@ -58,8 +60,8 @@ mod tls_config;
 mod unknown_transit;
 
 pub use admission::{
-    ScHubAdmissionDecision, ScHubAdmissionInput, ScHubAdmissionLimits, ScHubAdmissionPolicy,
-    ScHubRegistrationKind, ScHubStatus, DEFAULT_MAX_CLIENTS, DEFAULT_MAX_HANDSHAKES,
+    DEFAULT_MAX_CLIENTS, DEFAULT_MAX_HANDSHAKES, ScHubAdmissionDecision, ScHubAdmissionInput,
+    ScHubAdmissionLimits, ScHubAdmissionPolicy, ScHubRegistrationKind, ScHubStatus,
 };
 pub use broadcast_rate::{ScHubBroadcastDropCounts, ScHubBroadcastRatePolicy};
 pub use certificate_bindings::{ScHubCertificateBinding, ScHubCertificateBindings};
@@ -76,18 +78,18 @@ use helpers::*;
 #[cfg(test)]
 use relay::build_hub_relay_message;
 use relay::{
-    encode_hub_relay_frame, hub_relay_recipient_vmacs, hub_relay_target, relay_result,
-    HubRelayReject, HubRelayTarget, ResultRelayDisposition,
+    HubRelayReject, HubRelayTarget, ResultRelayDisposition, encode_hub_relay_frame,
+    hub_relay_recipient_vmacs, hub_relay_target, relay_result,
 };
 
-use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage, Vmac};
+use crate::sc_frame::{ScFunction, ScMessage, Vmac, decode_sc_message, encode_sc_message};
 
 type TlsStream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
 type WsSink = SplitSink<WebSocketStream<TlsStream>, Message>;
 type DeviceUuid = [u8; 16];
 
 const HUB_MAX_BVLC_LENGTH: u16 = crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH;
-const HUB_MAX_NPDU_LENGTH: u16 = 1497;
+const HUB_MAX_NPDU_LENGTH: u16 = bacnet_npdu::MAX_NPDU as u16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectRequestVmacDisposition {
@@ -484,11 +486,11 @@ async fn handle_client(
 #[cfg(test)]
 async fn handle_client_observed(
     peer_addr: SocketAddr,
-    hub_vmac: Vmac,
-    hub_uuid: DeviceUuid,
+    (hub_vmac, hub_uuid): (Vmac, DeviceUuid),
     read: futures_util::stream::SplitStream<WebSocketStream<TlsStream>>,
     write: Arc<Mutex<WsSink>>,
     clients: Clients,
+    admission: Arc<admission::AdmissionRuntime>,
     on_heartbeat_ack: impl Fn() + Send,
 ) {
     let deadline = Arc::new(deadlines::ConnectDeadline::new(
@@ -497,7 +499,6 @@ async fn handle_client_observed(
     // The observed test seam bypasses TLS with no client authentication.
     // Never graceful: a fresh supervisor never fires, preserving the
     // forceful/discard-Ack behavior for heartbeat tests.
-    let admission = Arc::new(admission::AdmissionRuntime::default());
     let tasks = tasks::Tasks::new();
     let graceful = tasks.graceful_ctx();
     let timing = heartbeat_test_support::probe_runtime();
@@ -529,6 +530,8 @@ mod admission_tests;
 
 #[cfg(test)]
 mod connect_validation_tests;
+#[cfg(test)]
+mod connection_warning_tests;
 #[cfg(test)]
 mod deadline_capacity_tests;
 #[cfg(test)]

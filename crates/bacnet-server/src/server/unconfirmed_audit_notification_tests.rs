@@ -6,7 +6,7 @@ use bacnet_transport::port::TransportProvenance;
 use bacnet_types::enums::AuditOperation;
 
 use super::audit_notification_tests::{
-    count, database, database_with_device, notification, oid, request_bytes, MemoryPersistence,
+    MemoryPersistence, count, database, database_with_device, notification, oid, request_bytes,
 };
 use super::*;
 use crate::server::test_transport::{SendLog, TestTransport};
@@ -16,6 +16,7 @@ fn received(
     source_network: Option<NpduAddress>,
 ) -> bacnet_network::layer::ReceivedApdu {
     bacnet_network::layer::ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: Bytes::new(),
         source_mac: MacAddr::from_slice(source_mac),
@@ -81,10 +82,12 @@ async fn accepted_direct_and_routed_requests_commit_atomically_without_output() 
     let observed = Arc::clone(&contexts);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        unconfirmed_audit_notification_authorizer: Some(Arc::new(move |context| {
-            observed.lock().unwrap().push(context.clone());
-            true
-        })),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().unconfirmed_audit_notification(move |context| {
+                observed.lock().unwrap().push(context.clone());
+                true
+            }),
+        )),
         ..ServerConfig::default()
     };
     let routed = NpduAddress {
@@ -131,14 +134,16 @@ async fn accepted_direct_and_routed_requests_commit_atomically_without_output() 
     assert_eq!(count(&db, sink).await, (2, 2));
     assert_eq!(routed_sends.len(), 0, "the routed request must not send");
     assert_eq!(direct_sends.len(), 0, "the direct request must not send");
-    assert!(persistence
-        .snapshot
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .completed_receipts
-        .is_empty());
+    assert!(
+        persistence
+            .snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .completed_receipts
+            .is_empty()
+    );
 
     let contexts = contexts.lock().unwrap();
     assert_eq!(contexts[0].source_mac, MacAddr::from_slice(&[0x10]));
@@ -155,18 +160,15 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
 
     for authorizer in [
         None,
+        Some(crate::FnPolicy::new().unconfirmed_audit_notification(|_| false)),
         Some(
-            Arc::new(|_: &UnconfirmedAuditNotificationAuthorizationContext| false)
-                as UnconfirmedAuditNotificationAuthorizer,
+            crate::FnPolicy::new().unconfirmed_audit_notification(|_| -> bool { panic!("denied") }),
         ),
-        Some(Arc::new(
-            |_: &UnconfirmedAuditNotificationAuthorizationContext| -> bool { panic!("denied") },
-        ) as UnconfirmedAuditNotificationAuthorizer),
     ] {
         let db = database(Arc::new(MemoryPersistence::default()), 7);
         let config = ServerConfig {
             audit_notification_sink: Some(sink),
-            unconfirmed_audit_notification_authorizer: authorizer,
+            policy: authorizer.map(|policy| Arc::new(policy) as Arc<dyn crate::ServerPolicy>),
             ..ServerConfig::default()
         };
         assert_silent_drop(&db, sink, &config, valid.clone()).await;
@@ -174,7 +176,9 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
 
     let authorized = ServerConfig {
         audit_notification_sink: Some(sink),
-        unconfirmed_audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().unconfirmed_audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     };
     let db = database(Arc::new(MemoryPersistence::default()), 7);
@@ -201,7 +205,9 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
     ] {
         let config = ServerConfig {
             audit_notification_sink: configured_sink,
-            unconfirmed_audit_notification_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().unconfirmed_audit_notification(|_| true),
+            )),
             ..ServerConfig::default()
         };
         assert_silent_drop(&db, sink, &config, valid.clone()).await;
@@ -238,25 +244,29 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
     let db = database(Arc::clone(&persistence), 7);
     persistence.fail.store(true, Ordering::Release);
     assert_silent_drop(&db, sink, &authorized, valid.clone()).await;
-    assert!(persistence
-        .snapshot
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .records
-        .is_empty());
+    assert!(
+        persistence
+            .snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .records
+            .is_empty()
+    );
 
     let persistence = Arc::new(MemoryPersistence::default());
     let db = database(Arc::clone(&persistence), 7);
     db.write().await.set_clock_reader(None);
     assert_silent_drop(&db, sink, &authorized, valid).await;
-    assert!(persistence
-        .snapshot
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .records
-        .is_empty());
+    assert!(
+        persistence
+            .snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .records
+            .is_empty()
+    );
 }

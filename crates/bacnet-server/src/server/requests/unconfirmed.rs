@@ -12,7 +12,7 @@ use bacnet_objects::clock::ClockReader;
 use bacnet_services::alarm_event::ForwardedEventNotification;
 use bacnet_services::device_mgmt::TimeSynchronizationRequest;
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[cfg(test)]
 /// Every unconfirmed service choice with an inbound execution arm in
@@ -46,6 +46,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             discovery_limiter,
             time_sync_limiter,
             notification_transactions,
+            warnings,
             ..
         } = services;
         let clock = clock.as_ref();
@@ -56,7 +57,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 Err(e) => {
                     // A peer whose I-Am carries extra octets never binds, so
                     // say so where it can be seen (#1411).
-                    warn!(error = %e, source = ?received.source_mac, "Failed to decode IAm");
+                    warn_throttled!(
+                        warnings.decode,
+                        error = %e,
+                        source = ?received.source_mac,
+                        "Failed to decode IAm"
+                    );
                     return;
                 }
             };
@@ -73,7 +79,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     debug!("Ignoring unusable I-Am observation");
                 }
                 device_bindings::ObservationOutcome::RejectedCapacity => {
-                    warn!("Device binding capacity reached; I-Am observation ignored");
+                    warn_throttled!(
+                        warnings.binding_capacity,
+                        "Device binding capacity reached; I-Am observation ignored"
+                    );
                 }
                 device_bindings::ObservationOutcome::Inserted
                 | device_bindings::ObservationOutcome::Refreshed
@@ -83,7 +92,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let who_is = match WhoIsRequest::decode(&req.service_request) {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!(error = %e, "Failed to decode WhoIs");
+                    warn_throttled!(warnings.decode, error = %e, "Failed to decode WhoIs");
                     return;
                 }
             };
@@ -121,7 +130,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     &source_net.mac_address,
                                     &received.source_mac,
                                     false,
-                                    NetworkPriority::NORMAL,
+                                    NetworkPriority::Normal,
                                 )
                                 .await,
                             true,
@@ -133,7 +142,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     &buf,
                                     &received.source_mac,
                                     false,
-                                    NetworkPriority::NORMAL,
+                                    NetworkPriority::Normal,
                                 )
                                 .await,
                             true,
@@ -141,7 +150,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     } else {
                         (
                             network
-                                .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                                .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                                 .await,
                             false,
                         )
@@ -164,7 +173,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let who_has = match WhoHasRequest::decode(&req.service_request) {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!(error = %e, "Failed to decode WhoHas");
+                    warn_throttled!(warnings.decode, error = %e, "Failed to decode WhoHas");
                     return;
                 }
             };
@@ -220,7 +229,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 &source_net.mac_address,
                                                 &received.source_mac,
                                                 false,
-                                                NetworkPriority::NORMAL,
+                                                NetworkPriority::Normal,
                                             )
                                             .await,
                                         true,
@@ -234,7 +243,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 &buf,
                                                 &received.source_mac,
                                                 false,
-                                                NetworkPriority::NORMAL,
+                                                NetworkPriority::Normal,
                                             )
                                             .await,
                                         true,
@@ -242,7 +251,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 } else {
                                     (
                                         network
-                                            .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                                            .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                                             .await,
                                         false,
                                     )
@@ -266,7 +275,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         discovery_limiter.record_negative_who_has(target, now);
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to decode WhoHas");
+                        warn_throttled!(warnings.decode, error = %e, "Failed to decode WhoHas");
                     }
                 }
             }

@@ -12,8 +12,11 @@ type Received = Arc<std::sync::Mutex<Vec<ReinitializeContext>>>;
 /// A handler that records the context of each request it carries out.
 fn recording(
     received: &Received,
-) -> impl Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error> + Send + Sync + 'static
-{
+) -> impl Fn(&ReinitializeContext, &mut ObjectDatabase) -> Result<(), Error>
++ Send
++ Sync
++ 'static
++ use<> {
     let recorded = Arc::clone(received);
     move |context: &ReinitializeContext, _: &mut ObjectDatabase| {
         recorded.lock().unwrap().push(context.clone());
@@ -88,7 +91,7 @@ fn assert_protocol_error(result: Result<(), Error>, class: ErrorClass, code: Err
     let error = result.unwrap_err();
     assert!(
         matches!(error, Error::Protocol { class: c, code: e }
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            if c == class && e == code),
         "got {error:?}"
     );
 }

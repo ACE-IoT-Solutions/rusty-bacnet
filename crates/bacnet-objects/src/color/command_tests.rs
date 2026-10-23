@@ -15,8 +15,8 @@ const CC: PropertyIdentifier = PropertyIdentifier::COLOR_COMMAND;
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
         Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -368,9 +368,11 @@ fn color_objects_no_longer_answer_to_508_to_511() {
         }
         let list = object.property_list();
         assert!(list.contains(&PropertyIdentifier::from_raw(4_194_334)));
-        assert!(object
-            .read_property(PropertyIdentifier::from_raw(4_194_334), None)
-            .is_ok());
+        assert!(
+            object
+                .read_property(PropertyIdentifier::from_raw(4_194_334), None)
+                .is_ok()
+        );
     }
     let color = ColorObject::new(1, "CLR-1").unwrap();
     assert_eq!(

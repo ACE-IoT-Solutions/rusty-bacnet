@@ -51,19 +51,19 @@ mod metadata;
 macro_rules! define_value_object_commandable {
     (
         name: $struct_name:ident,
-        doc: $doc:expr,
-        object_type: $obj_type:expr,
+        doc: $doc:expr_2021,
+        object_type: $obj_type:expr_2021,
         value_type: $val_type:ty,
-        default_value: $default:expr,
-        pv_to_property: $pv_to_prop:expr,
-        property_to_pv: $prop_to_pv:expr,
-        pa_wrap: $pa_wrap:expr,
-        rd_wrap: $rd_wrap:expr,
-        rd_validate: $rd_validate:expr,
+        default_value: $default:expr_2021,
+        pv_to_property: $pv_to_prop:expr_2021,
+        property_to_pv: $prop_to_pv:expr_2021,
+        pa_wrap: $pa_wrap:expr_2021,
+        rd_wrap: $rd_wrap:expr_2021,
+        rd_validate: $rd_validate:expr_2021,
         copy_type: $is_copy:tt,
         $(units: $units_ty:ty,)?
         $(cov_increment: $cov_ty:ty,)?
-        property_metadata: $property_metadata:expr
+        property_metadata: $property_metadata:expr_2021
         $(,)?
     ) => {
         #[doc = $doc]
@@ -307,11 +307,11 @@ macro_rules! define_value_object_commandable {
     };
 
     // Read priority array for Copy types: use the common macro.
-    (@read_pa $self:ident, $array_index:ident, $wrap:expr, copy) => {{
+    (@read_pa $self:ident, $array_index:ident, $wrap:expr_2021, copy) => {{
         common::read_priority_array!($self, $array_index, $wrap)
     }};
     // Read priority array for Clone (non-Copy) types.
-    (@read_pa $self:ident, $array_index:ident, $wrap:expr, clone) => {{
+    (@read_pa $self:ident, $array_index:ident, $wrap:expr_2021, clone) => {{
         let wrap_fn = $wrap;
         match $array_index {
             None => {

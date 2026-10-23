@@ -33,8 +33,8 @@ pub(super) struct RecipientState {
 
 fn property_error(code: ErrorCode) -> Error {
     Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: code.to_raw() as u32,
+        class: ErrorClass::PROPERTY,
+        code,
     }
 }
 
@@ -194,8 +194,8 @@ impl DeviceObject {
         }
         if priority.is_some_and(|p| !(1..=16).contains(&p)) {
             return Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32,
+                class: ErrorClass::SERVICES,
+                code: ErrorCode::PARAMETER_OUT_OF_RANGE,
             });
         }
         if value == PropertyValue::Null {

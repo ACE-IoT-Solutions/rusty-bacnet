@@ -7,12 +7,13 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{EnableDisable, EventState, ObjectType, ReinitializedState};
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
+use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 /// Synchronize time with a remote device.
 pub async fn time_sync_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     utc: bool,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -59,13 +60,9 @@ pub async fn time_sync_cmd<T: TransportPort + 'static>(
         hundredths,
     };
 
-    if utc {
-        client.utc_time_synchronization(mac, date, time).await?;
-    } else {
-        // For local time sync we also use UTC since we don't have
-        // a timezone library. Document this limitation.
-        client.time_synchronization(mac, date, time).await?;
-    }
+    // Both choices retain the existing UTC-derived fields; there is no
+    // timezone library here to calculate local civil time.
+    to.time_synchronization(client, date, time, utc).await?;
     output::print_success("Time synchronized", format);
     Ok(())
 }
@@ -103,7 +100,7 @@ fn parse_reinit_state(state: &str) -> Result<ReinitializedState, String> {
 /// Send a DeviceCommunicationControl request.
 pub async fn control_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     action: &str,
     duration: Option<u16>,
     password: Option<&str>,
@@ -111,14 +108,13 @@ pub async fn control_cmd<T: TransportPort + 'static>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let enable_disable = parse_enable_disable(action)?;
 
-    client
-        .device_communication_control(
-            mac,
-            enable_disable,
-            duration,
-            password.map(|s| s.to_string()),
-        )
-        .await?;
+    to.device_communication_control(
+        client,
+        enable_disable,
+        duration,
+        password.map(|s| s.to_string()),
+    )
+    .await?;
 
     output::print_success("OK", format);
     Ok(())
@@ -127,15 +123,14 @@ pub async fn control_cmd<T: TransportPort + 'static>(
 /// Send a ReinitializeDevice request.
 pub async fn reinit_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     state: &str,
     password: Option<&str>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reinit_state = parse_reinit_state(state)?;
 
-    client
-        .reinitialize_device(mac, reinit_state, password.map(|s| s.to_string()))
+    to.reinitialize_device(client, reinit_state, password.map(|s| s.to_string()))
         .await?;
 
     output::print_success("OK", format);
@@ -145,10 +140,10 @@ pub async fn reinit_cmd<T: TransportPort + 'static>(
 /// Get event/alarm information from a device.
 pub async fn alarms_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client.get_event_information(mac, None).await?;
+    let response = to.get_event_information(client, None).await?;
 
     // TODO: Decode GetEventInformation-ACK properly.
     let hex: String = response
@@ -204,7 +199,7 @@ pub struct AcknowledgeAlarmArgs<'a> {
 /// Acknowledge an alarm on a remote device with exact caller-supplied timestamps.
 pub async fn acknowledge_alarm_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     args: AcknowledgeAlarmArgs<'_>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -228,7 +223,7 @@ pub async fn acknowledge_alarm_cmd<T: TransportPort + 'static>(
         time_of_acknowledgment,
     )?;
 
-    client.acknowledge_alarm_request(mac, &request).await?;
+    to.acknowledge_alarm_request(client, &request).await?;
 
     output::print_success("Alarm acknowledged", format);
     Ok(())
@@ -237,13 +232,13 @@ pub async fn acknowledge_alarm_cmd<T: TransportPort + 'static>(
 /// Delete an object on a remote device.
 pub async fn delete_object_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     object_type: ObjectType,
     instance: u32,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let oid = ObjectIdentifier::new(object_type, instance)?;
-    client.delete_object(mac, oid).await?;
+    to.delete_object(client, oid).await?;
     output::print_success(&format!("Deleted {}:{}", object_type, instance), format);
     Ok(())
 }
@@ -251,7 +246,7 @@ pub async fn delete_object_cmd<T: TransportPort + 'static>(
 /// Create an object on a remote device.
 pub async fn create_object_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     object_type: ObjectType,
     instance: u32,
     format: OutputFormat,
@@ -259,7 +254,7 @@ pub async fn create_object_cmd<T: TransportPort + 'static>(
     use bacnet_services::object_mgmt::ObjectSpecifier;
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let specifier = ObjectSpecifier::Identifier(oid);
-    let response = client.create_object(mac, specifier, vec![]).await?;
+    let response = to.create_object(client, specifier, vec![]).await?;
     let hex: String = response
         .iter()
         .map(|b| format!("{b:02x}"))

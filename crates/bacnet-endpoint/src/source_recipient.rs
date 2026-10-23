@@ -107,8 +107,8 @@ impl SourceRoutes {
 }
 fn denied() -> Error {
     Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+        class: ErrorClass::SERVICES,
+        code: ErrorCode::SERVICE_REQUEST_DENIED,
     }
 }
 
@@ -137,8 +137,8 @@ impl SourceRecipient {
                 // Device refuses it the same way when a write carries one.
                 bacnet_encoding::constructed::encode_recipient(&mut bytes, &recipient).map_err(
                     |_| Error::Protocol {
-                        class: ErrorClass::PROPERTY.to_raw() as u32,
-                        code: ErrorCode::INVALID_DATA_ENCODING.to_raw() as u32,
+                        class: ErrorClass::PROPERTY,
+                        code: ErrorCode::INVALID_DATA_ENCODING,
                     },
                 )?;
                 PropertyValue::ApplicationData(bytes.to_vec())
@@ -174,10 +174,13 @@ impl SourceRecipient {
     }
 
     pub(crate) fn seal(&self) {
-        if let Some(notifications) = self.notifications.upgrade() {
-            notifications.seal_audit_owner(&self.owner);
-        } else {
-            self.owner.seal();
+        match self.notifications.upgrade() {
+            Some(notifications) => {
+                notifications.seal_audit_owner(&self.owner);
+            }
+            _ => {
+                self.owner.seal();
+            }
         }
     }
     pub(crate) fn uninstall(self: &Arc<Self>, db: &mut ObjectDatabase) {

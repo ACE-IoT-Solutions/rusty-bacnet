@@ -4,13 +4,13 @@
 //! WriteProperty is refused, and the PICS lists it required and read-only.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::value_types::{
     IntegerValueObject, LargeAnalogValueObject, PositiveIntegerValueObject,
 };
 use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 /// The three numeric value objects, Units set to degrees Celsius when
 /// `configured`, otherwise left at NO_UNITS.
@@ -116,8 +116,8 @@ fn numeric_value_units_read_over_the_wire_and_refuse_writes() {
             assert!(matches!(
                 handle_write_property(&mut db, &request),
                 Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::WRITE_ACCESS_DENIED
             ));
             assert_eq!(read_units(&db, oid), expected, "{oid:?}");
         }
@@ -126,7 +126,7 @@ fn numeric_value_units_read_over_the_wire_and_refuse_writes() {
 
 #[test]
 fn pics_numeric_value_units_is_required_and_read_only() {
-    use crate::pics::{generate_pics, PicsConfig};
+    use crate::pics::{PicsConfig, generate_pics};
     use crate::server::ServerConfig;
 
     for object in numeric_values(true) {

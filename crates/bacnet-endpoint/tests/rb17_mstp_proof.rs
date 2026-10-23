@@ -34,7 +34,7 @@ mod rb17_harness;
 
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_endpoint::identity::DeviceIdentity;
 use bacnet_endpoint::mstp::MstpEndpointBuilder;
@@ -52,7 +52,7 @@ async fn one_owner_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut transport = MstpEndpointBuilder::new(serial, SESSION_MAC)
         .max_master(7)
         .extended_frames(frames.extended())
-        .execution_mode(mode)
+        .execution_mode(mode.clone())
         .build_transport()
         .expect("transport must build");
     assert_eq!(transport.local_mac(), &[SESSION_MAC]);
@@ -102,7 +102,7 @@ async fn mstp_one_serial_owner_tokio() {
 
 #[tokio::test]
 async fn mstp_one_serial_owner_dedicated() {
-    one_owner_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    one_owner_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -112,7 +112,7 @@ async fn mstp_one_serial_owner_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_one_serial_owner_extended_dedicated() {
-    one_owner_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    one_owner_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 async fn prompt_reply_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -149,7 +149,7 @@ async fn mstp_prompt_reply_tokio() {
 
 #[tokio::test]
 async fn mstp_prompt_reply_dedicated() {
-    prompt_reply_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    prompt_reply_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn mstp_prompt_reply_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_prompt_reply_extended_dedicated() {
-    prompt_reply_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    prompt_reply_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 async fn bidirectional_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -231,7 +231,7 @@ async fn mstp_bidirectional_tokio() {
 
 #[tokio::test]
 async fn mstp_bidirectional_dedicated() {
-    bidirectional_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    bidirectional_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -241,7 +241,7 @@ async fn mstp_bidirectional_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_bidirectional_extended_dedicated() {
-    bidirectional_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    bidirectional_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 async fn deferred_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -278,7 +278,7 @@ async fn mstp_deferred_after_postponed_tokio() {
 
 #[tokio::test]
 async fn mstp_deferred_after_postponed_dedicated() {
-    deferred_impl(MstpExecutionMode::DedicatedThread, Frames::Standard).await;
+    deferred_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
 }
 
 #[tokio::test]
@@ -288,7 +288,7 @@ async fn mstp_deferred_after_postponed_extended_tokio() {
 
 #[tokio::test]
 async fn mstp_deferred_after_postponed_extended_dedicated() {
-    deferred_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
+    deferred_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
 }
 
 /// The builder's timing setters reach the transport's `MstpConfig`; left
@@ -349,15 +349,19 @@ fn mstp_builder_timing_setters_reach_the_transport() {
 async fn mstp_builder_bounds_reject() {
     // Addressing validation fails fast at composition (MstpConfig::validate).
     let (serial, _peer) = LoopbackSerial::pair();
-    assert!(MstpEndpointBuilder::new(serial, 9)
-        .max_master(7)
-        .validate_only()
-        .is_err());
+    assert!(
+        MstpEndpointBuilder::new(serial, 9)
+            .max_master(7)
+            .validate_only()
+            .is_err()
+    );
     let (serial, _peer) = LoopbackSerial::pair();
-    assert!(MstpEndpointBuilder::new(serial, SESSION_MAC)
-        .max_master(200)
-        .validate_only()
-        .is_err());
+    assert!(
+        MstpEndpointBuilder::new(serial, SESSION_MAC)
+            .max_master(200)
+            .validate_only()
+            .is_err()
+    );
     // A port declaring an echo with no grace is rejected.
     let (serial, _peer) = LoopbackSerial::pair();
     let zero = bacnet_transport::mstp::Echo::Full {
@@ -372,8 +376,10 @@ async fn mstp_builder_bounds_reject() {
     let (serial, _peer) = LoopbackSerial::pair();
     let big = DeviceIdentity::new(2002, 42).unwrap();
     assert_eq!(big.max_apdu_length(), 1476);
-    assert!(MstpEndpointBuilder::new(serial, SESSION_MAC)
-        .device(big)
-        .build_session()
-        .is_ok());
+    assert!(
+        MstpEndpointBuilder::new(serial, SESSION_MAC)
+            .device(big)
+            .build_session()
+            .is_ok()
+    );
 }

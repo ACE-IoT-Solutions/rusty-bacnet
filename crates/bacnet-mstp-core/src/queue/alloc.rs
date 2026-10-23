@@ -8,17 +8,17 @@ use bacnet_time::Instant;
 use crate::config::DEFAULT_STARVATION_LIMIT;
 use crate::counters::QueueCounters;
 
-use super::slots::{expired, Lane, LiveItems, Selected, Slot};
+use super::slots::{Lane, LiveItems, Selected, Slot, expired};
 use super::{
-    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
-    MAX_STANDARD_MPDU_DATA,
+    DequeuedNpdu, MAX_STANDARD_MPDU_DATA, NetworkPriority, QueueItemInfo, QueueKind, QueueRefusal,
+    QueueStorage,
 };
 
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 ///
 /// `N` is the longest NPDU a slot holds, as for
-/// [`HeaplessQueues`](crate::HeaplessQueues): 501 octets by default, and
+/// [`FixedQueues`](crate::FixedQueues): 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
 /// a core with extended frames on. `N` can be at most 65,535, or the
 /// constructors fail to compile:
@@ -41,7 +41,7 @@ use super::{
 /// fills.
 ///
 /// The starvation limit comes from the core's configuration, as for
-/// [`HeaplessQueues`](crate::HeaplessQueues).
+/// [`FixedQueues`](crate::FixedQueues).
 pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Lane<Vec<Slot<N>>>,
     broadcast: Lane<Vec<Slot<N>>>,

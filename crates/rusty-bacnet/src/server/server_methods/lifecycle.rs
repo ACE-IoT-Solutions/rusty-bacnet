@@ -5,6 +5,7 @@ use bacnet_transport::port::TransportPort;
 impl BACnetServer {
     /// Start the server. It will begin responding to BACnet requests.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         // Validate the selected sink before TLS/serial/network preparation or
         // ownership transfer. Keep registration stable until it is drained.
         let mut pending = self.lock_pending()?;
@@ -89,9 +90,11 @@ impl BACnetServer {
         let broadcast_str = self.broadcast_address.clone();
         let share_port_by_address = self.share_port_by_address;
         let bip_mode = self.bip_mode.clone();
+        let multicast = self.multicast;
         let sc_hub = self.sc_hub.clone();
         let sc_vmac = self.sc_vmac.clone();
         let sc_device_uuid = self.sc_device_uuid;
+        let sc_npdu_admission_policy = self.sc_npdu_admission_policy;
         let sc_heartbeat_interval_ms = self.sc_heartbeat_interval_ms;
         let sc_heartbeat_timeout_ms = self.sc_heartbeat_timeout_ms;
         let ipv6_interface = self.ipv6_interface.clone();
@@ -101,6 +104,10 @@ impl BACnetServer {
         let dcc_source_restriction = self.dcc_source_restriction.clone();
         let dcc_disable_rate_limit = self.dcc_disable_rate_limit;
         let reinit_password = self.reinit_password.clone();
+        let reinitialize = self.reinitialize.clone();
+        if let Some(reinitialize) = &reinitialize {
+            reinitialize.bind_event_loop(py)?;
+        }
         let request_admission_policy = self.request_admission_policy;
         let read_property_multiple_budget = self.read_property_multiple_budget;
         let get_alarm_summary_budget = self.get_alarm_summary_budget;
@@ -141,6 +148,8 @@ impl BACnetServer {
                         let mut bip = BipTransport::new(interface, port, broadcast);
                         bip.set_share_port_by_address(share_port_by_address);
                         bip.set_mode(bip_mode);
+                        bip.set_multicast(multicast)
+                            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
                         Some(AnyTransport::Bip(Box::new(bip)))
                     }
                     "ipv6" => {
@@ -237,7 +246,8 @@ impl BACnetServer {
                         .map_err(to_py_err)?;
 
                     let mut sc = bacnet_transport::sc::ScTransport::new(ws, vmac)
-                        .with_device_uuid(sc_device_uuid);
+                        .with_device_uuid(sc_device_uuid)
+                        .with_npdu_per_origin_limit(sc_npdu_admission_policy.per_origin_limit);
                     if let Some(ms) = sc_heartbeat_interval_ms {
                         sc = sc.with_heartbeat_interval_ms(ms);
                     }
@@ -265,9 +275,11 @@ impl BACnetServer {
             if let Some(sink) = audit_notification_sink {
                 builder = builder.audit_notification_sink(sink.object_id);
                 if sink.allow_all {
-                    builder = builder
-                        .audit_notification_authorizer(|_| true)
-                        .unconfirmed_audit_notification_authorizer(|_| true);
+                    builder = builder.policy(
+                        bacnet_server::FnPolicy::new()
+                            .audit_notification(|_| true)
+                            .unconfirmed_audit_notification(|_| true),
+                    );
                 }
                 // deny_all deliberately retains the Rust fail-closed defaults.
             }
@@ -280,6 +292,11 @@ impl BACnetServer {
                 .dcc_disable_rate_limit(dcc_disable_rate_limit);
             if let Some(pw) = reinit_password {
                 builder = builder.reinit_password(pw);
+            }
+            // With a handler, a BBMD port's written rows become writable and
+            // ACTIVATE_CHANGES or WARMSTART activates them (#1578).
+            if let Some(reinitialize) = reinitialize {
+                builder = builder.on_reinitialize(reinitialize.handler());
             }
             let srv = builder.build().await.map_err(to_py_err)?;
 

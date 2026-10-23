@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
+use bacnet_npdu::NetworkMessageType;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::enums::NetworkMessageType;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::*;
 use crate::layer::QueueAdmissionSnapshot;
@@ -50,7 +50,7 @@ async fn ports() -> (
 async fn one_start_combines_admission_tracking_a_control_policy_and_the_control_receiver() {
     let (ports, [(mut peer_a, _), (mut peer_b, _)]) = ports().await;
     // Hardened, with an authorizer that admits rejects and nothing else.
-    let reject = NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw();
+    let reject = NetworkMessageType::REJECT_MESSAGE_TO_NETWORK;
     let options = RouterOptions::new()
         .track_admission()
         .control_policy(ControlPolicy::Hardened)
@@ -95,7 +95,7 @@ async fn one_start_combines_admission_tracking_a_control_policy_and_the_control_
     let snapshot = counters.snapshot();
     assert_eq!((snapshot.current_depth, snapshot.high_water), (0, 1));
 
-    router.stop().await;
+    router.stop().await.unwrap();
     peer_a.stop().await.unwrap();
     peer_b.stop().await.unwrap();
 }
@@ -127,7 +127,7 @@ async fn plain_options_start_a_permissive_router_without_a_control_receiver() {
         crate::router_table::PortId(1)
     );
 
-    router.stop().await;
+    router.stop().await.unwrap();
     peer_a.stop().await.unwrap();
     peer_b.stop().await.unwrap();
 }
@@ -142,6 +142,9 @@ async fn rejects_to_the_router(
 ) {
     for _ in 0..count {
         peer_b.send_unicast(&REJECT_3000, &[0x02]).await.unwrap();
+        // The loopback link drops what finds the router's 256-frame queue
+        // full (#1713), so let the router take each frame as it goes.
+        tokio::task::yield_now().await;
     }
     peer_b.send_unicast(&TO_6000, &[0x02]).await.unwrap();
     while recv(from_router_b).await.npdu[..] != REJECT_6000 {}
@@ -149,7 +152,13 @@ async fn rejects_to_the_router(
 
 #[tokio::test]
 async fn tracked_network_control_receiver_counts_its_high_water_mark_and_drops() {
-    let (ports, [(mut peer_a, _from_router_a), (mut peer_b, mut from_router_b)]) = ports().await;
+    let (
+        ports,
+        [
+            (mut peer_a, _from_router_a),
+            (mut peer_b, mut from_router_b),
+        ],
+    ) = ports().await;
     let options = RouterOptions::new().network_control_receiver_with_admission();
     let StartedRouter {
         mut router,
@@ -201,7 +210,7 @@ async fn tracked_network_control_receiver_counts_its_high_water_mark_and_drops()
         }
     );
 
-    router.stop().await;
+    router.stop().await.unwrap();
     peer_a.stop().await.unwrap();
     peer_b.stop().await.unwrap();
 }

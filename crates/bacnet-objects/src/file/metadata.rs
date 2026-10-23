@@ -1,4 +1,4 @@
-use super::{resize, FileObject};
+use super::{FileObject, resize};
 use std::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
@@ -70,7 +70,7 @@ mod tests {
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
             matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+            if class == ErrorClass::PROPERTY && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }

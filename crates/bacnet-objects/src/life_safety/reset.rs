@@ -1,6 +1,6 @@
 //! Application-owned reset execution for built-in Life Safety objects.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use bacnet_types::enums::{
@@ -12,7 +12,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use crate::traits::LifeSafetyOperationEffect;
 
 use super::{
-    life_safety_error, valid_life_safety_state, LifeSafetyPointObject, LifeSafetyZoneObject,
+    LifeSafetyPointObject, LifeSafetyZoneObject, life_safety_error, valid_life_safety_state,
 };
 
 /// Immutable Life Safety Point state supplied to a reset executor.
@@ -144,8 +144,8 @@ fn reset_error(error: LifeSafetyResetError) -> Error {
             life_safety_error(ErrorCode::INVALID_OPERATION_IN_THIS_STATE)
         }
         LifeSafetyResetError::ServiceRequestDenied => Error::Protocol {
-            class: ErrorClass::SERVICES.to_raw() as u32,
-            code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+            class: ErrorClass::SERVICES,
+            code: ErrorCode::SERVICE_REQUEST_DENIED,
         },
     }
 }

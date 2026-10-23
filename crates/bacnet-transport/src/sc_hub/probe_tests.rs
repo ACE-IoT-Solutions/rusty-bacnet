@@ -78,10 +78,12 @@ async fn configured_scan_idle_and_ack_age_are_precise_strict_exceeds() {
     );
     tokio::time::advance(ms(20)).await;
     until(|| hub.hub.tasks.probe_scans.load(Ordering::Acquire) == 2).await;
-    assert!(hub.clients.lock().await[&[0x42; 6]]
-        .heartbeat
-        .pending
-        .is_none());
+    assert!(
+        hub.clients.lock().await[&[0x42; 6]]
+            .heartbeat
+            .pending
+            .is_none()
+    );
     tokio::time::advance(ms(10)).await;
     let frame = poll_io(peer.ws.next()).await.unwrap().unwrap();
     let Message::Binary(bytes) = frame else {
@@ -138,10 +140,12 @@ async fn slow_sweep_skips_missed_ticks_instead_of_catch_up_burst() {
     let held = peer.sink.clone().lock_owned().await;
     tokio::time::advance(ms(30)).await;
     until(|| hub.hub.tasks.probe_scans.load(Ordering::Acquire) == 2).await;
-    assert!(hub.clients.lock().await[&[0x42; 6]]
-        .heartbeat
-        .pending
-        .is_some());
+    assert!(
+        hub.clients.lock().await[&[0x42; 6]]
+            .heartbeat
+            .pending
+            .is_some()
+    );
     tokio::time::advance(ms(64)).await;
     assert!(hub.clients.lock().await.contains_key(&[0x42; 6]));
     tokio::time::advance(ms(36)).await;
@@ -171,10 +175,12 @@ async fn configured_blocked_probe_is_owned_by_forceful_and_graceful_shutdown() {
         let held = peer.sink.clone().lock_owned().await;
         tokio::time::advance(ms(30)).await;
         until(|| hub.hub.tasks.probe_scans.load(Ordering::Acquire) == 2).await;
-        assert!(hub.clients.lock().await[&[0x42; 6]]
-            .heartbeat
-            .pending
-            .is_some());
+        assert!(
+            hub.clients.lock().await[&[0x42; 6]]
+                .heartbeat
+                .pending
+                .is_some()
+        );
         if graceful {
             let stop = hub.hub.shutdown_gracefully();
             tokio::pin!(stop);

@@ -7,7 +7,7 @@ use crate::committed_cov::BackgroundCommit;
 mod period;
 use super::heap_futures::boxed;
 use super::{audit_recipient::spawn_owned, audit_recipient_routes::AuditRoutes};
-pub(super) use period::{event_enrollment_period, MonotonicClocks};
+pub(super) use period::{MonotonicClocks, event_enrollment_period};
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Start a server: every public start and build path ends here. The
@@ -60,6 +60,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
 
         let (clock, monotonic) = period::install_database_clocks(&mut db, clock_config);
+        // The device is starting: colour outputs go to their defaults
+        // (#1526). The database isn't shared yet, so no lock is taken. This
+        // runs before `network_port::start`, which can still fail; that's
+        // harmless, since the drive is what any start does, and a later
+        // start over the same objects drives them the same way again.
+        db.for_each_object_mut(|_, object| object.start_output_internal());
         let membership = crate::membership::install_waker(&mut db);
 
         let (network, mut apdu_rx, audit_routes, network_controls) =
@@ -131,7 +137,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
         let requests = Arc::clone(&request_tasks);
         let dispatch_context = DispatchContext {
-            services: RequestServices {
+            services: Arc::new(RequestServices {
                 db: Arc::clone(&db),
                 network: Arc::clone(&network_dispatch),
                 cov_table: Arc::clone(&cov_table),
@@ -148,8 +154,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 confirmed_event_repeats: Arc::default(),
                 received_event_log: Arc::default(),
                 mutation_decisions: Arc::clone(&mutation_decisions),
+                warnings: Arc::default(),
                 config: Arc::clone(&config_dispatch),
-            },
+            }),
             confirmed_request_tracker: Arc::clone(&confirmed_request_tracker),
             clock: clock.clone(),
             discovery_limiter: discovery_limiter.clone(),
@@ -165,6 +172,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let mut seg_receivers: HashMap<SegRecvKey, SegmentedRequestState> = HashMap::new();
             let mut notifications_open = true;
             let mut ingress_open = true;
+            // A peer's flood warns once per interval, the rest at debug (#1950).
+            let warnings = Arc::clone(&dispatch_context.services.warnings);
+            let (decode_warning, segment_warning) = (&warnings.decode, &warnings.segment);
 
             // While ingress is open, finished handlers are joined at the top
             // of each turn, not awaited below (IdleReap, #1713).
@@ -283,7 +293,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     )
                                 {
                                     seg_receivers.remove(&conflict);
-                                    warn!(
+                                    warn_throttled!(
+                                        segment_warning,
                                         invoke_id = req.invoke_id,
                                         "Aborting segmented request on provenance mismatch (fail-closed)"
                                     );
@@ -296,6 +307,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                         AbortReason::INVALID_APDU_IN_THIS_STATE,
                                     )
                                     .await;
+                                    continue;
+                                }
+
+                                if !Self::accept_segment_route(
+                                    &network_dispatch,
+                                    &mut seg_receivers,
+                                    &key,
+                                    &route,
+                                )
+                                .await
+                                {
                                     continue;
                                 }
 
@@ -353,6 +375,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 state,
                                                 req.invoke_id,
                                                 seq,
+                                                segment_warning,
                                             );
                                     } else {
                                         // In-order NEW segment: duplicates
@@ -370,7 +393,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                             // Clause 18.10's BUFFER_OVERFLOW
                                             // fits a reassembly that exceeds
                                             // available buffer capacity (#364).
-                                            warn!(
+                                            warn_throttled!(
+                                                segment_warning,
                                                 invoke_id = req.invoke_id,
                                                 accepted = state.accepted_segments,
                                                 "Segmented request exceeds reassembly capacity, aborting"
@@ -397,7 +421,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                             // it dangling told the peer
                                             // nothing while this side could
                                             // never complete (#364).
-                                            warn!(error = %e, "Rejecting unsaveable segment");
+                                            warn_throttled!(
+                                                segment_warning,
+                                                error = %e,
+                                                "Rejecting unsaveable segment"
+                                            );
                                             seg_receivers.remove(&key);
                                             Self::send_server_abort(
                                                 &network_dispatch,
@@ -442,11 +470,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     let proposed_window_size =
                                         req.proposed_window_size.unwrap_or(0);
                                     if !(1..=127).contains(&proposed_window_size) {
-                                        warn!(
-	                                            invoke_id = req.invoke_id,
-	                                            proposed_window_size,
-	                                            "Rejecting segmented request with invalid proposed window size"
-	                                        );
+                                        warn_throttled!(
+                                            segment_warning,
+                                            invoke_id = req.invoke_id,
+                                            proposed_window_size,
+                                            "Rejecting segmented request with invalid proposed window size"
+                                        );
                                         Self::send_server_abort(
                                             &network_dispatch,
                                             &source_mac,
@@ -489,7 +518,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                         // path; the Abort is what tells the
                                         // peer instead of leaving it to time
                                         // out (#364).
-                                        warn!(error = %e, "Rejecting unsaveable segment");
+                                        warn_throttled!(
+                                            segment_warning,
+                                            error = %e,
+                                            "Rejecting unsaveable segment"
+                                        );
                                         Self::send_server_abort(
                                             &network_dispatch,
                                             &source_mac,
@@ -504,10 +537,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     let (state, initial_ack) =
                                         super::segmented_receive::initial_state(
                                             payload,
-                                            provenance,
-                                            received
-                                                .as_ref()
-                                                .and_then(|r| r.direct_response.clone()),
+                                            route.clone(),
                                             source_mac.clone(),
                                             source_network.clone(),
                                             req,
@@ -518,11 +548,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     }
                                     seg_receivers.insert(key.clone(), state);
                                 } else {
-                                    warn!(
-	                                        invoke_id = req.invoke_id,
-	                                        seq = seq,
-	                                        "Received non-initial segment without prior segment 0, aborting"
-	                                    );
+                                    warn_throttled!(
+                                        segment_warning,
+                                        invoke_id = req.invoke_id,
+                                        seq = seq,
+                                        "Received non-initial segment without prior segment 0, aborting"
+                                    );
                                     Self::send_server_abort(
                                         &network_dispatch,
                                         &source_mac,
@@ -556,49 +587,36 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     }
                                 }
 
-                                if let Some(total) = final_total {
-                                    if let Some(state) = seg_receivers.remove(&key) {
-                                        if let Some(envelope) = received.as_mut() {
-                                            envelope.provenance = state.provenance;
-                                            envelope.direct_response = state.direct_response;
-                                        }
-                                        match state.payload.complete(total) {
-                                            Ok(reassembled) => {
-                                                debug!(
-                                                    invoke_id = reassembled.invoke_id,
-                                                    segments = total,
-                                                    payload_len = reassembled.service_request.len(),
-                                                    "Reassembled segmented ConfirmedRequest"
-                                                );
-                                                Self::dispatch(
+                                if let Some(total) = final_total
+                                    && let Some(state) = seg_receivers.remove(&key)
+                                {
+                                    if let Some(envelope) = received.as_mut() {
+                                        envelope.set_response_route(state.route.clone());
+                                    }
+                                    match state.payload.complete(total) {
+                                        Ok(reassembled) => {
+                                            debug!(
+                                                invoke_id = reassembled.invoke_id,
+                                                segments = total,
+                                                payload_len = reassembled.service_request.len(),
+                                                "Reassembled segmented ConfirmedRequest"
+                                            );
+                                            Self::dispatch(
                                                     &dispatch_context,
                                                     &source_mac,
                                                     Apdu::ConfirmedRequest(reassembled),
-                                                    received.take().unwrap_or_else(|| {
-                                                        warn!("received consumed twice - using empty fallback");
-                                                        bacnet_network::layer::ReceivedApdu {
-                                                            direct_response: None,
-                                                            apdu: bytes::Bytes::new(),
-                                                            source_mac: bacnet_types::MacAddr::new(),
-                                                            ingress_network: None,
-                                                            source_network: None,
-                                                            link_layer_group: false,
-                                                            is_group: false,
-                                                            global_broadcast: false,
-                                                            data_attributes: Vec::new(),
-                                                            provenance: bacnet_transport::port::TransportProvenance::unverified(),
-                                                            reply_tx: None,
-                                                        }
-                                                    }),
+                                                    received.take().unwrap_or_else(
+                                                        super::segmented_receive::empty_reassembled_envelope,
+                                                    ),
                                                 )
                                                 .await;
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    error = %e,
-                                                    "Failed to reassemble segmented request"
-                                                );
-                                            }
+                                        }
+                                        Err(e) => {
+                                            warn_throttled!(
+                                                segment_warning,
+                                                error = %e,
+                                                "Failed to reassemble segmented request"
+                                            );
                                         }
                                     }
                                 }
@@ -616,30 +634,19 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 &dispatch_context,
                                 &source_mac,
                                 decoded,
-                                received.take().unwrap_or_else(|| {
-                                    warn!("received consumed twice — using empty fallback");
-                                    bacnet_network::layer::ReceivedApdu {
-                                        direct_response: None,
-                                        apdu: bytes::Bytes::new(),
-                                        source_mac: bacnet_types::MacAddr::new(),
-                                        ingress_network: None,
-                                        source_network: None,
-                                        link_layer_group: false,
-                                        is_group: false,
-                                        global_broadcast: false,
-                                        data_attributes: Vec::new(),
-                                        provenance:
-                                            bacnet_transport::port::TransportProvenance::unverified(
-                                            ),
-                                        reply_tx: None,
-                                    }
-                                }),
+                                received.take().unwrap_or_else(
+                                    super::segmented_receive::empty_reassembled_envelope,
+                                ),
                             )
                             .await;
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Server failed to decode received APDU");
+                        warn_throttled!(
+                            decode_warning,
+                            error = %e,
+                            "Server failed to decode received APDU"
+                        );
                     }
                 }
             }

@@ -5,10 +5,10 @@
 //! the scenario's buffer in a static; the node itself is built on the
 //! stack. Its input and its summary pass through [`core::hint::black_box`],
 //! so none of the work can be optimized away, and then it loops. CI never
-//! runs it: building it proves that `bacnet-bip-core`'s node engine links
-//! without `std` or an allocator, and `scripts/ci/check-firmware-link.sh`
-//! checks its sizes. On a host the binary is a stub; `tests/node.rs` runs
-//! the scenario there.
+//! runs it: building it proves that `bacnet-bip-core`'s port and node
+//! engine link without `std` or an allocator, and
+//! `scripts/ci/check-firmware-link.sh` checks its sizes. On a host the
+//! binary is a stub; `tests/node.rs` runs the scenario there.
 //!
 //! The emulation build (the `emulate` feature) swaps in the reset entry of
 //! `emulated`, which runs under QEMU by hand: it runs the same scenario, and
@@ -27,7 +27,7 @@
 mod image {
     use core::hint::black_box;
 
-    use firmware_link::node::{run, Memory};
+    use firmware_link::node::{Memory, run};
 
     /// The reset entry. cortex-m-rt's macro turns the `static mut` below
     /// into a `&'static mut`, which is sound because the entry runs once.
@@ -47,7 +47,7 @@ mod image {
     use core::hint::black_box;
     use core::ptr::addr_of_mut;
 
-    use firmware_link::node::{run, Memory};
+    use firmware_link::node::{Memory, run};
 
     static mut MEMORY: Memory = Memory::new();
 
@@ -84,7 +84,7 @@ mod emulate;
 mod emulated {
     use core::hint::black_box;
 
-    use firmware_link::node::{expected, run, Memory};
+    use firmware_link::node::{Memory, expected, run};
 
     /// On Cortex-M, as `image::main`.
     #[cfg(target_arch = "arm")]

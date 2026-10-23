@@ -3,9 +3,9 @@ use super::*;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_transport::sc::{LoopbackWebSocket, ScTransport, WebSocketPort};
 use bacnet_transport::sc_frame::{
-    decode_sc_message, encode_sc_message, ScFunction, ScMessage, ScOption, Vmac,
+    ScFunction, ScMessage, ScOption, Vmac, decode_sc_message, encode_sc_message,
 };
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
     sc_hub_accept_with_limits(ws_hub, hub_vmac, 1476, 1476).await;
@@ -47,9 +47,8 @@ pub(super) async fn sc_hub_accept_with_limits(
 async fn forward_unicast_preserves_data_attributes() {
     let mut h = Harness::two_port();
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: bacnet_types::enums::NetworkPriority::NORMAL,
+        priority: bacnet_npdu::NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 2000,
             mac_address: MacAddr::from_slice(&[0x01, 0x02]),
@@ -94,9 +93,8 @@ async fn forward_unicast_preserves_data_attributes() {
 async fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
     let mut h = Harness::with_networks(&[1000, 2000, 3000]);
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: bacnet_types::enums::NetworkPriority::NORMAL,
+        priority: bacnet_npdu::NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 0xFFFF,
             mac_address: MacAddr::new(),
@@ -120,6 +118,7 @@ async fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
             SendRequest::Broadcast {
                 npdu: data,
                 data_attributes: sent_attributes,
+                ..
             } => {
                 let decoded = decode_npdu(data).unwrap();
                 assert_eq!(decoded.destination.as_ref().unwrap().network, 0xFFFF);
@@ -169,9 +168,8 @@ async fn sc_to_sc_forwarding_preserves_data_attributes_as_data_options() {
 
     let apdu = Bytes::from_static(&[0x10, 0x08]);
     let npdu = Npdu {
-        is_network_message: false,
         expecting_reply: false,
-        priority: bacnet_types::enums::NetworkPriority::NORMAL,
+        priority: bacnet_npdu::NetworkPriority::Normal,
         destination: Some(NpduAddress {
             network: 2000,
             mac_address: MacAddr::from_slice(&dest_vmac),
@@ -216,7 +214,7 @@ async fn sc_to_sc_forwarding_preserves_data_attributes_as_data_options() {
                 continue;
             }
             let decoded = decode_npdu(msg.payload.clone()).unwrap();
-            if !decoded.is_network_message && decoded.payload == apdu {
+            if !decoded.is_network_message() && decoded.payload == apdu {
                 return msg;
             }
         }
@@ -235,5 +233,5 @@ async fn sc_to_sc_forwarding_preserves_data_attributes_as_data_options() {
     assert!(!msg.data_options[1].must_understand);
     assert_eq!(msg.data_options[1].data, vec![0x12, 0x34, 0x56]);
 
-    router.stop().await;
+    router.stop().await.unwrap();
 }

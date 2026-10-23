@@ -38,8 +38,8 @@ fn network_write_mode(object: &mut dyn BACnetObject, raw: u32) -> Result<(), Err
 fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
     assert!(
         matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -62,12 +62,16 @@ fn accepted_modes_default_to_every_standard_mode_as_a_list() {
         assert_eq!(modes(object), standard);
         assert!(object.is_list_property(PropertyIdentifier::ACCEPTED_MODES));
         assert!(!object.is_array_property(PropertyIdentifier::ACCEPTED_MODES));
-        assert!(object
-            .property_list()
-            .contains(&PropertyIdentifier::ACCEPTED_MODES));
-        assert!(object
-            .required_properties()
-            .contains(&PropertyIdentifier::ACCEPTED_MODES));
+        assert!(
+            object
+                .property_list()
+                .contains(&PropertyIdentifier::ACCEPTED_MODES)
+        );
+        assert!(
+            object
+                .required_properties()
+                .contains(&PropertyIdentifier::ACCEPTED_MODES)
+        );
     }
 }
 

@@ -50,6 +50,7 @@ pub async fn run(_transport: &str, steps: &[u64]) -> Vec<DegradationPoint> {
         let iterations = 50u32;
         let mut recorder = LatencyRecorder::new();
 
+        let started = Instant::now();
         for _ in 0..iterations {
             let start = Instant::now();
             match client
@@ -64,26 +65,11 @@ pub async fn run(_transport: &str, steps: &[u64]) -> Vec<DegradationPoint> {
             }
         }
 
-        let stats = recorder.stats();
-        let throughput = recorder.successful() as f64
-            / (stats.p50 as f64 * recorder.successful() as f64 / 1_000_000.0).max(0.001);
-
-        eprintln!(
-            "  ok={} err={} p50={}µs p99={}µs max={}µs",
-            recorder.successful(),
-            recorder.failed(),
-            stats.p50,
-            stats.p99,
-            stats.max,
-        );
-
-        curve.push(DegradationPoint {
-            parameter: count,
-            p50_us: stats.p50,
-            p99_us: stats.p99,
-            throughput,
-            errors: recorder.failed(),
-        });
+        // Requests per second over the requests' measured time.
+        let point = DegradationPoint::from_recorder(count, &recorder, started.elapsed());
+        point.log();
+        eprintln!("  max={} µs", recorder.stats().max);
+        curve.push(point);
 
         let _ = client.stop().await;
         let _ = server.stop().await;

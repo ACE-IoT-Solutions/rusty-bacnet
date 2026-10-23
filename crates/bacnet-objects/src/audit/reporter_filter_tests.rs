@@ -65,7 +65,7 @@ fn audit_reporter_description_null_is_noop_and_indices_fail_before_value() {
                 .write_property(PropertyIdentifier::DESCRIPTION, Some(index), value, None)
                 .unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code } if class == ErrorClass::PROPERTY.to_raw() as u32 && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32)
+                matches!(error, Error::Protocol { class, code } if class == ErrorClass::PROPERTY && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY)
             );
             assert_eq!(reporter.configuration_internal(), before);
         }
@@ -81,6 +81,64 @@ fn audit_reporter_description_null_is_noop_and_indices_fail_before_value() {
     assert_eq!(reporter.configuration_internal(), before);
     assert_eq!(status.begin_delivery(), generation);
     assert!(
-        matches!(reporter.write_property(PropertyIdentifier::DESCRIPTION,None,PropertyValue::Boolean(false),None),Err(Error::Protocol { code,.. }) if code == ErrorCode::INVALID_DATA_TYPE.to_raw() as u32)
+        matches!(reporter.write_property(PropertyIdentifier::DESCRIPTION,None,PropertyValue::Boolean(false),None),Err(Error::Protocol { code,.. }) if code == ErrorCode::INVALID_DATA_TYPE)
     );
+}
+
+#[test]
+fn audit_reporter_lifecycle_configuration_filters_do_not_use_priority() {
+    let mut reporter = AuditReporterObject::new(1, "AR").unwrap();
+    reporter
+        .set_audit_priority_filter(BACnetPriorityFilter::from_bits(0))
+        .unwrap();
+    for level in [
+        AuditLevel::NONE,
+        AuditLevel::AUDIT_CONFIG,
+        AuditLevel::AUDIT_ALL,
+        AuditLevel::from_raw(64),
+    ] {
+        reporter.set_audit_level(level).unwrap();
+        for selected in [
+            AuditOperation::CREATE,
+            AuditOperation::DELETE,
+            AuditOperation::WRITE,
+        ] {
+            let mut flags = AuditOperationFlags::empty();
+            flags.insert(selected);
+            reporter.set_auditable_operations(flags).unwrap();
+            for operation in [AuditOperation::CREATE, AuditOperation::DELETE] {
+                assert_eq!(
+                    crate::audit::ObjectAuditPolicy::default()
+                        .effective_internal(&reporter.configuration_internal())
+                        .reports(operation, None, None),
+                    level != AuditLevel::NONE && selected == operation
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn audit_reporter_unassigned_creation_selection_needs_type_or_catch_all() {
+    let mut reporter = AuditReporterObject::new(1, "AR").unwrap();
+    let kind = ObjectType::BINARY_VALUE;
+    for (selectors, expected) in [
+        (None, true),
+        (Some(vec![]), false),
+        (Some(vec![Selector::None]), false),
+        (
+            Some(vec![Selector::Object(
+                ObjectIdentifier::new(kind, 1).unwrap(),
+            )]),
+            false,
+        ),
+        (
+            Some(vec![Selector::ObjectType(ObjectType::ANALOG_INPUT)]),
+            false,
+        ),
+        (Some(vec![Selector::None, Selector::ObjectType(kind)]), true),
+    ] {
+        reporter.set_monitored_objects(selectors).unwrap();
+        assert_eq!(reporter.monitors_unassigned_create_internal(kind), expected);
+    }
 }

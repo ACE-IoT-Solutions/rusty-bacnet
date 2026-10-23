@@ -11,10 +11,10 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::algorithms::extract_real;
-use super::commit::{EnrollmentUpdate, ReliabilityUpdate};
 use super::EventEnrollmentReliabilityCause;
 use super::LocalConfigurationReadError;
+use super::algorithms::extract_real;
+use super::commit::{EnrollmentUpdate, ReliabilityUpdate};
 use crate::server::event_notification_payload::CapturedReferencedValue;
 
 pub(super) enum SetpointRead {
@@ -138,12 +138,12 @@ pub(super) fn invalid_indexed_target_error(error: &Error) -> bool {
     matches!(
         error,
         Error::Protocol { class, code }
-            if *class == ErrorClass::PROPERTY.to_raw() as u32
+            if *class == ErrorClass::PROPERTY
                 && matches!(
                     *code,
-                    code if code == ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32
-                        || code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32
-                        || code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+                    code if code == ErrorCode::INVALID_ARRAY_INDEX
+                        || code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY
+                        || code == ErrorCode::UNKNOWN_PROPERTY
                 )
     )
 }
@@ -152,8 +152,8 @@ pub(super) fn classify_required_property_read_error(error: &Error) -> LocalConfi
     if matches!(
         error,
         Error::Protocol { class, code }
-            if *class == ErrorClass::PROPERTY.to_raw() as u32
-                && *code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+            if *class == ErrorClass::PROPERTY
+                && *code == ErrorCode::UNKNOWN_PROPERTY
     ) {
         LocalConfigurationReadError::Malformed
     } else {

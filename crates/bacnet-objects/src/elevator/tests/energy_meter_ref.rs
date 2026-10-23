@@ -16,7 +16,7 @@ const ENERGY_METER_REF: PropertyIdentifier = PropertyIdentifier::ENERGY_METER_RE
 trait Metered: BACnetObject {
     fn energy_meter_ref(&self) -> &BACnetDeviceObjectReference;
     fn set_energy_meter_ref(&mut self, reference: BACnetDeviceObjectReference)
-        -> Result<(), Error>;
+    -> Result<(), Error>;
 }
 
 macro_rules! impl_metered {
@@ -79,12 +79,8 @@ fn read(object: &dyn Metered, property: PropertyIdentifier) -> PropertyValue {
 fn assert_write_access_denied(result: Result<(), Error>, context: &str) {
     match result {
         Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{context}");
-            assert_eq!(
-                code,
-                ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-                "{context}"
-            );
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}");
+            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED, "{context}");
         }
         other => panic!("{context}: expected PROPERTY/WRITE_ACCESS_DENIED, got {other:?}"),
     }

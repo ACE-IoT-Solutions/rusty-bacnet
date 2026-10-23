@@ -61,8 +61,8 @@ use bacnet_types::enums::{PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 
-use super::credential_data_input_formats::{is_declared, SupportedFormat};
-use super::{simulated_reliability, UpdateClock};
+use super::credential_data_input_formats::{SupportedFormat, is_declared};
+use super::{UpdateClock, simulated_reliability};
 use crate::common;
 
 /// The values a client can simulate while Out_Of_Service is TRUE, plus the

@@ -1,0 +1,198 @@
+[
+  {
+    "from": "development/overview",
+    "to": "integrate/overview",
+    "sections": [
+      {
+        "heading": "Choose the owner for your application",
+        "anchor": "choose-the-owner-for-your-application",
+        "target": "integrate/overview/#choose-the-owner-for-your-application"
+      },
+      {
+        "heading": "Build a source checkout",
+        "anchor": "build-a-source-checkout",
+        "target": "development/build-from-source/#build-a-source-checkout"
+      },
+      {
+        "heading": "Use the reference for exact signatures",
+        "anchor": "use-the-reference-for-exact-signatures",
+        "target": "integrate/overview/#use-the-reference-for-exact-signatures"
+      },
+      {
+        "heading": "Next steps",
+        "anchor": "next-steps",
+        "target": "integrate/overview/#next-steps"
+      }
+    ]
+  },
+  {
+    "from": "development/shared-endpoints",
+    "to": "integrate/shared-endpoints",
+    "sections": [
+      {
+        "heading": "One session owns the connection",
+        "anchor": "one-session-owns-the-connection",
+        "target": "integrate/shared-endpoints/#one-session-owns-the-connection"
+      },
+      {
+        "heading": "Check requester and responder scope separately",
+        "anchor": "check-requester-and-responder-scope-separately",
+        "target": "integrate/shared-endpoints/#check-requester-and-responder-scope-separately"
+      },
+      {
+        "heading": "Add source READ or WRITE Audit reporting deliberately",
+        "anchor": "add-source-read-or-write-audit-reporting-deliberately",
+        "target": "integrate/shared-endpoints/#add-source-read-or-write-audit-reporting-deliberately"
+      },
+      {
+        "heading": "Close the owner, including after cancellation",
+        "anchor": "close-the-owner-including-after-cancellation",
+        "target": "integrate/shared-endpoints/#close-the-owner-including-after-cancellation"
+      },
+      {
+        "heading": "Next steps",
+        "anchor": "next-steps",
+        "target": "integrate/shared-endpoints/#next-steps"
+      }
+    ]
+  },
+  {
+    "from": "development/network-number",
+    "to": "integrate/network-ports",
+    "sections": [
+      {
+        "heading": "Three different actions",
+        "anchor": "three-different-actions",
+        "target": "integrate/network-ports/#three-different-actions"
+      },
+      {
+        "heading": "Register a B/IP receiving port",
+        "anchor": "register-a-bip-receiving-port",
+        "target": "integrate/network-ports/#register-a-bip-receiving-port"
+      },
+      {
+        "heading": "Let passive Number learning do its work",
+        "anchor": "let-passive-number-learning-do-its-work",
+        "target": "integrate/network-ports/#let-passive-number-learning-do-its-work"
+      },
+      {
+        "heading": "Know which owner and link were exercised",
+        "anchor": "know-which-owner-and-link-were-exercised",
+        "target": "integrate/network-ports/#know-which-owner-and-link-were-exercised"
+      },
+      {
+        "heading": "Next steps",
+        "anchor": "next-steps",
+        "target": "integrate/network-ports/#next-steps"
+      }
+    ]
+  },
+  {
+    "from": "development/transports",
+    "to": "reference/transports",
+    "sections": [
+      {
+        "heading": "Match the link to an owner",
+        "anchor": "match-the-link-to-an-owner",
+        "target": "reference/transports/#match-the-link-to-an-owner"
+      },
+      {
+        "heading": "Read the Number-control evidence at its actual scope",
+        "anchor": "read-the-number-control-evidence-at-its-actual-scope",
+        "target": "reference/transports/#read-the-number-control-evidence-at-its-actual-scope"
+      },
+      {
+        "heading": "Select IPv6 explicitly when discovery is ambiguous",
+        "anchor": "select-ipv6-explicitly-when-discovery-is-ambiguous",
+        "target": "reference/transports/#select-ipv6-explicitly-when-discovery-is-ambiguous"
+      },
+      {
+        "heading": "Plan your own validation",
+        "anchor": "plan-your-own-validation",
+        "target": "reference/transports/#plan-your-own-validation"
+      },
+      {
+        "heading": "Next steps",
+        "anchor": "next-steps",
+        "target": "reference/transports/#which-guide-next"
+      }
+    ]
+  },
+  {
+    "from": "development/bacnet-sc",
+    "to": "guides/bacnet-sc",
+    "sections": [
+      {
+        "heading": "Prepare identities and credentials before connecting",
+        "anchor": "prepare-identities-and-credentials-before-connecting",
+        "target": "guides/bacnet-sc/#prepare-identities-and-credentials-before-connecting"
+      },
+      {
+        "heading": "Connect with the CLI",
+        "anchor": "connect-with-the-cli",
+        "target": "guides/bacnet-sc/#cli-feature-and-identity-setup"
+      },
+      {
+        "heading": "Use the same prerequisites in Python and Rust",
+        "anchor": "use-the-same-prerequisites-in-python-and-rust",
+        "target": "guides/bacnet-sc/#use-the-same-prerequisites-in-python-and-rust"
+      },
+      {
+        "heading": "Diagnose the stage that failed",
+        "anchor": "diagnose-the-stage-that-failed",
+        "target": "guides/bacnet-sc/#diagnose-the-stage-that-failed"
+      },
+      {
+        "heading": "Keep transport identity separate from operation authority",
+        "anchor": "keep-transport-identity-separate-from-operation-authority",
+        "target": "guides/bacnet-sc/#keep-transport-identity-separate-from-operation-authority"
+      },
+      {
+        "heading": "Next steps",
+        "anchor": "next-steps",
+        "target": "guides/bacnet-sc/#next-steps"
+      }
+    ]
+  },
+  {
+    "from": "project/contributing",
+    "to": "development/documentation",
+    "sections": [
+      {
+        "heading": "Keep one task in focus",
+        "anchor": "keep-one-task-in-focus",
+        "target": "development/documentation/#keep-one-task-in-focus"
+      },
+      {
+        "heading": "Verify the interface",
+        "anchor": "verify-the-interface",
+        "target": "development/documentation/#verify-the-interface"
+      },
+      {
+        "heading": "Make visuals useful",
+        "anchor": "make-visuals-useful",
+        "target": "development/documentation/#make-visuals-useful"
+      },
+      {
+        "heading": "Keep the reading experience accessible",
+        "anchor": "keep-the-reading-experience-accessible",
+        "target": "development/documentation/#keep-the-reading-experience-accessible"
+      },
+      {
+        "heading": "Preserve technical evidence",
+        "anchor": "preserve-technical-evidence",
+        "target": "development/documentation/#preserve-technical-evidence"
+      },
+      {
+        "heading": "Work in the project",
+        "anchor": "work-in-the-project",
+        "target": "development/documentation/#work-in-the-project"
+      },
+      {
+        "heading": "Validate a content change",
+        "anchor": "validate-a-content-change",
+        "target": "development/documentation/#validate-a-content-change"
+      }
+    ]
+  }
+]

@@ -13,10 +13,7 @@
 //! takes the router's real forwarding path both ways.
 
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use tokio::sync::Mutex;
 
 use bacnet_client::client::BACnetClient;
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
@@ -29,8 +26,10 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use crate::stress::harness::{make_bip_server_with_db, make_large_db, make_stress_client};
-use crate::stress::mstp::{station, SimWire};
+use crate::stress::harness::{
+    make_bip_server_with_db, make_large_db, make_stress_client, stress_device_config,
+};
+use crate::stress::mstp::{SimWire, station};
 use crate::stress::output::{DegradationPoint, LatencyRecorder};
 
 /// The network the clients are on.
@@ -83,11 +82,11 @@ impl Running {
                 let _ = server.stop().await;
             }
             Self::Bip(mut router, mut server) => {
-                router.stop().await;
+                router.stop().await.unwrap();
                 let _ = server.stop().await;
             }
             Self::Mstp(mut router, mut server) => {
-                router.stop().await;
+                router.stop().await.unwrap();
                 let _ = server.stop().await;
             }
         }
@@ -182,6 +181,7 @@ async fn start(path: Path, baud: u32) -> (Running, Target) {
                     continue;
                 };
                 let server = BACnetServer::<MstpTransport<SimWire>>::generic_builder()
+                    .device(stress_device_config(1234).identity)
                     .transport(MstpTransport::new(server_end, station(1, baud, true)))
                     .database(db())
                     .build()
@@ -238,57 +238,47 @@ pub async fn run(
     for &count in steps {
         eprintln!("--- {count} clients ({path:?} path) ---");
 
-        let recorder = Arc::new(Mutex::new(LatencyRecorder::new()));
-        let deadline = Instant::now() + Duration::from_secs(duration_secs);
+        // Every client connects before the clock starts, and each records
+        // into its own histogram, so neither setup nor a shared lock is
+        // measured.
+        let mut pool = Vec::new();
+        for _ in 0..count {
+            match make_stress_client().await {
+                Ok(c) => pool.push(c),
+                Err(e) => eprintln!("  client error: {e}"),
+            }
+        }
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(duration_secs);
 
         let mut handles = Vec::new();
-        for _ in 0..count {
+        for mut client in pool {
             let target = target.clone();
-            let rec = recorder.clone();
             handles.push(tokio::spawn(async move {
-                let mut client = match make_stress_client().await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("  client error: {e}");
-                        return;
-                    }
-                };
-
+                let mut recorder = LatencyRecorder::new();
                 while Instant::now() < deadline {
                     let start = Instant::now();
                     match read(&client, &target, oid).await {
-                        Ok(_) => rec.lock().await.record_success(start),
-                        Err(_) => rec.lock().await.record_failure(),
+                        Ok(_) => recorder.record_success(start),
+                        Err(_) => recorder.record_failure(),
                     }
                 }
+                let ended = Instant::now();
                 let _ = client.stop().await;
+                (recorder, ended)
             }));
         }
 
+        let mut results = Vec::new();
         for h in handles {
-            let _ = h.await;
+            if let Ok(result) = h.await {
+                results.push(result);
+            }
         }
-
-        let rec = recorder.lock().await;
-        let throughput = rec.successful() as f64 / duration_secs as f64;
-        let stats = rec.stats();
-
-        eprintln!(
-            "  ok={} err={} throughput={:.0}/s p50={}µs p99={}µs",
-            rec.successful(),
-            rec.failed(),
-            throughput,
-            stats.p50,
-            stats.p99,
-        );
-
-        curve.push(DegradationPoint {
-            parameter: count,
-            p50_us: stats.p50,
-            p99_us: stats.p99,
-            throughput,
-            errors: rec.failed(),
-        });
+        let point = DegradationPoint::from_clients(count, started, results);
+        point.log();
+        curve.push(point);
     }
 
     running.stop().await;

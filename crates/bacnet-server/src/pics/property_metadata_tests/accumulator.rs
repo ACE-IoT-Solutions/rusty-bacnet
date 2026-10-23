@@ -1,7 +1,8 @@
 use super::*;
-use bacnet_objects::accumulator::{AccumulatorObject, PulseConverterObject};
-use bacnet_types::primitives::PropertyValue;
 use PropertyIdentifier as P;
+use bacnet_objects::accumulator::{AccumulatorObject, PulseConverterObject};
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::primitives::PropertyValue;
 
 fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
     // Independent (identifier, optional, writable) rows in declaration order; PICS sorts by property ID.
@@ -57,13 +58,16 @@ fn pics_accumulator_property_metadata_is_exact() {
     let fresh: [FreshObject; 2] = [
         || {
             (
-                Box::new(AccumulatorObject::new(7, "ACC-7", 95).unwrap()),
+                Box::new(AccumulatorObject::new(7, "ACC-7", EngineeringUnits::NO_UNITS).unwrap()),
                 ObjectType::ACCUMULATOR,
             )
         },
         || {
             (
-                Box::new(PulseConverterObject::new(7, "PC-7", 62).unwrap()),
+                Box::new(
+                    PulseConverterObject::new(7, "PC-7", EngineeringUnits::DEGREES_CELSIUS)
+                        .unwrap(),
+                ),
                 ObjectType::PULSE_CONVERTER,
             )
         },

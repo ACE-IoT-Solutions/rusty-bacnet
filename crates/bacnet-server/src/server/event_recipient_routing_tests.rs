@@ -10,14 +10,14 @@
 
 use super::event_notifications_tests::local_broadcast_destination;
 use super::*;
-use crate::server::test_transport::{SendLog, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, TestTransport};
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::event::{EventStateChange, EventTransition};
-use bacnet_objects::notification_class::{NotificationClass, MAX_RECIPIENT_LIST_DESTINATIONS};
+use bacnet_objects::notification_class::{MAX_RECIPIENT_LIST_DESTINATIONS, NotificationClass};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
-use bacnet_types::enums::{EventState, EventType};
+use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
 use bytes::Bytes;
 use std::borrow::Cow;
 
@@ -191,7 +191,7 @@ pub(super) async fn distribute_counted_through(
         .unwrap(),
     ))
     .unwrap();
-    let mut ai = AnalogInputObject::new(1, "AI-1", 0).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::SQUARE_METERS).unwrap();
     ai.write_property(
         PropertyIdentifier::NOTIFY_TYPE,
         None,
@@ -297,8 +297,8 @@ impl BACnetObject for TestNotificationClass {
             p if p == PropertyIdentifier::NOTIFICATION_CLASS => Ok(PropertyValue::Unsigned(0)),
             p if p == PropertyIdentifier::RECIPIENT_LIST => match self.recipient_list {
                 TestRecipientList::Unavailable => Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                    class: ErrorClass::PROPERTY,
+                    code: ErrorCode::UNKNOWN_PROPERTY,
                 }),
                 TestRecipientList::Invalid => Ok(PropertyValue::ApplicationData(vec![0x5E])),
                 TestRecipientList::Broadcasts(count) => {
@@ -315,8 +315,8 @@ impl BACnetObject for TestNotificationClass {
                 }
             },
             _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             }),
         }
     }
@@ -329,8 +329,8 @@ impl BACnetObject for TestNotificationClass {
         _priority: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
 

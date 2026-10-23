@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
+use bacnet_npdu::NpduLimits;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
@@ -17,15 +18,13 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::LoopbackSerial;
-use bacnet_transport::port::{
-    DataAttribute, GroupDestinations, NpduLimits, ReceivedNpdu, TransportPort,
-};
+use bacnet_transport::port::{DataAttribute, GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant, timeout};
 
 /// The router's MAC on network 1.
 const ROUTER_ON_1: [u8; 6] = [0x0A, 0x00, 0x00, 0x01, 0xBA, 0xC0];
@@ -203,7 +202,7 @@ async fn a_router_carries_a_bip6_nodes_vmac_as_sadr_and_dadr() {
         next_unicast(&peer).await,
         original_unicast([0x00, 0x00, 0x0A], PEER_VMAC, &forwarded)
     );
-    router.stop().await;
+    router.stop().await.unwrap();
     node.stop().await.unwrap();
 }
 
@@ -242,7 +241,7 @@ async fn a_routers_bip6_port_does_not_stall_behind_an_unknown_vmac() {
         start.elapsed()
     );
     assert_eq!(&arrived[7..10], PEER_VMAC);
-    router.stop().await;
+    router.stop().await.unwrap();
     node.stop().await.unwrap();
 }
 

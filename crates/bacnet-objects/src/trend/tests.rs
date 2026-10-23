@@ -234,9 +234,10 @@ fn trendlog_set_description_convenience() {
 #[test]
 fn trendlog_description_in_property_list() {
     let tl = TrendLogObject::new(1, "TL-1", 100).unwrap();
-    assert!(tl
-        .property_list()
-        .contains(&PropertyIdentifier::DESCRIPTION));
+    assert!(
+        tl.property_list()
+            .contains(&PropertyIdentifier::DESCRIPTION)
+    );
 }
 
 #[test]
@@ -265,8 +266,8 @@ fn trendlog_log_buffer_empty() {
     assert!(matches!(
         tl.read_property(PropertyIdentifier::LOG_BUFFER, None),
         Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::READ_ACCESS_DENIED.to_raw() as u32
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::READ_ACCESS_DENIED
     ));
 }
 
@@ -551,8 +552,8 @@ fn trendlog_reliability_is_not_network_writable() {
     );
     match result.expect_err("Reliability write must be refused") {
         Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY / WRITE_ACCESS_DENIED, got {other:?}"),
     }
@@ -581,10 +582,12 @@ fn trend_logs_have_no_out_of_service_property() {
                 .contains(&PropertyIdentifier::OUT_OF_SERVICE),
             "{kind:?}"
         );
-        assert!(!object
-            .property_metadata()
-            .iter()
-            .any(|row| row.property_identifier == PropertyIdentifier::OUT_OF_SERVICE));
+        assert!(
+            !object
+                .property_metadata()
+                .iter()
+                .any(|row| row.property_identifier == PropertyIdentifier::OUT_OF_SERVICE)
+        );
         assert!(!object.is_writable_property(PropertyIdentifier::OUT_OF_SERVICE));
         let read = object
             .read_property(PropertyIdentifier::OUT_OF_SERVICE, None)
@@ -598,12 +601,8 @@ fn trend_logs_have_no_out_of_service_property() {
         for result in [read, write] {
             match result.expect_err("no Out_Of_Service property") {
                 Error::Protocol { class, code } => {
-                    assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{kind:?}");
-                    assert_eq!(
-                        code,
-                        ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                        "{kind:?}"
-                    );
+                    assert_eq!(class, ErrorClass::PROPERTY, "{kind:?}");
+                    assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY, "{kind:?}");
                 }
                 other => panic!("expected PROPERTY / UNKNOWN_PROPERTY, got {other:?}"),
             }
@@ -628,8 +627,8 @@ fn trendlog_multiple_reliability_is_not_network_writable() {
     );
     match result.expect_err("Reliability write must be refused") {
         Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY / WRITE_ACCESS_DENIED, got {other:?}"),
     }

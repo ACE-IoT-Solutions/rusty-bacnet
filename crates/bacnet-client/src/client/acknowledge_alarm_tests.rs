@@ -1,6 +1,6 @@
 use super::*;
 
-use bacnet_encoding::apdu::{decode_apdu, SimpleAck};
+use bacnet_encoding::apdu::{SimpleAck, decode_apdu};
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_types::enums::{EventState, ObjectType};
@@ -103,7 +103,7 @@ async fn canonical_acknowledge_alarm_preserves_every_caller_supplied_field() {
             )
             .unwrap();
             remote_network
-                .send_apdu(&ack, &received.source_mac, false, NetworkPriority::NORMAL)
+                .send_apdu(&ack, &received.source_mac, false, NetworkPriority::Normal)
                 .await
                 .unwrap();
         }

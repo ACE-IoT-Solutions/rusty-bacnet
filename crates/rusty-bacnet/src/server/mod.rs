@@ -1,8 +1,8 @@
 //! Python BACnetServer — async wrapper around the Rust BACnetServer.
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -101,11 +101,14 @@ pub struct BACnetServer {
     share_port_by_address: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IP multicast group `multicast=` asked for (#941).
+    multicast: Option<bacnet_transport::bip::BipMulticast>,
     registered_network_port: Option<u32>,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,
     sc_device_uuid: [u8; 16],
+    sc_npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
     sc_ca_cert: Option<String>,
     sc_client_cert: Option<String>,
     sc_client_key: Option<String>,
@@ -122,6 +125,8 @@ pub struct BACnetServer {
     dcc_source_restriction: Option<server::DccSourceRestriction>,
     dcc_disable_rate_limit: Option<server::DccDisableRateLimit>,
     reinit_password: Option<String>,
+    /// The `on_reinitialize` and `after_reinitialize` callables (#1566).
+    reinitialize: Option<Arc<crate::reinitialize::PyReinitialize>>,
     request_admission_policy: server::RequestAdmissionPolicy,
     read_property_multiple_budget: server::ReadPropertyMultipleBudget,
     get_alarm_summary_budget: server::GetAlarmSummaryBudget,
@@ -199,6 +204,7 @@ impl BACnetServer {
 
 mod server_methods {
     mod access_control_methods;
+    mod access_credential_methods;
     mod access_input_methods;
     mod access_rights_methods;
     mod audit_log_methods;
@@ -214,12 +220,14 @@ mod server_methods {
     mod foreign_registration;
     mod life_safety_methods;
     mod lifecycle;
+    mod lighting_methods;
     mod loop_methods;
     mod network_port;
     mod notification_forwarder;
     mod policy_dict;
     mod registration;
     mod request_admission;
+    mod sc_npdu;
     mod time_sync_policy;
     mod trend_log_methods;
     mod value_registration;

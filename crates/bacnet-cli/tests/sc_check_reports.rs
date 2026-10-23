@@ -65,9 +65,10 @@ async fn complete_json_preserves_inventory_and_native_paths_without_runtime_cons
             assert_eq!(entry["index"], 0);
             let hash = entry["sha256"].as_str().unwrap();
             assert_eq!(hash.len(), 64);
-            assert!(hash
-                .bytes()
-                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)));
+            assert!(
+                hash.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            );
             assert_eq!(entry["metadata"]["subject"], "CN=CLI offline fixture");
             assert_eq!(entry["metadata"]["issuer"], "CN=CLI offline fixture");
             assert_eq!(entry["metadata"]["not_before_unix"].as_i64(), Some(NOW));
@@ -238,8 +239,10 @@ async fn human_pipe_output_and_json_precedence_preserve_the_same_decision() {
         .output()
         .await;
     assert_eq!(extreme.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&extreme.stdout)
-        .contains("Unix 9223372036854775807 (UTC calendar display unavailable)"));
+    assert!(
+        String::from_utf8_lossy(&extreme.stdout)
+            .contains("Unix 9223372036854775807 (UTC calendar display unavailable)")
+    );
 }
 
 #[tokio::test]
@@ -305,6 +308,64 @@ async fn supplied_keys_distinguish_match_mismatch_unusable_and_omission() {
         );
         assert_eq!(doc["inspection"]["key_consistency"], expected);
     }
+}
+
+/// A leaf from an issuing CA that the trust file lacks is flagged as not
+/// issued directly by a configured CA (a warning, exit 0); with that CA in the
+/// file, the document names its index (#968).
+#[tokio::test]
+async fn a_leaf_from_an_intermediate_outside_the_trust_file_is_not_direct() {
+    let ca = |name: &str| {
+        let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        p.distinguished_name.push(rcgen::DnType::CommonName, name);
+        (p, rcgen::KeyPair::generate().unwrap())
+    };
+    let (root, issuing) = (ca("CLI root"), ca("CLI issuing"));
+    let root_pem = root.0.self_signed(&root.1).unwrap().pem();
+    let by_root = rcgen::Issuer::from_params(&root.0, &root.1);
+    let issuing_pem = issuing.0.signed_by(&issuing.1, &by_root).unwrap().pem();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let by_issuing = rcgen::Issuer::from_params(&issuing.0, &issuing.1);
+    let leaf = params(400).signed_by(&key, &by_issuing).unwrap().pem();
+    let fixture = Fixture::new(params(400));
+    let cert = fixture.files.write("leaf.pem", leaf);
+    let key = fixture.files.write("leaf.key", key.serialize_pem());
+    let run = |trust: &str| {
+        let trust = fixture.files.write("trust.pem", trust);
+        let mut cmd = support::command();
+        cmd.arg("sc-check")
+            .arg("--sc-cert")
+            .arg(&cert)
+            .arg("--sc-key")
+            .arg(&key)
+            .arg("--sc-ca")
+            .arg(trust)
+            .args(["--at-unix", &NOW.to_string(), "--json"]);
+        cmd
+    };
+    let doc = document(&Process::spawn(&mut run(&root_pem)).output().await, 0);
+    assert_eq!(doc["inspection"]["direct_issuer"], "not_direct");
+    assert!(doc["inspection"]["direct_issuer_index"].is_null());
+    assert!(has(
+        &doc,
+        "identity",
+        Some(0),
+        "issuer.not_direct",
+        "warning"
+    ));
+    assert_eq!(doc["summary"]["errors"], 0);
+    let both = format!("{root_pem}{issuing_pem}");
+    let doc = document(&Process::spawn(&mut run(&both)).output().await, 0);
+    assert_eq!(doc["inspection"]["direct_issuer"], "direct");
+    assert_eq!(doc["inspection"]["direct_issuer_index"], 1);
+    assert!(!has(
+        &doc,
+        "identity",
+        Some(0),
+        "issuer.not_direct",
+        "warning"
+    ));
 }
 
 #[cfg(unix)]

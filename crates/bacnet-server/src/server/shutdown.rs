@@ -16,6 +16,10 @@ mod transport_shutdown_tests;
 #[path = "owned_shutdown_tests.rs"]
 mod owned_shutdown_tests;
 
+#[cfg(test)]
+#[path = "log_persistence_tests.rs"]
+mod log_persistence_tests;
+
 async fn stop_producer(slot: &mut Option<JoinHandle<()>>) {
     // Borrow across the join so cancellation leaves the handle recoverable.
     // Clear synchronously after completion: a later stop must not poll it twice.
@@ -42,7 +46,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// staged for one of them is dropped, and stop waits until every save
     /// those objects have queued has run, so storage holds the state each
     /// object serves (#1363); see
-    /// [`DurableWrites::settle_forgotten_writes`]. That wait has no limit:
+    /// [`DurableWrites::settle_forgotten_writes`]. A Trend Log, Trend Log
+    /// Multiple or Event Log kept in storage commits once more there, if it
+    /// changed since its last commit, and stop waits for that commit too
+    /// (#1541). That wait has no limit:
     /// storage that stalls holds stop up, and a warning naming the objects
     /// still saving is logged after 5 s and every 30 s after that. Stop does
     /// not wait while the application holds the database: the objects then
@@ -153,24 +160,24 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         if let Some(error) = &self.transport_cleanup_error {
             return Err(Error::Encoding(error.clone()));
         }
-        if self.transport_cleanup.is_none() {
-            if let Some(network) = self.network.take() {
-                let mut network = match Arc::try_unwrap(network) {
-                    Ok(network) => network,
-                    Err(network) => {
-                        self.network = Some(network);
-                        return Err(Error::Encoding(
-                            "server network still has an internal owner".into(),
-                        ));
-                    }
-                };
-                // Own the complete future, including cancellation-unsafe custom
-                // transport cleanup. Drop deliberately leaves this task running.
-                self.transport_cleanup = Some(tokio::spawn(async move {
-                    let result = network.stop().await;
-                    (network, result)
-                }));
-            }
+        if self.transport_cleanup.is_none()
+            && let Some(network) = self.network.take()
+        {
+            let mut network = match Arc::try_unwrap(network) {
+                Ok(network) => network,
+                Err(network) => {
+                    self.network = Some(network);
+                    return Err(Error::Encoding(
+                        "server network still has an internal owner".into(),
+                    ));
+                }
+            };
+            // Own the complete future, including cancellation-unsafe custom
+            // transport cleanup. Drop deliberately leaves this task running.
+            self.transport_cleanup = Some(tokio::spawn(async move {
+                let result = network.stop().await;
+                (network, result)
+            }));
         }
         let Some(cleanup) = self.transport_cleanup.as_mut() else {
             return Ok(());

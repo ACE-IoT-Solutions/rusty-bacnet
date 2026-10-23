@@ -123,14 +123,16 @@ async fn connect_request_invalid_repeat_preserves_registration_activity_and_prob
         assert!(!client.closed.load(Ordering::Acquire));
     }
     live.ack(0x2233).await;
-    assert!(clients
-        .lock()
-        .await
-        .get(&live.vmac)
-        .unwrap()
-        .heartbeat
-        .pending
-        .is_none());
+    assert!(
+        clients
+            .lock()
+            .await
+            .get(&live.vmac)
+            .unwrap()
+            .heartbeat
+            .pending
+            .is_none()
+    );
     send_raw(&mut live, &[0x0A, 0, 0x66, 0x77]).await;
     assert_eq!(recv_raw(&mut live).await, [0x0B, 0, 0x66, 0x77]);
 }

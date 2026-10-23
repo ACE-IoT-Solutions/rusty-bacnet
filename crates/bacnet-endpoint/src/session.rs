@@ -51,11 +51,11 @@
 //! lifecycle mutation is owner-exclusive (`&mut`) or via atomics/async
 //! mutexes; role handles synchronize through the shared session token.
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use bacnet_client::client::ClientConfig;
 use bacnet_client::EndpointRequester;
+use bacnet_client::client::ClientConfig;
 use bacnet_encoding::apdu::Apdu;
 use bacnet_endpoint_core::coordinator::{
     AdmissionOutcome, CoordinatorError, OutboundTransactionCoordinator,
@@ -71,7 +71,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 #[path = "source_profile.rs"]
@@ -87,8 +87,8 @@ mod device_writes;
 mod registered_port;
 
 use crate::roles::{
-    admit_once, decode_terminal, inbound_canonical_peer, is_requester_lease, ClientRoleHandle,
-    ServerRoleHandle, SessionToken,
+    ClientRoleHandle, ServerRoleHandle, SessionToken, admit_once, decode_terminal,
+    inbound_canonical_peer, is_requester_lease,
 };
 use bacnet_server::server::{
     __endpoint_EndpointResponder as EndpointResponder,
@@ -292,12 +292,14 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     bip_local_address: Option<std::net::SocketAddrV4>,
     registered_network_port: Option<ObjectIdentifier>,
     registered_port_lease: std::sync::Weak<()>,
-    device_write_authorizer: Option<bacnet_server::mutation::MutationAuthorizer>,
+    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
     pub(crate) reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     pub(crate) reinit_password: Option<String>,
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
     /// The B/IP transport's own exchanges, when the B/IP builder built it.
     pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
+    /// The MS/TP transport's counters, when the MS/TP builder built it.
+    pub(crate) mstp_diagnostics: Option<bacnet_transport::mstp::MstpDiagnostics>,
 }
 
 /// Terminal state of the session dispatch task.
@@ -407,6 +409,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             reinit_password: None,
             egress: None,
             bip_status: None,
+            mstp_diagnostics: None,
         })
     }
 
@@ -631,12 +634,11 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             }
         }
         if !self.ingress_stopped {
-            if let Some(ingress) = self.ingress.as_mut() {
-                if let Err(error) = ingress.stop().await {
-                    if self.stop_exit.as_ref().is_some_and(Result::is_ok) {
-                        self.stop_exit = Some(Err(error));
-                    }
-                }
+            if let Some(ingress) = self.ingress.as_mut()
+                && let Err(error) = ingress.stop().await
+                && self.stop_exit.as_ref().is_some_and(Result::is_ok)
+            {
+                self.stop_exit = Some(Err(error));
             }
             self.ingress_stopped = true;
         }
@@ -660,10 +662,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.responder.take();
         self.client_handle = None;
         self.server_handle = None;
-        if self.durable_settlement.is_none() {
-            if let Some(db) = &self.database {
-                self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
-            }
+        if self.durable_settlement.is_none()
+            && let Some(db) = &self.database
+        {
+            self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
         }
         if let Some(task) = self.durable_settlement.as_mut() {
             // Keep the one settlement owner across canceled stop waiters.
@@ -772,6 +774,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         Some(status.snapshot().foreign_registration)
     }
 
+    /// The MS/TP transport's counters (#958): a handle to the same
+    /// [`MstpDiagnostics`](bacnet_transport::mstp::MstpDiagnostics) the
+    /// transport updates, readable in any state, after stop included. It is
+    /// there for a session [`MstpEndpointBuilder`](crate::mstp::MstpEndpointBuilder)
+    /// built, and `None` for any other: take
+    /// [`MstpTransport::diagnostics`](bacnet_transport::mstp::MstpTransport::diagnostics)
+    /// before handing a transport to [`Self::new`].
+    pub fn mstp_diagnostics(&self) -> Option<bacnet_transport::mstp::MstpDiagnostics> {
+        self.mstp_diagnostics.clone()
+    }
+
     /// Returns the composed session role (narrow admin).
     pub fn session_role(&self) -> SessionRole {
         self.role
@@ -821,7 +834,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 apdu,
                 bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::LocalBroadcast,
                 false,
-                bacnet_types::enums::NetworkPriority::NORMAL,
+                bacnet_npdu::NetworkPriority::Normal,
                 Vec::new(),
             )
             .await
@@ -891,7 +904,7 @@ struct DispatchParts {
 
 #[path = "session_dispatch.rs"]
 mod dispatch;
-use dispatch::{next_event, DispatchEvent};
+use dispatch::{DispatchEvent, next_event};
 
 async fn dispatch_loop(mut parts: DispatchParts, mut cancel: oneshot::Receiver<()>) -> SessionExit {
     // One consumer retains all receivers and joins; cancellation stays first.
@@ -1077,6 +1090,12 @@ mod registered_port_wire_tests;
 #[cfg(test)]
 #[path = "network_number_tests.rs"]
 mod network_number_tests;
+
+/// Reruns a test whose closing rebind loses the freed port to another
+/// process (#1419).
+#[cfg(test)]
+#[path = "../tests/support/port_retry.rs"]
+mod port_retry;
 
 #[cfg(test)]
 #[path = "local_network_tests.rs"]

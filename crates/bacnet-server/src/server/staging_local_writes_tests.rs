@@ -7,10 +7,10 @@ use bacnet_objects::lighting::BinaryLightingOutputObject;
 use bacnet_objects::staging::{StagingConfig, StagingObject};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
-use bacnet_types::enums::Reliability;
+use bacnet_types::enums::{EngineeringUnits, Reliability};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 fn reference(object_type: ObjectType, instance: u32) -> BACnetDeviceObjectReference {
     BACnetDeviceObjectReference {
@@ -27,7 +27,7 @@ fn config(
     StagingConfig {
         present_value: 5.0,
         min_present_value: 0.0,
-        units: 62,
+        units: EngineeringUnits::DEGREES_CELSIUS,
         priority_for_writing: 8,
         stages: vec![
             BACnetStageLimitValue {
@@ -355,8 +355,8 @@ impl BACnetObject for CountingBinaryOutput {
             )),
             PropertyIdentifier::PRESENT_VALUE => Ok(PropertyValue::Enumerated(0)),
             _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             }),
         }
     }
@@ -376,8 +376,8 @@ impl BACnetObject for CountingBinaryOutput {
             return Ok(());
         }
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
 

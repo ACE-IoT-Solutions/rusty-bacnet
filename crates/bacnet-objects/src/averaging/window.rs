@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use bacnet_types::error::Error;
 
-use super::schedule::{SampleSchedule, MIN_SAMPLE_PERIOD};
+use super::schedule::{MIN_SAMPLE_PERIOD, SampleSchedule};
 use crate::common;
 use crate::traits::MonotonicClock;
 

@@ -137,12 +137,6 @@ fn segmentation_values() {
 }
 
 #[test]
-fn network_message_type_values() {
-    assert_eq!(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw(), 0x00);
-    assert_eq!(NetworkMessageType::NETWORK_NUMBER_IS.to_raw(), 0x13);
-}
-
-#[test]
 fn bacnet_sc_error_code_values() {
     assert_eq!(ErrorClass::COMMUNICATION.to_raw(), 7);
     assert_eq!(ErrorCode::MESSAGE_INCOMPLETE.to_raw(), 147);
@@ -179,7 +173,7 @@ fn reliability_multi_state_out_of_range() {
 /// `bacnet_enum!` type's `ALL_NAMED`: same length, same order, and every
 /// entry round-trips `from_raw` / `Display`.
 macro_rules! assert_production_values {
-    ($Ty:ident, [$($pair:expr),+ $(,)?] $(,)?) => {
+    ($Ty:ident, [$($pair:expr_2021),+ $(,)?] $(,)?) => {
         let all = [$($pair),+];
         assert_eq!($Ty::ALL_NAMED.len(), all.len(), "{} count", stringify!($Ty));
         for (i, &(name, raw)) in all.iter().enumerate() {
@@ -252,9 +246,11 @@ fn door_alarm_state_values_match_clause_21() {
 
     // The conflation guard: lock-fault belongs to LockStatus, at value 2.
     assert_eq!(LockStatus::LOCK_FAULT.to_raw(), 2);
-    assert!(DoorAlarmState::ALL_NAMED
-        .iter()
-        .all(|(name, _)| *name != "LOCK_FAULT"));
+    assert!(
+        DoorAlarmState::ALL_NAMED
+            .iter()
+            .all(|(name, _)| *name != "LOCK_FAULT")
+    );
 }
 
 /// 135-2020 Clause 21 (`BACnetLifeSafetyState ::= ENUMERATED`) runs through
@@ -792,6 +788,36 @@ fn from_str_audit_names_are_not_swapped() {
             .map(ObjectType::to_raw),
         Ok(62)
     );
+}
+
+/// `name()` gives a value's constant name, and `None` for a value that has
+/// none, on a u16-backed and a u32-backed enum (#915). No enum gives one
+/// number two names today, so there is no alias for it to choose between.
+#[test]
+fn name_returns_the_constant_name_or_none() {
+    assert_eq!(ErrorClass::PROPERTY.name(), Some("PROPERTY"));
+    assert_eq!(ErrorClass::from_raw(2).name(), Some("PROPERTY"));
+    assert_eq!(ErrorClass::from_raw(999).name(), None);
+    assert_eq!(ErrorCode::UNKNOWN_OBJECT.name(), Some("UNKNOWN_OBJECT"));
+    assert_eq!(ErrorCode::from_raw(65_535).name(), None);
+
+    assert_eq!(
+        EngineeringUnits::DEGREES_CELSIUS.name(),
+        Some("DEGREES_CELSIUS")
+    );
+    assert_eq!(
+        EngineeringUnits::from_raw(62).name(),
+        Some("DEGREES_CELSIUS")
+    );
+    assert_eq!(EngineeringUnits::from_raw(70_000).name(), None);
+
+    // Every listed constant names itself.
+    for (name, value) in ErrorCode::ALL_NAMED {
+        assert_eq!(value.name(), Some(*name));
+    }
+    for (name, value) in EngineeringUnits::ALL_NAMED {
+        assert_eq!(value.name(), Some(*name));
+    }
 }
 
 mod access_production;

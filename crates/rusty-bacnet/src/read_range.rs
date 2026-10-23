@@ -41,7 +41,7 @@ pub(crate) fn request(
         Some(_) => {
             return Err(PyValueError::new_err(
                 "range_type must be 'position', 'sequence', 'time', or None",
-            ))
+            ));
         }
         None => None,
     };

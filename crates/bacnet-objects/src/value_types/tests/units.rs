@@ -10,8 +10,8 @@ use bacnet_types::enums::{ErrorClass, ErrorCode};
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
         Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -25,7 +25,7 @@ fn units(object: &dyn BACnetObject) -> PropertyValue {
 
 /// Run the Units checks on one freshly built numeric value object.
 macro_rules! assert_units_row {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         let kind = object.object_identifier().object_type();
         assert_eq!(
@@ -34,9 +34,11 @@ macro_rules! assert_units_row {
             "{kind:?}"
         );
         assert!(object.property_list().contains(&PropertyIdentifier::UNITS));
-        assert!(object
-            .required_properties()
-            .contains(&PropertyIdentifier::UNITS));
+        assert!(
+            object
+                .required_properties()
+                .contains(&PropertyIdentifier::UNITS)
+        );
         assert!(!object.is_array_property(PropertyIdentifier::UNITS));
 
         object.set_units(EngineeringUnits::DEGREES_CELSIUS).unwrap();

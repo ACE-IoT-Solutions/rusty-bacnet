@@ -5,12 +5,13 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{MessageType, RejectReason};
+use bacnet_router_core::npdu::NetworkPriority;
 use bacnet_router_core::npdu::Npdu;
+use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_router_core::router::{Discard, Group, GroupClassifier, Kind, Options, PortConfig};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, Outcome, Recorder, CONFIRMED,
-    NODE_A, R7, UNCONFIRMED,
+    CONFIRMED, NODE_A, Outcome, R7, Recorder, UNCONFIRMED, addr, apdu_to, at, bytes, deliver,
+    learn_9_via_r7, reject_data,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -52,8 +53,8 @@ fn router() -> TestRouter {
     let port = |network, mac, matches| {
         PortConfig::new(
             network,
-            bacnet_router_core::Mac::from_slice(mac).unwrap(),
-            bacnet_router_core::router::Limits::both(1497),
+            bacnet_router_core::npdu::Mac::from_slice(mac).unwrap(),
+            bacnet_router_core::npdu::NpduLimits::both(1497),
             CustomGroups {
                 matches,
                 asked: Some(Rc::default()),
@@ -77,7 +78,7 @@ fn host() -> Recorder {
     Recorder::default()
 }
 
-fn dropped(router: &TestRouter, outcome: &Outcome, sent: &[fixture::Sent], drops: u64) {
+fn dropped(router: &TestRouter, outcome: &Outcome, sent: &[fixture::Sent], drops: u32) {
     assert_eq!(*outcome, Outcome::Discarded(Discard::GroupDadr));
     assert!(sent.is_empty(), "no send and no reject");
     assert_eq!(router.counters().group_dadr_drops, drops);
@@ -140,7 +141,7 @@ fn on_the_arrival_network_it_is_also_delivered_locally() {
             group: true,
             global: false,
             expecting_reply: false,
-            priority: 0,
+            priority: NetworkPriority::Normal,
         }
     );
     assert_eq!(sent.len(), 1);
@@ -221,13 +222,12 @@ fn only_a_directly_attached_ports_groups_count() {
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (1, Some(R7)));
     assert_eq!(sent[0].parsed().destination, Some(addr(9, PORT_1_GROUP)));
-    assert!(router.ports().iter().all(|port| port
-        .groups
-        .asked
-        .as_ref()
-        .unwrap()
-        .borrow()
-        .is_empty()));
+    assert!(
+        router
+            .ports()
+            .iter()
+            .all(|port| port.groups.asked.as_ref().unwrap().borrow().is_empty())
+    );
 
     // Port 0's group address, sent to port 1: an ordinary unicast there.
     let (outcome, sent) = deliver(
@@ -270,10 +270,10 @@ fn network_messages_for_a_group_are_dropped() {
     let mut host = host();
     let mut drops = 0;
     for group in [OWN_GROUP, OTHER_GROUP] {
-        let mut proprietary = Npdu::message(MessageType::from_raw(0x80), UNCONFIRMED);
+        let mut proprietary = Npdu::message(NetworkMessageType::from_raw(0x80), UNCONFIRMED);
         proprietary.vendor_id = Some(260);
         proprietary.destination = Some(addr(1, group));
-        let mut i_am = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+        let mut i_am = Npdu::message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
         i_am.destination = Some(addr(1, group));
         for frame in [bytes(&proprietary), bytes(&i_am)] {
             let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &frame, at(1));
@@ -292,8 +292,8 @@ fn a_reject_passing_on_to_a_group_is_dropped() {
     let mut host = host();
     learn_9_via_r7(&mut router, at(0));
     for (group, drops) in [(OWN_GROUP, 1), (OTHER_GROUP, 2)] {
-        let data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 9);
-        let mut reject = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
+        let data = reject_data(RejectMessageReason::NOT_DIRECTLY_CONNECTED, 9);
+        let mut reject = Npdu::message(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &data);
         reject.destination = Some(addr(1, group));
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&reject), at(1));
         dropped(&router, &outcome, &sent, drops);
@@ -310,8 +310,8 @@ fn reusing_storage_releases_custom_rules_of_removed_ports() {
     let port = |network, groups| {
         PortConfig::new(
             network,
-            bacnet_router_core::Mac::from_array([1]),
-            bacnet_router_core::router::Limits::both(1497),
+            bacnet_router_core::npdu::Mac::from_array([1]),
+            bacnet_router_core::npdu::NpduLimits::both(1497),
             groups,
         )
     };
@@ -351,22 +351,26 @@ fn reusing_storage_releases_custom_rules_of_removed_ports() {
 fn assert_unconfigured_port(npdu: &[u8]) {
     for port in [2, 255] {
         let mut router = router();
-        assert!(router
-            .table_mut()
-            .add_direct(9, bacnet_router_core::PortId(port)));
+        assert!(
+            router
+                .table_mut()
+                .add_direct(9, bacnet_router_core::PortId(port))
+        );
         let (outcome, sent) = deliver(&mut router, &mut host(), 0, NODE_A, npdu, at(1));
         assert_eq!(outcome, Outcome::Discarded(Discard::UnknownPort));
         assert!(sent.is_empty());
         assert_eq!(router.counters().unknown_port, 1);
         assert_eq!(router.counters().group_dadr_drops, 0);
         assert_eq!(router.counters().rejects, 0);
-        assert!(router.ports().iter().all(|port| port
-            .groups
-            .asked
-            .as_ref()
-            .unwrap()
-            .borrow()
-            .is_empty()));
+        assert!(
+            router.ports().iter().all(|port| port
+                .groups
+                .asked
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .is_empty())
+        );
     }
 }
 
@@ -377,15 +381,15 @@ fn unconfigured_direct_ports_for_apdus_are_counted_without_classification() {
 
 #[test]
 fn unconfigured_direct_ports_for_network_messages_are_counted_without_classification() {
-    let mut npdu = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+    let mut npdu = Npdu::message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
     npdu.destination = Some(addr(9, OWN_GROUP));
     assert_unconfigured_port(&bytes(&npdu));
 }
 
 #[test]
 fn unconfigured_direct_ports_for_forwarded_rejects_are_counted_without_classification() {
-    let data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 77);
-    let mut npdu = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
+    let data = reject_data(RejectMessageReason::NOT_DIRECTLY_CONNECTED, 77);
+    let mut npdu = Npdu::message(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &data);
     npdu.destination = Some(addr(9, OWN_GROUP));
     assert_unconfigured_port(&bytes(&npdu));
 }

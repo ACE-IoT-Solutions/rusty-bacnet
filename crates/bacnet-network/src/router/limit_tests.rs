@@ -3,15 +3,14 @@
 //! long, on ports the test drives. The BACnet/SC failovers are in
 //! `tests/sc_limits.rs`.
 
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
-use bacnet_router_core::router::Limits;
-use bacnet_transport::port::NpduLimits;
-use bacnet_types::enums::NetworkMessageType;
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
+use bacnet_npdu::NetworkMessageType;
+use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use std::sync::atomic::Ordering;
 use tokio::sync::watch;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::driven_port::{Driven, Handle, Sent};
 use super::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
@@ -89,7 +88,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 fn is_reason_4(sent: &Sent) -> bool {
     let npdu = decode_npdu(Bytes::from(sent.npdu.clone())).unwrap();
     sent.to.as_deref() == Some(NODE)
-        && npdu.message_type == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+        && npdu.message_type == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
         && npdu.payload.as_ref() == [4, 0x07, 0xD0]
 }
 
@@ -105,14 +104,17 @@ async fn a_published_limit_routes_every_later_frame() {
     let limit = |router: &BACnetRouter| router.shared.engine.lock().ports()[1].max_npdu;
 
     changes_tx.send_replace(NpduLimits::both(480));
-    until("the router has 480", || limit(&router) == Limits::both(480)).await;
+    until("the router has 480", || {
+        limit(&router) == NpduLimits::both(480)
+    })
+    .await;
     node.receive(to_peer(594), NODE).await;
     next_send(&mut node, is_reason_4).await;
     assert_eq!(router.counters().egress_too_long, 1);
 
     changes_tx.send_replace(NpduLimits::STANDARD);
     until("the router has 1497", || {
-        limit(&router) == Limits::both(1497)
+        limit(&router) == NpduLimits::both(1497)
     })
     .await;
     node.receive(to_peer(594), NODE).await;
@@ -123,10 +125,10 @@ async fn a_published_limit_routes_every_later_frame() {
 
 /// A send already past the engine when the port's limit falls, which the
 /// transport then refuses as too long, counts as `egress_too_long` and
-/// `refused`, with no reject; one refused for another reason doesn't.
+/// `refused`, and returns reason 4; an unrelated failure does not.
 #[tokio::test(start_paused = true)]
-async fn a_send_the_port_refuses_as_too_long_is_counted() {
-    let (first, node) = Driven::new(1, 1497);
+async fn a_send_the_port_refuses_as_too_long_returns_reason_4() {
+    let (first, mut node) = Driven::new(1, 1497);
     let (second, mut peer) = Driven::new(2, 1497);
     let router = start([first, second]).await;
     assert!(node.started.load(Ordering::SeqCst) && peer.started.load(Ordering::SeqCst));
@@ -147,5 +149,7 @@ async fn a_send_the_port_refuses_as_too_long_is_counted() {
     })
     .await;
     let counters = router.counters();
-    assert_eq!((counters.refused, counters.rejects), (1, 0));
+    assert_eq!((counters.refused, counters.rejects), (1, 1));
+    let rejected = next_send(&mut node, is_reason_4).await;
+    assert!(rejected.taken);
 }

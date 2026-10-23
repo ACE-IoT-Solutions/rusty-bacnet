@@ -1,10 +1,10 @@
 use std::future::Future;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Waker};
 
 use tokio::sync::Semaphore;
-use tokio::time::{advance, Duration, Instant};
+use tokio::time::{Duration, Instant, advance};
 
 use super::*;
 
@@ -180,10 +180,12 @@ async fn gpio_failed_drain_retains_de_and_read_recovers_only_after_completion() 
     );
     assert!(serial.direction.tx.load(Ordering::SeqCst));
     let mut buf = [0];
-    assert!(direction
-        .read(&serial, &*serial.direction, &mut buf)
-        .await
-        .is_err());
+    assert!(
+        direction
+            .read(&serial, &*serial.direction, &mut buf)
+            .await
+            .is_err()
+    );
     serial.fail_drain.store(false, Ordering::SeqCst);
     let mut read = pin!(direction.read(&serial, &*serial.direction, &mut buf));
     assert!(poll_once(read.as_mut()).is_pending());
@@ -313,7 +315,7 @@ impl<S: SerialPort> SerialPort for WithoutDrain<S> {
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_serial_with_echo_drops_its_own_frames() {
-    use crate::mstp::codec::{decode_frame, FrameType};
+    use crate::mstp::codec::{FrameType, decode_frame};
     use crate::mstp::{MstpConfig, MstpTransport};
     use crate::port::TransportPort;
 
@@ -385,7 +387,7 @@ async fn unix_serial_drain_uses_the_native_backend() {
 #[cfg(unix)]
 #[tokio::test]
 async fn native_serial_execution_modes_share_host_timing_harness() {
-    use crate::mstp::{execution_tests::execution_timing_harness, MstpExecutionMode};
+    use crate::mstp::{MstpExecutionMode, execution_tests::execution_timing_harness};
 
     // Native pseudo-terminals exercise the backend used for UART and USB ports;
     // late-tail delivery models host chunking, not physical RS-485 timing.
@@ -393,7 +395,10 @@ async fn native_serial_execution_modes_share_host_timing_harness() {
         for chunked in [false, true] {
             for software_direction in [false, true] {
                 let mut baseline = None;
-                for mode in [MstpExecutionMode::Tokio, MstpExecutionMode::DedicatedThread] {
+                for mode in [
+                    MstpExecutionMode::Tokio,
+                    MstpExecutionMode::dedicated_thread(),
+                ] {
                     let (stream, peer) = SerialStream::pair().unwrap();
                     let serial = TokioSerialPort {
                         inner: Arc::new(Mutex::new(stream)),
@@ -446,10 +451,13 @@ impl GatedSerial {
             self.entered.send(std::thread::current().id()).unwrap();
             // A finite guard makes accidental execution on the app thread fail
             // the test instead of deadlocking the test runner indefinitely.
+            // It is generous (#1912): on the dedicated thread it also spans
+            // the test's own steps up to the release, which a loaded runner
+            // can stretch.
             self.release
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(Duration::from_secs(10))
                 .unwrap();
         }
     }
@@ -515,9 +523,12 @@ async fn dedicated_blocking_io_keeps_app_responsive_and_stop_waits_for_release()
             .unwrap();
         peer.write(&incoming).await.unwrap();
         let mut transport = MstpTransport::new(serial, MstpConfig::default())
-            .with_execution_mode(MstpExecutionMode::DedicatedThread);
+            .with_execution_mode(MstpExecutionMode::dedicated_thread());
         let _npdus = transport.start().await.unwrap();
-        let thread = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        // These bounds only catch a hang, so they are generous (#1912): a
+        // loaded runner can take over a second to spawn and schedule the I/O
+        // thread. nextest's slow-timeout stays the backstop.
+        let thread = tokio::time::timeout(Duration::from_secs(10), events.recv())
             .await
             .unwrap()
             .unwrap();
@@ -526,13 +537,16 @@ async fn dedicated_blocking_io_keeps_app_responsive_and_stop_waits_for_release()
         {
             let stop = transport.stop();
             tokio::pin!(stop);
+            // The short window is the claim, not a hang guard: stop must
+            // still be pending while the I/O is gated. Load can only make a
+            // broken stop slip past it, never fail a correct one.
             tokio::select! {
                 _ = &mut stop => panic!("stop completed while backend I/O was blocked"),
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {}
             }
             // The app's current-thread runtime made progress while MAC I/O blocked.
             release.send(()).unwrap();
-            tokio::time::timeout(Duration::from_secs(2), stop)
+            tokio::time::timeout(Duration::from_secs(10), stop)
                 .await
                 .unwrap()
                 .unwrap();

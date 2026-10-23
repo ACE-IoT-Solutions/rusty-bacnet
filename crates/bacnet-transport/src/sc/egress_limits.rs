@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use tokio::sync::watch;
 
-use super::{ScConnection, ScTransport, WebSocketPort, DEFAULT_MAX_APDU_LENGTH};
-use crate::port::NpduLimits;
+use super::{DEFAULT_MAX_APDU_LENGTH, ScConnection, ScTransport, WebSocketPort};
 use crate::sc_limits::LOCAL_NPDU_HEADER_LEN;
+use bacnet_npdu::NpduLimits;
 
 /// The BVLC octets around an NPDU sent to the hub with no options: the
 /// header and the destination VMAC.

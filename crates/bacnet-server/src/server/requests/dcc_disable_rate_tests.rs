@@ -1,11 +1,11 @@
 use super::*;
 use crate::server::{
-    request_tasks::RequestTasks, DccDisableRateLimit, DccSource, DccSourceRestriction,
+    DccDisableRateLimit, DccSource, DccSourceRestriction, request_tasks::RequestTasks,
 };
 use bacnet_services::device_mgmt::DeviceCommunicationControlRequest;
 use bacnet_types::enums::EnableDisable;
 use std::future::Future;
-use tokio::time::{advance, Duration};
+use tokio::time::{Duration, advance};
 
 struct Fixture {
     config: ServerConfig,

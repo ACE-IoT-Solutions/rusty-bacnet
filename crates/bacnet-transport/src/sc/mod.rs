@@ -13,22 +13,25 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use bytes::Bytes;
 use bytes::BytesMut;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportPort};
+use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use crate::sc_frame::{BROADCAST_VMAC, ScFunction, Vmac, decode_sc_message, encode_sc_message};
 #[cfg(test)]
-use crate::sc_frame::{decode_sc_bvlc_result, ScMessage};
-use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, Vmac, BROADCAST_VMAC};
+use crate::sc_frame::{ScMessage, decode_sc_bvlc_result};
+use bacnet_npdu::NpduLimits;
 use bacnet_types::error::Error;
 
 mod address_resolution;
 mod advertisement;
+mod config;
 mod connect_result;
 mod connection;
 mod connector;
 mod control_admission;
+mod control_rate;
 mod data_attributes;
 pub(crate) mod diagnostic_throttle;
 pub(crate) mod direct_discovery;
@@ -49,6 +52,9 @@ mod peer_info;
 pub use peer_info::ScHubPeerInfo;
 mod lifecycle;
 mod loopback;
+mod observability;
+pub use observability::{SC_EVENT_CAPACITY, ScActiveHub, ScDisconnectCause, ScEvent, ScLinkStatus};
+use observability::{ScDisconnectCause as Cause, ScObserver};
 pub(crate) mod npdu_admission;
 mod proprietary;
 mod random48;
@@ -57,11 +63,20 @@ mod recovery;
 mod rejection;
 mod send;
 mod source_admission;
+mod tap;
+use tap::{TappedSocket, tapped_connector};
 mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
-use connector::{dial_failover_ws, WebSocketConnector};
-pub use errors::{ScConnectError, ScWebSocketErrorKind};
-use failover::{ActiveHub, PrimaryRestoreContext};
+pub use connector::dial_within;
+#[cfg(feature = "sc-tls")]
+pub(crate) use connector::enter_dial_stage;
+use connector::{WebSocketConnector, dial_failover_ws};
+pub use control_rate::ScControlRateLimit;
+pub use errors::{
+    ScCertificateRejection, ScConnectError, ScDialStage, ScTlsAlert, ScTlsFailure,
+    ScWebSocketErrorKind,
+};
+use failover::PrimaryRestoreContext;
 use handshake::perform_handshake;
 pub use loopback::LoopbackWebSocket;
 pub use npdu_admission::{ScNpduAdmissionPolicy, ScNpduDropCounts};
@@ -96,7 +111,7 @@ pub use websocket::WebSocketPort;
 /// publication) may retain the socket; retirement is not immediate OS closure.
 pub struct ScTransport<W: WebSocketPort> {
     ws: Option<W>,
-    ws_shared: Option<Arc<Mutex<Arc<W>>>>, // current active WebSocket for send methods
+    ws_shared: Option<Arc<Mutex<Arc<TappedSocket<W>>>>>, // current active WebSocket for send methods
     local_vmac: Vmac,
     /// Device UUID (16 bytes, RFC 4122).
     device_uuid: [u8; 16],
@@ -114,14 +129,18 @@ pub struct ScTransport<W: WebSocketPort> {
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
     failover_ws: Option<W>,
+    initial_hub: ScActiveHub,
     primary_connector: Option<WebSocketConnector<W>>,
     failover_connector: Option<WebSocketConnector<W>>,
     reconnect_config: Option<ScReconnectConfig>,
     npdu_admission_policy: ScNpduAdmissionPolicy,
     npdu_admission: Option<Arc<npdu_admission::ScNpduAdmission>>,
     restore_disconnect_task: Arc<StdMutex<Option<JoinHandle<()>>>>,
+    observer: Arc<ScObserver>,
     direct_membership: Arc<direct_membership::DirectMembership>,
     pub(super) direct: Option<Arc<direct_discovery::DirectShared<W>>>,
+    /// See [`Self::frame_tap`].
+    frame_tap: crate::tap::FrameTap,
     #[cfg(test)]
     allow_test_heartbeat_timing: bool,
 }
@@ -153,125 +172,21 @@ impl<W: WebSocketPort> ScTransport<W> {
             heartbeat_interval_ms: heartbeat::DEFAULT_HEARTBEAT_INTERVAL_MS,
             heartbeat_timeout_ms: heartbeat::DEFAULT_HEARTBEAT_TIMEOUT_MS,
             failover_ws: None,
+            initial_hub: ScActiveHub::Primary,
             primary_connector: None,
             failover_connector: None,
             reconnect_config: None,
             npdu_admission_policy: ScNpduAdmissionPolicy::default(),
             npdu_admission: None,
             restore_disconnect_task: Arc::new(StdMutex::new(None)),
+            observer: Arc::new(ScObserver::new()),
             direct_membership: Arc::new(direct_membership::DirectMembership::default()),
             direct: None,
+            frame_tap: crate::tap::FrameTap::new(),
             #[cfg(test)]
             allow_test_heartbeat_timing: false,
         }
     }
-
-    /// Configure the device UUID before start (builder-style).
-    ///
-    /// The caller must generate it before deployment and persist the same bytes
-    /// across restarts for the device's lifetime (Annex AB.1.5.3). No UUID is
-    /// generated here. Startup rejects only the all-zero UUID, not RFC version
-    /// or variant bits, and rejects only all-zero/broadcast local VMACs.
-    ///
-    /// After reconnect and heartbeat validation, [`TransportPort::start`] checks
-    /// identity before transport-owned I/O or startup state changes. These errors
-    /// retain both sockets; a UUID error can be repaired with this setter and
-    /// start retried on the same owned WebSocket. This cannot undo caller-owned
-    /// WebSocket creation or external dials (including work creating closures),
-    /// and is not generic endpoint rollback or a promise that every field has a
-    /// repair setter. The transport gives applications no mutable access to
-    /// the live connection afterwards; they read its state through
-    /// [`connection_state_changes`](Self::connection_state_changes).
-    pub fn with_device_uuid(mut self, uuid: [u8; 16]) -> Self {
-        self.device_uuid = uuid;
-        self
-    }
-
-    /// Set the connect handshake timeout in milliseconds (builder-style).
-    pub fn with_connect_timeout_ms(mut self, ms: u64) -> Self {
-        self.connect_timeout_ms = ms;
-        self
-    }
-
-    /// Set the heartbeat send interval in milliseconds (builder-style).
-    ///
-    /// Production transports validate this at [`TransportPort::start`] against
-    /// the Annex AB.6.3 configurable heartbeat timeout range of 3..300 seconds.
-    pub fn with_heartbeat_interval_ms(mut self, ms: u64) -> Self {
-        self.heartbeat_interval_ms = ms;
-        self
-    }
-
-    /// Set the heartbeat ack timeout in milliseconds (builder-style).
-    ///
-    /// This disconnect timeout must be greater than the heartbeat interval so
-    /// the peer has a chance to send a Heartbeat-ACK.
-    pub fn with_heartbeat_timeout_ms(mut self, ms: u64) -> Self {
-        self.heartbeat_timeout_ms = ms;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_test_heartbeat_timing_ms(mut self, interval_ms: u64, timeout_ms: u64) -> Self {
-        self.heartbeat_interval_ms = interval_ms;
-        self.heartbeat_timeout_ms = timeout_ms;
-        self.allow_test_heartbeat_timing = true;
-        self
-    }
-
-    /// Set a failover WebSocket to try if the primary connection fails (builder-style).
-    pub fn with_failover(mut self, ws: W) -> Self {
-        self.failover_ws = Some(ws);
-        self
-    }
-
-    /// Enable reconnection with the given configuration.
-    ///
-    /// When the BACnet/SC connection drops, the transport will attempt to reconnect
-    /// using exponential backoff as configured. Configure [`Self::with_connector`]
-    /// for true transport-level recovery from a dead WebSocket/TCP/TLS connection;
-    /// otherwise reconnect attempts can only reuse the current WebSocket object,
-    /// except after a rejection NAK exhausts its heartbeat budget. That socket
-    /// cannot be reused: recovery needs a fresh connector or unused failover
-    /// socket under the existing retry policy, or remains disconnected.
-    /// The local VMAC is preserved across reconnections.
-    ///
-    /// [`TransportPort::start`] validates this configuration before any transport
-    /// startup state changes or I/O, retaining the socket on validation failure.
-    /// It cannot undo a caller-owned dial: call [`ScReconnectConfig::validate`]
-    /// before dialing if needed. Generic endpoint startup may change its own
-    /// state before calling the transport; this is not transactional rollback.
-    pub fn with_reconnect(mut self, config: ScReconnectConfig) -> Self {
-        self.reconnect_config = Some(config);
-        self
-    }
-
-    /// Subscribe to BACnet/SC connection state changes.
-    ///
-    /// The returned watch receiver yields the latest known state immediately and
-    /// change notifications for subsequent state updates observed by the
-    /// transport. Rapid updates can coalesce under Tokio watch semantics, so use
-    /// this as a current-state signal rather than a durable transition log.
-    pub fn connection_state_changes(&self) -> watch::Receiver<ScConnectionState> {
-        self.state_tx.subscribe()
-    }
-}
-
-async fn publish_connected_ws<W: WebSocketPort>(
-    conn: &Arc<Mutex<ScConnection>>,
-    active_ws: &Arc<Mutex<Arc<W>>>,
-    ws: &Arc<W>,
-    probe_conn: &Arc<Mutex<ScConnection>>,
-    state_tx: &watch::Sender<ScConnectionState>,
-    hub_limits: &HubLimits,
-) {
-    let restored = probe_conn.lock().await.clone();
-    let mut current = active_ws.lock().await;
-    let mut c = conn.lock().await;
-    *c = restored;
-    *current = ws.clone();
-    hub_limits.publish(&c);
-    state_tx.send_replace(c.state);
 }
 
 impl<W: WebSocketPort> TransportPort for ScTransport<W> {
@@ -319,11 +234,17 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             .take()
             .ok_or_else(|| Error::Encoding("BACnet/SC transport already started".into()))?;
 
-        let primary_ws = Arc::new(primary_ws);
-        let mut failover_ws = self.failover_ws.take().map(Arc::new);
-        let primary_connector = self.primary_connector.clone();
-        let failover_connector = self.failover_connector.clone();
+        // Every hub socket goes through the frame tap (tap.rs).
+        let tap = &self.frame_tap;
+        let primary_ws = Arc::new(TappedSocket::new(primary_ws, tap, self.initial_hub));
+        let mut failover_ws = (self.failover_ws.take())
+            .map(|ws| Arc::new(TappedSocket::new(ws, tap, ScActiveHub::Failover)));
+        let primary_connector = (self.primary_connector.as_ref())
+            .map(|dial| tapped_connector(dial, tap, ScActiveHub::Primary));
+        let failover_connector = (self.failover_connector.as_ref())
+            .map(|dial| tapped_connector(dial, tap, ScActiveHub::Failover));
         let state_tx = self.state_tx.clone();
+        let observer = self.observer.clone();
 
         // Attempt handshake on the primary WebSocket.
         let (ws, active_hub) = match perform_handshake(
@@ -334,33 +255,50 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         )
         .await
         {
-            Ok(()) => (primary_ws.clone(), ActiveHub::Primary),
+            Ok(()) => (primary_ws.clone(), self.initial_hub),
             Err(primary_err) => {
+                observer.connect_failed(self.initial_hub, &primary_err);
                 // Primary failed — try failover if configured.
-                if !conn.lock().await.connect_retry_allowed {
-                    self.local_vmac = conn.lock().await.local_vmac;
-                    return Err(primary_err);
-                } else if let Some(failover) = dial_failover_ws(
-                    &failover_connector,
-                    &mut failover_ws,
-                    self.connect_timeout_ms,
-                )
-                .await
+                if self.initial_hub == ScActiveHub::Failover
+                    || !conn.lock().await.connect_retry_allowed
                 {
-                    debug!("BACnet/SC primary connect failed, attempting failover");
-                    // Reset connection state for the retry.
-                    {
-                        let mut c = conn.lock().await;
-                        c.reset_for_connect_retry();
-                        state_tx.send_replace(c.state);
-                    }
-                    perform_handshake(&*failover, &conn, Some(&state_tx), self.connect_timeout_ms)
-                        .await
-                        .map(|()| (failover, ActiveHub::Failover))
-                        .map_err(|_| primary_err)?
-                } else {
                     self.local_vmac = conn.lock().await.local_vmac;
                     return Err(primary_err);
+                } else {
+                    match dial_failover_ws(
+                        &failover_connector,
+                        &mut failover_ws,
+                        self.connect_timeout_ms,
+                    )
+                    .await
+                    {
+                        Some(failover) => {
+                            debug!("BACnet/SC primary connect failed, attempting failover");
+                            observer.failover_engaged();
+                            // Reset connection state for the retry.
+                            {
+                                let mut c = conn.lock().await;
+                                c.reset_for_connect_retry();
+                                state_tx.send_replace(c.state);
+                            }
+                            perform_handshake(
+                                &*failover,
+                                &conn,
+                                Some(&state_tx),
+                                self.connect_timeout_ms,
+                            )
+                            .await
+                            .map(|()| (failover, ScActiveHub::Failover))
+                            .map_err(|e| {
+                                observer.connect_failed(ScActiveHub::Failover, &e);
+                                primary_err
+                            })?
+                        }
+                        _ => {
+                            self.local_vmac = conn.lock().await.local_vmac;
+                            return Err(primary_err);
+                        }
+                    }
                 }
             }
         };
@@ -369,6 +307,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             let c = conn.lock().await;
             self.local_vmac = c.local_vmac;
             self.hub_limits.publish(&c);
+            observer.connected(active_hub, c.hub_vmac);
         }
 
         #[cfg(feature = "sc-tls")]
@@ -390,7 +329,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             .map(|cfg| cfg.initial_delay_ms.max(1))
             .unwrap_or(heartbeat_interval_ms.max(1));
 
-        let mut primary_ws = Some(primary_ws.clone());
+        let mut primary_ws = (self.initial_hub == ScActiveHub::Primary).then(|| primary_ws.clone());
         let mut ws_clone = ws.clone();
         let mut active_hub = active_hub;
         let hub_limits = self.hub_limits.clone();
@@ -417,7 +356,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 let mut current_reusable = true;
                 // One candidate per active-connection epoch. Dropping this
                 // future cancels dial/handshake without a detached task.
-                let mut primary_attempt: Option<failover::PrimaryAttempt<W>> = None;
+                let mut primary_attempt: Option<failover::PrimaryAttempt<TappedSocket<W>>> = None;
                 let mut connection_states = state_tx.subscribe();
                 // Idle time is on tokio's clock, like `hb_interval`, so the two
                 // agree under a paused test clock too.
@@ -460,9 +399,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                                     warn!("Malformed wire-level BACnet/SC BVLC-Result: {e}");
                                                 }
                                             }
-                                            let mut c = conn.lock().await;
-                                            c.state = ScConnectionState::Disconnected;
-                                            state_tx.send_replace(c.state);
+                                            observer.lose(&conn, &state_tx, Cause::MalformedResult).await;
                                             break;
                                         }
                                         Err(e) => {
@@ -496,6 +433,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                             warn!("BACnet/SC rejection NAK exhausted heartbeat budget — retiring socket");
                                             current_reusable = false;
                                             recovery::retire(&ws_clone, &mut primary_ws, &conn, &state_tx, &restore_disconnect_task).await;
+                                            observer.disconnected(Cause::RejectionExpired);
                                             break;
                                         }
                                     }
@@ -504,6 +442,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                         if heartbeat::ack_matches_outstanding(&msg, pending_heartbeat_id) {
                                             last_bvlc_received = tokio::time::Instant::now();
                                             pending_heartbeat_id = None;
+                                            observer.heartbeat_acked();
                                         } else if malformed_diag.should_emit_now() {
                                             let suppressed = malformed_diag.take_suppressed();
                                             if suppressed > 0 {
@@ -519,6 +458,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                     // refresh activity or retire an outstanding probe.
                                     last_bvlc_received = tokio::time::Instant::now();
                                     pending_heartbeat_id = None;
+                                    observer.activity();
 
                                     // Handle Heartbeat-Request with Heartbeat-ACK
                                     if msg.function == ScFunction::HeartbeatRequest {
@@ -565,8 +505,8 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                         {
                                             solicited_destination.map(|destination| {
                                                 let hub_status = match active_hub {
-                                                    ActiveHub::Primary => 1,
-                                                    ActiveHub::Failover => 2,
+                                                    ScActiveHub::Primary => 1,
+                                                    ScActiveHub::Failover => 2,
                                                 };
                                                 let accept_direct = !npdu_tx.is_closed()
                                                     && direct_intake.accepts_direct(&c);
@@ -590,6 +530,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                     };
                                     if let Some(state) = state_change {
                                         state_tx.send_replace(state);
+                                        if state == ScConnectionState::Disconnected {
+                                            observer.disconnected_by(&msg);
+                                        }
                                     }
 
                                     // Best-effort solicited reply (Heartbeat-ACK precedent:
@@ -642,9 +585,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                 }
                                 Err(e) => {
                                     warn!("BACnet/SC recv error: {}", e);
-                                    let mut c = conn.lock().await;
-                                    c.state = ScConnectionState::Disconnected;
-                                    state_tx.send_replace(c.state);
+                                    observer.lose(&conn, &state_tx, Cause::from_error(&e)).await;
                                     break;
                                 }
                             }
@@ -654,7 +595,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                 primary_attempt = None;
                             }
                         }
-                        _ = primary_restore_interval.tick(), if restore_enabled && active_hub == ActiveHub::Failover && primary_attempt.is_none() => {
+                        _ = primary_restore_interval.tick(), if restore_enabled && active_hub == ScActiveHub::Failover && primary_attempt.is_none() => {
                             let c = conn.lock().await;
                             if c.state != ScConnectionState::Connected || !c.connect_retry_allowed {
                                 continue;
@@ -674,13 +615,14 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                     state_tx: &state_tx,
                                     connect_timeout_ms,
                                     hub_limits: &hub_limits,
+                                    observer: &observer,
                                 },
                                 &ws_clone,
                                 candidate,
                             ).await {
                                 Ok(Some(restored_ws)) => {
                                     ws_clone = restored_ws;
-                                    active_hub = ActiveHub::Primary;
+                                    active_hub = ScActiveHub::Primary;
                                     last_bvlc_received = tokio::time::Instant::now();
                                     pending_heartbeat_id = None;
                                     info!("SC restored primary hub while failover was active");
@@ -688,6 +630,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                 Ok(None) => {}
                                 Err(e) => {
                                     debug!(%e, "SC primary restore attempt failed while failover active");
+                                    observer.primary_restore_failed(&e);
                                 }
                             }
                             // A full interval follows completion, however
@@ -707,19 +650,16 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                 drop(c);
                                 if let Err(e) = ws_clone.send(&buf).await {
                                     warn!("BACnet/SC heartbeat send error: {}", e);
-                                    let mut c = conn.lock().await;
-                                    c.state = ScConnectionState::Disconnected;
-                                    state_tx.send_replace(c.state);
+                                    observer.lose(&conn, &state_tx, Cause::from_error(&e)).await;
                                     break;
                                 }
                                 pending_heartbeat_id = Some(heartbeat_message_id);
+                                observer.heartbeat_sent();
                             }
 
                             if idle_for > Duration::from_millis(heartbeat_timeout_ms) {
                                 warn!("BACnet/SC heartbeat timeout — disconnecting");
-                                let mut c = conn.lock().await;
-                                c.state = ScConnectionState::Disconnected;
-                                state_tx.send_replace(c.state);
+                                observer.lose(&conn, &state_tx, Cause::HeartbeatTimeout).await;
                                 break;
                             }
                         }
@@ -745,6 +685,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                     state_tx: &state_tx,
                     connect_timeout_ms,
                     hub_limits: &hub_limits,
+                    observer: &observer,
                 };
                 match recovery
                     .reconnect(&ws_clone, active_hub, current_reusable)
@@ -772,6 +713,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         self.stop_owned().await
     }
 
+    /// Unlike `stop()`, abort (and drop) cannot join the receive task, so a
+    /// reconnect finishing on another worker may still report `Connected`
+    /// after the `LocalClose` this sends.
     fn abort(&mut self) {
         self.seal_direct_listener();
         self.direct_intake = advertisement::DirectIntake::default();

@@ -1,14 +1,31 @@
 use super::*;
+use crate::port_ownership::{ATTEMPTS, lost_port};
+use bacnet_types::constructed::BACnetHostNPort;
 
+/// The worker that holds the socket last also holds the lease to the end. Its
+/// closing rebind can lose the freed port to another process, which runs it
+/// again on a fresh port (#1419).
 #[tokio::test]
 async fn registration_token_follows_last_socket_worker_after_abort() {
+    for attempt in 1..=ATTEMPTS {
+        match token_follows_last_socket_worker().await {
+            Ok(()) => return,
+            Err(e) if lost_port(attempt, &e) => continue,
+            Err(e) => panic!("the released port did not rebind: {e}"),
+        }
+    }
+}
+
+async fn token_follows_last_socket_worker() -> std::io::Result<()> {
     let token = Arc::new(());
     let weak = Arc::downgrade(&token);
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     transport.retain_network_port_lease_internal(token).unwrap();
-    assert!(transport
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        transport
+            .retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
     let _received = transport.start().await.unwrap();
     let address = transport.bip_port().unwrap().endpoint;
     assert_ne!(address.port(), 0);
@@ -30,7 +47,7 @@ async fn registration_token_follows_last_socket_worker_after_abort() {
     release.send(()).unwrap();
     worker.await.unwrap();
     assert!(weak.upgrade().is_none());
-    let _reused = std::net::UdpSocket::bind(address).unwrap();
+    std::net::UdpSocket::bind(address).map(drop)
 }
 
 #[tokio::test]
@@ -46,14 +63,18 @@ async fn normal_capability_and_joined_stop_release_are_explicit() {
     transport.retain_network_port_lease_internal(token).unwrap();
     let _received = transport.start().await.unwrap();
     assert!(transport.supports_local_nonrouter_number_controls());
-    assert!(transport
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        transport
+            .retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
     transport.stop().await.unwrap();
     assert!(weak.upgrade().is_none());
-    assert!(transport
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        transport
+            .retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
 }
 
 /// A BBMD reports its mode before start, takes the lease, and lends its own
@@ -117,9 +138,10 @@ async fn bbmd_reports_its_mode_and_lends_its_live_tables_once_started() {
 
     bbmd.stop().await.unwrap();
     assert!(weak.upgrade().is_none());
-    assert!(bbmd
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        bbmd.retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -132,18 +154,14 @@ async fn foreign_device_reports_its_bbmd_and_lifetime() {
         ttl: 60,
     });
     assert!(foreign.supports_local_nonrouter_number_controls());
-    let BipPortMode::Foreign {
-        bbmd,
-        subscription_lifetime,
-    } = foreign.bip_port().unwrap().mode
-    else {
+    let BipPortMode::Foreign { registration } = foreign.bip_port().unwrap().mode else {
         panic!("foreign mode");
     };
     assert_eq!(
-        bbmd,
+        registration.bbmd(),
         BACnetHostNPort::from_socket_addr(SocketAddrV4::new([10, 0, 0, 1].into(), 47809).into())
     );
-    assert_eq!(subscription_lifetime, 60);
+    assert_eq!(registration.subscription_lifetime(), 60);
     foreign
         .retain_network_port_lease_internal(Arc::new(()))
         .unwrap();
@@ -160,9 +178,10 @@ fn a_bbmd_that_also_registers_as_a_foreign_device_has_no_single_mode() {
         ttl: 60,
     });
     assert!(both.bip_port().is_none());
-    assert!(both
-        .retain_network_port_lease_internal(Arc::new(()))
-        .is_err());
+    assert!(
+        both.retain_network_port_lease_internal(Arc::new(()))
+            .is_err()
+    );
 }
 
 fn foreign_config() -> ForeignDeviceConfig {

@@ -1,7 +1,7 @@
 //! CLI-owned serialization and observation severity; no TLS policy is applied.
 
 use super::{Diagnostic, Document, ExecutionError, Summary, UNASSESSED};
-use bacnet_transport::sc_tls::{inspection::*, ScCertificateMetadata};
+use bacnet_transport::sc_tls::{ScCertificateMetadata, inspection::*};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -10,6 +10,8 @@ pub(super) struct Inspection<'a> {
     pub(super) peer_trust_supplied: bool,
     pub(super) key_consistency: &'static str,
     pub(super) key_file_permissions: Option<Permissions>,
+    pub(super) direct_issuer: &'static str,
+    pub(super) direct_issuer_index: Option<usize>,
     pub(super) certificates: Vec<Certificate<'a>>,
 }
 #[derive(Serialize)]
@@ -98,6 +100,8 @@ pub(super) fn completed(report: &ScPemInspection) -> Document<Inspection<'_>> {
                 group_readable: value.group_readable,
                 world_readable: value.world_readable,
             }),
+            direct_issuer: report.direct_issuer.as_str(),
+            direct_issuer_index: report.direct_issuer_index,
             certificates: report
                 .certificates
                 .iter()
@@ -147,7 +151,7 @@ fn diagnostic(
     }
 }
 
-fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
+pub(super) fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
     let mut result = Vec::new();
     for cert in &report.certificates {
         let mut add = |area, kind: &str, severity, message: &str| {
@@ -169,18 +173,24 @@ fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
                 "warning"
             };
             let message = match (finding.area, finding.kind) {
-                (ScFindingArea::Certificate, ScFindingKind::Malformed) =>
-                    "Certificate data could not be interpreted. Replace this item with a valid certificate.",
-                (ScFindingArea::Certificate, ScFindingKind::Truncated) =>
-                    "Certificate extension count exceeded the inspection limit. Review unassessed extensions independently.",
-                (_, ScFindingKind::Malformed) =>
-                    "Extension data could not be interpreted completely. Review its encoding independently.",
-                (_, ScFindingKind::Duplicate) =>
-                    "Duplicate extension data was found. Review the certificate instead of selecting one value.",
-                (_, ScFindingKind::Unsupported) =>
-                    "Some certificate data is unsupported by this display. Review it with a suitable inspection tool.",
-                (_, ScFindingKind::Truncated) =>
-                    "Inspection or display limits truncated this area. Review the remaining data independently.",
+                (ScFindingArea::Certificate, ScFindingKind::Malformed) => {
+                    "Certificate data could not be interpreted. Replace this item with a valid certificate."
+                }
+                (ScFindingArea::Certificate, ScFindingKind::Truncated) => {
+                    "Certificate extension count exceeded the inspection limit. Review unassessed extensions independently."
+                }
+                (_, ScFindingKind::Malformed) => {
+                    "Extension data could not be interpreted completely. Review its encoding independently."
+                }
+                (_, ScFindingKind::Duplicate) => {
+                    "Duplicate extension data was found. Review the certificate instead of selecting one value."
+                }
+                (_, ScFindingKind::Unsupported) => {
+                    "Some certificate data is unsupported by this display. Review it with a suitable inspection tool."
+                }
+                (_, ScFindingKind::Truncated) => {
+                    "Inspection or display limits truncated this area. Review the remaining data independently."
+                }
             };
             add(
                 finding.area.as_str(),
@@ -207,26 +217,38 @@ fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
                 validity.as_str(),
                 date_severity,
                 if date_severity == "error" {
-                    "The identity leaf is outside its stated interval or has invalid dates. Check the inspection time and replace it as needed."
+                    "The identity leaf has expired, is not valid yet, or has invalid dates. Check the inspection time and replace it as needed."
                 } else {
                     "This inventory certificate has a date problem. Review its intended role; no certificate path or trust anchor was selected."
                 },
             ),
         }
         match cert.expiry {
-            ScExpiry::Alarm => add("expiry", "alarm", "warning",
-                "At most seven days remain in the stated interval. Arrange renewal; this notice does not itself make the certificate invalid."),
-            ScExpiry::Warning => add("expiry", "warning", "warning",
-                "At most thirty days remain in the stated interval. Plan renewal."),
-            _ => {},
+            ScExpiry::Alarm => add(
+                "expiry",
+                "alarm",
+                "warning",
+                "It expires within seven days. Arrange renewal; this notice does not itself make the certificate invalid.",
+            ),
+            ScExpiry::Warning => add(
+                "expiry",
+                "warning",
+                "warning",
+                "It expires within thirty days. Plan renewal.",
+            ),
+            _ => {}
         }
         if cert
             .metadata
             .as_ref()
             .is_some_and(ScCertificateMetadata::text_truncated)
         {
-            add("metadata", "text_truncated", "warning",
-                "Metadata display text reached its bound. Inspect the original certificate with a suitable tool.");
+            add(
+                "metadata",
+                "text_truncated",
+                "warning",
+                "Metadata display text reached its bound. Inspect the original certificate with a suitable tool.",
+            );
         }
         for (area, extension) in [
             ("san", &cert.san),
@@ -234,8 +256,12 @@ fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
             ("extended_key_usage", &cert.extended_key_usage),
         ] {
             if !extension.assessed {
-                add(area, "not_assessed", "notice",
-                    "Presence and values were not fully assessed. Do not interpret this state as absence.");
+                add(
+                    area,
+                    "not_assessed",
+                    "notice",
+                    "Presence and values were not fully assessed. Do not interpret this state as absence.",
+                );
             }
         }
     }
@@ -250,29 +276,82 @@ fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
         ))
     };
     match report.key_consistency {
-        ScKeyConsistency::Match => {},
-        ScKeyConsistency::NotAssessed => add_key("key", "not_assessed", "notice",
-            "No private key was supplied. Supply --sc-key to compare it with the identity leaf."),
-        ScKeyConsistency::Mismatch => add_key("key", "mismatch", "error",
-            "The private key does not match the identity leaf. Select the corresponding certificate and key."),
-        ScKeyConsistency::Unusable => add_key("key", "unusable", "error",
-            "The supplied private key could not be used for comparison. Check its supported unencrypted encoding."),
-        ScKeyConsistency::Unknown => add_key("key", "unknown", "warning",
-            "A key match could not be established. Review the identity leaf and key before relying on them."),
+        ScKeyConsistency::Match => {}
+        ScKeyConsistency::NotAssessed => add_key(
+            "key",
+            "not_assessed",
+            "notice",
+            "No private key was supplied. Supply --sc-key to compare it with the identity leaf.",
+        ),
+        ScKeyConsistency::Mismatch => add_key(
+            "key",
+            "mismatch",
+            "error",
+            "The private key does not match the identity leaf. Select the corresponding certificate and key.",
+        ),
+        ScKeyConsistency::Unusable => add_key(
+            "key",
+            "unusable",
+            "error",
+            "The supplied private key could not be used for comparison. Check its supported unencrypted encoding.",
+        ),
+        ScKeyConsistency::Unknown => add_key(
+            "key",
+            "unknown",
+            "warning",
+            "A key match could not be established. Review the identity leaf and key before relying on them.",
+        ),
     }
     match report.key_file_permissions {
-        None => add_key("key_permissions", "not_assessed", "notice",
-            "Unix key read bits were not observed. The key was omitted or this platform does not provide that observation."),
+        None => add_key(
+            "key_permissions",
+            "not_assessed",
+            "notice",
+            "Unix key read bits were not observed. The key was omitted or this platform does not provide that observation.",
+        ),
         Some(bits) => {
-            if bits.group_readable { add_key("key_permissions", "group_readable", "warning",
-                "The opened key file has its Unix group-read bit set. Review local access requirements; ACLs were not assessed."); }
-            if bits.world_readable { add_key("key_permissions", "world_readable", "warning",
-                "The opened key file has its Unix world-read bit set. Review local access requirements; ACLs were not assessed."); }
+            if bits.group_readable {
+                add_key(
+                    "key_permissions",
+                    "group_readable",
+                    "warning",
+                    "The opened key file has its Unix group-read bit set. Review local access requirements; ACLs were not assessed.",
+                );
+            }
+            if bits.world_readable {
+                add_key(
+                    "key_permissions",
+                    "world_readable",
+                    "warning",
+                    "The opened key file has its Unix world-read bit set. Review local access requirements; ACLs were not assessed.",
+                );
+            }
         }
+    }
+    let mut add_issuer = |kind, message| {
+        result.push(diagnostic(
+            ScInputRole::Identity,
+            Some(0),
+            "issuer",
+            kind,
+            "warning",
+            message,
+        ))
+    };
+    match report.direct_issuer {
+        ScDirectIssuer::Direct | ScDirectIssuer::NotAssessed => {}
+        ScDirectIssuer::NotDirect => add_issuer(
+            "not_direct",
+            "No CA in the --sc-ca bundle signed the identity leaf directly. Peers using the Annex AB.7.4 default check with this bundle can refuse it; have a bundle CA issue it, or add its issuing CA to every peer's bundle.",
+        ),
+        ScDirectIssuer::Unknown => add_issuer(
+            "unknown",
+            "Direct issuance by a --sc-ca CA could not be established: the leaf could not be read, or a candidate CA uses a signature algorithm this check does not support.",
+        ),
     }
     if !report.peer_trust_supplied {
         result.push(diagnostic(ScInputRole::PeerTrust, None, "peer_trust", "not_assessed", "notice",
-            "No peer-trust file was supplied. Supply --sc-ca to inventory that file; it does not authorize the local issuer."));
+            "No peer-trust file was supplied. Supply --sc-ca to inventory that file and to check that one of its CAs issued the identity leaf directly."));
     }
     let role = |value: Option<&str>| match value {
         Some("identity") => 0,
@@ -293,20 +372,40 @@ fn diagnostics(report: &ScPemInspection) -> Vec<Diagnostic> {
 pub(super) fn input_error(error: ScInspectionError) -> ExecutionError {
     match error {
         ScInspectionError::Input { role, index, kind } => ExecutionError {
-            category: "input", role: Some(role.as_str()), index, kind: Some(kind.as_str()),
+            category: "input",
+            role: Some(role.as_str()),
+            index,
+            kind: Some(kind.as_str()),
             os_code: None,
             message: match kind {
-                ScInputErrorKind::InputTooLarge => "Selected files exceed the one-MiB aggregate input limit. Reduce their contents.",
-                ScInputErrorKind::CertificateTooLarge => "A decoded certificate exceeds 128 KiB. Select a bounded certificate.",
-                ScInputErrorKind::TooManyCertificates => "The inputs exceed 64 certificates. Reduce the inventory.",
-                ScInputErrorKind::EmptyCertificates => "No certificate was found in the supplied file. Select a certificate PEM file.",
-                ScInputErrorKind::MalformedPem => "PEM input could not be decoded. Check the selected file's PEM framing and encoding.",
-                ScInputErrorKind::MissingPrivateKey => "No supported unencrypted private key was found. Check the selected key file.",
-                ScInputErrorKind::ClockOutOfRange => "The clock cannot be represented in signed Unix seconds. Supply --at-unix explicitly.",
+                ScInputErrorKind::InputTooLarge => {
+                    "Selected files exceed the one-MiB aggregate input limit. Reduce their contents."
+                }
+                ScInputErrorKind::CertificateTooLarge => {
+                    "A decoded certificate exceeds 128 KiB. Select a bounded certificate."
+                }
+                ScInputErrorKind::TooManyCertificates => {
+                    "The inputs exceed 64 certificates. Reduce the inventory."
+                }
+                ScInputErrorKind::EmptyCertificates => {
+                    "No certificate was found in the supplied file. Select a certificate PEM file."
+                }
+                ScInputErrorKind::MalformedPem => {
+                    "PEM input could not be decoded. Check the selected file's PEM framing and encoding."
+                }
+                ScInputErrorKind::MissingPrivateKey => {
+                    "No supported unencrypted private key was found. Check the selected key file."
+                }
+                ScInputErrorKind::ClockOutOfRange => {
+                    "The clock cannot be represented in signed Unix seconds. Supply --at-unix explicitly."
+                }
             },
         },
         ScInspectionError::Io { role, source } => ExecutionError {
-            category: "io", role: Some(role.as_str()), index: None, kind: None,
+            category: "io",
+            role: Some(role.as_str()),
+            index: None,
+            kind: None,
             os_code: source.raw_os_error(),
             message: "Could not read a selected input file. Check that it exists and is readable; the role and OS code identify the failure.",
         },

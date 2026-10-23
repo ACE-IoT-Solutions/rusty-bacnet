@@ -40,7 +40,7 @@ impl ScTransport<TlsWebSocket> {
             return None;
         }
         Some(ScHubPeerInfo {
-            tls: Arc::clone(ws.peer_info()),
+            tls: Arc::clone(ws.inner().peer_info()),
             observed_at: SystemTime::now(),
         })
     }

@@ -9,7 +9,7 @@ use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::enums::{DoorAlarmState as S, ErrorClass, ErrorCode, EventType};
 
 use super::*;
-use crate::event::{commit_test_proposal, EventStateChange, TransitionOutcome};
+use crate::event::{EventStateChange, TransitionOutcome, commit_test_proposal};
 
 const LISTS: [P; 3] = [P::ALARM_VALUES, P::FAULT_VALUES, P::MASKED_ALARM_VALUES];
 
@@ -63,8 +63,8 @@ fn change(from: EventState, to: EventState) -> EventStateChange {
 fn assert_out_of_range(result: Result<(), Error>) {
     assert!(
         matches!(result, Err(Error::Protocol { class, code } | Error::Structured { class, code, .. })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "expected PROPERTY / VALUE_OUT_OF_RANGE, got {result:?}"
     );
 }
@@ -190,9 +190,10 @@ fn access_door_alarm_lists_take_door_alarm_states_only() {
             );
             assert_eq!(read(&door, list), proprietary, "{list:?}");
         }
-        assert!(door
-            .write_property(list, Some(1), enumerated(3), None)
-            .is_err());
+        assert!(
+            door.write_property(list, Some(1), enumerated(3), None)
+                .is_err()
+        );
         assert_eq!(read(&door, list), proprietary, "{list:?}");
         write(&mut door, list, PropertyValue::List(vec![])).unwrap();
     }
@@ -414,7 +415,7 @@ fn access_door_simulated_reliability_holds_until_the_return_to_service() {
     assert!(matches!(
         write(&mut door, P::RELIABILITY, unreliable.clone()),
         Err(Error::Protocol { code, .. })
-            if code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+            if code == ErrorCode::WRITE_ACCESS_DENIED
     ));
     set_out_of_service(&mut door, true);
     write(&mut door, P::RELIABILITY, unreliable.clone()).unwrap();
@@ -436,7 +437,7 @@ fn access_door_simulated_reliability_holds_until_the_return_to_service() {
     ] {
         assert!(matches!(
             write(&mut door, P::RELIABILITY, value),
-            Err(Error::Protocol { code: actual, .. }) if actual == code.to_raw() as u32
+            Err(Error::Protocol { code: actual, .. }) if actual == code
         ));
     }
 

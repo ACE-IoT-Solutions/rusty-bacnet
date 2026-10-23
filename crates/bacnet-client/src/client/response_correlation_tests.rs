@@ -8,8 +8,8 @@
 //! Clause 20.1.5.4 numbers segments modulo 256, so a long enough response wraps
 //! onto segments already stored.
 
-use bacnet_encoding::apdu::{self, encode_apdu, AbortPdu, Apdu, ComplexAck, SegmentAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{self, AbortPdu, Apdu, ComplexAck, SegmentAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
@@ -17,7 +17,7 @@ use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetClient, ClientConfig};
 
@@ -525,7 +525,7 @@ async fn segment_ack_during_reassembly_aborts_the_transaction() {
     // waiting for a reassembly that is over.
     match link.finish().await {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw());
+            assert_eq!(reason, AbortReason::INVALID_APDU_IN_THIS_STATE);
         }
         other => panic!("expected the caller to be aborted, got {other:?}"),
     }
@@ -630,7 +630,7 @@ async fn segment_257_aborts_with_buffer_overflow() {
 
     match link.finish().await {
         Err(Error::Abort { reason }) => {
-            assert_eq!(reason, AbortReason::BUFFER_OVERFLOW.to_raw());
+            assert_eq!(reason, AbortReason::BUFFER_OVERFLOW);
         }
         other => panic!("expected a BUFFER_OVERFLOW abort, got {other:?}"),
     }

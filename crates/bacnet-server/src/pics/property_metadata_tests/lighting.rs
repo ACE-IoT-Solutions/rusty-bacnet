@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::lighting::{BinaryLightingOutputObject, LightingOutputObject};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
     // Independent (identifier, optional, writable) rows in declaration order; PICS sorts by property ID.
@@ -29,6 +29,9 @@ fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
             (P::DEFAULT_STEP_INCREMENT, false, true),
             (P::CURRENT_COMMAND_PRIORITY, false, false),
             (P::COV_INCREMENT, true, true),
+            (P::VALUE_SOURCE, false, true),
+            (P::VALUE_SOURCE_ARRAY, false, false),
+            (P::LAST_COMMAND_TIME, false, false),
             (P::PROPERTY_LIST, false, false),
         ],
         _ => vec![
@@ -46,6 +49,9 @@ fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
             (P::PRIORITY_ARRAY, false, false),
             (P::RELINQUISH_DEFAULT, false, true),
             (P::CURRENT_COMMAND_PRIORITY, false, false),
+            (P::VALUE_SOURCE, false, true),
+            (P::VALUE_SOURCE_ARRAY, false, false),
+            (P::LAST_COMMAND_TIME, false, false),
             (P::PROPERTY_LIST, false, false),
         ],
     }

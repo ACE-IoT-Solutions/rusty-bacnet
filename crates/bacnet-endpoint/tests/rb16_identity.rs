@@ -7,14 +7,14 @@
 //! Transport-dependent notes are recorded inline where Loopback differs from
 //! real B/IP (broadcast reach) or SC (provenance).
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
-use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity, NetworkPortEntry};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
+use bacnet_endpoint::identity::{DeviceIdentity, NetworkPortEntry, build_database_with_extra};
 use bacnet_endpoint::session::{EndpointSession, SessionConfig, SessionRole};
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_types::enums::{
-    NetworkType, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
+    EngineeringUnits, NetworkType, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
     UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
@@ -35,7 +35,12 @@ fn session_config() -> SessionConfig {
 }
 
 fn analog(instance: u32, value: f32) -> Box<dyn bacnet_objects::traits::BACnetObject> {
-    let mut o = AnalogInputObject::new(instance, format!("ai-{instance}"), 0).unwrap();
+    let mut o = AnalogInputObject::new(
+        instance,
+        format!("ai-{instance}"),
+        EngineeringUnits::SQUARE_METERS,
+    )
+    .unwrap();
     o.set_present_value(value);
     Box::new(o)
 }
@@ -276,7 +281,7 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     // ComplexAck draws client Abort (both directions refuse, Loopback here;
     // real-loopback proofs assert the same aborts on wire).
     use bacnet_encoding::apdu::{
-        encode_apdu, AbortPdu, ConfirmedRequest as ConfirmedPdu, RejectPdu,
+        AbortPdu, ConfirmedRequest as ConfirmedPdu, RejectPdu, encode_apdu,
     };
     use bacnet_services::read_property::ReadPropertyRequest;
     use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, RejectReason};
@@ -354,14 +359,9 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     });
     let mut enc = BytesMut::new();
     encode_apdu(&mut enc, &write_req).unwrap();
-    peer.send_apdu(
-        &enc,
-        &[0xC1],
-        true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&enc, &[0xC1], true, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
     let reply = tokio::time::timeout(WAIT, peer_rx.recv())
         .await
         .expect("reject must arrive")
@@ -399,14 +399,9 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     });
     let mut enc2 = BytesMut::new();
     encode_apdu(&mut enc2, &seg_req).unwrap();
-    peer.send_apdu(
-        &enc2,
-        &[0xC1],
-        true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&enc2, &[0xC1], true, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
     let abort = tokio::time::timeout(WAIT, peer_rx.recv())
         .await
         .expect("abort must arrive")
@@ -431,15 +426,17 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     b.stop().await.unwrap();
     c.stop().await.unwrap();
     assert!(a.stop().await.is_err());
-    assert!(detached
-        .read_property(
-            &[0xB2],
-            object_id(ObjectType::ANALOG_INPUT, 9),
-            PropertyIdentifier::PRESENT_VALUE,
-            None
-        )
-        .await
-        .is_err());
+    assert!(
+        detached
+            .read_property(
+                &[0xB2],
+                object_id(ObjectType::ANALOG_INPUT, 9),
+                PropertyIdentifier::PRESENT_VALUE,
+                None
+            )
+            .await
+            .is_err()
+    );
     peer.stop().await.unwrap();
 }
 
@@ -515,9 +512,10 @@ fn configured_port_both_database_builders_keep_capacity_separate_from_device() {
                 .unwrap(),
             PropertyValue::OctetString(vec![0; 4])
         );
-        assert!(bip
-            .read_property(PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED, None)
-            .is_err());
+        assert!(
+            bip.read_property(PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED, None)
+                .is_err()
+        );
         let sc = db.get(&object_id(ObjectType::NETWORK_PORT, 0)).unwrap();
         for p in [
             PropertyIdentifier::APDU_LENGTH,
@@ -540,16 +538,20 @@ fn configured_port_both_database_builders_keep_capacity_separate_from_device() {
 #[test]
 fn configured_port_identity_admission_checks_profile_bounds() {
     for instance in [0, 256, 4_194_303] {
-        assert!(DeviceIdentity::new(2867, 42)
-            .unwrap()
-            .with_bip_port(instance, 0, Ipv4Addr::LOCALHOST, 0)
-            .is_err());
+        assert!(
+            DeviceIdentity::new(2867, 42)
+                .unwrap()
+                .with_bip_port(instance, 0, Ipv4Addr::LOCALHOST, 0)
+                .is_err()
+        );
     }
     for number in [65535, u32::MAX] {
-        assert!(DeviceIdentity::new(2867, 42)
-            .unwrap()
-            .with_bip_port(1, number, Ipv4Addr::LOCALHOST, 0)
-            .is_err());
+        assert!(
+            DeviceIdentity::new(2867, 42)
+                .unwrap()
+                .with_bip_port(1, number, Ipv4Addr::LOCALHOST, 0)
+                .is_err()
+        );
     }
 }
 
@@ -573,10 +575,12 @@ fn configured_bip_entry_admission_rejects_divergent_mac_and_preserves_both_build
     let mut changed_udp = entry.clone();
     changed_udp.udp_port = 47809;
     for inconsistent in [changed_ip, changed_udp] {
-        assert!(DeviceIdentity::new(2867, 42)
-            .unwrap()
-            .with_network_port(inconsistent)
-            .is_err());
+        assert!(
+            DeviceIdentity::new(2867, 42)
+                .unwrap()
+                .with_network_port(inconsistent)
+                .is_err()
+        );
     }
     // A consistent generic admission retains exactly the view exposed by both
     // builders; no hidden canonicalization or second identity is introduced.
@@ -641,11 +645,12 @@ fn identity_maps_its_segment_timeout_to_both_database_builders_and_full_server()
     }
     let identity = DeviceIdentity::new(42, 7).unwrap();
     let db = identity.build_database().unwrap();
-    assert!(!db
-        .get(&object_id(ObjectType::DEVICE, 42))
-        .unwrap()
-        .property_list()
-        .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
+    assert!(
+        !db.get(&object_id(ObjectType::DEVICE, 42))
+            .unwrap()
+            .property_list()
+            .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT)
+    );
     let mut client = bacnet_client::client::ClientConfig {
         apdu_timeout_ms: 1234,
         ..Default::default()
@@ -712,9 +717,11 @@ async fn endpoint_roles_reject_segmented_database_without_identity_and_allow_cor
             .start()
             .await
             .expect_err("database cannot claim unsupported segmentation");
-        assert!(error
-            .to_string()
-            .contains("selected Device requires segmentation NONE"));
+        assert!(
+            error
+                .to_string()
+                .contains("selected Device requires segmentation NONE")
+        );
         let mut endpoint = endpoint.with_database(identity.build_database().unwrap());
         endpoint.start().await.unwrap();
         endpoint.stop().await.unwrap();

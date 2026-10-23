@@ -234,10 +234,12 @@ async fn audit_reporter_execution_failures_obey_level_operation_and_priority_fil
             }
             assert_eq!(fixture.attempts.load(Ordering::Acquire), 1);
             assert_eq!(fixture.writes.load(Ordering::Acquire), 0);
-            assert!(fixture
-                .server
-                .notification_transactions
-                .delivery_workers_idle());
+            assert!(
+                fixture
+                    .server
+                    .notification_transactions
+                    .delivery_workers_idle()
+            );
             fixture.server.stop().await.unwrap();
         }
     }
@@ -292,7 +294,8 @@ async fn audit_reporter_policy_denial_of_invalid_values_never_enters_execution()
         if deny_all {
             fixture.server.config_mut().mutation_policy = crate::mutation::MutationPolicy::DenyAll;
         } else {
-            fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false));
+            fixture.server.config_mut().policy =
+                Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)));
         }
         assert!(matches!(
             failed_value_write(&fixture.server, None).await,
@@ -315,10 +318,12 @@ async fn audit_reporter_policy_denial_of_invalid_values_never_enters_execution()
         assert_eq!(fixture.attempts.load(Ordering::Acquire), 0);
         assert_eq!(fixture.writes.load(Ordering::Acquire), 0);
         assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-        assert!(fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
         assert_eq!(
             health(&fixture.server).await,
             Reliability::NO_FAULT_DETECTED
@@ -380,10 +385,12 @@ async fn audit_reporter_failed_self_write_and_delivery_do_not_recurse() {
         Reliability::COMMUNICATION_FAILURE
     );
     assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-    assert!(fixture
-        .server
-        .notification_transactions
-        .delivery_workers_idle());
+    assert!(
+        fixture
+            .server
+            .notification_transactions
+            .delivery_workers_idle()
+    );
     fixture.server.stop().await.unwrap();
 }
 
@@ -407,10 +414,12 @@ async fn audit_reporter_execution_failures_without_recipient_do_not_accumulate()
             Reliability::CONFIGURATION_ERROR
         );
         assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-        assert!(fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
         fixture.server.stop().await.unwrap();
     }
 }
@@ -437,10 +446,12 @@ async fn audit_reporter_execution_failures_saturate_without_queue_retry_or_recur
             fixture.server.notification_transactions.active_count(),
             if confirmed { 64 } else { 0 }
         );
-        assert!(!fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            !fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
         assert_eq!(
             health(&fixture.server).await,
             Reliability::COMMUNICATION_FAILURE
@@ -456,10 +467,12 @@ async fn audit_reporter_execution_failures_saturate_without_queue_retry_or_recur
         settle().await;
         assert_eq!(fixture.transport.sent.lock().unwrap().len(), 64);
         assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-        assert!(fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
         // Admission is reusable; earlier failure records are never replayed.
         assert_wp_error(
             failed_value_write(&fixture.server, None).await,
@@ -470,10 +483,12 @@ async fn audit_reporter_execution_failures_saturate_without_queue_retry_or_recur
         assert_eq!(fixture.transport.sent.lock().unwrap().len(), 65);
         fixture.server.stop().await.unwrap();
         assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-        assert!(fixture
-            .server
-            .notification_transactions
-            .delivery_workers_idle());
+        assert!(
+            fixture
+                .server
+                .notification_transactions
+                .delivery_workers_idle()
+        );
     }
 }
 
@@ -482,8 +497,8 @@ async fn audit_reporter_execution_error_mapping_matches_response_but_unknown_out
     for (error, expected) in [
         (
             Error::Protocol {
-                class: 128,
-                code: 512,
+                class: ErrorClass::from_raw(128),
+                code: ErrorCode::from_raw(512),
             },
             Some((ErrorClass::from_raw(128), ErrorCode::from_raw(512))),
         ),
@@ -494,13 +509,13 @@ async fn audit_reporter_execution_error_mapping_matches_response_but_unknown_out
         (Error::Timeout(Duration::from_secs(1)), None),
         (
             Error::Reject {
-                reason: RejectReason::OTHER.to_raw(),
+                reason: RejectReason::OTHER,
             },
             None,
         ),
         (
             Error::Abort {
-                reason: AbortReason::OTHER.to_raw(),
+                reason: AbortReason::OTHER,
             },
             None,
         ),

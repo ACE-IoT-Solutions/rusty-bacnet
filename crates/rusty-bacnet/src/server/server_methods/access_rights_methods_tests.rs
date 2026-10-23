@@ -70,8 +70,8 @@ fn python_access_rules_reach_both_arrays() {
             .unwrap();
         assert!(
             matches!(refused, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::VALUE_OUT_OF_RANGE),
             "{refused:?}"
         );
     }
@@ -174,9 +174,11 @@ fn python_accompaniment_reaches_the_optional_row() {
     };
     let rights = access_rights(8, "AR-8", None, with(credential.clone())).unwrap();
     assert_eq!(rights.accompaniment(), Some(&credential));
-    assert!(rights
-        .property_list()
-        .contains(&PropertyIdentifier::ACCOMPANIMENT));
+    assert!(
+        rights
+            .property_list()
+            .contains(&PropertyIdentifier::ACCOMPANIMENT)
+    );
     assert_eq!(
         rights
             .read_property(PropertyIdentifier::ACCOMPANIMENT, None)
@@ -189,9 +191,11 @@ fn python_accompaniment_reaches_the_optional_row() {
     // Omitted, the object has no Accompaniment row.
     let bare = access_rights(9, "AR-9", None, RightsSettings::default()).unwrap();
     assert_eq!(bare.accompaniment(), None);
-    assert!(!bare
-        .property_list()
-        .contains(&PropertyIdentifier::ACCOMPANIMENT));
+    assert!(
+        !bare
+            .property_list()
+            .contains(&PropertyIdentifier::ACCOMPANIMENT)
+    );
 
     // An Access Point is the setter's refusal, and registers nothing.
     let refused = access_rights(
@@ -204,8 +208,8 @@ fn python_accompaniment_reaches_the_optional_row() {
     .unwrap();
     assert!(
         matches!(refused, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "{refused:?}"
     );
 }

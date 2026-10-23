@@ -1,16 +1,20 @@
-//! Explicit single B/IP port admission and cancellation-owned startup cleanup.
+//! Explicit single B/IP or B/IPv6 port admission and cancellation-owned
+//! startup cleanup.
 //!
 //! The registered port may run in NORMAL, FOREIGN or BBMD mode. Startup
 //! publishes the mode with the actual bind; in BBMD mode the Network Port
-//! object then reads the transport's own tables on each property read.
+//! object then reads the transport's own tables on each property read. A
+//! B/IPv6 port registers the same way, through
+//! [`TransportPort::bip6_port`], and publishes its VMAC and multicast group
+//! too.
 use super::*;
-use bacnet_network::layer::ReceivedApdu;
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
-    /// Select the concrete built-in Network Port for this owned B/IP link, in
-    /// whichever B/IP mode the transport runs. The object must already
-    /// describe the concrete interface and configured UDP port (zero is
-    /// allowed). Startup validates, then publishes the actual bind and mode.
+    /// Select the concrete built-in Network Port for this owned B/IP or
+    /// B/IPv6 link, in whichever mode the transport runs. The object must
+    /// already describe the concrete interface and configured UDP port
+    /// (zero is allowed): an IPV4 object for B/IP, an IPV6 one for B/IPv6.
+    /// Startup validates, then publishes the actual bind and mode.
     pub fn registered_network_port(mut self, oid: ObjectIdentifier) -> Self {
         self.config.registered_network_port = Some(oid);
         self
@@ -34,15 +38,20 @@ pub(super) fn prepare<T: TransportPort>(
     };
     let address = match transport.bip_port() {
         Some(port) => port.endpoint,
+        None if transport.bip6_port().is_some() => return prepare_bip6(db, transport, oid),
         // A B/IP link that reports no mode is configured both ways.
         None if transport.bip_broadcast_endpoint().is_some() => {
             return Err(Error::Encoding(
                 "registered Network Port refused: a BBMD that also registers as a foreign \
                  device has no single B/IP mode"
                     .into(),
-            ))
+            ));
         }
-        None => return Err(Error::Encoding("registered port requires B/IP".into())),
+        None => {
+            return Err(Error::Encoding(
+                "registered port requires B/IP or B/IPv6".into(),
+            ));
+        }
     };
     let ip = *address.ip();
     if ip.is_unspecified()
@@ -60,25 +69,78 @@ pub(super) fn prepare<T: TransportPort>(
     transport.retain_network_port_lease_internal(lease)
 }
 
+/// [`prepare`] for a B/IPv6 link: its configured address must be one
+/// concrete unicast address, as a B/IP link's must.
+fn prepare_bip6<T: TransportPort>(
+    db: &mut ObjectDatabase,
+    transport: &mut T,
+    oid: ObjectIdentifier,
+) -> Result<(), Error> {
+    let address = transport
+        .bip6_port()
+        .ok_or_else(|| Error::Encoding("registered port requires B/IP or B/IPv6".into()))?
+        .endpoint;
+    let ip = *address.ip();
+    let refused = if ip.is_unspecified() || ip.is_multicast() {
+        Some("registered B/IPv6 requires a concrete unicast interface")
+    } else if ip.to_ipv4_mapped().is_some() {
+        Some("registered B/IPv6 refuses an IPv4-mapped address: register IPv4 as B/IP")
+    } else if ip.is_unicast_link_local() {
+        // A link-local address needs IPv6_Zone_Index, which isn't modeled.
+        Some("registered B/IPv6 refuses a link-local address: no IPv6_Zone_Index is modeled")
+    } else {
+        None
+    };
+    if let Some(message) = refused {
+        return Err(Error::Encoding(message.into()));
+    }
+    let (_, lease) = db.reserve_bip6_port_internal(oid, ip.octets(), address.port())?;
+    transport.retain_network_port_lease_internal(lease)
+}
+
 pub(super) fn publish<T: TransportPort + 'static>(
     db: &mut ObjectDatabase,
     network: &NetworkLayer<T>,
     oid: Option<ObjectIdentifier>,
+    activation: bool,
 ) -> Result<(), Error> {
     let Some(oid) = oid else {
         return Ok(());
     };
-    let port = network
-        .transport()
-        .bip_port()
-        .ok_or_else(|| Error::Encoding("registered B/IP mode changed during bind".into()))?;
-    db.publish_bip_port_internal(
-        oid,
-        port.endpoint.ip().octets(),
-        port.endpoint.port(),
-        network.transport().local_receive_apdu_capacity() as u32,
-        port.mode,
-    )?;
+    let transport = network.transport();
+    let capacity = transport.local_receive_apdu_capacity() as u32;
+    match transport.bip_port() {
+        Some(port) => {
+            db.publish_bip_port_internal(
+                oid,
+                port.endpoint.ip().octets(),
+                port.endpoint.port(),
+                capacity,
+                port.mode,
+            )?;
+            // A port that can use B/IP multicast serves its group (#941).
+            db.set_network_port_multicast_internal(oid, port.multicast)?;
+        }
+        _ => {
+            let port = transport.bip6_port().ok_or_else(|| {
+                Error::Encoding("registered B/IP mode changed during bind".into())
+            })?;
+            let vmac = port
+                .vmac
+                .ok_or_else(|| Error::Encoding("started B/IPv6 port reports no VMAC".into()))?;
+            db.publish_bip6_port_internal(
+                oid,
+                port.endpoint.ip().octets(),
+                port.endpoint.port(),
+                vmac,
+                port.multicast_group.octets(),
+                capacity,
+                port.mode,
+            )?;
+        }
+    }
+    // Written values activate only through a ReinitializeDevice handler.
+    db.set_network_port_activation_internal(oid, activation)?;
     // The port's configured number is the local network number from the
     // start; the control worker copies every later change from the port.
     if let Some(state) = db.network_number_internal(oid, None) {
@@ -141,7 +203,7 @@ pub(super) async fn start<T: TransportPort + 'static>(
 ) -> Result<
     (
         NetworkLayer<T>,
-        mpsc::Receiver<ReceivedApdu>,
+        bacnet_network::layer::ApduReceiver,
         Arc<super::audit_recipient_routes::AuditRoutes>,
         Option<mpsc::Receiver<bacnet_network::layer::ReceivedNetworkControl>>,
     ),
@@ -160,7 +222,12 @@ pub(super) async fn start<T: TransportPort + 'static>(
             None
         };
         let apdu_rx = starting.network().start().await?;
-        publish(db, starting.network(), config.registered_network_port)?;
+        publish(
+            db,
+            starting.network(),
+            config.registered_network_port,
+            config.on_reinitialize.is_some(),
+        )?;
         let routes = audit_routes.finish(db, config, starting.network()).await?;
         let controls = starting
             .network()
@@ -197,15 +264,15 @@ pub(super) fn spawn_number_worker<T: TransportPort + 'static>(
         while let Some(control) = controls.recv().await {
             let before = network.local_network_number().get();
             let reply = owner.handle(control).await;
-            if network.local_network_number().get() != before {
-                if let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade) {
-                    audit.number_changed();
-                }
+            if network.local_network_number().get() != before
+                && let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade)
+            {
+                audit.number_changed();
             }
-            if let Some(npdu) = reply {
-                if let Err(error) = network.transport().send_broadcast(&npdu).await {
-                    tracing::debug!(%error, "Network-Number-Is broadcast failed");
-                }
+            if let Some(npdu) = reply
+                && let Err(error) = network.transport().send_broadcast(&npdu).await
+            {
+                tracing::debug!(%error, "Network-Number-Is broadcast failed");
             }
         }
     })

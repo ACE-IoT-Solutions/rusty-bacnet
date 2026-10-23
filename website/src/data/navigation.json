@@ -1,6 +1,6 @@
 [
   {
-    "label": "Start with v0.13",
+    "label": "Start with v0.14",
     "items": [
       {
         "label": "Choose your path",
@@ -25,6 +25,10 @@
       {
         "label": "Embed with Rust",
         "slug": "start/rust"
+      },
+      {
+        "label": "Run on a microcontroller",
+        "slug": "start/embedded"
       }
     ]
   },
@@ -33,23 +37,15 @@
     "items": [
       {
         "label": "Integration overview",
-        "slug": "development/overview"
+        "slug": "integrate/overview"
       },
       {
         "label": "Shared endpoints",
-        "slug": "development/shared-endpoints"
+        "slug": "integrate/shared-endpoints"
       },
       {
         "label": "Network Port & Number controls",
-        "slug": "development/network-number"
-      },
-      {
-        "label": "Transport evidence",
-        "slug": "development/transports"
-      },
-      {
-        "label": "BACnet/SC setup",
-        "slug": "development/bacnet-sc"
+        "slug": "integrate/network-ports"
       }
     ]
   },
@@ -83,6 +79,55 @@
     ]
   },
   {
+    "label": "Terminal UI",
+    "items": [
+      {
+        "label": "Overview & quick start",
+        "slug": "tui/overview"
+      },
+      {
+        "label": "Profiles & safety",
+        "slug": "tui/profiles"
+      },
+      {
+        "label": "Discover devices",
+        "slug": "tui/discovery"
+      },
+      {
+        "label": "Browse a device",
+        "slug": "tui/browser"
+      },
+      {
+        "label": "Write safely",
+        "slug": "tui/writes"
+      },
+      {
+        "label": "Watch points",
+        "slug": "tui/watch"
+      },
+      {
+        "label": "BBMDs & routers",
+        "slug": "tui/network"
+      },
+      {
+        "label": "BACnet/SC screen",
+        "slug": "tui/bacnet-sc"
+      },
+      {
+        "label": "MS/TP monitor & join",
+        "slug": "tui/mstp"
+      },
+      {
+        "label": "Keys & commands",
+        "slug": "tui/keys"
+      },
+      {
+        "label": "Terminal problems",
+        "slug": "tui/troubleshooting"
+      }
+    ]
+  },
+  {
     "label": "Reference",
     "items": [
       {
@@ -100,6 +145,19 @@
     ]
   },
   {
+    "label": "Contribute",
+    "items": [
+      {
+        "label": "Build from source",
+        "slug": "development/build-from-source"
+      },
+      {
+        "label": "Improve the documentation",
+        "slug": "development/documentation"
+      }
+    ]
+  },
+  {
     "label": "Help & project",
     "items": [
       {
@@ -113,10 +171,6 @@
       {
         "label": "Upgrade notes",
         "slug": "project/upgrading"
-      },
-      {
-        "label": "Contribute",
-        "slug": "project/contributing"
       }
     ]
   }

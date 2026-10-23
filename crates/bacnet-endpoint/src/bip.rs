@@ -39,7 +39,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_objects::database::ObjectDatabase;
-use bacnet_transport::bip::{BipMode, BipTransport};
+use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
@@ -60,11 +60,12 @@ pub struct BipEndpointBuilder {
     database: Option<ObjectDatabase>,
     registered_network_port: Option<ObjectIdentifier>,
     identity: Option<crate::identity::DeviceIdentity>,
-    device_write_authorizer: Option<bacnet_server::mutation::MutationAuthorizer>,
+    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
     reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     reinit_password: Option<String>,
     source_audit_bindings: Vec<(ObjectIdentifier, SocketAddrV4)>,
     mode: BipMode,
+    multicast: Option<BipMulticast>,
 }
 
 impl BipEndpointBuilder {
@@ -90,15 +91,16 @@ impl BipEndpointBuilder {
             reinit_password: None,
             source_audit_bindings: Vec::new(),
             mode: BipMode::Normal,
+            multicast: None,
         }
     }
 
     /// Binds the interface address itself, so endpoints on other addresses
     /// of this host can share the port, each getting only its own unicast
     /// (#1538). Off by default. Needs an explicit interface and a nonzero
-    /// port, or starting fails. Broadcasts and unicast are then received in
-    /// no fixed order; see
-    /// [`BipTransport::set_share_port_by_address`](bacnet_transport::bip::BipTransport::set_share_port_by_address).
+    /// port, or starting fails. See
+    /// [`BipTransport::set_share_port_by_address`](bacnet_transport::bip::BipTransport::set_share_port_by_address)
+    /// for what changes.
     pub fn share_port_by_address(mut self, enabled: bool) -> Self {
         self.share_port_by_address = enabled;
         self
@@ -180,7 +182,7 @@ impl BipEndpointBuilder {
     /// a bare transport cannot retain this session-owned authorization.
     pub fn device_writes(
         mut self,
-        authorizer: bacnet_server::mutation::MutationAuthorizer,
+        authorizer: bacnet_server::mutation::DeviceWriteAuthorizer,
     ) -> Self {
         self.device_write_authorizer = Some(authorizer);
         self
@@ -238,6 +240,17 @@ impl BipEndpointBuilder {
         self
     }
 
+    /// Makes the endpoint a B/IP-M node in `multicast`'s group (Annex J.8),
+    /// or, with `None` (the default), not. Needs an explicit interface; see
+    /// [`BipTransport::set_multicast`], whose refusals fail the build. In
+    /// BBMD mode the endpoint serves the group (Annex J.8.3). A registered
+    /// Network Port serves the group as `BACnet_IP_Multicast_Address`
+    /// (#941).
+    pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
+        self.multicast = multicast;
+        self
+    }
+
     /// Builds the concrete B/IP transport with all pre-start controls applied.
     ///
     /// Returns a typed [`Error::Encoding`] when any session-owned
@@ -269,6 +282,7 @@ impl BipEndpointBuilder {
         let mut transport = BipTransport::new(self.interface, self.port, self.broadcast_address);
         transport.set_share_port_by_address(self.share_port_by_address);
         transport.set_mode(self.mode);
+        transport.set_multicast(self.multicast)?;
         Ok(transport)
     }
 

@@ -29,7 +29,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 return Err(invalid(
                     "registered Network Port refused: a BBMD that also registers as a \
                      foreign device has no single B/IP mode",
-                ))
+                ));
             }
             None => return Err(invalid("registration requires B/IP")),
         };
@@ -86,6 +86,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             capacity as u32,
             port.mode,
         )?;
+        // A port that can use B/IP multicast serves its group (#941).
+        db.set_network_port_multicast_internal(oid, port.multicast)?;
+        // Written values activate only through a ReinitializeDevice handler.
+        db.set_network_port_activation_internal(oid, self.reinitialize.is_some())?;
         // The port's configured number is the local network number from the
         // start (#1403); the Number owner copies every later change from the
         // port, as the full server's does.

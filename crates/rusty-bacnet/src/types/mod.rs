@@ -3,14 +3,13 @@
 #![allow(non_snake_case)]
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::BytesMut;
-use pyo3::exceptions::{PyStopAsyncIteration, PyValueError};
+use pyo3::Py;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use pyo3::Py;
 use tokio::sync::broadcast;
 
 use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
@@ -23,6 +22,7 @@ use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums as bacnet_enums;
 use bacnet_types::primitives;
 
+mod access_credential;
 mod access_rule;
 mod action_list;
 mod address;
@@ -36,18 +36,24 @@ mod date;
 mod destination;
 mod device;
 mod enums;
+mod event_parameter_py;
 mod mapping;
 mod object_identifier;
+mod object_profile;
 mod property_reference;
 mod property_value;
 mod read_value;
 mod rpm_wpm;
+mod schedule;
 mod timestamp;
 
+pub(crate) use access_credential::{
+    AccessRightsValue, assigned_access_rights_from_py, authorization_exemptions_from_py,
+};
 pub(crate) use access_rule::{access_rules_from_py, device_object_reference};
 pub(crate) use action_list::action_lists_from_py;
 pub use address::parse_address;
-pub(crate) use address::{parse_bip6_address, PeerAddresses};
+pub(crate) use address::{PeerAddresses, parse_bip6_address};
 pub(crate) use audit::recipient as audit_recipient_from_py;
 pub(crate) use audit::{audit_log_query_request_from_py, audit_notification_request_from_py};
 pub(crate) use audit_projection::{audit_log_query_ack_to_py, audit_log_record_to_py};
@@ -59,14 +65,18 @@ pub use device::PyDiscoveredDevice;
 pub use enums::*;
 pub(crate) use mapping::scale as scale_from_py;
 pub use object_identifier::PyObjectIdentifier;
+pub(crate) use object_profile::object_profile_from_py;
 pub(crate) use property_reference::{
-    check_device, local_device, localize, property_references_from_py,
+    check_device, local_device, localize, property_reference_from_py, property_references_from_py,
 };
 pub use property_value::PyPropertyValue;
 pub(crate) use read_value::{decode_read_ack, decode_read_value};
 pub(crate) use rpm_wpm::{
-    py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyDeviceWrite, PyPropertyWrite,
-    PyReadAccessSpec, PyWriteAccessSpec,
+    PyDeviceWrite, PyPropertyWrite, PyReadAccessSpec, PyWriteAccessSpec, py_to_rpm_specs,
+    py_to_wpm_specs, rpm_ack_to_py,
+};
+pub(crate) use schedule::{
+    calendar_entries_from_py, date_range_from_py, special_events_from_py, weekly_schedule_from_py,
 };
 pub use timestamp::PyBACnetTimeStamp;
 pub(crate) use timestamp::{date_time_tuple, time_value};

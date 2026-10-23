@@ -88,7 +88,7 @@ async fn wire_contract(writes: bool, custom: bool) {
             "RP-only endpoint must omit {property:?} from Property_List"
         );
         assert!(
-            matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32),
+            matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY),
             "nonexecuted COV property must be unknown"
         );
     }
@@ -115,11 +115,11 @@ impl BACnetObject for CustomDevice {
     ) -> Result<PropertyValue, Error> {
         match property {
             PropertyIdentifier::OBJECT_IDENTIFIER => {
-                return Ok(PropertyValue::ObjectIdentifier(oid(123)))
+                return Ok(PropertyValue::ObjectIdentifier(oid(123)));
             }
             PropertyIdentifier::VENDOR_IDENTIFIER => return Ok(PropertyValue::Unsigned(42)),
             PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED => {
-                return Ok(PropertyValue::Unsigned(1476))
+                return Ok(PropertyValue::Unsigned(1476));
             }
             _ => {}
         }
@@ -313,7 +313,7 @@ async fn endpoint_wildcard_keeps_frozen_identity_and_identity_free_selection_sta
                 if composed && phase == 1 {
                     assert!(
                         matches!(result, Err(Error::Protocol { class, code })
-                        if class == u32::from(ErrorClass::OBJECT.to_raw()) && code == u32::from(ErrorCode::UNKNOWN_OBJECT.to_raw())),
+                        if class == ErrorClass::OBJECT && code == ErrorCode::UNKNOWN_OBJECT),
                         "{result:?}"
                     );
                 } else {

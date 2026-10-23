@@ -44,7 +44,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
 use super::persistence::{NotificationClassPersistence, NotificationClassSnapshot};
-use super::{recipient_list, NotificationClass, MAX_RECIPIENT_LIST_DESTINATIONS};
+use super::{MAX_RECIPIENT_LIST_DESTINATIONS, NotificationClass, recipient_list};
 use crate::common;
 use crate::durable::staged::{self, StagedSaves};
 use crate::durable::{DurableWrites, PendingWrite, SaveWait, SaveWriter, StageStep};

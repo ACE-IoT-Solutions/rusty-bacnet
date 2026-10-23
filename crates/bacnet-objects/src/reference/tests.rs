@@ -49,12 +49,8 @@ fn expect_protocol(
 ) {
     match result {
         Err(Error::Protocol { class, code }) => {
-            assert_eq!(
-                class,
-                ErrorClass::PROPERTY.to_raw() as u32,
-                "{context}: wrong error class"
-            );
-            assert_eq!(code, expected_code.to_raw() as u32, "{context}: wrong code");
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}: wrong error class");
+            assert_eq!(code, expected_code, "{context}: wrong code");
         }
         other => panic!("{context}: expected PROPERTY/{expected_code:?}, got {other:?}"),
     }
@@ -156,9 +152,11 @@ fn a_bare_reference_to_the_reserved_instance_clears() {
     }
     // One instance short of it is an ordinary reference.
     let value = PropertyValue::ApplicationData(vec![0x0C, 0x00, 0x3F, 0xFF, 0xFE, 0x19, 0x55]);
-    assert!(decode_reference_write(&value, ReferenceFrame::Bare)
-        .unwrap()
-        .is_some());
+    assert!(
+        decode_reference_write(&value, ReferenceFrame::Bare)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

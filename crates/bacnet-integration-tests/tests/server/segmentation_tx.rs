@@ -9,6 +9,7 @@ use super::*;
 #[tokio::test]
 async fn server_segments_large_rpm_response() {
     use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+    use bacnet_types::enums::EngineeringUnits;
 
     // Build a server with a Device and multiple AnalogInput objects so that
     // an RPM response reading many properties will be large.
@@ -35,7 +36,7 @@ async fn server_segments_large_rpm_response() {
                 "Analog Input Object With A Long Descriptive Name Number {}",
                 i
             ),
-            62,
+            EngineeringUnits::DEGREES_CELSIUS,
         )
         .unwrap();
         ai.set_present_value(i as f32 * 10.0);

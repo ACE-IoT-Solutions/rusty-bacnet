@@ -174,7 +174,9 @@ async fn proprietary_transit_local_preregistered_silence_and_state_matrix() {
                         (0, vec![], 149),
                         (0, vec![0x00, 0x2B], 147),
                     ] {
-                        let case = format!("proprietary registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} flags={flags} body={body:02x?}");
+                        let case = format!(
+                            "proprietary registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} flags={flags} body={body:02x?}"
+                        );
                         send(&mut a, raw(12, id, origin, dest, flags, &body)).await;
                         if (!registered || dest.is_none())
                             && dest != Some(BROADCAST_VMAC)
@@ -238,7 +240,9 @@ async fn proprietary_transit_result_for_12_relay_and_others_drop() {
                     ] {
                         let mut body = vec![0xFE, 0, 0, 0x1F];
                         body.extend_from_slice(&result);
-                        let case = format!("ResultFor=12 registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} result={result:02x?}");
+                        let case = format!(
+                            "ResultFor=12 registered={registered} id={id} origin={origin:02x?} dest={dest:02x?} result={result:02x?}"
+                        );
                         send(&mut b, raw(0, id, origin, dest, 2, &body)).await;
                         if registered && origin.is_none() && dest == Some([0x42; 6]) {
                             matrix_receive(

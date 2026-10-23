@@ -16,6 +16,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::args::FileReadAccess;
+use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 type BoxError = Box<dyn StdError>;
@@ -190,9 +191,10 @@ impl Drop for FileReadDestination {
         if let Err(error) = self.cleanup() {
             eprintln!(
                 "Error: cleanup failed during file-read cancellation: {error}; retained staging path: {}",
-                retained
-                    .as_deref()
-                    .map_or_else(|| "<unknown>".to_string(), |path| path.display().to_string())
+                retained.as_deref().map_or_else(
+                    || "<unknown>".to_string(),
+                    |path| path.display().to_string()
+                )
             );
         }
     }
@@ -521,7 +523,7 @@ pub struct FileReadOptions<'a> {
 /// Read a complete file from a remote device via successive AtomicReadFile ACKs.
 pub async fn file_read_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     file_instance: u32,
     options: FileReadOptions<'_>,
     format: OutputFormat,
@@ -536,7 +538,7 @@ pub async fn file_read_cmd<T: TransportPort + 'static>(
     validate_file_read_options(access, start_position, count, output_path)?;
     let file_oid = ObjectIdentifier::new(ObjectType::FILE, file_instance)?;
     let summary = read_file_with(access, start_position, count, output_path, |request| {
-        client.atomic_read_file_decoded(mac, file_oid, request)
+        to.atomic_read_file(client, file_oid, request)
     })
     .await?;
 
@@ -571,7 +573,7 @@ pub async fn file_read_cmd<T: TransportPort + 'static>(
 /// Write a file to a remote device via AtomicWriteFile (stream access).
 pub async fn file_write_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     file_instance: u32,
     start_position: i32,
     input_path: &str,
@@ -587,7 +589,7 @@ pub async fn file_write_cmd<T: TransportPort + 'static>(
         file_data,
     };
 
-    client.atomic_write_file(mac, file_oid, access).await?;
+    to.atomic_write_file(client, file_oid, access).await?;
 
     output::print_success(&format!("Wrote {data_len} bytes from {input_path}"), format);
     Ok(())

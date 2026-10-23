@@ -3,7 +3,7 @@ use bytes::BytesMut;
 use bacnet_types::error::Error;
 
 use crate::port::DataAttribute;
-use crate::sc_frame::{encode_sc_message, Vmac, BROADCAST_VMAC};
+use crate::sc_frame::{BROADCAST_VMAC, Vmac, encode_sc_message};
 
 use super::{ScConnectionState, ScTransport, WebSocketPort};
 
@@ -26,13 +26,13 @@ impl<W: WebSocketPort> ScTransport<W> {
         let mut dest_vmac = [0u8; 6];
         dest_vmac.copy_from_slice(mac);
 
-        if dest_vmac != BROADCAST_VMAC {
-            if let Some(route) = self.direct_membership.route(&dest_vmac) {
-                match route.send_npdu(npdu, data_attributes).await {
-                    Ok(()) => return Ok(()),
-                    Err(super::direct_egress::DirectSendError::Unavailable) => {}
-                    Err(error) => return Err(error.into_error()),
-                }
+        if dest_vmac != BROADCAST_VMAC
+            && let Some(route) = self.direct_membership.route(&dest_vmac)
+        {
+            match route.send_npdu(npdu, data_attributes).await {
+                Ok(()) => return Ok(()),
+                Err(super::direct_egress::DirectSendError::Unavailable) => {}
+                Err(error) => return Err(error.into_error()),
             }
         }
 
@@ -110,11 +110,10 @@ impl<W: WebSocketPort> ScTransport<W> {
                 ));
             }
             if npdu.len() > c.hub_max_npdu_length as usize {
-                return Err(Error::Encoding(format!(
-                    "BACnet/SC NPDU length {} exceeds peer Max-NPDU-Length {}",
-                    npdu.len(),
-                    c.hub_max_npdu_length
-                )));
+                return Err(Error::SendTooLong {
+                    length: npdu.len(),
+                    limit: usize::from(c.hub_max_npdu_length),
+                });
             }
             let hub_max_bvlc_length = c.hub_max_bvlc_length;
             let msg =
@@ -125,11 +124,10 @@ impl<W: WebSocketPort> ScTransport<W> {
         let mut buf = BytesMut::new();
         encode_sc_message(&mut buf, &msg);
         if buf.len() > hub_max_bvlc_length as usize {
-            return Err(Error::Encoding(format!(
-                "BACnet/SC encoded BVLC length {} exceeds peer Max-BVLC-Length {}",
-                buf.len(),
-                hub_max_bvlc_length
-            )));
+            return Err(Error::SendTooLong {
+                length: buf.len(),
+                limit: usize::from(hub_max_bvlc_length),
+            });
         }
         ws.send(&buf).await
     }

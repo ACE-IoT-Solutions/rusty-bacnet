@@ -2,10 +2,10 @@
 //!
 //! This entire module is gated behind `#[cfg(feature = "pcap")]`.
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
@@ -24,6 +24,8 @@ pub struct CaptureOpts {
     pub decode: bool,
     pub device: Option<String>,
     pub interface_ip: Ipv4Addr,
+    /// The UDP port the BPF filter keeps: the global `-p`.
+    pub port: u16,
     pub filter: Option<String>,
     pub count: Option<u64>,
     pub snaplen: u32,
@@ -152,18 +154,20 @@ struct PacketJson {
 // Core functions
 // ---------------------------------------------------------------------------
 
-/// Build a BPF filter string. Defaults to "udp port 47808"; if the user
-/// supplies an additional expression it is appended with `and`.
-fn build_filter(user_filter: &Option<String>) -> String {
-    let base = "udp port 47808";
+/// Build a BPF filter string: IPv4 UDP on the `-p` port (47808 by default); if
+/// the user supplies an additional expression it is appended with `and`.
+pub(crate) fn build_filter(port: u16, user_filter: &Option<String>) -> String {
+    // IPv4 only: the decoders read an IPv4 header, and an IPv6 datagram on
+    // the port would be read as one.
+    let base = format!("ip and udp port {port}");
     match user_filter {
         Some(expr) => format!("{base} and ({expr})"),
-        None => base.to_string(),
+        None => base,
     }
 }
 
 /// Resolve a pcap device from a name, interface IP, or system default.
-fn resolve_device(
+pub(crate) fn resolve_device(
     device_name: &Option<String>,
     interface_ip: Ipv4Addr,
 ) -> Result<pcap::Device, String> {
@@ -253,6 +257,30 @@ fn extract_bacnet_payload(raw: &[u8], datalink: pcap::Linktype) -> Option<&[u8]>
     Some(&udp[8..udp_len])
 }
 
+/// The UDP datagram in a captured frame: its source, its destination and
+/// its payload. The TUI's libpcap source reads frames with it.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn udp_datagram(
+    raw: &[u8],
+    datalink: pcap::Linktype,
+) -> Option<(SocketAddrV4, SocketAddrV4, &[u8])> {
+    let ip = raw.get(ip_offset(datalink)?..)?;
+    // IPv4 only: an IPv6 packet's fields are elsewhere.
+    if ip.first()? >> 4 != 4 {
+        return None;
+    }
+    let payload = extract_bacnet_payload(raw, datalink)?;
+    let udp = &ip[usize::from(ip[0] & 0x0F) * 4..];
+    let address = |at: usize, port: usize| {
+        let octets = [ip[at], ip[at + 1], ip[at + 2], ip[at + 3]];
+        SocketAddrV4::new(
+            Ipv4Addr::from(octets),
+            u16::from_be_bytes([udp[port], udp[port + 1]]),
+        )
+    };
+    Some((address(12, 0), address(16, 2), payload))
+}
+
 /// Install a Ctrl-C handler that clears the running flag.
 fn ctrlc_flag(flag: &Arc<AtomicBool>) {
     let f = flag.clone();
@@ -275,7 +303,7 @@ pub fn run_capture(opts: CaptureOpts) -> Result<(), Box<dyn std::error::Error>> 
         return Err("--quiet requires --save".into());
     }
 
-    let filter_str = build_filter(&opts.filter);
+    let filter_str = build_filter(opts.port, &opts.filter);
 
     // Open capture source
     let mut source: Box<dyn CaptureSource> = if let Some(ref path) = opts.read {
@@ -312,10 +340,10 @@ pub fn run_capture(opts: CaptureOpts) -> Result<(), Box<dyn std::error::Error>> 
         if !running.load(Ordering::Relaxed) {
             break;
         }
-        if let Some(limit) = opts.count {
-            if packet_count >= limit {
-                break;
-            }
+        if let Some(limit) = opts.count
+            && packet_count >= limit
+        {
+            break;
         }
 
         // Get next packet
@@ -419,13 +447,42 @@ mod tests {
 
     #[test]
     fn build_filter_default() {
-        assert_eq!(build_filter(&None), "udp port 47808");
+        assert_eq!(build_filter(47808, &None), "ip and udp port 47808");
     }
 
     #[test]
     fn build_filter_with_user_expr() {
-        let f = build_filter(&Some("host 10.0.0.1".to_string()));
-        assert_eq!(f, "udp port 47808 and (host 10.0.0.1)");
+        let f = build_filter(47808, &Some("host 10.0.0.1".to_string()));
+        assert_eq!(f, "ip and udp port 47808 and (host 10.0.0.1)");
+    }
+
+    #[test]
+    fn build_filter_honours_the_port_flag() {
+        assert_eq!(build_filter(47809, &None), "ip and udp port 47809");
+        let f = build_filter(47809, &Some("host 10.0.0.1".to_string()));
+        assert_eq!(f, "ip and udp port 47809 and (host 10.0.0.1)");
+    }
+
+    #[test]
+    fn udp_datagram_reads_the_endpoints_and_payload() {
+        let mut frame = vec![0u8; 14 + 20 + 8 + 2];
+        frame[12] = 0x08;
+        frame[14] = 0x45;
+        frame[14 + 12..14 + 16].copy_from_slice(&[10, 0, 0, 1]);
+        frame[14 + 16..14 + 20].copy_from_slice(&[10, 0, 0, 255]);
+        frame[34..36].copy_from_slice(&47809u16.to_be_bytes());
+        frame[36..38].copy_from_slice(&47808u16.to_be_bytes());
+        frame[38..40].copy_from_slice(&10u16.to_be_bytes());
+        frame[42..44].copy_from_slice(&[0x81, 0x0B]);
+        let (src, dst, payload) = udp_datagram(&frame, pcap::Linktype::ETHERNET).unwrap();
+        assert_eq!(src.to_string(), "10.0.0.1:47809");
+        assert_eq!(dst.to_string(), "10.0.0.255:47808");
+        assert_eq!(payload, &[0x81, 0x0B]);
+        assert!(udp_datagram(&frame[..30], pcap::Linktype::ETHERNET).is_none());
+        assert!(udp_datagram(&frame[..10], pcap::Linktype::ETHERNET).is_none());
+        // An IPv6 packet isn't read as IPv4.
+        frame[14] = 0x60;
+        assert!(udp_datagram(&frame, pcap::Linktype::ETHERNET).is_none());
     }
 
     #[test]
@@ -455,6 +512,7 @@ mod tests {
             decode: false,
             device: None,
             interface_ip: Ipv4Addr::UNSPECIFIED,
+            port: 47808,
             filter: None,
             count: None,
             snaplen: 65535,
@@ -473,6 +531,7 @@ mod tests {
             decode: false,
             device: Some("en0".to_string()),
             interface_ip: Ipv4Addr::UNSPECIFIED,
+            port: 47808,
             filter: None,
             count: None,
             snaplen: 65535,
@@ -486,12 +545,12 @@ mod tests {
     fn extract_ip_addrs_ethernet() {
         // Build a minimal Ethernet + IP + UDP frame
         let mut frame = vec![0u8; 14 + 20 + 8]; // Ethernet(14) + IP(20) + UDP(8)
-                                                // Ethernet header: 12 bytes dst+src, 2 bytes ethertype (0x0800 = IPv4)
+        // Ethernet header: 12 bytes dst+src, 2 bytes ethertype (0x0800 = IPv4)
         frame[12] = 0x08;
         frame[13] = 0x00;
         // IP header at offset 14
         frame[14] = 0x45; // version=4, IHL=5 (20 bytes)
-                          // Source IP: 10.0.0.1 at bytes 12-15 of IP header
+        // Source IP: 10.0.0.1 at bytes 12-15 of IP header
         frame[14 + 12] = 10;
         frame[14 + 13] = 0;
         frame[14 + 14] = 0;
@@ -527,7 +586,7 @@ mod tests {
         frame[12] = 0x08;
         frame[13] = 0x00;
         frame[14] = 0x45; // IHL=5
-                          // UDP length = 8 (header) + 4 (payload) = 12
+        // UDP length = 8 (header) + 4 (payload) = 12
         frame[34 + 4] = 0x00;
         frame[34 + 5] = 0x0C;
         // Payload bytes
@@ -548,7 +607,7 @@ mod tests {
         // DLT_RAW: no link-layer header, starts at IP
         let mut frame = vec![0u8; 20 + 8 + 2];
         frame[0] = 0x45; // IHL=5
-                         // UDP length = 10
+        // UDP length = 10
         frame[20 + 4] = 0x00;
         frame[20 + 5] = 0x0A;
         frame[28] = 0xAA;

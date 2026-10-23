@@ -6,12 +6,12 @@ use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
 use bacnet_bip_codec::Bvll;
 use bacnet_mstp_codec::{
-    crc, decode_frame, decode_frame_in_place, Frame, FrameType, MAX_EXTENDED_FRAME_LENGTH,
-    MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
+    Frame, FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
+    MAX_STANDARD_MPDU_DATA, crc, decode_frame, decode_frame_in_place,
 };
 use bacnet_router_core::npdu::{Address, Npdu};
 
@@ -117,13 +117,13 @@ fn bench_router_npdu(c: &mut Criterion) {
     let mut out = [0u8; 64];
 
     group.bench_function("parse_routed_request", |b| {
-        b.iter(|| black_box(Npdu::parse(black_box(&routed)).unwrap()))
+        b.iter(|| black_box(Npdu::decode(black_box(&routed)).unwrap()))
     });
     // What a router does to a request for a network it is on: drop DNET and
     // DADR, add SNET and SADR, then write the result.
     group.bench_function("parse_and_rewrite_for_final_hop", |b| {
         b.iter(|| {
-            let npdu = Npdu::parse(black_box(&routed)).unwrap();
+            let npdu = Npdu::decode(black_box(&routed)).unwrap();
             let rewritten = Npdu {
                 destination: None,
                 source: Some(Address {
@@ -133,7 +133,7 @@ fn bench_router_npdu(c: &mut Criterion) {
                 hop_count: 0,
                 ..npdu
             };
-            black_box(rewritten.write(&mut out).unwrap())
+            black_box(rewritten.encode_into(&mut out).unwrap())
         })
     });
     let routed_bytes = Bytes::from(routed.clone());

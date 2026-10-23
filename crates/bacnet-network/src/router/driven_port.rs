@@ -6,12 +6,13 @@
 //! octets each way, refusing a longer send, and publishes changes to it
 //! only when the test hands it a watch.
 
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-use bacnet_transport::port::{NpduLimits, ReceivedNpdu, TransportPort};
-use bacnet_types::error::Error;
+use bacnet_npdu::NpduLimits;
+use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 
@@ -102,9 +103,12 @@ impl Driven {
     /// Record the send, then take it or refuse it.
     fn send(&self, npdu: &[u8], to: Option<&[u8]>) -> Result<(), Error> {
         let refusal = if self.down.load(Ordering::SeqCst) {
-            Some("the port is down")
+            Some(Error::Encoding("the port is down".into()))
         } else if npdu.len() > usize::from(self.limit.load(Ordering::SeqCst)) {
-            Some("too long for the port")
+            Some(Error::SendTooLong {
+                length: npdu.len(),
+                limit: usize::from(self.limit.load(Ordering::SeqCst)),
+            })
         } else {
             None
         };
@@ -114,7 +118,7 @@ impl Driven {
             taken: refusal.is_none(),
         };
         let _ = self.sent.send(sent);
-        refusal.map_or(Ok(()), |why| Err(Error::Encoding(why.into())))
+        refusal.map_or(Ok(()), Err)
     }
 }
 

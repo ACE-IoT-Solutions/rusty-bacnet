@@ -35,6 +35,7 @@ use bacnet_objects::{
     binary::BinaryValueObject,
 };
 use bacnet_services::common::BACnetPropertyValue;
+use bacnet_types::enums::EngineeringUnits;
 
 fn flags(operations: &[AuditOperation]) -> AuditOperationFlags {
     let mut flags = AuditOperationFlags::empty();
@@ -50,7 +51,8 @@ fn encoded(value: &PropertyValue) -> Vec<u8> {
 }
 async fn install(f: &Fixture, policy: ObjectAuditPolicy) {
     let mut db = f.server.db.write().await;
-    let mut av = AnalogValueObject::new(11, "policy av", 62).unwrap();
+    let mut av =
+        AnalogValueObject::new(11, "policy av", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     av.set_audit_policy(policy);
     let mut bv = BinaryValueObject::new(11, "policy bv").unwrap();
     bv.set_audit_policy(policy);
@@ -102,18 +104,19 @@ async fn object_audit_policy_actual_changes_noops_failures_and_local_paths() {
             )
             .await
             .unwrap();
-        assert!(f
-            .server
-            .write_local(
-                &oid(kind, 11),
-                PropertyIdentifier::AUDIT_LEVEL,
-                None,
-                PropertyValue::Boolean(true),
-                None,
-                crate::LocalCommandSource::ServerDevice,
-            )
-            .await
-            .is_err());
+        assert!(
+            f.server
+                .write_local(
+                    &oid(kind, 11),
+                    PropertyIdentifier::AUDIT_LEVEL,
+                    None,
+                    PropertyValue::Boolean(true),
+                    None,
+                    crate::LocalCommandSource::ServerDevice,
+                )
+                .await
+                .is_err()
+        );
         // No-op and failed operations do not acquire mandatory-change status.
         assert!(matches!(
             write(
@@ -297,9 +300,11 @@ async fn object_audit_policy_priorities_config_read_and_failed_write() {
         .await;
         settle().await;
         assert_eq!(count(&f), 3);
-        assert!(notifications(&f.transport.sent)[2].notifications[0]
-            .result
-            .is_some());
+        assert!(
+            notifications(&f.transport.sent)[2].notifications[0]
+                .result
+                .is_some()
+        );
         write(
             &f,
             ObjectType::BINARY_VALUE,
@@ -551,9 +556,11 @@ async fn object_audit_policy_also_filters_list_and_file_execution_failures() {
         ));
         settle().await;
         assert_eq!(count(&f), if level == AuditLevel::NONE { 0 } else { 2 });
-        assert!(notifications(&f.transport.sent)
-            .iter()
-            .all(|n| n.notifications[0].result.is_some()));
+        assert!(
+            notifications(&f.transport.sent)
+                .iter()
+                .all(|n| n.notifications[0].result.is_some())
+        );
         f.server.stop().await.unwrap();
     }
 }

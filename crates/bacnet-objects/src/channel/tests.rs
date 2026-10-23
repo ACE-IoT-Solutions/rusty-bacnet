@@ -1,8 +1,8 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_encoding::constructed::encode_device_object_property_reference;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bytes::BytesMut;
-use PropertyIdentifier as P;
 
 pub(super) fn assert_error<T: std::fmt::Debug>(
     result: Result<T, Error>,
@@ -11,7 +11,7 @@ pub(super) fn assert_error<T: std::fmt::Debug>(
 ) {
     assert!(
         matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }

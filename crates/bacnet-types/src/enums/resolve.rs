@@ -688,20 +688,24 @@ mod tests {
 
     #[test]
     fn resolve_bits_ignores_non_bitstring() {
-        assert!(resolve_bits(
-            PropertyIdentifier::STATUS_FLAGS,
-            &PropertyValue::Unsigned(1)
-        )
-        .is_none());
+        assert!(
+            resolve_bits(
+                PropertyIdentifier::STATUS_FLAGS,
+                &PropertyValue::Unsigned(1)
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn resolve_enum_ignores_non_enumerated() {
-        assert!(resolve_enum(
-            PropertyIdentifier::OBJECT_TYPE,
-            &PropertyValue::Unsigned(19)
-        )
-        .is_none());
+        assert!(
+            resolve_enum(
+                PropertyIdentifier::OBJECT_TYPE,
+                &PropertyValue::Unsigned(19)
+            )
+            .is_none()
+        );
         assert!(matches!(
             resolve_enum(
                 PropertyIdentifier::EVENT_STATE,

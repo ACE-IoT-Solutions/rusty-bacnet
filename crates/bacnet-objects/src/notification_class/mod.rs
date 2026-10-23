@@ -47,8 +47,8 @@ pub(crate) mod recipient_list;
 mod saving;
 #[doc(hidden)]
 pub use enrollment_summary::{
-    resolve_enrollment_summary_class_internal, EnrollmentSummaryClassProjection,
-    EnrollmentSummaryClassProjectionError,
+    EnrollmentSummaryClassProjection, EnrollmentSummaryClassProjectionError,
+    resolve_enrollment_summary_class_internal,
 };
 pub use persistence::{
     FileNotificationClassPersistence, NotificationClassPersistence, NotificationClassSnapshot,
@@ -349,15 +349,14 @@ fn find_notification_class(
     notification_class: u32,
 ) -> Option<&dyn BACnetObject> {
     // Try direct OID lookup first (instance == notification_class is the common case)
-    if let Ok(nc_oid) = ObjectIdentifier::new(ObjectType::NOTIFICATION_CLASS, notification_class) {
-        if let Some(obj) = db.get(&nc_oid) {
-            if matches!(
-                obj.read_property(PropertyIdentifier::NOTIFICATION_CLASS, None),
-                Ok(PropertyValue::Unsigned(n)) if n as u32 == notification_class
-            ) {
-                return Some(obj);
-            }
-        }
+    if let Ok(nc_oid) = ObjectIdentifier::new(ObjectType::NOTIFICATION_CLASS, notification_class)
+        && let Some(obj) = db.get(&nc_oid)
+        && matches!(
+            obj.read_property(PropertyIdentifier::NOTIFICATION_CLASS, None),
+            Ok(PropertyValue::Unsigned(n)) if n as u32 == notification_class
+        )
+    {
+        return Some(obj);
     }
 
     // Fall back to scanning all NotificationClass objects

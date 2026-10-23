@@ -3,7 +3,7 @@
 //! In_Progress TRIM_ACTIVE, a trim change following Trim_Fade_Time, and
 //! commands, fades, steps, STOP and an egress staying inside the trims.
 
-use super::engine_tests::{op, Fixture};
+use super::engine_tests::{Fixture, op};
 use super::*;
 use crate::property_metadata::PropertyPresenceCondition;
 use bacnet_types::enums::{ErrorClass, ErrorCode, LightingInProgress, LightingOperation as Op};
@@ -20,8 +20,8 @@ fn assert_error(result: Result<impl std::fmt::Debug, Error>, expected: ErrorCode
     let error = result.unwrap_err();
     assert!(
         matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {error:?}"
     );
 }

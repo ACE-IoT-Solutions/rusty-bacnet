@@ -33,8 +33,8 @@ impl CustomPoint {
                 })
             }
             Behavior::Refuse => Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw().into(),
-                code: ErrorCode::INVALID_OPERATION_IN_THIS_STATE.to_raw().into(),
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::INVALID_OPERATION_IN_THIS_STATE,
             }),
             Behavior::AlreadyApplied => Ok(LifeSafetyOperationOutcome {
                 effect: LifeSafetyOperationEffect::AlreadyApplied,
@@ -89,8 +89,8 @@ impl BACnetObject for CustomPoint {
                 data: vec![0],
             }),
             _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw().into(),
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw().into(),
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             }),
         }
     }
@@ -102,8 +102,8 @@ impl BACnetObject for CustomPoint {
         _: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw().into(),
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
     fn supports_cov(&self) -> bool {
@@ -167,7 +167,11 @@ fn subscriptions(oid: ObjectIdentifier) -> Vec<CovSubscription> {
 }
 fn assert_notifications(apdus: &[Apdu], oid: ObjectIdentifier, invoke_id: u8) {
     assert!(matches!(&apdus[0], Apdu::SimpleAck(ack) if ack.invoke_id == invoke_id));
-    assert_eq!(apdus.len(), 3, "ACK precedes exactly the whole-object and Tracking_Value COV; unchanged Silenced is silent");
+    assert_eq!(
+        apdus.len(),
+        3,
+        "ACK precedes exactly the whole-object and Tracking_Value COV; unchanged Silenced is silent"
+    );
     let mut payloads = Vec::new();
     for apdu in &apdus[1..] {
         let Apdu::UnconfirmedRequest(request) = apdu else {

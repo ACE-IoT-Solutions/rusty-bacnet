@@ -191,8 +191,8 @@ fn log_datum_variants_clone_eq() {
     assert_eq!(bits.clone(), bits);
 
     let fail = LogDatum::Failure {
-        error_class: 2,
-        error_code: 31,
+        error_class: crate::enums::ErrorClass::PROPERTY,
+        error_code: crate::enums::ErrorCode::UNKNOWN_OBJECT,
     };
     assert_eq!(fail.clone(), fail);
 
@@ -469,23 +469,22 @@ fn a_reference_to_the_reserved_instance_is_unset() {
     let object = oid(ObjectType::ANALOG_INPUT, 7);
     let local = BACnetDeviceObjectPropertyReference::new_local(object, 85);
     assert!(!local.is_unset());
-    assert!(!BACnetDeviceObjectPropertyReference::new_remote(
-        object,
-        85,
-        oid(ObjectType::DEVICE, 9)
-    )
-    .is_unset());
-    assert!(BACnetDeviceObjectPropertyReference::new_remote(
-        object,
-        85,
-        oid(ObjectType::DEVICE, reserved)
-    )
-    .is_unset());
-    assert!(BACnetDeviceObjectPropertyReference::new_local(
-        oid(ObjectType::ANALOG_INPUT, reserved),
-        85
-    )
-    .is_unset());
+    assert!(
+        !BACnetDeviceObjectPropertyReference::new_remote(object, 85, oid(ObjectType::DEVICE, 9))
+            .is_unset()
+    );
+    assert!(
+        BACnetDeviceObjectPropertyReference::new_remote(
+            object,
+            85,
+            oid(ObjectType::DEVICE, reserved)
+        )
+        .is_unset()
+    );
+    assert!(
+        BACnetDeviceObjectPropertyReference::new_local(oid(ObjectType::ANALOG_INPUT, reserved), 85)
+            .is_unset()
+    );
 }
 
 #[test]

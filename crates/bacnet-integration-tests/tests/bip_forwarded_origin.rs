@@ -21,7 +21,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::MacAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// The B/IP network, and the one behind the router.
 const BIP_NET: u16 = 1;
@@ -112,6 +112,6 @@ async fn forwarded_origin_and_priority_survive_routing() {
         .unwrap();
     assert_eq!(to.as_slice(), [0x05]);
 
-    router.stop().await;
+    router.stop().await.unwrap();
     station.stop().await.unwrap();
 }

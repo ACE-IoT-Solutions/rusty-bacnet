@@ -38,13 +38,13 @@ use bacnet_types::primitives::BACnetTimeStamp;
 
 use crate::errors::to_py_err;
 use crate::types::{
-    audit_log_query_ack_to_py, audit_log_query_request_from_py, audit_notification_request_from_py,
-    decode_read_ack, parse_bip6_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
     PeerAddresses, PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator,
     PyDeviceWrite, PyDiscoveredDevice, PyEnableDisable, PyEnrollmentSummaryEventStateFilter,
     PyEventState, PyEventType, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier,
     PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec,
-    PyReinitializedState, PyWriteAccessSpec,
+    PyReinitializedState, PyWriteAccessSpec, audit_log_query_ack_to_py,
+    audit_log_query_request_from_py, audit_notification_request_from_py, decode_read_ack,
+    parse_bip6_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
 };
 use state::started;
 
@@ -80,6 +80,9 @@ fn device_range(
 ) -> PyResult<Option<DeviceInstanceRange>> {
     DeviceInstanceRange::from_limits(low_limit, high_limit).map_err(|error| match error {
         bacnet_types::error::Error::OutOfRange(message) => PyValueError::new_err(message),
+        bacnet_types::error::Error::Range(refused) => {
+            PyValueError::new_err(refused.message().to_string())
+        }
         other => PyValueError::new_err(other.to_string()),
     })
 }
@@ -116,17 +119,24 @@ pub struct BACnetClient {
     share_port_by_address: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IP multicast group `multicast=` asked for (#941).
+    multicast: Option<bacnet_transport::bip::BipMulticast>,
     apdu_timeout_ms: u64,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,
     sc_device_uuid: [u8; 16],
+    sc_npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
     sc_ca_cert: Option<String>,
     sc_client_cert: Option<String>,
     sc_client_key: Option<String>,
     sc_heartbeat_interval_ms: Option<u64>,
     sc_heartbeat_timeout_ms: Option<u64>,
     reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
+    /// The failover hub's URL (#1829); requires `reconnect`.
+    sc_failover_hub: Option<String>,
+    /// The bound on each hub dial and Connect-Request (#1829).
+    sc_connect_timeout_ms: Option<u64>,
     // IPv6 config
     ipv6_interface: Option<String>,
     /// The device instance whose VMAC an ipv6 client uses (H.7.2); `None`
@@ -139,7 +149,9 @@ pub struct BACnetClient {
 }
 
 mod client_methods {
+    mod bbmd_management;
     mod cov_discovery;
+    mod discovery_streams;
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
     mod foreign_registration;

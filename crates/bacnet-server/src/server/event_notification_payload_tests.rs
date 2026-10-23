@@ -75,8 +75,8 @@ impl BACnetObject for BuiltInProjectionObject {
                 self.feedback_value
                     .clone()
                     .ok_or(bacnet_types::error::Error::Protocol {
-                        class: ErrorClass::PROPERTY.to_raw() as u32,
-                        code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                        class: ErrorClass::PROPERTY,
+                        code: ErrorCode::UNKNOWN_PROPERTY,
                     })
             }
             p if p == PropertyIdentifier::RELIABILITY => Ok(self.reliability.clone()),
@@ -85,8 +85,8 @@ impl BACnetObject for BuiltInProjectionObject {
             p if p == PropertyIdentifier::LOW_LIMIT => Ok(PropertyValue::Real(20.0)),
             p if p == PropertyIdentifier::DEADBAND => Ok(PropertyValue::Real(2.0)),
             _ => Err(bacnet_types::error::Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+                class: ErrorClass::PROPERTY,
+                code: ErrorCode::UNKNOWN_PROPERTY,
             }),
         }
     }
@@ -99,8 +99,8 @@ impl BACnetObject for BuiltInProjectionObject {
         _priority: Option<u8>,
     ) -> Result<(), bacnet_types::error::Error> {
         Err(bacnet_types::error::Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
 
@@ -375,16 +375,18 @@ fn fault_recovery_requires_effective_reliability_type_and_none_is_not_projected(
             .is_some()
     );
     assert!(project_intrinsic_payload(&source, &recovery, EventType::OUT_OF_RANGE, None).is_none());
-    assert!(project_intrinsic_payload(
-        &source,
-        &EventStateChange {
-            from: EventState::NORMAL,
-            to: EventState::HIGH_LIMIT,
-        },
-        EventType::NONE,
-        None,
-    )
-    .is_none());
+    assert!(
+        project_intrinsic_payload(
+            &source,
+            &EventStateChange {
+                from: EventState::NORMAL,
+                to: EventState::HIGH_LIMIT,
+            },
+            EventType::NONE,
+            None,
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -392,16 +394,18 @@ fn malformed_required_builtin_data_fails_closed() {
     let mut source =
         BuiltInProjectionObject::new(1, ObjectType::ANALOG_INPUT, PropertyValue::Real(85.0), None);
     source.status_flags = PropertyValue::Unsigned(0);
-    assert!(project_intrinsic_payload(
-        &source,
-        &EventStateChange {
-            from: EventState::NORMAL,
-            to: EventState::HIGH_LIMIT,
-        },
-        EventType::OUT_OF_RANGE,
-        None,
-    )
-    .is_none());
+    assert!(
+        project_intrinsic_payload(
+            &source,
+            &EventStateChange {
+                from: EventState::NORMAL,
+                to: EventState::HIGH_LIMIT,
+            },
+            EventType::OUT_OF_RANGE,
+            None,
+        )
+        .is_none()
+    );
 }
 
 #[test]

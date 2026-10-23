@@ -1,8 +1,8 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, Apdu, ComplexAck, SegmentAck as SegmentAckPdu,
+    Apdu, ComplexAck, SegmentAck as SegmentAckPdu, decode_apdu, encode_apdu,
 };
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_endpoint_core::coordinator::{
@@ -10,16 +10,15 @@ use bacnet_endpoint_core::coordinator::{
 };
 use bacnet_endpoint_core::endpoint_ingress::EndpointIngress;
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_npdu::NetworkPriority;
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-};
+use bacnet_types::MacAddr;
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::*;
 use bacnet_transport::port::TransportProvenance;
@@ -66,6 +65,7 @@ fn encoded_ack(invoke_id: u8, property_value: PropertyValue) -> (Apdu, Bytes) {
 
 fn received(apdu: Bytes, source: &[u8]) -> ReceivedApdu {
     ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu,
         source_mac: MacAddr::from_slice(source),
@@ -253,7 +253,7 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
         &encoded_apdu(&segmented),
         &[0x01],
         false,
-        NetworkPriority::NORMAL,
+        NetworkPriority::Normal,
     )
     .await
     .unwrap();
@@ -322,9 +322,11 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
             .await
     );
     assert_eq!(coordinator.active_count().unwrap(), 1);
-    assert!(timeout(Duration::from_millis(25), peer_rx.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(25), peer_rx.recv())
+            .await
+            .is_err()
+    );
 
     assert!(
         requester
@@ -343,7 +345,7 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
     assert!(matches!(
         request_handle.await.unwrap(),
         Err(Error::Abort { reason })
-            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert_eq!(coordinator.active_count().unwrap(), 0);
     assert_eq!(admit_calls.load(Ordering::SeqCst), 1);
@@ -357,9 +359,11 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
             )
             .await
     );
-    assert!(timeout(Duration::from_millis(25), peer_rx.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(25), peer_rx.recv())
+            .await
+            .is_err()
+    );
 
     requester.close();
     endpoint.stop().await.unwrap();

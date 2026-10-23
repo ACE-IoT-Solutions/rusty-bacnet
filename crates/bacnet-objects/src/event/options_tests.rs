@@ -10,8 +10,8 @@ use bytes::BytesMut;
 fn code(result: Option<Result<(), Error>>) -> ErrorCode {
     match result {
         Some(Err(Error::Protocol { class, code })) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            ErrorCode::from_raw(code as u16)
+            assert_eq!(class, ErrorClass::PROPERTY);
+            code
         }
         other => panic!("expected a PROPERTY refusal, got {other:?}"),
     }
@@ -235,9 +235,11 @@ fn the_inhibit_is_writable_only_without_a_reference_and_with_detection_on() {
 fn other_properties_are_left_to_the_object() {
     let mut options = ReportingOptions::default();
     assert!(options.read(P::EVENT_MESSAGE_TEXTS, None).is_none());
-    assert!(options
-        .write(P::DESCRIPTION, None, &text("d"), true)
-        .is_none());
+    assert!(
+        options
+            .write(P::DESCRIPTION, None, &text("d"), true)
+            .is_none()
+    );
     for row in REPORTING_OPTION_METADATA {
         assert!(!row.is_required());
         assert!(row.write_capability.is_writable());

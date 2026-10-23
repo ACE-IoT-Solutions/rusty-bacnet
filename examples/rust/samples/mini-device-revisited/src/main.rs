@@ -8,6 +8,7 @@
 //!
 //! Bind UDP on 0.0.0.0 with a directed broadcast so
 //! subnet Who-Is reaches the socket on Linux; advertise the NIC IP in I-Am.
+#![forbid(unsafe_code)]
 
 use std::env;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -27,7 +28,9 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_server::server::{BACnetServer, IAmBroadcaster};
 use bacnet_transport::bip::DEFAULT_BACNET_PORT;
 use bacnet_transport::bvll::encode_bip_mac;
-use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use clap::Parser;
@@ -131,7 +134,9 @@ fn log_discovery_help(net: &NetworkConfig, port: u16, instance: u32) {
         "Manual add: {}:{} device ID {instance}",
         net.device_ip, port
     );
-    info!("Same-host whois-scan usually will not list this device (rusty-bacnet ignores same IP:47808); use Yabe from another PC on the subnet");
+    info!(
+        "Same-host whois-scan usually will not list this device (rusty-bacnet ignores same IP:47808); use Yabe from another PC on the subnet"
+    );
     info!("Debug: --debug or --trace (not --log-packets; that breaks Who-Is)");
 }
 
@@ -148,14 +153,12 @@ fn detect_enp3s0_address() -> Option<Ipv4Addr> {
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("inet ") {
-            if let Some(ip_str) = rest.split_whitespace().next() {
-                if let Some(base) = ip_str.split('/').next() {
-                    if let Ok(ip) = base.parse::<Ipv4Addr>() {
-                        return Some(ip);
-                    }
-                }
-            }
+        if let Some(rest) = line.strip_prefix("inet ")
+            && let Some(ip_str) = rest.split_whitespace().next()
+            && let Some(base) = ip_str.split('/').next()
+            && let Ok(ip) = base.parse::<Ipv4Addr>()
+        {
+            return Some(ip);
         }
     }
     None
@@ -266,8 +269,7 @@ fn verify_server_mac(device_ip: Ipv4Addr, port: u16, mac: &[u8]) {
     } else {
         warn!(
             "Device MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} != expected {}:{} — check routing/default interface",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-            device_ip, port
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], device_ip, port
         );
     }
 }
@@ -276,8 +278,8 @@ fn verify_server_mac(device_ip: Ipv4Addr, port: u16, mac: &[u8]) {
 /// has disabled initiation: an expected state while it lasts, not a fault.
 fn held_back_by_dcc(error: &Error) -> bool {
     matches!(error, Error::Protocol { class, code }
-        if *class == ErrorClass::SERVICES.to_raw() as u32
-            && *code == ErrorCode::COMMUNICATION_DISABLED.to_raw() as u32)
+        if *class == ErrorClass::SERVICES
+            && *code == ErrorCode::COMMUNICATION_DISABLED)
 }
 
 async fn iam_announcement_task(
@@ -305,7 +307,8 @@ fn build_database(args: &Args) -> Result<ObjectDatabase, Box<dyn std::error::Err
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, args.instance)?;
 
     // --- Read-only analogInput:1 (input objects reject Present_Value writes) ---
-    let mut read_only_ai = AnalogInputObject::new(1, "read-only-ai", UNITS_DEGF)?;
+    let mut read_only_ai =
+        AnalogInputObject::new(1, "read-only-ai", EngineeringUnits::from_raw(UNITS_DEGF))?;
     read_only_ai.set_description("Simulated Read-Only Analog Input");
     read_only_ai.set_present_value(4.0);
     db.add(Box::new(read_only_ai))?;
@@ -317,7 +320,8 @@ fn build_database(args: &Args) -> Result<ObjectDatabase, Box<dyn std::error::Err
     db.add(Box::new(read_only_bi))?;
 
     // --- Commandable analogValue:2 ---
-    let mut commandable_av = AnalogValueObject::new(2, "commandable-av", UNITS_DEGF)?;
+    let mut commandable_av =
+        AnalogValueObject::new(2, "commandable-av", EngineeringUnits::from_raw(UNITS_DEGF))?;
     commandable_av.set_description("Commandable Analog Value (Simulated)");
     commandable_av.set_relinquish_default(0.0)?;
     commandable_av.write_property(
@@ -557,7 +561,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match announcer.broadcast_i_am().await {
             Ok(()) => info!("startup I-Am broadcast sent for device {}", args.instance),
             Err(e) if held_back_by_dcc(&e) => {
-                info!("startup I-Am broadcast skipped: DeviceCommunicationControl disabled initiation")
+                info!(
+                    "startup I-Am broadcast skipped: DeviceCommunicationControl disabled initiation"
+                )
             }
             Err(e) => warn!("startup I-Am broadcast failed: {e}"),
         }

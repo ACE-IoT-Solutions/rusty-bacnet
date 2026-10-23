@@ -1,9 +1,10 @@
 //! Hub message dispatch; its registration lease is owned by the outer runner.
 
 use super::admission::{
-    channel_provenance, connect_denied_nak, ScHubAdmissionDecision, ScHubAdmissionInput,
+    ScHubAdmissionDecision, ScHubAdmissionInput, channel_provenance, connect_denied_nak,
 };
 use super::context::{HubConnectionContext, PeerConnection};
+use super::peer_warnings::ConnectRefusal;
 use super::relay_send::SocketIo;
 use super::*;
 use crate::sc::diagnostic_throttle::DiagnosticThrottle;
@@ -38,6 +39,8 @@ pub(super) async fn run(
     let mut malformed_diag = DiagnosticThrottle::new();
     let mut broadcast_rate = super::broadcast_rate::SenderBudget::for_connection();
     let mut graceful_signal = graceful.signal();
+    let refused =
+        |why| super::peer_warnings::connect_refused(&admission.connection_warning, peer_addr, why);
 
     loop {
         // A stream of immediately ready frames must not starve the timer.
@@ -82,7 +85,10 @@ pub(super) async fn run(
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,
             Ok(_) => {
-                warn!("Hub: non-binary frame from {peer_addr}, closing with 1003");
+                crate::warn_throttled!(
+                    admission.connection_warning,
+                    "Hub: non-binary frame from {peer_addr}, closing with 1003"
+                );
                 let mut w = write.lock().await;
                 let _ = w
                     .send(Message::Close(Some(
@@ -95,7 +101,10 @@ pub(super) async fn run(
                 break;
             }
             Err(e) => {
-                warn!("Hub: recv error from {peer_addr}: {e}");
+                crate::warn_throttled!(
+                    admission.connection_warning,
+                    "Hub: recv error from {peer_addr}: {e}"
+                );
                 break;
             }
         };
@@ -118,11 +127,11 @@ pub(super) async fn run(
             break;
         }
 
-        if let Some(registered_vmac) = lease.vmac {
-            if !registered_client_matches_sink(&clients, registered_vmac, &write).await {
-                debug!("Hub: client {peer_addr} (vmac={registered_vmac:02x?}) was superseded");
-                break;
-            }
+        if let Some(registered_vmac) = lease.vmac
+            && !registered_client_matches_sink(&clients, registered_vmac, &write).await
+        {
+            debug!("Hub: client {peer_addr} (vmac={registered_vmac:02x?}) was superseded");
+            break;
         }
 
         // This accepting hub neither initiates Connect nor waits for a
@@ -137,11 +146,11 @@ pub(super) async fn run(
         }
 
         if let Err(nak) = crate::sc_frame::validate_connect_request(&sc_msg, &data) {
-            if let Some(nak) = nak {
-                if let Err(e) = write.lock().await.send(Message::Binary(nak)).await {
-                    warn!("Hub: failed to send Connect NAK to {peer_addr}: {e}");
-                    break;
-                }
+            if let Some(nak) = nak
+                && let Err(e) = write.lock().await.send(Message::Binary(nak)).await
+            {
+                warn!("Hub: failed to send Connect NAK to {peer_addr}: {e}");
+                break;
             }
             // Preserve the existing pre-registration rejection lifecycle;
             // a malformed repeat must not retire an established connection.
@@ -156,11 +165,11 @@ pub(super) async fn run(
             &data,
             crate::sc_frame::ControlRecipient::AcceptingHub,
         ) {
-            if let Some(nak) = nak {
-                if let Err(e) = write.lock().await.send(Message::Binary(nak)).await {
-                    warn!("Hub: failed to send control NAK to {peer_addr}: {e}");
-                    break;
-                }
+            if let Some(nak) = nak
+                && let Err(e) = write.lock().await.send(Message::Binary(nak)).await
+            {
+                warn!("Hub: failed to send control NAK to {peer_addr}: {e}");
+                break;
             }
             continue;
         }
@@ -226,13 +235,15 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::unknown_transit::local_nak(&sc_msg) {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only, including supplied response address metadata.
-                // Retain the fallback's ignored immediate send error and existing
-                // supervised retirement/absolute pre-registration deadline.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+            } else {
+                if let Some(nak) = super::unknown_transit::local_nak(&sc_msg) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only, including supplied response address metadata.
+                    // Retain the fallback's ignored immediate send error and existing
+                    // supervised retirement/absolute pre-registration deadline.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                }
             }
             continue;
         }
@@ -269,12 +280,14 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::resolution_transit::local_nak(&sc_msg) {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only. Keep ignored immediate write failures and
-                // the existing retirement/absolute Connect deadline owners.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+            } else {
+                if let Some(nak) = super::resolution_transit::local_nak(&sc_msg) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only. Keep ignored immediate write failures and
+                    // the existing retirement/absolute Connect deadline owners.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                }
             }
             continue;
         }
@@ -312,12 +325,14 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::advertisement_transit::local_nak(&sc_msg, &data) {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only. Keep ignored immediate write failures and
-                // the existing retirement/absolute Connect deadline owners.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+            } else {
+                if let Some(nak) = super::advertisement_transit::local_nak(&sc_msg, &data) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only. Keep ignored immediate write failures and
+                    // the existing retirement/absolute Connect deadline owners.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                }
             }
             continue;
         }
@@ -358,12 +373,14 @@ pub(super) async fn run(
                 {
                     break;
                 }
-            } else if let Some(nak) = super::proprietary_transit::local_nak(&sc_msg, &data) {
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                // Same socket only. Keep ignored immediate write failures and
-                // the existing retirement/absolute Connect deadline owners.
-                let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+            } else {
+                if let Some(nak) = super::proprietary_transit::local_nak(&sc_msg, &data) {
+                    let mut buf = BytesMut::new();
+                    encode_sc_message(&mut buf, &nak);
+                    // Same socket only. Keep ignored immediate write failures and
+                    // the existing retirement/absolute Connect deadline owners.
+                    let _ = write.lock().await.send(Message::Binary(buf.freeze())).await;
+                }
             }
             continue;
         }
@@ -379,9 +396,7 @@ pub(super) async fn run(
         match sc_msg.function {
             ScFunction::ConnectRequest => {
                 if let Some(registered_vmac) = lease.vmac {
-                    warn!(
-                        "Hub: ConnectRequest from already connected client {peer_addr} (vmac={registered_vmac:02x?}), closing"
-                    );
+                    refused(ConnectRefusal::AlreadyConnected(registered_vmac));
                     let mut w = write.lock().await;
                     let _ = w.send(Message::Close(None)).await;
                     break;
@@ -394,17 +409,19 @@ pub(super) async fn run(
                 client_uuid.copy_from_slice(&sc_msg.payload[6..22]);
                 let client_max_bvlc = u16::from_be_bytes([sc_msg.payload[22], sc_msg.payload[23]]);
                 let client_max_npdu = u16::from_be_bytes([sc_msg.payload[24], sc_msg.payload[25]]);
-                debug!("Hub: ConnectRequest from {peer_addr} vmac={vmac:02x?} max_bvlc={client_max_bvlc} max_npdu={client_max_npdu}");
+                debug!(
+                    "Hub: ConnectRequest from {peer_addr} vmac={vmac:02x?} max_bvlc={client_max_bvlc} max_npdu={client_max_npdu}"
+                );
 
                 match connect_request_vmac_disposition(vmac, hub_vmac) {
                     ConnectRequestVmacDisposition::Accept => {}
                     ConnectRequestVmacDisposition::CloseReserved => {
-                        warn!("Hub: rejecting reserved VMAC {vmac:02x?} from {peer_addr}");
+                        refused(ConnectRefusal::ReservedVmac(vmac));
                         break;
                     }
                     ConnectRequestVmacDisposition::Nak(error_class, error_code) => {
                         super::outcomes::increment(&clients.outcomes.vmac_collision_rejections);
-                        warn!("Hub: VMAC collision for {vmac:02x?} from {peer_addr}");
+                        refused(ConnectRefusal::VmacCollision(vmac));
                         send_connect_nak(&write, sc_msg.message_id, error_class, error_code).await;
                         break;
                     }
@@ -441,7 +458,7 @@ pub(super) async fn run(
                     }) || admission.evaluate(&input) == ScHubAdmissionDecision::Deny
                     {
                         admission.note_denied();
-                        warn!("Hub: admin admission denied ConnectRequest from {peer_addr}");
+                        refused(ConnectRefusal::AdminDenied);
                         drop(map); // release lock before sending
                         let error_result = connect_denied_nak(sc_msg.message_id);
                         let mut buf = BytesMut::new();
@@ -482,7 +499,7 @@ pub(super) async fn run(
                         }
                         HubClientRegistrationDecision::NakDuplicateVmac => {
                             super::outcomes::increment(&clients.outcomes.vmac_collision_rejections);
-                            warn!("Hub: VMAC collision for {vmac:02x?} from {peer_addr}");
+                            refused(ConnectRefusal::VmacCollision(vmac));
                             drop(map); // release lock before sending
                             send_connect_nak(
                                 &write,
@@ -497,7 +514,7 @@ pub(super) async fn run(
                             super::outcomes::increment(
                                 &clients.outcomes.registered_capacity_rejections,
                             );
-                            warn!("SC Hub: max clients reached, rejecting connection");
+                            refused(ConnectRefusal::MaxClients);
                             drop(map);
                             send_connect_nak(
                                 &write,
@@ -704,7 +721,7 @@ pub(super) async fn run(
                                 )
                                 .await;
                                 if let Err(_) | Ok(Err(_)) = result {
-                                    warn!("Hub: broadcast relay failed to {:02x?}", target.vmac);
+                                    super::peer_warnings::relay_failed(clients, target.vmac);
                                 }
                             }
                         })
@@ -780,16 +797,7 @@ pub(super) async fn run(
 
             other => {
                 super::malformed_diag::unknown_function(&mut malformed_diag, peer_addr, &other);
-                let nak = build_bvlc_result_nak(
-                    sc_msg.message_id,
-                    other,
-                    ErrorClass::COMMUNICATION,
-                    unexpected_bvlc_function_error_code(other),
-                );
-                let mut buf = BytesMut::new();
-                encode_sc_message(&mut buf, &nak);
-                let mut w = write.lock().await;
-                let _ = w.send(Message::Binary(buf.to_vec().into())).await;
+                super::handler_fallback::send(&write, sc_msg.message_id, other).await;
             }
         }
     }

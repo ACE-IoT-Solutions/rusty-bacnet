@@ -12,7 +12,7 @@ use bacnet_transport::sc::{ScConnectionState, ScReconnectConfig, ScTransport};
 use bacnet_transport::sc_tls::TlsWebSocket;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 
 use crate::errors::to_py_err;
@@ -20,8 +20,8 @@ use crate::errors::to_py_err;
 mod config;
 mod snapshots;
 
-use config::{validate_ports, PyRouterPortConfig};
 pub use config::{PyRouterBipPort, PyRouterScPort};
+use config::{PyRouterPortConfig, validate_ports};
 pub use snapshots::{PyRouterPortHealth, PyRouterRouteEntry};
 
 type MixedTransport = AnyTransport<crate::mstp_py::PySerial>;
@@ -149,7 +149,7 @@ impl PyBACnetRouter {
                     .map_err(to_py_err)?;
                 for (index, (_, source)) in health.iter_mut().enumerate() {
                     if let HealthSource::Bip { identity } = source {
-                        if let Some(endpoint) = router.bip_endpoint(index) {
+                        if let Some(endpoint) = bip_endpoint(&router, index) {
                             *identity = endpoint.to_string();
                         }
                     }
@@ -189,7 +189,9 @@ impl PyBACnetRouter {
                 let health = health_snapshot(&active.health);
                 let mut router = active.router.lock().await;
                 let routes = route_snapshot(&router);
-                router.stop().await;
+                if let Err(error) = router.stop().await {
+                    tracing::warn!(%error, "router stop reported transport cleanup failures");
+                }
                 *last_health
                     .lock()
                     .map_err(|_| PyRuntimeError::new_err("internal health lock poisoned"))? =
@@ -213,7 +215,8 @@ impl PyBACnetRouter {
                 .ok_or_else(|| PyRuntimeError::new_err("router not started"))?;
             let router = active.router.lock().await;
             (0..active.health.len())
-                .find_map(|index| router.bip_endpoint(index))
+                .filter(|index| matches!(active.health[*index].1, HealthSource::Bip { .. }))
+                .find_map(|index| bip_endpoint(&router, index))
                 .map(|address| address.to_string())
                 .ok_or_else(|| PyRuntimeError::new_err("router B/IP port is unavailable"))
         })
@@ -299,6 +302,20 @@ fn health_snapshot(health: &[(u16, HealthSource)]) -> Vec<PyRouterPortHealth> {
         .enumerate()
         .map(|(index, (network, source))| source.snapshot(index, *network))
         .collect()
+}
+
+/// The actual bound IPv4 endpoint of a started B/IP router port, read from the
+/// native router's post-start MAC snapshot (the B/IP MAC is the bound
+/// address and UDP port, including an ephemeral port selected for port 0).
+fn bip_endpoint(router: &NativeRouter, index: usize) -> Option<std::net::SocketAddrV4> {
+    let info = router.ports().get(index)?;
+    let octets = info.local_mac();
+    if octets.len() != 6 {
+        return None;
+    }
+    let ip = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+    let port = u16::from_be_bytes([octets[4], octets[5]]);
+    Some(std::net::SocketAddrV4::new(ip, port))
 }
 
 fn route_snapshot(router: &NativeRouter) -> Vec<PyRouterRouteEntry> {

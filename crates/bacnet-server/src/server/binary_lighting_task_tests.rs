@@ -28,11 +28,12 @@ async fn start_server(
         )
         .unwrap();
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             PropertyValue::Enumerated(1),
             Some(8),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
     let oid = object.object_identifier();
@@ -283,11 +284,12 @@ async fn terminal_cov_snapshot_survives_a_later_command_before_delivery() {
             let mut db = server.db.write().await;
             let object = db.get_mut(&oid).unwrap();
             object
-                .write_property(
+                .write_property_from(
                     PropertyIdentifier::PRESENT_VALUE,
                     None,
                     PropertyValue::Enumerated(operation),
                     Some(8),
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
             let deadline = object.next_monotonic_deadline_internal().unwrap();
@@ -298,11 +300,12 @@ async fn terminal_cov_snapshot_survives_a_later_command_before_delivery() {
             let mut db = server.db.write().await;
             db.get_mut(&oid)
                 .unwrap()
-                .write_property(
+                .write_property_from(
                     PropertyIdentifier::PRESENT_VALUE,
                     None,
                     PropertyValue::Enumerated(1),
                     Some(4),
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
         }
@@ -385,7 +388,7 @@ fn multiple_notifications(sent: &SendLog, from: usize) -> Vec<COVNotificationMul
 
 #[tokio::test(start_paused = true)]
 async fn a_snapshot_report_times_a_timestamped_field_only_with_its_own_value() {
-    use super::cov_wire_test_support::{at, time, SharedClock};
+    use super::cov_wire_test_support::{SharedClock, at, time};
     let (mut server, oid, sent) = start_server(2).await;
     if let Some(task) = server.binary_lighting_operation_task.take() {
         task.abort();
@@ -474,11 +477,12 @@ async fn a_snapshot_report_times_a_timestamped_field_only_with_its_own_value() {
             let mut db = server.db.write().await;
             let object = db.get_mut(&oid).unwrap();
             object
-                .write_property(
+                .write_property_from(
                     PropertyIdentifier::PRESENT_VALUE,
                     None,
                     PropertyValue::Enumerated(value),
                     Some(8),
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
             object.cov_snapshot_internal().unwrap()
@@ -537,8 +541,8 @@ impl BACnetObject for StuckDeadline {
     }
     fn read_property(&self, _: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::UNKNOWN_PROPERTY,
         })
     }
     fn write_property(
@@ -549,8 +553,8 @@ impl BACnetObject for StuckDeadline {
         _: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::WRITE_ACCESS_DENIED,
         })
     }
     fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {

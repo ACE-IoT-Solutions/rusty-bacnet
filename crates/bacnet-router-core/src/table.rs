@@ -46,7 +46,7 @@ mod holds;
 
 use core::fmt;
 
-use crate::{swap_apart, Duration, Instant, Mac, PortId};
+use crate::{Duration, Instant, Mac, PortId, swap_apart};
 
 pub use claims::{LearnRefusal, Learned};
 pub use holds::RejectEffect;
@@ -299,8 +299,11 @@ const VACANT: Slot = Slot {
     pending: None,
 };
 
-/// Whether `network` names no single network (0, or the global 0xFFFF).
-const fn is_reserved(network: u16) -> bool {
+/// Whether `network` names no single network (0, or the global 0xFFFF), so
+/// no route can lead to it. A router never learns one, and a non-routing
+/// node reading a route announcement drops it the same way.
+#[must_use]
+pub const fn is_reserved(network: u16) -> bool {
     network == 0 || network == 0xFFFF
 }
 
@@ -661,10 +664,10 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// Note that a learned route carried traffic `now`. Only `last_used`
     /// moves, so traffic never keeps a route alive.
     pub fn touch(&mut self, network: u16, now: Instant) {
-        if let Some(slot) = self.slot_mut(network) {
-            if !slot.route.direct {
-                slot.route.last_used = Some(now);
-            }
+        if let Some(slot) = self.slot_mut(network)
+            && !slot.route.direct
+        {
+            slot.route.last_used = Some(now);
         }
     }
 

@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, mpsc};
 use std::time::Duration;
 
 use bacnet_objects::audit::{AuditLogObject, AuditLogPersistence, AuditLogSnapshot};
@@ -108,7 +108,9 @@ async fn stop(server: Arc<BACnetServer<TestTransport>>) {
 fn receiving() -> ServerConfig {
     ServerConfig {
         audit_notification_sink: Some(audit_log()),
-        audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     }
 }
@@ -243,7 +245,7 @@ where
 fn assert_error(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(
         matches!(error, Error::Protocol { class: c, code: e }
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {error:?}"
     );
 }

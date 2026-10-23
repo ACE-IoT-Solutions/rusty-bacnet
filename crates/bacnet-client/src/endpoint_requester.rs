@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bacnet_encoding::apdu::{
-    encode_apdu, max_apdu_header_at_or_below, AbortPdu, Apdu,
-    ConfirmedRequest as ConfirmedRequestPdu,
+    AbortPdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu, encode_apdu,
+    max_apdu_header_at_or_below,
 };
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_endpoint_core::coordinator::{
@@ -12,21 +12,20 @@ use bacnet_endpoint_core::coordinator::{
 };
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointEgress};
 use bacnet_network::layer::ReceivedApdu;
+use bacnet_npdu::NetworkPriority;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest, ReadRangeValidation};
 use bacnet_transport::port::{DataAttribute, TransportProvenance};
-use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, PropertyIdentifier,
-};
+use bacnet_types::MacAddr;
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 use bytes::BytesMut;
 
 use crate::client::pacing::{self, PaceGuard, PaceKey, RequestPacer};
 use crate::client::{
-    check_routed_unicast, confirmed_response_result, new_coordinated_tsm, ClientConfig,
-    TransactionPeer,
+    ClientConfig, TransactionPeer, check_routed_unicast, confirmed_response_result,
+    new_coordinated_tsm,
 };
 #[path = "endpoint_operation.rs"]
 mod operation;
@@ -393,14 +392,14 @@ impl EndpointRequester {
         let destination = destination.localized(self.inner.egress.local_network_number().get());
         // A direct destination, as named or as localized, that reaches a group
         // of nodes is a local broadcast (#1479).
-        if let EndpointApduDestination::Direct { destination_mac } = &destination {
-            if self.inner.egress.is_group_destination(destination_mac) {
-                return Err(Error::Encoding(
-                    "endpoint requester cannot send confirmed requests to a broadcast or group \
+        if let EndpointApduDestination::Direct { destination_mac } = &destination
+            && self.inner.egress.is_group_destination(destination_mac)
+        {
+            return Err(Error::Encoding(
+                "endpoint requester cannot send confirmed requests to a broadcast or group \
                      address"
-                        .into(),
-                ));
-            }
+                    .into(),
+            ));
         }
         Ok(destination)
     }
@@ -415,9 +414,7 @@ impl EndpointRequester {
         let mut service_data = BytesMut::new();
         request.encode(&mut service_data)?;
         if 4 + service_data.len() > usize::from(self.inner.max_apdu_length) {
-            return Err(Error::Segmentation(
-                "endpoint requester supports only unsegmented requests".into(),
-            ));
+            return Err(bacnet_types::error::SegmentationError::EndpointRequestTooLong.into());
         }
         Ok(service_data)
     }
@@ -485,10 +482,10 @@ impl EndpointRequester {
                     },
                     Apdu::Error(error) => TsmResponse::from_error_pdu(error),
                     Apdu::Reject(reject) => TsmResponse::Reject {
-                        reason: reject.reject_reason.to_raw(),
+                        reason: reject.reject_reason,
                     },
                     Apdu::Abort(abort) => TsmResponse::Abort {
-                        reason: abort.abort_reason.to_raw(),
+                        reason: abort.abort_reason,
                     },
                     Apdu::SegmentAck(_)
                     | Apdu::ConfirmedRequest(_)
@@ -537,7 +534,7 @@ impl EndpointRequester {
                         encoded.to_vec(),
                         destination,
                         false,
-                        NetworkPriority::NORMAL,
+                        NetworkPriority::Normal,
                         attributes,
                     )
                     .await

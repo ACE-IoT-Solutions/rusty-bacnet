@@ -397,14 +397,8 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
         .expect_err("a bare Date is not a BACnetDateTime")
     {
         Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-            );
-            assert_eq!(
-                code,
-                bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
-            );
+            assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
+            assert_eq!(code, bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE);
         }
         other => panic!("expected PROPERTY / INVALID_DATA_TYPE, got {other:?}"),
     }
@@ -451,14 +445,15 @@ fn date_value_relinquish_default_write_recaptures_present_value() {
         "with an empty priority array, PV must resolve to the written default"
     );
     // Wrong-typed write refuses and leaves state untouched.
-    assert!(dv
-        .write_property(
+    assert!(
+        dv.write_property(
             PropertyIdentifier::RELINQUISH_DEFAULT,
             None,
             PropertyValue::Unsigned(1241225),
             None,
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         dv.read_property(PropertyIdentifier::RELINQUISH_DEFAULT, None)
             .unwrap(),

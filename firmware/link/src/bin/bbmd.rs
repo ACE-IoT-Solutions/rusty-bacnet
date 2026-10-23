@@ -5,8 +5,8 @@
 //! the scenario's buffers in a static; the tables are built on the stack.
 //! Its input and its summary pass through [`core::hint::black_box`], so
 //! none of the work can be optimized away, and then it loops. CI never runs
-//! it: building it proves that `bacnet-bip-core`'s BBMD tables and receive
-//! rules link without `std` or an allocator, and
+//! it: building it proves that `bacnet-bip-core`'s BBMD port, its tables and
+//! its receive rules link without `std` or an allocator, and
 //! `scripts/ci/check-firmware-link.sh` checks its sizes. On a host the
 //! binary is a stub; `tests/bbmd.rs` runs the scenario there.
 //!
@@ -27,7 +27,7 @@
 mod image {
     use core::hint::black_box;
 
-    use firmware_link::bbmd::{run, Memory};
+    use firmware_link::bbmd::{Memory, run};
 
     /// The reset entry. cortex-m-rt's macro turns the `static mut` below
     /// into a `&'static mut`, which is sound because the entry runs once.
@@ -47,7 +47,7 @@ mod image {
     use core::hint::black_box;
     use core::ptr::addr_of_mut;
 
-    use firmware_link::bbmd::{run, Memory};
+    use firmware_link::bbmd::{Memory, run};
 
     static mut MEMORY: Memory = Memory::new();
 
@@ -84,7 +84,7 @@ mod emulate;
 mod emulated {
     use core::hint::black_box;
 
-    use firmware_link::bbmd::{run, Memory, EXPECTED};
+    use firmware_link::bbmd::{EXPECTED, Memory, run};
 
     /// On Cortex-M, as `image::main`.
     #[cfg(target_arch = "arm")]

@@ -6,12 +6,12 @@
 
 mod fixture;
 
-use bacnet_router_core::message::MessageType;
+use bacnet_router_core::npdu::NetworkMessageType;
 use bacnet_router_core::router::{Event, Kind, Options};
 use bacnet_router_core::{PortId, Router};
 use fixture::{
-    apdu_to, at, deliver, deliver_broadcast, i_am, message, router, two_ports, Outcome, Recorder,
-    Store, CONFIRMED, NODE_A, R7,
+    CONFIRMED, NODE_A, Outcome, R7, Recorder, Store, apdu_to, at, deliver, deliver_broadcast, i_am,
+    message, router, two_ports,
 };
 
 /// A route learned by a frame stamped before the router's start is
@@ -55,7 +55,7 @@ fn a_frame_stamped_early_reads_marks_at_the_latest_time() {
     let mut host = Recorder::default();
     deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9]), at(0));
     // Busy until 130 s.
-    let busy = message(MessageType::ROUTER_BUSY_TO_NETWORK, &[0, 9]);
+    let busy = message(NetworkMessageType::ROUTER_BUSY_TO_NETWORK, &[0, 9]);
     deliver_broadcast(&mut router, &mut host, 1, R7, &busy, at(100));
     let to_9 = apdu_to(9, &[5], CONFIRMED);
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &to_9, at(140));

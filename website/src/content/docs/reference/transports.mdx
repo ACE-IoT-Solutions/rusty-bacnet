@@ -7,7 +7,7 @@ import Diagram from '../../../components/Diagram.astro';
 import { release, repository } from '../../../lib/site.mjs';
 
 
-For owner APIs and actual wire qualification, use the [transport evidence matrix](/rusty-bacnet/development/transports/).
+Select the application owner, binding and data link separately. The tables below keep entry points and runtime evidence together; they do not form a conformance database.
 
 A transport appearing in the codebase is not the same as every package, CLI binary, operating system, and hardware combination supporting that transport equally.
 
@@ -18,16 +18,55 @@ A transport appearing in the codebase is not the same as every package, CLI bina
 | BACnet/IP | CLI, Python client, or Rust client | Direct reads, discovery, and routed traffic are distinct tests |
 | BACnet/IPv6 | CLI `--ipv6`, Python, or Rust feature path | Requires appropriate IPv6 addressing/interface and network validation; targets are VMACs (`bip6:<instance>`), which the CLI resolves from `[ip]:port` and Python from `resolve_vmac` |
 | BACnet/SC | SC-enabled CLI, Python, or Rust | Certificate trust, local identities, and hub behavior must be configured |
-| MS/TP | Rust serial path, or Python `transport="mstp"` and `MstpEndpoint` | No reviewed CLI transport flag; qualify the actual serial hardware |
+| MS/TP | Rust serial path, or Python `transport="mstp"` and `MstpEndpoint` | The CLI joins with `--mstp` in the Linux release executables, or a source build with the `serial` feature. Qualify the actual serial hardware |
 | Ethernet/802.3 | Advanced Rust transport path | Platform/privilege evidence is incomplete; not a general CLI tutorial |
 
 This is a guide to entry points, not a formal supported-platform or conformance matrix.
 
 <Diagram file="transport-topologies.svg" title="Different transports, different topologies" description="Separate BACnet/IP, BACnet/SC, and MS/TP topology examples." />
 
+## Match the link to an owner
+
+| Data link | Entry points | Setup and important boundary |
+|---|---|---|
+| B/IP, NORMAL | Rust/Python standalone client and server; shared endpoint | Explicit local IPv4 interface and UDP port; selected Network Port registration is a separate opt-in |
+| B/IP, BBMD or foreign | Rust client, server and endpoint builders (`.mode(BipMode::…)`); Python `bbmd=` and `foreign_device=`; CLI `--foreign-bbmd` | BDT/FDT or configured BBMD; one transport is never both; shared-endpoint Number evidence does not qualify every administrative operation |
+| B/IP, BBMD behind NAT | `BbmdOptions::nat` (Rust); Python `Bbmd(nat_global_address=…)` | Configured global address and a port-forwarding router; two-hop BDT listing every site's global address; loopback NAT emulation in tests, real routers only in the manual Docker check (`examples/docker/nat`) |
+| B/IP multicast (B/IP-M) node | Rust client, server and endpoint builders (`.multicast(…)`); Python `multicast=Multicast(…)`; CLI `--bip-multicast` | Explicit interface (no `0.0.0.0`), class D group, TTL 1 unless the group spans routers; broadcasts only from the group; NORMAL mode, or a BBMD that serves the group (J.8.3) with an all-ones own BDT row; not a foreign device; loopback evidence on Linux and macOS, Windows untested |
+| B/IPv6 | Standalone Rust/Python client and server; Rust configured foreign-device mode | Select one usable interface/address; peers are named by 3-octet VMAC (`bip6:<instance>`); no shared endpoint builder or Python foreign-device entry point |
+| BACnet/SC | Rust/Python standalone owners and shared endpoint | Operational credentials, explicit CA and durable UUID/VMAC configuration; Rust TLS paths require `sc-tls` |
+| MS/TP | Rust transport/server/endpoint; Python standalone and endpoint paths | Serial adapter, station, baud and token participation; do not infer physical timing from simulation |
+| Ethernet | Linux Rust standalone client and server | AF_PACKET raw socket permissions; no shared endpoint builder or Python Ethernet API |
+
+The CLI has its own <a href={`${repository}/blob/v${release}/docs/CLI.md`}>configuration surface</a>. A Rust transport does not imply a matching CLI command or Python constructor. For exact feature gates, use the crate manifests and <a href={`${repository}/blob/v${release}/docs/rust-api.md#bacnet-transport`}>Rust API</a>; do not enable every feature merely to discover which one you need.
+
+## Read the Number-control evidence at its actual scope
+
+| Evidence | Exercised behavior | Limit |
+|---|---|---|
+| B/IP loopback | Server/endpoint NORMAL controls; independent standalone-client NORMAL/BBMD/foreign replies; full-server and shared-endpoint BBMD Original-Broadcast and foreign DBTN captures | Linux supplies BBMD broadcast observation; no physical-LAN qualification |
+| Constrained local SC TLS | Full server/shared endpoint and standalone client Number bytes and Hub broadcast VMAC; direct query replies use Hub broadcast | Generic controlled tests separately prove queued/pending cancellation; TLS trust does not authenticate a relayed NPDU origin |
+| MS/TP LoopbackSerial | Full server, shared endpoint and standalone client standard frames, token opportunity, mode parity and producer cancellation | Simulator evidence, not RS-485 timing, transceiver control or hardware interoperability |
+| Isolated Linux Ethernet | Full server/standalone client MAC, LLC, length, payload and padding; raw-FD stop/drop and canceled-stop ownership | Opt-in virtual-link fixture needs raw-socket capability; excluded from ordinary CI |
+| Isolated Linux B/IPv6 | Full server/standalone Rust client selected-link OriginalBroadcast and configured-foreign DBTN; independent bytes/address/interface; normal installed-Python evidence | Explicit external ignored tests; no physical LAN, IPv6 endpoint builder or full Annex U claim |
+
+Standalone-client BBMD/foreign cases retain BDT/FDT admission, alternate-sender compatibility and registration NAK/retry behavior, and prove requester progress plus awaited-stop socket release. Other implemented opt-ins are not automatically independently qualified by this table.
+
+## Select IPv6 explicitly when discovery is ambiguous
+
+Normal IPv6 startup chooses one unambiguous usable local link/address. A non-loopback multicast interface and a unique non-link-local address are preferred. If selection is ambiguous, supply a concrete local IPv6 address rather than assuming `::` means all interfaces. There is no silent physical-selection fallback to `::1`.
+
+Incoming destination and interface checks run before VMAC learning/application delivery; outgoing data and controls keep the selected source and bound port. Explicit loopback remains node-local. Windows has compile evidence for the described selection path, not the isolated Linux runtime qualification. See the <a href={`${repository}/blob/v${release}/docs/python-api.md#bacnetipv6`}>Python IPv6 contract</a> before migrating an application that relied on `::` choosing an address for it.
+
+## Plan your own validation
+
+Record the source revision, interface, feature set, OS and native artifact. Start with a known peer and bounded read. Add registration, discovery, subscriptions or writes only when the intended operation needs them. Preserve the distinction between a successful build, a loopback test, simulated serial frames, an actual isolated wire capture and a hardware deployment test.
+
+[Support and conformance](/rusty-bacnet/project/support/) summarizes what is supported. <a href={`${repository}/blob/v${release}/docs/mstp-qualification.md`}>MS/TP qualification</a> covers the separate hardware path. No page here claims BTL certification.
+
 ## Features are package-specific
 
-The CLI manifest enables its IPv6 path and defines optional `sc-tls` and `pcap` features; the release executables enable `sc-tls` everywhere and `pcap` on Linux. The Python binding manifest enables underlying SC, IPv6, and serial transport features, but a Cargo feature selection alone is not proof of an installable or qualified wheel on a particular host.
+The CLI manifest enables its IPv6 path and defines optional `sc-tls` and `pcap` features; the release executables enable `sc-tls` everywhere and `pcap` and `serial` on Linux. The terminal UI (`tui`) is a default feature, and a `serial` feature adds MS/TP, which the Linux release executables include. The Python binding manifest enables underlying SC, IPv6, and serial transport features, but a Cargo feature selection alone is not proof of an installable or qualified wheel on a particular host.
 
 Inspect the selected binary or wheel and its release build configuration. Do not turn a code-level table into five identical “fully supported” badges.
 
@@ -35,7 +74,7 @@ Inspect the selected binary or wheel and its release build configuration. Do not
 
 There is no browser-based BACnet transport promised by this site. The unsupported WASM surfaces were withdrawn. A demo or a codec is not a complete browser network interface.
 
-The README does not claim Annex J NAT traversal or IPv4 BACnet/IP multicast. A BBMD setup guide must not accidentally imply either. One working MS/TP example is not a timing qualification, and the presence of segmentation code elsewhere does not automatically qualify end-to-end segmented MS/TP.
+A B/IP node can join an IPv4 multicast group (B/IP-M, Annex J.8) on an explicit interface, taking broadcasts only from the group. A BBMD can serve the group (J.8.3): it passes the group's broadcasts to its BDT peers and foreign devices and theirs to the group, and its own BDT row must have the all-ones mask. A network that mixes B/IP-M and plain B/IP devices needs exactly one BBMD for the group, and the two kinds of device must not share an IP subnet; the stack can't check either. The group of a BBMD is read-only on its Network Port. The multicast evidence is a loopback test on Linux and macOS (members, the group's BBMD, a plain peer BBMD and a foreign device); Windows multicast is untested. A BBMD behind a NAT router (Annex J.7.5) is supported at a global address you configure: nothing discovers it, the NAT router must port-forward the BACnet/IP port to the BBMD, and each site exposes that one router-BBMD. The automated evidence is a loopback NAT emulation; a real router topology is a manual check (`examples/docker/nat`). For linking sites across the internet, prefer BACnet/SC: an internet-facing BBMD has no authentication, only its access lists, quotas and rate limits. One working MS/TP example is not a timing qualification, and the presence of segmentation code elsewhere does not automatically qualify end-to-end segmented MS/TP.
 
 ## Understand the evidence labels
 
@@ -44,6 +83,8 @@ Code that implements a feature, a test that exercises it, and conformance are se
 ## Which guide next?
 
 Start with [connection configuration](/rusty-bacnet/guides/configuration/) for BACnet/IP, [SC setup](/rusty-bacnet/guides/bacnet-sc/) for hub/certificate deployments, or [MS/TP commissioning](/rusty-bacnet/guides/mstp/) for serial labs.
+
+For application ownership, continue with [shared endpoints](/rusty-bacnet/integrate/shared-endpoints/) or [Network Port and Number controls](/rusty-bacnet/integrate/network-ports/).
 
 ## Sources and release scope
 

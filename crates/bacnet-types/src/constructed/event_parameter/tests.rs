@@ -234,11 +234,13 @@ fn decode_rejects_non_unsigned_tag() {
 #[test]
 fn decode_rejects_truncated_out_of_range() {
     // tag + time_delay only — missing the three REAL limits.
-    assert!(BACnetEventParameter::decode(&PropertyValue::List(vec![
-        PropertyValue::Unsigned(event_parameter_tag::OUT_OF_RANGE as u64),
-        PropertyValue::Unsigned(0),
-    ]))
-    .is_err());
+    assert!(
+        BACnetEventParameter::decode(&PropertyValue::List(vec![
+            PropertyValue::Unsigned(event_parameter_tag::OUT_OF_RANGE as u64),
+            PropertyValue::Unsigned(0),
+        ]))
+        .is_err()
+    );
 }
 
 #[test]

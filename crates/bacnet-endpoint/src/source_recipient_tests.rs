@@ -49,7 +49,7 @@ async fn current(session: &EndpointSession<BipTransport>) -> PropertyValue {
 async fn wire(
     session: &EndpointSession<BipTransport>,
     peer: &NetworkLayer<BipTransport>,
-    replies: &mut mpsc::Receiver<ReceivedApdu>,
+    replies: &mut bacnet_network::layer::ApduReceiver,
     bytes: Vec<u8>,
     invoke: u8,
 ) -> Apdu {
@@ -74,7 +74,7 @@ async fn wire(
                 destination_mac: MacAddr::from_slice(peer.local_mac()),
             },
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
         )
         .await
@@ -446,12 +446,14 @@ async fn source_recipient_unresolved_device_preserves_read_and_rejects_live_chan
             .number(),
         0
     );
-    assert!(local(
-        &session,
-        PropertyValue::ApplicationData(value(&direct(&sink)))
-    )
-    .await
-    .is_err());
+    assert!(
+        local(
+            &session,
+            PropertyValue::ApplicationData(value(&direct(&sink)))
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(
         current(&session).await,
         PropertyValue::ApplicationData(value(&device(999)))

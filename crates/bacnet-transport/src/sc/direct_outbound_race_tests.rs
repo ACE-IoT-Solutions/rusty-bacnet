@@ -39,11 +39,10 @@ impl WebSocketPort for OrderedSocket {
     async fn send(&self, bytes: &[u8]) -> Result<(), Error> {
         if decode_sc_message(bytes).unwrap().function == ScFunction::EncapsulatedNpdu
             && self.first_npdu.swap(false, Ordering::SeqCst)
+            && let Some(gate) = &self.gate
         {
-            if let Some(gate) = &self.gate {
-                self.events.send((self.id, "send")).await.unwrap();
-                gate.send.notified().await;
-            }
+            self.events.send((self.id, "send")).await.unwrap();
+            gate.send.notified().await;
         }
         self.ws.send(bytes).await
     }

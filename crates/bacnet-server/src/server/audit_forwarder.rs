@@ -2,7 +2,7 @@
 
 use super::device_bindings::BindingFreshness;
 use super::event_recipient_route::{ConfirmedRecipientRoute, RecipientRoute};
-use super::notification_transactions::{run_notification_worker, NotificationWorkerResult};
+use super::notification_transactions::{NotificationWorkerResult, run_notification_worker};
 use super::*;
 use bacnet_objects::audit::AuditLogForwarding;
 use bacnet_objects::database::LocalDevice;
@@ -176,7 +176,7 @@ impl ForwardBatch {
                     match (&route.local_target, &route.remote) {
                         (Some(mac), None) => {
                             network
-                                .send_apdu(&bytes, mac, true, NetworkPriority::NORMAL)
+                                .send_apdu(&bytes, mac, true, NetworkPriority::Normal)
                                 .await
                         }
                         (None, Some((net, mac, Some(router)))) => {
@@ -187,7 +187,7 @@ impl ForwardBatch {
                                     mac,
                                     router,
                                     true,
-                                    NetworkPriority::NORMAL,
+                                    NetworkPriority::Normal,
                                 )
                                 .await
                         }

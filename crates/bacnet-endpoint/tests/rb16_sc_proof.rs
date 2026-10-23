@@ -25,23 +25,24 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu};
-use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
+use bacnet_encoding::apdu::{Apdu, decode_apdu, encode_apdu};
+use bacnet_endpoint::identity::{DeviceIdentity, build_database_with_extra};
 use bacnet_endpoint::sc::ScEndpointBuilder;
 use bacnet_endpoint::session::SessionRole;
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
 use bacnet_transport::sc_hub::{ScHub, ScHubTlsConfig};
 use bacnet_transport::sc_tls::{ScNodeTlsConfig, TlsWebSocket};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier, Segmentation,
     ServiceSupported, UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::primitives::PropertyValue;
-use bacnet_types::MacAddr;
 use bytes::BytesMut;
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -110,7 +111,12 @@ fn db_with_analog(
     instance: u32,
     value: f32,
 ) -> bacnet_objects::database::ObjectDatabase {
-    let mut o = AnalogInputObject::new(instance, format!("sc-ai-{instance}"), 0).unwrap();
+    let mut o = AnalogInputObject::new(
+        instance,
+        format!("sc-ai-{instance}"),
+        EngineeringUnits::SQUARE_METERS,
+    )
+    .unwrap();
     o.set_present_value(value);
     build_database_with_extra(id, vec![Box::new(o)]).unwrap()
 }
@@ -126,7 +132,7 @@ async fn dial_node(hub_port: u16, node_tls: ScNodeTlsConfig) -> TlsWebSocket {
 /// Controlled SC peer (real hub relay) exposing provenance + source MAC.
 struct ControlledPeer {
     net: NetworkLayer<ScTransport<TlsWebSocket>>,
-    rx: tokio::sync::mpsc::Receiver<bacnet_network::layer::ReceivedApdu>,
+    rx: bacnet_network::layer::ApduReceiver,
     vmac: [u8; 6],
 }
 
@@ -189,7 +195,7 @@ impl ControlledPeer {
         let mut enc = BytesMut::new();
         encode_apdu(&mut enc, &resp).unwrap();
         self.net
-            .send_apdu(&enc, &src, false, NetworkPriority::NORMAL)
+            .send_apdu(&enc, &src, false, NetworkPriority::Normal)
             .await
             .unwrap();
         (iid, src, verified)
@@ -281,7 +287,7 @@ async fn sc_one_node_bidirectional_with_provenance_and_admin() {
     let mut enc = BytesMut::new();
     encode_apdu(&mut enc, &req).unwrap();
     peer.net
-        .send_apdu(&enc, &src, true, NetworkPriority::NORMAL)
+        .send_apdu(&enc, &src, true, NetworkPriority::Normal)
         .await
         .unwrap();
     let reply = tokio::time::timeout(WAIT, peer.rx.recv())
@@ -340,15 +346,17 @@ async fn sc_one_node_bidirectional_with_provenance_and_admin() {
     let detached = endpoint.cloned_client_handle().unwrap();
     endpoint.stop().await.unwrap();
     assert!(endpoint.stop().await.is_err());
-    assert!(detached
-        .read_property(
-            &peer.mac(),
-            oid(ObjectType::ANALOG_INPUT, 1),
-            PropertyIdentifier::PRESENT_VALUE,
-            None
-        )
-        .await
-        .is_err());
+    assert!(
+        detached
+            .read_property(
+                &peer.mac(),
+                oid(ObjectType::ANALOG_INPUT, 1),
+                PropertyIdentifier::PRESENT_VALUE,
+                None
+            )
+            .await
+            .is_err()
+    );
     peer.net.stop().await.unwrap();
     hub.stop().await;
 }
@@ -476,10 +484,12 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
         .unwrap()
         .with_device_uuid([0x99; 16]);
     let ws_bad = dial_node(hub_port, ca.node_tls.clone()).await;
-    assert!(ScEndpointBuilder::new([0x07; 6], [0x77; 16])
-        .device(bad_id)
-        .build_hub_session(ws_bad)
-        .is_err());
+    assert!(
+        ScEndpointBuilder::new([0x07; 6], [0x77; 16])
+            .device(bad_id)
+            .build_hub_session(ws_bad)
+            .is_err()
+    );
 
     s2.stop().await.unwrap();
     s3.stop().await.unwrap();

@@ -5,6 +5,7 @@ use bacnet_server::server::{DeviceBinding, ServerConfig};
 use bacnet_transport::bbmd::BdtEntry;
 use bacnet_transport::bvll::decode_bip_mac;
 use bacnet_types::constructed::{BACnetActionCommand, BACnetActionList};
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::PropertyValue;
 use tokio::sync::RwLock;
 
@@ -125,10 +126,14 @@ async fn run(server: &BACnetServer<BipTransport>, list: u64) -> (bool, Vec<bool>
 async fn start_target() -> BACnetServer<BipTransport> {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(device(20))).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogInputObject::new(1, "AI-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     start(db, None).await
 }
 

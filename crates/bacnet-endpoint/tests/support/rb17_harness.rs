@@ -12,19 +12,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, Apdu, ComplexAck, ConfirmedRequest as ConfirmedPdu,
+    Apdu, ComplexAck, ConfirmedRequest as ConfirmedPdu, decode_apdu, encode_apdu,
 };
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::encode_property_value;
-use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
+use bacnet_endpoint::identity::{DeviceIdentity, build_database_with_extra};
 use bacnet_endpoint::mstp::MstpEndpointBuilder;
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::mstp::{LoopbackSerial, MstpExecutionMode, MstpTransport, SerialPort};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier, Segmentation,
     ServiceSupported,
 };
 use bacnet_types::error::Error;
@@ -33,7 +34,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
 use crate::mstp_wire::{
-    decode_frame, encode_frame, reply_to_poll, token_frame, FrameType, MstpFrame,
+    FrameType, MstpFrame, decode_frame, encode_frame, reply_to_poll, token_frame,
 };
 
 pub const WAIT: Duration = Duration::from_secs(5);
@@ -90,7 +91,7 @@ pub fn db_with_named_analog(
     name: &str,
     value: f32,
 ) -> ObjectDatabase {
-    let mut o = AnalogInputObject::new(instance, name, 0).unwrap();
+    let mut o = AnalogInputObject::new(instance, name, EngineeringUnits::SQUARE_METERS).unwrap();
     o.set_present_value(value);
     build_database_with_extra(id, vec![Box::new(o)]).unwrap()
 }
@@ -306,9 +307,8 @@ pub fn local_npdu(apdu: Bytes, expecting_reply: bool) -> Bytes {
     encode_npdu(
         &mut npdu,
         &Npdu {
-            is_network_message: false,
             expecting_reply,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: apdu,

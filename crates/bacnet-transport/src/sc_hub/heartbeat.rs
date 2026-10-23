@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::SinkExt;
@@ -15,10 +15,10 @@ use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::tungstenite::{Error, Message};
 use tracing::warn;
 
-use super::timing::HubTiming;
 use super::ScHubProbePolicy;
+use super::timing::HubTiming;
 use super::{Clients, HubClient, Vmac, WsSink};
-use crate::sc_frame::{encode_sc_message, ScFunction, ScMessage};
+use crate::sc_frame::{ScFunction, ScMessage, encode_sc_message};
 
 // Private I/O boundary: tests use the real TLS/WebSocket send, but control when
 // its completion becomes visible to the sweep and supply the monotonic millisecond value.

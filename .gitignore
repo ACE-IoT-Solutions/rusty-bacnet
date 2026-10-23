@@ -72,3 +72,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Local code-search index (cocoindex-code), never committed
+/.cocoindex_code/

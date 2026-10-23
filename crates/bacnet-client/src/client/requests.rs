@@ -107,7 +107,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///
     /// A confirmed request goes to one device, so `dest_network` must be in
     /// 1..=65534 and `dest_mac` must hold 1 to
-    /// [`NpduAddress::MAX_MAC_LEN`] octets. DNET 0 names no network, DNET
+    /// [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) octets. DNET 0 names no network, DNET
     /// 65535 and an empty DADR address a broadcast, and any of them fails
     /// with [`Error::Encoding`] before path or transaction state is taken.
     /// Every routed confirmed entry point, such as the `_to_device` and
@@ -164,15 +164,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let target = named.localized(self.network.local_network_number().get());
         // With no DNET, a group destination is a local broadcast, which
         // carries no confirmed request (Clause 6.3, #1479).
-        if let ConfirmedTarget::Local { mac } = target {
-            if self.network.transport().is_group_destination(mac) {
-                return Err(Error::Encoding(
-                    "a confirmed request goes to one device, not to a broadcast or group \
+        if let ConfirmedTarget::Local { mac } = target
+            && self.network.transport().is_group_destination(mac)
+        {
+            return Err(Error::Encoding(
+                "a confirmed request goes to one device, not to a broadcast or group \
                      address (a local broadcast carries only an UNCONFIRMED_REQUEST APDU, \
                      Clause 6.3)"
-                        .into(),
-                ));
-            }
+                    .into(),
+            ));
         }
         let routed_forwarded_npci_len = match target {
             ConfirmedTarget::Local { .. } => None,
@@ -260,17 +260,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             // placeholder row stays unknown and keeps today's behavior.
             if let Some(crate::discovery::PeerSegmentation::Authoritative(capability)) =
                 peer_segmentation
-            {
-                if matches!(
+                && matches!(
                     capability,
                     bacnet_types::enums::Segmentation::NONE
                         | bacnet_types::enums::Segmentation::TRANSMIT
-                ) {
-                    return Err(Error::Segmentation(format!(
-                        "request requires segmentation but the peer advertised \
-                         {capability:?} and cannot receive segmented requests"
-                    )));
+                )
+            {
+                return Err(bacnet_types::error::SegmentationError::PeerCannotReceive {
+                    capability,
                 }
+                .into());
             }
             return self
                 .segmented_confirmed_request(
@@ -375,10 +374,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 registration.progress,
             )
             .await;
-        if response.is_ok() {
-            if let Some(lease) = path_lease.as_ref() {
-                lease.mark_terminal_observed();
-            }
+        if response.is_ok()
+            && let Some(lease) = path_lease.as_ref()
+        {
+            lease.mark_terminal_observed();
         }
         guard.mark_completed();
         response.and_then(Self::confirmed_response_result)
@@ -390,7 +389,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         &self,
         wait_for: ConfirmedWait<'_>,
         mut response_rx: oneshot::Receiver<TsmResponse>,
-        mut progress_rx: tokio::sync::watch::Receiver<TransactionProgress>,
+        mut progress_rx: ProgressReceiver,
     ) -> Result<TsmResponse, Error> {
         let ConfirmedWait {
             target,
@@ -409,7 +408,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             )
         };
         let mut retries_sent = 0u16;
-        let mut progress = *progress_rx.borrow_and_update();
+        let mut progress = progress_rx.borrow_and_update();
 
         loop {
             let wait = match progress {
@@ -423,13 +422,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 response = &mut response_rx => {
                     return response.map_err(|_| Error::Encoding("TSM response channel closed".into()));
                 }
-                changed = progress_rx.changed() => {
-                    if changed.is_err() {
-                        return (&mut response_rx)
-                            .await
-                            .map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                    }
-                    progress = *progress_rx.borrow_and_update();
+                // Progress is never published after the transaction leaves
+                // the TSM; the response arm above resolves then instead.
+                () = progress_rx.changed() => {
+                    progress = progress_rx.borrow_and_update();
                 }
                 _ = &mut timer => {
                     match progress {
@@ -519,7 +515,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         None,
                                     );
                                     return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT.to_raw(),
+                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
                                     });
                                 }
                                 RequestTimerExpiration::NoTransaction => {
@@ -551,7 +547,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         None,
                                     );
                                     return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT.to_raw(),
+                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
                                     });
                                 }
                                 SegmentTimerExpiration::NoTransaction => {
@@ -597,7 +593,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         match target {
             ConfirmedTarget::Local { mac } => {
                 self.network
-                    .send_apdu(apdu, mac, true, NetworkPriority::NORMAL)
+                    .send_apdu(apdu, mac, true, NetworkPriority::Normal)
                     .await
             }
             ConfirmedTarget::Routed {
@@ -612,7 +608,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         dest_mac,
                         router_mac,
                         true,
-                        NetworkPriority::NORMAL,
+                        NetworkPriority::Normal,
                     )
                     .await
             }
@@ -652,7 +648,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         encode_apdu(&mut buf, &pdu)?;
 
         self.network
-            .send_apdu(&buf, destination_mac, false, NetworkPriority::NORMAL)
+            .send_apdu(&buf, destination_mac, false, NetworkPriority::Normal)
             .await
     }
 
@@ -671,7 +667,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         encode_apdu(&mut buf, &pdu)?;
 
         self.network
-            .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+            .broadcast_apdu(&buf, false, NetworkPriority::Normal)
             .await
     }
 
@@ -690,7 +686,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         encode_apdu(&mut buf, &pdu)?;
 
         self.network
-            .broadcast_global_apdu(&buf, false, NetworkPriority::NORMAL)
+            .broadcast_global_apdu(&buf, false, NetworkPriority::Normal)
             .await
     }
 
@@ -716,11 +712,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         if self.network.local_network_number().get() == Some(dest_network) {
             return self
                 .network
-                .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                 .await;
         }
         self.network
-            .broadcast_to_network(&buf, dest_network, false, NetworkPriority::NORMAL)
+            .broadcast_to_network(&buf, dest_network, false, NetworkPriority::Normal)
             .await
     }
 }

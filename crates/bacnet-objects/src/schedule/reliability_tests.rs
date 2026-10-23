@@ -9,6 +9,7 @@ use crate::traits::ReliabilityEvaluation;
 use bacnet_encoding::constructed::encode_special_event;
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::constructed::SpecialEventPeriod;
+use bacnet_types::enums::RejectReason;
 
 type P = PropertyIdentifier;
 
@@ -192,14 +193,16 @@ fn network_writes_re_evaluate_reliability() {
     let duplicate = vec![
         0x0E, 0xB4, 8, 0, 0, 0, 0x44, 0x41, 0xA8, 0, 0, 0xB4, 8, 0, 0, 0, 0x10, 0x0F,
     ];
-    assert!(sched
-        .write_property(
-            P::WEEKLY_SCHEDULE,
-            Some(1),
-            PropertyValue::ApplicationData(duplicate),
-            None,
-        )
-        .is_err());
+    assert!(
+        sched
+            .write_property(
+                P::WEEKLY_SCHEDULE,
+                Some(1),
+                PropertyValue::ApplicationData(duplicate),
+                None,
+            )
+            .is_err()
+    );
     assert_fault(&sched, false, "refused write");
 }
 
@@ -417,8 +420,8 @@ fn the_reference_fault_combines_with_the_content_fault() {
 #[test]
 fn target_outcomes_classify_the_write_error() {
     let protocol = |code: ErrorCode| Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: code.to_raw() as u32,
+        class: ErrorClass::PROPERTY,
+        code,
     };
     let cases = [
         (Ok(()), Accepted),
@@ -429,8 +432,8 @@ fn target_outcomes_classify_the_write_error() {
         ),
         (
             Err(Error::protocol(
-                ErrorClass::PROPERTY.to_raw() as u32,
-                ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
                 Some(bacnet_types::error::ErrorDetail::FirstFailedElementNumber(
                     1,
                 )),
@@ -439,8 +442,8 @@ fn target_outcomes_classify_the_write_error() {
         ),
         (
             Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
+                class: ErrorClass::OBJECT,
+                code: ErrorCode::UNKNOWN_OBJECT,
             }),
             ReferenceRefused,
         ),
@@ -455,7 +458,12 @@ fn target_outcomes_classify_the_write_error() {
         ),
         (Err(protocol(ErrorCode::WRITE_ACCESS_DENIED)), Failed),
         (Err(protocol(ErrorCode::VALUE_OUT_OF_RANGE)), Failed),
-        (Err(Error::Reject { reason: 0 }), Failed),
+        (
+            Err(Error::Reject {
+                reason: RejectReason::OTHER,
+            }),
+            Failed,
+        ),
     ];
     for (result, outcome) in cases {
         assert_eq!(ScheduleTargetOutcome::of(&result), outcome, "{result:?}");

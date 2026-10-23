@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, LifeSafetyOperation, LifeSafetyState, PropertyIdentifier, SilencedState,
@@ -42,7 +42,7 @@ fn assert_error(error: Error, class: ErrorClass, code: ErrorCode) {
         Error::Protocol {
             class: actual_class,
             code: actual_code,
-        } if actual_class == class.to_raw() as u32 && actual_code == code.to_raw() as u32
+        } if actual_class == class && actual_code == code
     ));
 }
 

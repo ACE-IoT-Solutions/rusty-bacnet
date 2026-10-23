@@ -9,8 +9,8 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 use std::borrow::Cow;
 
-use super::energy_meter::{energy_meter_accessors, EnergyMeter};
-use super::membership::{group_membership_accessors, GroupMembership};
+use super::energy_meter::{EnergyMeter, energy_meter_accessors};
+use super::membership::{GroupMembership, group_membership_accessors};
 use super::{decode_fault_signals, metadata, named_or_proprietary};
 use crate::common::{self, read_common_properties};
 use crate::traits::BACnetObject;

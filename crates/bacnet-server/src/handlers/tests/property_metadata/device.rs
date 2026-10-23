@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::traits::BACnetObject;
@@ -6,7 +7,6 @@ use bacnet_types::bitstring::ServicesSupported;
 use bacnet_types::enums::{Segmentation, ServiceSupported};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 use std::sync::{Arc, Mutex};
-use PropertyIdentifier as P;
 
 struct TestClock(Mutex<Option<ClockFrame>>);
 
@@ -120,8 +120,8 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
                     read.unwrap();
                 } else {
                     assert!(matches!(read, Err(Error::Protocol { class, code })
-                        if class == bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-                            && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32));
+                        if class == bacnet_types::enums::ErrorClass::PROPERTY
+                            && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY));
                 }
             }
             let PropertyValue::BitString { unused_bits, data } = object

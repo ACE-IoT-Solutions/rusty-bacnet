@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu, ConfirmedRequest};
+use bacnet_encoding::apdu::{Apdu, ConfirmedRequest, decode_apdu, encode_apdu};
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_endpoint::session::{EndpointSession, SessionConfig, SessionRole};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, LeaseMetadata, TerminalPolicy};
@@ -15,7 +15,9 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+};
 use bytes::BytesMut;
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -32,7 +34,8 @@ fn session_config() -> SessionConfig {
 
 fn database_with_analog(instance: u32, value: f32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    let mut analog = AnalogInputObject::new(instance, "lease-input", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(instance, "lease-input", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(value);
     db.add(Box::new(analog)).unwrap();
     db
@@ -62,13 +65,15 @@ async fn lease_exhaustion_release_reuse() {
             .expect("reserve must succeed below 256");
         tokens.push(token);
     }
-    assert!(coordinator
-        .reserve(LeaseMetadata::requester(
-            CanonicalPeer::direct(&[0x02]),
-            ConfirmedServiceChoice::READ_PROPERTY,
-            TerminalPolicy::ComplexAck,
-        ))
-        .is_err());
+    assert!(
+        coordinator
+            .reserve(LeaseMetadata::requester(
+                CanonicalPeer::direct(&[0x02]),
+                ConfirmedServiceChoice::READ_PROPERTY,
+                TerminalPolicy::ComplexAck,
+            ))
+            .is_err()
+    );
     assert_eq!(coordinator.active_count().unwrap(), 256);
 
     // Release one lease → reuse succeeds with the same numeric ID eventually.
@@ -139,7 +144,7 @@ async fn lost_consumer_routes_to_policy_without_hanging() {
         &encoded,
         &[0x01],
         true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
+        bacnet_npdu::NetworkPriority::Normal,
     )
     .await
     .unwrap();
@@ -200,7 +205,7 @@ async fn full_ingress_queue_overflows_to_policy() {
             &encoded,
             &[0x01],
             true,
-            bacnet_types::enums::NetworkPriority::NORMAL,
+            bacnet_npdu::NetworkPriority::Normal,
         )
         .await
         .unwrap();
@@ -239,7 +244,7 @@ async fn full_ingress_queue_overflows_to_policy() {
                     &encoded,
                     &[0x01],
                     true,
-                    bacnet_types::enums::NetworkPriority::NORMAL,
+                    bacnet_npdu::NetworkPriority::Normal,
                 )
                 .await
                 .unwrap();
@@ -290,14 +295,9 @@ async fn malformed_apdu_is_policy_owned() {
     let _peer_rx = peer.start().await.unwrap();
 
     // Und decodable APDU (empty payload decodes as malformed at classifier).
-    peer.send_apdu(
-        &[],
-        &[0x01],
-        false,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&[], &[0x01], false, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
 
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {

@@ -166,7 +166,10 @@ async fn foreign_mode_refuses_manual_requests_that_could_change_its_registration
     ];
     for refusal in refusals {
         let error = refusal.unwrap_err();
-        assert!(matches!(error, Error::Encoding(_)), "{error:?}");
+        assert!(
+            matches!(error, BvlcExchangeError::Transport(Error::Encoding(_))),
+            "{error:?}"
+        );
         assert!(
             error.to_string().contains("managed automatically"),
             "{error}"
@@ -364,7 +367,11 @@ async fn sent_once(transport: &BipTransport) -> BvlcClientSnapshot {
 #[tokio::test(start_paused = true)]
 async fn foreign_tiny_interval_countdown_tracks_the_effective_schedule() {
     let (_peer, mut transport) = peer_and_transport().await;
-    transport.foreign_device.as_mut().unwrap().renewal_interval = Some(Duration::from_nanos(1));
+    transport
+        .foreign_device
+        .as_ref()
+        .unwrap()
+        .edit(|config| config.renewal_interval = Some(Duration::from_nanos(1)));
     let _rx = transport.start().await.unwrap();
     let first = sent_once(&transport).await;
     // The first attempt is in flight: the next is one effective interval,
@@ -454,7 +461,9 @@ async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
     let snapshot = node.snapshot();
     let counters = snapshot.register_foreign_device;
     let attempts = counters.sent + counters.busy + counters.local_errors;
-    eprintln!("tiny interval busy={busy} local_error={local_error}: {attempts} attempts in {elapsed:?}; counters={counters:?}");
+    eprintln!(
+        "tiny interval busy={busy} local_error={local_error}: {attempts} attempts in {elapsed:?}; counters={counters:?}"
+    );
     assert!(attempts > 0, "worker must make progress");
     let limit = elapsed.as_millis() / 100 + 1;
     assert!(

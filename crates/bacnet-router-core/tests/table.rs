@@ -7,11 +7,12 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use bacnet_router_core::message::RejectReason;
+use bacnet_router_core::PortId;
+use bacnet_router_core::npdu::Mac;
+use bacnet_router_core::npdu::RejectMessageReason;
 use bacnet_router_core::table::{LearnRefusal, Learned, Reachability, RejectEffect, Table};
-use bacnet_router_core::{Mac, PortId};
 use proptest::prelude::*;
-use support::{mac, port, purge, secs, Hosted, BASE, NANO, TIMING};
+use support::{BASE, Hosted, NANO, TIMING, mac, port, purge, secs};
 
 #[test]
 fn add_direct_and_lookup() {
@@ -391,9 +392,11 @@ fn same_port_refresh_updates_seen_preserves_used() {
     let mut table = Hosted::new();
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     table.touch(3000, BASE + secs(10));
-    assert!(table
-        .apply_claim(3000, port(0), mac(&[2]), BASE + secs(20), &TIMING)
-        .applied());
+    assert!(
+        table
+            .apply_claim(3000, port(0), mac(&[2]), BASE + secs(20), &TIMING)
+            .applied()
+    );
     let entry = table.lookup(3000).unwrap();
     assert_eq!(entry.last_seen(), Some(BASE + secs(20)));
     assert_eq!(entry.last_used(), Some(BASE + secs(10)));
@@ -511,7 +514,13 @@ fn debug_shows_the_stored_routes_only() {
         "an empty table prints no slots"
     );
     table.add_learned(3000, port(1), mac(&[7]), BASE);
-    table.apply_reject(3000, port(1), RejectReason::ROUTER_BUSY, BASE, &TIMING);
+    table.apply_reject(
+        3000,
+        port(1),
+        RejectMessageReason::ROUTER_BUSY,
+        BASE,
+        &TIMING,
+    );
     let text = format!("{table:?}");
     assert_eq!(text.matches("Slot").count(), 1, "{text}");
     assert_eq!(text.matches("Hold").count(), 1, "{text}");
@@ -520,14 +529,20 @@ fn debug_shows_the_stored_routes_only() {
 
 #[test]
 fn a_panicking_purge_callback_leaves_the_table_whole() {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     let mut table = Hosted::new();
     table.add_direct(1000, port(0));
     for network in [3000, 3001, 3002] {
         table.add_learned(network, port(1), mac(&[7]), BASE);
     }
-    table.apply_reject(3001, port(1), RejectReason::ROUTER_BUSY, BASE, &TIMING);
+    table.apply_reject(
+        3001,
+        port(1),
+        RejectMessageReason::ROUTER_BUSY,
+        BASE,
+        &TIMING,
+    );
     let before: Vec<u16> = table.networks().collect();
     let mut calls = 0;
     let unwound = catch_unwind(AssertUnwindSafe(|| {
@@ -548,7 +563,7 @@ fn a_panicking_purge_callback_leaves_the_table_whole() {
         probe.apply_reject(
             3001,
             port(1),
-            RejectReason::NOT_DIRECTLY_CONNECTED,
+            RejectMessageReason::NOT_DIRECTLY_CONNECTED,
             BASE,
             &TIMING
         ),

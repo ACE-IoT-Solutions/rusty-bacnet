@@ -24,12 +24,13 @@ use bacnet_types::constructed::{
     BACnetLogMultipleRecord, BACnetLogRecord, BACnetRecipient, EventLogDatum,
     EventNotificationRequest, LogData, LogDatum,
 };
-use bacnet_types::enums::{ErrorClass, ErrorCode, NotifyType, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{NotifyType, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use serde::Serialize;
 
 use super::read::{decode_and_format, format_application_values, hex};
 pub use super::read_range_options::RangeOptions;
+use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 /// Read a range of items from a list or log-buffer property: one read over
@@ -37,7 +38,7 @@ use crate::output::{self, OutputFormat};
 #[allow(clippy::too_many_arguments)]
 pub async fn read_range_cmd<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     object_type: ObjectType,
     instance: u32,
     property: PropertyIdentifier,
@@ -57,7 +58,7 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
         }
         // What was read is printed, with the flags that resume the read,
         // before any error that stopped it.
-        let (rows, stopped) = read_all(client, mac, oid, range, &mut heading).await?;
+        let (rows, stopped) = read_all(client, to, oid, range, &mut heading).await?;
         print_records(&heading, &rows, format);
         return stopped.map_or(Ok(()), Err);
     }
@@ -72,7 +73,7 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
     } else {
         ReadRangeValidation::Lenient
     };
-    let reply = client.read_range_with(mac, &request, validation).await?;
+    let reply = to.read_range(client, &request, validation).await?;
     let ack = reply.ack;
     heading.item_count = u64::from(ack.item_count);
     heading.result_flags = ack.result_flags;
@@ -95,7 +96,7 @@ type Stopped = Option<Box<dyn std::error::Error>>;
 /// read, for the caller to print first.
 async fn read_all<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    mac: &[u8],
+    to: &Destination,
     log: ObjectIdentifier,
     range: &RangeOptions,
     heading: &mut Heading,
@@ -104,7 +105,7 @@ async fn read_all<T: TransportPort + 'static>(
     let mut rows = LogRows::default();
     let mut paged = Paged::default();
     let stopped = loop {
-        let page = match client.read_log_page(mac, log, cursor, page_size).await {
+        let page = match to.read_log_page(client, log, cursor, page_size).await {
             Ok(page) => page,
             Err(error) => break Some(error.into()),
         };
@@ -413,21 +414,10 @@ fn log_datum(datum: &LogDatum) -> String {
         LogDatum::Failure {
             error_class,
             error_code,
-        } => format!("failure {}", raw_error(*error_class, *error_code)),
+        } => format!("failure {error_class}/{error_code}"),
         LogDatum::TimeChange(seconds) => time_change(*seconds),
         LogDatum::AnyValue(bytes) => decode_and_format(bytes),
     }
-}
-
-/// An error class and code by name, or by number when one doesn't fit the
-/// enumeration.
-fn raw_error(class: u32, code: u32) -> String {
-    let class = u16::try_from(class).map_or(class.to_string(), |raw| {
-        ErrorClass::from_raw(raw).to_string()
-    });
-    let code =
-        u16::try_from(code).map_or(code.to_string(), |raw| ErrorCode::from_raw(raw).to_string());
-    format!("{class}/{code}")
 }
 
 /// Notify type, event type, event object and transition, then the message.

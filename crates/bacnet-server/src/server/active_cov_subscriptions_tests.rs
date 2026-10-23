@@ -498,7 +498,7 @@ async fn active_cov_read_only_list_scope_local_read_and_stop() {
     }
     let indexed = wire.server.read_local(&live_device, ACTIVE, Some(1)).await;
     assert!(matches!(indexed, Err(Error::Protocol { code, .. })
-        if code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32));
+        if code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY));
     let raw = wire
         .server
         .database()

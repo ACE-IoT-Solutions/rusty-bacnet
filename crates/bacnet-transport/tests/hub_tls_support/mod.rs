@@ -6,7 +6,7 @@ use rcgen::{CertificateParams, Issuer, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 pub type Peer = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
 pub const HUB_VMAC: [u8; 6] = [0x10; 6];
@@ -150,10 +150,10 @@ pub async fn relay(sender: &mut Peer, recipient: &mut Peer, id: u8) {
 // The body is caught by each caller so explicit stop/join also runs on assertion
 // failure; Drop is only the last-resort fallback for a broken cleanup itself.
 pub async fn finish(mut hub: ScHub, outcome: std::thread::Result<()>) {
-    let address = hub.local_addr().unwrap();
+    // stop() joins the accept task that owns the listener. Rebinding the
+    // freed port here to show it could lose it to another process (#1419),
+    // and these tests check the hub's connections, not its port.
     bounded(hub.stop()).await;
-    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    drop(listener);
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }

@@ -39,13 +39,13 @@ async fn isolated_segments(same_leaf: bool, cancel_a: bool) {
     let observer = seen.clone();
     let config = ServerConfig {
         device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
-        mutation_authorizer: Some(Arc::new(move |context| {
+        policy: Some(Arc::new(crate::FnPolicy::new().mutation(move |context| {
             observer
                 .lock()
                 .unwrap()
                 .push(context.direct_sc_identity().unwrap());
             true
-        })),
+        }))),
         ..Default::default()
     };
     let mut f = Fixture::new(&ca, config, database(Arc::new(AtomicUsize::new(0)))).await;
@@ -158,13 +158,13 @@ async fn direct_principal_two_admitted_contexts_finish_without_merging() {
         &ca,
         ServerConfig {
             device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
-            mutation_authorizer: Some(Arc::new(move |c| {
+            policy: Some(Arc::new(crate::FnPolicy::new().mutation(move |c| {
                 observer
                     .lock()
                     .unwrap()
                     .push(c.direct_sc_identity().unwrap());
                 true
-            })),
+            }))),
             ..Default::default()
         },
         database(Arc::new(AtomicUsize::new(0))),

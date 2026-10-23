@@ -1,7 +1,7 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{averaging::AveragingObject, traits::BACnetObject};
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn averaging_object(configured: bool) -> AveragingObject {
     let mut object = AveragingObject::new(7, "AVG-7").unwrap();
@@ -111,8 +111,8 @@ fn rpm_averaging_metadata_does_not_enable_create_object() {
         let mut response = BytesMut::new();
         let result = handle_create_object(&mut db, &request, &mut response);
         assert!(matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::OBJECT.to_raw() as u32
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE.to_raw() as u32));
+            if class == ErrorClass::OBJECT
+                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE));
         assert!(response.is_empty());
         assert!(db.is_empty());
     }

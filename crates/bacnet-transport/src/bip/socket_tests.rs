@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::local_addresses::LocalInterface;
-use crate::port_ownership::{restart, ATTEMPTS};
-use socket::{udp_socket, BindPlan, BoundSockets, SocketRole};
+use crate::port_ownership::{ATTEMPTS, restart};
+use socket::{BindPlan, BoundSockets, SocketRole, udp_socket};
 
 #[tokio::test]
 async fn socket_is_broadcast_capable_and_binds_inaddr_any() {
@@ -96,6 +96,7 @@ fn plan(interface: Ipv4Addr, port: u16, by_address: bool) -> BindPlan {
         by_address,
         broadcast: Ipv4Addr::new(127, 255, 255, 255),
         local: None,
+        multicast: None,
     }
 }
 

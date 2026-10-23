@@ -44,8 +44,8 @@ fn assert_protocol_error(result: Result<(), Error>, code: ErrorCode) {
             class,
             code: actual,
         } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(actual, code.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(actual, code);
         }
         other => panic!("expected protocol error, got {other:?}"),
     }
@@ -57,8 +57,8 @@ fn assert_property_read_error(result: Result<PropertyValue, Error>, code: ErrorC
             class,
             code: actual,
         } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(actual, code.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(actual, code);
         }
         other => panic!("expected protocol error, got {other:?}"),
     }
@@ -77,12 +77,12 @@ fn assert_write_access_denied(
         Error::Protocol { class, code } => {
             assert_eq!(
                 class,
-                ErrorClass::PROPERTY.to_raw() as u32,
+                ErrorClass::PROPERTY,
                 "{label}: {property:?} error class"
             );
             assert_eq!(
                 code,
-                ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                ErrorCode::WRITE_ACCESS_DENIED,
                 "{label}: {property:?} error code"
             );
         }
@@ -206,9 +206,11 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
         label,
     );
     assert!(!object.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
-    assert!(object
-        .property_list()
-        .contains(&PropertyIdentifier::ACKED_TRANSITIONS));
+    assert!(
+        object
+            .property_list()
+            .contains(&PropertyIdentifier::ACKED_TRANSITIONS)
+    );
 
     // Event_State is maintained by the detector, never assignable from the
     // network — a write arm would let a client fake an alarm state.
@@ -309,13 +311,17 @@ fn binary_alarm_value_round_trips_and_matches_pics() {
                 .unwrap(),
             PropertyValue::Enumerated(0)
         );
-        assert!(object
-            .property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUE));
+        assert!(
+            object
+                .property_list()
+                .contains(&PropertyIdentifier::ALARM_VALUE)
+        );
         assert!(object.is_writable_property(PropertyIdentifier::ALARM_VALUE));
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUES));
+        assert!(
+            !object
+                .property_list()
+                .contains(&PropertyIdentifier::ALARM_VALUES)
+        );
         assert_protocol_error(
             object.write_property(
                 PropertyIdentifier::ALARM_VALUE,
@@ -420,7 +426,7 @@ fn binary_event_history_is_listed_readable_and_read_only() {
 }
 
 macro_rules! assert_seeded_binary_event_history {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         let expected_timestamps = [
             BACnetTimeStamp::Time(Time {
@@ -524,7 +530,7 @@ fn binary_seeded_event_history_preserves_array_order_and_timestamp_choices() {
 }
 
 macro_rules! assert_binary_history_reset {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         object.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
         object.event_history.message_texts[1] = "seeded".into();

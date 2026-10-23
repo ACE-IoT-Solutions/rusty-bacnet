@@ -3,7 +3,7 @@
 An Astro/Starlight task guide for the release named in `src/lib/site.mjs`:
 installation, the local lab and first reads (`start/`), integration guides for
 shared endpoints, Network Port/Number controls, transport evidence and SC setup
-(`development/`), and operating guides (`guides/`). [Engineering
+(`integrate/`), contributor source builds and documentation work (`development/`), and operating guides (`guides/`). [Engineering
 docs](../docs/README.md) remain the contract authority.
 
 This content refresh is local-only. A successful build or browser check does not
@@ -92,8 +92,80 @@ workflow `34003656261`, artifact `9980479931`, tag `v0.11.0` at
 The release `bacnet-macos-arm64` executable also read value 72.5 and units 64
 from a 30-second loopback server that then stopped. This is bounded tutorial
 evidence, not PyPI, general wheel/platform, or physical-network qualification.
-That evidence is for v0.11.0; the lab has not yet run against a later
-release's wheels.
+That evidence is for v0.11.0.
+
+## Displayed Python first-read verification
+
+The binding unittest suite also extracts the sole Python code block from
+`src/content/docs/start/python.md` and executes those exact bytes in a subprocess.
+It uses the installed extension and an ephemeral loopback server to check typed
+values, instance selection, unknown-object errors and argument bounds. Missing,
+ambiguous, empty or unclosed Python blocks fail instead of silently selecting a
+different sample. Run this check from the repository root:
+
+```sh
+python -m unittest discover -s crates/rusty-bacnet/tests -p test_website_first_read.py -v
+```
+
+The existing binding CI jobs discover this test against their development
+extension. To validate a published release, run the same test in a separate
+virtual environment containing its published wheel and record the wheel's source,
+hash and installation report. A development package can report the release's
+version, so the version string alone is insufficient provenance. This check does
+not execute other website snippets or qualify discovery, COV, writes or physical
+networks. `npm run verify` remains separate from native Python execution.
+
+## TUI screenshots
+
+The `tui/` pages show real macOS Terminal screenshots of `bacnet tui`. They are
+WebP files in `src/assets/tui/` (lossy, quality 92: sharp text at about a
+twentieth of a PNG's size), which Astro's image pipeline resizes at build time. `src/assets/tui/manifest.json` lists every shot: its file,
+alt text, terminal size, the command and keys that produced it, and whether it
+is a live capture, an insta snapshot or a placeholder. A unit test checks that
+the pages, the manifest and the capture script name the same shots.
+
+`scripts/tui-screenshots/capture.py` regenerates them. It needs macOS, tmux
+and cwebp (`brew install tmux webp`) and Rust. It shoots its own Terminal
+window; when Terminal is in full screen, that window can't be resized, so the
+script keeps the TUI at the shot's size in the window's top-left corner and
+crops each shot to it.
+From the repository root:
+
+```sh
+python3 website/scripts/tui-screenshots/capture.py --list    # the shot list
+python3 website/scripts/tui-screenshots/capture.py           # build, then every shot
+python3 website/scripts/tui-screenshots/capture.py --reuse --only watch-list,overview-help
+```
+
+The script builds `bacnet` (with `sc-tls` and `serial`) and the loopback lab
+in `scripts/tui-screenshots/lab/`, a standalone crate outside the workspace
+that uses the workspace crates by path. It starts the lab (a BBMD, a router,
+three B/IP devices and a BACnet/SC hub, all on 127.0.0.1) and runs the TUI in
+a tmux pane. It then opens a **new** Terminal window attached to that pane,
+sends the keys through tmux, and photographs only that window with
+`screencapture -l`. The window is closed at the end, also on failure or
+Ctrl-C; your own Terminal windows and tabs are left as they were. Keep the
+screen unlocked while it runs, about five minutes. Grant Terminal or your shell
+the Screen Recording permission if macOS asks.
+
+- **Paths.** `BACNET_CONFIG_DIR` is `/tmp/bacnet-docs`, a link to a fresh
+  directory that is removed at the end, so no shot shows a home directory or
+  user name.
+- **MS/TP.** The script never joins a trunk. Without `--mstp-port`, the MS/TP
+  shots show the TUI's insta snapshots (simulated stations, no colour).
+  `--mstp-port /dev/cu.usbserial-XXXX` adds live monitor shots with
+  `--mstp-monitor ... --passive`, which only listens; the join shots still
+  come from snapshots.
+- **Look.** The window uses Menlo 12 by default (`--font`, `--font-size`) and
+  your default Terminal profile's colours (`--terminal-profile NAME` picks
+  another). Shots are scaled to at most 1440 pixels wide (`--width`).
+- **Checking the driving logic** without a Terminal window:
+  `capture.py --reuse --tmux-only DIR` writes each shot's text to `DIR/NAME.txt`
+  and leaves the PNGs alone.
+
+Rerun it after a TUI change that the pages show, and review the new PNGs before
+committing them. A new shot needs an entry in `SHOTS` in `capture.py`, a step
+in one of its scenarios, and a page that uses it.
 
 ## Retained CI and publication reference
 
@@ -202,9 +274,9 @@ artifact or fetch a mutable branch in the deployment job.
 
 ## Content organization
 
-- `start/`, `development/` and `guides/`: release tasks for the version in
+- `start/`, `integrate/` and `guides/`: release tasks for the version in
   `src/lib/site.mjs`, linked to the canonical repository docs at that release's
-  tag. `development/overview` keeps the source-build path for unreleased changes.
+  tag. `development/build-from-source` and `development/documentation` cover repository contributions and unreleased work.
 - `src/lib/site.mjs`: `release`, which MDX pages, the download list, the footer
   and the llms index read. To move to another release, change it and run
   `npm test`: `tests/unit/release.test.mjs` names every page, the lab script,
@@ -212,13 +284,17 @@ artifact or fetch a mutable branch in the deployment job.
   (`project/upgrading.md` and the lab's recorded evidence may name the previous
   one). It also checks the installation page's asset list against
   `.github/workflows/release.yml`.
+- `tui/`: the terminal UI on the `dev` branch, which ships after the release in
+  `src/lib/site.mjs`. Its screenshots come from `scripts/tui-screenshots/`
+  (see "TUI screenshots" above).
 - `reference/` and `project/`: reference entry points, support scope and the
   upgrade guide from the previous release.
 - `src/data/navigation.json`: sidebar and test route inventory.
+- `src/data/legacy-routes.json`: retained routes and section destinations. Compatibility pages keep old bookmarks and raw URLs usable, stay out of Pagefind, and are omitted from the canonical llms guide list.
 - `scripts/prepare.mjs`: source-derived raw Markdown and version-aware llms index.
 
 Preserve the loopback lab's single source, generated download and recorded release
 native provenance. Tests automatically sweep navigation routes and additionally
-check development routing, search, scope in exports and representative screenshots.
+check integration/contributor routing, compatibility links, search, scope in exports and representative screenshots.
 Do not turn a docs refresh into a new support database, dependency upgrade, site/base
 change or publication workflow change.

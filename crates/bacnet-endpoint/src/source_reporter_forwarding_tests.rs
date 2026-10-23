@@ -43,8 +43,8 @@ fn read(object: &dyn BACnetObject, property: PropertyIdentifier) -> PropertyValu
 
 fn denied(result: Result<(), Error>) {
     assert!(matches!(result, Err(Error::Protocol { class, code })
-        if class == ErrorClass::PROPERTY.to_raw() as u32
-            && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+        if class == ErrorClass::PROPERTY
+            && code == ErrorCode::WRITE_ACCESS_DENIED));
 }
 
 #[tokio::test]
@@ -123,12 +123,16 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
             PropertyValue::Boolean(false),
             None,
         ));
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
-        assert!(object
-            .read_property(PropertyIdentifier::MONITORED_OBJECTS, None)
-            .is_err());
+        assert!(
+            !object
+                .property_list()
+                .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+        );
+        assert!(
+            object
+                .read_property(PropertyIdentifier::MONITORED_OBJECTS, None)
+                .is_err()
+        );
         object
             .write_property(
                 PropertyIdentifier::DESCRIPTION,
@@ -146,16 +150,18 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
             .iter()
             .map(|&p| (p, read(object, p)))
             .collect::<Vec<_>>();
-        assert!(object
-            .configure_audit_reporter_internal(
-                AuditLevel::DEFAULT,
-                AuditOperationFlags::empty(),
-                false,
-                None,
-                BACnetPriorityFilter::all(),
-                None,
-            )
-            .is_err());
+        assert!(
+            object
+                .configure_audit_reporter_internal(
+                    AuditLevel::DEFAULT,
+                    AuditOperationFlags::empty(),
+                    false,
+                    None,
+                    BACnetPriorityFilter::all(),
+                    None,
+                )
+                .is_err()
+        );
         for (property, expected) in before {
             assert_eq!(read(object, property), expected);
         }
@@ -173,9 +179,11 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
             read(object, PropertyIdentifier::AUDIT_LEVEL),
             PropertyValue::Enumerated(AuditLevel::AUDIT_CONFIG.to_raw())
         );
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+        assert!(
+            !object
+                .property_list()
+                .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+        );
         object
             .configure_audit_reporter_internal(
                 AuditLevel::NONE,
@@ -415,9 +423,10 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
             selected()
         );
         assert!(db.find_by_name("Reporter-1").is_none());
-        assert!(db
-            .check_name_available(&target(), "Custom Reporter")
-            .is_err());
+        assert!(
+            db.check_name_available(&target(), "Custom Reporter")
+                .is_err()
+        );
         assert!(db.enrollment_eval_state_invalidated(&selected()));
         assert_eq!(db.enrollment_eval_source(&selected()), Some(monitored));
         assert_eq!(calls.clock_bindings.load(Ordering::SeqCst), clock_binds);
@@ -481,16 +490,18 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
             .iter()
             .map(|&p| (p, read(object, p)))
             .collect::<Vec<_>>();
-        assert!(object
-            .configure_audit_reporter_internal(
-                AuditLevel::DEFAULT,
-                AuditOperationFlags::empty(),
-                false,
-                None,
-                BACnetPriorityFilter::all(),
-                None,
-            )
-            .is_err());
+        assert!(
+            object
+                .configure_audit_reporter_internal(
+                    AuditLevel::DEFAULT,
+                    AuditOperationFlags::empty(),
+                    false,
+                    None,
+                    BACnetPriorityFilter::all(),
+                    None,
+                )
+                .is_err()
+        );
         assert_eq!(calls.configurations.load(Ordering::SeqCst), 1);
         for (property, expected) in before {
             assert_eq!(read(object, property), expected);
@@ -506,9 +517,11 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
             )
             .unwrap();
         assert_eq!(calls.configurations.load(Ordering::SeqCst), 2);
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+        assert!(
+            !object
+                .property_list()
+                .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+        );
         assert_eq!(
             read(object, PropertyIdentifier::AUDIT_SOURCE_REPORTER),
             PropertyValue::Boolean(true)

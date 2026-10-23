@@ -7,9 +7,9 @@
 //! BACnet multicast group itself.
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu, UnconfirmedRequest,
+    Apdu, ConfirmedRequest as ConfirmedRequestPdu, UnconfirmedRequest, decode_apdu, encode_apdu,
 };
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::encode_app_real;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::database::ObjectDatabase;
@@ -18,7 +18,7 @@ use bacnet_server::server::{BACnetServer, DiscoveryPolicy};
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::bip6::{
-    decode_bvll6, encode_bvll6, Bip6ForeignDeviceConfig, Bip6Transport, Bip6Vmac, Bvll6,
+    Bip6ForeignDeviceConfig, Bip6Transport, Bip6Vmac, Bvll6, decode_bvll6, encode_bvll6,
 };
 use bacnet_types::enums::{
     ConfirmedServiceChoice, ObjectType, PropertyIdentifier, UnconfirmedServiceChoice,
@@ -44,8 +44,15 @@ pub(super) fn database() -> ObjectDatabase {
         .unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(
+            1,
+            "AV-1",
+            bacnet_types::enums::EngineeringUnits::DEGREES_CELSIUS,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
     db
 }
 

@@ -6,9 +6,6 @@
 //! notification datum (Clause 12.27.13), so the record codec reuses these
 //! functions.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::ToString;
-
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetPropertyStates,
     ChangeOfValueChoice, EventNotificationRequest, NotificationParameters,
@@ -17,11 +14,11 @@ use bacnet_types::enums::{
     AccessEvent, EventState, EventType, LifeSafetyMode, LifeSafetyOperation, LifeSafetyState,
     NotifyType, Reliability, TimerState, TimerTransition,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, StatusFlags, Time};
 use bytes::BytesMut;
 
-use super::tagged::{misplaced_tag, unclosed_kind};
+use super::tagged::{misplaced, misplaced_tag, unclosed_kind};
 use super::{
     decode_bacnet_property_value_in_list, encode_bacnet_property_value, validate_tlv_sequence,
     MAX_FRAMED_ITEMS,
@@ -54,7 +51,7 @@ pub fn encode_event_notification(
     let mut encoded = BytesMut::new();
     encode_into(request, &mut encoded)?;
     validate_tlv_sequence(&encoded, "EventNotification")
-        .map_err(|error| Error::Encoding(error.to_string()))?;
+        .map_err(Error::into_encode_refusal)?;
     buf.extend_from_slice(&encoded);
     Ok(())
 }
@@ -91,13 +88,12 @@ fn encode_into(request: &EventNotificationRequest, buf: &mut BytesMut) -> Result
     // [11] toState
     primitives::encode_ctx_enumerated(buf, 11, request.to_state.to_raw());
     // [12] eventValues — optional
-    if request.notify_type != NotifyType::ACK_NOTIFICATION {
-        if let Some(ref params) = request.event_values {
+    if request.notify_type != NotifyType::ACK_NOTIFICATION
+        && let Some(ref params) = request.event_values {
             tags::encode_opening_tag(buf, 12);
             encode_notification_parameters(params, buf)?;
             tags::encode_closing_tag(buf, 12);
         }
-    }
     Ok(())
 }
 

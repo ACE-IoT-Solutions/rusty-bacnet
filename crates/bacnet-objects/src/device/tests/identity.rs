@@ -48,8 +48,8 @@ fn mode_derived_max_segments_accepted() {
             None => assert!(matches!(
                 max_segments,
                 Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::UNKNOWN_PROPERTY
             )),
         }
     }
@@ -64,23 +64,27 @@ fn segment_timeout_absence_custom_value_and_zero_validation() {
     .unwrap();
     assert!(
         matches!(none.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY)
     );
-    assert!(!none
-        .property_list()
-        .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
+    assert!(
+        !none
+            .property_list()
+            .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT)
+    );
     for mode in [
         Segmentation::TRANSMIT,
         Segmentation::RECEIVE,
         Segmentation::BOTH,
     ] {
-        assert!(DeviceObject::new(DeviceConfig {
-            identity: crate::DeviceIdentity::default()
-                .with_segmentation(mode)
-                .with_apdu_segment_timeout_ms(0),
-            ..Default::default()
-        })
-        .is_err());
+        assert!(
+            DeviceObject::new(DeviceConfig {
+                identity: crate::DeviceIdentity::default()
+                    .with_segmentation(mode)
+                    .with_apdu_segment_timeout_ms(0),
+                ..Default::default()
+            })
+            .is_err()
+        );
         let device = DeviceObject::new(DeviceConfig {
             identity: crate::DeviceIdentity::default()
                 .with_segmentation(mode)
@@ -106,9 +110,11 @@ fn segment_timeout_absence_custom_value_and_zero_validation() {
                 .unwrap(),
             PropertyValue::Unsigned(3)
         );
-        assert!(device
-            .property_list()
-            .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
+        assert!(
+            device
+                .property_list()
+                .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT)
+        );
     }
 }
 
@@ -134,9 +140,12 @@ fn segment_timeout_is_present_for_segmented_devices() {
 
 #[test]
 fn invalid_segmentation_is_rejected_at_construction() {
-    assert!(DeviceObject::new(DeviceConfig {
-        identity: crate::DeviceIdentity::default().with_segmentation(Segmentation::from_raw(64)),
-        ..DeviceConfig::default()
-    })
-    .is_err());
+    assert!(
+        DeviceObject::new(DeviceConfig {
+            identity: crate::DeviceIdentity::default()
+                .with_segmentation(Segmentation::from_raw(64)),
+            ..DeviceConfig::default()
+        })
+        .is_err()
+    );
 }
