@@ -421,6 +421,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "tokio",
+ "toml",
 ]
 
 [[package]]
