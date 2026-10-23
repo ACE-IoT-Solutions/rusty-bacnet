@@ -2295,10 +2295,14 @@ in memory and drains immediately, and its reads always return octets.
 #### Passive monitor
 
 `bacnet_transport::mstp::monitor::MstpMonitor` listens to a trunk without
-joining it (#958). It takes any `tokio::io::AsyncRead` and nothing that can
-write; with the `serial` feature, `mstp_serial::ReceiveOnlyPort::open` opens a
-port that way, keeping only its read half, with no kernel RS-485 transmit setup
-and no GPIO. The monitor decodes the stream with the codec's `StreamDecoder`
+joining it (#958). Its `MonitorRead` input combines asynchronous reads with
+an explicit close barrier (#1854). With the `serial` feature,
+`mstp_serial::ReceiveOnlyPort::open` requests exclusive native read-only access,
+raw binary 8N1 and input purge, with no kernel RS-485 transmit setup or GPIO.
+Unix uses a nonblocking read-only descriptor and preserves inherited HUPCL. Windows uses a synchronous
+read-only handle owned by one reader thread; awaited close joins that thread.
+Driver/open transitions can still change modem lines, including before an
+explicit RTS level is applied; this is not an electrical-silence guarantee. The monitor decodes the stream with the codec's `StreamDecoder`
 and publishes `MonitorStats` through a `watch` channel: frames per station and
 type, header and data CRC errors, other rejected frames, token passes, rotation
 times and retries, lost tokens (silences of at least T_no_token after a
@@ -2318,14 +2322,36 @@ use bacnet_transport::mstp::monitor::{MonitorConfig, MstpMonitor};
 use bacnet_transport::mstp_serial::{ReceiveOnlyPort, SerialConfig};
 
 let config = SerialConfig { port_name: "/dev/ttyUSB1".into(), baud_rate: 38_400 };
-let monitor = MstpMonitor::start(
+let mut monitor = MstpMonitor::start(
     ReceiveOnlyPort::open(&config, None)?,
     MonitorConfig::new(config.baud_rate),
-)?;
+).await?;
 let stats = monitor.statistics();
 // ...
 let present: Vec<u8> = stats.borrow().present_stations().collect();
+monitor.stop().await?; // ownership released before reopening the adapter
 ```
+
+`open` and `start` return `MonitorAdmissionError` on failure. Its
+`release_confirmed()` permits retry only when no owner was acquired or cleanup
+succeeded; otherwise refuse replacement and retain the error. `start` is async
+so rejected inputs can also be closed. `stop(&mut self)` retains
+shutdown and join progress if its future is cancelled; call it again to await
+the same barrier. Repeated failures remain failures. The CLI terminates its
+coordinator with a visible error on unproven admission cleanup or any failed
+stop, so queued joins cannot open a replacement. This conservatively includes
+a read error followed by successful close. EOF and read errors also
+run the close epilogue before task completion. Drop only requests shutdown and
+is not a reopening barrier. Ordinary in-memory readers explicitly opt into
+`DropOnClose::new(reader)`; do not use this adapter for deferred native cleanup.
+
+Windows first-byte read timeouts provide stop-check opportunities, not EOF or
+a hard driver deadline. A driver that never completes its read can delay close.
+Linux termios2 supports checked numeric rates on supported architectures;
+macOS custom rates use IOSSIOSPEED without physical rate read-back. Unsupported
+configuration fails instead of substituting a rate or opening read-write.
+PTY, scripted-owner and native file-access tests qualify their respective
+software boundaries only; physical COM/RS-485 behavior needs bench evidence.
 
 `MonitorStats::record` is the engine on its own: feed it `(time, LineEvent)`
 pairs from a capture to get the same statistics offline.

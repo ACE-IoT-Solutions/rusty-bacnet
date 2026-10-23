@@ -96,7 +96,7 @@ pub(super) struct Passive {
     pub(super) app: App,
     pub(super) commands: mpsc::Sender<Command>,
     pub(super) events: mpsc::Receiver<WorkerEvent>,
-    pub(super) task: JoinHandle<()>,
+    pub(super) task: JoinHandle<Result<(), String>>,
     pub(super) address: SocketAddrV4,
 }
 impl Passive {
@@ -146,7 +146,7 @@ impl Passive {
     }
     pub(super) async fn stop(self) {
         self.commands.send(Command::Disconnect).await.unwrap();
-        self.task.await.unwrap();
+        self.task.await.unwrap().unwrap();
         let rebound = std::net::UdpSocket::bind(self.address).expect("one-shot immediate rebind");
         drop(rebound);
     }

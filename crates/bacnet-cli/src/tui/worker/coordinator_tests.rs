@@ -15,6 +15,7 @@ async fn full_inner_queue_reports_cancel_refusal_after_outer_admission() {
     let (release, held) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {
         held.await.unwrap();
+        Ok(())
     });
     let active = Active {
         cancel,
@@ -140,7 +141,7 @@ async fn full_inner_queue_reports_cancel_refusal_after_outer_admission() {
         "admitted retry must not produce a rejection"
     );
     release.send(()).unwrap();
-    active.task.await.unwrap();
+    active.task.await.unwrap().unwrap();
 }
 
 #[test]
@@ -212,7 +213,7 @@ async fn a_watch_command_waits_for_room_in_a_full_session_queue() {
     let active = Active {
         cancel,
         commands,
-        task: tokio::spawn(std::future::pending::<()>()),
+        task: tokio::spawn(std::future::pending::<Result<(), String>>()),
     };
     active.commands.try_send(Command::Reconnect).unwrap();
     assert_eq!(active.commands.capacity(), 0, "the session queue is full");

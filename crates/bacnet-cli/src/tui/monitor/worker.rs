@@ -32,26 +32,34 @@ use crate::tui::worker::{EventSink, Offer, passive};
 
 /// Serve a monitor session until it is cancelled, disconnected, or the
 /// monitor ends. Before returning it stops the monitor and waits for its
-/// task, so the port is closed by then.
+/// task. Success acknowledges release; failure prohibits replacement.
 pub(crate) async fn serve(
     plan: MonitorPlan,
     lines: &Lines,
     sink: &EventSink,
     commands: mpsc::Receiver<Command>,
-) {
+) -> Result<(), String> {
     let config = MonitorConfig::new(plan.baud).with_timestamp_resolution(plan.resolution);
-    let started = lines
-        .open_monitor(&plan.port, plan.baud)
-        .and_then(|reader| MstpMonitor::start(reader, config));
-    let monitor = match started {
+    let started = match lines.open_monitor(&plan.port, plan.baud) {
+        Ok(reader) => MstpMonitor::start(reader, config).await,
+        Err(error) => Err(error),
+    };
+    let mut monitor = match started {
         Ok(monitor) => monitor,
         Err(error) => {
             tracing::error!("MS/TP monitor on {}: {error}", plan.port);
             sink.deliver(WorkerEvent::ConnectFailed {
-                error: crate::tui::message::Failure::within(&plan.port, &error),
+                error: crate::tui::message::Failure::within(&plan.port, error.error()),
             })
             .await;
-            return;
+            return if error.release_confirmed() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "MS/TP input release unproven on {}: {error}",
+                    plan.port
+                ))
+            };
         }
     };
     tracing::info!(
@@ -78,9 +86,16 @@ pub(crate) async fn serve(
             Box::pin(capturing)
         );
     }
-    // Wait for the monitor's task: once it returns, the port is closed.
+    // Only a successful stop acknowledges release. A scoped event may be
+    // cancelled, so refusal also travels through the session's task result.
     let stopped = monitor.stop().await;
-    tracing::info!("MS/TP monitor on {} closed", plan.port);
+    if stopped.is_ok() {
+        tracing::info!("MS/TP monitor on {} closed", plan.port);
+    }
+    let retirement = stopped
+        .as_ref()
+        .map(|_| ())
+        .map_err(|error| format!("MS/TP input release unproven on {}: {error}", plan.port));
     let error = match (ended, stopped) {
         (_, Err(error)) => Some(error.to_string()),
         (Some(()), Ok(_)) => Some("the port closed".into()),
@@ -91,6 +106,7 @@ pub(crate) async fn serve(
         let report = MonitorReport::Ended(format!("{}: {error}", plan.port));
         sink.deliver(WorkerEvent::Monitor(report)).await;
     }
+    retirement
 }
 
 /// What the worker follows between samples.

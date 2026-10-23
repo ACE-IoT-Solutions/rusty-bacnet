@@ -44,7 +44,7 @@ async fn passive_full_queue_cancellation_closes_socket_and_counts_drops() {
         tokio::task::yield_now().await;
     }
     cancel.send_replace(true);
-    task.await.unwrap();
+    task.await.unwrap().unwrap();
     assert!(matches!(
         events.recv().await,
         Some(WorkerEvent::Session { generation: 7, .. })
@@ -60,7 +60,7 @@ async fn passive_ui_event_receiver_close_releases_unscoped_listener() {
     let net = Passive::start(super::network::plan(None)).await;
     let address = net.address;
     drop(net.events);
-    net.task.await.unwrap();
+    net.task.await.unwrap().unwrap();
     assert!(std::net::UdpSocket::bind(address).is_ok());
     drop(net.commands);
 }
@@ -177,7 +177,7 @@ async fn passive_bind_failure_and_unsupported_modes_never_claim_readiness() {
             events.recv().await,
             Some(WorkerEvent::ConnectFailed { .. })
         ));
-        task.await.unwrap();
+        task.await.unwrap().unwrap();
         assert!(events.recv().await.is_none());
     }
 }
