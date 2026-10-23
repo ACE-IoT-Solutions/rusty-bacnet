@@ -22,8 +22,7 @@ No observation was removed, no matrix was repeated, and no threshold was changed
 
 `candidate.patch.gz` contains the exact patch bytes in deterministic gzip form
 (mtime zero). Decompress it before applying it to reconstruct all eight B files
-exactly from A, including its
-three added identity tests and historical optimization changelog. Apply it only
+exactly from A, including its three added identity tests and historical optimization changelog. Apply it only
 to an isolated experimental checkout. Its seven Rust files are not present as
 changes in the final delivery diff. The original candidate remains in branch
 history; the later evidence commit explicitly restores A's production bytes.
@@ -179,8 +178,10 @@ was replaced or was discarded. `failures.json`, `image-build-failure.log`,
 - `candidate.patch.gz`, `patch-reconstruction.json`: the rejected candidate and its
   exact eight-file reconstruction proof. `common/` holds the unchanged harness,
   normalized lock, profile, protocol and derivative Dockerfile.
-- `measured/`: byte-identical original runners and analysis. Top-level runners
-  only parameterize the capture directory; `capture.py` is a packaging helper.
+- `measured/`: byte-identical original runners and analysis. Corrected top-level
+  reproduction tools own fresh source-bound builds, require those captures and
+  execute an immutable Docker image ID. They intentionally differ from the
+  historical scripts; the original measurements are unchanged.
 - `profiles/`: compressed original exploratory A and selected final B ct profiles,
   with raw/compressed hashes in `provenance.json`; `attribution.json` identifies
   the reached frame. Complete original profiles and binaries remain at the local
@@ -195,69 +196,96 @@ source identity or sample, so rejection exercises semantic guards. All three
 corruptions were rejected, and the untouched data passed before/after.
 `integrity-validation.json` retains these expected failures. The capture helper
 also accepted exact A/B source and rejected a wrong revision before restoration.
+That historical source-only check did not establish build/artifact association.
+`test_capture.py` and `reproduction-validation.json` cover the corrected fresh-build
+path: 21 isolated controls mock Git/compiler/Docker processes while exercising real
+source hashing, artifact parsing, resource admission, logging and publication.
+Wrong-source/stale build metadata, reused targets/volumes, changed source, failed
+builds and image-tag drift are covered. No new build or timing is claimed by these
+controls. The original capture misbinding and mutable-tag execution were reproduced
+before repair; their expected failing evidence is retained separately.
 
 Run from any directory with Python 3.10+:
 
 ```sh
 python3 /absolute/path/to/1978-macaddr/reconstruct.py
 python3 /absolute/path/to/1978-macaddr/validate_integrity.py
+python3 -B /absolute/path/to/1978-macaddr/test_capture.py
 ```
 
 ## Opt-in reproduction of new measurements
 
-Reconstruction above uses the published observations. The following is an
-explicit new experiment, not a favorable retry of this dataset. Use clean isolated
-checkouts at A and B, private native targets and fresh Linux volumes. The original
-B commit is retained in history; `candidate.patch.gz` provides its exact intervention.
-`capture.py` refuses a wrong revision, source hash, unsuccessful Cargo JSON build,
-reused variant label or mismatched common harness.
+Reconstruction above uses the published observations. The following starts a
+separate experiment, not a favorable retry of this dataset. Use clean isolated
+checkouts at A and B. The original B commit is retained in history;
+`candidate.patch.gz` contains its exact intervention.
 
-Linux reproduction requires the retained `rb-callgrind:local` base image
-`sha256:0f6ec7193b18244427fba499eaf40ff35be670e08b327c5f689b1a6eb9c5f5ee`.
-It is a local prerequisite, not a public registry download. The distributed
-Dockerfile installs pinned Rust 1.99.0 in a derivative, preserving the base.
-An independently constructed image is a new environment and must be identified
-as such. Probe actual compiler/Valgrind versions and preserve its image ID.
+`capture.py` now owns the pinned, locked builds. It accepts neither a prebuilt
+executable nor independently supplied Cargo JSON. For each label it reserves a
+new native target and named Linux volume, verifies the complete source manifest,
+runs the builds from that root, checks their successful Cargo artifact records
+against the exact manifest/source paths, and rechecks source and common inputs
+before publishing the variant. Existing resources and cross-label reuse are
+refused, even when an earlier failed attempt reserved them. A volume ownership
+label checks the create race. Independent builds with equal binary bytes are valid.
 
-Set `EVIDENCE` to this directory, `FROZEN` to a new absolute capture directory,
-and `A_TREE`/`B_TREE` to the clean immutable checkouts. No path may reuse the
-original experiment's targets, volumes or outputs. Build all variants serially,
-check every command's status, and retain stdout/stderr. For each label, use its
-`TREE`, private `NATIVE_TARGET`, fresh `VOLUME` and selected `IMAGE`:
+The native command is `cargo +1.99.0 bench --locked -p bacnet-benchmarks --bench
+bip_latency --no-run --message-format=json`, with `CARGO_INCREMENTAL=0` and the
+fresh target. Linux runs `cargo build --release --locked --message-format=json`
+inside the selected image, with the frozen `common/harness` and its lock mounted
+read-only at `/h`, the verified source at `/wt`, and a fresh `/target` volume.
+These are opt-in commands executed by the capture tool; they are not prerequisites
+for checking the published observations.
 
-```sh
-# Prepare FROZEN/harness once by copying common/harness with its existing lock.
-# Verify the retained base ID before building the task-local derivative.
-BUILDX_CONFIG="$FROZEN/buildx" docker build --progress=plain \
-  -t "$IMAGE" "$EVIDENCE/common/image"
+Supply an already prepared local image with Rust/Cargo 1.99.0 and Valgrind 3.22.0.
+The original derivative is identified in `inputs.json`; it requires the retained
+local base `sha256:0f6ec7193b18244427fba499eaf40ff35be670e08b327c5f689b1a6eb9c5f5ee`,
+not a public registry download. `common/image/Dockerfile` is the frozen historical
+recipe. If preparing a new derivative, pin its base by immutable ID and record
+the resulting image as a new environment. Do not assume that the recipe's mutable
+base tag still names the original base.
 
-cd "$TREE"
-CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$NATIVE_TARGET" \
-  cargo +1.99.0 bench --locked -p bacnet-benchmarks --bench bip_latency \
-  --no-run --message-format=json > "$FROZEN/$LABEL-build.json" \
-  2> "$FROZEN/$LABEL-build.err"
-# Create VOLUME only after confirming that name does not already exist.
-docker volume create "$VOLUME"
-docker run --rm -e CARGO_INCREMENTAL=0 -e CARGO_TARGET_DIR=/target \
-  -v "$TREE:/wt:ro" -v "$FROZEN/harness:/h:ro" -v "$VOLUME:/target" \
-  -w /h "$IMAGE" cargo build --release --locked
-python3 "$EVIDENCE/capture.py" "$LABEL" "$TREE" "$FROZEN/$LABEL-build.json" \
-  "$NATIVE_TARGET" "$VOLUME" "$FROZEN" --image "$IMAGE"
-```
+The first capture resolves `IMAGE` once to a complete immutable image ID. Both
+variants use that ID for version probes, builds and executable hashing; the
+Callgrind matrix executes the same ID. Rebinding the original tag later does not
+change execution. The helper records actual new binary hashes and platform/tool
+observations, not a claim that another machine reproduces the original bytes.
 
-Before timing, repeat the recorded correctness commands and ct/mt RP/WP harness
-oracles, then capture the qualified binaries after all builds finish. Check actual
-OS/toolchain/power/process/container state and at least 50 GiB free. Use no other
-builds/benchmark suites or system-setting intervention. The fixed serial matrix is:
+Set `EVIDENCE` to this directory, `FROZEN` to a fresh absolute capture directory,
+and `A_TREE`/`B_TREE` to the clean immutable checkouts. `A_NATIVE`/`B_NATIVE` must
+name absent private target paths outside the sources; `A_VOLUME`/`B_VOLUME` must
+name absent, distinct Docker volumes. Use the same `IMAGE` selector for both calls.
+Run them serially:
 
 ```sh
-python3 "$EVIDENCE/callgrind_matrix.py" "$FROZEN"
-python3 "$EVIDENCE/native_matrix.py" "$FROZEN"
-python3 "$EVIDENCE/analyze.py" "$FROZEN"
+python3 -B "$EVIDENCE/capture.py" A "$A_TREE" "$A_NATIVE" "$A_VOLUME" \
+  "$FROZEN" --image "$IMAGE"
+python3 -B "$EVIDENCE/capture.py" B "$B_TREE" "$B_NATIVE" "$B_VOLUME" \
+  "$FROZEN" --image "$IMAGE"
 ```
 
-The runners refuse existing output/baseline names, stop on execution failure,
-retain raw data and check frozen source/binary identity. New build paths may alter
-binary layout/hash; capture the actual new executable rather than expecting the
-original machine's byte identity. Keep the resulting new data separate, including
-any failures or uncertainty. No new measurements are needed to verify this report.
+Each preparation retains its reservation, exact commands, explicit environment
+overrides, stdout/stderr/statuses and successful build receipt under
+`preparations/A` or `preparations/B`. A failed build never falls back to a prior
+executable and never publishes its variant. Failed logs and allocated resources
+remain for inspection; use a fresh output and fresh resources for another attempt.
+The receipt checks bracket the builds; they are not a filesystem snapshot or a
+complete capture of the inherited native build environment.
+
+Before timing, run the recorded correctness checks in separate validation targets
+and the non-timing ct/mt RP/WP harness oracles. Any later binary change invalidates
+its capture. Check actual OS/toolchain/power/process/container state and at least
+50 GiB free. Use no other builds or benchmark suites during the fixed serial matrix:
+
+```sh
+python3 -B "$EVIDENCE/callgrind_matrix.py" "$FROZEN"
+python3 -B "$EVIDENCE/native_matrix.py" "$FROZEN"
+python3 -B "$EVIDENCE/analyze.py" "$FROZEN"
+```
+
+Both runners require the corrected capture format, two distinct build resources,
+unchanged receipts and unchanged reproduction tools. They refuse existing output
+or baseline names, stop on execution failure, retain raw data and check frozen
+source/binary identity. Linux checks the binary before each invocation and executes
+only the selected image ID. Keep the resulting new data separate, including any
+failures or uncertainty. No new measurements are needed to verify this report.

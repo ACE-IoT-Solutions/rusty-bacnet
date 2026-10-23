@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import json,os,subprocess,datetime,hashlib,shutil,sys
 from pathlib import Path
-root=Path(sys.argv[1]).resolve(); inputs=json.loads((root/'inputs.json').read_text());out=root/'outputs/native-final';out.mkdir(exist_ok=False)
+from capture import load_inputs
+root=Path(sys.argv[1]).resolve(); inputs=load_inputs(root);out=root/'outputs/native-final';out.mkdir(exist_ok=False)
 workloads=['bip_read_property_latency','bip_write_property_latency','bip_rpm_10_objects_latency'];manifest={'order':list('ABBA')*3,'runs':[],'inputs':inputs,'workloads':workloads}
 def save(): (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
