@@ -13,7 +13,7 @@ fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(kind, instance).unwrap()
 }
 
-fn database() -> ObjectDatabase {
+pub(super) fn database() -> ObjectDatabase {
     let mut db = read_services::database();
     let mut alarm =
         AnalogInputObject::new(77, "Routed alarm", EngineeringUnits::DEGREES_CELSIUS).unwrap();
@@ -55,13 +55,34 @@ async fn invoke(
     service: &str,
     arguments: &[&str],
 ) -> std::process::Output {
+    invoke_at(port, target, service, arguments, None).await
+}
+
+async fn invoke_at(
+    port: Option<u16>,
+    target: &str,
+    service: &str,
+    arguments: &[&str],
+    source_port: Option<u16>,
+) -> std::process::Output {
     let mut cmd = command();
-    cmd.args(["--interface", "127.0.0.1", "--port", "0", "--json"]);
+    cmd.args([
+        "--interface",
+        "127.0.0.1",
+        "--port",
+        &source_port.unwrap_or(0).to_string(),
+        "--json",
+    ]);
     if let Some(port) = port {
         cmd.args(["--foreign-bbmd", &format!("127.0.0.1:{port}")]);
     }
     cmd.arg(service).arg(target).args(arguments);
-    Process::spawn(&mut cmd).output().await
+    let process = Process::spawn(&mut cmd);
+    if source_port.is_some() {
+        support::paused::output(process).await
+    } else {
+        process.output().await
+    }
 }
 
 fn success(output: &std::process::Output, message: &str) {
@@ -86,16 +107,24 @@ fn object_values(db: &ObjectDatabase) -> Vec<PropertyValue> {
     .to_vec()
 }
 
-async fn object_lifecycle<T: TransportPort + 'static>(
+pub(super) async fn object_lifecycle<T: TransportPort + 'static>(
     server: &BACnetServer<T>,
     port: Option<u16>,
     target: &str,
+    source_port: Option<u16>,
 ) {
     let created = oid(ObjectType::BINARY_INPUT, 100);
     let before = server.database().read().await.len();
     assert!(server.database().read().await.get(&created).is_none());
     success(
-        &invoke(port, target, "create-object", &["bi:100", "--allow-write"]).await,
+        &invoke_at(
+            port,
+            target,
+            "create-object",
+            &["bi:100", "--allow-write"],
+            source_port,
+        )
+        .await,
         "Created object (response: c4 00 c0 00 64)",
     );
     let expected = vec![
@@ -105,17 +134,25 @@ async fn object_lifecycle<T: TransportPort + 'static>(
     assert_eq!(object_values(&*server.database().read().await), expected);
     assert_eq!(server.database().read().await.len(), before + 1);
     failure(
-        &invoke(port, target, "create-object", &["bi:100", "--allow-write"]).await,
+        &invoke_at(
+            port,
+            target,
+            "create-object",
+            &["bi:100", "--allow-write"],
+            source_port,
+        )
+        .await,
         "OBJECT_IDENTIFIER_ALREADY_EXISTS",
     );
     assert_eq!(object_values(&*server.database().read().await), expected);
     assert_eq!(server.database().read().await.len(), before + 1);
     failure(
-        &invoke(
+        &invoke_at(
             port,
             target,
             "delete-object",
             &[&format!("device:{INSTANCE}"), "--allow-write"],
+            source_port,
         )
         .await,
         "OBJECT_DELETION_NOT_PERMITTED",
@@ -123,12 +160,26 @@ async fn object_lifecycle<T: TransportPort + 'static>(
     assert_eq!(object_values(&*server.database().read().await), expected);
     assert_eq!(server.database().read().await.len(), before + 1);
     success(
-        &invoke(port, target, "delete-object", &["bi:100", "--allow-write"]).await,
+        &invoke_at(
+            port,
+            target,
+            "delete-object",
+            &["bi:100", "--allow-write"],
+            source_port,
+        )
+        .await,
         "Deleted BINARY_INPUT:100",
     );
     assert!(server.database().read().await.get(&created).is_none());
     failure(
-        &invoke(port, target, "delete-object", &["bi:100", "--allow-write"]).await,
+        &invoke_at(
+            port,
+            target,
+            "delete-object",
+            &["bi:100", "--allow-write"],
+            source_port,
+        )
+        .await,
         "UNKNOWN_OBJECT",
     );
     assert_eq!(server.database().read().await.len(), before);
@@ -234,7 +285,7 @@ async fn acknowledge<T: TransportPort + 'static>(
 async fn routed_object_create_and_delete_change_only_the_selected_object() {
     for target in [format!("{DNET}:{INSTANCE}"), format!("{DNET}:0x05")] {
         let (mut router, mut server, port) = site_with_database(database()).await;
-        object_lifecycle(&server, Some(port), &target).await;
+        object_lifecycle(&server, Some(port), &target, None).await;
         server.stop().await.unwrap();
         router.stop().await.unwrap();
     }
@@ -262,7 +313,7 @@ async fn direct_object_and_alarm_commands_preserve_output_and_state_changes() {
         .unwrap();
     let mac = server.local_mac();
     let target = format!("127.0.0.1:{}", u16::from_be_bytes([mac[4], mac[5]]));
-    object_lifecycle(&server, None, &target).await;
+    object_lifecycle(&server, None, &target, None).await;
     acknowledge(&server, None, &target).await;
     server.stop().await.unwrap();
 }
