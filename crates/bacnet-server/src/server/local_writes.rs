@@ -11,7 +11,7 @@ mod finish;
 #[path = "local_access_inputs.rs"]
 mod access_inputs;
 pub(super) use finish::Committed;
-use finish::local_runtime;
+pub(super) use finish::local_runtime;
 
 #[cfg(test)]
 #[path = "input_present_value_tests.rs"]

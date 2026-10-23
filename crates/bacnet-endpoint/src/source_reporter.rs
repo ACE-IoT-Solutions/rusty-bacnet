@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use bacnet_objects::access_control::AccessControlInput;
+use bacnet_objects::access_control::{AccessControlInput, AccessEventReport, CommittedAccessEvent};
 use bacnet_objects::audit::{
     AuditLogForwarding, AuditLogNotificationSink, AuditLogStorage, AuditReporterObject,
 };
@@ -494,6 +494,16 @@ impl BACnetObject for SourceReporter {
 
     fn set_tracking_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
         self.wrapped.set_tracking_value_internal(value)
+    }
+
+    fn supports_access_event_batch_internal(&self) -> bool {
+        self.wrapped.supports_access_event_batch_internal()
+    }
+    fn record_access_event_batch_internal(
+        &mut self,
+        reports: &[AccessEventReport],
+    ) -> Result<Vec<CommittedAccessEvent>, Error> {
+        self.wrapped.record_access_event_batch_internal(reports)
     }
 
     fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
