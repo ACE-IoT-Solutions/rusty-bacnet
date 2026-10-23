@@ -413,3 +413,85 @@ fn accompaniment_detached_intents_preserve_explicit_original_identity() {
         }
     }
 }
+
+fn chronology_case(
+    first: (u64, u64),
+    second: (u64, u64),
+    third: (u64, u64),
+) -> AccompanimentEvaluation {
+    let (db, _) = chain();
+    let presentation = |credential, (sequence, seconds)| CredentialPresentation {
+        sequence,
+        credential,
+        point: point(),
+        at: Duration::from_secs(seconds),
+    };
+    let first = presentation(credential(1), first);
+    let second = presentation(credential(2), second);
+    let third = presentation(credential(3), third);
+    let witnesses = [
+        AccompanimentWitness {
+            original: first.sequence,
+            evidence: AccompanimentEvidence::Presented(second),
+        },
+        AccompanimentWitness {
+            original: second.sequence,
+            evidence: AccompanimentEvidence::Presented(third),
+        },
+    ];
+    let mut request = request(&witnesses);
+    request.original = first;
+    request.now = first.at.max(second.at).max(third.at);
+    request.timing.order = AccompanimentOrder::Either;
+    request.max_links = 2;
+    let result = evaluate_accompaniment(&db, request).unwrap();
+    assert_eq!(
+        result.events,
+        [AccompanimentEventIntent {
+            original: first,
+            access_event: AccessEvent::ACCOMPANIMENT_BY,
+            presentation: second,
+        }]
+    );
+    result
+}
+#[test]
+fn accompaniment_chain_rejects_nonadjacent_chronology_conflicts() {
+    for (first, second, third) in [
+        ((10, 100), (20, 102), (5, 101)),
+        ((20, 102), (10, 100), (25, 101)),
+    ] {
+        let result = chronology_case(first, second, third);
+        assert_eq!(
+            result.outcome,
+            AccompanimentOutcome::Unresolved(AccompanimentProblem::Presentation {
+                presentation: third.0,
+                reason: AccompanimentPresentationFailure::NonMonotonic,
+            },)
+        );
+        assert_eq!(result.companions.len(), 1);
+    }
+}
+#[test]
+fn accompaniment_chain_accepts_globally_consistent_zigzag_chronology() {
+    for (first, second, third) in [
+        ((10, 100), (20, 102), (15, 101)),
+        ((20, 102), (10, 100), (15, 101)),
+    ] {
+        let result = chronology_case(first, second, third);
+        assert_eq!(result.outcome, AccompanimentOutcome::Satisfied);
+        assert_eq!(result.companions.len(), 2);
+    }
+}
+#[test]
+fn accompaniment_chain_accepts_equal_time_distinct_sequences() {
+    for (first, second, third) in [
+        ((10, 101), (20, 102), (5, 101)),
+        ((20, 101), (10, 100), (25, 101)),
+        ((10, 100), (20, 100), (5, 100)),
+    ] {
+        let result = chronology_case(first, second, third);
+        assert_eq!(result.outcome, AccompanimentOutcome::Satisfied);
+        assert_eq!(result.companions.len(), 2);
+    }
+}

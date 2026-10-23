@@ -34,6 +34,7 @@ pub(super) fn eligible(
     candidate: CredentialPresentation,
     request: &AccompanimentRequest<'_>,
     period: Duration,
+    path: &[CredentialPresentation],
 ) -> Result<bool, AccompanimentProblem> {
     let invalid = |reason| problem(candidate.sequence, reason);
     if current.point != candidate.point {
@@ -42,9 +43,12 @@ pub(super) fn eligible(
     if candidate.at > request.now {
         return Err(invalid(AccompanimentPresentationFailure::Future));
     }
-    if (candidate.sequence < current.sequence && candidate.at > current.at)
-        || (candidate.sequence > current.sequence && candidate.at < current.at)
-    {
+    // Either-order chains may zigzag, so adjacent agreement alone cannot
+    // establish one consistent presentation history. Equal times remain valid.
+    if path.iter().any(|previous| {
+        (candidate.sequence < previous.sequence && candidate.at > previous.at)
+            || (candidate.sequence > previous.sequence && candidate.at < previous.at)
+    }) {
         return Err(invalid(AccompanimentPresentationFailure::NonMonotonic));
     }
     let delta = candidate.at.abs_diff(current.at);

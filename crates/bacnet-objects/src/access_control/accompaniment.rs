@@ -233,7 +233,7 @@ fn follow(
                 AccompanimentPresentationFailure::ReusedSequence,
             ));
         }
-        if !timing::eligible(current, candidate, request, period)? {
+        if !timing::eligible(current, candidate, request, period, &path)? {
             read::available(db, &requirement)?;
             return Ok(deny(result, current, true));
         }
