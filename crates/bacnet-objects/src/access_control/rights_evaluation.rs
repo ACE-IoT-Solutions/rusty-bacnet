@@ -423,7 +423,7 @@ fn exempt(credential: &dyn BACnetObject) -> bool {
 }
 
 /// The credential's Assigned_Access_Rights, decoded from the value it serves.
-fn assigned_access_rights(
+pub(super) fn assigned_access_rights(
     credential: &dyn BACnetObject,
 ) -> Result<Vec<BACnetAssignedAccessRights>, Error> {
     let value = credential.read_property(PropertyIdentifier::ASSIGNED_ACCESS_RIGHTS, None)?;

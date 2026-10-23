@@ -10,7 +10,10 @@
 //! - CredentialDataInput (type 37)
 //!
 //! [`evaluate_access_rights`] checks a credential against the Access Rights
-//! it is assigned, for the application to act on (#1331).
+//! it is assigned, for the application to act on (#1331). Separate
+//! [`evaluate_accompaniment`] combines those rights with explicit local companion
+//! evidence and returns accompaniment-stage results and event intents (#1571).
+//! Neither helper performs complete authorization or publishes events.
 
 use bacnet_encoding::primitives::encode_timestamp_choice;
 use bacnet_types::constructed::BACnetDeviceObjectReference;
@@ -151,6 +154,8 @@ fn references_to(
 
 // ---------------------------------------------------------------------------
 
+mod accompaniment;
+mod accompaniment_types;
 mod credential;
 mod credential_data_input;
 mod credential_data_input_formats;
@@ -172,6 +177,8 @@ mod user;
 mod zone;
 mod zone_occupancy;
 mod zone_out_of_service;
+pub use accompaniment::*;
+pub use accompaniment_types::*;
 pub use credential::*;
 pub use credential_data_input::*;
 pub use door::*;
@@ -226,3 +233,16 @@ mod zone_occupancy_tests;
 mod zone_out_of_service_tests;
 #[cfg(test)]
 mod zone_points_tests;
+
+#[cfg(test)]
+mod accompaniment_tests;
+
+#[cfg(test)]
+mod accompaniment_test_support;
+
+#[cfg(test)]
+mod accompaniment_chain_tests;
+#[cfg(test)]
+mod accompaniment_resolution_tests;
+#[cfg(test)]
+mod accompaniment_timing_tests;
