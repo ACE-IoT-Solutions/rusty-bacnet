@@ -12,6 +12,7 @@ pub(crate) mod connection;
 pub(crate) mod devices;
 mod filter;
 pub(crate) mod monitor;
+mod monitor_scan;
 pub(crate) mod mstp;
 pub(crate) mod names;
 pub(crate) mod network;
@@ -665,6 +666,16 @@ impl App {
     }
 
     fn reset_session(&mut self) {
+        if let Some(monitor) = self.monitor.as_deref_mut() {
+            monitor.live = false;
+            monitor.wizard = None;
+            monitor.joining = None;
+            if let Some(scan) = monitor.scan.as_deref_mut().filter(|scan| scan.active()) {
+                scan.phase = crate::tui::monitor::scan::ScanPhase::Stopped(
+                    "session ended without restoration".into(),
+                );
+            }
+        }
         self.devices = DeviceTable::default();
         self.browser = None;
         if self.screen == Screen::Browse {

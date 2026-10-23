@@ -42,8 +42,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, monitor: &MonitorState, theme:
     .areas(inner);
     frame.render_widget(Paragraph::new(summary), summary_area);
     frame.render_widget(Paragraph::new(tab_bar(monitor, theme)), tabs);
+    if monitor.tab == MonitorTab::Scan {
+        return super::monitor_scan::draw(frame, body, monitor, theme);
+    }
     let Some(sample) = sample else {
-        let text = "Listening; the first reading comes within a second.";
+        let text = if monitor.live {
+            "Listening; the first reading comes within a second."
+        } else {
+            "Monitor is not listening. See Scan for progress or restoration errors."
+        };
         frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), body);
         return;
     };
@@ -52,6 +59,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, monitor: &MonitorState, theme:
         MonitorTab::Ring => ring(monitor, sample, usize::from(body.width), theme),
         MonitorTab::Findings => findings(monitor, sample, theme),
         MonitorTab::Errors => errors(monitor, sample, theme),
+        MonitorTab::Scan => unreachable!("scan rendered before sample"),
     };
     let paragraph = if matches!(monitor.tab, MonitorTab::Findings | MonitorTab::Errors) {
         Paragraph::new(lines).wrap(Wrap { trim: false })

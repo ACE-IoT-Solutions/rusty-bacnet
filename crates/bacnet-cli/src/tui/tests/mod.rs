@@ -71,6 +71,11 @@ mod mstp_monitor;
 #[cfg(all(target_os = "linux", feature = "serial"))]
 mod mstp_monitor_pty;
 mod mstp_release;
+mod mstp_scan;
+mod mstp_scan_capture;
+mod mstp_scan_lifecycle;
+#[cfg(all(target_os = "linux", feature = "serial"))]
+mod mstp_scan_native;
 mod mstp_screen;
 mod multicast_profile;
 mod names;

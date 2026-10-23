@@ -15,6 +15,18 @@ impl App {
             self.dirty = true;
             return;
         }
+        if let Command::MonitorScan(request) = command {
+            self.scan_report(crate::tui::monitor::scan::ScanReport::Rejected {
+                id: request.id(),
+                cancel: matches!(
+                    request,
+                    crate::tui::monitor::scan::ScanCommand::Cancel { .. }
+                ),
+                reason: error,
+            });
+            self.dirty = true;
+            return;
+        }
         // A name request is asked again on the next tick, without a notice.
         if let Command::Names { req, .. } = command {
             self.names.refused(req);
@@ -109,6 +121,9 @@ impl App {
             }
             WorkerEvent::SessionStarted { generation } => {
                 self.generation = generation;
+                if let Some(monitor) = self.monitor.as_deref_mut() {
+                    monitor.scan = None;
+                }
                 self.monitor_joined();
                 self.reset_session();
                 if self.link != Link::Disconnecting {
@@ -239,6 +254,7 @@ impl App {
             WorkerEvent::Sc(report) => self.sc_report(report),
             WorkerEvent::Mstp(report) => self.mstp.report(report),
             WorkerEvent::Monitor(report) => self.monitor_report(report),
+            WorkerEvent::MonitorScan(report) => self.scan_report(report),
             WorkerEvent::Capture(event) => {
                 if let Some(text) = self.capture.event(event) {
                     self.flash(text, FLASH_FOR);

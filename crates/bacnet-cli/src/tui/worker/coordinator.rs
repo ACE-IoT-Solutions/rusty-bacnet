@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 struct Active {
+    scan: crate::tui::monitor::scan::ScanGate,
     cancel: watch::Sender<bool>,
     commands: mpsc::Sender<Command>,
     task: JoinHandle<Result<(), String>>,
@@ -51,8 +52,12 @@ async fn start(
         return None;
     }
     let scoped = sink.for_session(generation, cancelled);
-    let task = session::spawn(plan.clone(), scoped, command_rx, options.clone());
+    let mut options = options.clone();
+    options.mstp.scan = Default::default();
+    let scan = options.mstp.scan.clone();
+    let task = session::spawn(plan.clone(), scoped, command_rx, options);
     Some(Active {
+        scan,
         cancel,
         commands,
         task,
@@ -64,6 +69,7 @@ async fn retire(active: &mut Option<Active>) -> Result<(), String> {
         cancel,
         commands,
         task,
+        ..
     }) = active.take()
     {
         cancel.send_replace(true);
@@ -148,6 +154,9 @@ async fn run(
                         let refused = |reason| DiscoveryEvent::Refused { command: command_copy, reason };
                         let refused = move |reason| WorkerEvent::Discovery(refused(reason));
                         forward_or_refuse(active.as_ref(), command, generation, &sink, refused).await;
+                    }
+                    Command::MonitorScan(request) => {
+                        forward_scan(active.as_ref(), plan.as_ref(), request, generation, &sink).await;
                     }
                     Command::Capture(_) => {
                         let refused = |why| WorkerEvent::Capture(CaptureEvent::Ended { what: TAP.into(), why });
@@ -235,6 +244,7 @@ async fn run(
                         } else { reject(&sink, "select a profile before connecting").await; }
                     }
                     Command::JoinTrunk { settings } => {
+                        if active.as_ref().is_some_and(|active| active.scan.busy()) { reject(&sink, "finish or cancel the baud scan before joining").await; continue; }
                         // A profile joins through its reviewed preview and its own confirmation.
                         if profiles.is_some() { reject(&sink, "review the profile before joining").await; continue; }
                         if let Err(error) = settings.validate() { reject(&sink, &error).await; continue; }
@@ -515,3 +525,56 @@ async fn forward_safety(
 #[cfg(test)]
 #[path = "coordinator_tests.rs"]
 mod tests;
+
+/// Reserve at the coordinator boundary before another queued join can retire it.
+async fn forward_scan(
+    active: Option<&Active>,
+    plan: Option<&ConnectPlan>,
+    request: crate::tui::monitor::scan::ScanCommand,
+    generation: u64,
+    sink: &EventSink,
+) {
+    use crate::tui::monitor::{
+        scan::{ScanCommand, ScanReport},
+        scan_worker::valid_window,
+    };
+    let id = request.id();
+    let cancel = matches!(request, ScanCommand::Cancel { .. });
+    let reason = match active.filter(|_| plan.is_some_and(|p| p.kind == TransportKind::MstpMonitor))
+    {
+        None => Some("a scan needs a live receive-only MS/TP monitor".to_string()),
+        Some(active) => {
+            // Repeated delivery of the same Start is idempotent.
+            if !cancel && active.scan.owns(id) {
+                return;
+            }
+            let admitted = match request {
+                ScanCommand::Start { id, window } => {
+                    valid_window(window) && active.scan.reserve(id)
+                }
+                ScanCommand::Cancel { id } => active.scan.owns(id),
+            };
+            if !admitted {
+                Some("another scan owns the monitor, or the window is invalid".into())
+            } else if let Err(error) = active.commands.try_send(Command::MonitorScan(request)) {
+                if !cancel {
+                    active.scan.release(id);
+                }
+                Some(format!("scan command was not admitted: {error}"))
+            } else {
+                None
+            }
+        }
+    };
+    if let Some(reason) = reason {
+        sink.deliver(WorkerEvent::Session {
+            generation,
+            event: Box::new(WorkerEvent::MonitorScan(ScanReport::Rejected {
+                id,
+                cancel,
+                reason,
+            })),
+        })
+        .await;
+    }
+}

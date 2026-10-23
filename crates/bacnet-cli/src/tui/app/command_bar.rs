@@ -105,8 +105,12 @@ pub(crate) const COMMANDS: &[Syntax] = &[
     Syntax {
         name: "mstp",
         alias: None,
-        usage: &["mstp rotation|hold MS", "mstp listen SECS"],
-        what: "The MS/TP monitor's thresholds; how long a safe join listens",
+        usage: &[
+            "mstp rotation|hold MS",
+            "mstp listen SECS",
+            "mstp scan SECS|cancel",
+        ],
+        what: "Monitor thresholds, safe-join window, or receive-only baud scan",
     },
 ];
 
@@ -159,6 +163,8 @@ pub(crate) enum Line {
     Find(String),
     /// An MS/TP monitor setting.
     Mstp(Setting),
+    /// Start a baud scan, or cancel when no window is supplied.
+    Scan(Option<Duration>),
 }
 
 /// `mstp rotation|hold MS` or `mstp listen SECS`, each at least 1.
@@ -337,6 +343,15 @@ pub(crate) fn parse(text: &str, devices: &DeviceTable) -> Result<Line, String> {
         ("csv", ["off"]) => Ok(Line::Csv(false)),
         ("bbmd", []) => Ok(Line::Bbmd(None)),
         ("bbmd", [address]) => Ok(Line::Bbmd(Some(crate::foreign::parse_bbmd_arg(address)?))),
+        ("mstp", ["scan", "cancel"]) => Ok(Line::Scan(None)),
+        ("mstp", ["scan", value]) => {
+            let seconds = value
+                .parse::<u64>()
+                .ok()
+                .filter(|n| (1..=3600).contains(n))
+                .ok_or_else(|| "mstp scan takes 1 to 3600 whole seconds, or cancel".to_string())?;
+            Ok(Line::Scan(Some(Duration::from_secs(seconds))))
+        }
         ("mstp", [which, value]) => Ok(Line::Mstp(mstp_setting(which, value)?)),
         // A quoted first word, `"find"`, is still find.
         ("find", _) => Ok(Line::Find(find_name(rest.trim()))),
@@ -371,6 +386,7 @@ impl App {
                     Ok(Line::Bbmd(bbmd)) => self.show_bbmd(bbmd, out),
                     Ok(Line::Find(name)) => self.find(name, out),
                     Ok(Line::Mstp(setting)) => self.mstp_setting(setting),
+                    Ok(Line::Scan(window)) => self.mstp_scan(window, out),
                     Err(error) => self.flash(error, FLASH_FOR),
                 }
             }
@@ -625,6 +641,23 @@ mod tests {
     }
 
     #[test]
+    fn mstp_scan_commands_require_an_explicit_bounded_window() {
+        for text in ["mstp scan 1", "mstp scan 3600", "mstp scan cancel"] {
+            assert!(parse(text).is_ok(), "{text}: {:?}", parse(text));
+        }
+        for text in [
+            "mstp scan",
+            "mstp scan 0",
+            "mstp scan 3601",
+            "mstp scan -1",
+            "mstp scan 1.5",
+            "mstp scan cancel now",
+        ] {
+            assert!(parse(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
     fn writem_lines_take_object_property_value_groups() {
         let Ok(Line::Writem(specs)) = parse("writem 100 ao:1 pv 42@8 av:1 description \"x\"")
         else {
@@ -649,7 +682,7 @@ mod tests {
             Line::Writem(_) => "writem",
             Line::Bbmd(_) => "bbmd",
             Line::Find(_) => "find",
-            Line::Mstp(_) => "mstp",
+            Line::Mstp(_) | Line::Scan(_) => "mstp",
         }
     }
 

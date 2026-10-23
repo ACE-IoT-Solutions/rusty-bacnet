@@ -42,6 +42,7 @@ Standard library only.
 import argparse
 import json
 import os
+import plistlib
 import re
 import shlex
 import shutil
@@ -70,6 +71,13 @@ MAIN = (120, 36)
 # Every shot the pages use: name -> (size, alt text). The names are the
 # files in src/assets/tui/ and stay stable across refreshes.
 SHOTS = {
+    "mstp-scan-stopped": ((80, 24), "Original-rate restoration failed; the scan evidence remains visible."),
+    "mstp-scan-cancelled": ((80, 24), "Manual cancellation retains partial evidence and restores the original monitor."),
+    "mstp-scan-partial": ((80, 24), "A failed candidate leaves partial evidence and no global best."),
+    "mstp-scan-insufficient": ((80, 24), "No valid decoded frames: insufficient traffic for a baud suggestion."),
+    "mstp-scan-ambiguous": ((80, 24), "Equal best ratios remain ambiguous across two rates."),
+    "mstp-scan-result": ((120, 40), "A scripted 38400 baud suggestion, with the original 19200 baud monitor restored."),
+    "mstp-scan-progress": ((80, 24), "A receive-only scan measuring the first of six rates."),
     "profiles-picker": (MAIN, "The profile picker listing four saved profiles, with keys to preview, create or reload them."),
     "profiles-new-bip": (MAIN, "The new B/IP profile form with its fields and their defaults."),
     "profiles-new-mstp": (MAIN, "The new MS/TP profile form: serial port, MAC, baud, Max_Master and Max_Info_Frames."),
@@ -130,6 +138,13 @@ SHOTS = {
 # live port. The last three always come from snapshots: they need stations to
 # answer, or a join, which this script never makes.
 SNAPSHOT_SHOTS = {
+    "mstp-scan-stopped": "mstp_scan__mstp_scan_stopped_80x24",
+    "mstp-scan-cancelled": "mstp_scan__mstp_scan_cancelled_80x24",
+    "mstp-scan-partial": "mstp_scan__mstp_scan_partial_80x24",
+    "mstp-scan-insufficient": "mstp_scan__mstp_scan_insufficient_80x24",
+    "mstp-scan-ambiguous": "mstp_scan__mstp_scan_ambiguous_80x24",
+    "mstp-scan-result": "mstp_scan__mstp_scan_result_120x40",
+    "mstp-scan-progress": "mstp_scan__mstp_scan_progress_80x24",
     "mstp-monitor-stations": "mstp_monitor__monitor_stations_120x40",
     "mstp-monitor-ring": "mstp_monitor__monitor_ring_120x40",
     "mstp-monitor-findings": "mstp_monitor__monitor_findings_80x24",
@@ -345,29 +360,61 @@ class Window:
     def __init__(self, opts):
         self.opts = opts
         attach = "cd /tmp && exec %s -L %s attach -t docs" % (shlex.quote(TMUX), SOCKET)
-        settings = ""
-        if opts.terminal_profile:
-            settings = 'set current settings of t to settings set "%s"\n' % opts.terminal_profile
-        # `do script` with no target opens a new window and leaves the user's
-        # own windows and tabs as they are. The title is fixed so it shows no
-        # user name or path.
-        out = osascript(
-            'tell application "Terminal"\n'
-            '  set t to do script "%s"\n%s'
-            '  set custom title of t to "bacnet"\n'
-            '  set title displays custom title of t to true\n'
-            '  set title displays device name of t to false\n'
-            '  set title displays shell path of t to false\n'
-            '  set title displays window size of t to false\n'
-            '  set title displays file name of t to false\n'
-            '  set font name of t to "%s"\n'
-            '  set font size of t to %d\n'
-            '  return t\n'
-            'end tell' % (attach.replace('"', '\\"'), settings, opts.font, opts.font_size))
-        match = re.search(r"window id (\d+)", out)
-        if not match:
-            raise Failure("could not tell which Terminal window opened: %r" % out)
-        self.id = int(match.group(1))
+        # Modern Terminal also inherits working-directory and active-process
+        # title components that its tab AppleScript flags do not control. Copy
+        # the chosen settings into a unique, temporary profile; never mutate a
+        # user's profile or default. close() removes only this owned profile.
+        self.profile = "bacnet-docs-%d" % os.getpid()
+        prefs = plistlib.loads(run(["defaults", "export", "com.apple.Terminal", "-"]).encode())
+        base = opts.terminal_profile or prefs.get("Default Window Settings", "Basic")
+        settings = dict(prefs["Window Settings"][base])
+        settings["name"] = self.profile
+        settings["WindowTitle"] = "bacnet"
+        for key in ("ShowComponentsWhenTabHasCustomTitle", "ShowActiveProcessInTitle",
+                    "ShowActiveProcessArgumentsInTitle", "ShowRepresentedURLInTitle",
+                    "ShowRepresentedURLPathInTitle", "ShowShellCommandInTitle",
+                    "ShowWindowSettingsNameInTitle", "ShowTTYNameInTitle", "ShowDimensionsInTitle"):
+            settings[key] = False
+        # An imported profile must never inherit a user's startup command.
+        settings.pop("CommandString", None)
+        settings.pop("RunCommandAsShell", None)
+        self.id = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="bacnet-capture-") as directory:
+                # Terminal names an imported profile from the filename.
+                profile = os.path.join(directory, self.profile + ".terminal")
+                with open(profile, "wb") as stream:
+                    stream.write(plistlib.dumps(settings))
+                run(["open", "-a", "Terminal", profile])
+                deadline = time.time() + 5
+                while True:
+                    found = osascript(
+                        'tell application "Terminal"\n'
+                        '  repeat with w in (get id of every window)\n'
+                        '    try\n'
+                        '      if name of current settings of tab 1 of window id w is "%s" then return w as integer\n'
+                        '    end try\n'
+                        '  end repeat\n'
+                        'end tell' % self.profile).strip()
+                    if found:
+                        self.id = int(found)
+                        break
+                    if time.time() >= deadline:
+                        raise Failure("the capture Terminal profile did not open a window")
+                    time.sleep(0.1)
+            osascript(
+                'tell application "Terminal"\n'
+                '  set t to tab 1 of window id %d\n'
+                '  set custom title of t to "bacnet"\n'
+                '  set title displays custom title of t to true\n'
+                '  set font name of t to "%s"\n'
+                '  set font size of t to %d\n'
+                '  do script "%s" in t\n'
+                'end tell' % (self.id, opts.font, opts.font_size, attach.replace('"', '\\"')))
+        except BaseException:
+            # Ctrl-C/SIGTERM during initialization also retire the owned profile.
+            self.close()
+            raise
         log("Terminal window %d" % self.id)
 
     def tab(self):
@@ -446,9 +493,18 @@ class Window:
 
     def close(self):
         try:
-            osascript('tell application "Terminal" to close (window id %d) saving no' % self.id)
+            # Match only the profile created by this process, including an
+            # imported window if initialization failed before its ID was read.
+            osascript('tell application "Terminal"\n'
+                      '  repeat with w in (get id of every window)\n'
+                      '    try\n'
+                      '      if name of current settings of tab 1 of window id w is "%s" then close (window id w) saving no\n'
+                      '    end try\n'
+                      '  end repeat\n'
+                      '  if exists settings set "%s" then delete settings set "%s"\n'
+                      'end tell' % (self.profile, self.profile, self.profile))
         except Failure as e:
-            log("could not close Terminal window %d: %s" % (self.id, e))
+            log("could not close capture window/profile %s: %s" % (self.profile, e))
 
 
 class Pane:

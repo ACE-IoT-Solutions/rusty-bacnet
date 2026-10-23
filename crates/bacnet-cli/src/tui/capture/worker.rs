@@ -439,6 +439,10 @@ pub(crate) async fn pump(
             received = command(&mut commands) => {
                 // Another Start is a no-op: this capture already runs.
                 if received.is_none() {
+                    counts.finish(batch, &source, sink).await;
+                    sink.deliver(WorkerEvent::Capture(CaptureEvent::Ended {
+                        what, why: "the monitor or capture session retired".into(),
+                    })).await;
                     return;
                 }
             }

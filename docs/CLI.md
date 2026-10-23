@@ -498,7 +498,7 @@ table is refreshed from the client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`; the footer shows the syntax of the commands matching what is typed |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -668,7 +668,7 @@ Frames themselves are on the Capture screen (`7`).
 opens, and the status bar reads `listen only`. The MS/TP screen (`6`, shown
 first) opens with a summary (port, baud rate, uptime, stations heard, timestamp
 resolution), which goes on to a second line on a narrow terminal rather than
-being cut, and has four views, Tab to change:
+being cut, and has five views, Tab to change:
 
 - **Stations**: a map of every address, masters 0 to 127 and slaves 128 to
   254, each marked `M` master (passes the token or polls), `S` slave (only
@@ -693,6 +693,38 @@ being cut, and has four views, Tab to change:
   and extended (COBS, Clause 9.10) frames, which are decoded but not
   interpreted. `z` counts from now and Space pauses. The timestamps are only
   as good as the adapter: the screen shows the 16 ms a USB adapter adds.
+
+- **Scan**: explicit receive-only baud measurements, described below. Up and
+  Down (or `+` and `-`) select a row's detailed decoder errors on a narrow
+  screen; wide screens show the components together.
+
+**Baud scan.** `:mstp scan SECS` measures 9600, 19200, 38400, 57600, 76800
+and 115200 baud (the rates in Clause 9.2.3), for 1 to 3600 whole seconds per
+rate. Start from a live monitor; a participant cannot scan. The worker waits
+for the previous input to close, opens a fresh receive-only input at each
+rate, purges pending input, and starts fresh decoder counters. The displayed
+seconds are actual measurement time, excluding the wait for close.
+
+The score is valid frames divided by valid frames plus header-CRC, data-CRC,
+malformed and aborted-frame events. Noise octets are shown separately. A rate
+needs at least one valid frame to be suggested. Equal best ratios stay
+ambiguous, even when their frame counts differ; all-zero valid counts mean
+insufficient traffic. Failed, incomplete or cancelled scans cannot identify
+a global best, and saturated counters withhold ranking. This is a sampling
+heuristic: sparse traffic and decoder errors do not establish UART framing,
+electrical quality or confidence that a physical trunk uses the suggested rate.
+
+`:mstp scan cancel` retains partial evidence. Completion and manual cancellation
+restore the **original configured rate**, with fresh ordinary monitor counters,
+while retaining the scan report. A suggestion never changes the selected rate,
+joins the trunk or writes a profile. Disconnect, quit and session replacement
+close the current input without restoration. A safe restoration failure shows
+Stopped; failed or unproven release ends the session and prohibits another open.
+
+Scanning clears join proposals and refuses joins until the original monitor
+is live again. It ends the ordinary capture subscription, finishes pending
+capture accounting and keeps historical rows; candidate traffic stays out of
+that ring. Reopen Capture explicitly after restoration to start a new subscription.
 
 `J` starts the safe join: the monitor listens for 10 s (`:mstp listen SECS`
 changes that), then proposes a free MAC that a master polls and that is within
