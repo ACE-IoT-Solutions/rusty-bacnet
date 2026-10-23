@@ -512,6 +512,8 @@ pub(crate) mod event_timestamp;
 mod handles;
 mod learned_router_cache;
 mod lifecycle;
+mod local_authorization;
+pub use local_authorization::LocalAuthorizationResult;
 mod local_writes;
 mod network_port;
 #[cfg(test)]

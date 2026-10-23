@@ -1188,6 +1188,32 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         })
     }
 
+    /// Whether this object opts in to atomic completed-authorization event batches.
+    /// An implementation returning true must implement the all-or-nothing contract
+    /// of [`Self::record_access_event_batch_internal`]. The default refuses admission.
+    #[doc(hidden)]
+    fn supports_access_event_batch_internal(&self) -> bool {
+        false
+    }
+
+    /// Install at most four ordered authorization event reports atomically.
+    /// Validate every report and timestamp before changing any served state. On
+    /// error, leave all event fields untouched. On success, retain each installed
+    /// intermediate state and its clock frame for post-commit COV preparation.
+    /// The native Access Point refuses out-of-service or faulty operation and
+    /// timestamps omitted times. Custom objects must opt in explicitly; callers
+    /// must never replace this operation with a fallible per-report loop.
+    #[doc(hidden)]
+    fn record_access_event_batch_internal(
+        &mut self,
+        _reports: &[crate::access_control::AccessEventReport],
+    ) -> Result<Vec<crate::access_control::CommittedAccessEvent>, Error> {
+        Err(Error::Protocol {
+            class: ErrorClass::OBJECT,
+            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        })
+    }
+
     /// Apply the Controlled_Variable_Value measured by the local application.
     ///
     /// Only the built-in Loop opts in. Its control algorithm runs in the

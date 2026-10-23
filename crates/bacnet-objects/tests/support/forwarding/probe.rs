@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::fixtures::{METADATA, address, day, noon, oid, property_error, schedule_write};
-use bacnet_objects::access_control::AccessControlInput;
+use bacnet_objects::access_control::{AccessControlInput, AccessEventReport, CommittedAccessEvent};
 use bacnet_objects::accumulator::InputReading;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::audit::{
@@ -51,6 +51,9 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, PropertyValue, Time};
+
+#[path = "access_batch.rs"]
+mod access_batch;
 
 pub const CUSTOM: P = P::from_raw(5000);
 pub const CUSTOM_LIST: P = P::from_raw(5001);
@@ -564,6 +567,16 @@ impl BACnetObject for Probe {
     fn set_tracking_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
         self.called("set_tracking_value_internal", (value,));
         Ok(())
+    }
+    fn supports_access_event_batch_internal(&self) -> bool {
+        self.called("supports_access_event_batch_internal", ());
+        true
+    }
+    fn record_access_event_batch_internal(
+        &mut self,
+        reports: &[AccessEventReport],
+    ) -> Result<Vec<CommittedAccessEvent>, Error> {
+        access_batch::record(self, reports)
     }
     fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
         self.called("report_access_input_internal", (input,));

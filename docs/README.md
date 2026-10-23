@@ -18,6 +18,7 @@ These documents follow the `dev` branch. The latest release is **0.14.0**, and t
 ## Policy and resource contracts
 
 - [Server authorization policy](mutation-policy.md) (mutations, LifeSafetyOperation, Audit receipt, SC principals), [Device Communication Control](dcc-policy.md) and [time synchronization](time-sync-policy.md).
+- [Completed local access authorization](local-access-authorization.md) documents terminal event publication, diagnostic-only outcomes and cancellation boundaries.
 - [Request admission](request-admission.md), [ReadPropertyMultiple budgets](rpm-budget.md), [ReadRange budgets](read-range-budget.md) and [full-server segmentation timing](server-segmentation.md).
 - [AtomicReadFile](atomic-read-file-budget.md), [AtomicWriteFile](atomic-write-file-budget.md), [alarm summary](alarm-summary-budget.md), [enrollment summary](enrollment-summary-budget.md) and [event information](event-information-budget.md) response budgets.
 - [Target Audit Reporters](target-audit-reporters.md), [Device Audit recipient](device-audit-recipient.md), [delayed target Audit](delayed-target-audit.md) and [Audit Log forwarding](audit-log-forwarding.md).
