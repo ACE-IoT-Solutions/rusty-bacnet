@@ -31,6 +31,10 @@ pub(super) const CAPACITY: usize = 64;
 /// How long a plan is kept: far longer than a stack takes to answer.
 pub(super) const LIFETIME: Duration = Duration::from_secs(30);
 
+// `RouterApplicationPort`'s docs and docs/rust-api.md name both numbers:
+// change them together.
+const _: () = assert!(CAPACITY == 64 && LIFETIME.as_secs() == 30);
+
 /// One request's saved plan.
 struct Saved {
     network: u16,
@@ -57,9 +61,12 @@ impl Replies {
     /// `network` and `mac`. A repeat of the request replaces its plan.
     pub(super) fn save(&self, network: u16, mac: &[u8], apdu: &[u8], response: RouterResponse) {
         // Confirmed-Request: the invoke ID is its third octet.
-        let Some(&invoke_id) = apdu.get(2).filter(|_| apdu[0] >> 4 == 0) else {
+        let &[first, _, invoke_id, ..] = apdu else {
             return;
         };
+        if first >> 4 != 0 {
+            return;
+        }
         let now = Instant::now();
         let mut saved = self.saved();
         saved.retain(|entry| {
@@ -106,7 +113,11 @@ impl Replies {
         if ends {
             saved.remove(index).map(|entry| entry.response)
         } else {
-            Some(saved[index].response.clone())
+            // Still going: its lifetime counts from this answer, so a long
+            // segmented exchange keeps its plan.
+            let entry = &mut saved[index];
+            entry.saved_at = now;
+            Some(entry.response.clone())
         }
     }
 

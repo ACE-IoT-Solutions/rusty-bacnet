@@ -267,18 +267,25 @@ impl TransportPort for RouterApplicationPort {
         })?;
         let (tx, rx) = mpsc::channel(QUEUE);
         let replies = Arc::clone(&self.replies);
-        // No lock is held across an await: the only waits are the router's
-        // local queue and room in the stack's. A slow stack holds up only
-        // the router's local queue, which then drops new APDUs as it does
-        // for any slow consumer; the router itself never waits.
+        // No lock is held across an await: the only waits are room in the
+        // stack's queue and the router's local queue, in that order. Room is
+        // reserved before an APDU is taken, so nothing leaves the router's
+        // queue (freeing its admission slot) until the stack can take it. A
+        // slow stack holds up only the router's local queue, which then
+        // drops new APDUs as it does for any slow consumer; the router
+        // itself never waits.
         self.task = Some(tokio::spawn(async move {
-            while let Some(apdu) = apdus.recv().await {
-                let Some(npdu) = inbound(apdu, &replies) else {
-                    continue;
+            while let Ok(permit) = tx.reserve().await {
+                let npdu = loop {
+                    let apdu = match apdus.recv().await {
+                        Some(apdu) => apdu,
+                        None => return,
+                    };
+                    if let Some(npdu) = inbound(apdu, &replies) {
+                        break npdu;
+                    }
                 };
-                if tx.send(npdu).await.is_err() {
-                    break;
-                }
+                permit.send(npdu);
             }
         }));
         Ok(rx)

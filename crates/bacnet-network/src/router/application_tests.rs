@@ -4,11 +4,12 @@
 
 use std::io;
 
-use bacnet_npdu::{Mac, NpduLimits};
+use bacnet_npdu::{Address, Mac, NpduLimits};
 use bacnet_router_core::PortId;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::error::Error;
 
+use super::super::application_replies::{CAPACITY, LIFETIME, Replies};
 use super::super::priority_harness::*;
 use super::{OriginateError, OriginateFailure, RouterApplicationPort, SourceSelection};
 use crate::layer::{AdmissionReceiver, ReceivedApdu};
@@ -321,22 +322,111 @@ async fn an_answer_goes_back_through_the_saved_plan() {
 /// Plans are kept for a while, and for so many requests.
 #[tokio::test(start_paused = true)]
 async fn plans_expire_and_are_bounded() {
-    let (mut router, apdus, peers) = start(2).await;
+    let (mut router, apdus, mut peers) = start(2).await;
     let mut port = router.application_port(apdus);
     let mut frames = port.start().await.unwrap();
     receive(&peers[1], notification(1), 0).await;
     frames.recv().await.unwrap();
-    tokio::time::advance(super::super::application_replies::LIFETIME).await;
+    tokio::time::advance(LIFETIME).await;
     // Expired: the answer is originated, and there is no route.
     let error = port.send_unicast(&simple_ack(1), &[7]).await.unwrap_err();
     assert!(OriginateFailure::from_error(&error).is_some(), "{error:?}");
 
-    let capacity = super::super::application_replies::CAPACITY;
-    for invoke_id in 0..=capacity as u8 {
+    for invoke_id in 0..=CAPACITY as u8 {
         receive(&peers[1], notification(invoke_id), 0).await;
         frames.recv().await.unwrap();
     }
-    assert_eq!(port.saved_replies(), capacity);
+    assert_eq!(port.saved_replies(), CAPACITY);
+    // The oldest, invoke ID 0, was pushed out: its answer is originated.
+    let error = port.send_unicast(&simple_ack(0), &[7]).await.unwrap_err();
+    assert!(OriginateFailure::from_error(&error).is_some(), "{error:?}");
+    // The newest still answers through its plan.
+    let newest = simple_ack(CAPACITY as u8);
+    let (to, answered) = tokio::join!(
+        async {
+            // Past the searches the two originated answers started.
+            loop {
+                let sent = sending(&mut peers[1]).await;
+                sent.complete.send(Ok(())).unwrap();
+                if sent.to.is_some() {
+                    break sent.to;
+                }
+            }
+        },
+        port.send_unicast(&newest, &[7])
+    );
+    answered.unwrap();
+    assert_eq!(to, Some(vec![7]));
     router.stop().await.unwrap();
     port.stop().await.unwrap();
+}
+
+/// The router, and the plan it saved with `notification(9)`, kept in a
+/// fresh [`Replies`] under station 5 on network 3000.
+async fn one_plan() -> (super::super::BACnetRouter, Replies) {
+    let (router, mut apdus, peers) = start(2).await;
+    receive(&peers[1], notification(9), 0).await;
+    let delivered = apdus.recv().await.unwrap();
+    let replies = Replies::default();
+    let response = delivered.router_response.expect("a reply plan");
+    replies.save(3000, &[5], &delivered.apdu, response);
+    assert_eq!(replies.len(), 1);
+    (router, replies)
+}
+
+const STATION_5: Address<'static> = Address {
+    network: 3000,
+    mac: &[5],
+};
+
+/// Which answers use the saved plan, and which of them end it.
+#[tokio::test]
+async fn which_answers_use_and_end_the_plan() {
+    // (first octet, uses the plan, plan kept after)
+    let cases = [
+        (0x3C, true, true),  // ComplexAck, more segments follow
+        (0x30, true, false), // the final ComplexAck
+        (0x41, true, true),  // Segment-ACK sent as the server
+        (0x71, true, false), // Abort sent as the server
+        (0x40, false, true), // Segment-ACK sent as a client
+        (0x70, false, true), // Abort sent as a client
+        (0x20, true, false), // SimpleAck
+        (0x50, true, false), // Error
+        (0x60, true, false), // Reject
+        (0x10, false, true), // an Unconfirmed-Request
+    ];
+    for (first, uses, kept) in cases {
+        let (mut router, replies) = one_plan().await;
+        // Another invoke ID, or another station, has no plan.
+        assert!(replies.plan_for(STATION_5, &[0x20, 8]).is_none());
+        let other = Address {
+            network: 3000,
+            mac: &[6],
+        };
+        assert!(replies.plan_for(other, &[0x20, 9]).is_none());
+        let plan = replies.plan_for(STATION_5, &[first, 9, 0]);
+        assert_eq!(plan.is_some(), uses, "{first:#04x}");
+        assert_eq!(replies.len(), usize::from(kept), "{first:#04x}");
+        router.stop().await.unwrap();
+    }
+}
+
+/// An answer that keeps the plan restarts its lifetime.
+#[tokio::test(start_paused = true)]
+async fn a_continuing_answer_refreshes_the_plan() {
+    let (mut router, replies) = one_plan().await;
+    let most = LIFETIME - std::time::Duration::from_secs(1);
+    tokio::time::advance(most).await;
+    assert!(replies.plan_for(STATION_5, &[0x3C, 9]).is_some());
+    tokio::time::advance(most).await;
+    assert!(
+        replies.plan_for(STATION_5, &[0x30, 9]).is_some(),
+        "counted from the segment, not the request"
+    );
+    router.stop().await.unwrap();
+
+    let (mut router, replies) = one_plan().await;
+    tokio::time::advance(LIFETIME).await;
+    assert!(replies.plan_for(STATION_5, &[0x30, 9]).is_none(), "expired");
+    router.stop().await.unwrap();
 }
