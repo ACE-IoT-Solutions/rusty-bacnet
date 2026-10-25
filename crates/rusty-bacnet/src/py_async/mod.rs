@@ -73,15 +73,18 @@ fn exiting() -> PyErr {
 }
 
 thread_local! {
-    /// Set while this thread runs a Python callback that a native lock waits
-    /// on, such as a ReinitializeDevice handler (#1566).
+    /// Set while this thread runs a Python callback inside a server's
+    /// dispatch: a ReinitializeDevice handler (#1566), which a native lock
+    /// waits on, or a `mutation_policy` or `device_write_policy` callable.
     static UNDER_NATIVE_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Run `f`, a synchronous Python callback called while a native lock is
-/// held, with [`future_into_py`] refused on this thread. A binding
-/// operation the callback started would wait for that same lock, and one it
-/// then blocked on (with `asyncio.run`, say) would never finish.
+/// Run `f`, a synchronous Python callback called inside a server's dispatch,
+/// with [`future_into_py`] refused on this thread. Under a native lock (a
+/// ReinitializeDevice handler), a binding operation the callback started
+/// would wait for that same lock, and one it then blocked on (with
+/// `asyncio.run`, say) would never finish. The policy callables run with no
+/// lock held but keep the same refusal.
 pub(crate) fn under_native_lock<R>(f: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
@@ -185,7 +188,8 @@ where
     }
     if UNDER_NATIVE_LOCK.with(std::cell::Cell::get) {
         return Err(PyRuntimeError::new_err(
-            "a callback that runs under a server lock cannot start a binding operation",
+            "a server callback (on_reinitialize, mutation_policy, device_write_policy) \
+             cannot start a binding operation",
         ));
     }
     let event_loop = py

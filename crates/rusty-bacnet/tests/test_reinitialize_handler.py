@@ -244,7 +244,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                              error(1, *SERVICES_OTHER))
         await self.run_server(owner, exchange)
         self.assertEqual(len(failures), 1)
-        self.assertIn("server lock", failures[0])
+        self.assertIn("cannot start a binding operation", failures[0])
 
     async def test_after_reinitialize_runs_once_the_reply_is_on_the_link(self):
         """The hook runs only after the server sent the reply. Whether the

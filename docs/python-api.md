@@ -4583,28 +4583,34 @@ listener, so `principal` is always `None` today, over B/IP as over a hub;
 `certificate` and `forwarding_peer_certificate` are always `None` for the same
 reason.
 
-The callable runs on the server's dispatch path, for WritePropertyMultiple with
-the device's objects write-locked. Decide from the context alone,
-synchronously and quickly: no awaiting, no I/O, no waiting on the event loop or
-another thread, and no calls back into the server (binding operations started
-from it are refused, WriteGroup's included, though WriteGroup asks with no lock
-held). **A callable that waits, such as one calling
-`asyncio.run_coroutine_threadsafe(...).result()`, holds the lock while it waits
-and hangs every client and `stop()`, not just its own request.**
+The callable runs on the server's dispatch path with no database lock held: a
+WritePropertyMultiple asks about all its elements before it takes the write
+lock (#2032), and it runs on a worker thread of its own while the request
+waits. A callable that blocks, such as one calling
+`asyncio.run_coroutine_threadsafe(...).result()`, delays only its own request:
+other clients' requests carry on, and `stop()` ends without waiting for it
+(the request is dropped and the callable's eventual answer ignored). **A
+callable that never returns keeps the process from exiting**: interpreter exit
+waits for every thread inside the bindings, that one included. Still decide
+from the context alone, synchronously and quickly, and make no calls back into
+the server (binding operations started from it are refused).
 
 It fails closed: an exception (reported through `sys.unraisablehook`), a return
 value that isn't a `bool` (a truthy `1` included), a coroutine or interpreter
 shutdown denies. The denied mutation changes nothing, but the elements of a
 WritePropertyMultiple before a denied one stay written, as a denial answers
-only from that element on. An element that an object saves before serving it
-(a Notification Forwarder's list, an Access Rights object's rules and the like,
-#1321) is asked about earlier, under a read lock, so the callable can be asked
-about an element the request never reaches.
+only from that element on. Since every element is asked about before any is
+written, the callable can be asked about an element the request never
+reaches, when an earlier one fails as it is written. An element whose object
+appears between the decisions and the writes was never asked about and is
+denied.
 
 Invalid mode strings raise `ValueError`; other non-callables raise `TypeError`
 during construction, before startup drains registrations or performs I/O. DCC,
 ReinitializeDevice, LifeSafety and Audit keep separate policies; this option
-doesn't configure endpoint Device-write authorization. See [Server authorization policy](mutation-policy.md) for exact
+doesn't configure endpoint Device-write authorization, which the endpoints'
+own `device_write_policy` callable decides (see
+[Endpoint](#endpoint-one-transport-both-roles)). See [Server authorization policy](mutation-policy.md) for exact
 service coverage, validation precedence and exclusions.
 
 #### `purge_audit_log(object_id)`
@@ -5095,8 +5101,9 @@ async with endpoint:
 (BIP), VMAC hex (SC), or station string (MS/TP). Roles expose no callbacks;
 the client initiates `read_property`, `read_range` and `read_property_multiple`; concurrent use is
 `asyncio.gather` over these reads plus
-`is_session_alive()` polling. The one Rust-calls-Python path is the owner's
-optional `on_reinitialize` / `after_reinitialize` pair. Interpreter
+`is_session_alive()` polling. The Rust-calls-Python paths are the owner's
+optional `on_reinitialize` / `after_reinitialize` pair and its optional
+`device_write_policy` callable. Interpreter
 finalization only seals forcefully; always await `close()` or context exit.
 BIPv6/Ethernet have no endpoint owner; use the standalone path there.
 
@@ -5104,9 +5111,31 @@ Python endpoint server roles execute and advertise ReadProperty, plus
 ReinitializeDevice when built with `on_reinitialize` (the keywords and rules of
 [ReinitializeDevice](#reinitializedevice), with `reinit_password` needing a
 handler; `EndpointServer.service_scope()` then lists `reinitialize_device`).
+
+The keyword-only `device_write_policy` (#2033) turns on WriteProperty to the
+endpoint's local Device, its `Description` and installed Audit recipient, as
+the Rust session's Device-write authorizer does; `service_scope()` then lists
+`write_property`. The callable gets the same frozen `MutationContext` a
+`BACnetServer` `mutation_policy` callable gets (service `"write_property"`)
+and follows its fail-closed rules: `True` allows, while `False`, an exception
+(reported through `sys.unraisablehook`), a non-bool answer, a coroutine or
+interpreter shutdown denies with SERVICES / SERVICE_REQUEST_DENIED before
+anything changes. Writes to other objects or properties are refused as
+before, and a value that isn't a callable or `None` raises `TypeError` in the
+constructor:
+
+```python
+def device_writes(context: MutationContext) -> bool:
+    return context.source_network is None  # local network only
+
+endpoint = BipEndpoint(1001, device_write_policy=device_writes)
+```
+
 The endpoint answers requests on one dispatch task, so a slow callable stalls
-every request. The Rust Device-write opt-in has no Python binding, and the
-roles expose neither Device COV list property. A supplied `services` list must include RP and
+every request, and `close()` waits for a `device_write_policy` call that is
+still running. The callables run with no lock held (`on_reinitialize` aside),
+but starting a binding operation from one is refused. The roles expose
+neither Device COV list property. A supplied `services` list must include RP and
 cannot claim unsupported execution; incompatible server-role profiles fail
 startup before ingress.
 ClientOnly has no responder and keeps its service list as a local declaration.

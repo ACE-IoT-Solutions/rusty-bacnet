@@ -14,7 +14,7 @@ mod alarm_summary;
 mod atomic_read_file;
 mod atomic_write_file;
 mod audit_notification;
-pub(super) use audit_notification::fail_closed_authorize;
+pub(super) use audit_notification::ask_policy;
 #[cfg(test)]
 mod confirmed;
 pub(super) mod confirmed_response;
@@ -27,6 +27,7 @@ mod enrollment_summary;
 mod event_information;
 mod issue;
 mod mutations;
+pub(super) use mutations::ask_mutation_policy;
 use mutations::{InitialCovNotification, MutationEffects};
 #[cfg(test)]
 mod audit_log_buffer_wire_tests;
@@ -57,7 +58,11 @@ mod mutation_wpm_priority_tests;
 #[cfg(test)]
 mod mutation_wpm_tests;
 #[cfg(test)]
+mod mutation_wpm_unlocked_tests;
+#[cfg(test)]
 mod notification_class_durable_tests;
+#[cfg(test)]
+mod policy_off_task_tests;
 
 pub(super) mod read_property;
 mod read_range;
@@ -495,11 +500,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     invoke_id,
                                     request: request.clone(),
                                 };
-                                let authorized = config.policy.as_ref().is_some_and(|policy| {
-                                    fail_closed_authorize(|| {
-                                        policy.authorize_life_safety_operation(&context)
-                                    })
-                                });
+                                let authorized = match &config.policy {
+                                    Some(policy) => {
+                                        ask_policy(policy, context, |policy, context| {
+                                            policy.authorize_life_safety_operation(context)
+                                        })
+                                        .await
+                                    }
+                                    None => false,
+                                };
                                 if !authorized {
                                     Err(handlers::life_safety_error(
                                         ErrorClass::SERVICES,
