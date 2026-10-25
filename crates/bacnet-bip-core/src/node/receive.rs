@@ -319,10 +319,10 @@ impl Link {
             return Received::Discarded(Discard::UnknownDestination);
         };
         let listener = matches!(datagram.path, Path::Listener { .. });
-        if let Path::Listener { other_interface } = datagram.path {
-            if let Some(discard) = listener_address_mismatch(to, other_interface) {
-                return Received::Discarded(discard);
-            }
+        if let Path::Listener { other_interface } = datagram.path
+            && let Some(discard) = listener_address_mismatch(to, other_interface)
+        {
+            return Received::Discarded(discard);
         }
         let frame = match BvllFrame::decode(datagram.payload) {
             Ok(frame) => frame,
