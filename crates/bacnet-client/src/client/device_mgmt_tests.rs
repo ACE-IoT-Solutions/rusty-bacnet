@@ -402,3 +402,56 @@ async fn device_mgmt_unknown_device_and_invalid_time_routes_send_nothing() {
     client.stop().await.unwrap();
     peer.transport.stop().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn over_long_passwords_fail_before_anything_is_sent() {
+    // #2085: 21 characters (two octets each in UTF-8) never reach the wire.
+    let too_long = "é".repeat(21);
+    for routed in [true, false] {
+        let (mut client, mut peer) = site(routed).await;
+        let errors = [
+            client
+                .device_communication_control_from_device(
+                    INSTANCE,
+                    EnableDisable::DISABLE,
+                    None,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+            client
+                .reinitialize_device_from_device(
+                    INSTANCE,
+                    ReinitializedState::COLDSTART,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+            client
+                .device_communication_control(
+                    ROUTER,
+                    EnableDisable::DISABLE,
+                    None,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+            client
+                .reinitialize_device(
+                    ROUTER,
+                    ReinitializedState::COLDSTART,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+        ];
+        for err in errors {
+            assert!(matches!(err, Error::Encode(_)), "{err:?}");
+            assert!(err.to_string().contains("20-character limit"), "{err}");
+        }
+        tokio::task::yield_now().await;
+        peer.empty();
+        client.stop().await.unwrap();
+        peer.transport.stop().await.unwrap();
+    }
+}

@@ -115,7 +115,10 @@ pub struct ClientConfig {
     pub apdu_timeout_ms: u64,
     /// Number of APDU retries.
     pub apdu_retries: u8,
-    /// Maximum APDU length this client accepts.
+    /// Maximum APDU length this client accepts. Each confirmed request
+    /// advertises the largest valid bucket at or below both this and the
+    /// transport's limit at that moment, so it follows a limit that changes
+    /// after start (#2086).
     pub max_apdu_length: u16,
     /// Maximum segments this client accepts (`None` = unspecified).
     ///

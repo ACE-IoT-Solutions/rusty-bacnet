@@ -118,6 +118,7 @@ impl BACnetServer {
         let read_range_budget = self.read_range_budget;
         let get_event_information_budget = self.get_event_information_budget;
         let cov_policy = self.cov_policy.clone();
+        let router = self.router.clone();
         let time_sync_policy = self.time_sync_policy.clone();
 
         let objects: Vec<Box<dyn BACnetObject + Send>> = pending.drain(..).collect();
@@ -137,58 +138,70 @@ impl BACnetServer {
             let mut db = ObjectDatabase::new();
 
             // Prepare non-SC transports locally before constructing our Device.
-            let prepared_transport: Option<AnyTransport> =
-                match transport_type.as_str() {
-                    "bip" => {
-                        let interface: Ipv4Addr = interface_str.parse().map_err(|e| {
-                            PyRuntimeError::new_err(format!("invalid interface: {e}"))
-                        })?;
-                        let broadcast: Ipv4Addr = broadcast_str.parse().map_err(|e| {
-                            PyRuntimeError::new_err(format!("invalid broadcast: {e}"))
-                        })?;
-                        let mut bip = BipTransport::new(interface, port, broadcast);
-                        bip.set_share_port_by_address(share_port_by_address);
-                        bip.set_mode(bip_mode);
-                        bip.set_multicast(multicast)
-                            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                        Some(AnyTransport::Bip(Box::new(bip)))
+            let prepared_transport: Option<AppTransport> = match transport_type.as_str() {
+                "bip" => {
+                    let interface: Ipv4Addr = interface_str
+                        .parse()
+                        .map_err(|e| PyRuntimeError::new_err(format!("invalid interface: {e}")))?;
+                    let broadcast: Ipv4Addr = broadcast_str
+                        .parse()
+                        .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
+                    let mut bip = BipTransport::new(interface, port, broadcast);
+                    bip.set_share_port_by_address(share_port_by_address);
+                    bip.set_mode(bip_mode);
+                    bip.set_multicast(multicast)
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                    Some(AnyTransport::Bip(Box::new(bip)).into())
+                }
+                "ipv6" => {
+                    let iface_str = ipv6_interface.as_deref().unwrap_or("::");
+                    let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
+                        PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
+                    })?;
+                    // A B/IPv6 device's VMAC is its device instance
+                    // (Clauses U.1.3, H.7.2), so peers can name it by
+                    // instance; startup fails if another node on the
+                    // link already uses it.
+                    let mut bip6 = Bip6Transport::new(interface, port, Some(device_instance));
+                    if let Some(foreign) = bip6_foreign {
+                        bip6.register_as_foreign_device(foreign);
                     }
-                    "ipv6" => {
-                        let iface_str = ipv6_interface.as_deref().unwrap_or("::");
-                        let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
-                            PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
-                        })?;
-                        // A B/IPv6 device's VMAC is its device instance
-                        // (Clauses U.1.3, H.7.2), so peers can name it by
-                        // instance; startup fails if another node on the
-                        // link already uses it.
-                        let mut bip6 = Bip6Transport::new(interface, port, Some(device_instance));
-                        if let Some(foreign) = bip6_foreign {
-                            bip6.register_as_foreign_device(foreign);
-                        }
-                        Some(AnyTransport::Bip6(bip6))
+                    Some(AnyTransport::Bip6(bip6).into())
+                }
+                // SC can only be constructed after its dial; defer that I/O.
+                "sc" => None,
+                "mstp" => Some(
+                    mstp_transport
+                        .take()
+                        .ok_or_else(|| PyRuntimeError::new_err("MS/TP transport was not prepared"))?
+                        .into(),
+                ),
+                // The router's server port is taken only once the database
+                // is valid, so a refused start leaves it for the next one.
+                "router" => {
+                    if router.is_none() {
+                        return Err(PyRuntimeError::new_err("transport='router' needs router="));
                     }
-                    // SC can only be constructed after its dial; defer that I/O.
-                    "sc" => None,
-                    "mstp" => Some(mstp_transport.take().ok_or_else(|| {
-                        PyRuntimeError::new_err("MS/TP transport was not prepared")
-                    })?),
-                    other => {
-                        return Err(PyRuntimeError::new_err(format!(
-                            "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"
-                        )));
-                    }
-                };
+                    None
+                }
+                other => {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', 'mstp' \
+                             or 'router'"
+                    )));
+                }
+            };
 
-            let local_capacity =
-                match &prepared_transport {
-                    Some(transport) => transport.local_receive_apdu_capacity(),
-                    // Only the SC branch defers construction. Its receive declaration
-                    // is owned by ScTransport and available before opening a socket.
-                    None => bacnet_transport::sc::ScTransport::<
-                        bacnet_transport::sc_tls::TlsWebSocket,
-                    >::LOCAL_RECEIVE_APDU_CAPACITY,
-                };
+            let local_capacity = match (&prepared_transport, &router) {
+                (Some(transport), _) => transport.local_receive_apdu_capacity(),
+                // The router's port, read where it is parked.
+                (None, Some(router)) => router.capacity().await?,
+                // SC defers construction too. Its receive declaration
+                // is owned by ScTransport and available before opening a socket.
+                (None, None) => bacnet_transport::sc::ScTransport::<
+                    bacnet_transport::sc_tls::TlsWebSocket,
+                >::LOCAL_RECEIVE_APDU_CAPACITY,
+            };
 
             // Validate the generated Device and entire pending DB before SC I/O.
             let identity = identity.resolve(local_capacity).map_err(to_py_err)?;
@@ -224,9 +237,11 @@ impl BACnetServer {
                 ))
             })?;
 
-            let transport = match prepared_transport {
-                Some(transport) => transport,
-                None => {
+            let transport = match (prepared_transport, router) {
+                (Some(transport), _) => transport,
+                // The database is valid: now spend the router's port.
+                (None, Some(router)) => AppTransport::Router(router.take().await?),
+                (None, None) => {
                     let hub_url = sc_hub.ok_or_else(|| {
                         PyRuntimeError::new_err("sc_hub is required for SC transport")
                     })?;
@@ -256,7 +271,7 @@ impl BACnetServer {
                     if let Some(ms) = sc_heartbeat_timeout_ms {
                         sc = sc.with_heartbeat_timeout_ms(ms);
                     }
-                    AnyTransport::Sc(Box::new(sc))
+                    AnyTransport::Sc(Box::new(sc)).into()
                 }
             };
 

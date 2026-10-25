@@ -1,4 +1,5 @@
 //! A successful startup result lost in asyncio only closes its own generation.
+use super::application::Application;
 use super::config::PortConfig;
 use super::lifecycle::{Lifecycle, StartError};
 use super::session::NativeSession;
@@ -30,11 +31,12 @@ impl Publication {
         &self,
         reenter: bool,
         configs: Vec<PortConfig>,
+        application: Application,
     ) -> Result<(), StartError<bacnet_types::error::Error, bacnet_network::router::RouterStopError>>
     {
         let receipt = self
             .owner
-            .start(reenter, move || NativeSession::new(configs))
+            .start(reenter, move || NativeSession::new(configs, application))
             .await?;
         receipt.publish(|generation| self.arm(generation));
         Ok(())

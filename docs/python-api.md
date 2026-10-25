@@ -81,11 +81,11 @@ asyncio.run(main())
 ## B/IP router
 
 `BACnetRouter` owns forwarding across configured B/IP networks (Clause 6).
-This source-build API provides B/IP ports, router discovery, and copied route
-inspection. It has no local application role: host applications with
-`BACnetServer` or an endpoint on an attached network. Other link types, local
-origination, route administration, and the full native `RouterOptions` surface
-are outside this binding. Native router defaults apply, including the permissive
+This source-build API provides B/IP ports, router discovery, copied route
+inspection, and a client and server on the router's own application entity
+([below](#a-client-and-a-server-on-the-router)). Other link types, route
+administration, and the full native `RouterOptions` surface are outside this
+binding. Native router defaults apply, including the permissive
 wire-control policy; this API does not add an authorization policy.
 
 ```python
@@ -148,6 +148,72 @@ Context exit waits for cleanup and preserves an exception from the body as the
 primary exception; a secondary cleanup error remains observable through a later
 `close()`. Destruction requests best-effort cleanup on the shared runtime. Use
 an awaited close or context exit when resource release must be established.
+
+### A client and a server on the router
+
+A router is a BACnet node in its own right, at its address on each of its
+networks (Clause 6). The keyword-only `application` argument shares that
+application entity with Python stacks (#2071):
+
+- `application=None`, the default: the router only forwards.
+- `application="client"`: one `BACnetClient` takes everything the router
+  delivers to its application.
+- `application="client_and_server"`: a `BACnetClient` and a `BACnetServer`
+  split it. Confirmed requests to the router reach the server, except
+  confirmed COV notifications, which go to the client, and confirmed event
+  notifications, which reach both with only the server's answer sent;
+  confirmed audit notifications reach the server alone. Unconfirmed requests
+  reach both, and each answer goes to the stack that sent the request.
+
+Build each stack with `transport="router", router=router`. It takes its share
+from the running router when it starts (`async with` for the client,
+`start()` for the server), once per router start.
+
+```python
+from rusty_bacnet import (BACnetClient, BACnetRouter, BACnetServer,
+                          BipRouterPort, ObjectIdentifier, ObjectType,
+                          PropertyIdentifier)
+
+router = BACnetRouter([
+    BipRouterPort(1, interface="192.0.2.10", broadcast_address="192.0.2.255"),
+    BipRouterPort(5, interface="198.51.100.10", broadcast_address="198.51.100.255"),
+], application="client_and_server")
+async with router:
+    hosted = BACnetServer(2071, "Router device", transport="router", router=router)
+    hosted.add_analog_input(0, "Supply temperature", 62, 18.5)
+    await hosted.start()
+    async with BACnetClient(transport="router", router=router) as client:
+        for device in await client.discover(timeout_ms=3000):
+            print(device.object_identifier.instance, device.source_network)
+        value = await client.read_property_from_device(
+            1005, ObjectIdentifier(ObjectType.ANALOG_INPUT, 0),
+            PropertyIdentifier.PRESENT_VALUE)
+    await hosted.stop()
+```
+
+The client sends every request through the router's table, so it names each
+device by its network, as a routed device, even on a directly attached
+network. Every reply and I-Am reaches it with the sender's network and MAC
+as its source, so discover devices first and use the `_from_device` and
+`_to_device` methods. Who-Is goes out as a global broadcast on every port. A
+send to an `ip:port` names no network: it raises `BacnetError`. A request to a
+network the router doesn't know yet raises `BacnetTransportError` with errno
+`ENETUNREACH`, and the router starts looking for it; once the route is
+learned, a retry goes. The server answers at the router's address on each
+network.
+
+A stack whose role the router doesn't share raises `ValueError` at
+construction: a server needs `application="client_and_server"`. `router=`
+without `transport="router"` (or the reverse) raises `ValueError` before any
+I/O. On
+a split entity, the client's `apdu_timeout_ms` and the server's
+`apdu_segment_timeout_ms` must be under 60000, since the router forgets a
+request 60 seconds after its last segment, retry or answer. Starting a stack
+before the router, or a second stack of the same role on one router start,
+raises `RuntimeError`. Closing the router ends both shares: each request
+then fails at once with `BacnetTransportError` (errno `ENOTCONN`); stop the
+stacks as usual. A restarted router makes new shares for stacks started
+after it. The router's network-control messages stay internal.
 
 ## Enums
 
