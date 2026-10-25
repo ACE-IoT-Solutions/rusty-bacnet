@@ -84,6 +84,10 @@
       {
         "label": "Network Port & Number controls",
         "slug": "integrate/network-ports"
+      },
+      {
+        "label": "Restrict who can change it",
+        "slug": "integrate/security"
       }
     ]
   },
