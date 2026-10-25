@@ -38,6 +38,7 @@ pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, RowError>);
 /// Why one property of a read has no value. Structured, so a front end can
 /// report the device's error class and code as data, not only as text.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RowError {
     /// The device answered this property with an error, a reject or an
     /// abort.
@@ -60,13 +61,18 @@ impl RowError {
 }
 
 impl From<Error> for RowError {
+    /// The device's error, reject or abort as [`RowError::Remote`], with a
+    /// structured Error PDU reduced to its class and code; anything else
+    /// as text.
     fn from(error: Error) -> Self {
-        match error {
-            Error::Remote(remote) => Self::Remote(remote),
-            other => Self::Other(other.to_string()),
+        match error.remote() {
+            Some(remote) => Self::Remote(remote),
+            None => Self::Other(error.to_string()),
         }
     }
 }
+
+impl std::error::Error for RowError {}
 
 impl std::fmt::Display for RowError {
     /// An error as `CLASS:CODE` (`PROPERTY:UNKNOWN_PROPERTY`), the form

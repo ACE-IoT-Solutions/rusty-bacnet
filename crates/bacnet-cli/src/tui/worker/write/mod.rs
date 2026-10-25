@@ -128,7 +128,7 @@ pub(crate) async fn keep_offline(options: &SafetyOptions, level: Level) {
         return;
     };
     let audit = Audit::open(dir, context(options, "-"));
-    let kept = lock(dir).and_then(|held| {
+    let kept = lock(dir, "tui").and_then(|held| {
         let mut ledger = Ledger::open(dir)?;
         ledger.keep_all();
         ledger.save()?;
@@ -231,7 +231,7 @@ impl<'a> Runner<'a> {
                 return runner;
             }
         }
-        match lock(dir).and_then(|held| Ok((held, Ledger::open(dir)?))) {
+        match lock(dir, "tui").and_then(|held| Ok((held, Ledger::open(dir)?))) {
             Ok((held, ledger)) => {
                 runner._lock = Some(held);
                 runner.ledger = Some(ledger);

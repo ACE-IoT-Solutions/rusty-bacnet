@@ -13,6 +13,7 @@ use bacnet_types::primitives::{PropertyValue, StatusFlags};
 use tokio::time::Instant;
 
 use crate::tui::point::Health;
+use crate::tui::row_error::row_error_text;
 use crate::tui::watched::{Point, Sample};
 
 /// One value of a point, as read or notified, not yet written out.
@@ -139,7 +140,7 @@ pub(crate) fn from_rows(property: PropertyIdentifier, rows: &[RawRow]) -> Option
         .and_then(|(_, value)| value.as_deref().ok())
         .and_then(flags);
     Some(Reading {
-        value: value.clone().map_err(|error| error.to_string()),
+        value: value.clone().map_err(|error| row_error_text(&error)),
         flags: status,
         at: Instant::now().into_std(),
     })

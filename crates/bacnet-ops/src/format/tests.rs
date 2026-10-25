@@ -368,3 +368,47 @@ fn the_name_is_the_object_name_with_its_control_characters_as_spaces() {
     let long = encoded(&[PropertyValue::CharacterString("é".repeat(500))]);
     assert_eq!(name_text(&long).unwrap().chars().count(), MAX_NAME_CHARS);
 }
+
+/// A row error keeps the device's answer as data: an Error PDU (structured
+/// or not) as its class and code, a reject or abort as its reason, and only
+/// other failures as text.
+#[test]
+fn row_errors_keep_the_device_answer_typed() {
+    use bacnet_types::constructed::BACnetObjectPropertyReference;
+    use bacnet_types::enums::{AbortReason, RejectReason};
+    use bacnet_types::error::ErrorDetail;
+
+    let unknown = Some((ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY));
+    let plain = RowError::from(Error::Remote(RemoteError::Error {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::UNKNOWN_PROPERTY,
+    }));
+    assert_eq!(plain.class_code(), unknown);
+    let structured = RowError::from(Error::Structured {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::UNKNOWN_PROPERTY,
+        detail: Box::new(ErrorDetail::FirstFailedWriteAttempt(
+            BACnetObjectPropertyReference::new(
+                ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 1).unwrap(),
+                PropertyIdentifier::PRESENT_VALUE.to_raw(),
+            ),
+        )),
+    });
+    assert_eq!(structured, plain);
+    assert_eq!(structured.to_string(), "PROPERTY:UNKNOWN_PROPERTY");
+    let reject = RowError::from(Error::Remote(RemoteError::Reject {
+        reason: RejectReason::UNRECOGNIZED_SERVICE,
+    }));
+    assert_eq!(reject.class_code(), None);
+    assert!(matches!(
+        reject,
+        RowError::Remote(RemoteError::Reject { .. })
+    ));
+    let abort = RowError::from(Error::Remote(RemoteError::Abort {
+        reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
+    }));
+    assert!(matches!(abort, RowError::Remote(RemoteError::Abort { .. })));
+    let other = RowError::from(Error::Encoding("bad tag".into()));
+    assert_eq!(other, RowError::Other("encoding error: bad tag".into()));
+    let _: &dyn std::error::Error = &other;
+}

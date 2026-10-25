@@ -9,6 +9,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier, ResolvedBits, resolve_
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
 use crate::tui::point::{DeviceCard, Health, ObjectView, PriorityView, PropertyRow};
+use crate::tui::row_error::row_error_text;
 
 /// The single value of `property` among `rows`.
 fn single(rows: &[RawRow], property: PropertyIdentifier) -> Option<PropertyValue> {
@@ -59,7 +60,7 @@ pub(crate) fn card(rows: &[RawRow], via: ReadVia) -> DeviceCard {
                 Some((_, Ok(data))) => {
                     supported(data, property).unwrap_or_else(|| format.plain(property, data))
                 }
-                Some((_, Err(error))) => format!("({error})"),
+                Some((_, Err(error))) => format!("({})", row_error_text(error)),
                 None => "-".into(),
             };
             (label, text)
@@ -149,7 +150,7 @@ pub(crate) fn object_view(object: ObjectIdentifier, rows: &[RawRow], via: ReadVi
                     Ok(format.with_units(*property, data, units))
                 }
                 Ok(data) => Ok(format.value(*property, data)),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(row_error_text(error)),
             },
         })
         .collect();

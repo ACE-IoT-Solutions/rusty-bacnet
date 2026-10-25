@@ -156,8 +156,14 @@ client's discovery table, so routed devices work through the
 | `alarms(device, after)` | one decoded GetEventInformation answer |
 
 A property the device can't give is a typed `RowError`, not text: the
-device's error (class and code), reject or abort as data, or no value. The
-TUI shows it as `CLASS:CODE`; MCP returns the structured form (§5.2).
+device's error (class and code, a structured Error PDU reduced to both),
+reject or abort as data, or no value. MCP returns the structured form
+(§5.2). The TUI writes it in kebab case like the property names beside it
+(`unknown-property`, or `device / operational-problem` when the class adds
+something; `rejected: unrecognized-service`). Before phase 0 the TUI showed
+an RPM error as `PROPERTY:UNKNOWN_PROPERTY` and a ReadProperty-fallback one
+as `BACnet error: property / unknown-property`. `RowError`'s own `Display`
+stays `CLASS:CODE`, the form the one-shot commands print.
 
 Each request waits for its device's gate and a slot under the global cap.
 A call is cancelled by dropping its future: a turn's wait is cancel-safe.
@@ -489,15 +495,22 @@ the slow-network default matters.
   crate-wide (a command-line tool prints its results), so the guards are a
   test that parses every stdout line as JSON-RPC and the `mcp` module
   denying the lint again for itself.
-- **Sharing a profile with the TUI.** The TUI may already hold the profile's
-  workspace lock and its UDP port (47808 on B/IP). The stdio server then
-  still starts:
-  - it tries the workspace lock at start and again before each write. While
-    another process holds it, reads work and every write is refused with
-    `refused: workspace-locked`, nothing sent; the tool list doesn't change;
+- **Sharing a profile with the TUI.** The TUI may be open on the same
+  profile, holding its UDP port (47808 on B/IP) and taking the workspace
+  lock for its own ledger work. The stdio server still starts:
+  - it never holds the workspace lock for the session. It takes the lock
+    only around a write (lock, write the ledger entry, send, settle,
+    release), as the TUI's `keep_offline` does. When another front end
+    holds the lock at that moment, the write is refused with
+    `refused: workspace-locked` and nothing is sent; reads go on, and the
+    tool list doesn't change. The refusal is audited all the same: the
+    audit file is append-only and written without the lock, and two front
+    ends appending to it at once is acceptable. The lock file names its
+    holder's front end and process id, so the message reads, for example,
+    "in use by bacnet tui (pid 4242)" or "in use by bacnet mcp (pid 4242)";
   - when the profile's port is taken it binds an ephemeral port instead,
     unless the profile pins the port, in which case it refuses to start and
-    names the holder's lock. On an ephemeral port broadcast I-Am answers
+    says the port is in use. On an ephemeral port broadcast I-Am answers
     don't reach it, so `bacnet_discover` and `bacnet://session` say so and
     discovery falls back to directed requests and the known table.
 
