@@ -531,6 +531,7 @@ impl TransportPort for BipTransport {
                     Arc::new(bbmd::LiveTables {
                         state: Arc::clone(state),
                         file: self.bdt_file.clone(),
+                        group: self.supports_multicast().then(|| self.group_change()),
                     }) as Arc<dyn BbmdTables>
                 }),
             },
@@ -590,7 +591,7 @@ impl TransportPort for BipTransport {
         if let Some(foreign) = &foreign_config {
             foreign.check_bbmd(self.broadcast_address, self.interface)?;
         }
-        let multicast = self.multicast.config();
+        let multicast = self.multicast.start_config();
         if let Some(group) = &multicast {
             self.check_multicast_start(group, foreign_config.is_some())?;
         }

@@ -299,6 +299,14 @@ impl NodeHandle {
         self.lock().stopped
     }
 
+    /// Whether the node's link would take `subnet` ([`set_subnet`](Self::set_subnet)),
+    /// changing nothing.
+    pub(super) fn check_subnet(&self, subnet: LocalSubnet) -> Result<(), Error> {
+        let mut link = self.link();
+        link.subnet = subnet;
+        link.validate().map_err(config_error)
+    }
+
     /// Whether this node, a foreign device, would take `foreign` as its
     /// registration ([`retarget`](Self::retarget)), changing nothing.
     pub(super) fn check_retarget(&self, foreign: Foreign) -> Result<(), Error> {

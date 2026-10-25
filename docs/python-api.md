@@ -825,11 +825,13 @@ and foreign devices, and theirs come back through the group. Its own BDT
 row must have the mask 255.255.255.255 (a `Bbmd()` without its own row
 gets one), or `start()` raises. A registered Network Port serves the group
 as BACnet_IP_Multicast_Address (0.0.0.0 when off), writable when the owner
-answers ReinitializeDevice and isn't a BBMD; activation moves the running
-owner to the new group. A group changed that way lasts until the process
-exits: it isn't saved, so the next process starts with the `multicast=` it
-is given. A BBMD's group is read-only, since its own BDT row depends on it
-(#1963 tracks changing both in one activation).
+answers ReinitializeDevice; activation moves the running owner to the new
+group. On a BBMD the group goes in with the BDT written beside it, in one
+activation that applies both or neither, since its own BDT row must have
+the all-ones mask while it serves a group (#1963). A group changed that way
+lasts until the process exits: the Python bindings don't set a
+persisted-group file, so the next process starts with the `multicast=` it
+is given.
 Windows multicast is untested. See
 [B/IP multicast](rust-api.md#bip-multicast-bip-m) for the Rust side.
 
