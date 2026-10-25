@@ -15,10 +15,10 @@
 //!   `present-value[3]`, `72.5@8`);
 //! - [`format`](mod@format) and [`label`]: values as display text, and how objects,
 //!   properties and priorities are named;
-//! - [`limits`]: the global request-rate cap and the one-request-per-device
-//!   gate;
+//! - [`limits`]: the global request-rate cap, the one-request-per-device
+//!   gate, rates per network and per-caller accounts;
 //! - [`engine`]: the read operations (properties, the object list, a device
-//!   summary, trend log pages and alarms) over those limits.
+//!   summary, trend log pages and alarms) and Who-Is over those limits.
 //!
 //! The write safety core (plans, ledger, audit) moves here in a later
 //! phase; see `docs/design/mcp.md`.

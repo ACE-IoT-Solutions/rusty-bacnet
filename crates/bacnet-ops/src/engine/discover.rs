@@ -1,0 +1,79 @@
+//! Discovery through the engine: Who-Is under the rate cap, and the
+//! client's discovery table.
+
+use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_services::who_is::{DeviceInstanceRange, WhoIsRequest};
+use bacnet_transport::port::TransportPort;
+use bacnet_types::enums::UnconfirmedServiceChoice;
+use bacnet_types::error::Error;
+use bytes::BytesMut;
+
+use super::Engine;
+use crate::target::{self, AddressStyle};
+
+/// Why a directed Who-Is refuses a device instance or a routed target.
+const NOT_A_STATION: &str =
+    "a directed Who-Is needs a station address, not a device instance or routed target";
+
+/// Where a Who-Is goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhoIsScope<'a> {
+    /// Broadcast to this network alone.
+    Local,
+    /// A broadcast on one remote network, through its router.
+    Network(u16),
+    /// One station, by its address in the target grammar
+    /// ([`target::address_mac`]).
+    Directed(&'a str),
+    /// A global broadcast, which every router passes on.
+    Global,
+}
+
+impl<T: TransportPort + 'static> Engine<T> {
+    /// Send one Who-Is to `scope`, for the devices in `range` (all for
+    /// `None`), under the rate cap. The answers land in the discovery table
+    /// ([`devices`](Self::devices)) as they arrive.
+    pub async fn who_is(
+        &self,
+        scope: WhoIsScope<'_>,
+        range: Option<DeviceInstanceRange>,
+    ) -> Result<(), Error> {
+        let mac = match scope {
+            WhoIsScope::Directed(address) => Some(
+                target::address_mac(self.client.transport(), address, NOT_A_STATION)
+                    .await
+                    .map_err(Error::Encoding)?,
+            ),
+            _ => None,
+        };
+        self.limits.slot(None).await;
+        match (scope, mac) {
+            (WhoIsScope::Local, _) => {
+                let mut buf = BytesMut::new();
+                WhoIsRequest { range }.encode(&mut buf);
+                self.client
+                    .broadcast_unconfirmed(UnconfirmedServiceChoice::WHO_IS, &buf)
+                    .await
+            }
+            (WhoIsScope::Network(network), _) => self.client.who_is_network(network, range).await,
+            (WhoIsScope::Directed(_), Some(mac)) => self.client.who_is_directed(&mac, range).await,
+            (WhoIsScope::Directed(_), None) => unreachable!("a directed Who-Is has its address"),
+            (WhoIsScope::Global, _) => self.client.who_is(range).await,
+        }
+    }
+
+    /// Every device in the client's discovery table.
+    pub async fn devices(&self) -> Vec<DiscoveredDevice> {
+        self.client.discovered_devices().await
+    }
+
+    /// One device from the discovery table.
+    pub async fn device(&self, instance: u32) -> Option<DiscoveredDevice> {
+        self.client.get_device(instance).await
+    }
+
+    /// How this client's link writes addresses.
+    pub fn address_style(&self) -> AddressStyle {
+        AddressStyle::of(self.client.transport())
+    }
+}

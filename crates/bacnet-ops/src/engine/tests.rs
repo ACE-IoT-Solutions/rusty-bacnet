@@ -406,3 +406,60 @@ async fn every_call_waits_for_the_device_gate() {
         .unwrap();
     stop(engine, server).await;
 }
+
+/// A trend page is charged for every request it sends, not once per page:
+/// the oldest page reads the log's counts before its ReadRange, and the
+/// next page, by sequence number, sends the ReadRange alone.
+#[tokio::test(start_paused = true)]
+async fn a_trend_page_is_charged_per_request() {
+    use crate::limits::{Account, charged};
+    let (engine, server) = lab().await;
+    let log = oid(ObjectType::TREND_LOG, 1);
+    let first = Arc::new(Account::new(None));
+    let page = charged(
+        Arc::clone(&first),
+        engine.read_trend(LAB, log, LogCursor::Oldest, 2),
+    )
+    .await
+    .unwrap();
+    assert!(
+        first.requests() >= 3,
+        "counts then range: {}",
+        first.requests()
+    );
+    let second = Arc::new(Account::new(None));
+    charged(
+        Arc::clone(&second),
+        engine.read_trend(LAB, log, page.next, 2),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.requests(), 1);
+    stop(engine, server).await;
+}
+
+/// A local Who-Is puts the lab device in the table; a device instance is
+/// no station address for a directed one.
+#[tokio::test(start_paused = true)]
+async fn a_who_is_fills_the_table() {
+    let (engine, server) = lab().await;
+    engine.client.clear_devices().await;
+    assert!(engine.device(LAB).await.is_none());
+    engine.who_is(WhoIsScope::Local, None).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let found = engine.device(LAB).await.expect("the lab device");
+    assert_eq!(found.vendor_id, 42);
+    assert!(
+        engine
+            .devices()
+            .await
+            .iter()
+            .any(|d| d.object_identifier.instance_number() == LAB)
+    );
+    let refused = engine
+        .who_is(WhoIsScope::Directed("1234"), None)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("station address"), "{refused}");
+    stop(engine, server).await;
+}
