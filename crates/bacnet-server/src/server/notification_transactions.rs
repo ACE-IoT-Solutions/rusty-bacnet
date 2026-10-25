@@ -537,20 +537,13 @@ impl NotificationCore {
             }
             // What the refusal said goes to the waiting worker (#1323).
             Apdu::Error(pdu) if pdu.invoke_id == token.invoke_id() => {
-                CovAckResult::Error(RemoteError::Error {
-                    class: pdu.error_class,
-                    code: pdu.error_code,
-                })
+                CovAckResult::Error(pdu.remote_error())
             }
             Apdu::Reject(pdu) if pdu.invoke_id == token.invoke_id() => {
-                CovAckResult::Error(RemoteError::Reject {
-                    reason: pdu.reject_reason,
-                })
+                CovAckResult::Error(pdu.remote_error())
             }
             Apdu::Abort(pdu) if pdu.invoke_id == token.invoke_id() => {
-                CovAckResult::Error(RemoteError::Abort {
-                    reason: pdu.abort_reason,
-                })
+                CovAckResult::Error(pdu.remote_error())
             }
             _ => return false,
         };

@@ -85,10 +85,7 @@ impl TsmResponse {
     /// WritePropertyMultiple's first failed write attempt.
     pub(crate) fn from_error_pdu(pdu: &bacnet_encoding::apdu::ErrorPdu) -> Self {
         Self::Remote {
-            error: RemoteError::Error {
-                class: pdu.error_class,
-                code: pdu.error_code,
-            },
+            error: pdu.remote_error(),
             detail: bacnet_services::structured_error::detail(pdu),
         }
     }

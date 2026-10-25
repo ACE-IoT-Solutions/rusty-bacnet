@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_transport::port::ReceivedNpdu;
+use bacnet_types::MacAddr;
 use bytes::Bytes;
 
 use super::*;
