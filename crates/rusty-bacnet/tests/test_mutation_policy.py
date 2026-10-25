@@ -24,6 +24,9 @@ class MutationPolicyConfigurationTests(unittest.TestCase):
     def test_runtime_and_installed_stub_contract(self):
         parameter = inspect.signature(BACnetServer).parameters["mutation_policy"]
         self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+        # The runtime signature can't render the parsed default; the stub
+        # says "permissive" (#1966).
+        self.assertIs(parameter.default, Ellipsis)
         tree = ast.parse(Path(rusty_bacnet.__file__).with_suffix(".pyi").read_text())
         server = next(
             n for n in tree.body

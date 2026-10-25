@@ -276,8 +276,12 @@ the server's `ServerPolicy`, so it is asked exactly where `authorize_mutation`
 is, WritePropertyMultiple elements and WriteGroup Channels included. It gets a
 frozen, redacted `MutationContext` (service, target coordinates, claimed source
 addresses, provenance kind, principal fingerprints and invoke ID) and returns a
-bool. An exception, a non-bool answer or interpreter shutdown denies, with no
-side effects. Python has no direct BACnet/SC listener, so the context's
+bool. An exception, a non-bool answer or interpreter shutdown denies; the
+denied mutation changes nothing, though earlier elements of the same
+WritePropertyMultiple stay written. It must decide from the context alone,
+synchronously and quickly: one that waits on the event loop or another thread
+holds the database write lock for WritePropertyMultiple and hangs every client
+and `stop()`. Python has no direct BACnet/SC listener, so the context's
 `principal` is always `None` there, and its `certificate` and
 `forwarding_peer_certificate` are `None` too. See
 [the Python API](python-api.md#runtime-object-access) for the calling rules.

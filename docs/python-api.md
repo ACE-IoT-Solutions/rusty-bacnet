@@ -4584,12 +4584,22 @@ listener, so `principal` is always `None` today, over B/IP as over a hub;
 reason.
 
 The callable runs on the server's dispatch path, for WritePropertyMultiple with
-the device's objects locked, so it must be fast and must not block: a plain
-function that never awaits, never waits on the event loop or another thread,
-and never calls back into the server. It fails closed: an exception (reported
-through `sys.unraisablehook`), a return value that isn't a `bool` (a truthy
-`1` included), a coroutine or interpreter shutdown denies, and the request
-changes nothing.
+the device's objects write-locked. Decide from the context alone,
+synchronously and quickly: no awaiting, no I/O, no waiting on the event loop or
+another thread, and no calls back into the server (binding operations started
+from it are refused, WriteGroup's included, though WriteGroup asks with no lock
+held). **A callable that waits, such as one calling
+`asyncio.run_coroutine_threadsafe(...).result()`, holds the lock while it waits
+and hangs every client and `stop()`, not just its own request.**
+
+It fails closed: an exception (reported through `sys.unraisablehook`), a return
+value that isn't a `bool` (a truthy `1` included), a coroutine or interpreter
+shutdown denies. The denied mutation changes nothing, but the elements of a
+WritePropertyMultiple before a denied one stay written, as a denial answers
+only from that element on. An element that an object saves before serving it
+(a Notification Forwarder's list, an Access Rights object's rules and the like,
+#1321) is asked about earlier, under a read lock, so the callable can be asked
+about an element the request never reaches.
 
 Invalid mode strings raise `ValueError`; other non-callables raise `TypeError`
 during construction, before startup drains registrations or performs I/O. DCC,

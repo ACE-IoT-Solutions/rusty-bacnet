@@ -145,8 +145,9 @@ class ScControlRateWireTests(ClientScFixture):
     async def test_a_small_limit_drops_and_counts_excess_control_messages(self):
         default = await self.control_flood({}, 12)
         self.assertEqual(default["control_rate_drops"], 0)
-        # A burst of 2 refilling at 1 a second: of 12 sent at once, at least
-        # 9 are over budget however slow the machine (a refill per second).
+        # A burst of 2 refilling at 1 a second. The 12 frames go out in one
+        # write and are processed promptly, so 10 are over budget, 9 if a
+        # refill lands while they are read.
         limited = await self.control_flood({"sc_control_rate_limit": (2, 1)}, 12)
         self.assertGreaterEqual(limited["control_rate_drops"], 9, limited)
         self.assertLessEqual(limited["control_rate_drops"], 10, limited)

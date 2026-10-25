@@ -7,14 +7,21 @@
 //! WritePropertyMultiple element and each Channel an inbound WriteGroup would
 //! write. It runs on the server's dispatch path, for WritePropertyMultiple
 //! with the object database write-locked, so it is entered through
-//! [`crate::py_async::attach`] and must return at once: no awaiting, no
-//! waiting on the event loop or another thread, no calls back into the
-//! server. [`crate::py_async::under_native_lock`] refuses any binding
-//! operation it starts.
+//! [`crate::py_async::attach`] and must decide from the context alone,
+//! synchronously and quickly: no awaiting, no I/O, no waiting on the event
+//! loop or another thread, no calls back into the server. A callable that
+//! waits (a `run_coroutine_threadsafe(...).result()`, say) holds the write
+//! lock meanwhile and hangs every client and `stop()`, not just its own
+//! request. [`crate::py_async::under_native_lock`] refuses any binding
+//! operation it starts, WriteGroup included, which asks with no database
+//! guard held.
 //!
 //! It fails closed: an exception (shown through `sys.unraisablehook`), a
-//! return value that isn't a bool, and an exiting interpreter all deny, and
-//! a denied request changes nothing.
+//! return value that isn't a bool, and an exiting interpreter all deny. The
+//! denied mutation changes nothing, but the elements of a
+//! WritePropertyMultiple before a denied one stay written, and the callable
+//! can be asked, under a database read guard, about an element that saves
+//! before it is served (#1321) even when the request never reaches it.
 
 use std::sync::Arc;
 
