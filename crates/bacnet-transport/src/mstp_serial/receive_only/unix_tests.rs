@@ -49,11 +49,12 @@ async fn input_is_purged_before_open_returns() {
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
         .open(&config.port_name)
         .unwrap();
-    let setup = AsyncFd::with_interest(setup, tokio::io::Interest::READABLE).unwrap();
     master.write_all(b"old\n").await.unwrap();
     // Readiness acknowledges actual queued input; no sleep or flush assumption.
-    drop(setup.readable().await.unwrap());
-    assert_eq!(crate::sys::serial_receive_probe::queued(setup.get_ref()), 4);
+    crate::sys::serial_receive_probe::readable(&setup)
+        .await
+        .unwrap();
+    assert_eq!(crate::sys::serial_receive_probe::queued(&setup), 4);
     drop(setup);
     let mut input = ReceiveOnlyPort::open(&config, None).unwrap();
     master.write_all(b"new").await.unwrap();
