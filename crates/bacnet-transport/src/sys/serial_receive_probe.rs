@@ -40,6 +40,24 @@ pub(crate) fn speed(fd: &impl AsRawFd) -> u32 {
     }
 }
 
+/// Wait until `file` is readable, registering it with Tokio's reactor only
+/// for the wait.
+pub(crate) async fn readable(file: &std::fs::File) -> io::Result<()> {
+    use std::os::fd::AsFd;
+    // SAFETY: the `AsyncFd` holds a `BorrowedFd` of `file`, so the file can't
+    // be closed or replaced while it is registered, and the `AsyncFd` drops,
+    // deregistering, before this call returns and the borrow ends.
+    let registered = unsafe {
+        tokio::io::unix::AsyncFd::register_with_interest(
+            file.as_fd(),
+            tokio::io::Interest::READABLE,
+        )
+    }
+    .map_err(|error| error.into_parts().1)?;
+    drop(registered.readable().await?);
+    Ok(())
+}
+
 pub(crate) fn queued(fd: &impl AsRawFd) -> usize {
     let mut count: libc::c_int = 0;
     // SAFETY: FIONREAD writes one integer through a valid pointer; fd is live.
