@@ -80,10 +80,19 @@ class DccConstructorTests(unittest.TestCase):
                          sc_device_uuid=bytes.fromhex("8e62ac46d7084226913776a32b619315"),
                          sc_ca_cert="ca.pem", sc_client_cert="cert.pem", sc_client_key="key.pem")
             for policy in ["deny_all", "legacy_permissive"]:
-                for password in [None, "", "x" * 100]:
+                for password in [None, "", "x" * 20]:
                     BACnetServer(123, transport=transport, dcc_policy=policy, dcc_password=password,
                                  sc_device_uuid=bytes.fromhex("8e62ac46d7084226913776a32b619315"),
                                  sc_ca_cert="ca.pem", sc_client_cert="cert.pem", sc_client_key="key.pem")
+
+    def test_password_over_twenty_characters_refused_in_every_policy(self):
+        # The limit counts characters, not octets (#2060); a longer password
+        # could never be sent, whatever the policy.
+        for policy in ["deny_all", "require_password", "legacy_permissive"]:
+            with self.subTest(policy=policy):
+                with self.assertRaisesRegex(ValueError, "dcc_password exceeds the 20-character limit"):
+                    BACnetServer(123, dcc_policy=policy, dcc_password="é" * 21)
+                BACnetServer(123, dcc_policy=policy, dcc_password="é" * 20)
 
     def test_comm_state_stub_returns_enable_disable(self):
         stub_path = Path(rusty_bacnet.__file__).with_suffix(".pyi")

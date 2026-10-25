@@ -4,6 +4,21 @@ use bacnet_transport::bip::BipTransport;
 
 use super::*;
 
+/// Each MAC prints as a target the CLI reads back: a B/IPv6 VMAC as
+/// `bip6:0x……`, not as hex, which no target form takes.
+#[test]
+fn macs_print_as_targets() {
+    assert_eq!(format_mac(&[10, 0, 0, 1, 0xBA, 0xC0]), "10.0.0.1:47808");
+    assert_eq!(format_mac(&[0x00, 0x04, 0xD2]), "bip6:0x0004D2");
+    assert_eq!(format_mac(&[7]), "07");
+    for mac in [vec![10, 0, 0, 1, 0xBA, 0xC0], vec![0x40, 0xAB, 0xCD]] {
+        match parse_target(&format_mac(&mac)) {
+            Ok(Target::Mac(parsed)) => assert_eq!(parsed, mac),
+            _ => panic!("{} does not read back", format_mac(&mac)),
+        }
+    }
+}
+
 fn mac(target: Result<Target, String>) -> Vec<u8> {
     match target {
         Ok(Target::Mac(mac)) => mac,
@@ -150,7 +165,6 @@ fn routed_stations_read_back_as_the_same_target() {
     assert!(parse_target("2:0x").is_err());
 }
 
-#[cfg(feature = "tui")]
 #[test]
 fn a_routed_device_is_located_by_its_station_and_router() {
     let router = [10, 0, 1, 1, 0xBA, 0xC0];
@@ -185,10 +199,10 @@ fn bip6_targets_name_a_vmac() {
 #[test]
 fn bip6_vmac_text_round_trips() {
     for vmac in [[0x00, 0x04, 0xD2], [0x40, 0xAB, 0xCD], [0x3F, 0xFF, 0xFF]] {
-        let printed = crate::output::format_mac(&vmac);
+        let printed = format_mac(&vmac);
         assert_eq!(mac(parse_target(&printed)), vmac, "{printed}");
     }
-    assert_eq!(crate::output::format_mac(&[0, 4, 0xD2]), "bip6:0x0004D2");
+    assert_eq!(format_mac(&[0, 4, 0xD2]), "bip6:0x0004D2");
 }
 
 #[test]

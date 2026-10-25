@@ -24,6 +24,8 @@ use bacnet_client::client::{
     BACnetClient, CovTarget, ManagedCOVSubscription, ManagedCOVSubscriptionEvent,
     ReceivedCOVNotification,
 };
+use bacnet_ops::label::{kebab, object_label};
+use bacnet_ops::limits::RequestLimits;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::error::Error;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -35,8 +37,6 @@ use self::csv::{CsvLog, field, unix_ms};
 use self::jobs::{Lifetime, Polled, Refusal, Started};
 use self::sample::{Reading, RowFormat};
 use super::EventSink;
-use super::browse::limits::RequestLimits;
-use crate::tui::app::objects::{kebab, object_label};
 use crate::tui::message::{Command, WorkerEvent};
 use crate::tui::watched::{Point, RowId, Sample, Source, WatchCommand, WatchEvent, WatchStats};
 

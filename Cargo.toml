@@ -19,6 +19,7 @@ members = [
     "crates/bacnet-objects",
     "crates/bacnet-server",
     "crates/bacnet-endpoint",
+    "crates/bacnet-ops",
     "crates/bacnet-integration-tests",
     "crates/rusty-bacnet",
     "crates/bacnet-cli",
@@ -64,6 +65,7 @@ default-members = [
     "crates/bacnet-objects",
     "crates/bacnet-server",
     "crates/bacnet-endpoint",
+    "crates/bacnet-ops",
     "crates/bacnet-integration-tests",
     "benchmarks",
 ]
@@ -105,6 +107,7 @@ bacnet-client = { version = "0.14.0", path = "crates/bacnet-client" }
 bacnet-objects = { version = "0.14.0", path = "crates/bacnet-objects" }
 bacnet-server = { version = "0.14.0", path = "crates/bacnet-server" }
 bacnet-endpoint = { version = "0.14.0", path = "crates/bacnet-endpoint" }
+bacnet-ops = { version = "0.14.0", path = "crates/bacnet-ops" }
 thiserror = { version = "2", default-features = false }
 bitflags = "2"
 bytes = { version = "1", default-features = false }

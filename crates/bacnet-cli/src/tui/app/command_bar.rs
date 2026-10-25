@@ -36,6 +36,8 @@ mod words;
 
 use std::time::Duration;
 
+use bacnet_ops::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
+use bacnet_ops::target::{Target, parse_target};
 use bacnet_types::enums::{EnableDisable, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
@@ -44,8 +46,6 @@ use super::devices::DeviceTable;
 use super::monitor::Setting;
 use super::{App, FLASH_FOR, FilterKey, Overlay};
 use crate::commands::device::{parse_enable_disable, parse_reinit_state};
-use crate::core::target::{Target, parse_target};
-use crate::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
 use crate::tui::message::Command;
 use crate::tui::safety::WriteSpec;
 use crate::tui::safety::manage::{Action, DccTime};
@@ -455,10 +455,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use bacnet_ops::target::routed_station;
     use bacnet_types::enums::{ObjectType, Segmentation};
 
     use super::*;
-    use crate::core::target::routed_station;
     use crate::tui::message::DeviceRow;
 
     /// A line read with an empty device table.
@@ -617,7 +617,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            crate::parse::parse_value(&text),
+            bacnet_ops::parse::parse_value(&text),
             Ok(bacnet_types::primitives::PropertyValue::CharacterString(
                 "two words".into()
             ))

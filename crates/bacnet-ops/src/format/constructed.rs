@@ -21,7 +21,7 @@ use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
 use super::ValueFormat;
 use super::primitive::{date_range, date_text, date_time, month_text, time_text, weekday};
-use crate::tui::app::objects::{kebab, object_label};
+use crate::label::{kebab, object_label};
 
 /// The object instance an unset reference names: the standard keeps
 /// 4194303 for an object that isn't there.

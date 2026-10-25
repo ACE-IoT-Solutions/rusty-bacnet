@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::destination::Destination;
 use bacnet_services::file::FileWriteAccessMethod;
 use bacnet_services::file::{AtomicReadFileAck, FileAccessMethod, FileReadAckMethod};
 use bacnet_transport::port::TransportPort;
@@ -16,7 +17,6 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::args::FileReadAccess;
-use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 type BoxError = Box<dyn StdError>;

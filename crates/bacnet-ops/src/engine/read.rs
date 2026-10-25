@@ -20,13 +20,21 @@ use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifie
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::limits::{RequestLimits, Turn};
-use crate::tui::format::{RawRow, decode_all};
-use crate::tui::point::ReadVia;
+use crate::format::{RawRow, RowError, decode_all};
+use crate::limits::{RequestLimits, Turn};
+
+/// How a property list was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadVia {
+    /// One ReadPropertyMultiple.
+    Rpm,
+    /// ReadProperty per property, after the device refused RPM.
+    Rp,
+}
 
 /// Elements a device's Object_List may claim before the browser stops
 /// reading it; a device holds far fewer.
-pub(crate) const MAX_OBJECTS: u32 = 100_000;
+pub const MAX_OBJECTS: u32 = 100_000;
 
 /// Properties read when an object's Property_List can't be: the ones the
 /// browser shows most.
@@ -44,7 +52,7 @@ const FALLBACK_PROPERTIES: [PropertyIdentifier; 9] = [
 
 /// Why a read stopped.
 #[derive(Debug)]
-pub(crate) enum Halt {
+pub enum Halt {
     /// The job was stopped between requests.
     Cancelled,
     /// The device, or the way to it, failed the request.
@@ -52,7 +60,7 @@ pub(crate) enum Halt {
 }
 
 /// What [`Reader::properties`] reads.
-pub(crate) enum Wanted<'a> {
+pub enum Wanted<'a> {
     /// Every property (ALL, or Property_List over ReadProperty).
     All,
     /// These properties.
@@ -61,7 +69,7 @@ pub(crate) enum Wanted<'a> {
 
 /// What an RPM failure says about trying ReadProperty instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RpmFailure {
+pub enum RpmFailure {
     /// The device doesn't take RPM: a reject (an unknown service, say) or a
     /// services-class error. Remembered for the rest of the session.
     Refused,
@@ -73,7 +81,7 @@ pub(crate) enum RpmFailure {
 }
 
 /// Classify an RPM failure.
-pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
+pub fn rpm_failure(error: &Error) -> RpmFailure {
     let too_large = [
         AbortReason::SEGMENTATION_NOT_SUPPORTED,
         AbortReason::BUFFER_OVERFLOW,
@@ -98,7 +106,7 @@ pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
 
 /// True when `error` says the device, or the way to it, isn't answering: a
 /// timeout or a transport failure. Reading on would only time out again.
-pub(crate) fn unreachable(error: &Error) -> bool {
+pub fn unreachable(error: &Error) -> bool {
     match error {
         Error::Remote(RemoteError::Abort { reason }) => *reason == AbortReason::TSM_TIMEOUT,
         Error::Timeout(_) | Error::Transport(_) => true,
@@ -108,31 +116,37 @@ pub(crate) fn unreachable(error: &Error) -> bool {
 
 /// How an Object_List read went.
 #[derive(Debug)]
-pub(crate) struct ListRead {
+pub struct ListRead {
     /// The entries read, in device order.
-    pub(crate) objects: Vec<ObjectIdentifier>,
+    pub objects: Vec<ObjectIdentifier>,
     /// It took element-by-element reads.
-    pub(crate) indexed: bool,
+    pub indexed: bool,
     /// An element-by-element read stopped early, and why: `objects` holds
     /// the elements before it.
-    pub(crate) stopped: Option<String>,
+    pub stopped: Option<String>,
 }
 
 /// Reads one device, one request at a time, each with its turn at the
 /// device's gate and the global rate cap.
-pub(crate) struct Reader<'a, T: TransportPort + 'static> {
-    pub(crate) client: &'a BACnetClient<T>,
-    pub(crate) device: u32,
-    pub(crate) rate: &'a RequestLimits,
-    pub(crate) cancel: &'a AtomicBool,
+pub struct Reader<'a, T: TransportPort + 'static> {
+    /// The client the requests go through.
+    pub client: &'a BACnetClient<T>,
+    /// The device instance read, looked up in the client's discovery table.
+    pub device: u32,
+    /// The limits each request waits for.
+    pub rate: &'a RequestLimits,
+    /// Set to stop the read before its next request.
+    pub cancel: &'a AtomicBool,
     /// False once the device has refused RPM.
-    pub(crate) rpm: bool,
+    pub rpm: bool,
 }
 
 impl<T: TransportPort + 'static> Reader<'_, T> {
     /// Wait for this request's turn at the device, unless the job was
     /// stopped. Hold it for the one request (see [`RequestLimits::turn`]).
-    pub(super) async fn turn(&self) -> Result<Turn, Halt> {
+    /// A scheduling hook for the TUI's own request loops; the read methods
+    /// take their turns themselves.
+    pub async fn turn(&self) -> Result<Turn, Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
@@ -146,9 +160,9 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
     /// Wait until a request could go at once, without taking the device's
     /// gate or a slot, unless the job was stopped (see
     /// [`RequestLimits::wait_free`]). Another worker can take the gate
-    /// before [`Self::turn`]; the name reads check again then which names
-    /// are still wanted.
-    pub(super) async fn free_turn(&self) -> Result<(), Halt> {
+    /// before [`Self::turn`]; the TUI's name reads, the hook's one caller,
+    /// check again then which names are still wanted.
+    pub async fn free_turn(&self) -> Result<(), Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
@@ -160,12 +174,12 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
     }
 
     /// The Device object.
-    pub(crate) fn device_object(&self) -> Result<ObjectIdentifier, Halt> {
+    pub fn device_object(&self) -> Result<ObjectIdentifier, Halt> {
         ObjectIdentifier::new(ObjectType::DEVICE, self.device).map_err(Halt::Device)
     }
 
     /// ReadProperty, routed if the device is.
-    pub(crate) async fn rp(
+    pub async fn rp(
         &self,
         object: ObjectIdentifier,
         property: PropertyIdentifier,
@@ -211,8 +225,10 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             .map(|element| {
                 let value = match (element.property_value, element.error) {
                     (Some(value), _) => Ok(value),
-                    (None, Some((class, code))) => Err(format!("{class}:{code}")),
-                    (None, None) => Err("no value".into()),
+                    (None, Some((class, code))) => {
+                        Err(RowError::Remote(RemoteError::Error { class, code }))
+                    }
+                    (None, None) => Err(RowError::NoValue),
                 };
                 (element.property_identifier, value)
             })
@@ -221,7 +237,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
 
     /// The properties `wanted` of `object`, by RPM or, once the device has
     /// refused it, by ReadProperty each.
-    pub(crate) async fn properties(
+    pub async fn properties(
         &mut self,
         object: ObjectIdentifier,
         wanted: Wanted<'_>,
@@ -255,7 +271,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
                 Ok(value) => Ok(value),
                 // A device that stopped answering fails the read once.
                 Err(Halt::Device(error)) if unreachable(&error) => return Err(Halt::Device(error)),
-                Err(Halt::Device(error)) => Err(error.to_string()),
+                Err(Halt::Device(error)) => Err(RowError::from(error)),
                 Err(Halt::Cancelled) => return Err(Halt::Cancelled),
             };
             rows.push((property, value));
@@ -304,10 +320,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
 
     /// The device's Object_List. `progress` hears `(done, total)` along an
     /// element-by-element read.
-    pub(crate) async fn object_list(
-        &self,
-        mut progress: impl FnMut(u32, u32),
-    ) -> Result<ListRead, Halt> {
+    pub async fn object_list(&self, mut progress: impl FnMut(u32, u32)) -> Result<ListRead, Halt> {
         let device = self.device_object()?;
         let list = PropertyIdentifier::OBJECT_LIST;
         let whole = match self.rp(device, list, None).await {

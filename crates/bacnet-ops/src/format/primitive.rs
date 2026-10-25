@@ -5,7 +5,7 @@ use bacnet_types::enums::{PropertyIdentifier, ResolvedBits, resolve_bits, resolv
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 
 use super::Floats;
-use crate::tui::app::objects::{kebab, object_label};
+use crate::label::{kebab, object_label};
 
 /// Significant digits a display float keeps.
 const DISPLAY_DIGITS: usize = 6;

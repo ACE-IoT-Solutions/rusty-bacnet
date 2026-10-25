@@ -81,7 +81,7 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
         directions,
         [Direction::Out, Direction::In, Direction::Out, Direction::In]
     );
-    let server_address = crate::output::format_mac(&target);
+    let server_address = bacnet_ops::target::format_mac(&target);
     assert_eq!(frames[0].destination, server_address);
     assert_eq!(frames[1].source, server_address);
     let pdus: Vec<_> = frames

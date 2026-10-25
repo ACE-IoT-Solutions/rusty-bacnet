@@ -38,16 +38,21 @@ Runtime and application roles
   bacnet-server         Full server dispatch, COV, events, scheduling
   bacnet-endpoint       Public shared owner composing bounded sibling roles
 
+Operations core (UI-free, for the front ends)
+  bacnet-ops            Target and value grammar, value formatting, request
+                        limits, read engine over bacnet-client
+
 Selected direct dependencies
   bacnet-endpoint -> bacnet-client, bacnet-server, bacnet-endpoint-core,
                      bacnet-network, bacnet-objects
-  bacnet-cli     -> bacnet-client              (CLI application)
+  bacnet-ops     -> bacnet-client, bacnet-transport
+  bacnet-cli     -> bacnet-ops, bacnet-client  (CLI application)
   rusty-bacnet   -> bacnet-client, bacnet-server, bacnet-endpoint
                                               (PyO3 bindings)
 ```
 
 `bacnet-client`, `bacnet-server` and `bacnet-endpoint` are all workspace
-`default-members`, along with the foundational crates, endpoint-core,
+`default-members`, along with the foundational crates, endpoint-core, `bacnet-ops`,
 integration tests, the MS/TP bus simulator and benchmarks. The CLI
 (`bacnet-cli`) and PyO3 binding (`rusty-bacnet`) are excluded from default
 builds: the CLI pulls in heavier application dependencies, and the Python

@@ -14,6 +14,7 @@
 
 use bacnet_client::client::BACnetClient;
 use bacnet_client::log_reader::{LogCursor, LogGap};
+use bacnet_ops::destination::Destination;
 use bacnet_services::read_range::{
     LogRecords, ReadRangeAck, ReadRangeRequest, ReadRangeValidation, ReadRangeViolation,
 };
@@ -30,7 +31,6 @@ use serde::Serialize;
 
 use super::read::{decode_and_format, format_application_values, hex};
 pub use super::read_range_options::RangeOptions;
-use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
 
 /// Read a range of items from a list or log-buffer property: one read over

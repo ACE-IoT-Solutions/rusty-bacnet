@@ -6,6 +6,7 @@
 //! where both fit (#1915). Frames at 80x24, 120x40 and 200x50.
 
 use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_ops::target::{Target, parse_target};
 use bacnet_types::MacAddr;
 use bacnet_types::enums::{ObjectType, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
@@ -13,7 +14,6 @@ use insta::assert_snapshot;
 use ratatui::crossterm::event::KeyCode;
 
 use super::*;
-use crate::core::target::{Target, parse_target};
 use crate::tui::network::discovery::{DiscoveryEvent, FoundRow};
 use crate::tui::worker::DeviceFeed;
 

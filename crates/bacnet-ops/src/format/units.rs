@@ -16,7 +16,7 @@
 
 use bacnet_types::enums::EngineeringUnits as U;
 
-use crate::tui::app::objects::kebab;
+use crate::label::kebab;
 
 /// The symbols, by unit.
 const SYMBOLS: [(U, &str); 44] = [

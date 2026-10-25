@@ -215,12 +215,7 @@ impl Harness {
             })
             .collect();
         let engine = Engine::new(&configs, tokio_clock(), options).unwrap();
-        let shared = Arc::new(Shared {
-            engine,
-            gate: Arc::clone(&gate),
-            networks: networks.to_vec(),
-            warnings: Default::default(),
-        });
+        let shared = Arc::new(Shared::new(engine, Arc::clone(&gate), networks.to_vec()));
         let (txs, rxs) = capacities.iter().map(|&n| send_queue::channel(n)).unzip();
         let (local_tx, apdus, counters) = AdmissionReceiver::channel(true);
         let mut harness = Self {

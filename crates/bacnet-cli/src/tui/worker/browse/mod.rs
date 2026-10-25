@@ -14,9 +14,8 @@
 //! job waiting inside the client is never left unpolled while the session
 //! loop awaits something of its own. The loop's own arms never await.
 
-pub(crate) mod limits;
 pub(crate) mod names;
-pub(crate) mod read;
+pub(crate) mod schedule;
 pub(crate) mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -25,15 +24,15 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::engine::{DEVICE_PROPERTIES, Halt, Reader, Wanted};
+use bacnet_ops::limits::RequestLimits;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
-use self::limits::{Job, RequestLimits, Scheduler, Started, Task};
 use self::names::NameQueue;
-use self::read::{Halt, Reader, Wanted};
+use self::schedule::{Job, Scheduler, Started, Task};
 use super::EventSink;
 use crate::tui::message::{Command, WorkerEvent};
 use crate::tui::point::{BrowseRead, BrowseResult, NameAsk, ReqId};
@@ -43,23 +42,6 @@ pub(crate) const DEFAULT_MAX_RATE: u32 = 20;
 
 /// Object_List elements between progress reports.
 const PROGRESS_EVERY: u32 = 25;
-
-/// The Device properties on the card (Clause 12.11).
-const CARD: [PropertyIdentifier; 13] = [
-    PropertyIdentifier::OBJECT_NAME,
-    PropertyIdentifier::VENDOR_NAME,
-    PropertyIdentifier::VENDOR_IDENTIFIER,
-    PropertyIdentifier::MODEL_NAME,
-    PropertyIdentifier::FIRMWARE_REVISION,
-    PropertyIdentifier::APPLICATION_SOFTWARE_VERSION,
-    PropertyIdentifier::PROTOCOL_VERSION,
-    PropertyIdentifier::PROTOCOL_REVISION,
-    PropertyIdentifier::PROTOCOL_SERVICES_SUPPORTED,
-    PropertyIdentifier::PROTOCOL_OBJECT_TYPES_SUPPORTED,
-    PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED,
-    PropertyIdentifier::SEGMENTATION_SUPPORTED,
-    PropertyIdentifier::DATABASE_REVISION,
-];
 
 /// What a finished job tells the loop.
 struct Done {
@@ -226,7 +208,9 @@ async fn read_device<T: TransportPort + 'static>(
     req: ReqId,
 ) -> Result<(), Halt> {
     let device = reader.device_object()?;
-    let (rows, via) = reader.properties(device, Wanted::List(&CARD)).await?;
+    let (rows, via) = reader
+        .properties(device, Wanted::List(&DEVICE_PROPERTIES))
+        .await?;
     deliver(sink, req, BrowseResult::Card(view::card(&rows, via))).await;
     let read = reader
         .object_list(|done, total| {
