@@ -33,11 +33,11 @@ mod tables;
 pub(crate) use forward::Forward;
 use nat::NatSetting;
 pub use nat::{NatError, NatTraversal, PrivateRange};
-pub(crate) use persist::{BdtFile, PersistedNat, decode_file};
+pub(crate) use persist::{BdtFile, PersistedNat, decode_file, write_atomically};
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use serve::Reply;
-pub(crate) use tables::{LiveTables, lock};
+pub(crate) use tables::{GroupChange, LiveTables, lock};
 
 /// Rows the BDT holds, this BBMD's own row included.
 const MAX_BDT: usize = 128;

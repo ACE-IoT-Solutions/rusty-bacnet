@@ -33,7 +33,7 @@ No private keys, real customer identifiers, or unredacted operational captures b
 
 Use [GitHub issues](https://github.com/jscott3201/rusty-bacnet/issues) to report problems and propose work. Preserve immutable release links and historical artifact provenance. Do not edit deployment workflows or publish the site as a side effect of a content change.
 
-The [engineering docs map](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/README.md) identifies canonical contracts. Add integration guidance under `website/src/content/docs/integrate/` and operating guidance under `guides/`; keep install/lab examples tied to their validated revision. The release version lives in `website/src/lib/site.mjs`, and `npm test` names every page that still carries another one. Navigation drives route checks, and Markdown exports must preserve version scope and usable links.
+The [engineering docs map](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/README.md) identifies canonical contracts. Add integration guidance under `website/src/content/docs/integrate/`, data-link setup under `connect/` and operating guidance under `guides/`; keep install/lab examples tied to their validated revision. The release version lives in `website/src/lib/site.mjs`, and `npm test` names every page that still carries another one. Navigation drives route checks, and Markdown exports must preserve version scope and usable links.
 
 ## Validate a content change
 

@@ -2,8 +2,10 @@
 
 An Astro/Starlight task guide for the release named in `src/lib/site.mjs`:
 installation, the local lab and first reads (`start/`), integration guides for
-shared endpoints, Network Port/Number controls, transport evidence and SC setup
-(`integrate/`), contributor source builds and documentation work (`development/`), and operating guides (`guides/`). [Engineering
+shared endpoints and Network Port/Number controls (`integrate/`), data-link
+setup for BACnet/IP, BACnet/SC and MS/TP (`connect/`), contributor source builds
+and documentation work (`development/`), and discovery, subscription and write
+guides (`guides/`). [Engineering
 docs](../docs/README.md) remain the contract authority.
 
 This content refresh is local-only. A successful build or browser check does not
@@ -274,21 +276,21 @@ artifact or fetch a mutable branch in the deployment job.
 
 ## Content organization
 
-- `start/`, `integrate/` and `guides/`: release tasks for the version in
+- `start/`, `connect/`, `integrate/` and `guides/`: release tasks for the version in
   `src/lib/site.mjs`, linked to the canonical repository docs at that release's
   tag. `development/build-from-source` and `development/documentation` cover repository contributions and unreleased work.
 - `src/lib/site.mjs`: `release`, which MDX pages, the download list, the footer
   and the llms index read. To move to another release, change it and run
   `npm test`: `tests/unit/release.test.mjs` names every page, the lab script,
   the sidebar label and the home banner that still carry another version
-  (`project/upgrading.md` and the lab's recorded evidence may name the previous
-  one). It also checks the installation page's asset list against
+  (the upgrade guide from it, `project/upgrading/v0-14.md`, and the lab's
+  recorded evidence may name the previous one). It also checks the installation page's asset list against
   `.github/workflows/release.yml`.
 - `tui/`: the terminal UI on the `dev` branch, which ships after the release in
   `src/lib/site.mjs`. Its screenshots come from `scripts/tui-screenshots/`
   (see "TUI screenshots" above).
-- `reference/` and `project/`: reference entry points, support scope and the
-  upgrade guide from the previous release.
+- `reference/` and `project/`: reference entry points, support scope, and the
+  upgrade hub (`project/upgrading`) with one guide per release under it.
 - `src/data/navigation.json`: sidebar and test route inventory.
 - `src/data/legacy-routes.json`: retained routes and section destinations. Compatibility pages keep old bookmarks and raw URLs usable, stay out of Pagefind, and are omitted from the canonical llms guide list.
 - `scripts/prepare.mjs`: source-derived raw Markdown and version-aware llms index.
