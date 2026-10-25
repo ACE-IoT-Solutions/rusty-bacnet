@@ -1164,6 +1164,9 @@ bacnet --allow-write write 192.168.1.100 av:1 pv enumerated:3       # explicit e
 bacnet --allow-write write 192.168.1.100 sc:1 pv date:2024-03-15    # date value
 bacnet --allow-write write 192.168.1.100 sc:1 pv time:14:30:00      # time value
 bacnet --allow-write write 192.168.1.100 nc:1 pv object:ai:1        # object identifier value
+bacnet --allow-write write 192.168.1.100 ai:1 reliability open-loop  # enumeration by name
+bacnet --allow-write write 192.168.1.100 ai:1 event-enable "to-offnormal | to-normal"  # named bits
+bacnet --allow-write write 192.168.1.100 trend-log:1 start-time "2026-10-25 14:30"   # date-time
 ```
 
 Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
@@ -1197,6 +1200,42 @@ bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2
 | `object:type:inst` | `object:ai:1` | ObjectIdentifier |
 
 Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
+
+**Values by name.** `write` and `writem` know the property they write, so
+a value can be typed as [Value output](#value-output) prints it, and a value
+read pastes back as a write:
+
+- an enumeration by name, in kebab case, UPPER_SNAKE or any case
+  (`open-loop`, `OPEN_LOOP`), or by number; a binary object's state as
+  `active` or `inactive`, with or without the object's text after it
+  (`active (On)`); a multi-state state by number, its text allowed after
+  it (`2 (Heat)`);
+- a named bit string by its set bits, `in-alarm,fault` or `in-alarm |
+  fault` (quote a `|` for the shell; `writem` needs the `|` form, since a
+  comma separates its writes), as 0/1 digits first bit first (`1100`), or
+  `none` (or an empty value) for no bit set; a bit string without names as
+  `bits(0101)`;
+- a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`), `*` for any
+  field, the special months and days by name (`*-even-months-last-day`),
+  or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
+  field, or `any time`. The `date:` and `time:` prefixes take the same
+  forms;
+- a date-time as a date then a time, `2026-10-19 Mon 07:00`, or
+  `unspecified`; for a property that holds one (Start_Time, Stop_Time,
+  Modification_Date, a DateTime Value's Present_Value and similar), a date
+  alone leaves the time unspecified;
+- a timestamp (Last_Restore_Time, an `event-time-stamps[N]` element) as
+  `seq 42`, a time, or a date and time.
+
+A mistyped name is refused with the valid names, or the nearest few when
+the enumeration is long:
+
+```text
+Error: unknown BinaryPV 'actve'; expected one of: inactive, active (or a number)
+```
+
+The explicit forms (`enumerated:N`, `date:`, `time:`, `object:`, a quoted
+string, `null`, `true`/`false`) keep their meaning for every property.
 
 ### COV Subscriptions
 
@@ -1244,7 +1283,11 @@ bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" 
 | `--ack-time <SPEC>` | (required) | Caller-selected time of acknowledgment |
 | `--source <S>` | `bacnet-cli` | Acknowledgment source string |
 
-Both timestamp flags use the same strict grammar:
+Both timestamp flags take a timestamp as the CLI prints one, so a printed
+timestamp pastes back: `seq 417`, a time (`14:29:58.25`), or a date and time
+(`"2026-10-25 Sun 14:30:05"`; a date alone leaves the time unspecified), with
+the date and time forms of [Writing Properties](#writing-properties). They
+also take the strict grammar:
 
 - `sequence:<0..65535>`
 - `time:<hour>,<minute>,<second>,<hundredths>`

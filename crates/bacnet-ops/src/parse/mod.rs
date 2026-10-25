@@ -2,9 +2,24 @@
 //!
 //! Handles full names (kebab-case), common abbreviations, and numeric values
 //! for BACnet object types, property identifiers, and write values.
+//! A write value typed for a known property ([`parse_value_for`]) also
+//! takes its enumeration and bit names, and dates, times and timestamps
+//! in the forms the formatter prints, so what a read shows can be typed
+//! back.
+
+mod datetime;
+mod typed;
+
+pub use datetime::{parse_date, parse_date_time, parse_time, parse_timestamp};
+pub use typed::{parse_value_for, parse_value_for_with_priority};
 
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
+use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
+
+#[cfg(test)]
+mod datetime_tests;
+#[cfg(test)]
+mod typed_tests;
 
 /// Abbreviation mappings for object types: (abbreviation, raw_value).
 ///
@@ -158,7 +173,9 @@ fn parse_property_name(s: &str) -> Result<PropertyIdentifier, String> {
     Err(format!("unknown property: '{s}'"))
 }
 
-/// Parse a write value from a string.
+/// Parse a write value from a string, with no property to say its
+/// datatype. [`parse_value_for`] reads names and named bits for a known
+/// property.
 ///
 /// Accepts:
 /// - `null` → PropertyValue::Null
@@ -168,6 +185,13 @@ fn parse_property_name(s: &str) -> Result<PropertyIdentifier, String> {
 /// - Float with decimal: `72.5` → PropertyValue::Real
 /// - Quoted string: `"hello"` → PropertyValue::CharacterString
 /// - `enumerated:3` → PropertyValue::Enumerated(3)
+/// - `bits(0101)` → PropertyValue::BitString, first bit first
+/// - dates, times and date-times as the formatter prints them, bare or
+///   after `date:`/`time:`: `2026-10-19`, `2026-10-19 Mon`, `*-*-* Fri`,
+///   `07:00`, `14:30:05.25`, `any date`, `any time`; a date and a time
+///   (`2026-10-19 07:00`, or `unspecified`) is a BACnetDateTime, a Date
+///   then a Time
+/// - `object:ai:1` → PropertyValue::ObjectIdentifier
 pub fn parse_value(s: &str) -> Result<PropertyValue, String> {
     let s = s.trim();
 
@@ -192,94 +216,40 @@ pub fn parse_value(s: &str) -> Result<PropertyValue, String> {
         return Ok(PropertyValue::Enumerated(0));
     }
 
-    // Date prefix: date:YYYY-MM-DD
+    // Date prefix: date:YYYY-MM-DD, in any form the formatter prints.
     if let Some(rest) = s.strip_prefix("date:") {
-        let parts: Vec<&str> = rest.split('-').collect();
-        if parts.len() != 3 {
-            return Err(format!(
-                "invalid date format: '{rest}', expected YYYY-MM-DD"
-            ));
-        }
-        let year = if parts[0] == "*" {
-            0xFF
-        } else {
-            let y = parts[0]
-                .parse::<u16>()
-                .map_err(|_| format!("invalid year: '{}'", parts[0]))?;
-            if y < 1900 {
-                return Err(format!("year must be >= 1900, got {y}"));
-            }
-            (y - 1900) as u8
-        };
-        let month = if parts[1] == "*" {
-            0xFF
-        } else {
-            parts[1]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid month: '{}'", parts[1]))?
-        };
-        let day = if parts[2] == "*" {
-            0xFF
-        } else {
-            parts[2]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid day: '{}'", parts[2]))?
-        };
-        return Ok(PropertyValue::Date(Date {
-            year,
-            month,
-            day,
-            day_of_week: 0xFF,
-        }));
+        return parse_date(rest).map(PropertyValue::Date);
     }
 
-    // Time prefix: time:HH:MM:SS or time:HH:MM:SS.hh
+    // Time prefix: time:HH:MM[:SS[.hh]]
     if let Some(rest) = s.strip_prefix("time:") {
-        let (time_part, hundredths_part) = if let Some((tp, hp)) = rest.rsplit_once('.') {
-            (tp, Some(hp))
-        } else {
-            (rest, None)
+        return parse_time(rest).map(PropertyValue::Time);
+    }
+
+    // Bare dates, times and date-times, as the formatter prints them.
+    if s.eq_ignore_ascii_case("any time") || datetime::looks_like_time(s) {
+        return parse_time(s).map(PropertyValue::Time);
+    }
+    let lower = s.to_ascii_lowercase();
+    if datetime::looks_like_date(s) || lower.starts_with("any date") || lower == "unspecified" {
+        return match parse_date_time(s)? {
+            (date, None) => Ok(PropertyValue::Date(date)),
+            (date, Some(time)) => Ok(PropertyValue::List(vec![
+                PropertyValue::Date(date),
+                PropertyValue::Time(time),
+            ])),
         };
-        let parts: Vec<&str> = time_part.split(':').collect();
-        if parts.len() != 3 {
+    }
+
+    // A bit string as its bits, as the formatter prints one without names.
+    if let Some(bits) = s.strip_prefix("bits(").and_then(|b| b.strip_suffix(')')) {
+        if !bits.bytes().all(|b| b == b'0' || b == b'1') {
             return Err(format!(
-                "invalid time format: '{rest}', expected HH:MM:SS or HH:MM:SS.hh"
+                "invalid bits '{bits}': 0/1 digits, first bit first"
             ));
         }
-        let hour = if parts[0] == "*" {
-            0xFF
-        } else {
-            parts[0]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid hour: '{}'", parts[0]))?
-        };
-        let minute = if parts[1] == "*" {
-            0xFF
-        } else {
-            parts[1]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid minute: '{}'", parts[1]))?
-        };
-        let second = if parts[2] == "*" {
-            0xFF
-        } else {
-            parts[2]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid second: '{}'", parts[2]))?
-        };
-        let hundredths = match hundredths_part {
-            Some("*") => 0xFF,
-            Some(h) => h
-                .parse::<u8>()
-                .map_err(|_| format!("invalid hundredths: '{h}'"))?,
-            None => 0,
-        };
-        return Ok(PropertyValue::Time(Time {
-            hour,
-            minute,
-            second,
-            hundredths,
-        }));
+        let set: Vec<bool> = bits.bytes().map(|b| b == b'1').collect();
+        return Ok(typed::bit_string(&set));
     }
 
     // ObjectIdentifier prefix: object:type:instance
@@ -336,10 +306,9 @@ pub fn parse_value(s: &str) -> Result<PropertyValue, String> {
     Err(format!("cannot parse value: '{s}'"))
 }
 
-/// Parse a value with optional `@priority` suffix.
-///
-/// Examples: `72.5@8` → (Real(72.5), Some(8)), `null@16` → (Null, Some(16)), `42` → (Unsigned(42), None)
-pub fn parse_value_with_priority(s: &str) -> Result<(PropertyValue, Option<u8>), String> {
+/// A value's text and its optional `@priority` suffix, the `@` after a
+/// quoted string's closing quote when the value is one.
+fn split_priority(s: &str) -> Result<(&str, Option<u8>), String> {
     let s = s.trim();
 
     // Find the last '@' that separates value from priority.
@@ -356,21 +325,25 @@ pub fn parse_value_with_priority(s: &str) -> Result<(PropertyValue, Option<u8>),
         s.rfind('@')
     };
 
-    if let Some(pos) = at_pos {
-        let value_str = &s[..pos];
-        let priority_str = &s[pos + 1..];
-        let priority = priority_str
-            .parse::<u8>()
-            .map_err(|_| format!("invalid priority: '{priority_str}'"))?;
-        if !(1..=16).contains(&priority) {
-            return Err(format!("priority must be 1-16, got {priority}"));
-        }
-        let value = parse_value(value_str)?;
-        Ok((value, Some(priority)))
-    } else {
-        let value = parse_value(s)?;
-        Ok((value, None))
+    let Some(pos) = at_pos else {
+        return Ok((s, None));
+    };
+    let priority_str = &s[pos + 1..];
+    let priority = priority_str
+        .parse::<u8>()
+        .map_err(|_| format!("invalid priority: '{priority_str}'"))?;
+    if !(1..=16).contains(&priority) {
+        return Err(format!("priority must be 1-16, got {priority}"));
     }
+    Ok((&s[..pos], Some(priority)))
+}
+
+/// Parse a value with optional `@priority` suffix.
+///
+/// Examples: `72.5@8` → (Real(72.5), Some(8)), `null@16` → (Null, Some(16)), `42` → (Unsigned(42), None)
+pub fn parse_value_with_priority(s: &str) -> Result<(PropertyValue, Option<u8>), String> {
+    let (value, priority) = split_priority(s)?;
+    Ok((parse_value(value)?, priority))
 }
 
 #[cfg(test)]
