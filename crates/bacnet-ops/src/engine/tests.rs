@@ -463,3 +463,41 @@ async fn a_who_is_fills_the_table() {
     assert!(refused.to_string().contains("station address"), "{refused}");
     stop(engine, server).await;
 }
+
+/// The client's side of the lab link, refusing every broadcast, as a
+/// transport refuses a send it can't make.
+struct RefusesBroadcasts(LoopbackTransport);
+
+impl TransportPort for RefusesBroadcasts {
+    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+        self.0.start().await
+    }
+    async fn stop(&mut self) -> Result<(), Error> {
+        self.0.stop().await
+    }
+    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
+        self.0.send_unicast(npdu, mac).await
+    }
+    async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
+        Err(Error::Encoding("broadcast refused".into()))
+    }
+    fn local_mac(&self) -> &[u8] {
+        self.0.local_mac()
+    }
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        self.0.local_receive_apdu_capacity()
+    }
+}
+
+/// A Who-Is the transport refuses never left, so the caller isn't charged
+/// for it.
+#[tokio::test(start_paused = true)]
+async fn a_refused_who_is_is_not_charged() {
+    use crate::limits::{Account, charged};
+    let (engine, server) = lab_on(RefusesBroadcasts).await;
+    let account = Arc::new(Account::new(None));
+    let sent = charged(Arc::clone(&account), engine.who_is(WhoIsScope::Local, None)).await;
+    assert!(sent.is_err());
+    assert_eq!(account.requests(), 0);
+    stop(engine, server).await;
+}

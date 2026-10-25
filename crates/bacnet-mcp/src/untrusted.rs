@@ -45,7 +45,8 @@ fn breaks(ch: char) -> bool {
 /// The characters dropped: every format character (general category Cf,
 /// Unicode 16: the bidirectional embeddings, overrides, isolates and marks,
 /// the zero-width ones, the tag characters and the rest), the variation
-/// selectors, and the Hangul fillers, which show as nothing. Each change
+/// selectors, the Hangul fillers, and a few others that show as nothing.
+/// Each change
 /// how the text around them reads without showing themselves.
 pub(crate) const HIDDEN: &[(char, char)] = &[
     // Format characters (Cf).
@@ -79,6 +80,13 @@ pub(crate) const HIDDEN: &[(char, char)] = &[
     ('\u{115F}', '\u{1160}'),
     ('\u{3164}', '\u{3164}'),
     ('\u{FFA0}', '\u{FFA0}'),
+    // Others that show as nothing: the combining grapheme joiner, the
+    // Khmer inherent vowels, the blank Braille pattern, and the
+    // unassigned code points before the interlinear annotations.
+    ('\u{034F}', '\u{034F}'),
+    ('\u{17B4}', '\u{17B5}'),
+    ('\u{2800}', '\u{2800}'),
+    ('\u{FFF0}', '\u{FFF8}'),
 ];
 
 fn hidden(ch: char) -> bool {

@@ -77,9 +77,37 @@ fn datum_json(datum: &Datum) -> Value {
     serde_json::to_value(datum).expect("a datum serializes")
 }
 
+/// The object forms of [`Datum`] whose strings are the formatter's own
+/// (names, digits, dates), by their keys; a key in the second list may be
+/// left out.
+const SAFE_SHAPES: [(&[&str], &[&str]); 8] = [
+    (&["float"], &[]),
+    (&["octets"], &[]),
+    (&["value"], &["name"]),
+    (&["bits"], &["names"]),
+    (&["date"], &[]),
+    (&["time"], &[]),
+    (&["type", "type_number", "instance"], &[]),
+    (&["raw"], &[]),
+];
+
+/// Whether `map` is one of [`SAFE_SHAPES`]: every required key there, and
+/// no key the shape doesn't have.
+fn safe_shape(map: &serde_json::Map<String, Value>) -> bool {
+    SAFE_SHAPES.iter().any(|(required, optional)| {
+        required.iter().all(|key| map.contains_key(*key))
+            && map
+                .keys()
+                .all(|key| required.contains(&key.as_str()) || optional.contains(&key.as_str()))
+    })
+}
+
 /// Put each device-text leaf of `typed` in an envelope; true when there
-/// was one. A bare JSON string in a datum is a character string, and an
-/// object with `element` and `text` is a constructed element.
+/// was one. A bare JSON string in a datum is a character string; an
+/// object with `element` and `text` is a constructed element, whose text
+/// is enveloped unless its kind is plain; a known object form is left as
+/// it is; and any other object (a form the formatter adds later) has
+/// every string in it enveloped, so nothing new slips past.
 fn envelope_leaves(typed: &mut Value, source: &str, cap: usize) -> bool {
     match typed {
         Value::String(text) => {
@@ -93,22 +121,30 @@ fn envelope_leaves(typed: &mut Value, source: &str, cap: usize) -> bool {
             }
             any
         }
-        Value::Object(map) => {
+        Value::Object(map) if safe_shape(map) => false,
+        Value::Object(map) if map.len() == 2 && map.contains_key("element") => {
             let plain = map
                 .get("element")
                 .and_then(Value::as_str)
                 .is_some_and(|kind| PLAIN_ELEMENTS.contains(&kind));
             match map.get_mut("text") {
-                Some(Value::String(text)) if !plain => {
-                    let wrapped = envelope(text, source, cap);
-                    map.insert("text".into(), wrapped);
-                    true
-                }
-                _ => false,
+                Some(text) if !plain => envelope_leaves(text, source, cap),
+                Some(_) => false,
+                None => envelope_every(map, source, cap),
             }
         }
+        Value::Object(map) => envelope_every(map, source, cap),
         _ => false,
     }
+}
+
+/// Envelope every string in an object of a form not known to be safe.
+fn envelope_every(map: &mut serde_json::Map<String, Value>, source: &str, cap: usize) -> bool {
+    let mut any = false;
+    for value in map.values_mut() {
+        any |= envelope_leaves(value, source, cap);
+    }
+    any
 }
 
 /// The names of a bit string's set bits, for a property whose bits have
@@ -236,5 +272,12 @@ mod tests {
         assert_eq!(named[1], json!(7));
         let mut unknown = json!({ "element": "element", "text": "x" });
         assert!(envelope_leaves(&mut unknown, "s", 256));
+        // The formatter's own strings stay; a form it doesn't have yet has
+        // its strings enveloped.
+        let mut known = json!([{ "value": 1, "name": "active" }, { "bits": "01", "names": ["a"] }]);
+        assert!(!envelope_leaves(&mut known, "s", 256));
+        let mut future = json!({ "label": "Fan\u{202E}", "count": 2 });
+        assert!(envelope_leaves(&mut future, "s", 256));
+        assert_eq!(future["label"]["untrusted"], json!("Fan"));
     }
 }

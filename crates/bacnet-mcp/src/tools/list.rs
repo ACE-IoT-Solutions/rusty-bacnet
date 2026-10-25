@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
 use super::{Spec, next, schema, start};
-use crate::context::{CachedList, Call, Ctx, Device, DeviceArg, LIST_TTL};
+use crate::context::{CachedList, Call, Ctx, Device, DeviceArg, LIST_CAP};
 use crate::errors::ToolError;
 use crate::untrusted::envelope;
 use crate::value::{object_text, row_text};
@@ -88,6 +88,11 @@ fn output() -> Value {
                 "read": { "type": "integer" },
                 "elements": { "type": ["integer", "null"] },
                 "next_element": { "type": ["integer", "null"] },
+                "gaps": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "description": "Elements the device answered with an error, passed over",
+                },
                 "stopped": { "type": ["string", "null"] },
             },
         },
@@ -111,7 +116,10 @@ pub(super) struct Listing {
     cached: bool,
     /// Read element by element: the element count, and the next element.
     indexed: Option<(u32, u32)>,
-    /// Why an element read stopped early, if one did.
+    /// Elements the device answered with an error, skipped.
+    gaps: Vec<u32>,
+    /// Why an element read stopped early (the device stopped answering),
+    /// if one did.
     stopped: Option<String>,
 }
 
@@ -131,8 +139,19 @@ impl Listing {
             "read": self.objects.len(),
             "elements": self.indexed.map(|_| total),
             "next_element": (!self.complete()).then_some(next),
+            "gaps": self.gaps,
             "stopped": self.stopped,
         })
+    }
+
+    fn from_cache(kept: &CachedList, cached: bool, stopped: Option<String>) -> Self {
+        Self {
+            objects: Arc::clone(&kept.objects),
+            cached,
+            indexed: kept.indexed,
+            gaps: kept.gaps.clone(),
+            stopped,
+        }
     }
 }
 
@@ -148,79 +167,110 @@ fn identifiers(data: &[u8]) -> Vec<ObjectIdentifier> {
         .collect()
 }
 
+/// An element count as read from element 0.
+fn count(data: &[u8]) -> Option<u32> {
+    match decode_all(data)?.as_slice() {
+        [PropertyValue::Unsigned(n)] => Some(u32::try_from(*n).unwrap_or(u32::MAX)),
+        _ => None,
+    }
+}
+
 /// `device`'s Object_List, as far as this call's budget gets it.
 ///
 /// A fresh complete list comes from the cache. Otherwise the list is read
 /// whole, or, when the device can't send it in one answer, element by
-/// element (element 0 holds the count). An element read stops when the
-/// call's budget is spent (after at least one element) or an element
-/// fails, and what was read is kept with where to go on, so the next call
-/// continues rather than starts again.
+/// element (element 0 holds the count). Calls on one device take turns at
+/// its lock, so a second call goes on from where the first stopped and the
+/// read never goes back. An element read stops when the call's budget is
+/// spent (after at least one element) or the device stops answering; an
+/// element the device answers with an error is a gap, recorded and passed.
+/// What was read is kept with where to go on. A read resumed checks the
+/// count again and starts over if it changed, and one begun more than
+/// [`PARTIAL_TTL`](crate::context::PARTIAL_TTL) ago starts over.
 pub(super) async fn listing<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
     device: &Device,
 ) -> Result<Listing, ToolError> {
     let engine = ctx.engine()?;
+    let lock = {
+        let mut locks = ctx
+            .list_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        Arc::clone(locks.entry(device.instance).or_default())
+    };
+    let _turn = lock.lock().await;
     let failed = |e: &Error| ToolError::device(device.instance, e);
     let kept = {
         let lists = ctx.lists.lock().unwrap_or_else(PoisonError::into_inner);
         lists
             .get(&device.instance)
-            .filter(|kept| kept.at.elapsed() < LIST_TTL)
+            .filter(|kept| kept.fresh())
             .cloned()
     };
     if let Some(kept) = &kept
         && kept.complete()
     {
-        return Ok(Listing {
-            objects: Arc::clone(&kept.objects),
-            cached: true,
-            indexed: kept.indexed,
-            stopped: None,
-        });
+        return Ok(Listing::from_cache(kept, true, None));
     }
     let list_object = ObjectIdentifier::new(ObjectType::DEVICE, device.instance)
         .map_err(|e| ToolError::invalid("device", e.to_string()))?;
     let list = PropertyIdentifier::OBJECT_LIST;
-    let (mut objects, total, mut next, cached) = match kept {
+    let read_count = async |whole: Option<&Error>| -> Result<u32, ToolError> {
+        let data = engine
+            .read_property(device.instance, list_object, list, Some(0))
+            .await
+            .map_err(|e| failed(whole.unwrap_or(&e)))?;
+        let total = count(&data).ok_or_else(|| {
+            whole.map_or_else(
+                || ToolError::Failed("Object_List count isn't a number".into()),
+                failed,
+            )
+        })?;
+        if total > MAX_OBJECTS {
+            return Err(ToolError::Failed(format!(
+                "Object_List claims {total} objects; at most {MAX_OBJECTS} are read"
+            )));
+        }
+        Ok(total)
+    };
+    let (mut state, cached) = match kept {
         Some(kept) => {
-            let (total, next) = kept.indexed.unwrap_or((0, 1));
-            (kept.objects.as_ref().clone(), total, next, true)
+            // Resuming: the count must be what it was, or start over.
+            let (total, _) = kept.indexed.unwrap_or((0, 1));
+            let now = read_count(None).await?;
+            if now == total {
+                (kept, true)
+            } else {
+                tracing::info!(
+                    "device {}: Object_List count went from {total} to {now}; reading it again",
+                    device.instance
+                );
+                (fresh_partial(now), false)
+            }
         }
         None => match engine
             .read_property(device.instance, list_object, list, None)
             .await
         {
             Ok(data) => {
-                let objects = Arc::new(identifiers(&data));
-                store(ctx, device.instance, Arc::clone(&objects), None);
-                return Ok(Listing {
-                    objects,
-                    cached: false,
+                let whole = CachedList {
+                    at: Instant::now(),
+                    objects: Arc::new(identifiers(&data)),
                     indexed: None,
-                    stopped: None,
-                });
+                    gaps: Vec::new(),
+                };
+                store(ctx, device.instance, whole.clone());
+                return Ok(Listing::from_cache(&whole, false, None));
             }
             Err(e) if unreachable(&e) => return Err(failed(&e)),
-            Err(whole) => {
-                let count = engine
-                    .read_property(device.instance, list_object, list, Some(0))
-                    .await
-                    .map_err(|_| failed(&whole))?;
-                let total = match decode_all(&count).as_deref() {
-                    Some([PropertyValue::Unsigned(n)]) => u32::try_from(*n).unwrap_or(u32::MAX),
-                    _ => return Err(failed(&whole)),
-                };
-                if total > MAX_OBJECTS {
-                    return Err(ToolError::Failed(format!(
-                        "Object_List claims {total} objects; at most {MAX_OBJECTS} are read"
-                    )));
-                }
-                (Vec::new(), total, 1, false)
-            }
+            Err(whole) => (fresh_partial(read_count(Some(&whole)).await?), false),
         },
     };
+    let (total, mut next) = state.indexed.unwrap_or((0, 1));
+    let mut objects = state.objects.as_ref().clone();
     let mut stopped = None;
     let mut read_here = 0;
     while next <= total {
@@ -231,53 +281,51 @@ pub(super) async fn listing<T: TransportPort + 'static>(
             .read_property(device.instance, list_object, list, Some(next))
             .await
         {
-            Ok(data) => {
-                objects.extend(identifiers(&data));
-                next += 1;
-                read_here += 1;
-            }
-            Err(e) if read_here == 0 && objects.is_empty() && unreachable(&e) => {
-                return Err(failed(&e));
-            }
-            Err(e) => {
+            Ok(data) => objects.extend(identifiers(&data)),
+            Err(e) if unreachable(&e) => {
+                if read_here == 0 && objects.is_empty() {
+                    return Err(failed(&e));
+                }
                 stopped = Some(format!("element {next} of {total}: {e}"));
                 break;
             }
+            // The device has no answer for this element: a gap, passed.
+            Err(_) => state.gaps.push(next),
         }
+        next += 1;
+        read_here += 1;
     }
-    let objects = Arc::new(objects);
-    store(
-        ctx,
-        device.instance,
-        Arc::clone(&objects),
-        Some((total, next)),
-    );
-    Ok(Listing {
-        objects,
-        cached,
-        indexed: Some((total, next)),
-        stopped,
-    })
+    state.objects = Arc::new(objects);
+    state.indexed = Some((total, next));
+    store(ctx, device.instance, state.clone());
+    Ok(Listing::from_cache(&state, cached, stopped))
 }
 
-/// Keep what was read of `device`'s list.
-fn store<T: TransportPort + 'static>(
-    ctx: &Ctx<T>,
-    device: u32,
-    objects: Arc<Vec<ObjectIdentifier>>,
-    indexed: Option<(u32, u32)>,
-) {
-    ctx.lists
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(
-            device,
-            CachedList {
-                at: Instant::now(),
-                objects,
-                indexed,
-            },
-        );
+/// An element-by-element read of `total` elements, begun now.
+fn fresh_partial(total: u32) -> CachedList {
+    CachedList {
+        at: Instant::now(),
+        objects: Arc::new(Vec::new()),
+        indexed: Some((total, 1)),
+        gaps: Vec::new(),
+    }
+}
+
+/// Keep what was read of `device`'s list, evicting the oldest list past
+/// [`LIST_CAP`] devices.
+fn store<T: TransportPort + 'static>(ctx: &Ctx<T>, device: u32, list: CachedList) {
+    let mut lists = ctx.lists.lock().unwrap_or_else(PoisonError::into_inner);
+    lists.insert(device, list);
+    while lists.len() > LIST_CAP {
+        let oldest = lists
+            .iter()
+            .min_by_key(|(_, kept)| kept.at)
+            .map(|(device, _)| *device);
+        match oldest {
+            Some(oldest) => drop(lists.remove(&oldest)),
+            None => break,
+        }
+    }
 }
 
 pub(super) async fn run<T: TransportPort + 'static>(

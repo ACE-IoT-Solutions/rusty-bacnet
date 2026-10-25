@@ -34,6 +34,12 @@ use crate::{McpServer, Policy};
 /// The lab device's instance.
 pub(crate) const LAB: u32 = 1201;
 
+/// The lab device's link address, a B/IP one: 10.0.0.2:47808.
+pub(crate) const LAB_MAC: [u8; 6] = [10, 0, 0, 2, 0xBA, 0xC0];
+
+/// The agent's side of the link: 10.0.0.1:47808.
+const AGENT_MAC: [u8; 6] = [10, 0, 0, 1, 0xBA, 0xC0];
+
 /// The Description of AI:3, written by an attacker: tag characters, a
 /// zero-width joiner, a variation selector, a Hangul filler, a control
 /// character, a bidirectional override, a line separator, a URL and far
@@ -238,7 +244,8 @@ impl Lab {
             objects.push(Box::new(point));
         }
         let database = build_database_with_extra(&identity, objects).unwrap();
-        let (client_port, server_port) = LoopbackTransport::pair(vec![1], vec![2]);
+        let (client_port, server_port) =
+            LoopbackTransport::pair(AGENT_MAC.to_vec(), LAB_MAC.to_vec());
         let server = BACnetServer::generic_builder()
             .device(identity)
             .database(database)
@@ -264,15 +271,15 @@ impl Lab {
             ..ClientConfig::default()
         };
         let client = Arc::new(BACnetClient::start(config, recording).await.unwrap());
-        client.add_device(LAB, &[2]).await.unwrap();
+        client.add_device(LAB, &LAB_MAC).await.unwrap();
         for alias in ALIASES {
-            client.add_device(alias, &[2]).await.unwrap();
+            client.add_device(alias, &LAB_MAC).await.unwrap();
         }
         for instance in 300..305 {
             client
                 .add_routed_device(RoutedDeviceConfig {
                     instance,
-                    router_mac: vec![2],
+                    router_mac: LAB_MAC.to_vec(),
                     remote_network: 2001,
                     remote_mac: vec![u8::try_from(instance - 290).unwrap()],
                     max_apdu_length: 480,
@@ -296,6 +303,30 @@ impl Lab {
             client,
             serving,
         }
+    }
+
+    /// Add an analog input to the lab device, as a site change would.
+    pub(crate) async fn add_point(&self, instance: u32) {
+        let point = AnalogInputObject::new(
+            instance,
+            format!("Point {instance}"),
+            EngineeringUnits::PERCENT,
+        )
+        .unwrap();
+        let mut db = self.server.database().write().await;
+        db.add(Box::new(point)).unwrap();
+        // The Device's Object_List names its objects; list the new one.
+        let device = bacnet_types::primitives::ObjectIdentifier::new(
+            bacnet_types::enums::ObjectType::DEVICE,
+            LAB,
+        )
+        .unwrap();
+        let mut objects = db.list_objects();
+        objects.sort_by_key(|o| (o.object_type() != device.object_type(), o.instance_number()));
+        db.get_mut(&device)
+            .and_then(|device| device.device_authority_internal())
+            .expect("the lab Device")
+            .set_object_list(objects);
     }
 
     /// Requests sent so far.

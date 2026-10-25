@@ -20,6 +20,7 @@ use rmcp::ErrorData;
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool, ToolAnnotations};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
+use tokio_util::sync::CancellationToken;
 
 use crate::context::{Call, Ctx};
 use crate::errors::ToolError;
@@ -123,6 +124,7 @@ pub(crate) async fn call<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     name: &str,
     args: Map<String, Value>,
+    cancel: CancellationToken,
 ) -> Result<CallToolResult, ErrorData> {
     if !names(&ctx.policy).contains(&name) {
         // Not listed in this configuration (a passive server's read tools,
@@ -144,7 +146,20 @@ pub(crate) async fn call<T: TransportPort + 'static>(
             Request::Describe(a) => describe::run(ctx, &call, a).await,
         }
     };
-    let outcome = match tokio::time::timeout(budget + GRACE, charged(account, run)).await {
+    // A cancelled call (`notifications/cancelled`, or the host going away)
+    // drops its future, and with it any gate, lock or slot it waits for:
+    // nothing more is sent, and what it was charged is still logged. The
+    // call's own engine requests run one after another inside that one
+    // future, so none is left queued and unpolled.
+    let work = tokio::time::timeout(budget + GRACE, charged(account, run));
+    let finished = tokio::select! {
+        finished = work => finished,
+        () = cancel.cancelled() => {
+            ctx.log_read(name, &call, "cancelled");
+            return Err(ErrorData::internal_error("the call was cancelled", None));
+        }
+    };
+    let outcome = match finished {
         Ok(outcome) => outcome,
         Err(_) if call.account.requests() == 0 => Err(ToolError::Refused {
             reason: "rate-limited",

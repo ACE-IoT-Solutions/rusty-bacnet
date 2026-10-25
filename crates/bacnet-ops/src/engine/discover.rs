@@ -55,7 +55,7 @@ impl<T: TransportPort + 'static> Engine<T> {
             WhoIsScope::Global => None,
         };
         self.limits.slot(network).await;
-        match (scope, mac) {
+        let sent = match (scope, mac) {
             (WhoIsScope::Local, _) => {
                 let mut buf = BytesMut::new();
                 WhoIsRequest { range }.encode(&mut buf);
@@ -67,7 +67,22 @@ impl<T: TransportPort + 'static> Engine<T> {
             (WhoIsScope::Directed(_), Some(mac)) => self.client.who_is_directed(&mac, range).await,
             (WhoIsScope::Directed(_), None) => unreachable!("a directed Who-Is has its address"),
             (WhoIsScope::Global, _) => self.client.who_is(range).await,
+        };
+        // An unconfirmed send that fails never left: the caller isn't
+        // charged for it.
+        if sent.is_err() {
+            crate::limits::refund();
         }
+        sent
+    }
+
+    /// The link MAC of a station address in the target grammar, checked
+    /// without sending anything: a device instance or routed target is no
+    /// station address.
+    pub async fn station_mac(&self, address: &str) -> Result<Vec<u8>, Error> {
+        target::address_mac(self.client.transport(), address, NOT_A_STATION)
+            .await
+            .map_err(Error::Encoding)
     }
 
     /// Every device in the client's discovery table.

@@ -14,7 +14,7 @@
 
 mod account;
 
-pub use self::account::{Account, TokenBucket, charged};
+pub use self::account::{Account, TokenBucket, charged, refund};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};

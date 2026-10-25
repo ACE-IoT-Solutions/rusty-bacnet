@@ -54,6 +54,15 @@ impl Account {
         self.requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Take back a request counted for a send that never left.
+    fn uncount_request(&self) {
+        // The refunded request was counted just before, by this call's
+        // own task, so the count is above zero here.
+        if self.requests.load(Ordering::Relaxed) > 0 {
+            self.requests.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     pub(super) fn add_wait(&self, waited: Duration) {
         let micros = u64::try_from(waited.as_micros()).unwrap_or(u64::MAX);
         self.throttled_us.fetch_add(micros, Ordering::Relaxed);
@@ -67,6 +76,14 @@ impl Account {
 /// Run `future` with every request it sends charged to `account`.
 pub async fn charged<F: Future>(account: Arc<Account>, future: F) -> F::Output {
     ACCOUNT.scope(account, future).await
+}
+
+/// Take back the last request this task's call was charged for, when its
+/// send failed before anything left (the transport refused it).
+pub fn refund() {
+    if let Some(account) = current() {
+        account.uncount_request();
+    }
 }
 
 /// The account of the call running on this task, if any.

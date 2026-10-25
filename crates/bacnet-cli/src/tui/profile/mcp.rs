@@ -226,7 +226,12 @@ impl McpSection {
                 && self
                     .fast_networks
                     .iter()
-                    .any(|n| !from.fast_networks.contains(n)));
+                    .any(|n| !from.fast_networks.contains(n)))
+            || (self.rates()[2] > self.rates()[1]
+                && self
+                    .slow_networks
+                    .iter()
+                    .any(|n| !from.slow_networks.contains(n)));
         faster || bigger || unpaced || self.reaches_further(from)
     }
 
@@ -304,6 +309,19 @@ mod tests {
         };
         assert!(narrow.raises(&paced), "a network no longer slow");
         assert!(!paced.raises(&narrow), "a network newly slow");
+        let quick_slow = McpSection {
+            slow_networks: vec![7],
+            slow_rate: Some(50),
+            ..narrow.clone()
+        };
+        let quick_base = McpSection {
+            slow_rate: Some(50),
+            ..narrow.clone()
+        };
+        assert!(
+            quick_slow.raises(&quick_base),
+            "a network newly \"slow\" at a rate above the network rate goes faster"
+        );
         assert!(all.raises(&narrow));
         let more_networks = McpSection {
             networks: Some(vec![0, 7]),

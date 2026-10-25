@@ -46,19 +46,30 @@ async fn a_wide_range_is_broad() {
         )
         .await;
     assert_eq!(reason(&narrow), None, "{narrow}");
-    // A directed Who-Is is answered by one station only.
-    let directed = lab
+    // A directed Who-Is without a range is broad, unless its address is a
+    // device already discovered: an unknown address may be a broadcast.
+    let known = lab
         .agent
         .call(
             "bacnet_discover",
-            json!({ "scope": "directed", "address": "10.0.0.1", "wait_s": 1 }),
+            json!({ "scope": "directed", "address": "10.0.0.2:47808", "wait_s": 1 }),
         )
         .await;
-    assert_ne!(
-        reason(&directed).as_deref(),
-        Some("broad-discovery"),
-        "{directed}"
-    );
+    assert_eq!(reason(&known), None, "{known}");
+    for address in ["10.0.0.9:47808", "10.0.0.255:47808"] {
+        let unknown = lab
+            .agent
+            .call(
+                "bacnet_discover",
+                json!({ "scope": "directed", "address": address, "wait_s": 1 }),
+            )
+            .await;
+        assert_eq!(
+            reason(&unknown).as_deref(),
+            Some("broad-discovery"),
+            "{address}: {unknown}"
+        );
+    }
     lab.stop().await;
 }
 
@@ -268,8 +279,148 @@ async fn a_long_indexed_object_list_resumes() {
     assert!(calls >= 3, "{calls} calls");
     // The lab's own two analog inputs and the 150 more.
     assert_eq!(listed["total"], json!(152), "{listed}");
-    // One whole read, one count, then each of the 154 elements once.
+    // One whole read, one count, each of the 154 elements once, and the
+    // count again at each resumption.
     let sent = lab.sends().len();
-    assert_eq!(sent, 2 + 154, "{sent} requests");
+    assert_eq!(sent, 2 + 154 + (calls - 1), "{sent} requests");
+    lab.stop().await;
+}
+
+/// The rates and budget the indexed-list tests share: open rates, and a
+/// budget of two seconds, which reads about 40 elements of a device that
+/// answers in 50 ms.
+fn short_budget() -> Policy {
+    Policy {
+        rates: Rates {
+            global: 1000,
+            network: 1000,
+            principal: 1000,
+            burst: 1000,
+            ..Rates::default()
+        },
+        caps: Caps {
+            budget: Duration::from_secs(2),
+            ..Caps::default()
+        },
+        ..Policy::default()
+    }
+}
+
+/// One `bacnet_list_objects` call of analog inputs, resuming `cursor`.
+async fn list_page(lab: &mut Lab, cursor: &Value) -> Value {
+    let mut args = json!({ "device": "1201", "types": ["analog-input"] });
+    if !cursor.is_null() {
+        args["cursor"] = cursor.clone();
+    }
+    let result = lab.agent.call("bacnet_list_objects", args).await;
+    assert_eq!(result["isError"], json!(false), "{result}");
+    result["structuredContent"].clone()
+}
+
+/// A list whose element count changes while it is read element by element
+/// is read again from the start, and comes out whole.
+#[tokio::test(start_paused = true)]
+async fn a_changed_count_restarts_the_list() {
+    let mut lab = Lab::start_lab(short_budget(), Duration::from_millis(50), 150, true).await;
+    lab.agent.initialize().await;
+    let first = list_page(&mut lab, &Value::Null).await;
+    assert_eq!(first["list"]["complete"], json!(false), "{first}");
+    let read_before = first["list"]["read"].as_u64().unwrap();
+    lab.add_point(900).await;
+    let mut cursor = first["next_cursor"].clone();
+    let second = list_page(&mut lab, &cursor).await;
+    assert_eq!(second["list"]["elements"], json!(155), "{second}");
+    assert!(
+        second["list"]["read"].as_u64().unwrap() <= read_before,
+        "started over: {second}"
+    );
+    let mut body = second;
+    while body["list"]["complete"] != json!(true) {
+        cursor = body["next_cursor"].clone();
+        body = list_page(&mut lab, &cursor).await;
+    }
+    assert_eq!(body["total"], json!(153), "{body}");
+    let objects = body["objects"].as_array().unwrap();
+    assert!(
+        objects
+            .iter()
+            .any(|o| o["object"] == json!("analog-input:900"))
+    );
+    lab.stop().await;
+}
+
+/// Two calls on one device at once take turns: the second goes on from
+/// where the first stopped, so progress never goes back and no element is
+/// read twice.
+#[tokio::test(start_paused = true)]
+async fn parallel_calls_on_one_list_take_turns() {
+    let mut lab = Lab::start_lab(short_budget(), Duration::from_millis(50), 150, true).await;
+    lab.agent.initialize().await;
+    let mut rounds = 0;
+    let mut last_read = 0;
+    loop {
+        rounds += 1;
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let args = json!({ "device": "1201", "types": ["analog-input"] });
+            let call = json!({ "name": "bacnet_list_objects", "arguments": args });
+            ids.push(lab.agent.post("tools/call", call).await);
+        }
+        let mut bodies = Vec::new();
+        while bodies.len() < 2 {
+            let reply = lab.agent.receive().await;
+            if ids.contains(&reply["id"].as_u64().unwrap_or(0)) {
+                bodies.push(reply["result"]["structuredContent"].clone());
+            }
+        }
+        let mut done = false;
+        for body in &bodies {
+            let read = body["list"]["read"].as_u64().unwrap_or(0);
+            if body["list"]["complete"] == json!(true) {
+                done = true;
+            } else {
+                assert!(read >= last_read, "progress went back: {body}");
+                last_read = read;
+            }
+        }
+        if done {
+            break;
+        }
+        assert!(rounds < 20, "the list never finishes");
+    }
+    // Each element once: one whole read, the count at the start and at
+    // each resumption, and the 154 elements.
+    let sends = lab.sends().len();
+    assert!(
+        sends <= 2 + 154 + 2 * rounds,
+        "{sends} requests in {rounds} rounds"
+    );
+    assert!(sends >= 2 + 154, "{sends}");
+    lab.stop().await;
+}
+
+/// With the policy's devices set wide, a wide range inside them is still
+/// broad: the limit is about traffic.
+#[tokio::test(start_paused = true)]
+async fn a_wide_range_inside_the_devices_is_still_broad() {
+    let policy = Policy {
+        devices: Some(vec![(0, 4_194_302)]),
+        ..Policy::default()
+    };
+    let mut lab = Lab::start(policy).await;
+    lab.agent.initialize().await;
+    let wide = lab
+        .agent
+        .call("bacnet_discover", json!({ "range": "1-5000", "wait_s": 1 }))
+        .await;
+    assert_eq!(reason(&wide).as_deref(), Some("broad-discovery"), "{wide}");
+    let narrow = lab
+        .agent
+        .call(
+            "bacnet_discover",
+            json!({ "range": "1200-1210", "wait_s": 1 }),
+        )
+        .await;
+    assert_eq!(reason(&narrow), None, "{narrow}");
     lab.stop().await;
 }

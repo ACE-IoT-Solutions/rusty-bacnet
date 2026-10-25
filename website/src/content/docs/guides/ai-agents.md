@@ -33,7 +33,7 @@ bacnet mcp authorize --profile plant-a
 
 The authorization covers the table and the profile's transport settings. Widening the table later (another network or device, broad discovery, a higher rate or a larger cap) or changing the transport clears it, so the server refuses to start until it is given again. Narrowing the table doesn't.
 
-A Who-Is is broad when it is global, has no range, or asks more than 1000 instances, and needs `broad_discovery`. When the table names `devices`, a Who-Is must ask a range inside them.
+A Who-Is is broad when it is global, has no range, or asks more than 1000 instances, and needs `broad_discovery`. A directed Who-Is without a range counts as broad too, unless its address is a device already discovered: an unknown address may be a subnet's broadcast address. When the table names `devices`, a Who-Is must also ask a range inside them.
 
 ## Add it to the agent host
 

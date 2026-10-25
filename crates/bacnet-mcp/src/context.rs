@@ -34,6 +34,10 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     pub(crate) broad: Mutex<Option<Instant>>,
     /// Object lists read, by device, for paging without reading again.
     pub(crate) lists: Mutex<HashMap<u32, CachedList>>,
+    /// One lock a device, held while its list is read, so two calls on one
+    /// device take turns and the second goes on from where the first
+    /// stopped.
+    pub(crate) list_locks: Mutex<HashMap<u32, Arc<tokio::sync::Mutex<()>>>>,
     /// Calls and requests per device, logged as a summary at shutdown.
     pub(crate) reads: Mutex<BTreeMap<u32, (u64, u64)>>,
 }
@@ -41,13 +45,16 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
 /// A device's Object_List as read so far.
 #[derive(Debug, Clone)]
 pub(crate) struct CachedList {
-    /// When it was last read from.
+    /// When it was read whole, or, for one read element by element, when
+    /// that read began (not when it last went on).
     pub(crate) at: Instant,
     /// The entries read, in device order.
     pub(crate) objects: Arc<Vec<ObjectIdentifier>>,
     /// Read element by element: the element count, and the next element to
     /// read (past `total` once complete).
     pub(crate) indexed: Option<(u32, u32)>,
+    /// Elements the device answered with an error, skipped.
+    pub(crate) gaps: Vec<u32>,
 }
 
 impl CachedList {
@@ -55,10 +62,29 @@ impl CachedList {
     pub(crate) fn complete(&self) -> bool {
         self.indexed.is_none_or(|(total, next)| next > total)
     }
+
+    /// Whether it may still be used: a complete list for [`LIST_TTL`]
+    /// after it was read, a partial one for [`PARTIAL_TTL`] after its read
+    /// began.
+    pub(crate) fn fresh(&self) -> bool {
+        let ttl = if self.complete() {
+            LIST_TTL
+        } else {
+            PARTIAL_TTL
+        };
+        self.at.elapsed() < ttl
+    }
 }
 
 /// How long an object list read for one page serves the next ones.
 pub(crate) const LIST_TTL: Duration = Duration::from_secs(300);
+
+/// How long an element-by-element read may go on across calls before it
+/// starts again.
+pub(crate) const PARTIAL_TTL: Duration = Duration::from_secs(600);
+
+/// The most devices whose lists are kept; past it the oldest goes.
+pub(crate) const LIST_CAP: usize = 64;
 
 /// One tool call's budget and tally.
 pub(crate) struct Call {

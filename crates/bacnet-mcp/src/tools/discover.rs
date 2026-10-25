@@ -30,8 +30,10 @@ pub(super) const SPEC: Spec = Spec {
                   remote network, directed asks one address, global asks every network. A \
                   global Who-Is, or one without a range or wider than 1000 instances, needs \
                   broad discovery in the server's policy, at most one a minute: give a range \
-                  (1000-1999) otherwise. When the policy names the devices it may reach, the \
-                  range must lie inside them. names: true also reads each listed device's \
+                  (1000-1999) otherwise. A directed Who-Is counts too, unless its address is \
+                  a device already discovered (an unknown address may be a subnet broadcast). \
+                  When the policy names the devices it may reach, the range must lie inside \
+                  them. names: true also reads each listed device's \
                   name. send: false only lists what is known; pages index a live table. \
                   Read-only.",
     input,
@@ -314,7 +316,25 @@ async fn who_is<T: TransportPort + 'static>(
         }
         _ => unreachable!("checked by the caller"),
     };
-    if broad(ctx, args.scope, range)? {
+    // A directed Who-Is's address, checked before anything is charged, and
+    // whether the discovery table knows a device there.
+    let known_station = match scope {
+        WhoIsScope::Directed(address) => {
+            let mac = engine.station_mac(address).await.map_err(|e| match e {
+                bacnet_types::error::Error::Encoding(message) => {
+                    ToolError::invalid("address", message)
+                }
+                other => ToolError::invalid("address", other.to_string()),
+            })?;
+            engine
+                .devices()
+                .await
+                .iter()
+                .any(|found| found.is_local() && found.mac_address.as_slice() == mac.as_slice())
+        }
+        _ => false,
+    };
+    if broad(ctx, args.scope, range, known_station)? {
         broad_allowed(ctx)?;
     }
     let range = range
@@ -331,15 +351,18 @@ async fn who_is<T: TransportPort + 'static>(
 /// outside the policy answer.
 ///
 /// - When the policy names its devices, the range must lie inside one of
-///   its ranges, whatever the scope; such a range isn't broad, since the
-///   profile allows every device in it.
-/// - Otherwise a global Who-Is is broad, and so is one without a range or
-///   wider than [`BROAD_WIDTH`] instances, except a directed one, which
-///   only the station addressed answers.
+///   its ranges, whatever the scope.
+/// - Broad is about traffic, so in either case a global Who-Is is broad,
+///   and so is one without a range or wider than [`BROAD_WIDTH`]
+///   instances. The one exception is a directed Who-Is to a station the
+///   discovery table already knows as a device (`known_station`): only it
+///   answers. An unknown address may be a subnet's broadcast address, which
+///   every device on that subnet hears.
 fn broad<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     scope: Scope,
     range: Option<(u32, u32)>,
+    known_station: bool,
 ) -> Result<bool, ToolError> {
     if let Some(allowed) = &ctx.policy.devices {
         let inside =
@@ -351,10 +374,10 @@ fn broad<T: TransportPort + 'static>(
                  inside them",
             ));
         }
-        return Ok(scope == Scope::Global);
     }
     let wide = range.is_none_or(|(low, high)| high - low >= BROAD_WIDTH);
-    Ok(scope == Scope::Global || (wide && scope != Scope::Directed))
+    let one_station = scope == Scope::Directed && known_station;
+    Ok(scope == Scope::Global || (wide && !one_station))
 }
 
 /// A broad Who-Is: allowed by the policy, and not within a minute of the

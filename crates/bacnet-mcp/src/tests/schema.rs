@@ -2,7 +2,8 @@
 //! output schema the tool declares.
 //!
 //! The check covers the JSON Schema keywords the output schemas use:
-//! `type` (one or a list), `properties`, `required`, `items` and `enum`.
+//! `type` (one or a list), `properties`, `required`, `items`, `enum`,
+//! `anyOf` and `additionalProperties: false`.
 //! A test asserts the schemas use no other keyword that constrains a
 //! value, so a new one can't pass unchecked.
 
@@ -12,12 +13,14 @@ use super::Lab;
 use crate::Policy;
 
 /// The keywords this check understands; descriptions are notes.
-const KNOWN: [&str; 6] = [
+const KNOWN: [&str; 8] = [
     "type",
     "properties",
     "required",
     "items",
     "enum",
+    "anyOf",
+    "additionalProperties",
     "description",
 ];
 
@@ -51,6 +54,26 @@ fn violations(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) 
         if !fits {
             out.push(format!("{path}: {value} is not {types:?}"));
             return;
+        }
+    }
+    if let Some(Value::Array(choices)) = schema.get("anyOf") {
+        let fits_one = choices.iter().any(|choice| {
+            let mut inner = Vec::new();
+            violations(choice, value, path, &mut inner);
+            inner.is_empty()
+        });
+        if !fits_one {
+            out.push(format!("{path}: {value} fits none of anyOf"));
+            return;
+        }
+    }
+    if schema.get("additionalProperties") == Some(&Value::Bool(false))
+        && let (Some(object), properties) = (value.as_object(), schema.get("properties"))
+    {
+        for key in object.keys() {
+            if properties.and_then(|p| p.get(key)).is_none() {
+                out.push(format!("{path}: unexpected {key}"));
+            }
         }
     }
     if let Some(Value::Array(allowed)) = schema.get("enum")
@@ -96,6 +119,17 @@ fn the_check_finds_violations() {
     violations(&schema, &json!({ "n": "1", "e": "b" }), "$", &mut out);
     violations(&schema, &json!({}), "$", &mut out);
     assert_eq!(out.len(), 3, "{out:?}");
+    let either = json!({ "anyOf": [
+        { "type": "integer" },
+        { "type": "object", "properties": { "a": {} }, "additionalProperties": false },
+    ] });
+    let mut out = Vec::new();
+    violations(&either, &json!(3), "$", &mut out);
+    violations(&either, &json!({ "a": 1 }), "$", &mut out);
+    assert!(out.is_empty(), "{out:?}");
+    violations(&either, &json!({ "b": 1 }), "$", &mut out);
+    violations(&either, &json!("x"), "$", &mut out);
+    assert_eq!(out.len(), 2, "{out:?}");
 }
 
 /// Calls that succeed and calls that fail, for every tool.

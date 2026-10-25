@@ -264,9 +264,11 @@ Notes:
   COV_Increment, Event_State and Object_Name.
 - A broad Who-Is (global, without a range, or wider than 1000 instances)
   is refused unless the profile or grant allows broad discovery, and then
-  limited to one a minute per principal. When the profile names its
-  devices, a Who-Is must ask a range inside them, broad discovery or not,
-  so devices outside the policy are never asked to answer.
+  limited to one a minute per principal. A directed one counts too unless
+  its address is a device already discovered, since an unknown address may
+  be a subnet broadcast. Broad is about traffic, so the rule holds whatever
+  the reach; and when the profile names its devices, a Who-Is must also ask
+  a range inside them, so devices outside the policy are never asked.
 - `bacnet_read_trend` with `summary: true` pages the whole window on the
   server under the rate limit and returns only statistics, for analysis
   without flooding the agent's context.
