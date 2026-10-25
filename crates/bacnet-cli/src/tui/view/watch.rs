@@ -4,6 +4,8 @@
 
 use std::collections::VecDeque;
 
+use bacnet_ops::label::{kebab, object_label};
+use bacnet_ops::limits::METER_WINDOW_SECS;
 use bacnet_types::enums::PropertyIdentifier;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -14,9 +16,8 @@ use ratatui::widgets::{Block, Paragraph, Row, Table};
 use super::{FULL_WIDTH, Theme, WIDE_WIDTH, ellipsize as fit, sanitize, text_width};
 use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
-use crate::tui::app::objects::{kebab, object_label};
 use crate::tui::app::watch::WatchRow;
-use crate::tui::watched::{METER_WINDOW_SECS, Source};
+use crate::tui::watched::Source;
 
 /// The bar levels, lowest first.
 const LEVELS: [&str; 8] = [

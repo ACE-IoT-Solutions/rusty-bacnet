@@ -1,12 +1,12 @@
 //! Discovery commands: WhoIs and WhoHas.
 
 use bacnet_client::client::{BACnetClient, ReceivedIHave};
+use bacnet_ops::target::AddressStyle;
 use bacnet_services::who_has::WhoHasObject;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::port::TransportPort;
 use serde::Serialize;
 
-use crate::core::target::AddressStyle;
 use crate::output::{self, DeviceInfo, OutputFormat, device_info};
 
 /// Collect device infos from the client's discovered device table,

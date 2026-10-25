@@ -20,19 +20,19 @@
 //! reported unreachable; those are read again once the UI says the device
 //! answered (an I-Am, [`NameQueue::retry`]).
 //!
-//! [`Scheduler`]: super::limits::Scheduler
-//! [`RequestLimits`]: super::limits::RequestLimits
+//! [`Scheduler`]: super::schedule::Scheduler
+//! [`RequestLimits`]: bacnet_ops::limits::RequestLimits
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
+use bacnet_ops::engine::{Halt, Reader, RpmFailure, rpm_failure, unreachable};
+use bacnet_ops::format::{MAX_NAME_CHARS, name_text};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::read::{Halt, Reader, RpmFailure, rpm_failure, unreachable};
-use crate::tui::format::{MAX_NAME_CHARS, name_text};
 use crate::tui::point::{ReadName, ReqId};
 
 /// The most names one ReadPropertyMultiple asks for, however large the

@@ -3,14 +3,12 @@
 //! Supports table (human-readable) and JSON output formats with automatic
 //! TTY detection.
 
-use std::net::Ipv4Addr;
-
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_types::primitives::PropertyValue;
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
-use crate::core::target::{AddressStyle, routed_station};
+use bacnet_ops::target::{AddressStyle, routed_station};
 
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,26 +39,6 @@ pub struct DeviceInfo {
     /// CLI reads back: `2:0x05`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub station: Option<String>,
-}
-
-/// Format a MAC address as a target the CLI reads back: a BIP MAC (6 bytes:
-/// 4 IP + 2 port) as `ip:port`, and a B/IPv6 VMAC (3 bytes, the only
-/// 3-byte MAC the CLI's transports use) as `bip6:0x0004D2`. Falls back to
-/// hex display for other MACs. A routed station is written with its network
-/// by [`crate::core::target::routed_station`] instead.
-pub fn format_mac(mac: &[u8]) -> String {
-    if mac.len() == 6 {
-        let ip = Ipv4Addr::new(mac[0], mac[1], mac[2], mac[3]);
-        let port = u16::from_be_bytes([mac[4], mac[5]]);
-        format!("{ip}:{port}")
-    } else if let Ok(vmac) = <[u8; 3]>::try_from(mac) {
-        bacnet_transport::bip6::format_vmac_text(bacnet_transport::bip6::Bip6Vmac::new(vmac))
-    } else {
-        mac.iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join(":")
-    }
 }
 
 /// Convert a `DiscoveredDevice` into a `DeviceInfo` for display, its
@@ -423,21 +401,6 @@ mod tests {
         );
     }
 
-    /// Each MAC prints as a target the CLI reads back: a B/IPv6 VMAC as
-    /// `bip6:0x……`, not as hex, which no target form takes.
-    #[test]
-    fn macs_print_as_targets() {
-        assert_eq!(format_mac(&[10, 0, 0, 1, 0xBA, 0xC0]), "10.0.0.1:47808");
-        assert_eq!(format_mac(&[0x00, 0x04, 0xD2]), "bip6:0x0004D2");
-        assert_eq!(format_mac(&[7]), "07");
-        for mac in [vec![10, 0, 0, 1, 0xBA, 0xC0], vec![0x40, 0xAB, 0xCD]] {
-            match crate::core::target::parse_target(&format_mac(&mac)) {
-                Ok(crate::core::target::Target::Mac(parsed)) => assert_eq!(parsed, mac),
-                _ => panic!("{} does not read back", format_mac(&mac)),
-            }
-        }
-    }
-
     #[test]
     fn device_info_serializes() {
         let info = DeviceInfo {
@@ -463,7 +426,7 @@ mod tests {
         use bacnet_types::enums::{ObjectType, Segmentation};
         use bacnet_types::primitives::ObjectIdentifier;
 
-        use crate::core::target::{Target, parse_target};
+        use bacnet_ops::target::{Target, parse_target};
 
         let found = |instance: u32, routed: Option<(u16, &[u8])>| DiscoveredDevice {
             object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),

@@ -22,7 +22,7 @@ use serde::Serialize;
 /// What a command does to a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum Class {
+pub enum Class {
     /// Observes only.
     Read,
     /// Changes a value, an object, a file or a table.
@@ -33,7 +33,7 @@ pub(crate) enum Class {
 
 impl Class {
     /// The name in messages and JSON.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Read => "read",
             Self::Write => "write",
@@ -44,9 +44,10 @@ impl Class {
 
 use Class::{DeviceManagement, Read, Write};
 
-/// Every subcommand, aliases included, with its class. A test checks this
-/// against the clap definitions in both directions.
-const COMMANDS: &[(&str, Class)] = &[
+/// Every subcommand, aliases included, with its class. A test in
+/// `bacnet-cli` checks this against the clap definitions in both
+/// directions.
+pub const COMMANDS: &[(&str, Class)] = &[
     // Discovery and reads.
     ("discover", Read),
     ("whois", Read),
@@ -98,13 +99,13 @@ const COMMANDS: &[(&str, Class)] = &[
 /// finite subscription is renewed while the CLI watches and cancelled when
 /// it stops, so it is a read; one of 0 never expires (Clause 13.14.1.1.4)
 /// and outlives the CLI, so it is a write.
-pub(crate) fn of_subscribe(lifetime: u32) -> Class {
+pub fn of_subscribe(lifetime: u32) -> Class {
     if lifetime == 0 { Write } else { Read }
 }
 
 /// The class of a subcommand, by name or alias;
 /// `None` for a word that is neither.
-pub(crate) fn of(command: &str) -> Option<Class> {
+pub fn of(command: &str) -> Option<Class> {
     COMMANDS
         .iter()
         .find(|(name, _)| *name == command)
@@ -114,44 +115,6 @@ pub(crate) fn of(command: &str) -> Option<Class> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
-
-    /// Every clap subcommand and alias, from the derived definition.
-    fn clap_names() -> Vec<(String, Vec<String>)> {
-        crate::parse_on_large_stack(|| {
-            crate::args::Cli::command()
-                .get_subcommands()
-                .map(|sub| {
-                    (
-                        sub.get_name().to_string(),
-                        sub.get_all_aliases().map(str::to_string).collect(),
-                    )
-                })
-                .collect()
-        })
-    }
-
-    /// A new subcommand can't skip classification, and an
-    /// alias has its command's class.
-    #[test]
-    fn every_command_and_alias_has_a_class() {
-        let clap = clap_names();
-        assert!(clap.len() > 20, "{clap:?}");
-        for (name, aliases) in &clap {
-            let class = of(name).unwrap_or_else(|| panic!("subcommand {name} has no class"));
-            for alias in aliases {
-                assert_eq!(of(alias), Some(class), "alias {alias} of {name}");
-            }
-        }
-        // And the table names nothing that no longer exists.
-        for (name, _) in COMMANDS {
-            let known = clap
-                .iter()
-                .any(|(n, aliases)| n == name || aliases.iter().any(|a| a == name))
-                || *name == "help";
-            assert!(known, "{name} is classified but is no command");
-        }
-    }
 
     /// The classes themselves, pinned: a change here is a safety change.
     #[test]

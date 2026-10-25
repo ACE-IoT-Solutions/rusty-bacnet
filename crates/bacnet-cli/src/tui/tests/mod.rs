@@ -126,6 +126,7 @@ use std::net::Ipv4Addr;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use bacnet_ops::target::AddressStyle;
 use bacnet_types::enums::Segmentation;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -137,7 +138,6 @@ use super::keymap::map_key;
 use super::log_layer::LogRing;
 use super::message::{Command, DeviceRow, WorkerEvent};
 use crate::core::interfaces::Ipv4Interface;
-use crate::core::target::AddressStyle;
 
 /// One fixed start time per test process, so ages are exact offsets from it.
 pub(super) fn t0() -> Instant {
@@ -201,7 +201,7 @@ pub(super) fn routed_row(
     vendor_id: u16,
     seen: u64,
 ) -> DeviceRow {
-    let address = crate::core::target::routed_station(network, station).expect("a station");
+    let address = bacnet_ops::target::routed_station(network, station).expect("a station");
     let mut row = row(instance, &address, vendor_id, seen);
     row.network = Some(network);
     row.via = Some(router.into());

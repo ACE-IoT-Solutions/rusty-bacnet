@@ -6,15 +6,15 @@
 //! dropped once it has been sent.
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::class::Class;
+use bacnet_ops::limits::RequestLimits;
 use bacnet_transport::port::TransportPort;
 
 use super::send::find;
 use super::{PASSIVE, Runner, tell};
-use crate::core::class::Class;
 use crate::tui::safety::manage::{Action, NEEDS_DANGEROUS, Request};
 use crate::tui::safety::{Outcome, SafetyEvent};
 use crate::tui::worker::EventSink;
-use crate::tui::worker::browse::limits::RequestLimits;
 
 impl Runner<'_> {
     /// Why a device management request may not be sent now, if it may not.

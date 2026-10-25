@@ -9,10 +9,10 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
+use bacnet_ops::label::object_label;
 use bacnet_types::enums::PropertyIdentifier;
 
 use super::devices::Movement;
-use super::objects::object_label;
 use super::{App, FLASH_FOR, Link};
 use crate::tui::message::Command;
 use crate::tui::point::Health;

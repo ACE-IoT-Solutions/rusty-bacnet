@@ -33,7 +33,6 @@
 mod app;
 mod capture;
 mod event_loop;
-mod format;
 mod help;
 mod keymap;
 mod log_layer;
@@ -47,6 +46,7 @@ mod mstp;
 mod network;
 mod point;
 mod profile;
+mod row_error;
 mod safety;
 // Without `sc-tls` nothing reports to the SC screen; it still draws.
 #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
