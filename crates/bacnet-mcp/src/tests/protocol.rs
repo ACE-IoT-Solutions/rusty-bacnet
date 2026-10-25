@@ -133,17 +133,17 @@ async fn an_agent_surveys_the_lab_over_the_pipe() {
         .find(|row| row["property"] == json!("present-value"))
         .unwrap();
     assert_eq!(pv["value"]["display"], json!("72.5 °F"));
-    assert_eq!(
-        pv["value"]["typed"],
-        json!({ "type": "real", "value": 72.5 })
-    );
+    assert_eq!(pv["value"]["typed"], json!(72.5));
     let flags = read["results"]
         .as_array()
         .unwrap()
         .iter()
         .find(|row| row["property"] == json!("status-flags"))
         .unwrap();
-    assert_eq!(flags["value"]["typed"]["set"], json!([]));
+    assert_eq!(
+        flags["value"]["typed"],
+        json!({ "bits": "0000", "names": [] })
+    );
     // An analog input has no priority array: an error row, not a failure.
     let missing = read["results"]
         .as_array()

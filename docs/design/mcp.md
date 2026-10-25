@@ -227,9 +227,10 @@ Rules:
    `dnet:0xMAC` for a routed one, in the shared target grammar. An object is
    `type:instance` (`ai:1`, `analog-output:3`). Write tools never resolve a
    target by name, because names are attacker-controlled strings.
-5. **Values cross in two forms:** the display string from `format`, and a
-   typed JSON form `{ "type": "real", "value": 72.5 }`. Writes take only the
-   typed form or the CLI value grammar (`parse`), never free text.
+5. **Values cross in two forms:** the display string from `format`, and
+   its typed form, `format::Datum`, the CLI's JSON shape (`72.5`, `{ "value":
+   62, "name": "degrees-fahrenheit" }`, ...). Writes take only a typed form
+   or the CLI value grammar (`parse`), never free text.
 6. **Limits are enforced on the server and reported.** Each result carries
    `truncated`, `next_cursor` and a `cost` block (requests sent, elapsed and
    throttled time, timeouts), so the agent learns when a network is slow.

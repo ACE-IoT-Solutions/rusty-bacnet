@@ -259,7 +259,7 @@ async fn hostile_device_text_comes_back_enveloped() {
         )
         .await;
     let row = &read["structuredContent"]["results"][0];
-    let typed = &row["value"]["typed"]["value"];
+    let typed = &row["value"]["typed"];
     assert_eq!(
         typed["source"],
         json!("device 1201 analog-input:3 description")

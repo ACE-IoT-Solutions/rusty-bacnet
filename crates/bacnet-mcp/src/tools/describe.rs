@@ -14,7 +14,7 @@ use super::{Spec, list::listing, schema};
 use crate::context::{Call, Ctx, DeviceArg};
 use crate::errors::{ToolError, row_error_json};
 use crate::untrusted::envelope;
-use crate::value::{row_text, typed};
+use crate::value::{bit_names, row_text};
 
 pub(super) const NAME: &str = "bacnet_describe_device";
 
@@ -101,15 +101,7 @@ fn unsigned(rows: &[RawRow], property: PropertyIdentifier) -> Option<u64> {
 /// The names of a bit string's set bits (services, object types).
 fn set_bits(rows: &[RawRow], property: PropertyIdentifier) -> Vec<String> {
     match values(rows, property).as_deref() {
-        Some([bits @ PropertyValue::BitString { .. }]) => {
-            match typed(property, bits, "", 0).get("set") {
-                Some(Value::Array(names)) => names
-                    .iter()
-                    .filter_map(|name| name.as_str().map(str::to_string))
-                    .collect(),
-                _ => Vec::new(),
-            }
-        }
+        Some([bits @ PropertyValue::BitString { .. }]) => bit_names(property, bits),
         _ => Vec::new(),
     }
 }

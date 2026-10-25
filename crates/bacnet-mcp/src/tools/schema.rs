@@ -58,8 +58,19 @@ pub(super) fn value() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "display": { "type": ["string", "object"] },
-            "typed": { "type": "object" },
+            "display": {
+                "type": ["string", "object"],
+                "description": "The formatter's text; an untrusted envelope when the value holds \
+                                device text",
+            },
+            "typed": {
+                "description": "The decoded value, as the CLI's JSON writes it: a number, \
+                                boolean or null; {value, name} for an enumeration; {bits, names} \
+                                for a bit string; {type, type_number, instance} for an object; \
+                                {date}, {time}, {octets}, {float} or {raw}; {element, text} for a \
+                                constructed element; an array for several; device text as an \
+                                untrusted envelope, in place of a string or of an element's text",
+            },
         },
     })
 }

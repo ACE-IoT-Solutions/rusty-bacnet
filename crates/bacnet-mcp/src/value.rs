@@ -1,31 +1,58 @@
 //! Property values in the two forms the tools return (design §5): the
 //! display text of the shared formatter (`bacnet_ops::format`), which
-//! decodes constructed values such as timestamps and schedules, and a typed
-//! JSON form with enumeration names beside their numbers and bit strings
-//! with their set bits named. Raw hex is only the fallback for octets that
-//! don't decode.
+//! decodes constructed values such as timestamps and schedules, and the
+//! formatter's typed form ([`Datum`]: enumerations with their number and
+//! name, bit strings with their set bits named, objects by type and
+//! instance, constructed elements as text), the same shape as the CLI's
+//! JSON. Raw hex is only the fallback for octets that don't decode.
 //!
-//! Display text is never device text: state texts aren't spliced in, and a
-//! value holding a character string, or anything that doesn't decode as
-//! application values, has its display text put in an untrusted envelope.
+//! Device text goes in untrusted envelopes, leaf by leaf: a character
+//! string, and the text of a constructed element whose kind can hold one.
+//! State texts are never spliced into the display text, and the display
+//! text is enveloped whole only when the value holds device text.
 
-use bacnet_ops::format::{Floats, StateTexts, ValueFormat, decode_all};
-use bacnet_ops::label::{kebab, object_label};
-use bacnet_types::enums::{
-    EngineeringUnits, ObjectType, PropertyIdentifier, ResolvedBits, ResolvedEnum, resolve_bits,
-    resolve_enum,
-};
-use bacnet_types::primitives::{Date, PropertyValue, Time};
+use bacnet_ops::format::{Datum, Floats, StateTexts, ValueFormat, decode_all};
+use bacnet_ops::label::kebab;
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
+use bacnet_types::primitives::PropertyValue;
 use serde_json::{Value, json};
 
 use crate::untrusted::envelope;
 
-/// A property's value as `{display, typed}`: `source` names it for an
-/// envelope, `cap` caps any device text, and `units` (the object's, when
-/// read) follow a number in the display text.
+/// Constructed elements whose text holds no device string: references,
+/// times and dates, addresses, scales and the like. Any other kind (a name
+/// and value, a schedule's values, an action, an access result, or one the
+/// formatter doesn't name) may carry a character string, so its text is
+/// enveloped.
+const PLAIN_ELEMENTS: [&str; 18] = [
+    "destination",
+    "port-permission",
+    "read-access-specification",
+    "device-object-reference",
+    "authentication-factor-format",
+    "stage-limit-value",
+    "device-object-property-reference",
+    "object-property-reference",
+    "recipient",
+    "calendar-entry",
+    "date-range",
+    "time-stamp",
+    "cov-subscription",
+    "value-source",
+    "scale",
+    "prescale",
+    "address-binding",
+    "shed-level",
+];
+
+/// A property's value as `{display, typed}`, read at `index` (an array
+/// element) or whole: `source` names it for an envelope, `cap` caps any
+/// device text, and `units` (the object's, when read) follow a number in
+/// the display text.
 pub(crate) fn property_value(
     object_type: ObjectType,
     property: PropertyIdentifier,
+    index: Option<u32>,
     data: &[u8],
     units: Option<EngineeringUnits>,
     source: &str,
@@ -33,106 +60,67 @@ pub(crate) fn property_value(
 ) -> Value {
     let texts = StateTexts::default();
     let format = ValueFormat::new(object_type, &texts, Floats::Display);
-    let text = format.with_units(property, data, units);
-    let values = decode_all(data);
-    let display = match &values {
-        Some(values) if !values.iter().any(holds_text) => json!(text),
-        _ => envelope(&text, source, cap),
+    let text = match index {
+        None => format.with_units(property, data, units),
+        Some(_) => format.value_at(property, index, data),
     };
-    let typed = match values.as_deref() {
-        Some([one]) => typed(property, one, source, cap),
-        Some(many) => json!({
-            "type": "sequence",
-            "items": many.iter().map(|v| typed(property, v, source, cap)).collect::<Vec<_>>(),
-        }),
-        None => json!({ "type": "raw", "hex": hex(data) }),
+    let mut typed = datum_json(&format.data_at(property, index, data));
+    let display = if envelope_leaves(&mut typed, source, cap) {
+        envelope(&text, source, cap)
+    } else {
+        json!(text)
     };
     json!({ "display": display, "typed": typed })
 }
 
-/// Whether `value` holds device text, or octets that might hide some.
-fn holds_text(value: &PropertyValue) -> bool {
-    match value {
-        PropertyValue::CharacterString(_) | PropertyValue::ApplicationData(_) => true,
-        PropertyValue::List(items) => items.iter().any(holds_text),
+fn datum_json(datum: &Datum) -> Value {
+    serde_json::to_value(datum).expect("a datum serializes")
+}
+
+/// Put each device-text leaf of `typed` in an envelope; true when there
+/// was one. A bare JSON string in a datum is a character string, and an
+/// object with `element` and `text` is a constructed element.
+fn envelope_leaves(typed: &mut Value, source: &str, cap: usize) -> bool {
+    match typed {
+        Value::String(text) => {
+            *typed = envelope(text, source, cap);
+            true
+        }
+        Value::Array(items) => {
+            let mut any = false;
+            for item in items {
+                any |= envelope_leaves(item, source, cap);
+            }
+            any
+        }
+        Value::Object(map) => {
+            let plain = map
+                .get("element")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| PLAIN_ELEMENTS.contains(&kind));
+            match map.get_mut("text") {
+                Some(Value::String(text)) if !plain => {
+                    let wrapped = envelope(text, source, cap);
+                    map.insert("text".into(), wrapped);
+                    true
+                }
+                _ => false,
+            }
+        }
         _ => false,
     }
 }
 
-/// One application value in its typed form.
-pub(crate) fn typed(
-    property: PropertyIdentifier,
-    value: &PropertyValue,
-    source: &str,
-    cap: usize,
-) -> Value {
-    match value {
-        PropertyValue::Null => json!({ "type": "null" }),
-        PropertyValue::Boolean(b) => json!({ "type": "boolean", "value": b }),
-        PropertyValue::Unsigned(n) => json!({ "type": "unsigned", "value": n }),
-        PropertyValue::Signed(n) => json!({ "type": "signed", "value": n }),
-        PropertyValue::Real(v) => json!({ "type": "real", "value": number(f64::from(*v)) }),
-        PropertyValue::Double(v) => json!({ "type": "double", "value": number(*v) }),
-        PropertyValue::OctetString(bytes) => json!({ "type": "octet-string", "hex": hex(bytes) }),
-        PropertyValue::CharacterString(text) => {
-            json!({ "type": "character-string", "value": envelope(text, source, cap) })
-        }
-        PropertyValue::BitString { unused_bits, data } => {
-            let total = (data.len() * 8).saturating_sub(usize::from(*unused_bits));
-            let bits: String = (0..total)
-                .map(|i| {
-                    if data[i / 8] & (0x80 >> (i % 8)) != 0 {
-                        '1'
-                    } else {
-                        '0'
-                    }
-                })
-                .collect();
-            let mut out = json!({ "type": "bit-string", "bits": bits });
-            if let Some(names) = bit_names(property, value) {
-                out["set"] = json!(names);
-            }
-            out
-        }
-        PropertyValue::Enumerated(raw) => {
-            let mut out = json!({ "type": "enumerated", "value": raw });
-            match resolve_enum(property, value) {
-                Some(ResolvedEnum::Unknown(_)) | None => {}
-                Some(named) => out["name"] = json!(kebab(named)),
-            }
-            out
-        }
-        PropertyValue::Date(date) => date_json(date),
-        PropertyValue::Time(time) => time_json(time),
-        PropertyValue::ObjectIdentifier(object) => json!({
-            "type": "object-identifier",
-            "object": object_text(object.object_type(), object.instance_number()),
-            "label": object_label(*object),
-        }),
-        PropertyValue::List(items) => json!({
-            "type": "list",
-            "items": items.iter().map(|v| typed(property, v, source, cap)).collect::<Vec<_>>(),
-        }),
-        PropertyValue::ApplicationData(bytes) => json!({ "type": "raw", "hex": hex(bytes) }),
-    }
-}
-
 /// The names of a bit string's set bits, for a property whose bits have
-/// names.
-fn bit_names(property: PropertyIdentifier, value: &PropertyValue) -> Option<Vec<String>> {
-    match resolve_bits(property, value)? {
-        ResolvedBits::Unknown { .. } => None,
-        named => {
-            let text = kebab(named);
-            Some(
-                text.split('|')
-                    .map(str::trim)
-                    // An empty set shows as `()`.
-                    .filter(|name| !name.is_empty() && *name != "()")
-                    .map(str::to_string)
-                    .collect(),
-            )
-        }
+/// names (services, object types, status flags).
+pub(crate) fn bit_names(property: PropertyIdentifier, value: &PropertyValue) -> Vec<String> {
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(ObjectType::DEVICE, &texts, Floats::Display);
+    match format.element_data(property, value) {
+        Datum::Bits {
+            names: Some(names), ..
+        } => names,
+        _ => Vec::new(),
     }
 }
 
@@ -159,56 +147,6 @@ pub(crate) fn object_text(object_type: ObjectType, instance: u32) -> String {
     format!("{}:{instance}", kebab(object_type))
 }
 
-/// A float as a JSON number, or its name when it has none in JSON.
-fn number(value: f64) -> Value {
-    if value.is_finite() {
-        json!(value)
-    } else {
-        json!(value.to_string())
-    }
-}
-
-/// A date field, or null when unspecified.
-fn field(value: u8) -> Value {
-    if value == Date::UNSPECIFIED {
-        Value::Null
-    } else {
-        json!(value)
-    }
-}
-
-fn date_json(date: &Date) -> Value {
-    let year = (date.year != Date::UNSPECIFIED).then(|| u16::from(date.year) + 1900);
-    json!({
-        "type": "date",
-        "year": year,
-        "month": field(date.month),
-        "day": field(date.day),
-        "weekday": field(date.day_of_week),
-    })
-}
-
-fn time_json(time: &Time) -> Value {
-    let field = |value: u8| {
-        if value == Time::UNSPECIFIED {
-            Value::Null
-        } else {
-            json!(value)
-        }
-    };
-    json!({
-        "type": "time",
-        "hour": field(time.hour),
-        "minute": field(time.minute),
-        "second": field(time.second),
-        "hundredths": field(time.hundredths),
-    })
-}
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,17 +165,19 @@ mod tests {
         let value = property_value(
             ObjectType::ANALOG_INPUT,
             PropertyIdentifier::PRESENT_VALUE,
+            None,
             &pv,
             Some(EngineeringUnits::DEGREES_FAHRENHEIT),
             "device 1 analog-input:1 present-value",
             256,
         );
         assert_eq!(value["display"], json!("72.5 °F"));
-        assert_eq!(value["typed"], json!({ "type": "real", "value": 72.5 }));
+        assert_eq!(value["typed"], json!(72.5));
         let units = encoded(&PropertyValue::Enumerated(64));
         let value = property_value(
             ObjectType::ANALOG_INPUT,
             PropertyIdentifier::UNITS,
+            None,
             &units,
             None,
             "s",
@@ -245,7 +185,7 @@ mod tests {
         );
         assert_eq!(
             value["typed"],
-            json!({ "type": "enumerated", "value": 64, "name": "degrees-fahrenheit" })
+            json!({ "value": 64, "name": "degrees-fahrenheit" })
         );
     }
 
@@ -255,16 +195,9 @@ mod tests {
             unused_bits: 4,
             data: vec![0b1001_0000],
         };
-        let value = typed(PropertyIdentifier::STATUS_FLAGS, &flags, "s", 256);
-        assert_eq!(value["bits"], json!("1001"));
-        assert_eq!(value["set"], json!(["in-alarm", "out-of-service"]));
-        let none = PropertyValue::BitString {
-            unused_bits: 4,
-            data: vec![0],
-        };
         assert_eq!(
-            typed(PropertyIdentifier::STATUS_FLAGS, &none, "s", 256)["set"],
-            json!([])
+            bit_names(PropertyIdentifier::STATUS_FLAGS, &flags),
+            ["in-alarm", "out-of-service"]
         );
     }
 
@@ -276,16 +209,32 @@ mod tests {
         let value = property_value(
             ObjectType::ANALOG_INPUT,
             PropertyIdentifier::DESCRIPTION,
+            None,
             &name,
             None,
             "device 1 analog-input:1 description",
             256,
         );
         assert_eq!(value["display"]["untrusted"], json!("\"Fan hxxps://x\""));
-        assert_eq!(value["typed"]["value"]["untrusted"], json!("Fan hxxps://x"));
+        assert_eq!(value["typed"]["untrusted"], json!("Fan hxxps://x"));
         assert_eq!(
-            value["typed"]["value"]["source"],
+            value["typed"]["source"],
             json!("device 1 analog-input:1 description")
         );
+    }
+
+    /// A constructed element that holds no device string isn't enveloped;
+    /// one that can is, leaf by leaf, and its display text with it.
+    #[test]
+    fn only_device_text_elements_are_enveloped() {
+        let mut stamp = json!([{ "element": "time-stamp", "text": "2026-10-25 07:00" }]);
+        assert!(!envelope_leaves(&mut stamp, "s", 256));
+        assert_eq!(stamp[0]["text"], json!("2026-10-25 07:00"));
+        let mut named = json!([{ "element": "name-value", "text": "mode = \"Fan\u{202E}\"" }, 7]);
+        assert!(envelope_leaves(&mut named, "s", 256));
+        assert_eq!(named[0]["text"]["untrusted"], json!("mode = \"Fan\""));
+        assert_eq!(named[1], json!(7));
+        let mut unknown = json!({ "element": "element", "text": "x" });
+        assert!(envelope_leaves(&mut unknown, "s", 256));
     }
 }

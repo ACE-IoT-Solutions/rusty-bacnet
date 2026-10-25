@@ -351,8 +351,15 @@ fn result_row(
     match value {
         Ok(data) => {
             let source = format!("device {device} {object_name} {property_name}");
-            let mut value =
-                property_value(object.object_type(), property, &data, units, &source, cap);
+            let mut value = property_value(
+                object.object_type(),
+                property,
+                index,
+                &data,
+                units,
+                &source,
+                cap,
+            );
             match format {
                 Format::Display => drop(value.as_object_mut().map(|v| v.remove("typed"))),
                 Format::Typed => drop(value.as_object_mut().map(|v| v.remove("display"))),

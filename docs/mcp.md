@@ -51,11 +51,18 @@ The other five tools of phase 1 (`bacnet_find_object`, `bacnet_network_map`,
   list (a passive server's read tools). A test checks every tool's
   results, success and error, against its output schema. A cancelled call
   (`notifications/cancelled`) drops its future, so it sends nothing more.
-- Values are `{display, typed}`: the shared formatter's text, and a typed
-  form with enumeration names, named bits and dates and times by field. Raw
-  hex only for octets that don't decode.
-- Device text (names, descriptions, vendor strings, character-string
-  values, and display text holding them) is an envelope
+- Values are `{display, typed}`: the shared formatter's text, and its
+  typed form, `bacnet_ops::format::Datum`, the shape the CLI's JSON uses
+  (numbers as numbers, `{value, name}` for enumerations, `{bits, names}` for
+  bit strings, `{type, type_number, instance}` for objects, `{element,
+  text}` for constructed elements). Raw hex only for octets that don't
+  decode.
+- Device text is an envelope, leaf by leaf: names, descriptions, vendor
+  strings, a character-string value in `typed`, and the `text` of a
+  constructed element whose kind can hold a string (a name and value, a
+  schedule's values, an access result, an unnamed kind), but not of one
+  that can't (a time stamp, a reference, a date range). The display text is
+  enveloped whole only when the value holds device text. Each envelope is
   `{untrusted, source, truncated}`: C0 and C1 controls and the line and
   paragraph separators become spaces; format characters (category Cf:
   bidirectional, zero-width, tag characters and the rest), variation
@@ -66,10 +73,6 @@ The other five tools of phase 1 (`bacnet_find_object`, `bacnet_network_map`,
   binding the tool, a digest of the principal (the OS user's name doesn't
   show), a digest of the other arguments, an expiry (10 minutes) and the
   position.
-- Display text holding any character string is enveloped whole, so a
-  constructed value with a string inside comes back enveloped even where
-  most of it isn't device text. Enveloping only the string leaves waits
-  for the shared typed value form (#2092).
 
 ## Limits
 
