@@ -115,10 +115,10 @@ pub(crate) struct LiveTables {
 impl LiveTables {
     /// The group view, for a written group; refused without one.
     fn group(&self) -> Result<&Arc<dyn GroupChange>, Error> {
-        self.group.as_ref().ok_or(Error::Protocol {
-            class: bacnet_types::enums::ErrorClass::PROPERTY,
-            code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        self.group.as_ref().ok_or(Error::protocol(
+            bacnet_types::enums::ErrorClass::PROPERTY,
+            bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     /// Activate `changes`, a new group among them, as one step (#1963).
