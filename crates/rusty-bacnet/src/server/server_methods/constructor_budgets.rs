@@ -1,5 +1,5 @@
 //! Validation and budget assembly for the `BACnetServer` constructor: the
-//! registered Network Port range, the mutation and DCC policies, and the
+//! registered Network Port range, the DCC policy, and the
 //! request-admission and per-service budgets. Each check raises ValueError.
 
 use pyo3::exceptions::PyValueError;
@@ -21,17 +21,6 @@ pub(super) fn registered_network_port(port: Option<u32>, transport: &str) -> PyR
         ));
     }
     Ok(())
-}
-
-/// Parse the `mutation_policy` keyword.
-pub(super) fn mutation_policy(name: &str) -> PyResult<bacnet_server::mutation::MutationPolicy> {
-    match name {
-        "permissive" => Ok(bacnet_server::mutation::MutationPolicy::Permissive),
-        "deny_all" => Ok(bacnet_server::mutation::MutationPolicy::DenyAll),
-        _ => Err(PyValueError::new_err(
-            "mutation_policy must be 'permissive' or 'deny_all'",
-        )),
-    }
 }
 
 /// The DCC policy with its source restriction and disable rate limit.

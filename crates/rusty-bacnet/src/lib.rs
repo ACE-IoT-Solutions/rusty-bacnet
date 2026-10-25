@@ -20,6 +20,7 @@ mod hub_bindings;
 mod log_records;
 mod logging_bridge;
 mod mstp_py;
+mod mutation_policy;
 mod object_audit_policy;
 mod object_options;
 mod py_async;
@@ -79,6 +80,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     endpoint::register(m)?;
     router::register(m)?;
     reinitialize::register(m)?;
+    mutation_policy::register(m)?;
     m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
     m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;
 

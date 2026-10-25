@@ -100,6 +100,7 @@ impl BACnetServer {
         let ipv6_interface = self.ipv6_interface.clone();
         let dcc_password = self.dcc_password.clone();
         let mutation_policy = self.mutation_policy;
+        let mutation_callback = self.mutation_callback.clone();
         let dcc_policy = self.dcc_policy;
         let dcc_source_restriction = self.dcc_source_restriction.clone();
         let dcc_disable_rate_limit = self.dcc_disable_rate_limit;
@@ -247,7 +248,8 @@ impl BACnetServer {
 
                     let mut sc = bacnet_transport::sc::ScTransport::new(ws, vmac)
                         .with_device_uuid(sc_device_uuid)
-                        .with_npdu_per_origin_limit(sc_npdu_admission_policy.per_origin_limit);
+                        .with_npdu_per_origin_limit(sc_npdu_admission_policy.per_origin_limit)
+                        .with_control_rate_limit(sc_npdu_admission_policy.control_rate);
                     if let Some(ms) = sc_heartbeat_interval_ms {
                         sc = sc.with_heartbeat_interval_ms(ms);
                     }
@@ -272,16 +274,29 @@ impl BACnetServer {
                 .cov_policy(cov_policy)
                 .time_sync_policy(time_sync_policy)
                 .transport(transport);
+            // One policy holds every decision Python configures: installing
+            // a second would replace the first.
+            let mut policy = None;
             if let Some(sink) = audit_notification_sink {
                 builder = builder.audit_notification_sink(sink.object_id);
                 if sink.allow_all {
-                    builder = builder.policy(
+                    policy = Some(
                         bacnet_server::FnPolicy::new()
                             .audit_notification(|_| true)
                             .unconfirmed_audit_notification(|_| true),
                     );
                 }
                 // deny_all deliberately retains the Rust fail-closed defaults.
+            }
+            if let Some(callback) = mutation_callback {
+                policy = Some(
+                    policy
+                        .unwrap_or_default()
+                        .mutation(move |context| callback.decide(context)),
+                );
+            }
+            if let Some(policy) = policy {
+                builder = builder.policy(policy);
             }
             if let Some(pw) = dcc_password {
                 builder = builder.dcc_password(pw);
