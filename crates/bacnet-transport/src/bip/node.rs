@@ -346,6 +346,11 @@ impl NodeHandle {
         })
     }
 
+    /// Where this node's exchanges are counted.
+    pub(super) fn record(&self) -> &ClientRecord {
+        &self.record
+    }
+
     /// The node's clock.
     pub(super) fn clock(&self) -> HostClock {
         self.clock

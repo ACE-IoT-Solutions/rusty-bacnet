@@ -361,11 +361,8 @@ impl BipTransport {
     /// FD_Subscription_Lifetime, activated by ReinitializeDevice); a later
     /// start keeps the values it moved to.
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
-        self.foreign_device = Some(Arc::new(foreign_target::ForeignTarget::new(
-            config,
-            self.broadcast_address,
-            self.interface,
-        )));
+        let target = foreign_target::ForeignTarget::new(config, self);
+        self.foreign_device = Some(Arc::new(target));
     }
 
     /// Get the BBMD state (if BBMD mode is enabled). It appears when
