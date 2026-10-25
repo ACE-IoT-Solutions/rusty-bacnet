@@ -359,7 +359,7 @@ async fn a_password_over_twenty_characters_is_refused() {
     };
     assert_refused(
         &mut session("é".repeat(21)),
-        "reinit_password exceeds 20 characters",
+        "reinit_password exceeds the 20-character limit",
     )
     .await;
     let mut fits = session("é".repeat(20));

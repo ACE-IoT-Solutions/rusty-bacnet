@@ -152,7 +152,7 @@ impl super::ServerConfig {
         ] {
             if password.as_deref().is_some_and(|p| !password_fits(p)) {
                 return Err(Error::Encoding(format!(
-                    "{name} exceeds {MAX_PASSWORD_CHARS} characters, so no request could match it"
+                    "{name} exceeds the {MAX_PASSWORD_CHARS}-character limit"
                 )));
             }
         }

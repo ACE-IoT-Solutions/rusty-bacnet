@@ -392,7 +392,7 @@ async fn configured_password_over_twenty_characters_rejected_before_start() {
             .err()
             .unwrap();
         assert!(
-            matches!(&error, Error::Encoding(m) if m == &format!("{name} exceeds 20 characters, so no request could match it")),
+            matches!(&error, Error::Encoding(m) if m == &format!("{name} exceeds the 20-character limit")),
             "{error:?}"
         );
         assert!(!started.load(Ordering::Acquire));

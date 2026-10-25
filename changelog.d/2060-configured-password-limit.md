@@ -1,6 +1,7 @@
 ---
 section: Changed
 ---
-- **Breaking (Rust API):** A server or endpoint, Python's included, refuses
-  to start with a configured DCC or ReinitializeDevice password over 20
-  characters, which no request could ever match (#2060).
+- **Breaking (Rust API, Python API):** A server or endpoint refuses a
+  configured DCC or ReinitializeDevice password over 20 characters, which no
+  request could carry: at start in Rust, with ValueError at construction in
+  Python (#2060).

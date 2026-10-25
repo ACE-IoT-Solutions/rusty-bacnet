@@ -118,6 +118,16 @@ class ConstructorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "after_reinitialize needs on_reinitialize"):
             BipEndpoint(4101, after_reinitialize=lambda request: None)
 
+    def test_password_over_twenty_characters_is_refused(self):
+        # The limit counts characters, not octets (#2060).
+        handler = lambda request: None
+        with self.assertRaisesRegex(ValueError, "reinit_password exceeds the 20-character limit"):
+            server(on_reinitialize=handler, reinit_password="é" * 21)
+        with self.assertRaisesRegex(ValueError, "reinit_password exceeds the 20-character limit"):
+            BipEndpoint(4101, on_reinitialize=handler, reinit_password="é" * 21)
+        server(on_reinitialize=handler, reinit_password="é" * 20)
+        BipEndpoint(4101, on_reinitialize=handler, reinit_password="é" * 20)
+
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

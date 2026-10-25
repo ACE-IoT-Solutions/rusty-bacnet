@@ -136,7 +136,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .is_some_and(|password| !bacnet_services::device_mgmt::password_fits(password))
         {
             return Err(Error::Encoding(format!(
-                "reinit_password exceeds {} characters, so no request could match it",
+                "reinit_password exceeds the {}-character limit",
                 bacnet_services::device_mgmt::MAX_PASSWORD_CHARS
             )));
         }
