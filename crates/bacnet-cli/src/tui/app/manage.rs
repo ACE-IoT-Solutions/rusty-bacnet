@@ -8,6 +8,8 @@
 //! [`Secret`] and shown only as a mask; Esc drops it with the prompt, and
 //! a declined confirmation drops it before anything is recorded.
 
+use std::time::Instant;
+
 use super::safety::{ARM_HINT, Modal, ModalKey, modal};
 use super::watch::Screen;
 use super::{App, FLASH_FOR};
@@ -77,6 +79,7 @@ impl App {
         self.overlay = modal(Modal::Password {
             request,
             typed: Secret::default(),
+            opened: self.now,
         });
     }
 
@@ -88,6 +91,7 @@ impl App {
         key: ModalKey,
         mut request: Box<Request>,
         mut typed: Secret,
+        opened: Instant,
     ) -> Option<Modal> {
         match key {
             // What was typed goes with the prompt.
@@ -113,6 +117,10 @@ impl App {
             }
             _ => {}
         }
-        Some(Modal::Password { request, typed })
+        Some(Modal::Password {
+            request,
+            typed,
+            opened,
+        })
     }
 }

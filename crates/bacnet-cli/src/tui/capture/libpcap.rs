@@ -144,6 +144,7 @@ fn read(
             via,
             bytes: Bytes::copy_from_slice(payload),
             summary,
+            redacted: false,
         };
         match tx.try_send(Ok(frame)) {
             Ok(()) => {}

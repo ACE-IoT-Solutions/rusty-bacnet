@@ -24,6 +24,32 @@ pub(crate) const MAX_PASSWORD: usize = 20;
 pub(crate) const NEEDS_DANGEROUS: &str = "device management (dcc, reinit) needs a profile with \
      dangerous = true in its [safety] table";
 
+/// A disable's length when none is typed, in minutes (decided on #1799).
+pub(crate) const DEFAULT_DCC_MINUTES: u16 = 15;
+
+/// How long a DeviceCommunicationControl lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DccTime {
+    /// None typed: [`DEFAULT_DCC_MINUTES`].
+    Default,
+    /// The minutes typed, 1 to 65535.
+    Minutes(u16),
+    /// `forever`, or an `enable`: no time duration is sent, so a disable
+    /// lasts until enabled again or a restart.
+    Forever,
+}
+
+impl DccTime {
+    /// The duration sent, in minutes; `None` sends none.
+    pub(crate) fn minutes(self) -> Option<u16> {
+        match self {
+            Self::Default => Some(DEFAULT_DCC_MINUTES),
+            Self::Minutes(minutes) => Some(minutes),
+            Self::Forever => None,
+        }
+    }
+}
+
 /// What to ask the device to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Action {
@@ -31,8 +57,8 @@ pub(crate) enum Action {
     Dcc {
         /// Enable, disable, or disable initiation.
         state: EnableDisable,
-        /// How long, in minutes; `None` is until told otherwise.
-        minutes: Option<u16>,
+        /// How long.
+        time: DccTime,
     },
     /// ReinitializeDevice.
     Reinit {
@@ -78,15 +104,28 @@ impl Action {
         }
     }
 
-    /// `disable for 30 min`, `coldstart`.
+    /// `disable for 30 min`, `disable for 15 min (default)`, `disable,
+    /// no time limit`, `enable`, `coldstart`.
     pub(crate) fn describe(self) -> String {
+        let state = self.state();
         match self {
             Self::Dcc {
-                minutes: Some(minutes),
+                state: EnableDisable::ENABLE,
                 ..
-            } => format!("{} for {minutes} min", self.state()),
-            Self::Dcc { minutes: None, .. } => format!("{} until told otherwise", self.state()),
-            Self::Reinit { .. } => self.state(),
+            }
+            | Self::Reinit { .. } => state,
+            Self::Dcc {
+                time: DccTime::Default,
+                ..
+            } => format!("{state} for {DEFAULT_DCC_MINUTES} min (default)"),
+            Self::Dcc {
+                time: DccTime::Minutes(minutes),
+                ..
+            } => format!("{state} for {minutes} min"),
+            Self::Dcc {
+                time: DccTime::Forever,
+                ..
+            } => format!("{state}, no time limit"),
         }
     }
 }
@@ -123,8 +162,11 @@ impl Request {
     pub(crate) fn audit_json(&self) -> Value {
         let mut params = Map::new();
         params.insert("state".into(), json!(self.action.state()));
-        if let Action::Dcc { minutes, .. } = self.action {
-            params.insert("minutes".into(), json!(minutes));
+        if let Action::Dcc { time, .. } = self.action {
+            params.insert("minutes".into(), json!(time.minutes()));
+            if time == DccTime::Default {
+                params.insert("default_duration".into(), json!(true));
+            }
         }
         if let Some(password) = &self.password {
             params.insert("password".into(), json!(password));
@@ -154,7 +196,7 @@ mod tests {
             device: 100,
             action: Action::Dcc {
                 state: EnableDisable::DISABLE_INITIATION,
-                minutes: Some(30),
+                time: DccTime::Minutes(30),
             },
             password: Some(Secret::new("hunter2-unit")),
         };
@@ -173,6 +215,18 @@ mod tests {
             reinit.label(),
             "ReinitializeDevice to device 7: activate-changes"
         );
+        let dcc = |state, time| Action::Dcc { state, time }.describe();
+        assert_eq!(
+            dcc(EnableDisable::DISABLE, DccTime::Default),
+            "disable for 15 min (default)"
+        );
+        assert_eq!(
+            dcc(EnableDisable::DISABLE, DccTime::Forever),
+            "disable, no time limit"
+        );
+        assert_eq!(dcc(EnableDisable::ENABLE, DccTime::Forever), "enable");
+        assert_eq!(DccTime::Default.minutes(), Some(DEFAULT_DCC_MINUTES));
+        assert_eq!(DccTime::Forever.minutes(), None);
         // A state without a name shows its number.
         let odd = Action::Reinit {
             state: ReinitializedState::from_raw(99),
@@ -187,7 +241,7 @@ mod tests {
             device: 100,
             action: Action::Dcc {
                 state: EnableDisable::DISABLE,
-                minutes: None,
+                time: DccTime::Forever,
             },
             password: Some(Secret::new("hunter2-unit")),
         };

@@ -23,16 +23,16 @@ use crate::tui::safety::manage::{Action, NEEDS_DANGEROUS, Request};
 use crate::tui::safety::{Outcome, SafetyCommand, SafetyEvent};
 
 /// The device's password, distinctive enough to grep for.
-const PASSWORD: &str = "Zq7-hunter2-Xv9";
+pub(super) const PASSWORD: &str = "Zq7-hunter2-Xv9";
 
-const DANGEROUS: Safety = Safety {
+pub(super) const DANGEROUS: Safety = Safety {
     writes: Writes::Session,
     dangerous: true,
 };
 
 /// The lab device, accepting `PASSWORD`, with a profile workspace in
 /// `dir` and the device open in the browser.
-async fn site(dir: &Path, policy: Safety) -> Site {
+pub(super) async fn site(dir: &Path, policy: Safety) -> Site {
     let server = Server {
         password: Some(PASSWORD),
         ..Server::lab(100, LAB)
@@ -66,7 +66,7 @@ async fn confirm(site: &mut Site) {
     finished(site).await;
 }
 
-fn bodies(site: &Site, service: ConfirmedServiceChoice) -> Vec<Vec<u8>> {
+pub(super) fn bodies(site: &Site, service: ConfirmedServiceChoice) -> Vec<Vec<u8>> {
     site.hub.bodies_to(&LAB_MAC, service)
 }
 
@@ -204,7 +204,9 @@ fn files(dir: &Path) -> Vec<std::path::PathBuf> {
 /// The password goes on the wire and nowhere else: not the audit log, the
 /// ledger, the workspace's other files, the log (every level, to a file in
 /// the workspace), any frame drawn, nor this test's snapshots. The masked
-/// prompt and the T3 confirmation are snapshot at 80x24.
+/// prompt and the T3 confirmation are snapshot at 80x24. The capture, which
+/// this hub's ports can't feed, is checked over real B/IP in
+/// `device_mgmt_capture`.
 #[tokio::test(start_paused = true)]
 async fn the_password_reaches_no_file_frame_or_log() {
     let dir = tempfile::tempdir().unwrap();
@@ -267,7 +269,8 @@ async fn the_password_reaches_no_file_frame_or_log() {
     let snapshots = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui/tests/snapshots");
     for name in ["dcc_password_prompt_80x24", "dcc_confirm_t3_80x24"] {
         let path = snapshots.join(format!("bacnet__tui__tests__device_mgmt__{name}.snap"));
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert!(!text.contains(PASSWORD), "{}", path.display());
     }
 }

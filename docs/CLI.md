@@ -498,7 +498,7 @@ table is refreshed from the client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc ACTION [MINUTES]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -884,11 +884,13 @@ The result shows
 each write's outcome; a device whose write policy refuses it
 (SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors.
 
-**Device management.** `:dcc enable|disable|disable-initiation [MINUTES]`
-(also `:control`) sends DeviceCommunicationControl, and `:reinit STATE`
-sends ReinitializeDevice, with the one-shot `control` and `reinit` names for
-the action and state. Without MINUTES (1 to 65535) a DCC lasts until enabled
-again or a restart. Both go to the device open on the Browse screen, or the
+**Device management.** `:dcc enable`, `:dcc disable-initiation|disable
+[MINUTES|forever]` (also `:control`) send DeviceCommunicationControl, and
+`:reinit STATE` sends ReinitializeDevice, with the one-shot `control` and
+`reinit` names for the action and state. A disable without MINUTES (1 to
+65535) lasts 15 minutes; `forever` sends no duration, so it lasts until
+enabled again or a restart; `enable` takes no duration. The one-shot
+`control` is unchanged. Both go to the device open on the Browse screen, or the
 selected row on the Devices screen; anywhere else, or with nothing
 selected, they are refused and say so. They need an armed write session on
 a profile with `dangerous = true`; without it, and in a passive or
@@ -903,7 +905,10 @@ the device's acknowledgement or error. Neither request is kept in the
 ledger, because revert can't undo it. The audit record (event `dcc` or
 `reinit`) names the service, the device, the state, the duration, the tier
 and the outcome, with a `password` field written as `[redacted]` when one was
-sent; the password reaches only the request on the wire.
+sent; the password reaches only the request on the wire. The capture masks
+it with `*` (same length) in any frame this node sent or heard on the wire
+before the frame enters the ring, marks the frame "password redacted", and
+exports it masked.
 
 **Ledger.** Every change still in effect is kept with its pre-image in
 `ledger.json`, saved before each request goes out and after each answer, so it

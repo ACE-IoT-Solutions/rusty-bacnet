@@ -189,6 +189,9 @@ pub(crate) enum Modal {
         request: Box<Request>,
         /// What has been typed, shown only as a mask.
         typed: Secret,
+        /// When it opened: like a preview, it closes after
+        /// [`PREVIEW_LIFETIME`], and what was typed goes with it.
+        opened: Instant,
     },
     /// A change to confirm at its tier.
     Confirm {
@@ -360,9 +363,20 @@ impl App {
         });
     }
 
-    /// Once a second: decline a preview left too long, disarm at expiry,
+    /// Once a second: decline a preview left too long, close a password
+    /// prompt left too long (dropping what was typed), disarm at expiry,
     /// and redraw the countdown.
     pub(super) fn safety_tick(&mut self, out: &mut Vec<Command>) {
+        let prompt = matches!(&self.overlay, Overlay::Safety(m)
+            if matches!(**m, Modal::Password { opened, .. }
+                if self.now.saturating_duration_since(opened) >= PREVIEW_LIFETIME));
+        if prompt {
+            self.overlay = Overlay::None;
+            self.flash(
+                "The password prompt expired: nothing was sent, and the password was cleared.",
+                FLASH_FOR,
+            );
+        }
         let stale = matches!(&self.overlay, Overlay::Safety(m)
             if matches!(**m, Modal::Confirm { opened, .. }
                 if self.now.saturating_duration_since(opened) >= PREVIEW_LIFETIME));
@@ -443,7 +457,11 @@ impl App {
                     form,
                 }),
             },
-            Modal::Password { request, typed } => self.password_key(key, request, typed),
+            Modal::Password {
+                request,
+                typed,
+                opened,
+            } => self.password_key(key, request, typed, opened),
             Modal::Confirm {
                 req,
                 change,

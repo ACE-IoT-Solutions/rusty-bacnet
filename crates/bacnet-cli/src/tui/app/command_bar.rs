@@ -36,7 +36,7 @@ mod words;
 
 use std::time::Duration;
 
-use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::enums::{EnableDisable, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use self::words::Word;
@@ -48,7 +48,7 @@ use crate::core::target::{Target, parse_target};
 use crate::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
 use crate::tui::message::Command;
 use crate::tui::safety::WriteSpec;
-use crate::tui::safety::manage::Action;
+use crate::tui::safety::manage::{Action, DccTime};
 use crate::tui::watched::{Point, WatchCommand};
 
 /// One command: its name, a short alias, its forms and what it does. The
@@ -123,7 +123,11 @@ pub(crate) const COMMANDS: &[Syntax] = &[
     Syntax {
         name: "dcc",
         alias: Some("control"),
-        usage: &["dcc enable|disable|disable-initiation [MINUTES]"],
+        usage: &[
+            "dcc enable",
+            "dcc disable-initiation|disable [MINUTES]",
+            "dcc disable-initiation|disable forever",
+        ],
         what: "DeviceCommunicationControl, selected device (T3)",
     },
     Syntax {
@@ -190,12 +194,29 @@ pub(crate) enum Line {
     Manage(Action),
 }
 
-/// `dcc`'s optional duration: whole minutes, 1 to 65535.
-fn dcc_minutes(word: &str) -> Result<u16, String> {
-    word.parse::<u16>()
-        .ok()
-        .filter(|minutes| *minutes > 0)
-        .ok_or_else(|| format!("'{word}': dcc takes a duration of 1 to 65535 whole minutes"))
+/// `dcc ACTION [MINUTES|forever]`. A disable without a duration lasts
+/// [`DEFAULT_DCC_MINUTES`](crate::tui::safety::manage::DEFAULT_DCC_MINUTES);
+/// `forever` sends none. `enable` takes none,
+/// since the device ignores one.
+fn dcc(action: &str, duration: Option<&str>) -> Result<Action, String> {
+    let state = parse_enable_disable(action)?;
+    let time = match duration {
+        _ if state == EnableDisable::ENABLE => match duration {
+            None => DccTime::Forever,
+            Some(_) => return Err("usage: dcc enable (it takes no duration)".into()),
+        },
+        None => DccTime::Default,
+        Some("forever") => DccTime::Forever,
+        Some(word) => DccTime::Minutes(
+            word.parse::<u16>()
+                .ok()
+                .filter(|minutes| *minutes > 0)
+                .ok_or_else(|| {
+                    format!("'{word}': dcc takes 1 to 65535 whole minutes, or forever")
+                })?,
+        ),
+    };
+    Ok(Action::Dcc { state, time })
 }
 
 /// `mstp rotation|hold MS` or `mstp listen SECS`, each at least 1.
@@ -384,10 +405,9 @@ pub(crate) fn parse(text: &str, devices: &DeviceTable) -> Result<Line, String> {
             Ok(Line::Scan(Some(Duration::from_secs(seconds))))
         }
         ("mstp", [which, value]) => Ok(Line::Mstp(mstp_setting(which, value)?)),
-        ("dcc", [action, rest @ ..]) if rest.len() <= 1 => Ok(Line::Manage(Action::Dcc {
-            state: parse_enable_disable(action)?,
-            minutes: rest.first().map(|word| dcc_minutes(word)).transpose()?,
-        })),
+        ("dcc", [action, rest @ ..]) if rest.len() <= 1 => {
+            Ok(Line::Manage(dcc(action, rest.first().copied())?))
+        }
         ("reinit", [state]) => Ok(Line::Manage(Action::Reinit {
             state: parse_reinit_state(state)?,
         })),
@@ -693,42 +713,6 @@ mod tests {
             "mstp scan cancel now",
         ] {
             assert!(parse(text).is_err(), "{text}");
-        }
-    }
-
-    /// `dcc` and `reinit` take the one-shot command's names, and `dcc` an
-    /// optional duration in whole minutes (#1799).
-    #[test]
-    fn dcc_and_reinit_take_the_one_shot_names() {
-        use bacnet_types::enums::{EnableDisable, ReinitializedState};
-        let dcc = |state, minutes| Ok(Line::Manage(Action::Dcc { state, minutes }));
-        assert_eq!(parse("dcc enable"), dcc(EnableDisable::ENABLE, None));
-        assert_eq!(
-            parse("control DISABLE_INITIATION 30"),
-            dcc(EnableDisable::DISABLE_INITIATION, Some(30))
-        );
-        assert_eq!(
-            parse("dcc disable 65535"),
-            dcc(EnableDisable::DISABLE, Some(65535))
-        );
-        assert_eq!(
-            parse("reinit start-backup"),
-            Ok(Line::Manage(Action::Reinit {
-                state: ReinitializedState::START_BACKUP
-            }))
-        );
-        for bad in ["dcc disable 0", "dcc disable 65536", "dcc disable 1.5"] {
-            let error = parse(bad).unwrap_err();
-            assert!(error.contains("1 to 65535 whole minutes"), "{bad}: {error}");
-        }
-        assert!(parse("dcc pause").unwrap_err().contains("unknown action"));
-        assert!(
-            parse("reinit reboot")
-                .unwrap_err()
-                .contains("unknown state")
-        );
-        for wrong in ["dcc", "dcc enable 5 more", "reinit", "reinit coldstart now"] {
-            assert!(parse(wrong).unwrap_err().starts_with("usage: "), "{wrong}");
         }
     }
 

@@ -14,7 +14,7 @@ use crate::tui::app::safety::{Form, Modal};
 use crate::tui::app::{App, Link};
 use crate::tui::safety::audit::Secret;
 use crate::tui::safety::ledger::{Entry, State};
-use crate::tui::safety::manage::{Action, MAX_PASSWORD, Request};
+use crate::tui::safety::manage::{Action, DccTime, MAX_PASSWORD, Request};
 use crate::tui::safety::{Change, Effect, Gate, Occupancy, Outcome, Planned, Tier};
 
 /// Draw `modal` over the screen.
@@ -38,7 +38,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, them
                 Line::styled("Esc closes this view.", theme.dim()),
             ],
         ),
-        Modal::Password { request, typed } => (
+        Modal::Password { request, typed, .. } => (
             format!(" {}: device {} ", request.action.service(), request.device),
             password(request, typed, theme),
         ),
@@ -235,16 +235,16 @@ fn request_lines(request: &Request, theme: &Theme) -> Vec<Line<'static>> {
         Line::raw(format!("  password: {password}")),
         Line::styled(format!("  ! {warning}"), theme.warn()),
     ];
-    if let Action::Dcc { state, minutes } = request.action {
+    if let Action::Dcc { state, time } = request.action {
         if state == EnableDisable::DISABLE {
             lines.push(Line::styled(
                 "  ! disable is deprecated (Clause 16.1); current devices refuse it.",
                 theme.warn(),
             ));
         }
-        if minutes.is_none() && state != EnableDisable::ENABLE {
+        if time == DccTime::Forever && state != EnableDisable::ENABLE {
             lines.push(Line::styled(
-                "  ! No duration: it lasts until a dcc enable or a restart.",
+                "  ! No time limit: it lasts until a dcc enable or a restart.",
                 theme.warn(),
             ));
         }

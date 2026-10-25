@@ -7,10 +7,11 @@ use ratatui::crossterm::event::KeyCode;
 
 use super::*;
 use crate::tui::app::Overlay;
+use crate::tui::app::command_bar::Line;
 use crate::tui::app::monitor::MonitorState;
 use crate::tui::app::safety::{ARM_HINT, CONFIRM_GUARD, Modal};
 use crate::tui::profile::{Safety, Writes};
-use crate::tui::safety::manage::{Action, MAX_PASSWORD};
+use crate::tui::safety::manage::{Action, DccTime, MAX_PASSWORD};
 use crate::tui::safety::{Change, SafetyCommand, SafetyEvent};
 
 const DANGEROUS: Safety = Safety {
@@ -106,7 +107,7 @@ fn each_refusal_names_its_reason() {
 fn the_prompt_masks_edits_and_esc_clears() {
     let mut app = app_with(DANGEROUS, true);
     assert!(command(&mut app, "dcc disable-initiation 30").is_empty());
-    let Some(Modal::Password { request, typed }) = modal(&app) else {
+    let Some(Modal::Password { request, typed, .. }) = modal(&app) else {
         panic!("expected the password prompt: {}", flash(&app));
     };
     assert_eq!(request.device, 100);
@@ -114,7 +115,7 @@ fn the_prompt_masks_edits_and_esc_clears() {
         request.action,
         Action::Dcc {
             state: EnableDisable::DISABLE_INITIATION,
-            minutes: Some(30)
+            time: DccTime::Minutes(30)
         }
     );
     assert!(typed.is_empty());
@@ -200,4 +201,58 @@ fn a_blank_password_sends_none_and_a_decline_drops_it() {
         Some("s3cret")
     );
     assert!(matches!(modal(&app), Some(Modal::Waiting { .. })));
+}
+
+/// `dcc` and `reinit` take the one-shot command's names, and `dcc` a
+/// duration in whole minutes, 15 by default, or `forever` (#1799).
+#[test]
+fn dcc_and_reinit_take_the_one_shot_names() {
+    let parse = |line: &str| crate::tui::app::command_bar::parse(line, &Default::default());
+    let dcc = |state, time| Ok(Line::Manage(Action::Dcc { state, time }));
+    assert_eq!(
+        parse("dcc enable"),
+        dcc(EnableDisable::ENABLE, DccTime::Forever)
+    );
+    assert_eq!(
+        parse("control DISABLE_INITIATION 30"),
+        dcc(EnableDisable::DISABLE_INITIATION, DccTime::Minutes(30))
+    );
+    assert_eq!(
+        parse("dcc disable 65535"),
+        dcc(EnableDisable::DISABLE, DccTime::Minutes(65535))
+    );
+    assert_eq!(
+        parse("dcc disable-initiation"),
+        dcc(EnableDisable::DISABLE_INITIATION, DccTime::Default)
+    );
+    assert_eq!(
+        parse("dcc disable forever"),
+        dcc(EnableDisable::DISABLE, DccTime::Forever)
+    );
+    for with in ["dcc enable 30", "dcc enable forever"] {
+        let error = parse(with).unwrap_err();
+        assert!(error.contains("takes no duration"), "{with}: {error}");
+    }
+    assert_eq!(
+        parse("reinit start-backup"),
+        Ok(Line::Manage(Action::Reinit {
+            state: ReinitializedState::START_BACKUP
+        }))
+    );
+    for bad in ["dcc disable 0", "dcc disable 65536", "dcc disable 1.5"] {
+        let error = parse(bad).unwrap_err();
+        assert!(
+            error.contains("1 to 65535 whole minutes, or forever"),
+            "{bad}: {error}"
+        );
+    }
+    assert!(parse("dcc pause").unwrap_err().contains("unknown action"));
+    assert!(
+        parse("reinit reboot")
+            .unwrap_err()
+            .contains("unknown state")
+    );
+    for wrong in ["dcc", "dcc enable 5 more", "reinit", "reinit coldstart now"] {
+        assert!(parse(wrong).unwrap_err().starts_with("usage: "), "{wrong}");
+    }
 }

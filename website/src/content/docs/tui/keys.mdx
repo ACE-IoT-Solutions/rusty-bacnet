@@ -262,9 +262,11 @@ profile with `dangerous = true`.
 
 | Command | What it does |
 |---|---|
-| `dcc enable [MINUTES]` | DeviceCommunicationControl: let the device communicate again. `control` is the same command |
-| `dcc disable-initiation [MINUTES]` | Stop the device starting conversations, for MINUTES (1 to 65535) or until enabled again |
+| `dcc enable` | DeviceCommunicationControl: let the device communicate again. `control` is the same command |
+| `dcc disable-initiation [MINUTES]` | Stop the device starting conversations for MINUTES (1 to 65535), 15 by default |
 | `dcc disable [MINUTES]` | The deprecated full disable, which current devices refuse; the confirmation warns |
+| `dcc disable-initiation forever` | The same with no time limit: it lasts until a `dcc enable` or a restart |
+| `dcc disable forever` | The deprecated full disable with no time limit |
 | `reinit coldstart` | ReinitializeDevice: a cold start |
 | `reinit warmstart` | ReinitializeDevice: a warm start |
 | `reinit STATE` | The other states: `start-backup`, `end-backup`, `start-restore`, `end-restore`, `abort-restore` or `activate-changes` |

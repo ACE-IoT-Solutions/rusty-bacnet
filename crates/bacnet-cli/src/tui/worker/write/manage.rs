@@ -73,9 +73,9 @@ async fn send<T: TransportPort + 'static>(
     let turn = rate.turn(device).await;
     let password = request.password.as_ref().map(|p| p.expose().to_owned());
     let result = match request.action {
-        Action::Dcc { state, minutes } => {
+        Action::Dcc { state, time } => {
             client
-                .device_communication_control_from_device(device, state, minutes, password)
+                .device_communication_control_from_device(device, state, time.minutes(), password)
                 .await
         }
         Action::Reinit { state } => {

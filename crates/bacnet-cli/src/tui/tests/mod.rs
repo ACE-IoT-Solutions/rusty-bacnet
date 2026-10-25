@@ -60,6 +60,8 @@ mod connections;
 mod crash;
 mod device_mgmt;
 mod device_mgmt_app;
+mod device_mgmt_capture;
+mod device_mgmt_worker;
 mod devices_layout;
 mod discovery;
 mod event_loop;
