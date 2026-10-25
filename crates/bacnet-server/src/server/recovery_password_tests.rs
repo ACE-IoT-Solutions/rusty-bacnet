@@ -120,9 +120,12 @@ async fn recovery_accepts_a_twenty_character_multi_octet_password() {
     dispatch(&server, enable(1, Some(&too_long)), source(1), None).await;
     observed(&mut started).await;
     assert_eq!(server.comm_state.get(), DccState::DisableInitiation);
-    assert!(!matches!(
+    // Valid encoding, size out of the service's range: a Reject, as
+    // ReinitializeDevice answers (#2085).
+    assert!(matches!(
         held_sends(&server).frames.lock().unwrap().last(),
-        Some(Apdu::SimpleAck(_))
+        Some(Apdu::Reject(r)) if r.invoke_id == 1
+            && r.reject_reason == bacnet_types::enums::RejectReason::PARAMETER_OUT_OF_RANGE
     ));
     dispatch(&server, enable(2, Some(&password)), source(2), None).await;
     observed(&mut started).await;
