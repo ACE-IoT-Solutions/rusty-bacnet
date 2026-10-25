@@ -12,11 +12,11 @@ import policyManifest from '../../../../examples/rust/sc-operator-policy/Cargo.t
 
 A `BACnetServer` answers every peer that reaches it. Unless you configure it otherwise, any peer on any data link may write properties, create and delete objects, and subscribe. BACnet/SC mutual TLS doesn't change that: it authenticates a connection, not a service. This page shows where to decide who may change your device, which identity each decision can rely on, and what Python exposes.
 
-The page describes **v{release}**. Two additions merged on `dev` after the release, DeviceCommunicationControl decisions and rules on certificate names, have [their own section](#on-dev-after-the-release) with an example program.
+The page describes **v{release}**. Two additions merged on `dev` after the release have [their own section](#on-dev-after-the-release), with an example program: DeviceCommunicationControl decisions, and rules on certificate names.
 
 ## One policy makes the server's decisions
 
-Install one `ServerPolicy` with `policy(..)` on a server builder, or in `ServerConfig::policy`. Each method answers one question and has a default, so a policy overrides only what it decides:
+Install one `ServerPolicy` with `policy(..)` on a server builder, or in `ServerConfig::policy`. Each method answers one question and has a default, so a policy overrides only what it decides. A *covered mutation* is any request in the table's first two rows: one that changes the object database or adds a subscription.
 
 | Request | Method | Without a policy | When the policy denies |
 |---|---|---|---|
@@ -31,7 +31,7 @@ Returning `false` denies, and so does a panic: the server catches it and treats 
 Some decisions are settings rather than policy methods:
 
 - `MutationPolicy::DenyAll` refuses every covered mutation without asking the policy.
-- DeviceCommunicationControl has a password, a static `DccPolicy` that denies every request by default, an exact source restriction and a disable rate limit. In v{release} the policy doesn't decide it.
+- DeviceCommunicationControl has a password, a static `DccPolicy` that denies every request by default, a restriction to listed source addresses and a disable rate limit. In v{release} the policy doesn't decide it.
 - ReinitializeDevice runs only when you install an `on_reinitialize` handler, optionally behind a password. The policy doesn't cover it; the handler's `ReinitializeContext` has the same `principal()` for its own checks.
 - TimeSynchronization is limited by `TimeSyncPolicy`.
 - Routing control belongs to the router's `ControlAuthorizer`, not to the server.
@@ -43,7 +43,7 @@ Some decisions are settings rather than policy methods:
 
 ## Know who sent the request
 
-Every policy context carries the claimed source addresses, the ingress `TransportProvenance`, and two principals derived from them:
+Every policy context carries the source addresses the request claims, its `TransportProvenance` (how it arrived: unverified, over a hub, or over a verified direct BACnet/SC connection), and two principals derived from them:
 
 - `principal()` is the fingerprint (`ScPrincipal`) of the verified leaf certificate, when the request came over a verified direct BACnet/SC connection from the device that originated it, and `None` otherwise.
 - `forwarding_peer_principal()` is the fingerprint of the direct BACnet/SC peer that handed the request over, a router included.
@@ -51,7 +51,7 @@ Every policy context carries the claimed source addresses, the ingress `Transpor
 Two kinds of request have no `principal()`:
 
 - **Hub-relayed requests.** The hub authenticated its own TLS client. The originating node's certificate never reaches your device, so a policy can't tell one hub member from another.
-- **Routed requests**, even over a direct connection. A request with a routed source (SNET/SADR) came from a device behind a router, and the connection authenticates only the router. `forwarding_peer_principal()` returns the router's principal, for a policy that trusts that router with everything it forwards.
+- **Routed requests**, even over a direct connection. A request with a routed source (SNET/SADR: the network number and address of a device on another network) came from a device behind a router, and the connection authenticates only the router. `forwarding_peer_principal()` returns the router's principal, for a policy that trusts that router with everything it forwards.
 
 B/IP, B/IPv6, MS/TP and Ethernet requests carry no principal at all. A source MAC, VMAC, device UUID or SNET/SADR is a claim the peer makes, never an identity. A gateway that re-originates requests shows its own principal, so trust a principal as far as everything its holder may relay.
 
@@ -71,7 +71,7 @@ Python's `BACnetServer` takes static settings only:
 - `mutation_policy="permissive"`, the default, or `"deny_all"`, which denies the covered mutations through the same gate as Rust's `MutationPolicy::DenyAll`.
 - `dcc_policy`, `dcc_password` and `dcc_source_restriction` for DeviceCommunicationControl, and `time_sync_policy` for clock changes.
 
-Python has no policy callback, and no access to a principal or a certificate. It has no direct BACnet/SC listener either, so a principal would always be absent there. A Python callback that sees the request context is tracked in issue #1966, and certificate names for Python in issue #2022; neither has a release date.
+Python has no policy callback, and no access to the requesting peer's principal or certificate. It has no direct BACnet/SC listener either, so a principal would always be absent there. A Python callback that sees the request context is tracked in issue #1966, and certificate names for Python in issue #2022; neither has a release date.
 
 ## Read the contracts
 
@@ -86,7 +86,7 @@ These additions were merged on `dev` after v{release}. Until docs.rs builds a re
 
 ### DeviceCommunicationControl decisions
 
-`ServerPolicy::authorize_device_communication_control`, or `FnPolicy::device_communication_control`, decides DCC requests (#1964). The static checks run first: the password, the refusal of the deprecated DISABLE, `DccPolicy` and the source restriction. A request any of them refuses never reaches the policy, so under the default `DccPolicy::DenyAll` the policy is never asked. The policy is asked before the disable rate limit is charged, so a denied requester spends none of that shared budget. A denial is answered SERVICES / SERVICE_REQUEST_DENIED, changes neither the state nor a running timer, and is counted in `dcc_outcome_counters` as `policy_denied_total`. Without a policy, the method's default allows.
+`ServerPolicy::authorize_device_communication_control`, or `FnPolicy::device_communication_control`, decides DCC requests (#1964). The static checks run first: the password, the refusal of the deprecated DISABLE, `DccPolicy` and the source restriction. A request any of them refuses never reaches the policy, so under the default `DccPolicy::DenyAll` the policy is never asked. The policy is asked before the disable rate limit is charged, so a denied requester spends none of that shared budget. A denial is answered SERVICES / SERVICE_REQUEST_DENIED, changes neither the state nor a running timer, and is counted in `dcc_outcome_counters` as `policy_denied_total`, which also counts the static refusals by `DccPolicy::DenyAll`, the source restriction and the rate limit. Without a policy, the method's default allows.
 
 ### Rules that survive certificate renewal
 
@@ -110,7 +110,7 @@ Only a server with a direct BACnet/SC listener sees certificates. On a server th
 
 #### Save the program and manifest
 
-Put [Cargo.toml](/rusty-bacnet/examples/rust/sc-operator-policy/Cargo.toml) in a new directory and [main.rs](/rusty-bacnet/examples/rust/sc-operator-policy/src/main.rs) in its `src` subdirectory. The manifest builds against the `dev` branch, whose minimum Rust version is **1.95**, because v{release} doesn't have the certificate accessors. A release that includes them will be pinned here instead.
+Put [Cargo.toml](/rusty-bacnet/examples/rust/sc-operator-policy/Cargo.toml) in a new directory and [main.rs](/rusty-bacnet/examples/rust/sc-operator-policy/src/main.rs) in its `src` subdirectory. The manifest builds against the `dev` branch, whose minimum Rust version is **1.95**, because v{release} doesn't have the certificate accessors. A release that includes them will be pinned here instead. BACnet/SC's TLS library (aws-lc) needs CMake and a C toolchain to build.
 
 <Code code={policyManifest} lang="toml" title="Cargo.toml" />
 
@@ -128,7 +128,6 @@ A successful run prints:
 
 ```text
 DCC without a certificate: denied
-Policy installed: true
 ```
 
 Without a name, or without a password, it prints a usage message and exits unsuccessfully. CI compiles this exact file and runs it both ways in the `sc_operator_policy` integration tests. Those tests don't exercise the allow path. The server's own tests do, over real direct TLS: a renewed certificate with the same DNS name stays allowed.

@@ -34,8 +34,13 @@ test('security page shows the exact policy program and keeps dev additions apart
     'Next steps',
   ]) assert.ok(body.includes(`\n## ${heading}\n`), heading);
   // Release-scoped above the dev section; dev links only inside it.
-  const [released, onDev] = body.split('\n## On `dev` after the release\n');
-  assert.ok(onDev);
+  const [before, after] = body.split('\n## On `dev` after the release\n');
+  assert.ok(after);
+  // The dev section ends at the next H2; everything else is release-scoped.
+  const next = after.indexOf('\n## ');
+  assert.notEqual(next, -1, 'a section follows the dev one');
+  const onDev = after.slice(0, next);
+  const released = before + after.slice(next);
   assert.ok(!released.includes(`${repo}/blob/dev/`));
   for (const doc of ['mutation-policy', 'dcc-policy', 'time-sync-policy']) {
     assert.ok(released.includes(`${repo}/blob/v${release}/docs/${doc}.md`), doc);

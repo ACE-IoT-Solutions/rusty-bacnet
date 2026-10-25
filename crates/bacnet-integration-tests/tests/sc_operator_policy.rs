@@ -20,7 +20,7 @@ fn denies_a_request_without_a_certificate() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "DCC without a certificate: denied\nPolicy installed: true\n"
+        "DCC without a certificate: denied\n"
     );
 }
 
@@ -35,6 +35,10 @@ fn refuses_to_start_without_a_name_or_a_password() {
         let output = run(args, password);
         assert!(!output.status.success(), "{args:?} {password:?}");
         assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
+        assert_eq!(output.status.code(), Some(2), "{args:?} {password:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "usage: BACNET_DCC_PASSWORD=... sc-operator-policy <operator-dns-name>\n"
+        );
     }
 }

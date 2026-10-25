@@ -41,8 +41,15 @@ test('integration navigation resolves task guides with release-pinned source lin
     assert.ok(body.includes(`https://github.com/jscott3201/rusty-bacnet/blob/v${release}/docs/`), slug);
     // The security page keeps its post-release additions, and their dev
     // links, in one section after the release-scoped content.
-    const released = slug === 'integrate/security' ? body.split('\n## On `dev` after the release\n')[0] : body;
-    assert.ok(released !== body || slug !== 'integrate/security', slug);
+    // Everything outside that one section, later sections included.
+    let released = body;
+    if (slug === 'integrate/security') {
+      const [before, after] = body.split('\n## On `dev` after the release\n');
+      assert.ok(after !== undefined, slug);
+      const next = after.indexOf('\n## ');
+      assert.notEqual(next, -1, `${slug}: a section follows the dev one`);
+      released = before + after.slice(next);
+    }
     assert.ok(!released.includes('https://github.com/jscott3201/rusty-bacnet/blob/dev/'), slug);
     assert.ok(body.includes(slug === 'reference/transports' ? '## Which guide next?' : '## Next steps'), slug);
     assert.ok(!body.includes('cargo install bacnet-cli --version'), slug);

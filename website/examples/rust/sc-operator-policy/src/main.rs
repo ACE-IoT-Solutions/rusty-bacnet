@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 use std::io::{self, Write};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use bacnet_server::ServerPolicy;
@@ -55,17 +56,23 @@ impl ServerPolicy for OperatorOnly {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let password = std::env::var("BACNET_DCC_PASSWORD").unwrap_or_default();
     let (Some(operator), None, false) = (args.next(), args.next(), password.is_empty()) else {
-        return Err("usage: BACNET_DCC_PASSWORD=... sc-operator-policy <operator-dns-name>".into());
+        writeln!(
+            io::stderr(),
+            "usage: BACNET_DCC_PASSWORD=... sc-operator-policy <operator-dns-name>"
+        )?;
+        return Ok(ExitCode::from(2));
     };
     let policy = Arc::new(OperatorOnly { operator });
 
-    // The static DCC settings run before the policy. The default,
-    // DccPolicy::DenyAll, refuses every request without asking it.
-    let config = ServerConfig {
+    // Pass this configuration to BACnetServer::start with the SC transport
+    // that owns your direct listener; a hub-only server never sees a
+    // certificate. The static DCC settings run before the policy: the
+    // default, DccPolicy::DenyAll, refuses every request without asking it.
+    let _config = ServerConfig {
         policy: Some(policy.clone()),
         dcc_policy: DccPolicy::RequirePassword,
         dcc_password: Some(password),
@@ -86,13 +93,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("a request without a certificate was allowed".into());
     }
     writeln!(io::stdout(), "DCC without a certificate: denied")?;
-    writeln!(
-        io::stdout(),
-        "Policy installed: {}",
-        config.policy.is_some()
-    )?;
-
-    // Pass `config` to BACnetServer::start with the SC transport that owns
-    // your direct listener; a hub-only server never sees a certificate.
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }

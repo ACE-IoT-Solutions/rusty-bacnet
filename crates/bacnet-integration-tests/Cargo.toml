@@ -7,8 +7,8 @@ license.workspace = true
 publish = false
 
 [features]
-ipv6 = ["bacnet-transport/ipv6"]
-ethernet = ["bacnet-transport/ethernet"]
+ipv6 = ["bacnet-transport?/ipv6"]
+ethernet = ["bacnet-transport?/ethernet"]
 # Builds the website's BACnet/SC policy program (guide-sc-operator-policy).
 sc-tls = ["dep:bacnet-server", "dep:bacnet-transport", "bacnet-server/sc-tls", "bacnet-transport/sc-tls"]
 
