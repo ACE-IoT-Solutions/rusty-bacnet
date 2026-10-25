@@ -78,7 +78,7 @@ bacnet tui --profile plant-a --passive
 Each profile has a `[safety]` table:
 
 - `writes = "session"`, the default, lets `W` arm a write session. `writes = "never"` makes `W` say why and arm nothing.
-- `dangerous = true` allows a write at priority 6 inside an armed session. It needs `writes = "session"`.
+- `dangerous = true` allows a write at priority 6 inside an armed session. It needs `writes = "session"`. On the development branch it also allows [`:dcc` and `:reinit`](/rusty-bacnet/tui/writes/#development-dcc-and-reinitialize).
 
 [Write safely](/rusty-bacnet/tui/writes/) explains arming, the confirmation tiers and the ledger.
 

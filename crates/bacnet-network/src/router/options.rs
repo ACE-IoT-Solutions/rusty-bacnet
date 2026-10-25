@@ -340,7 +340,7 @@ pub struct StartedRouter<
 /// A local APDU receiver type [`BACnetRouter::start`] can return: the raw
 /// [`mpsc::Receiver`] or, after [`RouterOptions::track_admission`], an
 /// [`AdmissionReceiver`]. Sealed.
-pub trait LocalApduReceiver: sealed::Sealed<ReceivedApdu> {}
+pub trait LocalApduReceiver: sealed::Sealed<ReceivedApdu> + sealed::ApduQueue {}
 
 impl LocalApduReceiver for mpsc::Receiver<ReceivedApdu> {}
 impl LocalApduReceiver for AdmissionReceiver<ReceivedApdu> {}
@@ -380,6 +380,43 @@ pub(super) mod sealed {
 
         fn from_queue(rx: mpsc::Receiver<ReceivedApdu>, counters: QueueAdmissionCounters) -> Self {
             AdmissionReceiver::from_apdu_parts(rx, counters)
+        }
+    }
+
+    /// Either local APDU receiver, as one type, for the router's
+    /// [application port](crate::router::RouterApplicationPort).
+    pub enum ApduSource {
+        /// The raw queue.
+        Raw(mpsc::Receiver<ReceivedApdu>),
+        /// The tracked queue, whose accounting it keeps.
+        Tracked(AdmissionReceiver<ReceivedApdu>),
+    }
+
+    impl ApduSource {
+        /// The next APDU, or `None` once the queue is closed and drained.
+        pub(crate) async fn recv(&mut self) -> Option<ReceivedApdu> {
+            match self {
+                Self::Raw(rx) => rx.recv().await,
+                Self::Tracked(rx) => rx.recv().await,
+            }
+        }
+    }
+
+    /// How a local APDU receiver becomes an [`ApduSource`].
+    pub trait ApduQueue {
+        /// This receiver as an [`ApduSource`].
+        fn into_source(self) -> ApduSource;
+    }
+
+    impl ApduQueue for mpsc::Receiver<ReceivedApdu> {
+        fn into_source(self) -> ApduSource {
+            ApduSource::Raw(self)
+        }
+    }
+
+    impl ApduQueue for AdmissionReceiver<ReceivedApdu> {
+        fn into_source(self) -> ApduSource {
+            ApduSource::Tracked(self)
         }
     }
 

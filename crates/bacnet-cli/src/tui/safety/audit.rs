@@ -29,12 +29,47 @@ pub(crate) const FILE: &str = "audit.jsonl";
 /// What a redacted value is written as.
 pub(crate) const REDACTED: &str = "[redacted]";
 
-/// A password or other secret: never written or printed. The write
-/// services here carry none; DeviceCommunicationControl and
-/// ReinitializeDevice (later issues) will hold their passwords in one.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct Secret(pub(crate) String);
+/// A password or other secret: never written or printed. Debug output and
+/// serialisation both give [`REDACTED`]; only [`Secret::expose`] gives the
+/// text, for the request that carries it. DeviceCommunicationControl and
+/// ReinitializeDevice hold their passwords in one from the masked prompt
+/// to the request (#1799).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct Secret(String);
+
+impl Secret {
+    /// A secret holding `text`; the TUI builds its secrets a character at
+    /// a time, so only tests start from whole text.
+    #[cfg(test)]
+    pub(crate) fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// Add a typed character.
+    pub(crate) fn push(&mut self, ch: char) {
+        self.0.push(ch);
+    }
+
+    /// Erase the last character.
+    pub(crate) fn pop(&mut self) {
+        self.0.pop();
+    }
+
+    /// How many characters it holds: all a mask may show.
+    pub(crate) fn chars(&self) -> usize {
+        self.0.chars().count()
+    }
+
+    /// True when nothing is held.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The text itself, for the request that sends it and nothing else.
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -265,7 +300,7 @@ mod tests {
             },
         )
         .unwrap();
-        let secret = Secret("hunter2-test-password".into());
+        let secret = Secret::new("hunter2-test-password");
         let fields = json!({ "service": "DeviceCommunicationControl",
             "params": { "password": "hunter2-test-password", "secret": secret } });
         audit

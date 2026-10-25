@@ -81,6 +81,7 @@ fn mstp_frames() -> Vec<Arc<CaptureFrame>> {
         via: None,
         summary: summarize_frame(Framing::Mstp, &bytes),
         bytes: Bytes::from(bytes),
+        redacted: false,
     })
     .map(Arc::new)
     .collect()

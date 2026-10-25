@@ -6,6 +6,8 @@
 //! - [`ledger`]: every change still in effect, with its pre-image, saved to
 //!   the profile workspace after each change so it outlives a crash.
 //! - [`audit`]: the append-only `audit.jsonl`.
+//! - [`manage`]: DeviceCommunicationControl and ReinitializeDevice, the
+//!   device management requests, always at T3.
 //!
 //! The app decides what the user may do; the worker checks the same rules
 //! again before it sends anything, owns the ledger and the audit log, and
@@ -14,6 +16,7 @@
 pub(crate) mod audit;
 pub(crate) mod ledger;
 pub(crate) mod lock;
+pub(crate) mod manage;
 pub(crate) mod plan;
 
 use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode, PropertyIdentifier};
@@ -256,6 +259,34 @@ pub(crate) struct Preview {
     pub(crate) gate: Gate,
 }
 
+/// A change waiting for its confirmation: a write preview, or a device
+/// management request. Both go through the one confirmation dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Change {
+    /// One WriteProperty or a WritePropertyMultiple batch.
+    Write(Box<Preview>),
+    /// DeviceCommunicationControl or ReinitializeDevice.
+    Device(Box<manage::Request>),
+}
+
+impl Change {
+    /// The device it goes to, typed out to confirm at T3.
+    pub(crate) fn device(&self) -> u32 {
+        match self {
+            Self::Write(preview) => preview.device,
+            Self::Device(request) => request.device,
+        }
+    }
+
+    /// Its tier, or why it is blocked.
+    pub(crate) fn gate(&self) -> Gate {
+        match self {
+            Self::Write(preview) => preview.gate.clone(),
+            Self::Device(request) => request.gate(),
+        }
+    }
+}
+
 /// How a confirmed request ended, for the audit log and the result view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -356,10 +387,11 @@ pub(crate) enum SafetyCommand {
         /// The session ran out.
         expired: bool,
     },
-    /// The user declined a confirmation; recorded, nothing sent.
+    /// The user declined a confirmation; recorded, nothing sent. A device
+    /// management request comes without its password.
     Declined {
         /// What was declined.
-        preview: Box<Preview>,
+        change: Change,
     },
     /// Read what the writes need and preview them.
     Prepare {
@@ -376,6 +408,13 @@ pub(crate) enum SafetyCommand {
         req: u64,
         /// What was confirmed.
         preview: Box<Preview>,
+    },
+    /// Send a confirmed device management request.
+    Manage {
+        /// Request id, echoed.
+        req: u64,
+        /// What was confirmed, password included.
+        request: Box<manage::Request>,
     },
     /// Undo every ledger entry, newest first.
     Revert {
@@ -422,7 +461,8 @@ pub(crate) enum SafetyEvent {
         /// The preview.
         preview: Box<Preview>,
     },
-    /// Writes ended: each target's label and outcome.
+    /// Writes, or a device management request, ended: each target's label
+    /// and outcome.
     Done {
         /// The request it answers.
         req: u64,

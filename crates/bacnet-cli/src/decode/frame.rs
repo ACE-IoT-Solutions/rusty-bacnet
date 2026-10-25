@@ -106,19 +106,19 @@ pub fn kebab(name: impl std::fmt::Display) -> String {
 }
 
 /// What the link layer says about a frame, and where its NPDU is.
-pub(super) struct Link {
-    pub(super) name: String,
-    pub(super) broadcast: bool,
-    pub(super) source: Option<String>,
-    pub(super) destination: Option<String>,
-    pub(super) problem: Option<String>,
+pub(crate) struct Link {
+    pub(crate) name: String,
+    pub(crate) broadcast: bool,
+    pub(crate) source: Option<String>,
+    pub(crate) destination: Option<String>,
+    pub(crate) problem: Option<String>,
     /// The NPDU, as a range of the frame's octets, or decoded on its own
     /// for an extended MS/TP frame, whose data is COBS-encoded on the wire.
-    pub(super) npdu: Option<Npdu>,
+    pub(crate) npdu: Option<Npdu>,
 }
 
 /// Where a frame's NPDU is.
-pub(super) enum Npdu {
+pub(crate) enum Npdu {
     /// Inside the frame, as sent.
     At(Range<usize>),
     /// Encoded in `wire`; `data` is the decoded NPDU.
@@ -136,7 +136,7 @@ fn offset_in(frame: &[u8], part: &[u8]) -> usize {
 }
 
 /// Read the link layer of `frame`.
-pub(super) fn link(framing: Framing, frame: &[u8]) -> Link {
+pub(crate) fn link(framing: Framing, frame: &[u8]) -> Link {
     let mut link = Link {
         name: String::new(),
         broadcast: false,

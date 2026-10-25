@@ -252,6 +252,25 @@ These commands are on the development branch, not v{release}. See the
 In the development Scan tab, Up/Down or `+`/`-` selects a row's detailed error
 counts. A suggestion never applies a rate, joins or writes a profile.
 
+### Development device management commands
+
+These commands are on the development branch, not v{release}. See
+[DCC and reinitialize](/rusty-bacnet/tui/writes/#development-dcc-and-reinitialize).
+Both go to the device open in Browse or selected on the Devices screen, ask
+for a masked password, and confirm at T3. They need an armed session on a
+profile with `dangerous = true`.
+
+| Command | What it does |
+|---|---|
+| `dcc enable` | DeviceCommunicationControl: let the device communicate again. `control` is the same command |
+| `dcc disable-initiation [MINUTES]` | Stop the device starting conversations for MINUTES (1 to 65535), 15 by default |
+| `dcc disable [MINUTES]` | The deprecated full disable, which current devices refuse; the confirmation warns |
+| `dcc disable-initiation forever` | The same with no time limit: it lasts until a `dcc enable` or a restart |
+| `dcc disable forever` | The deprecated full disable with no time limit |
+| `reinit coldstart` | ReinitializeDevice: a cold start |
+| `reinit warmstart` | ReinitializeDevice: a warm start |
+| `reinit STATE` | The other states: `start-backup`, `end-backup`, `start-restore`, `end-restore`, `abort-restore` or `activate-changes` |
+
 ## Flags
 
 `bacnet tui` takes these, as well as the global network flags. Plain `bacnet` uses their defaults; name `tui` to set them.

@@ -1,6 +1,7 @@
 //! The write session's worker side: it checks every request against the
 //! session level and the profile's policy again, reads the pre-image,
-//! sends the writes, and owns the ledger and the audit log.
+//! sends the writes and the device management requests ([`manage`]), and
+//! owns the ledger and the audit log.
 //!
 //! [`run`] is polled beside the session loop under `join!`, like the
 //! browser and the watch list, and serves one request at a time. It does
@@ -12,6 +13,7 @@
 //! While it runs it holds the workspace's lock ([`lock`]), so a second
 //! session on the same profile can't arm.
 
+mod manage;
 mod send;
 
 use std::path::PathBuf;
@@ -37,7 +39,8 @@ use crate::tui::safety::ledger::{Entry, Ledger};
 use crate::tui::safety::lock::{WorkspaceLock, lock};
 use crate::tui::safety::plan::{self, PRE_READ, PRIORITY_6, PreRead};
 use crate::tui::safety::{
-    Gate, Level, MAX_MINUTES, Outcome, Planned, Preview, SafetyCommand, SafetyEvent, WriteSpec,
+    Change, Gate, Level, MAX_MINUTES, Outcome, Planned, Preview, SafetyCommand, SafetyEvent,
+    WriteSpec,
 };
 
 /// Why a passive session refuses anything that transmits.
@@ -382,10 +385,18 @@ impl<'a> Runner<'a> {
                 }
                 tell(sink, SafetyEvent::Disarmed).await;
             }
-            SafetyCommand::Declined { preview } => {
+            SafetyCommand::Declined {
+                change: Change::Write(preview),
+            } => {
                 let items: Vec<Value> = preview.items.iter().map(item_json).collect();
                 let fields = json!({ "items": items, "tier": gate_name(&preview.gate) });
                 self.audit("declined", fields).await;
+            }
+            SafetyCommand::Declined {
+                change: Change::Device(request),
+            } => self.audit("declined", request.audit_json()).await,
+            SafetyCommand::Manage { req, request } => {
+                self.manage(client, sink, rate, req, *request).await;
             }
             SafetyCommand::Prepare { req, specs, batch } => {
                 if let Some(why) = self.refusal() {
