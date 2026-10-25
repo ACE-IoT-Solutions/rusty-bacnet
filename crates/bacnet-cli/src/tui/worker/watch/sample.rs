@@ -139,7 +139,7 @@ pub(crate) fn from_rows(property: PropertyIdentifier, rows: &[RawRow]) -> Option
         .and_then(|(_, value)| value.as_deref().ok())
         .and_then(flags);
     Some(Reading {
-        value: value.clone(),
+        value: value.clone().map_err(|error| error.to_string()),
         flags: status,
         at: Instant::now().into_std(),
     })

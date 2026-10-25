@@ -115,11 +115,6 @@ impl<T: TransportPort + 'static> Engine<T> {
         }
     }
 
-    /// The client the engine reads through.
-    pub fn client(&self) -> &BACnetClient<T> {
-        &self.client
-    }
-
     /// The limits every request waits for.
     pub fn limits(&self) -> &RequestLimits {
         &self.limits
@@ -242,13 +237,13 @@ impl<T: TransportPort + 'static> Engine<T> {
     }
 }
 
-/// The device's error behind a halted read. The engine's readers are never
-/// stopped (see [`NEVER_STOPPED`]), so a cancelled halt can't occur; it maps
-/// to an error rather than a panic all the same.
+/// The device's error behind a halted read.
 fn device_error(halt: Halt) -> Error {
     match halt {
         Halt::Device(error) => error,
-        Halt::Cancelled => Error::Encoding("the read was cancelled".into()),
+        // The engine's readers share NEVER_STOPPED, which nothing sets, and
+        // a reader halts as cancelled only when its flag is set.
+        Halt::Cancelled => unreachable!("an engine read is never stopped by its flag"),
     }
 }
 

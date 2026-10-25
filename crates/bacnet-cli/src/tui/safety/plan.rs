@@ -357,7 +357,9 @@ fn plan(
 
 #[cfg(test)]
 mod tests {
-    use bacnet_types::enums::ObjectType;
+    use bacnet_ops::format::RowError;
+    use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
+    use bacnet_types::error::RemoteError;
     use bacnet_types::primitives::ObjectIdentifier;
 
     use super::*;
@@ -665,7 +667,10 @@ mod tests {
         );
         // An error reading it means not commandable.
         let mut rows = ao1();
-        rows[1].1 = Err("PROPERTY:UNKNOWN_PROPERTY".into());
+        rows[1].1 = Err(RowError::Remote(RemoteError::Error {
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::UNKNOWN_PROPERTY,
+        }));
         let planned = preview(
             &[spec(Some("1"), 12)],
             &[rows.into()],

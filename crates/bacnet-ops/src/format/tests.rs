@@ -354,7 +354,13 @@ fn the_name_is_the_object_name_with_its_control_characters_as_spaces() {
     )];
     assert_eq!(object_name(&named).as_deref(), Some("Zone Temp "));
     // An error for the name alone, or no name at all: no name.
-    let refused = vec![(P::OBJECT_NAME, Err("property:unknown-property".into()))];
+    let refused = vec![(
+        P::OBJECT_NAME,
+        Err(RowError::Remote(RemoteError::Error {
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::UNKNOWN_PROPERTY,
+        })),
+    )];
     assert_eq!(object_name(&refused), None);
     assert_eq!(object_name(&[]), None);
     // Not a string, or a name longer than the cap.

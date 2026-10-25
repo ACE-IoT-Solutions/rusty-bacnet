@@ -20,7 +20,7 @@ use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifie
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use crate::format::{RawRow, decode_all};
+use crate::format::{RawRow, RowError, decode_all};
 use crate::limits::{RequestLimits, Turn};
 
 /// How a property list was read.
@@ -144,6 +144,8 @@ pub struct Reader<'a, T: TransportPort + 'static> {
 impl<T: TransportPort + 'static> Reader<'_, T> {
     /// Wait for this request's turn at the device, unless the job was
     /// stopped. Hold it for the one request (see [`RequestLimits::turn`]).
+    /// A scheduling hook for the TUI's own request loops; the read methods
+    /// take their turns themselves.
     pub async fn turn(&self) -> Result<Turn, Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
@@ -158,8 +160,8 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
     /// Wait until a request could go at once, without taking the device's
     /// gate or a slot, unless the job was stopped (see
     /// [`RequestLimits::wait_free`]). Another worker can take the gate
-    /// before [`Self::turn`]; the name reads check again then which names
-    /// are still wanted.
+    /// before [`Self::turn`]; the TUI's name reads, the hook's one caller,
+    /// check again then which names are still wanted.
     pub async fn free_turn(&self) -> Result<(), Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
@@ -223,8 +225,10 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             .map(|element| {
                 let value = match (element.property_value, element.error) {
                     (Some(value), _) => Ok(value),
-                    (None, Some((class, code))) => Err(format!("{class}:{code}")),
-                    (None, None) => Err("no value".into()),
+                    (None, Some((class, code))) => {
+                        Err(RowError::Remote(RemoteError::Error { class, code }))
+                    }
+                    (None, None) => Err(RowError::NoValue),
                 };
                 (element.property_identifier, value)
             })
@@ -267,7 +271,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
                 Ok(value) => Ok(value),
                 // A device that stopped answering fails the read once.
                 Err(Halt::Device(error)) if unreachable(&error) => return Err(Halt::Device(error)),
-                Err(Halt::Device(error)) => Err(error.to_string()),
+                Err(Halt::Device(error)) => Err(RowError::from(error)),
                 Err(Halt::Cancelled) => return Err(Halt::Cancelled),
             };
             rows.push((property, value));

@@ -1,6 +1,7 @@
 //! The engine against an in-process lab device over a loopback link.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_client::log_reader::LogCursor;
@@ -12,12 +13,19 @@ use bacnet_objects::trend::TrendLogObject;
 use bacnet_server::server::BACnetServer;
 use bacnet_services::read_range::LogRecords;
 use bacnet_transport::loopback::LoopbackTransport;
+use bacnet_transport::port::ReceivedNpdu;
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
-use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
+use bytes::Bytes;
+use tokio::sync::mpsc;
 
 use super::*;
-use crate::format::{Floats, StateTexts, ValueFormat, decode_all};
+use crate::format::{Floats, RowError, StateTexts, ValueFormat, decode_all};
 
 /// The lab device's instance.
 const LAB: u32 = 1001;
@@ -54,6 +62,13 @@ fn trend(records: u8) -> TrendLogObject {
 /// The lab: a device with an analog input, an analog output and a trend
 /// log, an engine over a client paired with it, and the server to stop.
 async fn lab() -> (Engine<LoopbackTransport>, BACnetServer<LoopbackTransport>) {
+    lab_on(|port| port).await
+}
+
+/// [`lab`], with the client's link wrapped by `wrap`.
+async fn lab_on<C: TransportPort + 'static>(
+    wrap: fn(LoopbackTransport) -> C,
+) -> (Engine<C>, BACnetServer<LoopbackTransport>) {
     let identity = DeviceIdentity::new(LAB, 42).unwrap();
     let mut ai = AnalogInputObject::new(1, "Zone Temp", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(21.5);
@@ -78,13 +93,18 @@ async fn lab() -> (Engine<LoopbackTransport>, BACnetServer<LoopbackTransport>) {
         apdu_retries: 0,
         ..ClientConfig::default()
     };
-    let client = BACnetClient::start(config, client_port).await.unwrap();
+    let client = BACnetClient::start(config, wrap(client_port))
+        .await
+        .unwrap();
     client.add_device(LAB, &[2]).await.unwrap();
     let engine = Engine::new(Arc::new(client), Arc::new(RequestLimits::new(0)));
     (engine, server)
 }
 
-async fn stop(engine: Engine<LoopbackTransport>, mut server: BACnetServer<LoopbackTransport>) {
+async fn stop<C: TransportPort + 'static>(
+    engine: Engine<C>,
+    mut server: BACnetServer<LoopbackTransport>,
+) {
     let Ok(mut client) = Arc::try_unwrap(engine.client) else {
         panic!("the engine holds the only client");
     };
@@ -198,25 +218,155 @@ async fn an_unknown_device_fails() {
     stop(engine, server).await;
 }
 
-/// Once a reader of the engine meets an RPM refusal, every later read of
-/// that device goes by ReadProperty, with the same values; other devices
-/// keep RPM.
+/// A device that rejects ReadPropertyMultiple is read by ReadProperty
+/// instead, and the engine remembers it: the next read of that device goes
+/// straight to ReadProperty, with the same values. Errors stay structured
+/// on both paths.
 #[tokio::test(start_paused = true)]
 async fn a_refusal_of_rpm_is_remembered_per_device() {
+    let (engine, server) = lab_on(RefusesRpm::new).await;
+    let ai = oid(ObjectType::ANALOG_INPUT, 1);
+    // State_Text: an analog input has none.
+    let wanted = [
+        PropertyIdentifier::PRESENT_VALUE,
+        PropertyIdentifier::STATE_TEXT,
+    ];
+    assert!(!engine.refused_rpm(LAB));
+    let first = engine.read(LAB, ai, Wanted::List(&wanted)).await.unwrap();
+    assert_eq!(first.via, ReadVia::Rp);
+    assert!(engine.refused_rpm(LAB), "the refusal is remembered");
+    assert!(!engine.refused_rpm(LAB + 1));
+    let rejected = engine.client.transport().rejected();
+    assert_eq!(rejected, 1);
+    let second = engine.read(LAB, ai, Wanted::List(&wanted)).await.unwrap();
+    assert_eq!(second.via, ReadVia::Rp);
+    assert_eq!(
+        engine.client.transport().rejected(),
+        rejected,
+        "no RPM was tried again"
+    );
+    assert_eq!(second.rows, first.rows);
+    assert_eq!(
+        decode_all(second.rows[0].1.as_ref().unwrap()).unwrap(),
+        [PropertyValue::Real(21.5)]
+    );
+    let missing = second.rows[1].1.as_ref().unwrap_err();
+    assert_eq!(
+        missing.class_code(),
+        Some((ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)),
+        "{missing:?}"
+    );
+    stop(engine, server).await;
+}
+
+/// An RPM answer's per-property error comes back as the device's class and
+/// code, shown as `CLASS:CODE`.
+#[tokio::test(start_paused = true)]
+async fn a_missing_property_is_a_typed_error_row() {
     let (engine, server) = lab().await;
     let ai = oid(ObjectType::ANALOG_INPUT, 1);
-    let wanted = [PropertyIdentifier::PRESENT_VALUE, PropertyIdentifier::UNITS];
-    let by_rpm = engine.read(LAB, ai, Wanted::List(&wanted)).await.unwrap();
-    // What a reader records when the device refuses RPM.
-    let mut refused = engine.reader(LAB);
-    refused.rpm = false;
-    engine.settle(&refused);
-    assert!(engine.refused_rpm(LAB));
-    assert!(!engine.refused_rpm(LAB + 1));
-    let by_rp = engine.read(LAB, ai, Wanted::List(&wanted)).await.unwrap();
-    assert_eq!(by_rp.via, ReadVia::Rp);
-    assert_eq!(by_rp.rows, by_rpm.rows);
+    let wanted = [PropertyIdentifier::STATE_TEXT];
+    let read = engine.read(LAB, ai, Wanted::List(&wanted)).await.unwrap();
+    assert_eq!(read.via, ReadVia::Rpm);
+    let error = read.rows[0].1.as_ref().unwrap_err();
+    assert_eq!(
+        *error,
+        RowError::Remote(RemoteError::Error {
+            class: ErrorClass::PROPERTY,
+            code: ErrorCode::UNKNOWN_PROPERTY,
+        })
+    );
+    assert_eq!(error.to_string(), "PROPERTY:UNKNOWN_PROPERTY");
+    assert_eq!(RowError::NoValue.to_string(), "no value");
     stop(engine, server).await;
+}
+
+/// The client's side of the lab link, answering every ReadPropertyMultiple
+/// itself with a Reject (unrecognized service), as a device without RPM
+/// does. Everything else passes through.
+struct RefusesRpm {
+    inner: LoopbackTransport,
+    /// Where the client's receive channel is fed from, once started.
+    inbox: Mutex<Option<mpsc::Sender<ReceivedNpdu>>>,
+    rejected: AtomicUsize,
+}
+
+impl RefusesRpm {
+    fn new(inner: LoopbackTransport) -> Self {
+        Self {
+            inner,
+            inbox: Mutex::new(None),
+            rejected: AtomicUsize::new(0),
+        }
+    }
+
+    /// ReadPropertyMultiple requests answered with a Reject so far.
+    fn rejected(&self) -> usize {
+        self.rejected.load(Ordering::Relaxed)
+    }
+
+    /// The invoke ID of `npdu` when it is a local, unsegmented
+    /// ReadPropertyMultiple request: NPDU version and a control octet with
+    /// no addresses, then a Confirmed-Request APDU.
+    fn rpm_invoke_id(npdu: &[u8]) -> Option<u8> {
+        match npdu {
+            [0x01, control, apdu, _, invoke_id, service, ..]
+                if control & 0x28 == 0 && apdu & 0xF8 == 0x00 && *service == 14 =>
+            {
+                Some(*invoke_id)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl TransportPort for RefusesRpm {
+    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+        let mut from_peer = self.inner.start().await?;
+        let (tx, rx) = mpsc::channel(256);
+        *self.inbox.lock().unwrap() = Some(tx.clone());
+        tokio::spawn(async move {
+            while let Some(npdu) = from_peer.recv().await {
+                if tx.send(npdu).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(rx)
+    }
+
+    async fn stop(&mut self) -> Result<(), Error> {
+        self.inbox.lock().unwrap().take();
+        self.inner.stop().await
+    }
+
+    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
+        let Some(invoke_id) = Self::rpm_invoke_id(npdu) else {
+            return self.inner.send_unicast(npdu, mac).await;
+        };
+        self.rejected.fetch_add(1, Ordering::Relaxed);
+        // A Reject PDU for UNRECOGNIZED_SERVICE (9), from the device.
+        let reject = Bytes::from(vec![0x01, 0x00, 0x60, invoke_id, 9]);
+        let inbox = self.inbox.lock().unwrap().clone();
+        if let Some(inbox) = inbox {
+            let source = MacAddr::from_slice(mac);
+            let back = ReceivedNpdu::unverified(reject, source, false, Vec::new(), None);
+            let _ = inbox.send(back).await;
+        }
+        Ok(())
+    }
+
+    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
+        self.inner.send_broadcast(npdu).await
+    }
+
+    fn local_mac(&self) -> &[u8] {
+        self.inner.local_mac()
+    }
+
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        self.inner.local_receive_apdu_capacity()
+    }
 }
 
 /// Every call waits for the device's gate: while another request to the

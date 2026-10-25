@@ -309,7 +309,8 @@ How to configure each one:
 | [`bacnet-cli`](https://crates.io/crates/bacnet-cli) | The `bacnet` command-line tool (also as release binaries) |
 
 All are on crates.io at 0.14.0, except `bacnet-time`, which versions on its
-own and is at 0.13.1, and `bacnet-ops`, which is first published with 0.15.0. The Python package is built from
+own and is at 0.13.1, and `bacnet-ops`, which is first published with
+0.15.0. The Python package is built from
 [`crates/rusty-bacnet`](crates/rusty-bacnet) with [maturin](https://www.maturin.rs/).
 The [architecture guide](docs/architecture.md) shows how the layers fit
 together.

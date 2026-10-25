@@ -149,7 +149,7 @@ pub(crate) fn object_view(object: ObjectIdentifier, rows: &[RawRow], via: ReadVi
                     Ok(format.with_units(*property, data, units))
                 }
                 Ok(data) => Ok(format.value(*property, data)),
-                Err(error) => Err(error.clone()),
+                Err(error) => Err(error.to_string()),
             },
         })
         .collect();

@@ -54,7 +54,7 @@ second set of checks.
 
 ## 3. Decisions (maintainer, 2026-10-25)
 
-Recorded as OD-35 in the 0.15 roadmap.
+Recorded in the epic, #2064.
 
 1. **Home.** Two new workspace crates. `bacnet-ops` is the UI-free core the
    CLI, the TUI and MCP share; it is a default member. `bacnet-mcp` is the MCP
@@ -94,7 +94,7 @@ Layer 6.5: bacnet-ops    the operations core: no UI, no MCP dependency
              watch        ref-counted COV and poll hub               (planned, phase 2)
            bacnet-mcp    the MCP surface over bacnet-ops::engine     (planned, phase 1)
              tools/, resources/, prompts/, untrusted text, approvers,
-             policy, sealed request state, signed cursors
+             policy, integrity-protected request state, signed cursors
 Layer 7:   bacnet-cli    `bacnet mcp serve` (feature `mcp`), later `connect`
 ```
 
@@ -113,7 +113,7 @@ Layer 7:   bacnet-cli    `bacnet mcp serve` (feature `mcp`), later `connect`
   feature adds the HTTP stack.
 - None of this is no_std. These are hosted adapters over the portable cores,
   in line with the no_std-cores-plus-std-adapters direction.
-- `rmcp` has had four major releases in 2026. It stays behind `bacnet-mcp`
+- `rmcp` has had three major releases in 2026 (1.0, 2.0 and 3.0). It stays behind `bacnet-mcp`
   internals: wire changes and SDK majors never reach `bacnet-ops`.
 
 ### 4.2 What phase 0 moved
@@ -154,6 +154,10 @@ client's discovery table, so routed devices work through the
 | `describe_device(device)` | the Device properties the TUI's device card shows (vendor, model, firmware, revisions, services, object types, APDU size, segmentation, database revision) |
 | `read_trend(device, log, cursor, page_size)` | one page of a Trend Log, Trend Log Multiple, Event Log or Audit Log, with where to read next |
 | `alarms(device, after)` | one decoded GetEventInformation answer |
+
+A property the device can't give is a typed `RowError`, not text: the
+device's error (class and code), reject or abort as data, or no value. The
+TUI shows it as `CLASS:CODE`; MCP returns the structured form (§5.2).
 
 Each request waits for its device's gate and a slot under the global cap.
 A call is cancelled by dropping its future: a turn's wait is cancel-safe.
@@ -385,7 +389,7 @@ multi round-trip requests (MRTR):
    policy, reads the pre-image, builds the preview and computes the tier. A
    blocked write is refused with nothing sent.
 2. **Approval.** Unless a plan grant covers the write, the server returns an
-   `input_required` result with an elicitation form (T1) and a sealed
+   `input_required` result with an elicitation form (T1) and an integrity-protected
    `requestState`. The form shows the canonical target
    (`device 1201 analog-output 3 present-value @8`), the value now and after,
    who holds the slot, whether Present_Value changes, and warnings; any
@@ -396,12 +400,14 @@ multi round-trip requests (MRTR):
    out, sends, settles the entry and audits.
 4. **Decline or cancel.** Audited as `declined`.
 
-**Sealed confirmation state.** The spec makes `requestState` attacker
-controlled: the server must protect its integrity when it affects
+**Integrity-protected confirmation state.** The spec makes `requestState`
+attacker controlled: the server must protect its integrity when it affects
 authorization, should bind it to the principal, a short expiry and a digest
-of the request, and must enforce single use itself. Ours is sealed with an
-AEAD under a per-process key (a shared, rotated key file for replicated
-HTTP) and carries the principal, the tool, an argument digest, a preview
+of the request, and must enforce single use itself. Ours is
+integrity-protected with `rmcp`'s request-state codec (an HMAC with key
+rotation) under a per-process key (a shared, rotated key file for
+replicated HTTP). Integrity is the requirement, not secrecy: the state
+holds nothing the client may not see. It carries the principal, the tool, an argument digest, a preview
 digest (pre-images and slot occupancy), a nonce and a 120 s expiry, the TUI's
 preview timeout. A tampered, expired, replayed or cross-principal state is
 refused and nothing is sent.
@@ -479,9 +485,24 @@ the slow-network default matters.
 - **stdio.** The host launches `bacnet mcp serve --stdio --profile X` as a
   child process. Per the spec, stdio uses no OAuth; credentials come from the
   profile and the environment. The process's OS user is the one principal.
-  Tracing goes to stderr or a file only: the workspace's `print_stdout` lint
-  and a test that parses every stdout line as JSON-RPC keep the protocol
-  stream clean.
+  Tracing goes to stderr or a file only. The CLI allows `print_stdout`
+  crate-wide (a command-line tool prints its results), so the guards are a
+  test that parses every stdout line as JSON-RPC and the `mcp` module
+  denying the lint again for itself.
+- **Sharing a profile with the TUI.** The TUI may already hold the profile's
+  workspace lock and its UDP port (47808 on B/IP). The stdio server then
+  still starts:
+  - it tries the workspace lock at start and again before each write. While
+    another process holds it, reads work and every write is refused with
+    `refused: workspace-locked`, nothing sent; the tool list doesn't change;
+  - when the profile's port is taken it binds an ephemeral port instead,
+    unless the profile pins the port, in which case it refuses to start and
+    names the holder's lock. On an ephemeral port broadcast I-Am answers
+    don't reach it, so `bacnet_discover` and `bacnet://session` say so and
+    discovery falls back to directed requests and the known table.
+
+  Phase 4's attached mode removes both conflicts: one process owns the
+  lock and the port.
 - **Local socket (phase 4).** A Unix socket (0600, in a 0700 workspace
   directory, peer uid checked with `SO_PEERCRED` or `getpeereid`) or a
   Windows named pipe with an owner-only DACL that rejects remote clients.
@@ -548,7 +569,7 @@ image, and a `.mcpb` bundle for Claude Desktop.
 | 0 | #2065 | `bacnet-ops` read side; this document | CLI and TUI suites pass unchanged (insta snapshots, the in-process lab, the class-table pin test, which moved with the table); `bacnet-ops` passes `check-default-features.sh` and the file-size cap; no snapshot churn |
 | 1 | #2066 | `bacnet-mcp` with `stdio`; `bacnet mcp serve` behind `mcp`; the nine read tools; untrusted envelope; error mapping; signed cursors; per-call caps; per-principal and per-network limits; the `[mcp]` profile table; `survey_site` and `investigate_point`; `mcp` classified `Read` | a stdio integration test drives a site survey against the in-process lab; `tools/list` has no write tool in any configuration; `--passive` builds no client and sends nothing; 500 reads stay within the caps and a slow network is held to 2 a second; an injection fixture comes back sanitised, enveloped and capped; stdout carries only JSON-RPC; trend paging survives three pages and `summary` matches a brute-force computation; a docs page and changelog |
 | 2 | #2067 | the watch hub; resources and templates; `subscriptions/listen` with caps; the alarm, session and ledger resources | two listeners on one point make one BACnet subscription and the last one leaving cancels it; a device refusing COV falls back to polling with `source: poll`; no lifetime-0 subscription; a notification storm is coalesced and drops counted; shutdown completes each listen stream and cancels every subscription |
-| 3 | #2068 | `tui/safety/*` and the engine half of the write worker move to `bacnet-ops::safety` (the TUI keeps an adapter); `bacnet_write`, `bacnet_revert`; the `Approver` trait with `ClientElicitation`, `PlanGrant` and `Deny`; sealed state; `mcp_writes = "never" \| "elicit"` (default `never`); the new audit fields | with `never` the write tools are absent; with `elicit` a T1 write is previewed, confirmed, sent and ledgered while T2, T3 and priority 6 are refused; tampered, expired, replayed or cross-principal state is refused and nothing sent; a stale pre-image gives `refused: stale`, audited; a timeout leaves an `unknown` entry; revert restores the pre-image; the TUI lists MCP entries marked `front_end: mcp`; plan-grant writes run without prompts and are audited; the TUI's write tests still pass |
+| 3 | #2068 | `tui/safety/*` and the engine half of the write worker move to `bacnet-ops::safety` (the TUI keeps an adapter); `bacnet_write`, `bacnet_revert`; the `Approver` trait with `ClientElicitation`, `PlanGrant` and `Deny`; integrity-protected state; `mcp_writes = "never" \| "elicit"` (default `never`); the new audit fields | with `never` the write tools are absent; with `elicit` a T1 write is previewed, confirmed, sent and ledgered while T2, T3 and priority 6 are refused; tampered, expired, replayed or cross-principal state is refused and nothing sent; a stale pre-image gives `refused: stale`, audited; a timeout leaves an `unknown` entry; revert restores the pre-image; the TUI lists MCP entries marked `front_end: mcp`; plan-grant writes run without prompts and are audited; the TUI's write tests still pass |
 | 4 | after 0.15 | TUI-attached mode | an agent's T2 or T3 write executes only after the TUI confirmation; another uid is refused and audited; agent reads share the rate meter; frame tests cover the banner and queue |
 | 4b | after 0.15, optional | background daemon | survives TUI exit and reattaches with the same ledger; a crash mid-write leaves `sending`, which becomes `unknown` on restart; a protocol mismatch is handled as specified |
 | 5 | after 0.15 | Streamable HTTP and OAuth, multi-user | conformance against an SDK client; wrong audience 401, missing scope 403; cross-user redemption refused; starts only with TLS and OAuth or an explicit loopback bind; interop with a real provider as a manual check |
@@ -575,7 +596,7 @@ otherwise.
 
 | Risk | Mitigation |
 |---|---|
-| `rmcp` majors (four in 2026) and its two 2026 server-side DoS advisories | keep it inside `bacnet-mcp`; stdio first; follow advisories; pin in the lock file |
+| `rmcp` majors (three in 2026) and its two 2026 server-side DoS advisories | keep it inside `bacnet-mcp`; stdio first; follow advisories; pin in the lock file |
 | `rmcp` has no OAuth resource-server helpers, and Origin validation is off by default | we write the metadata route and bearer middleware and turn Origin checks on, with tests (phase 5) |
 | Formatter coupling to the TUI's object list | resolved in phase 0: the label helpers moved with the formatter |
 | A host that auto-approves elicitations | only T1 accepts client confirmation; the audit records `confirmed_via` |

@@ -23,13 +23,64 @@ mod units;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::decode_application_value;
-use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use units::unit_symbol;
 
-/// A property as read: its raw application-tagged value, or an error.
-pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, String>);
+/// A property as read: its raw application-tagged value, or why the device
+/// gave none.
+pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, RowError>);
+
+/// Why one property of a read has no value. Structured, so a front end can
+/// report the device's error class and code as data, not only as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowError {
+    /// The device answered this property with an error, a reject or an
+    /// abort.
+    Remote(RemoteError),
+    /// The device's answer for this property held neither a value nor an
+    /// error.
+    NoValue,
+    /// Any other failure of this property's read, as text.
+    Other(String),
+}
+
+impl RowError {
+    /// The device's error class and code, when it answered with an error.
+    pub fn class_code(&self) -> Option<(ErrorClass, ErrorCode)> {
+        match self {
+            Self::Remote(RemoteError::Error { class, code }) => Some((*class, *code)),
+            _ => None,
+        }
+    }
+}
+
+impl From<Error> for RowError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Remote(remote) => Self::Remote(remote),
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for RowError {
+    /// An error as `CLASS:CODE` (`PROPERTY:UNKNOWN_PROPERTY`), the form
+    /// the TUI shows; a reject or abort, or any other failure, as its own
+    /// text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remote(RemoteError::Error { class, code }) => write!(f, "{class}:{code}"),
+            Self::Remote(remote) => write!(f, "{remote}"),
+            Self::NoValue => f.write_str("no value"),
+            Self::Other(text) => f.write_str(text),
+        }
+    }
+}
 
 /// Values shown before the rest of a list is summarised.
 const MAX_LIST_SHOWN: usize = 8;

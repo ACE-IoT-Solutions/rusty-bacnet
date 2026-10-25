@@ -31,24 +31,6 @@ use tokio::sync::broadcast::error::RecvError;
 
 use super::target::{Target, bip6_vmac, parse_target_on};
 
-/// How long a routed target waits for its device to answer a Who-Is sent
-/// to its network, as long as `discover` waits by default.
-const ROUTED_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
-
-/// Undocumented: milliseconds to wait instead, so tests of a device that
-/// never answers don't wait the full three seconds.
-const ROUTED_WAIT_VAR: &str = "BACNET_CLI_ROUTED_WAIT_MS";
-
-/// How long a routed target waits for its device: three seconds, as long as
-/// `discover` waits by default,
-/// unless the environment sets another wait for a test.
-pub fn routed_wait() -> Duration {
-    std::env::var(ROUTED_WAIT_VAR)
-        .ok()
-        .and_then(|ms| ms.parse().ok())
-        .map_or(ROUTED_DISCOVERY_WAIT, Duration::from_millis)
-}
-
 /// Where a service request goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destination {
