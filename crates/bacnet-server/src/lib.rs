@@ -19,6 +19,8 @@ mod membership;
 pub mod mutation;
 #[doc(hidden)]
 pub mod network_number;
+#[doc(hidden)]
+pub mod network_port_registration;
 pub mod pics;
 pub mod policy;
 pub use policy::{FnPolicy, ServerPolicy};
