@@ -11,8 +11,8 @@
 //! COV sample, or of the arrival, as its monotonic deadline, and the server's
 //! task advances it then.
 
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::enums::ColorOperationInProgress;
 

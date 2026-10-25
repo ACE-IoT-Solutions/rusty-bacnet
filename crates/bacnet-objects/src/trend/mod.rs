@@ -1,8 +1,9 @@
 //! TrendLog (type 20) and TrendLogMultiple (type 27) objects per ASHRAE 135-2020.
 
-use std::borrow::Cow;
-use std::collections::VecDeque;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetLogRecord};
@@ -537,7 +538,7 @@ impl BACnetObject for TrendLogObject {
         self.store.is_some().then_some(self as _)
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
         self.commit_if_interval(now);
         false
     }

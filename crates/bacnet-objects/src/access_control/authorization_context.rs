@@ -7,7 +7,7 @@ use super::{
 use crate::clock::ClockFrame;
 use bacnet_types::enums::AccessPassbackMode;
 use bacnet_types::primitives::ObjectIdentifier;
-use std::time::Duration;
+use core::time::Duration;
 
 /// A known application fact or an explicit lack of evidence. No default exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

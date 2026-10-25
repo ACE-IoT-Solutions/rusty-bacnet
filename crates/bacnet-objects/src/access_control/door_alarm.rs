@@ -37,6 +37,7 @@
 //! quiet door in alarm, as a fault value it would fault one, and masked it
 //! would leave Door_Alarm_State nothing to hold.
 
+use crate::prelude::*;
 use bacnet_types::enums::{DoorAlarmState, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;

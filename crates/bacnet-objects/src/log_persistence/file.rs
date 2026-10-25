@@ -1,5 +1,6 @@
 //! The two-slot file store for log snapshots.
 
+use crate::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -71,7 +72,7 @@ impl FileLogPersistence {
             match codec::decode::<R>(&data, expected) {
                 Decoded::Refused(error) => return Err(error),
                 Decoded::Corrupt(error) => {
-                    tracing::warn!(slot = %path.display(), %error, "Passing over a damaged log snapshot slot");
+                    log_warn!(slot = %path.display(), %error, "Passing over a damaged log snapshot slot");
                     damage = Some(error);
                 }
                 Decoded::Valid(snapshot) => match &newest {

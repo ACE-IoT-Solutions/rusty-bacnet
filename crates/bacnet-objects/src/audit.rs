@@ -1,8 +1,9 @@
 //! AuditLog (type 61) and AuditReporter (type 62) objects per Addendum 135-2016bj.
 
-use std::borrow::Cow;
-use std::collections::VecDeque;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter, LogStatus};
 use bacnet_types::constructed::{
@@ -43,9 +44,9 @@ mod reporter_object;
 mod reporter_status;
 mod staging;
 pub use notification::AuditLogNotificationSink;
-pub use persistence::{
-    AuditLogPersistence, AuditLogSnapshot, FileAuditLogPersistence, MAX_AUDIT_RECORDS,
-};
+#[cfg(feature = "std")]
+pub use persistence::FileAuditLogPersistence;
+pub use persistence::{AuditLogPersistence, AuditLogSnapshot, MAX_AUDIT_RECORDS};
 use persistence::{validate_record, validate_snapshot};
 pub use receipt::{
     CompletedAuditReceipt, ConfirmedAuditNotificationOutcome, MAX_AUDIT_RECEIPT_KEY_BYTES,
@@ -117,7 +118,7 @@ pub trait AuditLogStorage: Send + Sync {
 /// caller's thread with nothing to catch its panics, so asserting the traits
 /// for it would claim more than the type can promise. It also keeps the
 /// result of each staged batch that settled before its request collected it,
-/// and that result's [`Error`] can wrap a [`std::io::Error`], which has
+/// and that result's [`Error`] can wrap a `std::io::Error`, which has
 /// neither trait. Caller clocks get no unwind-safety bound.
 pub struct AuditLogObject {
     oid: ObjectIdentifier,
@@ -171,7 +172,7 @@ impl AuditLogObject {
                 }
                 validate_snapshot(&snapshot)?;
                 if snapshot.capacity != buffer_size {
-                    tracing::warn!(
+                    log_warn!(
                         audit_log = %oid,
                         configured = buffer_size,
                         stored = snapshot.capacity,
@@ -653,7 +654,7 @@ impl BACnetObject for AuditLogObject {
         Some(self)
     }
 
-    fn advance_monotonic_time_internal(&mut self, _now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, _now: core::time::Duration) -> bool {
         self.settle_finished();
         false
     }
@@ -684,8 +685,8 @@ pub struct AuditReporterObject {
     oid: ObjectIdentifier,
     name: String,
     status: Arc<AuditReporterStatus>,
-    change_sink: Option<std::sync::Weak<dyn AuditReporterChangeSink>>,
-    change_owner: std::sync::Weak<crate::database::AuditOwnership>,
+    change_sink: Option<alloc::sync::Weak<dyn AuditReporterChangeSink>>,
+    change_owner: alloc::sync::Weak<crate::database::AuditOwnership>,
     clock: Option<Arc<dyn ClockReader>>,
 }
 
@@ -697,7 +698,7 @@ impl AuditReporterObject {
             name: name.into(),
             status: Arc::new(AuditReporterStatus::default()),
             change_sink: None,
-            change_owner: std::sync::Weak::new(),
+            change_owner: alloc::sync::Weak::new(),
             clock: None,
         })
     }
@@ -751,7 +752,7 @@ impl AuditReporterObject {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "audit/tests.rs"]
 mod tests;
 
@@ -759,7 +760,7 @@ mod tests;
 #[path = "audit/query_tests.rs"]
 mod query_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "audit/notification_tests.rs"]
 mod notification_tests;
 
@@ -767,11 +768,11 @@ mod notification_tests;
 #[path = "audit/receipt_tests.rs"]
 mod receipt_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "audit/persistence_receipt_tests.rs"]
 mod persistence_receipt_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "audit/persistence_schema_tests.rs"]
 mod persistence_schema_tests;
 
@@ -782,10 +783,10 @@ mod reporter_configuration;
 #[path = "audit/reporter_delay_tests.rs"]
 mod reporter_delay_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "audit/staging_tests.rs"]
 mod staging_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "audit/buffer_tests.rs"]
 mod buffer_tests;
