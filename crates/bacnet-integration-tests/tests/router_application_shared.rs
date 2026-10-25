@@ -449,6 +449,128 @@ async fn the_ports_follow_a_router_ports_limit() {
     site.stop().await;
 }
 
+/// A ConfirmedEventNotification to the router reaches both stacks: the
+/// hosted server's Notification Forwarder forwards it, the router's client
+/// hears it, and the sender gets exactly one answer, the server's.
+#[tokio::test(start_paused = true)]
+async fn an_event_notification_reaches_both_and_is_answered_once() {
+    use bacnet_encoding::constructed::{
+        encode_event_notification, encode_event_notification_subscription_list,
+    };
+    use bacnet_objects::notification_forwarder::NotificationForwarderObject;
+    use bacnet_services::alarm_event::EventNotificationRequest;
+    use bacnet_types::MacAddr;
+    use bacnet_types::constructed::{
+        BACnetAddress, BACnetEventNotificationSubscription, BACnetRecipient,
+    };
+    use bacnet_types::enums::{ConfirmedServiceChoice, EventState, EventType, NotifyType};
+    use bacnet_types::primitives::BACnetTimeStamp;
+
+    let mut site = site().await;
+    let forwarder = ObjectIdentifier::new(ObjectType::NOTIFICATION_FORWARDER, 1).unwrap();
+    site.hosted
+        .database()
+        .write()
+        .await
+        .add(Box::new(
+            NotificationForwarderObject::new(1, "Forwarder").unwrap(),
+        ))
+        .unwrap();
+    // Forward process 5 to the remote client, station 7 on network 1.
+    site.remote_client
+        .write_property(
+            &[ROUTER_ON_1],
+            forwarder,
+            PropertyIdentifier::PROCESS_IDENTIFIER_FILTER,
+            None,
+            vec![0x21, 0x05],
+            None,
+        )
+        .await
+        .unwrap();
+    let mut subscriptions = bytes::BytesMut::new();
+    encode_event_notification_subscription_list(
+        &mut subscriptions,
+        &[BACnetEventNotificationSubscription {
+            recipient: BACnetRecipient::Address(BACnetAddress {
+                network_number: 1,
+                mac_address: MacAddr::from_slice(&[REMOTE_CLIENT]),
+            }),
+            process_identifier: 77,
+            issue_confirmed_notifications: false,
+            time_remaining: 300,
+        }],
+    )
+    .unwrap();
+    site.remote_client
+        .write_property(
+            &[ROUTER_ON_1],
+            forwarder,
+            PropertyIdentifier::SUBSCRIBED_RECIPIENTS,
+            None,
+            subscriptions.to_vec(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut forwarded = site.remote_client.event_notifications();
+    let mut heard = site.client.event_notifications();
+    while site.to_client.try_recv().is_ok() {}
+    let mut request = bytes::BytesMut::new();
+    encode_event_notification(
+        &EventNotificationRequest {
+            process_identifier: 5,
+            initiating_device_identifier: device(900),
+            event_object_identifier: sensor(),
+            timestamp: BACnetTimeStamp::SequenceNumber(31),
+            notification_class: 3,
+            priority: 90,
+            event_type: EventType::CHANGE_OF_STATE,
+            message_text: Some("door open".into()),
+            notify_type: NotifyType::EVENT,
+            ack_required: false,
+            from_state: EventState::NORMAL,
+            to_state: EventState::OFFNORMAL,
+            event_values: None,
+        },
+        &mut request,
+    )
+    .unwrap();
+    let ack = site
+        .remote_client
+        .confirmed_request(
+            &[ROUTER_ON_1],
+            ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION,
+            &request,
+        )
+        .await
+        .unwrap();
+    assert!(ack.is_empty(), "a Simple-ACK");
+
+    let copy = tokio::time::timeout(Duration::from_secs(5), forwarded.recv())
+        .await
+        .expect("the forwarder's copy")
+        .unwrap();
+    assert_eq!(copy.notification.process_identifier, 77);
+    let own = tokio::time::timeout(Duration::from_secs(5), heard.recv())
+        .await
+        .expect("the client hears it")
+        .unwrap();
+    assert_eq!(own.notification.process_identifier, 5);
+    sleep(Duration::from_secs(30)).await;
+    // On network 1: one Simple-ACK for ConfirmedEventNotification (service
+    // 2), whoever else wrote there.
+    let answers = std::iter::from_fn(|| site.to_client.try_recv().ok())
+        .filter(|npdu| {
+            npdu.get(2..)
+                .is_some_and(|apdu| apdu[0] >> 4 == 2 && apdu.get(2) == Some(&2))
+        })
+        .count();
+    assert_eq!(answers, 1);
+    site.stop().await;
+}
+
 impl Site {
     fn hosted_transport_max_npdu(&self) -> NpduLimits {
         self.hosted.transport().expect("running").max_npdu()

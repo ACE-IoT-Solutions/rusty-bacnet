@@ -3621,31 +3621,40 @@ let client = BACnetClient::generic_builder().transport(ports.client).build().awa
 
 The router shares out what it delivers to its application:
 
-- A Confirmed-Request goes to the server, except a ConfirmedCOVNotification or
-  ConfirmedEventNotification, which goes to the client.
+- A Confirmed-Request goes to the server, with two exceptions. A
+  ConfirmedCOVNotification goes to the client alone. A
+  ConfirmedEventNotification goes to both: the client hears it, and the server
+  takes it for its Notification Forwarders. The server's answer is the one
+  sent; the client's is dropped. A ConfirmedAuditNotification goes to the
+  server alone, since only the server handles it.
 - An Unconfirmed-Request goes to both. The client hears I-Am, I-Have and
   unconfirmed notifications; the server hears Who-Is, Who-Has and the rest.
   Each ignores what it doesn't use.
 - An answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK or
   Abort with the server bit set) goes to whichever stack sent the request it
   answers, matched by device and invoke ID. The server sends requests too:
-  notifications, writes to Command targets and binding probes. An answer that
-  matches no open request goes to the client.
+  notifications, writes to Command targets and binding probes. A request stays
+  matched for 10 seconds after its final answer, so the requester's last
+  Segment-ACK and a device's repeated final segment still find it. An answer
+  that matches no request goes to the client, unless the client could take it
+  for a request that went out under another invoke ID; that one is dropped.
 - A Segment-ACK or Abort with the server bit clear comes from a device acting
   as the requester, so it goes to the server.
 
 The two stacks choose invoke IDs on their own. When both have a request open
 to one device under the same invoke ID, the later one goes out under another ID
 that is free for that device, and its answers come back under its own ID. The
-ports track up to 1,024 open requests, each for 60 seconds from its last
-segment, retry or answer.
+ports track up to 1,024 requests, each for 60 seconds from its last segment,
+retry or answer; past 1,024, the least recently used one is forgotten, even if
+still open. Keep each stack's APDU and segment timeouts under 60 seconds, or a
+late answer goes unmatched.
 
 Each port holds only a few NPDUs, and the router's local queue stays the buffer
 that fills and drops, with its admission accounting. A stack that leaves its
 port's queue full for 100 ms is taken as stalled. The other stack stops
 waiting for it, and what arrives for it is dropped while its queue is full,
 until it takes something again. A stalled stack therefore holds the other up
-for at most 100 ms at a time. When neither has room, nothing more is taken
+for at most 100 ms each time it frees a slot and then stays full again. When neither has room, nothing more is taken
 from the router's queue.
 
 ### Moving a router table from 0.12

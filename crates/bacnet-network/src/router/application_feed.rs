@@ -8,15 +8,20 @@
 //! [split](super::StartedRouter::into_application_ports) between a client
 //! and a server, it goes by what it is:
 //!
-//! - a Confirmed-Request goes to the server, unless it is a COV or event
-//!   notification, which only the client takes;
+//! - a Confirmed-Request goes to the server, unless it is a COV
+//!   notification, which only the client takes, or an event notification,
+//!   which goes to both: the server's answer is sent, and the client's is
+//!   dropped;
 //! - an Unconfirmed-Request goes to both: the client takes I-Am, I-Have and
 //!   notifications, the server Who-Is, Who-Has and the rest, and each
 //!   ignores what it doesn't use;
 //! - an answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK
 //!   or Abort with its server bit set, so sent by the side that answers)
 //!   goes to whichever stack sent the request it answers, found by device
-//!   and invoke ID ([`Transactions`]), or to the client when none did;
+//!   and invoke ID ([`Transactions`]) among requests open or closed in the
+//!   last few seconds, or to the client when none did, unless the client
+//!   could take it for a request that went out under another ID: that one
+//!   is dropped;
 //! - a Segment-ACK or Abort with the server bit clear comes from a device
 //!   acting as the requester, so it goes to the server.
 //!
@@ -29,7 +34,7 @@
 //! [`STALL`] is taken as stalled: the task stops waiting for it, and the
 //! APDUs meant for it are dropped while its queue stays full, until it has
 //! room again. A stalled consumer therefore holds the other one up for at
-//! most [`STALL`] at a time. When no consumer has room, the task waits for
+//! most [`STALL`] each time it frees a slot and then stays full again. When no consumer has room, the task waits for
 //! one, and the router's queue drops. The router itself never waits.
 
 use std::borrow::Cow;
@@ -45,7 +50,7 @@ use tokio::time::{Duration, Instant, timeout_at};
 use tracing::debug;
 
 use super::application_replies::Replies;
-use super::application_transactions::{Side, Transactions};
+use super::application_transactions::{Owner, Side, Transactions};
 use super::options::sealed::ApduSource;
 use crate::layer::ReceivedApdu;
 
@@ -318,16 +323,23 @@ impl Router {
             None => [true, false],
             Some(transactions) => match classify(&apdu.apdu) {
                 Route::To(side) => to(side),
-                Route::Both => [true, true],
+                Route::Both | Route::ServerAnswers => [true, true],
                 Route::Answer { invoke_id, ends } => {
                     match transactions.answer(network, mac, invoke_id, ends) {
-                        Some((side, local)) => {
+                        Owner::Stack(side, local) => {
                             if local != invoke_id {
                                 payload.to_mut()[1] = local;
                             }
                             to(side)
                         }
-                        None => to(Side::Client),
+                        Owner::Unknown => to(Side::Client),
+                        Owner::Ambiguous => {
+                            debug!(
+                                invoke_id,
+                                "router application: an answer that would match a translated request"
+                            );
+                            return [None, None];
+                        }
                     }
                 }
                 Route::Neither => {
@@ -356,9 +368,13 @@ impl Router {
             return [None, None];
         }
         if let Some(response) = apdu.router_response {
-            // A Confirmed-Request, which goes to one slot.
+            // A Confirmed-Request. One that goes to both is the server's to
+            // answer; the client's answer is swallowed.
             let slot = usize::from(slots[1]);
             self.replies[slot].save(network, mac, &apdu.apdu, response);
+            if slots == [true, true] {
+                self.replies[0].silence(network, mac, &apdu.apdu);
+            }
         }
         let npdu = Bytes::from(buf);
         let up = |npdu: Bytes| ReceivedNpdu {
@@ -392,6 +408,8 @@ pub(super) enum Route {
     To(Side),
     /// An Unconfirmed-Request: to both.
     Both,
+    /// A ConfirmedEventNotification: to both, for the server to answer.
+    ServerAnswers,
     /// An answer to a request one of the stacks sent, to be matched by
     /// `invoke_id`; `ends` when it closes that request.
     Answer {
@@ -420,8 +438,11 @@ pub(super) fn classify(apdu: &[u8]) -> Route {
             // segmented request, else the invoke ID.
             let service = apdu.get(if first & 0x08 != 0 { 5 } else { 3 });
             match service {
-                // ConfirmedCOVNotification, ConfirmedEventNotification.
-                Some(1 | 2) => Route::To(Side::Client),
+                // ConfirmedCOVNotification: only the client takes it.
+                Some(1) => Route::To(Side::Client),
+                // ConfirmedEventNotification: the client hears it, and the
+                // server takes it too, for its Notification Forwarders.
+                Some(2) => Route::ServerAnswers,
                 _ => Route::To(Side::Server),
             }
         }

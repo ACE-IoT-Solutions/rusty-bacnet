@@ -9,7 +9,9 @@ use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, advance, timeout};
 
-use super::super::application_transactions::{CAPACITY, LIFETIME, Side, Transactions};
+use super::super::application_transactions::{
+    CAPACITY, CLOSED, LIFETIME, Owner, Side, Transactions,
+};
 use super::super::priority_harness::*;
 use super::super::{RouterApplicationPorts, RouterOptions};
 use super::{QUEUE, Route, STALL, classify, outbound};
@@ -27,13 +29,15 @@ fn each_pdu_type_goes_where_it_belongs() {
     let client = To(Side::Client);
     let server = To(Side::Server);
     let answer = |ends| Answer { invoke_id: 9, ends };
-    let cases: [(&[u8], Route); 22] = [
-        // Confirmed-Requests: ReadProperty to the server, notifications
-        // (services 1 and 2) to the client, segmented ones too.
+    let cases: [(&[u8], Route); 23] = [
+        // Confirmed-Requests: ReadProperty and audit notifications (32) to
+        // the server, COV notifications (1) to the client, event
+        // notifications (2) to both, segmented ones too.
         (&[0x00, 0x05, 9, 0x0C], server),
         (&[0x00, 0x05, 9, 0x01], client),
-        (&[0x00, 0x05, 9, 0x02], client),
-        (&[0x08, 0x05, 9, 0, 1, 0x02], client),
+        (&[0x00, 0x05, 9, 0x02], ServerAnswers),
+        (&[0x08, 0x05, 9, 0, 1, 0x02], ServerAnswers),
+        (&[0x00, 0x05, 9, 0x20], server),
         (&[0x08, 0x05, 9, 0, 1, 0x0C], server),
         (&[0x00, 0x05, 9], server),
         // Unconfirmed-Requests, either bit.
@@ -64,8 +68,9 @@ fn each_pdu_type_goes_where_it_belongs() {
 }
 
 /// Requests to one device under one invoke ID from both stacks: the later
-/// goes out under the next free ID, and the answers come back to each.
-#[tokio::test]
+/// goes out under the next free ID, and the answers come back to each,
+/// also for a while after the final one.
+#[tokio::test(start_paused = true)]
 async fn shared_invoke_ids_are_kept_apart() {
     let transactions = Transactions::default();
     assert_eq!(transactions.request(Side::Server, STATION_7, 3), Some(3));
@@ -85,24 +90,53 @@ async fn shared_invoke_ids_are_kept_apart() {
     assert_eq!(transactions.requester(Side::Client, STATION_7, 3, false), 4);
     assert_eq!(transactions.requester(Side::Server, STATION_7, 9, false), 9);
 
-    // A segment of the answer leaves the request open; the last ends it.
-    assert_eq!(
-        transactions.answer(2000, &[7], 4, false),
-        Some((Side::Client, 3))
-    );
-    assert_eq!(
-        transactions.answer(2000, &[7], 4, true),
-        Some((Side::Client, 3))
-    );
-    assert_eq!(transactions.answer(2000, &[7], 4, true), None);
+    // A segment of the answer leaves the request open; the last closes it.
+    let client_3 = Owner::Stack(Side::Client, 3);
+    assert_eq!(transactions.answer(2000, &[7], 4, false), client_3);
+    assert_eq!(transactions.answer(2000, &[7], 4, true), client_3);
+    // Closed, it still translates the final Segment-ACK, and a repeat of
+    // the final segment, and that ACK's repeat.
+    assert_eq!(transactions.requester(Side::Client, STATION_7, 3, false), 4);
+    assert_eq!(transactions.answer(2000, &[7], 4, true), client_3);
+    assert_eq!(transactions.requester(Side::Client, STATION_7, 3, false), 4);
     assert_eq!(
         transactions.answer(2000, &[7], 3, true),
-        Some((Side::Server, 3))
+        Owner::Stack(Side::Server, 3)
     );
-    // A requester's Abort ends its request.
+    // And keeps 4 from the other stack meanwhile.
+    assert_eq!(transactions.request(Side::Server, STATION_7, 4), Some(6));
+    // A requester's Abort closes its request, which still matches.
     assert_eq!(transactions.requester(Side::Client, STATION_7, 4, true), 5);
-    assert_eq!(transactions.answer(2000, &[7], 5, true), None);
-    assert_eq!(transactions.len(), 1, "the other device's");
+    assert_eq!(
+        transactions.answer(2000, &[7], 5, true),
+        Owner::Stack(Side::Client, 4)
+    );
+    assert_eq!(transactions.answer(2000, &[7], 77, true), Owner::Unknown);
+
+    // Once the closed ones are gone: an answer under 6 is the server's
+    // open one; one under 4 matches nothing, but the server knows its
+    // request under 6 as 4, so it can't go up unchanged.
+    advance(CLOSED).await;
+    assert_eq!(
+        transactions.answer(2000, &[7], 6, false),
+        Owner::Stack(Side::Server, 4)
+    );
+    assert_eq!(transactions.answer(2000, &[7], 4, true), Owner::Ambiguous);
+    assert_eq!(transactions.answer(2000, &[7], 3, true), Owner::Unknown);
+    // A closed request's own stack reopens it under the same ID.
+    transactions.answer(2000, &[7], 6, true);
+    assert_eq!(transactions.request(Side::Server, STATION_7, 4), Some(6));
+    advance(CLOSED).await;
+    assert_eq!(
+        transactions.answer(2000, &[7], 6, true),
+        Owner::Stack(Side::Server, 4),
+        "open again, so kept past CLOSED"
+    );
+    assert_eq!(
+        transactions.len(),
+        2,
+        "the server's 4 and the other device's"
+    );
 }
 
 /// The bytes a stack sends, with the ID they go out under.
@@ -131,13 +165,23 @@ async fn outbound_apdus_carry_the_wire_id() {
     };
     let sent = outbound(&transactions, Side::Client, everyone, &read).unwrap();
     assert_eq!(&sent[..], read);
-    assert_eq!(transactions.len(), 1, "the server's request");
+    assert_eq!(
+        transactions.len(),
+        2,
+        "the server's request, and the client's, closed by its Abort"
+    );
 
-    // Every ID to the device in use: refused.
+    // Every ID to the device in use: a new request is refused.
     for id in 0..=u8::MAX {
         let _ = transactions.request(Side::Server, STATION_7, id);
     }
-    let error = outbound(&transactions, Side::Client, STATION_7, &read).unwrap_err();
+    let error = outbound(
+        &transactions,
+        Side::Client,
+        STATION_7,
+        &[0x00, 0x05, 9, 0x0C],
+    )
+    .unwrap_err();
     assert!(
         matches!(&error, bacnet_types::error::Error::Transport(io) if io.kind() == std::io::ErrorKind::WouldBlock),
         "{error:?}"
@@ -156,10 +200,14 @@ async fn open_requests_expire_and_are_bounded() {
     advance(LIFETIME - Duration::from_secs(1)).await;
     assert_eq!(
         transactions.answer(2000, &[7], 1, false),
-        Some((Side::Server, 1))
+        Owner::Stack(Side::Server, 1)
     );
     advance(LIFETIME).await;
-    assert_eq!(transactions.answer(2000, &[7], 1, true), None, "expired");
+    assert_eq!(
+        transactions.answer(2000, &[7], 1, true),
+        Owner::Unknown,
+        "expired"
+    );
 
     for index in 0..=CAPACITY {
         let mac = (index as u16).to_be_bytes();
@@ -172,10 +220,13 @@ async fn open_requests_expire_and_are_bounded() {
     assert_eq!(transactions.len(), CAPACITY);
     assert_eq!(
         transactions.answer(2000, &[0, 0], 0, true),
-        None,
+        Owner::Unknown,
         "pushed out"
     );
-    assert!(transactions.answer(2000, &[0, 1], 0, true).is_some());
+    assert_eq!(
+        transactions.answer(2000, &[0, 1], 0, true),
+        Owner::Stack(Side::Client, 0)
+    );
 }
 
 /// The two ports on a router with two driven ports, both started.
@@ -358,5 +409,108 @@ async fn the_ports_follow_the_routers_limits() {
         .unwrap();
     assert_eq!(*capped_changes.borrow(), NpduLimits::both(1000));
     assert_eq!(client.max_npdu(), NpduLimits::both(1497));
+    router.stop().await.unwrap();
+}
+
+/// Send `apdu` from `port` to station 7 on network 2000, expecting a reply
+/// when `expecting`, and return the APDU the router sent there.
+async fn to_station_7(
+    port: &super::super::RouterApplicationPort,
+    peer: &mut Peer,
+    apdu: &[u8],
+    expecting: bool,
+) -> Vec<u8> {
+    let control = if expecting { 0x24 } else { 0x20 };
+    let npdu = [&[1, control, 0x07, 0xD0, 1, 7, 255][..], apdu].concat();
+    let (sent, result) = tokio::join!(
+        async {
+            let sent = sending(peer).await;
+            sent.complete.send(Ok(())).unwrap();
+            assert_eq!(sent.to, Some(vec![7]));
+            sent.npdu
+        },
+        port.send_unicast(&npdu, &[0xEE])
+    );
+    result.unwrap();
+    sent[2..].to_vec()
+}
+
+/// A segmented Complex-ACK to the client's request, which went out under
+/// another ID: every segment, repeats included, comes up under the
+/// client's ID, and every Segment-ACK, the final one and its repeat
+/// included, goes out under the wire ID. The server's answer, and its
+/// repeat, still reach the server.
+#[tokio::test]
+async fn a_translated_segmented_answer_keeps_its_ids_to_the_end() {
+    let (mut router, ports, [mut client, mut server], mut peers) = split().await;
+    let peer = &mut peers[1];
+    assert_eq!(
+        to_station_7(&ports.server, peer, &[0x00, 0x05, 3, 0x02], true).await,
+        [0x00, 0x05, 3, 0x02]
+    );
+    assert_eq!(
+        to_station_7(&ports.client, peer, &[0x00, 0x05, 3, 0x0C], true).await,
+        [0x00, 0x05, 4, 0x0C]
+    );
+    let first = [0x3C, 4, 0, 1, 0x0C, 0xAA];
+    let last = [0x38, 4, 1, 1, 0x0C, 0xBB];
+    receive(&peers[1], [&[1, 0][..], &first].concat(), 0).await;
+    assert_eq!(&next(&mut client).await[6..], [0x3C, 3, 0, 1, 0x0C, 0xAA]);
+    let peer = &mut peers[1];
+    assert_eq!(
+        to_station_7(&ports.client, peer, &[0x40, 3, 0, 1], false).await,
+        [0x40, 4, 0, 1]
+    );
+    // The final segment closes the request; its Segment-ACK, the repeat of
+    // the segment and the repeat of the ACK all keep the IDs.
+    for _ in 0..2 {
+        receive(&peers[1], [&[1, 0][..], &last].concat(), 0).await;
+        assert_eq!(&next(&mut client).await[6..], [0x38, 3, 1, 1, 0x0C, 0xBB]);
+        let peer = &mut peers[1];
+        assert_eq!(
+            to_station_7(&ports.client, peer, &[0x40, 3, 1, 1], false).await,
+            [0x40, 4, 1, 1]
+        );
+    }
+    // The server's Simple-ACK, and a repeat of it after it closed.
+    for _ in 0..2 {
+        receive(&peers[1], vec![1, 0, 0x20, 3, 0x02], 0).await;
+        assert_eq!(&next(&mut server).await[6..], [0x20, 3, 0x02]);
+    }
+    assert!(client.try_recv().is_err());
+    router.stop().await.unwrap();
+}
+
+/// A ConfirmedEventNotification goes to both stacks: the server's answer is
+/// sent through the saved plan, the client's dropped.
+#[tokio::test]
+async fn an_event_notification_is_answered_by_the_server_alone() {
+    let (mut router, ports, [mut client, mut server], mut peers) = split().await;
+    let notification = [0x00, 0x05, 9, 0x02, 0x09, 0x01];
+    receive(&peers[1], [&[1, 0x04][..], &notification].concat(), 0).await;
+    assert_eq!(&next(&mut server).await[6..], notification);
+    assert_eq!(&next(&mut client).await[6..], notification);
+    assert_eq!(ports.server.saved_replies(), 1);
+    assert_eq!(ports.client.saved_replies(), 1);
+
+    let ack = [1, 0x20, 0x07, 0xD0, 1, 7, 255, 0x20, 9, 0x02];
+    // The client's: swallowed, nothing sent.
+    ports.client.send_unicast(&ack, &[0xEE]).await.unwrap();
+    assert_eq!(ports.client.saved_replies(), 0);
+    // The server's: sent to station 7 through the plan.
+    let peer = &mut peers[1];
+    let (sent, result) = tokio::join!(
+        async {
+            let sent = sending(peer).await;
+            sent.complete.send(Ok(())).unwrap();
+            (sent.to, sent.npdu)
+        },
+        ports.server.send_unicast(&ack, &[0xEE])
+    );
+    result.unwrap();
+    assert_eq!(sent.0, Some(vec![7]));
+    assert_eq!(&sent.1[2..], [0x20, 9, 0x02]);
+    assert!(peers[1].sent.try_recv().is_err(), "one answer only");
+    assert_eq!(router.counters().originated, 0);
     router.stop().await.unwrap();
 }

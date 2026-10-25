@@ -46,17 +46,20 @@ impl Shared {
     /// [`Engine::limits`] takes them, and log a change.
     pub(super) fn set_port_limits(&self, port: PortId, reported: NpduLimits) {
         let limits = Engine::limits(reported);
-        let (changed, smallest) = {
+        let changed = {
             let mut router = self.engine.lock();
             let changed = match router.ports().get(usize::from(port.0)) {
                 Some(config) if config.max_npdu == limits => Ok(false),
                 _ => router.set_port_max_npdu(port, limits).map(|()| true),
             };
-            (changed, smallest(router.ports()))
+            // Published under the engine's lock, so the ports' tasks publish
+            // in the order they change the engine. A watch send never waits,
+            // and nothing that borrows the watch takes the engine's lock.
+            let smallest = smallest(router.ports());
+            self.application_limits
+                .send_if_modified(|current| std::mem::replace(current, smallest) != smallest);
+            changed
         };
-        // Sent with the engine's lock let go; a watch send never waits.
-        self.application_limits
-            .send_if_modified(|current| std::mem::replace(current, smallest) != smallest);
         match changed {
             Ok(true) => info!(
                 port = port.0,

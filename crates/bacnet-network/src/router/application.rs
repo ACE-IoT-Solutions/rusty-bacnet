@@ -50,6 +50,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::application_feed::{Feed, outbound, slot};
+use super::application_replies::Plan;
 use super::application_transactions::Side;
 use super::dispatch::{Outputs, Shared};
 use super::originate::{OriginateFailure, originate};
@@ -138,24 +139,35 @@ pub struct RouterApplicationPort {
 /// Both send as [`RouterApplicationPort`] does. What the router delivers is
 /// shared out by what it is:
 ///
-/// - a Confirmed-Request goes to the server, except a ConfirmedCOV- or
-///   ConfirmedEventNotification, which goes to the client;
+/// - a Confirmed-Request goes to the server, except a
+///   ConfirmedCOVNotification, which goes to the client, and a
+///   ConfirmedEventNotification, which goes to both: the server's answer is
+///   sent and the client's dropped. A ConfirmedAuditNotification goes to the
+///   server alone;
 /// - an Unconfirmed-Request goes to both, so the client hears I-Am, I-Have
 ///   and unconfirmed notifications, and the server Who-Is and Who-Has;
 /// - an answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK or
 ///   Abort sent by the answering side) goes to the port whose stack sent the
-///   request, matched by device and invoke ID, or to the client when neither
-///   did;
+///   request, matched by device and invoke ID among requests open or closed
+///   within the last 10 seconds, or to the client when neither did. One the
+///   client could mistake for a request that went out under another ID is
+///   dropped;
 /// - a Segment-ACK or Abort sent by a requester goes to the server.
 ///
 /// The two stacks choose invoke IDs on their own. When both have a request
 /// open to one device under the same ID, the later one goes out under
 /// another ID free for that device, and its answers come back under its own.
+/// Up to 1,024 requests are tracked, each for 60 seconds from its last
+/// segment, retry or answer; past that the least recently used goes. Each
+/// of the stacks' waits for one answer or segment, such as a client's APDU
+/// timeout, must be shorter than 60 seconds, or a late answer goes
+/// unmatched.
 ///
 /// Each port's queue is small, and the router's local queue stays the one
 /// that fills and drops. A stack that stops taking what its port holds for
 /// 100 ms is taken as stalled: the other no longer waits for it, and what
-/// arrives for it is dropped until it has room again.
+/// arrives for it is dropped while its queue is full. It holds the other up
+/// for at most 100 ms each time it frees a slot and stays full again.
 ///
 /// ```no_run
 /// # use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort};
@@ -196,7 +208,9 @@ impl<A: LocalApduReceiver, C> StartedRouter<A, C> {
     }
 
     /// [`Self::into_application_port`], with the entity split between a
-    /// client and a server (#2069). See [`RouterApplicationPorts`].
+    /// client and a server (#2069). See [`RouterApplicationPorts`], whose
+    /// invoke-ID tracking needs each stack's APDU and segment timeouts under
+    /// 60 seconds.
     pub fn into_application_ports(self) -> (BACnetRouter, RouterApplicationPorts, Option<C>) {
         let ports = self.router.application_ports(self.apdus);
         (self.router, ports, self.network_control)
@@ -298,10 +312,15 @@ impl RouterApplicationPort {
             ));
         };
         let replies = &self.feed.replies[slot(self.side)];
-        if let Some(response) = replies.plan_for(destination, npdu.payload) {
-            return replies
-                .send(&response, npdu.payload, npdu.expecting_reply, npdu.priority)
-                .await;
+        match replies.plan_for(destination, npdu.payload) {
+            Some(Plan::Send(response)) => {
+                return replies
+                    .send(&response, npdu.payload, npdu.expecting_reply, npdu.priority)
+                    .await;
+            }
+            // The server answers this one.
+            Some(Plan::Silenced) => return Ok(()),
+            None => {}
         }
         let apdu = match (self.side, &self.feed.transactions) {
             (Some(side), Some(transactions)) => {
