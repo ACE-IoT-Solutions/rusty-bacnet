@@ -331,10 +331,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use bacnet_ops::engine::ReadVia;
     use bacnet_types::enums::ObjectType;
 
     use super::*;
-    use crate::tui::point::ReadVia;
 
     fn view(instance: u32) -> BrowseResult {
         BrowseResult::Object(Box::new(ObjectView {

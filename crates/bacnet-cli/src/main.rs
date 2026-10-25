@@ -6,9 +6,12 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // a command-line tool prints its results
 #![forbid(unsafe_code)]
 
+use std::time::Duration;
 use std::{io::IsTerminal, net::Ipv4Addr};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::destination::{self, Destination};
+use bacnet_ops::{parse, target};
 use bacnet_transport::{bip::BipTransport, port::TransportPort};
 use clap::{CommandFactory, FromArgMatches};
 
@@ -25,7 +28,6 @@ mod mstp;
 mod mstp_thread;
 mod multicast;
 mod output;
-mod parse;
 #[cfg(feature = "tui")]
 mod paths;
 mod sc_check;
@@ -34,10 +36,8 @@ mod transport;
 #[cfg(feature = "tui")]
 mod tui;
 
-use crate::core::destination::{self, Destination};
 use crate::core::guard;
 use crate::core::range::parse_discover_range;
-use crate::core::target;
 use args::{Cli, Command};
 use output::OutputFormat;
 
@@ -87,13 +87,30 @@ async fn resolve_target_mac<T: TransportPort + 'static>(
     Ok(destination::resolve_mac(client, target_str).await?)
 }
 
+/// How long a routed target waits for its device to answer a Who-Is sent
+/// to its network, as long as `discover` waits by default.
+const ROUTED_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
+
+/// Undocumented: milliseconds to wait instead, so tests of a device that
+/// never answers don't wait the full three seconds.
+const ROUTED_WAIT_VAR: &str = "BACNET_CLI_ROUTED_WAIT_MS";
+
+/// How long a routed target waits for its device: [`ROUTED_DISCOVERY_WAIT`],
+/// unless the environment sets another wait for a test.
+fn routed_wait() -> Duration {
+    std::env::var(ROUTED_WAIT_VAR)
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(ROUTED_DISCOVERY_WAIT, Duration::from_millis)
+}
+
 /// Resolve a target string for a command with a routed client call: read,
 /// readm, write and subscribe also take `dnet:instance` and `dnet:0xMAC`.
 async fn resolve_destination<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Destination, Box<dyn std::error::Error>> {
-    Ok(destination::resolve(client, target_str, destination::routed_wait()).await?)
+    Ok(destination::resolve(client, target_str, routed_wait()).await?)
 }
 
 /// Execute a one-shot CLI command.
@@ -531,8 +548,8 @@ fn guard_one_shot(cli: &Cli, confirm: &mut dyn guard::Confirm) -> Result<(), gua
     };
     // A name that wasn't captured classifies as nothing, so it is refused.
     let name = cli.command_name.as_deref().unwrap_or_default();
-    let class = core::class::of(name).map(|class| match command {
-        Command::Subscribe { lifetime, .. } => core::class::of_subscribe(*lifetime),
+    let class = bacnet_ops::class::of(name).map(|class| match command {
+        Command::Subscribe { lifetime, .. } => bacnet_ops::class::of_subscribe(*lifetime),
         _ => class,
     });
     guard::check(name, class, target, cli.policy(), confirm)

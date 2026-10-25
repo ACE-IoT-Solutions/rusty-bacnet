@@ -83,8 +83,7 @@ fn failed(kind: io::ErrorKind, message: String) -> Error {
 
 /// A VMAC as six hex digits, as in `0x0004D2`.
 pub(super) fn vmac_text(vmac: Bip6Vmac) -> String {
-    let [high, middle, low] = vmac.octets();
-    format!("0x{high:02X}{middle:02X}{low:02X}")
+    bacnet_types::bip6_vmac::VmacHex(vmac.octets()).to_string()
 }
 
 /// The VMAC a network-layer MAC names: exactly three octets (U.1.3).

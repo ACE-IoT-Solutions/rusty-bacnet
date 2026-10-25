@@ -2,6 +2,8 @@
 
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::primitives::encode_property_value;
+use bacnet_ops::destination::Destination;
+use bacnet_ops::parse;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_transport::port::TransportPort;
@@ -9,9 +11,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 
-use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
-use crate::parse;
 
 /// Encode a `PropertyValue` into raw application-tagged bytes.
 fn encode_value(value: &PropertyValue) -> Result<Vec<u8>, Box<dyn std::error::Error>> {

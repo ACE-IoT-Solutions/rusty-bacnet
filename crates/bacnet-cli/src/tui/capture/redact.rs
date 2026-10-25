@@ -25,13 +25,12 @@
 //!   either request at every offset. Since such a match is only a guess,
 //!   it needs more to count: a plausible APDU header (reserved bits clear,
 //!   a defined maximum APDU, on a segment a window of 1 to 127 and one of
-//!   the first three sequence numbers), and on a
-//!   first segment a walk that reaches the password tag through the
-//!   expected fields, the mandatory one included. The search stops at the
-//!   first match masked, so it is linear in the frame. Damage to the APDU
-//!   header itself (its PDU type, its service octet, or a COBS code octet
-//!   before it) leaves nothing to find, and such a frame keeps its
-//!   password.
+//!   the first three sequence numbers), and on a first segment a walk that
+//!   reaches the password tag through the expected fields, the required
+//!   one included. The search stops at the first match masked, so it is
+//!   linear in the frame. Damage to the APDU header itself (its PDU type,
+//!   its service octet, or a COBS code octet before it) leaves nothing to
+//!   find, and such a frame keeps its password.
 //!
 //! B/IP, B/IPv6 and BACnet/SC frames keep their length, so the export still
 //! parses. A valid MS/TP frame is encoded again so its data CRC matches; an

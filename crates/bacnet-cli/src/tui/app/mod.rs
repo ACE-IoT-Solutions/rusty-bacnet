@@ -28,6 +28,8 @@ mod worker_events;
 
 use std::time::{Duration, Instant};
 
+use bacnet_ops::target::AddressStyle;
+
 use self::browser::Browser;
 use self::devices::{DeviceTable, Duplicates, Movement};
 use self::picker::{Picker, PickerKey};
@@ -35,7 +37,6 @@ use self::watch::{Screen, WatchList};
 use self::whois::{FormKey, FormOutcome, WhoIsForm};
 use super::log_layer::LogRing;
 use super::message::{Command, Failure, OpId, OpOutcome, WhoIsSpec, WorkerEvent};
-use crate::core::target::AddressStyle;
 
 /// A second Ctrl-C within this window quits.
 pub(crate) const CTRL_C_WINDOW: Duration = Duration::from_secs(2);

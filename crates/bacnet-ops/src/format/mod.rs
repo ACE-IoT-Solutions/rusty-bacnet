@@ -1,5 +1,6 @@
-//! The TUI's one value formatter: property values as read, turned into the
-//! text the browser, the watch list and the write previews show.
+//! The one value formatter the TUI and the MCP server share: property
+//! values as read, turned into the text the browser, the watch list and the
+//! write previews show.
 //!
 //! It knows the object type, so a constructed value (timestamps, schedule
 //! days, references) is split with the element table from
@@ -22,20 +23,77 @@ mod units;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::decode_application_value;
-use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use units::unit_symbol;
 
-/// A property as read: its raw application-tagged value, or an error.
-pub(crate) type RawRow = (PropertyIdentifier, Result<Vec<u8>, String>);
+/// A property as read: its raw application-tagged value, or why the device
+/// gave none.
+pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, RowError>);
+
+/// Why one property of a read has no value. Structured, so a front end can
+/// report the device's error class and code as data, not only as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowError {
+    /// The device answered this property with an error, a reject or an
+    /// abort.
+    Remote(RemoteError),
+    /// The device's answer for this property held neither a value nor an
+    /// error.
+    NoValue,
+    /// Any other failure of this property's read, as text.
+    Other(String),
+}
+
+impl RowError {
+    /// The device's error class and code, when it answered with an error.
+    pub fn class_code(&self) -> Option<(ErrorClass, ErrorCode)> {
+        match self {
+            Self::Remote(RemoteError::Error { class, code }) => Some((*class, *code)),
+            _ => None,
+        }
+    }
+}
+
+impl From<Error> for RowError {
+    /// The device's error, reject or abort as [`RowError::Remote`], with a
+    /// structured Error PDU reduced to its class and code; anything else
+    /// as text.
+    fn from(error: Error) -> Self {
+        match error.remote() {
+            Some(remote) => Self::Remote(remote),
+            None => Self::Other(error.to_string()),
+        }
+    }
+}
+
+impl std::error::Error for RowError {}
+
+impl std::fmt::Display for RowError {
+    /// An error as `CLASS:CODE` (`PROPERTY:UNKNOWN_PROPERTY`), the form
+    /// the TUI shows; a reject or abort, or any other failure, as its own
+    /// text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remote(RemoteError::Error { class, code }) => write!(f, "{class}:{code}"),
+            Self::Remote(remote) => write!(f, "{remote}"),
+            Self::NoValue => f.write_str("no value"),
+            Self::Other(text) => f.write_str(text),
+        }
+    }
+}
 
 /// Values shown before the rest of a list is summarised.
 const MAX_LIST_SHOWN: usize = 8;
 
 /// Every application-tagged value in `data`, or `None` if any part of it
 /// doesn't decode. A context tag decodes as `ApplicationData`.
-pub(crate) fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
+pub fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
     let mut offset = 0;
     let mut values = Vec::new();
     while offset < data.len() {
@@ -48,7 +106,7 @@ pub(crate) fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
 
 /// How floats are written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Floats {
+pub enum Floats {
     /// At most six significant digits, trailing zeros trimmed.
     Display,
     /// Every digit: the shortest text that reads back as the same value.
@@ -57,19 +115,19 @@ pub(crate) enum Floats {
 
 /// The object's own names for its states, when they were read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct StateTexts {
+pub struct StateTexts {
     /// A binary object's Active_Text.
-    pub(crate) active: Option<String>,
+    pub active: Option<String>,
     /// A binary object's Inactive_Text.
-    pub(crate) inactive: Option<String>,
+    pub inactive: Option<String>,
     /// A multi-state object's State_Text, state 1 first.
-    pub(crate) states: Vec<String>,
+    pub states: Vec<String>,
 }
 
 impl StateTexts {
     /// The properties that hold an object type's state texts, to read with
     /// the value; none for a type without them.
-    pub(crate) fn properties(object_type: ObjectType) -> &'static [PropertyIdentifier] {
+    pub fn properties(object_type: ObjectType) -> &'static [PropertyIdentifier] {
         if is_binary(object_type) {
             &[
                 PropertyIdentifier::ACTIVE_TEXT,
@@ -83,7 +141,7 @@ impl StateTexts {
     }
 
     /// The texts among properties as read.
-    pub(crate) fn from_rows(rows: &[RawRow]) -> Self {
+    pub fn from_rows(rows: &[RawRow]) -> Self {
         let values = |property| {
             rows.iter()
                 .find(|(p, _)| *p == property)
@@ -140,7 +198,7 @@ fn holds_state(property: PropertyIdentifier) -> bool {
 
 /// Formats the values of one object.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ValueFormat<'a> {
+pub struct ValueFormat<'a> {
     object_type: ObjectType,
     texts: &'a StateTexts,
     floats: Floats,
@@ -148,7 +206,7 @@ pub(crate) struct ValueFormat<'a> {
 
 impl<'a> ValueFormat<'a> {
     /// A formatter for an object of `object_type`.
-    pub(crate) fn new(object_type: ObjectType, texts: &'a StateTexts, floats: Floats) -> Self {
+    pub fn new(object_type: ObjectType, texts: &'a StateTexts, floats: Floats) -> Self {
         Self {
             object_type,
             texts,
@@ -159,7 +217,7 @@ impl<'a> ValueFormat<'a> {
     /// A property's value as display text: decoded as the element the table
     /// names for it when it has a renderer and the octets decode as those
     /// elements to the end, and otherwise as application values.
-    pub(crate) fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
+    pub fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
         if let Some((element, shape)) = property_element(self.object_type, property)
             && let Some(texts) = constructed::elements(self, element, data)
         {
@@ -197,7 +255,7 @@ impl<'a> ValueFormat<'a> {
 
     /// A value with the units after it, as the compact places show it:
     /// `72.5 °F`. Only numbers take units.
-    pub(crate) fn with_units(
+    pub fn with_units(
         &self,
         property: PropertyIdentifier,
         data: &[u8],
@@ -221,7 +279,7 @@ impl<'a> ValueFormat<'a> {
 
     /// A property's value as the device card shows it: a string without
     /// its quotes.
-    pub(crate) fn plain(&self, property: PropertyIdentifier, data: &[u8]) -> String {
+    pub fn plain(&self, property: PropertyIdentifier, data: &[u8]) -> String {
         match decode_all(data).as_deref() {
             Some([PropertyValue::CharacterString(text)]) => text.clone(),
             _ => self.value(property, data),
@@ -229,7 +287,7 @@ impl<'a> ValueFormat<'a> {
     }
 
     /// One application value of `property`.
-    pub(crate) fn element(&self, property: PropertyIdentifier, value: &PropertyValue) -> String {
+    pub fn element(&self, property: PropertyIdentifier, value: &PropertyValue) -> String {
         if holds_state(property)
             && let Some(state) = self.state(value)
         {
@@ -278,11 +336,11 @@ fn list(texts: Vec<String>, separator: &str) -> String {
 }
 
 /// Longest name kept, in characters; a device's longer name is cut.
-pub(crate) const MAX_NAME_CHARS: usize = 128;
+pub const MAX_NAME_CHARS: usize = 128;
 
 /// The Object_Name among properties as read; `None` when the device
 /// answered it with an error or left it out. See [`name_text`].
-pub(crate) fn object_name(rows: &[RawRow]) -> Option<String> {
+pub fn object_name(rows: &[RawRow]) -> Option<String> {
     let (_, value) = rows
         .iter()
         .find(|(p, _)| *p == PropertyIdentifier::OBJECT_NAME)?;
@@ -291,7 +349,7 @@ pub(crate) fn object_name(rows: &[RawRow]) -> Option<String> {
 
 /// An encoded Object_Name as text (see [`clean_name`]); `None` unless it
 /// is one character string.
-pub(crate) fn name_text(data: &[u8]) -> Option<String> {
+pub fn name_text(data: &[u8]) -> Option<String> {
     match decode_all(data)?.as_slice() {
         [PropertyValue::CharacterString(text)] => Some(clean_name(text)),
         _ => None,
@@ -300,7 +358,7 @@ pub(crate) fn name_text(data: &[u8]) -> Option<String> {
 
 /// A device's name for display: each control character as a space, so it
 /// can't move the cursor or break a row, and at most [`MAX_NAME_CHARS`].
-pub(crate) fn clean_name(text: &str) -> String {
+pub fn clean_name(text: &str) -> String {
     text.chars()
         .take(MAX_NAME_CHARS)
         .map(|ch| if ch.is_control() { ' ' } else { ch })
@@ -308,7 +366,7 @@ pub(crate) fn clean_name(text: &str) -> String {
 }
 
 /// The Units among properties as read.
-pub(crate) fn units(rows: &[RawRow]) -> Option<EngineeringUnits> {
+pub fn units(rows: &[RawRow]) -> Option<EngineeringUnits> {
     let (_, value) = rows.iter().find(|(p, _)| *p == PropertyIdentifier::UNITS)?;
     match decode_all(value.as_deref().ok()?)?.as_slice() {
         [PropertyValue::Enumerated(raw)] => Some(EngineeringUnits::from_raw(*raw)),

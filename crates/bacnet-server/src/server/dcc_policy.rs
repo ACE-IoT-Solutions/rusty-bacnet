@@ -1,5 +1,6 @@
 use super::{BipServerBuilder, ServerBuilder, TransportPort};
 use bacnet_encoding::npdu::NpduAddress;
+use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_fits};
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::error::Error;
 
@@ -143,6 +144,18 @@ impl DccSourceRestriction {
 
 impl super::ServerConfig {
     pub(super) fn validate_dcc_config(&self) -> Result<(), Error> {
+        // A configured password past the 20-character limit could never be
+        // sent, so it would refuse every request (#2060).
+        for (name, password) in [
+            ("dcc_password", &self.dcc_password),
+            ("reinit_password", &self.reinit_password),
+        ] {
+            if password.as_deref().is_some_and(|p| !password_fits(p)) {
+                return Err(Error::Encoding(format!(
+                    "{name} exceeds the {MAX_PASSWORD_CHARS}-character limit"
+                )));
+            }
+        }
         self.dcc_policy.validate(&self.dcc_password)?;
         if let Some(restriction) = &self.dcc_source_restriction {
             restriction.validate_policy(self.dcc_policy)?;

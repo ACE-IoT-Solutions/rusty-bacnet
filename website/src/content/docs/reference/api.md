@@ -28,6 +28,7 @@ docs.rs builds the rustdoc of each library crate on crates.io when a version is 
 | [`bacnet-transport`](https://docs.rs/bacnet-transport), [`bacnet-network`](https://docs.rs/bacnet-network) | The hosted data links and the network layer and router |
 | [`bacnet-endpoint-core`](https://docs.rs/bacnet-endpoint-core), [`bacnet-endpoint`](https://docs.rs/bacnet-endpoint) | Shared endpoints that combine requester and responder roles on one transport |
 | [`bacnet-objects`](https://docs.rs/bacnet-objects), [`bacnet-client`](https://docs.rs/bacnet-client), [`bacnet-server`](https://docs.rs/bacnet-server) | The object database, the standalone client and the standalone server |
+| [`bacnet-ops`](https://docs.rs/bacnet-ops) | The UI-free operations core the `bacnet` CLI, its TUI and its planned MCP server share: target and value grammar, value formatting, request limits and a read engine |
 
 `bacnet-cli` is a program; use the CLI reference above for it. A crate added on `dev` after the release gets a docs.rs page once a release publishes it.
 

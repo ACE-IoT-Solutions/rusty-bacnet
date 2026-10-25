@@ -4,20 +4,20 @@
 //! command watches and cancelled when it stops, so it leaves nothing behind
 //! on the device. A lifetime of 0 asks for one that never expires (Clause
 //! 13.14.1.1.4); it stays after the CLI exits, which is why the write guard
-//! treats it as a write (`core::class`).
+//! treats it as a write (`bacnet_ops::class`).
 
 use std::future::Future;
 use std::time::Duration;
 
 use bacnet_client::client::{BACnetClient, COVNotificationDelivery, ReceivedCOVNotification};
 use bacnet_encoding::primitives::decode_application_value;
+use bacnet_ops::destination::Destination;
+use bacnet_ops::target::routed_station;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::core::destination::Destination;
-use crate::core::target::routed_station;
 use crate::output::{self, OutputFormat};
 
 /// The lifetime a subscription asks for when `--lifetime` is not given.
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(renewal_interval(u32::MAX), secs(u64::from(u32::MAX) - 30));
         assert_eq!(renewal_interval(0), None);
     }
-    use crate::core::target::{Target, parse_target};
+    use bacnet_ops::target::{Target, parse_target};
 
     /// A COV source on B/IPv6 prints as the `bip6:` VMAC a target takes back;
     /// other MACs print as hex.

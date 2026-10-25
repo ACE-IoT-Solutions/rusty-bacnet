@@ -13,6 +13,8 @@
 //! labels padded to the longest among the objects listed, and leaves the
 //! names out when fewer than [`MIN_NAME`] columns are left for them.
 
+use bacnet_ops::engine::ReadVia;
+use bacnet_ops::label::{PRIORITIES, kebab, object_label, priority_label};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -24,8 +26,9 @@ use super::{
     FULL_WIDTH, MIN_NAME, Names, Theme, WIDE_WIDTH, ellipsize, name_marker, sanitize, text_width,
 };
 use crate::tui::app::browser::{Browser, ListState, Pane, ViewState};
-use crate::tui::app::objects::{ListRow, kebab, object_label};
-use crate::tui::point::{ObjectView, PRIORITIES, PriorityView, ReadVia, priority_label};
+
+use crate::tui::app::objects::ListRow;
+use crate::tui::point::{ObjectView, PriorityView};
 
 /// Width of the left column (card over objects) in the full layout.
 const LEFT_WIDTH: u16 = 46;

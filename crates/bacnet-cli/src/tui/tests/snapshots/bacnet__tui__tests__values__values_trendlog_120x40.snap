@@ -13,7 +13,7 @@ expression: text
 "│ Protocol version  1                        ││ log-interval                 0                                         │"
 "│ Protocol revision 22                       ││ stop-when-full               false                                     │"
 "│ Services          33 supported             ││ buffer-size                  100                                       │"
-"│ Object types      64 supported             ││ log-buffer                   (PROPERTY:READ_ACCESS_DENIED)             │"
+"│ Object types      64 supported             ││ log-buffer                   (read-access-denied)                      │"
 "│ Max APDU          1476                     ││ record-count                 0                                         │"
 "│ Segmentation      none                     ││ total-record-count           0                                         │"
 "│ Database revision 0                        ││ status-flags                 none                                      │"

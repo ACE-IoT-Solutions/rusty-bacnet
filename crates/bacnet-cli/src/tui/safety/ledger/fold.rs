@@ -5,11 +5,11 @@
 //! element entry's own pre-image put back at its index.
 
 use bacnet_encoding::primitives::encode_property_value;
+use bacnet_ops::format::{Floats, StateTexts, ValueFormat, decode_all};
 use bacnet_types::enums::ObjectType;
 use bytes::BytesMut;
 
 use super::{Entry, Stored};
-use crate::tui::format::{Floats, StateTexts, ValueFormat, decode_all};
 
 /// The original array: `whole`, the whole write's pre-image, with each of
 /// `elements`' pre-images put back. `None` (unknown) when any of them is

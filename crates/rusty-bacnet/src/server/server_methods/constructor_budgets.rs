@@ -48,6 +48,7 @@ pub(super) fn dcc_configuration(
             ));
         }
     };
+    crate::reinitialize::password_limit("dcc_password", password)?;
     policy
         .validate(password)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;

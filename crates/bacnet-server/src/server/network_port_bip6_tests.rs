@@ -75,6 +75,9 @@ fn config() -> Bip6PortConfig {
     }
 }
 
+/// The served Device, whose instance gives [`VMAC`] (Clause H.7.2).
+const DEVICE_INSTANCE: u32 = 0x12_3456;
+
 fn database() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
@@ -99,6 +102,7 @@ async fn start_with(
     handler: bool,
 ) -> Result<BACnetServer<TestTransport>, Error> {
     let config = ServerConfig {
+        device: bacnet_objects::DeviceIdentity::new(DEVICE_INSTANCE, 0).unwrap(),
         registered_network_port: Some(port_oid()),
         on_reinitialize: handler
             .then(|| Arc::new(|_: &_, _: &mut _| Ok(())) as ReinitializeHandler),
@@ -413,4 +417,52 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
         refusal(BACnetServer::start(config, database(), transport).await),
         "registration requires an IPV4 port"
     );
+}
+
+/// Registration refuses a B/IPv6 link whose VMAC isn't the served Device's
+/// (#2057): a transport built for another Device instance, or one built
+/// with none (its VMAC random). The refusal comes before anything is
+/// reserved, and the server doesn't start.
+#[tokio::test]
+async fn registration_refuses_a_vmac_that_is_not_the_served_devices() {
+    let normal = bind(BipPortMode::Normal);
+    for (vmac, expected) in [
+        (
+            // Device 1234's VMAC.
+            Some([0x00, 0x04, 0xD2]),
+            "registered B/IPv6 refused: the transport's VMAC 0x0004D2 is not Device 1193046's \
+             VMAC 0x123456; build the transport with the served Device instance",
+        ),
+        (
+            None,
+            "registered B/IPv6 refused: the transport has no Device instance in 0..=4194303, \
+             so its VMAC would be random; build it with Device instance 1193046",
+        ),
+    ] {
+        let port = Bip6Port {
+            vmac,
+            ..normal.clone()
+        };
+        let mut db = database();
+        let mut transport = TestTransport::builder().bip6_port(port.clone()).build();
+        let error =
+            network_port::prepare(&mut db, &mut transport, Some(port_oid()), DEVICE_INSTANCE);
+        assert!(
+            matches!(&error, Err(Error::Encoding(message)) if message == expected),
+            "{error:?}"
+        );
+        assert_eq!(db.registered_port_internal(), None, "{expected}");
+        // Nothing holds the port: it can be reserved.
+        drop(
+            db.reserve_bip6_port_internal(port_oid(), PORT_IP.octets(), UDP)
+                .unwrap(),
+        );
+        assert_eq!(refusal(start_with(port, database(), false).await), expected);
+    }
+    // The served Device's own VMAC registers.
+    start(BipPortMode::Normal, false)
+        .await
+        .stop()
+        .await
+        .unwrap();
 }

@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::target::AddressStyle;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::mstp::MstpTransport;
@@ -30,7 +31,6 @@ use tokio::sync::mpsc;
 
 use super::redact::scrub;
 use super::{Batch, CaptureCommand, CaptureEvent, CaptureFrame, Direction, FrameSummary, Framing};
-use crate::core::target::AddressStyle;
 use crate::decode::frame::summarize_frame;
 use crate::tui::message::WorkerEvent;
 use crate::tui::monitor::lines::CliSerial;

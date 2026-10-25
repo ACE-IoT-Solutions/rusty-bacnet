@@ -160,8 +160,8 @@ pub(super) fn item_json(item: &Planned) -> Value {
     json!({
         "target": {
             "device": spec.device,
-            "object": crate::tui::app::objects::object_label(spec.object),
-            "property": crate::tui::app::objects::kebab(spec.property),
+            "object": bacnet_ops::label::object_label(spec.object),
+            "property": bacnet_ops::label::kebab(spec.property),
             "index": spec.index,
         },
         "params": { "value": item.value.text, "encoded": hex(&item.value.bytes) },

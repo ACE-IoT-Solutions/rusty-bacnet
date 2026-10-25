@@ -2,6 +2,7 @@
 //! [`WIDE_WIDTH`] columns when both fit at their content widths, beside it
 //! (#1915). Every state is marked by text as well as colour.
 
+use bacnet_ops::label::object_label;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
@@ -11,7 +12,6 @@ use super::columns::{self, Column};
 use super::{FULL_WIDTH, Theme, WIDE_WIDTH, ellipsize, sanitize, text_width};
 use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
-use crate::tui::app::objects::object_label;
 use crate::tui::app::who_has::WhoHasSearch;
 use crate::tui::network::discovery::FoundRow;
 
