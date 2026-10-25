@@ -1,6 +1,5 @@
 use super::*;
-use bacnet_types::enums::RejectReason;
-use bacnet_types::error::RemoteError;
+use bacnet_types::{enums::RejectReason, error::RemoteError};
 use tokio::time::{Duration, timeout};
 
 fn assert_initial_response_aborted(
@@ -424,13 +423,13 @@ async fn invalid_initial_segment_resolves_final_send_polling() {
 async fn reject_and_abort_are_valid_throughout_segmented_request() {
     let mac = MacAddr::from_slice(&[127, 0, 0, 1, 0xBA, 0xC0]);
 
-    for response in [
-        TsmResponse::remote(RemoteError::Reject {
+    for error in [
+        RemoteError::Reject {
             reason: RejectReason::INVALID_PARAMETER_DATA_TYPE,
-        }),
-        TsmResponse::remote(RemoteError::Abort {
+        },
+        RemoteError::Abort {
             reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-        }),
+        },
     ] {
         let mut tsm = Tsm::new(TsmConfig::default());
         let invoke_id = tsm.allocate_invoke_id(&mac).unwrap();
@@ -440,22 +439,12 @@ async fn reject_and_abort_are_valid_throughout_segmented_request() {
             ConfirmedServiceChoice::READ_PROPERTY,
         );
         assert_eq!(
-            tsm.complete_transaction(&mac, invoke_id, None, response),
+            tsm.complete_transaction(&mac, invoke_id, None, TsmResponse::remote(error)),
             CompletionOutcome::Delivered
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Remote {
-                error: RemoteError::Reject {
-                    reason: RejectReason::INVALID_PARAMETER_DATA_TYPE
-                },
-                ..
-            } | TsmResponse::Remote {
-                error: RemoteError::Abort {
-                    reason: AbortReason::SEGMENTATION_NOT_SUPPORTED
-                },
-                ..
-            }
+            TsmResponse::Remote { error: got, detail: None } if got == error
         ));
         assert_eq!(tsm.pending_count(), 0);
     }
