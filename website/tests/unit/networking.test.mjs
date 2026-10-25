@@ -4,12 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { frontmatter, plainBody } from '../../scripts/content.mjs';
 import { release } from '../../src/lib/site.mjs';
+import { devRef, repo, splitDevSection } from './dev-section.mjs';
 
 const root = new URL('../../', import.meta.url);
-const repo = 'https://github.com/jscott3201/rusty-bacnet';
-const devHeading = '\n## On `dev` after the release\n';
-// Any link into the repository at the dev branch: blob/, tree/, raw/, commits/ and so on.
-const devRef = new RegExp(`${repo.replaceAll('.', '\\.')}/[a-z]+/dev/`);
 // The networking pages describe the release. A page with post-release
 // additions keeps them, and their dev links, in one section; everything
 // outside that section (later sections included) is release-scoped.
@@ -27,24 +24,14 @@ async function page(slug) {
   return { title, description, body: await plainBody(body, file, []) };
 }
 
-function split(body, slug) {
-  const parts = body.split(devHeading);
-  if (parts.length === 1) return { released: body, onDev: '' };
-  assert.equal(parts.length, 2, `${slug}: one dev section`);
-  const next = parts[1].indexOf('\n## ');
-  assert.notEqual(next, -1, `${slug}: a section follows the dev one`);
-  return { released: parts[0] + parts[1].slice(next), onDev: parts[1].slice(0, next) };
-}
-
 test('networking pages are release-scoped, with dev additions in one section', async () => {
   for (const [slug, { dev }] of Object.entries(pages)) {
     const { title, description, body } = await page(slug);
     assert.ok(title && description, slug);
     assert.ok(body.includes(`The page describes **v${release}**.`), slug);
     assert.ok(body.includes('\n## Next steps\n'), slug);
-    const { released, onDev } = split(body, slug);
+    const { released, onDev } = splitDevSection(body, slug);
     assert.ok(released.includes(`${repo}/blob/v${release}/docs/`), `${slug}: release-pinned docs links`);
-    assert.doesNotMatch(released, devRef, `${slug}: dev links only in the dev section`);
     if (dev === null) {
       assert.equal(onDev, '', `${slug}: no dev section`);
       continue;

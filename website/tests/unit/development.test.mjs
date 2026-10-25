@@ -5,6 +5,7 @@ import navigation from '../../src/data/navigation.json' with { type: 'json' };
 import { frontmatter, plainBody } from '../../scripts/content.mjs';
 import { fileURLToPath } from 'node:url';
 import { release } from '../../src/lib/site.mjs';
+import { splitDevSection } from './dev-section.mjs';
 
 const root = new URL('../../', import.meta.url);
 async function guidePath(slug) {
@@ -40,18 +41,9 @@ test('integration navigation resolves task guides with release-pinned source lin
     assert.ok(page.title && page.description, slug);
     const body = await plainBody(page.body, path, []);
     assert.ok(body.includes(`https://github.com/jscott3201/rusty-bacnet/blob/v${release}/docs/`), slug);
-    // The security page keeps its post-release additions, and their dev
-    // links, in one section after the release-scoped content.
-    // Everything outside that one section, later sections included.
-    let released = body;
-    if (slug === 'integrate/security') {
-      const [before, after] = body.split('\n## On `dev` after the release\n');
-      assert.ok(after !== undefined, slug);
-      const next = after.indexOf('\n## ');
-      assert.notEqual(next, -1, `${slug}: a section follows the dev one`);
-      released = before + after.slice(next);
-    }
-    assert.ok(!released.includes('https://github.com/jscott3201/rusty-bacnet/blob/dev/'), slug);
+    // Post-release additions and their dev links stay in one section.
+    const { onDev } = splitDevSection(body, slug);
+    assert.equal(onDev !== '', slug === 'integrate/security', `${slug}: dev section`);
     assert.ok(body.includes(slug === 'reference/transports' ? '## Which guide next?' : '## Next steps'), slug);
     assert.ok(!body.includes('cargo install bacnet-cli --version'), slug);
   }
