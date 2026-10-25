@@ -65,7 +65,9 @@
 
 mod actions;
 mod application;
+mod application_feed;
 mod application_replies;
+mod application_transactions;
 pub mod control_policy;
 mod counters;
 mod dispatch;
@@ -83,7 +85,7 @@ mod send_warning;
 mod sender;
 mod shutdown;
 mod startup;
-pub use application::RouterApplicationPort;
+pub use application::{RouterApplicationPort, RouterApplicationPorts};
 pub use replies::RouterResponse;
 pub use shutdown::{RouterStopError, RouterStopFailure};
 

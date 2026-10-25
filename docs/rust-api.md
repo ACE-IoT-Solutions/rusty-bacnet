@@ -3583,11 +3583,63 @@ let ack = client
   `OriginateFailure`, which `OriginateFailure::from_error` returns. A network
   the table lacks is `Refused(NoRoute)`, and the router starts a search for
   it, as `originate` does.
-- The port reports the smallest NPDU limits among the router's ports, and the
-  longest of the router's MACs as its own; `with_max_npdu` overrides the
-  limits.
-- The client takes every APDU for the router's application, so a server can't
-  share the same receiver.
+- The port reports the smallest NPDU limits among the router's ports as they
+  are now, and the longest of the router's MACs as its own. When a port's
+  transport publishes a new limit, such as BACnet/SC on hub failover, the
+  port's `max_npdu` and `egress_apdu_limit` follow it and `max_npdu_changes`
+  publishes it, so the client builds its next request for it (#2070).
+  `with_max_npdu` caps the limits. `local_receive_apdu_capacity` stays as it
+  was when the port was made.
+- The client takes every APDU for the router's application. To host a server
+  as well, split the entity, as below.
+
+### A server and a client on the router itself
+
+`StartedRouter::into_application_ports()` splits the router's application
+entity between a client and a server (#2069). It returns a
+`RouterApplicationPorts` with a `client` and a `server` port, each a
+`RouterApplicationPort` that sends as above.
+
+```rust,ignore
+let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
+let (router, ports, _controls) = started.into_application_ports();
+let server = BACnetServer::generic_builder()
+    .device(identity)
+    .database(db)
+    .transport(ports.server)
+    .build()
+    .await?;
+let client = BACnetClient::generic_builder().transport(ports.client).build().await?;
+```
+
+The router shares out what it delivers to its application:
+
+- A Confirmed-Request goes to the server, except a ConfirmedCOVNotification or
+  ConfirmedEventNotification, which goes to the client.
+- An Unconfirmed-Request goes to both. The client hears I-Am, I-Have and
+  unconfirmed notifications; the server hears Who-Is, Who-Has and the rest.
+  Each ignores what it doesn't use.
+- An answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK or
+  Abort with the server bit set) goes to whichever stack sent the request it
+  answers, matched by device and invoke ID. The server sends requests too:
+  notifications, writes to Command targets and binding probes. An answer that
+  matches no open request goes to the client.
+- A Segment-ACK or Abort with the server bit clear comes from a device acting
+  as the requester, so it goes to the server.
+
+The two stacks choose invoke IDs on their own. When both have a request open
+to one device under the same invoke ID, the later one goes out under another ID
+that is free for that device, and its answers come back under its own ID. The
+ports track up to 1,024 open requests, each for 60 seconds from its last
+segment, retry or answer.
+
+Each port holds only a few NPDUs, and the router's local queue stays the buffer
+that fills and drops, with its admission accounting. A stack that leaves its
+port's queue full for 100 ms is taken as stalled. The other stack stops
+waiting for it, and what arrives for it is dropped while its queue is full,
+until it takes something again. A stalled stack therefore holds the other up
+for at most 100 ms at a time. When neither has room, nothing more is taken
+from the router's queue.
 
 ### Moving a router table from 0.12
 

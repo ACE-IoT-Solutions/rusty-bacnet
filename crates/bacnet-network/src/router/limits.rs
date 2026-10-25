@@ -7,11 +7,15 @@
 //! task routes after that goes by the new limit. Nothing waits under the
 //! lock: the limit is copied out of the watch before the lock is taken,
 //! and the lock is let go before the task waits again.
+//!
+//! Each change also updates the smallest limits among the ports, which the
+//! router's application ports report (#2070).
 
 use std::sync::Arc;
 
 use bacnet_npdu::NpduLimits;
 use bacnet_router_core::PortId;
+use bacnet_router_core::router::PortConfig;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -42,13 +46,17 @@ impl Shared {
     /// [`Engine::limits`] takes them, and log a change.
     pub(super) fn set_port_limits(&self, port: PortId, reported: NpduLimits) {
         let limits = Engine::limits(reported);
-        let changed = {
+        let (changed, smallest) = {
             let mut router = self.engine.lock();
-            match router.ports().get(usize::from(port.0)) {
+            let changed = match router.ports().get(usize::from(port.0)) {
                 Some(config) if config.max_npdu == limits => Ok(false),
                 _ => router.set_port_max_npdu(port, limits).map(|()| true),
-            }
+            };
+            (changed, smallest(router.ports()))
         };
+        // Sent with the engine's lock let go; a watch send never waits.
+        self.application_limits
+            .send_if_modified(|current| std::mem::replace(current, smallest) != smallest);
         match changed {
             Ok(true) => info!(
                 port = port.0,
@@ -61,5 +69,22 @@ impl Shared {
             // engine's bounds, so this is never expected.
             Err(error) => warn!(port = port.0, %error, "Router kept a port's NPDU limit"),
         }
+    }
+}
+
+/// The smallest unicast and broadcast limits among `ports`: what a request
+/// from the router's application fits on whichever port it leaves by.
+pub(super) fn smallest<G>(ports: &[PortConfig<G>]) -> NpduLimits {
+    let smallest = |limit: fn(&NpduLimits) -> u16| {
+        ports
+            .iter()
+            .map(|port| limit(&port.max_npdu))
+            .min()
+            // A started router has at least one port.
+            .unwrap_or(NpduLimits::STANDARD.unicast)
+    };
+    NpduLimits {
+        unicast: smallest(|limits| limits.unicast),
+        broadcast: smallest(|limits| limits.broadcast),
     }
 }

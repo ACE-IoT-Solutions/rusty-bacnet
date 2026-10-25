@@ -1,6 +1,7 @@
 //! The router's application entity as a [`TransportPort`], so a stack built
 //! for one link, such as `bacnet-client`'s `BACnetClient` with its
-//! transaction state machine, runs on the router itself (#1808).
+//! transaction state machine, runs on the router itself (#1808); or as two,
+//! so a client and a server share it (#2069).
 //!
 //! # The seam
 //!
@@ -21,14 +22,17 @@
 //!   through each request's saved reply plan instead
 //!   ([`application_replies`](super::application_replies)): from the
 //!   endpoint that was asked, along the path the request came by.
-//! - **Receives** come from the router's local APDU receiver: every APDU the
-//!   router delivers to its application is handed up as an NPDU whose SNET
-//!   and SADR say where it came from. An APDU a router relayed keeps its
-//!   SNET and SADR. One from a device on a directly attached network gets
-//!   that port's network as its SNET and the device's link MAC as its SADR,
-//!   which is the station the request was addressed to, so its reply
-//!   completes the transaction keyed to the routed destination. The link
-//!   source MAC is passed up unchanged.
+//! - **Receives** come from the router's local APDU receiver, through the
+//!   [feed](super::application_feed): every APDU the router delivers to its
+//!   application is handed up as an NPDU whose SNET and SADR say where it
+//!   came from. An APDU a router relayed keeps its SNET and SADR. One from a
+//!   device on a directly attached network gets that port's network as its
+//!   SNET and the device's link MAC as its SADR, which is the station the
+//!   request was addressed to, so its reply completes the transaction keyed
+//!   to the routed destination. The link source MAC is passed up unchanged.
+//! - **Limits** follow the router's ports: the smallest NPDU limits among
+//!   them as they are now, which change when a port's transport publishes a
+//!   new one (#2070).
 //!
 //! The router chooses the source address of each request
 //! ([`SourceSelection`], the egress port's own by default), and its replies
@@ -37,30 +41,19 @@
 use std::io;
 use std::sync::{Arc, Weak};
 
-use bacnet_npdu::{Address, GLOBAL_NETWORK, MAX_NPDU, NetworkPriority, Npdu, NpduLimits};
+use bacnet_npdu::{MAX_NPDU, Npdu, NpduLimits};
 use bacnet_router_core::router::{OriginateError, Request, SourceSelection};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::MacAddr;
 use bacnet_types::error::Error;
-use bytes::Bytes;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tracing::debug;
 
-use super::application_replies::Replies;
+use super::application_feed::{Feed, outbound, slot};
+use super::application_transactions::Side;
 use super::dispatch::{Outputs, Shared};
-use super::options::sealed::ApduSource;
 use super::originate::{OriginateFailure, originate};
 use super::{BACnetRouter, LocalApduReceiver, StartedRouter};
-use crate::layer::ReceivedApdu;
-
-/// The NPDUs the port holds for the stack above. Few: the port's task takes
-/// an APDU off the router's local queue only once there is room here, so
-/// the router's queue, with its admission accounting and, when tracked, its
-/// per-source quota, stays the buffer that fills and drops under a slow
-/// stack. Taking more would free the router's slots, and the quota with
-/// them, for APDUs still waiting here.
-const QUEUE: usize = 4;
 
 /// Room for the network header in front of an APDU: what B/IP leaves
 /// between its 1,497-octet NPDU and 1,476-octet APDU.
@@ -73,13 +66,14 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 ///
 /// Made by [`StartedRouter::into_application_port`], from the router's own
 /// local APDU receiver: the stack on the port gets every APDU the router
-/// delivers to its application. A remote device is addressed by its network
-/// and MAC, as a routed device (with any MAC as the router's; the table picks
-/// the next hop), whether its network is directly attached or not. A
-/// device's reply carries its network and MAC as its source either way.
-/// The port has no local network, so a send with no DNET, such as a local
-/// broadcast, is refused with [`Error::Encoding`], and so is a network
-/// message.
+/// delivers to its application. [`StartedRouter::into_application_ports`]
+/// makes two instead, for a client and a server ([`RouterApplicationPorts`]).
+/// A remote device is addressed by its network and MAC, as a routed device
+/// (with any MAC as the router's; the table picks the next hop), whether its
+/// network is directly attached or not. A device's reply carries its network
+/// and MAC as its source either way. The port has no local network, so a
+/// send with no DNET, such as a local broadcast, is refused with
+/// [`Error::Encoding`], and so is a network message.
 ///
 /// The stack's answers to confirmed requests it receives, such as the
 /// acknowledgement of a confirmed COV notification, go back through the
@@ -94,9 +88,16 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// fails with [`OriginateError::NoRoute`] and starts a search for it, as
 /// `originate` does; once the router has learned the route, a retry goes.
 ///
-/// [`TransportPort::stop`] ends the port's task. Stopping the router closes
-/// its local receiver, which ends the task too, and every later send fails
-/// with [`OriginateFailure::Stopped`].
+/// [`TransportPort::max_npdu`] reports the smallest NPDU limits among the
+/// router's ports as they are now, and [`TransportPort::max_npdu_changes`]
+/// publishes each change once the port has started, such as a BACnet/SC
+/// port's on hub failover (#2070). [`TransportPort::egress_apdu_limit`]
+/// follows them, so a stack that reads it for each request, as
+/// `BACnetClient` does, builds the next request for the new limit.
+///
+/// [`TransportPort::stop`] closes the port's queue. Stopping the router
+/// closes its local receiver, which closes the port's queue too, and every
+/// later send fails with [`OriginateFailure::Stopped`].
 ///
 /// ```no_run
 /// # use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort};
@@ -112,12 +113,71 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 pub struct RouterApplicationPort {
     outputs: Weak<Outputs>,
     shared: Arc<Shared>,
-    apdus: Option<ApduSource>,
-    replies: Arc<Replies>,
+    feed: Arc<Feed>,
+    /// `None` for the whole entity.
+    side: Option<Side>,
+    started: bool,
     local_mac: MacAddr,
-    max_npdu: NpduLimits,
+    /// The router ports' smallest limits, as they change.
+    limits: watch::Receiver<NpduLimits>,
+    /// Those limits when the port was made, which fix its receive capacity.
+    initial: NpduLimits,
+    cap: Option<NpduLimits>,
+    /// [`Self::max_npdu`]'s changes, for [`TransportPort::max_npdu_changes`].
+    published: watch::Sender<NpduLimits>,
+    /// The task that publishes them, once started.
+    follow: Option<JoinHandle<()>>,
     source: SourceSelection,
-    task: Option<JoinHandle<()>>,
+}
+
+/// The router's application entity split between a client and a server
+/// (#2069), from [`StartedRouter::into_application_ports`]: give
+/// [`Self::client`] to a `BACnetClient` and [`Self::server`] to a
+/// `BACnetServer`, each with its `generic_builder`.
+///
+/// Both send as [`RouterApplicationPort`] does. What the router delivers is
+/// shared out by what it is:
+///
+/// - a Confirmed-Request goes to the server, except a ConfirmedCOV- or
+///   ConfirmedEventNotification, which goes to the client;
+/// - an Unconfirmed-Request goes to both, so the client hears I-Am, I-Have
+///   and unconfirmed notifications, and the server Who-Is and Who-Has;
+/// - an answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK or
+///   Abort sent by the answering side) goes to the port whose stack sent the
+///   request, matched by device and invoke ID, or to the client when neither
+///   did;
+/// - a Segment-ACK or Abort sent by a requester goes to the server.
+///
+/// The two stacks choose invoke IDs on their own. When both have a request
+/// open to one device under the same ID, the later one goes out under
+/// another ID free for that device, and its answers come back under its own.
+///
+/// Each port's queue is small, and the router's local queue stays the one
+/// that fills and drops. A stack that stops taking what its port holds for
+/// 100 ms is taken as stalled: the other no longer waits for it, and what
+/// arrives for it is dropped until it has room again.
+///
+/// ```no_run
+/// # use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort};
+/// # use bacnet_transport::loopback::LoopbackTransport;
+/// # async fn run(ports: Vec<RouterPort<LoopbackTransport>>) -> Result<(), bacnet_types::error::Error> {
+/// let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
+/// let (router, ports, _controls) = started.into_application_ports();
+/// // `BACnetServer::generic_builder().transport(ports.server)` hosts a
+/// // device on the router; `BACnetClient::generic_builder()
+/// // .transport(ports.client)` reads others through it.
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RouterApplicationPorts {
+    /// The port for the client: the answers to its requests, notifications
+    /// and every Unconfirmed-Request.
+    pub client: RouterApplicationPort,
+    /// The port for the server: the requests to the entity, the answers to
+    /// its own requests and every Unconfirmed-Request.
+    pub server: RouterApplicationPort,
 }
 
 impl<A: LocalApduReceiver, C> StartedRouter<A, C> {
@@ -127,12 +187,19 @@ impl<A: LocalApduReceiver, C> StartedRouter<A, C> {
     /// [`RouterApplicationPort`].
     ///
     /// The port reports the smallest NPDU limits of the router's ports, as
-    /// they are now, and the longest of the router's MACs on them as its
+    /// they change, and the longest of the router's MACs on them as its
     /// own: a request routed on from any port with the router's address as
     /// its source then fits.
     pub fn into_application_port(self) -> (BACnetRouter, RouterApplicationPort, Option<C>) {
         let port = self.router.application_port(self.apdus);
         (self.router, port, self.network_control)
+    }
+
+    /// [`Self::into_application_port`], with the entity split between a
+    /// client and a server (#2069). See [`RouterApplicationPorts`].
+    pub fn into_application_ports(self) -> (BACnetRouter, RouterApplicationPorts, Option<C>) {
+        let ports = self.router.application_ports(self.apdus);
+        (self.router, ports, self.network_control)
     }
 }
 
@@ -140,43 +207,54 @@ impl BACnetRouter {
     /// [`StartedRouter::into_application_port`], with `apdus`, which must
     /// be this router's own local receiver.
     pub(super) fn application_port<A: LocalApduReceiver>(&self, apdus: A) -> RouterApplicationPort {
-        let router = self.shared.engine.lock();
-        let ports = router.ports();
-        // A started router has at least one port.
-        let smallest = |limit: fn(&NpduLimits) -> u16| {
-            ports
-                .iter()
-                .map(|port| limit(&port.max_npdu))
-                .min()
-                .unwrap_or(NpduLimits::STANDARD.unicast)
-        };
-        let max_npdu = NpduLimits {
-            unicast: smallest(|limits| limits.unicast),
-            broadcast: smallest(|limits| limits.broadcast),
-        };
-        let local_mac =
-            ports
-                .iter()
-                .map(|port| port.mac.as_slice())
-                .fold(&[][..], |longest, mac| {
+        let feed = Arc::new(Feed::new(apdus.into_source(), false));
+        self.port_on(feed, None)
+    }
+
+    /// [`StartedRouter::into_application_ports`], with `apdus`, which must
+    /// be this router's own local receiver.
+    pub(super) fn application_ports<A: LocalApduReceiver>(
+        &self,
+        apdus: A,
+    ) -> RouterApplicationPorts {
+        let feed = Arc::new(Feed::new(apdus.into_source(), true));
+        RouterApplicationPorts {
+            client: self.port_on(Arc::clone(&feed), Some(Side::Client)),
+            server: self.port_on(feed, Some(Side::Server)),
+        }
+    }
+
+    fn port_on(&self, feed: Arc<Feed>, side: Option<Side>) -> RouterApplicationPort {
+        let local_mac = {
+            let router = self.shared.engine.lock();
+            let longest = router.ports().iter().map(|port| port.mac.as_slice()).fold(
+                &[][..],
+                |longest, mac| {
                     if mac.len() > longest.len() {
                         mac
                     } else {
                         longest
                     }
-                });
-        let port = RouterApplicationPort {
+                },
+            );
+            MacAddr::from_slice(longest)
+        };
+        let limits = self.shared.application_limits.subscribe();
+        let initial = *limits.borrow();
+        RouterApplicationPort {
             outputs: self.outputs.clone(),
             shared: Arc::clone(&self.shared),
-            apdus: Some(apdus.into_source()),
-            replies: Arc::default(),
-            local_mac: MacAddr::from_slice(local_mac),
-            max_npdu,
+            feed,
+            side,
+            started: false,
+            local_mac,
+            limits,
+            initial,
+            cap: None,
+            published: watch::Sender::new(initial),
+            follow: None,
             source: SourceSelection::default(),
-            task: None,
-        };
-        drop(router);
-        port
+        }
     }
 }
 
@@ -189,12 +267,14 @@ impl RouterApplicationPort {
         self
     }
 
-    /// Report `max_npdu` from [`TransportPort::max_npdu`] in place of the
-    /// router ports' smallest limits. The router still refuses a request
-    /// too long for the port it leaves by.
+    /// Report at most `max_npdu` from [`TransportPort::max_npdu`], below
+    /// the router ports' smallest limits when those are larger. The router
+    /// still refuses a request too long for the port it leaves by.
     #[must_use]
     pub fn with_max_npdu(mut self, max_npdu: NpduLimits) -> Self {
-        self.max_npdu = max_npdu;
+        self.cap = Some(max_npdu);
+        self.published
+            .send_replace(capped(Some(max_npdu), *self.limits.borrow()));
         self
     }
 
@@ -217,21 +297,28 @@ impl RouterApplicationPort {
                     .into(),
             ));
         };
-        if let Some(response) = self.replies.plan_for(destination, npdu.payload) {
-            return self
-                .replies
+        let replies = &self.feed.replies[slot(self.side)];
+        if let Some(response) = replies.plan_for(destination, npdu.payload) {
+            return replies
                 .send(&response, npdu.payload, npdu.expecting_reply, npdu.priority)
                 .await;
         }
-        let mut request = Request::new(destination, npdu.payload);
+        let apdu = match (self.side, &self.feed.transactions) {
+            (Some(side), Some(transactions)) => {
+                outbound(transactions, side, destination, npdu.payload)?
+            }
+            _ => npdu.payload.into(),
+        };
+        let mut request = Request::new(destination, &apdu);
         request.expecting_reply = npdu.expecting_reply;
         request.priority = npdu.priority;
         request.source = self.source;
         originate(&self.outputs, &self.shared, &request).map_err(failure_error)
     }
 
-    fn end_task(&mut self) {
-        if let Some(task) = self.task.take() {
+    fn end_tasks(&mut self) {
+        self.feed.detach(slot(self.side));
+        if let Some(task) = self.follow.take() {
             task.abort();
         }
     }
@@ -239,69 +326,59 @@ impl RouterApplicationPort {
     /// How many reply plans the port keeps now.
     #[cfg(test)]
     pub(super) fn saved_replies(&self) -> usize {
-        self.replies.len()
+        self.feed.replies[slot(self.side)].len()
     }
 }
 
 impl Drop for RouterApplicationPort {
     fn drop(&mut self) {
-        self.end_task();
+        self.end_tasks();
     }
 }
 
 impl std::fmt::Debug for RouterApplicationPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RouterApplicationPort")
+            .field("side", &self.side)
             .field("local_mac", &self.local_mac)
-            .field("max_npdu", &self.max_npdu)
+            .field("max_npdu", &self.max_npdu())
             .field("source", &self.source)
-            .field("started", &self.task.is_some())
+            .field("started", &self.started)
             .finish_non_exhaustive()
     }
 }
 
 impl TransportPort for RouterApplicationPort {
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        let mut apdus = self.apdus.take().ok_or_else(|| {
-            Error::Encoding("router application port already started".to_string())
-        })?;
-        let (tx, rx) = mpsc::channel(QUEUE);
-        let replies = Arc::clone(&self.replies);
-        // No lock is held across an await: the only waits are room in the
-        // stack's queue and the router's local queue, in that order. Room is
-        // reserved before an APDU is taken, so nothing leaves the router's
-        // queue (freeing its admission slot) until the stack can take it. A
-        // slow stack holds up only the router's local queue, which then
-        // drops new APDUs as it does for any slow consumer; the router
-        // itself never waits.
-        self.task = Some(tokio::spawn(async move {
-            while let Ok(permit) = tx.reserve().await {
-                let npdu = loop {
-                    let apdu = match apdus.recv().await {
-                        Some(apdu) => apdu,
-                        None => return,
-                    };
-                    if let Some(npdu) = inbound(apdu, &replies) {
-                        break npdu;
-                    }
-                };
-                permit.send(npdu);
+        if std::mem::replace(&mut self.started, true) {
+            return Err(Error::Encoding(
+                "router application port already started".to_string(),
+            ));
+        }
+        // Publish each change of the router's limits, capped. Nothing is
+        // locked: a watch borrow, then a send that never waits.
+        let mut limits = self.limits.clone();
+        let published = self.published.clone();
+        let cap = self.cap;
+        self.follow = Some(tokio::spawn(async move {
+            loop {
+                let now = capped(cap, *limits.borrow_and_update());
+                published.send_if_modified(|current| std::mem::replace(current, now) != now);
+                if limits.changed().await.is_err() {
+                    return;
+                }
             }
         }));
-        Ok(rx)
+        Ok(self.feed.attach(slot(self.side)))
     }
 
     async fn stop(&mut self) -> Result<(), Error> {
-        if let Some(task) = self.task.take() {
-            task.abort();
-            // Cancelled, or ended on its own: either way it has stopped.
-            let _ = task.await;
-        }
+        self.end_tasks();
         Ok(())
     }
 
     fn abort(&mut self) {
-        self.end_task();
+        self.end_tasks();
     }
 
     async fn send_unicast(&self, npdu: &[u8], _mac: &[u8]) -> Result<(), Error> {
@@ -316,69 +393,39 @@ impl TransportPort for RouterApplicationPort {
         &self.local_mac
     }
 
+    /// Fixed when the port is made: a declaration that limit changes leave
+    /// alone.
     fn local_receive_apdu_capacity(&self) -> u16 {
-        apdu_room(self.max_npdu.unicast)
+        apdu_room(capped(self.cap, self.initial).unicast)
     }
 
     fn egress_apdu_limit(&self) -> u16 {
-        apdu_room(self.max_npdu.unicast)
+        apdu_room(self.max_npdu().unicast)
     }
 
     fn max_npdu(&self) -> NpduLimits {
-        self.max_npdu
+        capped(self.cap, *self.limits.borrow())
+    }
+
+    fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
+        Some(self.published.subscribe())
+    }
+}
+
+/// `limits`, at most `cap`.
+fn capped(cap: Option<NpduLimits>, limits: NpduLimits) -> NpduLimits {
+    match cap {
+        Some(cap) => NpduLimits {
+            unicast: limits.unicast.min(cap.unicast),
+            broadcast: limits.broadcast.min(cap.broadcast),
+        },
+        None => limits,
     }
 }
 
 /// The APDU room in an NPDU of `max_npdu` octets, at most 1,476.
 fn apdu_room(max_npdu: u16) -> u16 {
     max_npdu.saturating_sub(NPCI_ROOM).min(1476)
-}
-
-/// `apdu`, delivered to the router's application, as the NPDU the stack
-/// above receives, with its origin as SNET and SADR, its reply plan kept in
-/// `replies`; `None`, logged, when it has no origin that can be written.
-fn inbound(apdu: ReceivedApdu, replies: &Replies) -> Option<ReceivedNpdu> {
-    let (network, mac) = match (&apdu.source_network, apdu.ingress_network) {
-        (Some(source), _) => (source.network, source.mac_address.as_slice()),
-        (None, Some(network)) => (network, apdu.source_mac.as_slice()),
-        (None, None) => {
-            debug!("router application: an APDU with no ingress network");
-            return None;
-        }
-    };
-    let npdu = Npdu {
-        expecting_reply: false,
-        priority: NetworkPriority::Normal,
-        destination: apdu.global_broadcast.then_some(Address {
-            network: GLOBAL_NETWORK,
-            mac: &[],
-        }),
-        source: Some(Address { network, mac }),
-        hop_count: 255,
-        message_type: None,
-        vendor_id: None,
-        payload: &apdu.apdu,
-        payload_offset: 0,
-    };
-    let mut buf = vec![0; npdu.encoded_len()];
-    if let Err(error) = npdu.encode_into(&mut buf) {
-        debug!(%error, "router application: an APDU with no writable source");
-        return None;
-    }
-    if let Some(response) = apdu.router_response {
-        replies.save(network, mac, &apdu.apdu, response);
-    }
-    Some(ReceivedNpdu {
-        npdu: Bytes::from(buf),
-        source_mac: apdu.source_mac,
-        link_layer_group: apdu.is_group && !apdu.global_broadcast,
-        data_attributes: apdu.data_attributes,
-        provenance: apdu.provenance,
-        // Answers go back through the saved plan, not on the arrival
-        // link's reply paths.
-        direct_response: None,
-        reply_tx: None,
-    })
 }
 
 /// The send error for an [`originate`] refusal.
