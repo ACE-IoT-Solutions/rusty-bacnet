@@ -207,7 +207,7 @@ impl BACnetClient {
                             .multicast(multicast)
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
-                            .build_any::<crate::mstp_py::PySerial>(),
+                            .build_any(),
                     )
                     .await
                 }
@@ -224,7 +224,7 @@ impl BACnetClient {
                     if let Some(instance) = ipv6_device_instance {
                         builder = builder.device_instance(instance);
                     }
-                    Box::pin(builder.build_any::<crate::mstp_py::PySerial>()).await
+                    Box::pin(builder.build_any()).await
                 }
                 "sc" => {
                     let hub_url = sc_hub.ok_or_else(|| {
@@ -272,7 +272,7 @@ impl BACnetClient {
                     }
                     // Subscribed before the client starts, so the first
                     // connection_events() sees the first Connected (#1908).
-                    Box::pin(builder.build_any_with_events::<crate::mstp_py::PySerial>())
+                    Box::pin(builder.build_any_with_events())
                         .await
                         .map(|(client, events)| {
                             inner.keep_first_sc_events(events);

@@ -48,7 +48,7 @@ use crate::types::{
 };
 use state::started;
 
-type CoreClient = client::BACnetClient<AnyTransport<crate::mstp_py::PySerial>>;
+type CoreClient = client::BACnetClient<AnyTransport>;
 type ClientInner = Arc<state::ClientState>;
 
 fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {

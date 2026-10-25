@@ -17,7 +17,6 @@ use bacnet_server::server::BACnetServer;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::LoopbackSerial;
 use bacnet_transport::port::{DataAttribute, GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
@@ -43,7 +42,7 @@ const REPLY: [u8; 3] = [0x20, 0x01, 0x0C];
 /// address, so the transport can take an ephemeral port rather than one
 /// guessed free beforehand.
 struct Reporting {
-    inner: AnyTransport<LoopbackSerial>,
+    inner: AnyTransport,
     bound: Arc<OnceLock<SocketAddrV6>>,
 }
 

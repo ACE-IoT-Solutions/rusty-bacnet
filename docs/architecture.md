@@ -164,7 +164,7 @@ MAC address format varies by transport:
 - **Ethernet**: 6 bytes (IEEE 802 MAC)
 - **Loopback**: arbitrary (synthetic, e.g., `[0x00, 0x01]`)
 
-`AnyTransport<S>` is a type-erased enum wrapping all transport types, enabling mixed-transport routing (e.g., BIP + MS/TP + Loopback on the same router).
+`AnyTransport` is a type-erased enum wrapping all transport types, enabling mixed-transport routing (e.g., BIP + MS/TP + Loopback on the same router). Its MS/TP variant runs over a `BoxedSerial`, so the enum carries no serial-port type parameter, and `BACnetClient` and `BACnetServer` take it as their default transport type.
 
 The transports' OS calls that still need `unsafe` (Winsock, `GetAdaptersAddresses`, `getifaddrs`, the libc `recvmsg`/`sendmsg` fallbacks for targets nix doesn't cover, and the RS-485 ioctl) sit in one private module, `bacnet-transport`'s `sys`, behind safe wrappers. It is the only place in the crate allowed to use `unsafe`, and the crate's `unsafe_stays_in_sys` test fails on unsafe code anywhere else (#1923).
 

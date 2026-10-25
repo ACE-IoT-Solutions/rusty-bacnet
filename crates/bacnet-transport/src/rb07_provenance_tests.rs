@@ -151,7 +151,7 @@ async fn caller_provided_untrusted_option_stays_untrusted() {
     );
     assert!(envelope.provenance.is_unverified());
     let (loopback, _peer) = LoopbackTransport::pair(vec![0xFE], vec![0xFD]);
-    let any = super::any::AnyTransport::<LoopbackSerial>::Loopback(loopback);
+    let any = super::any::AnyTransport::Loopback(loopback);
     // Delegation preserves inner provenance (unverified here); no data-link
     // implementation is forced to pretend auth support.
     assert_eq!(any.egress_apdu_limit(), 1476);

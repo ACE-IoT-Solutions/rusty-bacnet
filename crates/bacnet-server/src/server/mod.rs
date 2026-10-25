@@ -41,6 +41,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
+use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 use bacnet_transport::port::TransportPort;
 use bacnet_transport::warn_throttle::WarnThrottle;
@@ -149,8 +150,9 @@ pub use audit_reporter::{AuditReportersConfig, valid_bip_audit_address};
 #[cfg(test)]
 mod audit_reporter_tests;
 
-/// Generic builder for BACnetServer with a pre-built transport.
-pub struct ServerBuilder<T: TransportPort> {
+/// Generic builder for BACnetServer with a pre-built transport. The
+/// transport type defaults to [`AnyTransport`], as [`BACnetServer`]'s does.
+pub struct ServerBuilder<T: TransportPort = AnyTransport> {
     config: ServerConfig,
     db: Option<ObjectDatabase>,
     transport: Option<T>,
@@ -348,7 +350,12 @@ impl BipServerBuilder {
 type TransportCleanup<T> = JoinHandle<(NetworkLayer<T>, Result<(), Error>)>;
 
 /// BACnet server with APDU dispatch and service handling.
-pub struct BACnetServer<T: TransportPort> {
+///
+/// `T` is the transport the server runs over. It defaults to
+/// [`AnyTransport`], so `BACnetServer` alone names a server over any
+/// built-in transport; `BACnetServer<BipTransport>` and the like name one
+/// over a concrete transport.
+pub struct BACnetServer<T: TransportPort = AnyTransport> {
     target_audit: Option<Arc<audit_recipient::TargetAudit<T>>>,
     /// Shared with dispatch and every task the server starts (#1521).
     config: Arc<ServerConfig>,

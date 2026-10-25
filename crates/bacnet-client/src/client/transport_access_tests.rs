@@ -8,7 +8,6 @@ use bacnet_transport::bip::{AsBip, BvlcExchangeError, ManagementCounters};
 use bacnet_transport::bvll::BvlcResultCode;
 use bacnet_transport::bvll::decode_bip_mac;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::NoSerial;
 use bacnet_types::data_link::DataLink;
 
 /// A remote BBMD row the in-process BBMD starts with.
@@ -87,7 +86,7 @@ async fn any_transport_bip_variant_runs_the_bbmd_helpers_against_an_in_process_b
     let bbmd_mac = bbmd.local_mac().to_vec();
     let transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let mut client = BACnetClient::generic_builder()
-        .transport(AnyTransport::<NoSerial>::from(transport))
+        .transport(AnyTransport::from(transport))
         .apdu_timeout_ms(2000)
         .build()
         .await
@@ -131,7 +130,7 @@ async fn bbmd_helpers_on_a_non_bip_any_transport_fail_typed_before_sending() {
     let (ours, mut peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
     let mut peer_rx = peer.start().await.unwrap();
     let mut client = BACnetClient::generic_builder()
-        .transport(AnyTransport::<NoSerial>::Loopback(ours))
+        .transport(AnyTransport::Loopback(ours))
         .build()
         .await
         .unwrap();

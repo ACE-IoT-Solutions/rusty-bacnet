@@ -73,12 +73,11 @@ impl BACnetServer {
         };
         // MS/TP serial open is synchronous and must succeed before pending
         // registrations are moved into the startup future.
-        let mut mstp_transport: Option<AnyTransport<crate::mstp_py::PySerial>> =
-            if self.transport_type == "mstp" {
-                Some(crate::mstp_py::build_mstp_transport(&self.mstp)?)
-            } else {
-                None
-            };
+        let mut mstp_transport: Option<AnyTransport> = if self.transport_type == "mstp" {
+            Some(crate::mstp_py::build_mstp_transport(&self.mstp)?)
+        } else {
+            None
+        };
 
         let inner = self.inner.clone();
         let started = self.started.clone();
@@ -137,7 +136,7 @@ impl BACnetServer {
             let mut db = ObjectDatabase::new();
 
             // Prepare non-SC transports locally before constructing our Device.
-            let prepared_transport: Option<AnyTransport<crate::mstp_py::PySerial>> =
+            let prepared_transport: Option<AnyTransport> =
                 match transport_type.as_str() {
                     "bip" => {
                         let interface: Ipv4Addr = interface_str.parse().map_err(|e| {
@@ -580,8 +579,7 @@ mod capacity_tests {
     #[tokio::test]
     async fn binding_generated_mstp_device_matches_local_480_before_io() {
         let (serial, _peer) = LoopbackSerial::pair();
-        let transport: AnyTransport<LoopbackSerial> =
-            AnyTransport::Mstp(MstpTransport::new(serial, MstpConfig::default()));
+        let transport: AnyTransport = MstpTransport::new(serial, MstpConfig::default()).into();
         let identity = bacnet_objects::DeviceIdentity::new(893, 555)
             .unwrap()
             .resolve(transport.local_receive_apdu_capacity())

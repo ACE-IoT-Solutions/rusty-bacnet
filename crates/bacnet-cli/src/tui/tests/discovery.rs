@@ -11,7 +11,6 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bbmd::ForeignDevicePolicy;
 use bacnet_transport::bip::{BbmdOptions, BipMode, BipTransport};
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::NoSerial;
 use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use bacnet_types::primitives::ObjectIdentifier;
 use insta::assert_snapshot;
@@ -229,7 +228,7 @@ async fn the_networks_tab_maps_a_real_router() {
     let (far, _station) = LoopbackTransport::pair(vec![0x01], vec![0x05]);
     let ports = vec![
         RouterPort {
-            transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
+            transport: AnyTransport::Bip(Box::new(bip)),
             network_number: 1,
         },
         RouterPort {

@@ -7,8 +7,8 @@
 //!
 //! - [`SerialPort`], the serial I/O the transport runs over: `tokio-serial`,
 //!   kernel RS-485 and GPIO direction control in `mstp_serial` (the
-//!   `serial` feature), and [`LoopbackSerial`] and [`NoSerial`] for tests
-//!   and non-MS/TP builds.
+//!   `serial` feature), [`LoopbackSerial`] for tests, and [`BoxedSerial`],
+//!   any of them boxed, for [`AnyTransport`](crate::any::AnyTransport).
 //! - [`MstpTransport`], whose Tokio task drives the core: it feeds every
 //!   received octet to the core, services the core's deadlines with Tokio
 //!   time, and carries out the core's actions (frames to send, NPDUs to
@@ -441,8 +441,10 @@ impl MstpConfig {
     }
 }
 
+mod boxed;
 mod port;
-pub use port::{LoopbackSerial, MstpTransport, NoSerial};
+pub use boxed::BoxedSerial;
+pub use port::{LoopbackSerial, MstpTransport};
 
 #[cfg(test)]
 mod test_support;

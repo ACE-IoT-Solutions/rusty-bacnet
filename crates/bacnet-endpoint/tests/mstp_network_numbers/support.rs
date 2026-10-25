@@ -103,7 +103,7 @@ impl SerialPort for ObservedSerial {
 }
 
 pub struct GatedTransport {
-    inner: AnyTransport<ObservedSerial>,
+    inner: AnyTransport,
     gates: Arc<Gates>,
 }
 impl TransportPort for GatedTransport {
@@ -365,7 +365,7 @@ pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTran
         },
     )
     .with_execution_mode(mode);
-    let inner = AnyTransport::Mstp(transport);
+    let inner = AnyTransport::from(transport);
     assert_eq!(inner.local_receive_apdu_capacity(), 480);
     assert_eq!(inner.egress_apdu_limit(), 480);
     assert!(inner.bip_port().is_none(), "no configured B/IP authority");

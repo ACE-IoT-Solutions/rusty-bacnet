@@ -21,7 +21,6 @@ use bacnet_services::who_has::{IHaveRequest, WhoHasObject};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::NoSerial;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -186,7 +185,7 @@ async fn routed_site() -> (
     let (router_far, station) = LoopbackTransport::pair(vec![0x02], vec![STATION]);
     let ports = vec![
         RouterPort {
-            transport: AnyTransport::<NoSerial>::Loopback(router_near),
+            transport: AnyTransport::Loopback(router_near),
             network_number: 1,
         },
         RouterPort {

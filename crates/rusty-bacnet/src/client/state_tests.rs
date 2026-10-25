@@ -14,7 +14,7 @@ async fn running_client() -> ClientInner {
             .interface(Ipv4Addr::LOCALHOST)
             .broadcast_address(Ipv4Addr::LOCALHOST)
             .port(0)
-            .build_any::<crate::mstp_py::PySerial>()
+            .build_any()
             .await
             .unwrap(),
     );

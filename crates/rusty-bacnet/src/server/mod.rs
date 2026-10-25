@@ -87,7 +87,7 @@ use audit_configuration::AuditNotificationSink;
 /// Later startup failures retain existing behavior, not general rollback.
 #[pyclass(name = "BACnetServer", module = "rusty_bacnet")]
 pub struct BACnetServer {
-    inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport<crate::mstp_py::PySerial>>>>>,
+    inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport>>>>,
     device_instance: u32,
     segmentation_supported: bacnet_types::enums::Segmentation,
     apdu_segment_timeout_ms: u64,

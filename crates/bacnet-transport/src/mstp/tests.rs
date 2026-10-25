@@ -139,7 +139,17 @@ async fn transport_start_stop_and_sends_outside_a_run() {
 
 #[tokio::test]
 async fn a_failed_read_ends_the_task_and_later_sends() {
-    let mut transport = MstpTransport::new(NoSerial, config(0, 127));
+    /// A port whose every read and write fails.
+    struct FailingSerial;
+    impl SerialPort for FailingSerial {
+        async fn write(&self, _data: &[u8]) -> Result<(), Error> {
+            Err(Error::Encoding("no port".into()))
+        }
+        async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
+            Err(Error::Encoding("no port".into()))
+        }
+    }
+    let mut transport = MstpTransport::new(FailingSerial, config(0, 127));
     let diagnostics = transport.diagnostics();
     let mut npdus = transport.start().await.unwrap();
     assert!(npdus.recv().await.is_none(), "the task ended");

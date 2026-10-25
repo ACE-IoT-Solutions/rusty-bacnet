@@ -170,10 +170,7 @@ async fn start(path: Path, baud: u32) -> (Running, Target) {
                         network_number: CLIENT_NET,
                     },
                     RouterPort {
-                        transport: AnyTransport::Mstp(MstpTransport::new(
-                            router_end,
-                            station(0, baud, true),
-                        )),
+                        transport: MstpTransport::new(router_end, station(0, baud, true)).into(),
                         network_number: SERVER_NET,
                     },
                 ];
