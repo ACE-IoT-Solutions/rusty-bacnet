@@ -6537,7 +6537,10 @@ The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,
 `AsBip`: a client over `BipTransport`, or one over `AnyTransport` whose variant
 is `Bip`. Each fails with a `BvlcExchangeError` (#1822): `Nak` with the
 result code a peer refused with, `NoReply` when nothing answered within the
-three-second wait, `UnexpectedResponse`, or `Transport` for a local failure.
+three-second wait, `UnexpectedResponse`, `Refused` with the transport's
+`ExchangeRefusal` when it turned the request down unsent (the same request in
+flight, or every exchange slot in use, #1841), or `Transport` for a local
+failure.
 The three a success answers return `Ok(())` on success, so a refusal is
 always an error. On any other variant they return
 `BvlcExchangeError::Transport(Error::UnsupportedTransport { .. })` before

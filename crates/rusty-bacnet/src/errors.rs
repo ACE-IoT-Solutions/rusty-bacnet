@@ -166,8 +166,9 @@ pub fn to_py_err(err: Error) -> PyErr {
 /// #1841). A NAK raises `BacnetBvlcNakError` with the BBMD's `result_code`;
 /// no reply raises `BacnetTimeoutError`, so the two never share a class. A
 /// reply of the wrong kind raises `BacnetBvlcUnexpectedResponseError` with
-/// the `expected` and `got` BVLC function codes, and a local failure raises
-/// what [`to_py_err`] makes of it.
+/// the `expected` and `got` BVLC function codes. A request the transport
+/// refused before sending it (busy, or no free slot) raises a plain
+/// `BacnetError`, and a local failure raises what [`to_py_err`] makes of it.
 pub(crate) fn bvlc_exchange_err(err: BvlcExchangeError) -> PyErr {
     match err {
         BvlcExchangeError::Nak(code) => {
@@ -189,6 +190,7 @@ pub(crate) fn bvlc_exchange_err(err: BvlcExchangeError) -> PyErr {
             });
             py_err
         }
+        BvlcExchangeError::Refused(_) => BacnetError::new_err(err.to_string()),
         BvlcExchangeError::Transport(error) => to_py_err(error),
         other => BacnetError::new_err(other.to_string()),
     }
@@ -498,6 +500,11 @@ mod tests {
                 "refused".into(),
             )));
             assert!(local.value(py).get_type().is(py.get_type::<BacnetError>()));
+
+            let busy = bvlc_exchange_err(BvlcExchangeError::Refused(
+                bacnet_transport::bip::ExchangeRefusal::Full,
+            ));
+            assert!(busy.value(py).get_type().is(py.get_type::<BacnetError>()));
         });
     }
 

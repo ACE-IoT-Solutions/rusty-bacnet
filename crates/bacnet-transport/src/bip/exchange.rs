@@ -44,9 +44,14 @@ pub enum BvlcExchangeError {
         /// The function that came.
         got: BvlcFunction,
     },
+    /// The node refused the request before sending it (#1841): the same
+    /// request, or another one a success answers, is already in flight to
+    /// the peer, every exchange slot is in use, or the peer is this foreign
+    /// device's own BBMD for a request the node's registration owns. Nothing
+    /// was sent; a busy refusal may pass on a later try.
+    Refused(ExchangeRefusal),
     /// The request failed on this side or the answer could not be read: the
-    /// transport is not started, the exchange was refused (one already in
-    /// flight, every slot in use), the send failed, the request could not be
+    /// transport is not started, the send failed, the request could not be
     /// encoded or the response was malformed.
     Transport(Error),
 }
@@ -70,6 +75,10 @@ impl fmt::Display for BvlcExchangeError {
             Self::UnexpectedResponse { expected, got } => {
                 write!(f, "expected BVLC response {expected:?}, got {got:?}")
             }
+            Self::Refused(
+                refusal @ (ExchangeRefusal::SameExchange | ExchangeRefusal::ResultClass),
+            ) => write!(f, "BVLC management request already in flight: {refusal}"),
+            Self::Refused(refusal) => write!(f, "BVLC management request refused: {refusal}"),
             Self::Transport(error) => error.fmt(f),
         }
     }
@@ -78,6 +87,7 @@ impl fmt::Display for BvlcExchangeError {
 impl std::error::Error for BvlcExchangeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Refused(refusal) => Some(refusal),
             Self::Transport(error) => Some(error),
             _ => None,
         }
@@ -110,23 +120,23 @@ impl NodeHandle {
         target: &[u8],
         request: Bvll<'_>,
         timeout: Duration,
-    ) -> Result<BvllMessage, Error> {
+    ) -> Result<BvllMessage, BvlcExchangeError> {
         let (ip, port) = decode_bip_mac(target)?;
         let peer = SocketAddrV4::new(Ipv4Addr::from(ip), port);
         let (exchange, response) = self.begin(peer, request, timeout)?;
         let mut buf = BytesMut::new();
         if let Err(error) = encode_bvll(&mut buf, &request) {
             exchange.failed();
-            return Err(error);
+            return Err(error.into());
         }
         if let Err(error) = self.socket().send_to(&buf, peer).await {
             exchange.failed();
-            return Err(Error::Transport(error));
+            return Err(Error::Transport(error).into());
         }
         exchange.sent();
         match response.await {
-            Ok(outcome) => outcome,
-            Err(_) => Err(Error::Encoding("BVLC response channel dropped".into())),
+            Ok(outcome) => Ok(outcome?),
+            Err(_) => Err(Error::Encoding("BVLC response channel dropped".into()).into()),
         }
     }
 
@@ -136,17 +146,19 @@ impl NodeHandle {
         peer: SocketAddrV4,
         request: Bvll<'_>,
         timeout: Duration,
-    ) -> Result<(Exchange, oneshot::Receiver<Outcome>), Error> {
+    ) -> Result<(Exchange, oneshot::Receiver<Outcome>), BvlcExchangeError> {
         let (tx, rx) = oneshot::channel();
         let id = self.with(|state, now| {
             if state.stopped {
-                return Err(Error::Encoding("B/IP management client is stopped".into()));
+                return Err(BvlcExchangeError::Transport(Error::Encoding(
+                    "B/IP management client is stopped".into(),
+                )));
             }
             let (id, _) = state
                 .node
                 // A timeout past some 584 years is one that never ends.
                 .begin_exchange(peer, request, CoreDuration::saturating_from_core(timeout), now)
-                .map_err(refusal_error)?;
+                .map_err(BvlcExchangeError::Refused)?;
             let waiter = Waiter {
                 tx,
                 timeout,
@@ -209,9 +221,8 @@ impl BipTransport {
         request: Bvll<'_>,
     ) -> Result<BvllMessage, BvlcExchangeError> {
         let node = Arc::clone(self.require_node()?);
-        Ok(node
-            .request(target, request, Self::BVLC_RESPONSE_TIMEOUT)
-            .await?)
+        node.request(target, request, Self::BVLC_RESPONSE_TIMEOUT)
+            .await
     }
 
     /// Snapshot this transport's own manual BVLC and automatic foreign-device
@@ -327,16 +338,6 @@ impl BipTransport {
             .bvlc_request(target, Bvll::RegisterForeignDevice { ttl })
             .await?;
         acknowledged(&msg)
-    }
-}
-
-fn refusal_error(refusal: ExchangeRefusal) -> Error {
-    match refusal {
-        ExchangeRefusal::SameExchange | ExchangeRefusal::ResultClass => Error::Encoding(format!(
-            "BVLC management request already in flight: {refusal}"
-        )),
-        // Full, ManagedRegistration, NotARequest, and any later refusal.
-        _ => Error::Encoding(format!("BVLC management request refused: {refusal}")),
     }
 }
 

@@ -43,6 +43,7 @@ mod bbmd_receive;
 mod bbmd_start;
 mod client_snapshot;
 mod exchange;
+pub use bacnet_bip_core::node::ExchangeRefusal;
 pub use exchange::BvlcExchangeError;
 mod foreign_device;
 mod foreign_target;
