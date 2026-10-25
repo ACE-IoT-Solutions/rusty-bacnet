@@ -60,6 +60,8 @@ pub const COMMANDS: &[(&str, Class)] = &[
     ("read-range", Read),
     ("rr", Read),
     ("alarms", Read),
+    ("alarm-summary", Read),
+    ("enrollment-summary", Read),
     ("file-read", Read),
     ("bdt", Read),
     ("fdt", Read),

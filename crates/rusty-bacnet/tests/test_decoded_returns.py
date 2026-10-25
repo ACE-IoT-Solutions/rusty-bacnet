@@ -13,9 +13,11 @@ import unittest
 from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
+    BACnetTimeStamp,
     BacnetError,
     BitString,
     EventState,
+    NotifyType,
     ObjectIdentifier,
     ObjectType,
     PropertyIdentifier,
@@ -88,6 +90,67 @@ class RawPeerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((transitions.unused_bits, transitions.data), (5, b"\xa0"))
         self.assertEqual(transitions.bits, [True, False, True])
         self.assertEqual(transitions.names, ["TO_OFFNORMAL", "TO_NORMAL"])
+
+    async def test_event_information_is_decoded(self):
+        # One summary for (ANALOG_INPUT, 1): HIGH_LIMIT, acked 011, the
+        # three timestamp choices (time, sequence 42, date and time),
+        # notify type ALARM, enable 111, priorities 3, 5, 200; More_Events
+        # TRUE.
+        body = bytes.fromhex(
+            "0e"
+            "0c00000001" "1903" "2a0560"
+            "3e" "0c07000000" "192a" "2ea47e0a1907b40e1e05002f" "3f"
+            "4900" "5a05e0"
+            "6e" "2103" "2105" "21c8" "6f"
+            "0f" "1901"
+        )
+        result = await self.answered(
+            self.peer, self.client.get_event_information(self.address), body
+        )
+        self.assertEqual(set(result), {"summaries", "more_events"})
+        self.assertIs(result["more_events"], True)
+        self.assertEqual(len(result["summaries"]), 1)
+        summary = result["summaries"][0]
+        self.assertEqual(
+            set(summary),
+            {
+                "object_id",
+                "event_state",
+                "acknowledged_transitions",
+                "event_timestamps",
+                "notify_type",
+                "event_enable",
+                "event_priorities",
+            },
+        )
+        self.assertEqual(summary["object_id"], ObjectIdentifier(ObjectType.ANALOG_INPUT, 1))
+        self.assertEqual(summary["event_state"], EventState.HIGH_LIMIT)
+        acked = summary["acknowledged_transitions"]
+        self.assertIsInstance(acked, BitString)
+        self.assertEqual(acked.bits, [False, True, True])
+        self.assertEqual(acked.names, ["TO_FAULT", "TO_NORMAL"])
+        self.assertEqual(
+            summary["event_enable"].names, ["TO_OFFNORMAL", "TO_FAULT", "TO_NORMAL"]
+        )
+        self.assertEqual(
+            summary["event_timestamps"],
+            [
+                BACnetTimeStamp.time(7, 0, 0, 0),
+                BACnetTimeStamp.sequence_number(42),
+                BACnetTimeStamp.date_time((2026, 10, 25, 7), (14, 30, 5, 0)),
+            ],
+        )
+        self.assertEqual(summary["notify_type"], NotifyType.ALARM)
+        self.assertEqual(summary["notify_type"].name, "ALARM")
+        self.assertEqual(summary["event_priorities"], [3, 5, 200])
+
+    async def test_event_information_that_does_not_decode_raises(self):
+        with self.assertRaises(BacnetError):
+            await self.answered(
+                self.peer,
+                self.client.get_event_information(self.address),
+                bytes.fromhex("0e0c0000"),
+            )
 
     async def test_atomic_read_file_stream_ack_is_decoded(self):
         file = ObjectIdentifier(ObjectType.FILE, 1)
@@ -335,6 +398,52 @@ class LogRecordBitStringTests(unittest.TestCase):
         self.assertEqual(datum.bits, [True, False, True, False, False])
         self.assertIsNone(datum.names)
         self.assertIsNone(second["status_flags"])
+
+
+class EventInformationPagingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pages_follow_the_last_object_id(self):
+        # Two analog inputs over their high limit, one summary an answer.
+        server = BACnetServer(9874, interface="127.0.0.1", port=0,
+                              event_information_max_returned_summaries=1)
+        server.add_notification_class(0, "NC")
+        for instance in (1, 2):
+            server.add_analog_input(instance, f"AI-{instance}")
+        await server.start()
+
+        async def stop_server():
+            await server.stop()
+
+        self.addAsyncCleanup(stop_server)
+        for instance in (1, 2):
+            oid = ObjectIdentifier(ObjectType.ANALOG_INPUT, instance)
+            await server.write_property_local(
+                oid, PropertyIdentifier.HIGH_LIMIT, PropertyValue.real(1), source_object=None)
+            await server.write_property_local(
+                oid, PropertyIdentifier.LIMIT_ENABLE, PropertyValue.bit_string(6, b"\x40"),
+                source_object=None)
+            await server.set_present_value_local(oid, PropertyValue.real(2))
+        address = await server.local_address()
+        client = BACnetClient(interface="127.0.0.1", port=0)
+        await client.__aenter__()
+
+        async def stop_client():
+            await client.__aexit__(None, None, None)
+
+        self.addAsyncCleanup(stop_client)
+        seen = []
+        after = None
+        for expected_more in (True, False):
+            page = await asyncio.wait_for(client.get_event_information(address, after), 3)
+            self.assertIs(page["more_events"], expected_more)
+            self.assertEqual(len(page["summaries"]), 1)
+            summary = page["summaries"][0]
+            self.assertEqual(summary["event_state"], EventState.HIGH_LIMIT)
+            self.assertEqual(summary["acknowledged_transitions"].names,
+                             ["TO_OFFNORMAL", "TO_FAULT", "TO_NORMAL"])
+            self.assertEqual(summary["event_timestamps"][0].kind, "date_time")
+            after = summary["object_id"]
+            seen.append(after.instance)
+        self.assertEqual(seen, [1, 2])
 
 
 class EnumNameTests(unittest.TestCase):

@@ -1405,6 +1405,28 @@ class EventType:
         ...
 
 
+class NotifyType:
+    """BACnet notify type (Clause 12.21): whether a transition is reported as an alarm or an event."""
+
+    ALARM: NotifyType
+    EVENT: NotifyType
+    ACK_NOTIFICATION: NotifyType
+
+    @staticmethod
+    def from_raw(value: int) -> NotifyType: ...
+    def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"ALARM"``), or None for a value without one."""
+        ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __reduce__(self) -> tuple[Any, tuple[int]]:
+        """Rebuild with ``from_raw(to_raw())``, for ``copy`` and ``pickle``."""
+        ...
+
+
 class MessagePriority:
     """BACnet text message priority (Clause 16.5)."""
 
@@ -3880,8 +3902,19 @@ class BACnetClient:
         self,
         address: str,
         last_received_object_identifier: Optional[ObjectIdentifier] = None,
-    ) -> Awaitable[bytes]:
-        """Get event information from a remote device. Returns raw response bytes."""
+    ) -> Awaitable[dict[str, Any]]:
+        """Get event information from a remote device: one GetEventInformation answer, decoded.
+
+        Returns ``{"summaries": [...], "more_events": bool}``. Each summary is
+        ``{"object_id": ObjectIdentifier, "event_state": EventState,
+        "acknowledged_transitions": BitString, "event_timestamps":
+        [BACnetTimeStamp, BACnetTimeStamp, BACnetTimeStamp], "notify_type":
+        NotifyType, "event_enable": BitString, "event_priorities": [int, int,
+        int]}``: the bit strings name ``TO_OFFNORMAL``, ``TO_FAULT`` and
+        ``TO_NORMAL``, and the timestamps and priorities are in that order.
+        While ``more_events`` is true, call again with the last summary's
+        ``object_id`` as ``last_received_object_identifier``.
+        """
         ...
 
     def get_alarm_summary(self, address: str) -> Awaitable[list[dict[str, Any]]]:

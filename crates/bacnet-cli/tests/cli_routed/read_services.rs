@@ -94,23 +94,31 @@ async fn direct_site() -> (BACnetServer<BipTransport>, String) {
 }
 
 #[tokio::test]
-async fn routed_alarms_preserves_the_direct_response_for_both_target_forms() {
+async fn routed_alarm_commands_match_the_direct_response_for_both_target_forms() {
     let (mut router, mut remote, port) = site().await;
     let (mut direct, address) = direct_site().await;
-    let expected = json!({
-        "status": "ok",
-        "message": "GetEventInformation response (4 bytes, raw — decoding not yet implemented):\n0e 0f 19 00"
-    });
-    assert_eq!(
-        json_output(&query(None, &address, "alarms", &[]).await),
-        expected
-    );
-    for target in [format!("{DNET}:{INSTANCE}"), format!("{DNET}:0x05")] {
-        assert_eq!(
-            json_output(&query(Some(port), &target, "alarms", &[]).await),
-            expected,
-            "{target}"
-        );
+    for (service, arguments) in [
+        ("alarms", &[][..]),
+        ("alarm-summary", &[]),
+        ("enrollment-summary", &["--event-type", "buffer-ready"]),
+    ] {
+        let expected = json_output(&query(None, &address, service, arguments).await);
+        match service {
+            "alarms" => assert_eq!(expected, json!({"summaries": [], "more_events": false})),
+            "alarm-summary" => assert_eq!(expected, json!([])),
+            _ => assert_eq!(
+                expected[0]["object"],
+                json!({"type": "trend-log", "type_number": 20, "instance": 1}),
+                "{expected}"
+            ),
+        }
+        for target in [format!("{DNET}:{INSTANCE}"), format!("{DNET}:0x05")] {
+            assert_eq!(
+                json_output(&query(Some(port), &target, service, arguments).await),
+                expected,
+                "{service} {target}"
+            );
+        }
     }
     direct.stop().await.unwrap();
     remote.stop().await.unwrap();

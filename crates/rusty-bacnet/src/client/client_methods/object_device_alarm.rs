@@ -1,4 +1,5 @@
 use super::super::*;
+use bacnet_services::alarm_event::GetEventInformationAck;
 
 fn build_acknowledge_alarm_request(
     acknowledging_process_identifier: u32,
@@ -16,6 +17,51 @@ fn build_acknowledge_alarm_request(
         acknowledgment_source,
         time_of_acknowledgment,
     }
+}
+
+/// A GetEventInformation answer as the dict `get_event_information`
+/// returns.
+fn event_information_dict(py: Python<'_>, ack: &GetEventInformationAck) -> PyResult<Py<PyAny>> {
+    let summaries = pyo3::types::PyList::empty(py);
+    for summary in &ack.list_of_event_summaries {
+        let dict = PyDict::new(py);
+        dict.set_item(
+            "object_id",
+            PyObjectIdentifier::from_rust(summary.object_identifier),
+        )?;
+        dict.set_item(
+            "event_state",
+            PyEventState {
+                inner: summary.event_state,
+            },
+        )?;
+        dict.set_item(
+            "acknowledged_transitions",
+            crate::types::PyBitString::event_transitions(summary.acknowledged_transitions),
+        )?;
+        let timestamps = summary
+            .event_timestamps
+            .iter()
+            .map(|stamp| Py::new(py, PyBACnetTimeStamp::from_rust(stamp.clone())))
+            .collect::<PyResult<Vec<_>>>()?;
+        dict.set_item("event_timestamps", timestamps)?;
+        dict.set_item(
+            "notify_type",
+            crate::types::PyNotifyType {
+                inner: summary.notify_type,
+            },
+        )?;
+        dict.set_item(
+            "event_enable",
+            crate::types::PyBitString::event_transitions(summary.event_enable),
+        )?;
+        dict.set_item("event_priorities", summary.event_priorities.to_vec())?;
+        summaries.append(dict)?;
+    }
+    let result = PyDict::new(py);
+    result.set_item("summaries", summaries)?;
+    result.set_item("more_events", ack.more_events)?;
+    Ok(result.into_any().unbind())
 }
 
 #[pymethods]
@@ -243,7 +289,16 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Get event information from a remote device.
+    /// Get event information from a remote device: one GetEventInformation
+    /// answer, decoded.
+    ///
+    /// Returns `{"summaries": [...], "more_events": bool}`. Each summary is
+    /// a dict with `object_id`, `event_state` (an `EventState`),
+    /// `acknowledged_transitions` and `event_enable` (`BitString`s naming
+    /// `TO_OFFNORMAL`, `TO_FAULT`, `TO_NORMAL`), `event_timestamps` (three
+    /// `BACnetTimeStamp`s), `notify_type` (a `NotifyType`) and
+    /// `event_priorities` (three ints). While `more_events` is true, call
+    /// again with the last summary's `object_id`.
     #[pyo3(signature = (address, last_received_object_identifier=None))]
     fn get_event_information<'py>(
         &self,
@@ -262,7 +317,8 @@ impl BACnetClient {
                 .get_event_information(&mac, last_oid)
                 .await
                 .map_err(to_py_err)?;
-            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            let ack = GetEventInformationAck::decode(&raw).map_err(to_py_err)?;
+            crate::py_async::attach(|py| event_information_dict(py, &ack))
         })
     }
 }

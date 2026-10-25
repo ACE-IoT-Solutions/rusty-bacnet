@@ -9,6 +9,8 @@ use std::{
     path::PathBuf,
 };
 
+use bacnet_services::enrollment_summary::PriorityFilter;
+use bacnet_types::enums::{AcknowledgmentFilter, EnrollmentSummaryEventStateFilter, EventType};
 use bacnet_types::primitives::BACnetTimeStamp;
 use clap::builder::{OsStringValueParser, TypedValueParser};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -452,10 +454,43 @@ pub(crate) enum Command {
         password: Option<String>,
     },
 
-    /// Get event/alarm information.
+    /// List the objects with an active event or an unacknowledged
+    /// transition (GetEventInformation), following the device's pages.
     Alarms {
         /// Target device.
         target: String,
+        /// Stop after this many objects.
+        #[arg(long, default_value_t = crate::commands::alarms::DEFAULT_MAX_EVENTS,
+              value_parser = clap::value_parser!(u32).range(1..))]
+        max: u32,
+    },
+
+    /// List the objects in alarm (GetAlarmSummary).
+    AlarmSummary {
+        /// Target device.
+        target: String,
+    },
+
+    /// List the event-initiating objects that match the filters
+    /// (GetEnrollmentSummary).
+    EnrollmentSummary {
+        /// Target device.
+        target: String,
+        /// Acknowledgment: all, acked or not-acked.
+        #[arg(long, default_value = "all", value_parser = crate::commands::alarms::parse_ack_filter)]
+        acked: AcknowledgmentFilter,
+        /// Event state: offnormal, fault, normal, all or active.
+        #[arg(long, value_parser = crate::commands::alarms::parse_state_filter)]
+        state: Option<EnrollmentSummaryEventStateFilter>,
+        /// Event algorithm, such as out-of-range or change-of-state.
+        #[arg(long, value_parser = crate::commands::alarms::parse_event_type)]
+        event_type: Option<EventType>,
+        /// Notification priority, MIN-MAX (0 to 255) or one value.
+        #[arg(long, value_parser = crate::commands::alarms::parse_priority_range)]
+        priority: Option<PriorityFilter>,
+        /// Notification class number.
+        #[arg(long)]
+        class: Option<u32>,
     },
 
     /// Read a file from a device.

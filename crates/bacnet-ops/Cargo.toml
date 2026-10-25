@@ -25,6 +25,7 @@ tracing.workspace = true
 [dev-dependencies]
 bacnet-objects.workspace = true
 bacnet-server.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [features]

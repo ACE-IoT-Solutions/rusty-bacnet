@@ -5,8 +5,9 @@
 //! client calls route it: they unicast to the router with the device's
 //! network and MAC in the NPDU (Clause 6.2.2). ReadProperty,
 //! ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, SubscribeCOV,
-//! GetEventInformation, ReadRange (including log paging), AtomicReadFile and
-//! AtomicWriteFile, DeviceCommunicationControl, ReinitializeDevice and both
+//! GetEventInformation, GetAlarmSummary, GetEnrollmentSummary, ReadRange
+//! (including log paging), AtomicReadFile and AtomicWriteFile,
+//! DeviceCommunicationControl, ReinitializeDevice and both
 //! time synchronization services, CreateObject, DeleteObject and canonical
 //! AcknowledgeAlarm use routed calls.
 //! Commands without a routed call take [`resolve_mac`], which refuses one.
@@ -16,6 +17,8 @@ use std::time::Duration;
 use bacnet_client::client::{BACnetClient, DeviceEventKind};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_services::alarm_summary::GetAlarmSummaryAck;
+use bacnet_services::enrollment_summary::{GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest};
 use bacnet_services::file::{AtomicReadFileAck, FileAccessMethod, FileWriteAccessMethod};
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest, ReadRangeValidation};
@@ -86,14 +89,14 @@ pub async fn resolve_mac<T: TransportPort + 'static>(
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
                 "Device {instance} is behind a router; only read, readm, read-range, alarms, \
-                 file-read, file-write, write, writem, subscribe, control, reinit, time-sync, create-object, delete-object and ack-alarm reach routed devices"
+                 alarm-summary, enrollment-summary, file-read, file-write, write, writem, subscribe, control, reinit, time-sync, create-object, delete-object and ack-alarm reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
             "'{text}' is a routed target; only read, readm, read-range, alarms, \
-             file-read, file-write, write, writem, subscribe, control, reinit, time-sync, create-object, delete-object and ack-alarm reach routed devices"
+             alarm-summary, enrollment-summary, file-read, file-write, write, writem, subscribe, control, reinit, time-sync, create-object, delete-object and ack-alarm reach routed devices"
         )),
     }
 }
@@ -331,6 +334,33 @@ impl Destination {
             Self::Device(instance) => {
                 client
                     .get_event_information_from_device(*instance, last)
+                    .await
+            }
+        }
+    }
+
+    /// GetAlarmSummary, decoded.
+    pub async fn get_alarm_summary<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+    ) -> Result<GetAlarmSummaryAck, Error> {
+        match self {
+            Self::Mac(mac) => client.get_alarm_summary(mac).await,
+            Self::Device(instance) => client.get_alarm_summary_from_device(*instance).await,
+        }
+    }
+
+    /// GetEnrollmentSummary with the caller's filters, decoded.
+    pub async fn get_enrollment_summary<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        request: &GetEnrollmentSummaryRequest,
+    ) -> Result<GetEnrollmentSummaryAck, Error> {
+        match self {
+            Self::Mac(mac) => client.get_enrollment_summary(mac, request).await,
+            Self::Device(instance) => {
+                client
+                    .get_enrollment_summary_from_device(*instance, request)
                     .await
             }
         }
