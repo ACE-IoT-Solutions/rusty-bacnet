@@ -15,6 +15,7 @@ use bacnet_services::who_has::{IHaveRequest, WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use bacnet_types::enums::EnableDisable;
+use bacnet_types::error::RemoteError;
 
 /// The harness server, with initiation restricted for one minute by a DCC
 /// request it has acknowledged.
@@ -56,7 +57,7 @@ async fn enable(h: &mut Harness) {
 
 /// Whether `error` is the refusal of an I-Am announcement under DCC.
 fn communication_disabled(error: &Error) -> bool {
-    matches!(error, Error::Protocol { class, code }
+    matches!(error, Error::Remote(RemoteError::Error { class, code })
         if *class == ErrorClass::SERVICES
             && *code == ErrorCode::COMMUNICATION_DISABLED)
 }

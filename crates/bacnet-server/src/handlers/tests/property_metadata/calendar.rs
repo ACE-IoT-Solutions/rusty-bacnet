@@ -2,6 +2,7 @@ use super::*;
 use PropertyIdentifier as P;
 use bacnet_objects::{schedule::CalendarObject, traits::BACnetObject};
 use bacnet_types::constructed::{BACnetCalendarEntry, BACnetDateRange, BACnetWeekNDay};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Date;
 
 fn calendar_object(configured: bool) -> CalendarObject {
@@ -110,7 +111,7 @@ fn wp_calendar_properties_outside_table_12_11_are_unknown() {
         .unwrap();
         let result = handle_write_property(&mut db, &request);
         assert!(
-            matches!(result, Err(Error::Protocol { class, code })
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
                 if class == ErrorClass::PROPERTY
                     && code == ErrorCode::UNKNOWN_PROPERTY),
             "{property:?} write must be UNKNOWN_PROPERTY, got {result:?}"
@@ -137,9 +138,11 @@ fn rpm_calendar_metadata_does_not_enable_create_object() {
         .encode(&mut request);
         let mut response = BytesMut::new();
         let result = handle_create_object(&mut db, &request, &mut response);
-        assert!(matches!(result, Err(Error::Protocol { class, code })
+        assert!(
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::OBJECT
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE));
+                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
+        );
         assert!(response.is_empty());
         assert!(db.is_empty());
     }

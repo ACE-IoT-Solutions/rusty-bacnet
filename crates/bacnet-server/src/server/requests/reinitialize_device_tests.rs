@@ -187,7 +187,7 @@ fn states(received: &Received) -> Vec<ReinitializedState> {
 }
 
 fn protocol(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol { class, code }
+    Error::protocol(class, code)
 }
 
 #[tokio::test(start_paused = true)]
@@ -292,12 +292,8 @@ async fn reinitialize_device_handler_panic_is_answered_services_other() {
 /// SERVICES / OTHER, while a structured refusal keeps its class and code.
 #[tokio::test(start_paused = true)]
 async fn reinitialize_device_handler_reject_is_answered_services_other() {
-    let reject = || Error::Reject {
-        reason: RejectReason::PARAMETER_OUT_OF_RANGE,
-    };
-    let abort = || Error::Abort {
-        reason: AbortReason::OTHER,
-    };
+    let reject = || Error::reject(RejectReason::PARAMETER_OUT_OF_RANGE);
+    let abort = || Error::abort(AbortReason::OTHER);
     let encoding = || Error::Encoding("handler failure".into());
     for error in [reject, abort, encoding] {
         let (config, _) = recording_config(None, move || Err(error()));

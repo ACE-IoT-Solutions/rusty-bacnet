@@ -150,7 +150,7 @@ an awaited close or context exit when resource release must be established.
 
 ## Enums
 
-All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` for raw access. They support `==`, `hash()`, and `repr()`, and `copy.copy`, `copy.deepcopy` and `pickle`, which rebuild a value with `from_raw(value.to_raw())` (#1456).
+All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` for raw access. They support `==`, `hash()`, and `repr()`, and `copy.copy`, `copy.deepcopy` and `pickle`, which rebuild a value with `from_raw(value.to_raw())` (#1456). Five of them, `EngineeringUnits`, `ErrorClass`, `ErrorCode`, `RejectReason` and `AbortReason`, are `enum.IntEnum` classes whose members are ints ([below](#intenum-classes)).
 
 ### ObjectType
 
@@ -170,13 +170,33 @@ BACnet property identifiers (u32). Constants include `PRESENT_VALUE`, `OBJECT_NA
 pid = PropertyIdentifier.PRESENT_VALUE
 ```
 
-### ErrorClass / ErrorCode
+### IntEnum classes
 
-Error classification from BACnet error responses.
+`EngineeringUnits`, `ErrorClass`, `ErrorCode`, `RejectReason` and
+`AbortReason` are `enum.IntEnum` classes (#1816). A member is an `int`: it
+compares equal to its number and hashes like it, so code that passes or
+compares plain ints keeps working. The `units=` arguments of the object
+constructors take a member or an int, and a raised error's `error_class`,
+`error_code` and `reason` are members.
+
+A value without a name, such as a proprietary error code or unit, is a
+pseudo-member: `ErrorCode(300)` and `ErrorCode.from_raw(300)` give an
+`ErrorCode` equal to 300 whose `name` is `None` and whose repr is
+`ErrorCode(300)`. So a raised error's attributes, and the error pairs in read
+and audit results, are instances of their classes whatever the value. Other
+fields that carry these numbers, such as a trend log record's failure datum,
+stay plain ints. Pseudo-members aren't cached: two `ErrorCode(300)` calls give
+equal values (`==` holds) but not the same object (`is` doesn't). Whether
+`300 in ErrorCode` is true depends on the Python version, so test a value with
+`ErrorCode(300)` or by comparing numbers instead. A number outside the field's range (0 to 255 for the reasons, 0 to
+65535 for the error class and code) raises `ValueError`. `str()` of a member
+is its number, as for any `IntEnum`; `repr()` names it (`ErrorClass.PROPERTY`).
 
 ```python
-ec = ErrorClass.PROPERTY
-ev = ErrorCode.UNKNOWN_PROPERTY
+ec = ErrorClass.PROPERTY            # == 2
+ev = ErrorCode.UNKNOWN_PROPERTY     # == 32
+server.add_analog_input(1, "Zone Temp", units=EngineeringUnits.DEGREES_FAHRENHEIT)
+assert ErrorCode.from_raw(300) == 300 and ErrorCode.from_raw(300).name is None
 ```
 
 ### EnableDisable
@@ -2598,8 +2618,8 @@ All `add_*` methods must be called before `server.start()`. Objects cannot be ad
 #### Core I/O Objects
 
 ```python
-# Analog objects (units: BACnet engineering units enum value, e.g.
-# 62 = degrees Celsius, 64 = degrees Fahrenheit, 98 = percent)
+# Analog objects (units: an EngineeringUnits member or its number, e.g.
+# 62 = DEGREES_CELSIUS, 64 = DEGREES_FAHRENHEIT, 98 = PERCENT)
 server.add_analog_input(instance=1, name="Zone Temp", units=64, present_value=72.5)
 server.add_analog_output(instance=1, name="Damper Cmd", units=98)
 server.add_analog_value(instance=1, name="Setpoint", units=64)
@@ -4871,7 +4891,7 @@ except BacnetError as e:
     print(f"BACnet error: {e}")
 ```
 
-`BacnetProtocolError` has `error_class` and `error_code` integer attributes. Some services answer with a structured error body (Clause 21) that adds fields; each attribute below is `None` unless the device's error carried it:
+`BacnetProtocolError` has `error_class` and `error_code` attributes, `ErrorClass` and `ErrorCode` members that compare equal to the wire integers; `BacnetRejectError.reason` and `BacnetAbortError.reason` are `RejectReason` and `AbortReason` members (#1816). Some services answer with a structured error body (Clause 21) that adds fields; each attribute below is `None` unless the device's error carried it:
 
 | Attribute | Set by | Value |
 |-----------|--------|-------|
@@ -5855,7 +5875,8 @@ to the same Device remain distinguishable. The other keys are `device_instance`
 and `error`, plus `value` for RP or `results` for RPM. `error` is `None` on success
 or an existing `BacnetError` instance on a per-request failure, replacing the old
 string. `BacnetProtocolError.error_class/error_code` and
-`BacnetRejectError.reason`/`BacnetAbortError.reason` are numeric attributes.
+`BacnetRejectError.reason`/`BacnetAbortError.reason` are IntEnum members, which
+are numbers.
 
 ```python
 outcomes = await client.read_property_from_devices(requests, max_concurrent=8)

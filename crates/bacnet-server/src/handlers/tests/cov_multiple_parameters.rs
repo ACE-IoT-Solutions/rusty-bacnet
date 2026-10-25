@@ -2,6 +2,7 @@ use super::*;
 use crate::cov::MultipleRefusal;
 use bacnet_services::cov_multiple::{COVReference, COVSubscriptionSpecification};
 use bacnet_types::constructed::PropertyReference;
+use bacnet_types::error::RemoteError;
 
 fn encode_unchecked(
     specs: &[COVSubscriptionSpecification],
@@ -67,7 +68,7 @@ fn subscribe_cov_property_multiple_rejects_invalid_service_parameters() {
             .error;
         assert!(matches!(
             err,
-            Error::Reject { reason }
+            Error::Remote(RemoteError::Reject { reason })
                 if reason == RejectReason::INCONSISTENT_PARAMETERS
         ));
         assert!(table.is_empty());
@@ -83,7 +84,7 @@ fn subscribe_cov_property_multiple_rejects_invalid_service_parameters() {
             .unwrap_err()
             .error;
         match err {
-            Error::Protocol { class, code } => {
+            Error::Remote(RemoteError::Error { class, code }) => {
                 assert_eq!(class, ErrorClass::SERVICES);
                 assert_eq!(code, expected_code);
             }
@@ -152,7 +153,7 @@ fn subscribe_cov_property_multiple_context_delay_is_last_write_wins_per_form() {
         let buf = encode_unchecked(&specs, Some(lifetime), Some(delay));
         assert!(matches!(
             handle_subscribe_cov_property_multiple_with_initial(&mut table, &db, &mac, &buf),
-            Err(MultipleRefusal { error: Error::Protocol { code, .. }, refused: None, .. })
+            Err(MultipleRefusal { error: Error::Remote(RemoteError::Error { code, .. }), refused: None, .. })
                 if code == ErrorCode::VALUE_OUT_OF_RANGE
         ));
     }

@@ -93,7 +93,7 @@ mod tests {
     use crate::traits::BACnetObject;
     use crate::trend::TrendLogMultipleObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode, LoggingType, ObjectType};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::{Date, PropertyValue, Time};
     use std::sync::Arc;
 
@@ -184,7 +184,7 @@ mod tests {
 
     fn assert_error(error: Error, class: ErrorClass, code: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class: c, code: e }
+            matches!(error, Error::Remote(RemoteError::Error { class: c, code: e })
             if c == class && e == code),
             "{error:?}"
         );

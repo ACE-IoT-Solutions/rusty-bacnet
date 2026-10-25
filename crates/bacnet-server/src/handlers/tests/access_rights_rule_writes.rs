@@ -20,6 +20,7 @@ use bacnet_types::constructed::{
     PropertyReference, ReadAccessSpecification,
 };
 use bacnet_types::enums::{AccessRuleLocationSpecifier, AccessRuleTimeRangeSpecifier};
+use bacnet_types::error::RemoteError;
 
 const ARRAYS: [P; 2] = [P::POSITIVE_ACCESS_RULES, P::NEGATIVE_ACCESS_RULES];
 
@@ -109,7 +110,7 @@ fn write_multiple(
 
 fn assert_error(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
             if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );

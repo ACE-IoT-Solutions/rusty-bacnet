@@ -94,10 +94,7 @@ fn valid_life_safety_state(state: LifeSafetyState) -> bool {
 }
 
 fn life_safety_error(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::OBJECT,
-        code,
-    }
+    Error::protocol(ErrorClass::OBJECT, code)
 }
 
 fn apply_silenced_operation(

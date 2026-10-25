@@ -1,3 +1,4 @@
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -344,7 +345,7 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
     }
     assert!(matches!(
         request_handle.await.unwrap(),
-        Err(Error::Abort { reason })
+        Err(Error::Remote(RemoteError::Abort { reason }))
             if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert_eq!(coordinator.active_count().unwrap(), 0);

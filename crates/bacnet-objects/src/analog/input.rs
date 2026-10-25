@@ -362,10 +362,10 @@ impl BACnetObject for AnalogInputObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<(), Error> {
         if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::NO_ALARM_CONFIGURED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated(
             &mut self.event_detector.acked_transitions,
@@ -426,6 +426,7 @@ impl BACnetObject for AnalogInputObject {
 #[cfg(test)]
 mod detection_enable_reset_tests {
     use super::*;
+    use bacnet_types::error::RemoteError;
 
     #[test]
     fn built_in_intrinsic_transition_is_a_proposal_until_committed() {
@@ -643,7 +644,7 @@ mod detection_enable_reset_tests {
             )
             .unwrap_err();
         assert!(
-            matches!(error, bacnet_types::error::Error::Protocol { class, code }
+            matches!(error, bacnet_types::error::Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::INVALID_DATA_TYPE)
         );
@@ -685,11 +686,12 @@ mod acknowledge_alarm_correlation_tests;
 mod fault_out_of_range_non_finite_tests {
     use super::*;
     use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+    use bacnet_types::error::RemoteError;
 
     fn assert_value_out_of_range(result: Result<ReliabilityEvaluation, Error>) {
         assert!(matches!(
             result,
-            Err(Error::Protocol { class, code })
+            Err(Error::Remote(RemoteError::Error { class, code }))
                 if class == ErrorClass::PROPERTY
                     && code == ErrorCode::VALUE_OUT_OF_RANGE
         ));

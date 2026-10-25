@@ -79,10 +79,10 @@ impl ObservedFile {
     fn refuse(&self, start: u64, count: u64) -> Result<(), Error> {
         if self.fail_at == Some(start) {
             self.observe(start, count, None);
-            return Err(Error::Protocol {
-                class: ErrorClass::SERVICES,
-                code: ErrorCode::FILE_ACCESS_DENIED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::FILE_ACCESS_DENIED,
+            ));
         }
         Ok(())
     }

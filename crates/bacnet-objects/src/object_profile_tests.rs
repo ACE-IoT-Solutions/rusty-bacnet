@@ -8,11 +8,12 @@ use crate::lighting::{BinaryLightingOutputObject, ColorLink, LightingOutputObjec
 use crate::property_metadata::PropertyConformance;
 use crate::traits::BACnetObject;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 
 fn assert_code<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { code, .. }) => {
+        Err(Error::Remote(RemoteError::Error { code, .. })) => {
             assert_eq!(code, expected, "expected {expected:?}")
         }
         other => panic!("expected {expected:?}, got {other:?}"),

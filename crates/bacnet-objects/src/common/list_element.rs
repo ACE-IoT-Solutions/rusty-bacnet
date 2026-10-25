@@ -5,15 +5,16 @@
 /// that element's 1-based position as `FirstFailedElementNumber`. The server's
 /// AddListElement handler turns the position into the request's element
 /// number (#1048). Errors other than a class and code pass through.
+use bacnet_types::error::RemoteError;
 pub(crate) fn at_list_element(
     error: bacnet_types::error::Error,
     index: usize,
 ) -> bacnet_types::error::Error {
     use bacnet_types::error::{Error, ErrorDetail};
     match error {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             let position = u32::try_from(index).map_or(u32::MAX, |index| index.saturating_add(1));
-            Error::protocol(
+            Error::with_detail(
                 class,
                 code,
                 Some(ErrorDetail::FirstFailedElementNumber(position)),

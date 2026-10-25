@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 // --- LightingOutputObject ---
 
@@ -487,7 +488,7 @@ fn lighting_output_relinquish_default_write_recaptures_present_value() {
 
 fn assert_property_error(error: Error, expected_code: bacnet_types::enums::ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
             assert_eq!(code, expected_code);
         }

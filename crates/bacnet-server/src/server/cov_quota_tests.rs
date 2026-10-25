@@ -1,3 +1,4 @@
+use bacnet_types::error::RemoteError;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -103,7 +104,7 @@ async fn peer_quota_isolation() {
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &peer_a, &buf).unwrap_err();
         match err {
-            Error::Protocol { class, code } => {
+            Error::Remote(RemoteError::Error { class, code }) => {
                 assert_eq!(class, ErrorClass::RESOURCES);
                 assert_eq!(code, ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT);
             }
@@ -190,7 +191,7 @@ async fn reserved_capacity_preservation() {
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &unreserved_peer, &buf).unwrap_err();
         match err {
-            Error::Protocol { class, code } => {
+            Error::Remote(RemoteError::Error { class, code }) => {
                 assert_eq!(class, ErrorClass::RESOURCES);
                 assert_eq!(code, ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT);
             }
@@ -229,7 +230,7 @@ async fn reserved_capacity_preservation() {
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, reserved_mac.as_slice(), &buf).unwrap_err();
         match err {
-            Error::Protocol { class, code } => {
+            Error::Remote(RemoteError::Error { class, code }) => {
                 assert_eq!(class, ErrorClass::RESOURCES);
                 assert_eq!(code, ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT);
             }
@@ -275,7 +276,7 @@ async fn indefinite_subscription_policy() {
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap_err();
         match err {
-            Error::Protocol { class, code } => {
+            Error::Remote(RemoteError::Error { class, code }) => {
                 assert_eq!(class, ErrorClass::SERVICES);
                 assert_eq!(code, ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED);
             }
@@ -347,7 +348,7 @@ async fn indefinite_subscription_policy() {
         let db = server2.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap_err();
         match err {
-            Error::Protocol { class, code } => {
+            Error::Remote(RemoteError::Error { class, code }) => {
                 assert_eq!(class, ErrorClass::RESOURCES);
                 assert_eq!(code, ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT);
             }

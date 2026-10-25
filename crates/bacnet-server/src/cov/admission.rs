@@ -267,10 +267,10 @@ impl CovSubscriptionTable {
             self.counters
                 .subscriptions_rejected_capacity
                 .fetch_add(1, Ordering::Relaxed);
-            return Err(Error::Protocol {
-                class: ErrorClass::RESOURCES,
-                code: ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
-            });
+            return Err(Error::protocol(
+                ErrorClass::RESOURCES,
+                ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
+            ));
         };
         let first = self.generation + 1;
         self.generation = last;
@@ -355,10 +355,10 @@ impl CovSubscriptionTable {
             self.counters
                 .subscriptions_rejected_indefinite
                 .fetch_add(1, Ordering::Relaxed);
-            return Err(Error::Protocol {
-                class: ErrorClass::SERVICES,
-                code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+            ));
         }
 
         let (new_count, new_indefinite) = match existing {
@@ -396,20 +396,20 @@ impl CovSubscriptionTable {
                 self.counters
                     .subscriptions_rejected_indefinite
                     .fetch_add(1, Ordering::Relaxed);
-                return Err(Error::Protocol {
-                    class: ErrorClass::SERVICES,
-                    code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::SERVICES,
+                    ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+                ));
             }
             let current_indefinite = self.peer_indefinite_counts.get(peer).copied().unwrap_or(0);
             if current_indefinite + new_indefinite > self.policy.max_indefinite_per_peer {
                 self.counters
                     .subscriptions_rejected_indefinite
                     .fetch_add(1, Ordering::Relaxed);
-                return Err(Error::Protocol {
-                    class: ErrorClass::RESOURCES,
-                    code: ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::RESOURCES,
+                    ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
+                ));
             }
         }
 
@@ -455,9 +455,9 @@ impl CovSubscriptionTable {
             Cap::Table => &self.counters.subscriptions_rejected_capacity,
         };
         counter.fetch_add(1, Ordering::Relaxed);
-        Error::Protocol {
-            class: ErrorClass::RESOURCES,
-            code: ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
-        }
+        Error::protocol(
+            ErrorClass::RESOURCES,
+            ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
+        )
     }
 }

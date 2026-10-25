@@ -30,10 +30,10 @@ fn decode_alarm_values_write(
     number_of_states: u32,
 ) -> Result<Vec<u32>, Error> {
     if array_index.is_some() {
-        return Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
-        });
+        return Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+        ));
     }
     let PropertyValue::List(values) = value else {
         return Err(common::invalid_data_type_error());
@@ -42,10 +42,7 @@ fn decode_alarm_values_write(
     // element that does not fit.
     if values.len() > MAX_ALARM_VALUES {
         return Err(common::at_list_element(
-            Error::Protocol {
-                class: ErrorClass::RESOURCES,
-                code: ErrorCode::NO_SPACE_TO_WRITE_PROPERTY,
-            },
+            Error::protocol(ErrorClass::RESOURCES, ErrorCode::NO_SPACE_TO_WRITE_PROPERTY),
             MAX_ALARM_VALUES,
         ));
     }

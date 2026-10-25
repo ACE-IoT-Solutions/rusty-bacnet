@@ -3,6 +3,7 @@
 //! reasons, its validity window against the database clock, its two
 //! constructed arrays, and the door's pulse times and command priority.
 
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 use super::*;
@@ -69,7 +70,7 @@ fn read_wire(
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == expected),
         "expected PROPERTY/{expected:?}, got {result:?}"

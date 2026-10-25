@@ -4,12 +4,13 @@
 use super::*;
 use bacnet_encoding::constructed::encode_object_property_reference;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
 fn code(result: Option<Result<(), Error>>) -> ErrorCode {
     match result {
-        Some(Err(Error::Protocol { class, code })) => {
+        Some(Err(Error::Remote(RemoteError::Error { class, code }))) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             code
         }

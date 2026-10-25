@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, LifeSafetyOperation, LifeSafetyState, PropertyIdentifier, SilencedState,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use crate::traits::{BACnetObject, LifeSafetyOperationEffect};
@@ -39,10 +39,10 @@ fn zone_state(zone: &LifeSafetyZoneObject) -> (u32, u32, u32, u32) {
 fn assert_error(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } if actual_class == class && actual_code == code
+        }) if actual_class == class && actual_code == code
     ));
 }
 

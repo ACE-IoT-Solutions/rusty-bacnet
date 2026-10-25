@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 mod access_identity;
 mod access_topology;
@@ -141,7 +142,7 @@ fn read_property_handler_rejects_multistate_event_time_stamps_out_of_bounds_inde
 
     let mut ack_buf = BytesMut::new();
     match handle_read_property(&db, &buf, &mut ack_buf).unwrap_err() {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             assert_eq!(code, ErrorCode::INVALID_ARRAY_INDEX);
         }

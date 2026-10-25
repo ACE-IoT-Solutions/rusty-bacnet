@@ -30,10 +30,7 @@ use super::nat::check_global;
 
 /// The WriteProperty refusal of a value the BBMD can't take.
 fn out_of_range() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::VALUE_OUT_OF_RANGE,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE)
 }
 
 /// A written BDT as the rows the core takes. A row must name an IPv4 host

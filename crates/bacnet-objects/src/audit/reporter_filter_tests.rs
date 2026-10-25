@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn audit_reporter_write_filter_and_delivery_health() {
@@ -65,7 +66,7 @@ fn audit_reporter_description_null_is_noop_and_indices_fail_before_value() {
                 .write_property(PropertyIdentifier::DESCRIPTION, Some(index), value, None)
                 .unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code } if class == ErrorClass::PROPERTY && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY)
+                matches!(error, Error::Remote(RemoteError::Error { class, code }) if class == ErrorClass::PROPERTY && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY)
             );
             assert_eq!(reporter.configuration_internal(), before);
         }
@@ -81,7 +82,7 @@ fn audit_reporter_description_null_is_noop_and_indices_fail_before_value() {
     assert_eq!(reporter.configuration_internal(), before);
     assert_eq!(status.begin_delivery(), generation);
     assert!(
-        matches!(reporter.write_property(PropertyIdentifier::DESCRIPTION,None,PropertyValue::Boolean(false),None),Err(Error::Protocol { code,.. }) if code == ErrorCode::INVALID_DATA_TYPE)
+        matches!(reporter.write_property(PropertyIdentifier::DESCRIPTION,None,PropertyValue::Boolean(false),None),Err(Error::Remote(RemoteError::Error { code,.. })) if code == ErrorCode::INVALID_DATA_TYPE)
     );
 }
 

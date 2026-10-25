@@ -13,6 +13,7 @@ use bacnet_types::enums::{
     EnableDisable, ErrorClass, ErrorCode, ObjectType, ReinitializedState, RejectReason,
     Segmentation,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -247,10 +248,10 @@ async fn device_mgmt_confirmed_protocol_errors_and_rejects_are_preserved() {
     );
     assert!(matches!(
         result,
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: ErrorClass::SECURITY,
             code: ErrorCode::PASSWORD_FAILURE
-        })
+        }))
     ));
     let (result, ()) = tokio::join!(
         client.reinitialize_device_from_device(INSTANCE, ReinitializedState::WARMSTART, None),
@@ -267,9 +268,9 @@ async fn device_mgmt_confirmed_protocol_errors_and_rejects_are_preserved() {
     );
     assert!(matches!(
         result,
-        Err(Error::Reject {
+        Err(Error::Remote(RemoteError::Reject {
             reason: RejectReason::UNRECOGNIZED_SERVICE
-        })
+        }))
     ));
     client.stop().await.unwrap();
     peer.transport.stop().await.unwrap();

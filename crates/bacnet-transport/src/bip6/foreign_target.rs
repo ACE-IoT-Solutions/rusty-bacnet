@@ -52,10 +52,7 @@ pub(crate) struct ForeignTarget {
 }
 
 fn property_error(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code,
-    }
+    Error::protocol(ErrorClass::PROPERTY, code)
 }
 
 impl ForeignTarget {

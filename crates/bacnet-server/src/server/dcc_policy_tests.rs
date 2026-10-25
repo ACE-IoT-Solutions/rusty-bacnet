@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn dcc_disable_rate_validation_before_start() {
@@ -278,14 +279,18 @@ fn dcc_configured_validation_retains_decode_password_unknown_mode_precedence() {
         // `[1]` announces one contents octet and holds none (#1374): the
         // request's Reject for a missing parameter (#1446).
         let failure = validate(&[0x19]);
-        assert!(matches!(failure.error, Error::Reject { reason }
-            if reason == RejectReason::MISSING_REQUIRED_PARAMETER));
+        assert!(
+            matches!(failure.error, Error::Remote(RemoteError::Reject { reason })
+            if reason == RejectReason::MISSING_REQUIRED_PARAMETER)
+        );
         assert!(matches!(failure.outcome, DccOutcome::Malformed));
         // The password is checked before the mode, so an unknown mode with
         // no password is a password failure.
         let failure = validate(&[0x19, 3]);
-        assert!(matches!(failure.error, Error::Protocol { class, code }
-            if class == ErrorClass::SECURITY && code == ErrorCode::PASSWORD_FAILURE));
+        assert!(
+            matches!(failure.error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::SECURITY && code == ErrorCode::PASSWORD_FAILURE)
+        );
         assert!(matches!(failure.outcome, DccOutcome::PasswordFailure));
         let mut data = BytesMut::new();
         DeviceCommunicationControlRequest {

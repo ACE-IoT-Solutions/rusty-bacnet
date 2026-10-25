@@ -4,6 +4,7 @@ use bacnet_objects::{command::CommandObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetActionCommand, BACnetActionList, PropertyReference, ReadAccessSpecification,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 /// The three Action elements the configured fixture holds, each one
@@ -268,8 +269,10 @@ fn rpm_command_action_serves_one_action_list_per_index() {
                 Err(expected) => {
                     assert!(result.property_value.is_none());
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                    assert!(matches!(rp, Err(Error::Protocol { class, code })
-                        if class == ErrorClass::PROPERTY && code == expected));
+                    assert!(
+                        matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                        if class == ErrorClass::PROPERTY && code == expected)
+                    );
                     assert!(response.is_empty());
                 }
             }

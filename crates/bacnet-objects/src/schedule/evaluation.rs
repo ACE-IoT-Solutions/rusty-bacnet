@@ -25,7 +25,7 @@ use bacnet_types::constructed::{
     BACnetObjectPropertyReference, BACnetSpecialEvent, BACnetTimeValue, SpecialEventPeriod,
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, Time};
 
 use super::ScheduleObject;
@@ -86,7 +86,9 @@ impl ScheduleTargetOutcome {
         ];
         let code = match result {
             Ok(()) => return Self::Accepted,
-            Err(Error::Protocol { code, .. } | Error::Structured { code, .. }) => *code,
+            Err(
+                Error::Remote(RemoteError::Error { code, .. }) | Error::Structured { code, .. },
+            ) => *code,
             Err(_) => return Self::Failed,
         };
         let names = |codes: &[ErrorCode]| codes.contains(&code);

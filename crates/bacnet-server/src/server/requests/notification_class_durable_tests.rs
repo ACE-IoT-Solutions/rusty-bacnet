@@ -25,6 +25,7 @@ use bacnet_services::object_mgmt::DeleteObjectRequest;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_types::constructed::BACnetDestination;
+use bacnet_types::error::RemoteError;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -342,7 +343,7 @@ async fn a_list_that_cannot_be_saved_is_refused_on_every_path_and_the_old_list_s
 
     let (server, nc) = local_server(&storage).await;
     match write_local(&server, nc, &refused).await {
-        Err(Error::Protocol { class, code }) => assert_eq!(
+        Err(Error::Remote(RemoteError::Error { class, code })) => assert_eq!(
             (class, code),
             (ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
         ),

@@ -28,7 +28,7 @@ use bacnet_types::enums::{
     EnableDisable, ErrorClass, ErrorCode, EventState, EventType, ObjectType, PropertyIdentifier,
     RejectReason,
 };
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue};
 
 use bytes::BytesMut;

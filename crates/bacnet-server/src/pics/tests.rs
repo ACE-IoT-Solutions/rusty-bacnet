@@ -37,10 +37,10 @@ impl BACnetObject for TestAnalogInput {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         static PROPS: [PropertyIdentifier; 8] = [
@@ -124,10 +124,10 @@ impl BACnetObject for TestDevice {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         static PROPS: [PropertyIdentifier; 6] = [

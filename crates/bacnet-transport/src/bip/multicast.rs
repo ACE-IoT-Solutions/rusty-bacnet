@@ -655,10 +655,7 @@ impl MulticastControl {
 }
 
 fn protocol(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code,
-    }
+    Error::protocol(ErrorClass::PROPERTY, code)
 }
 
 impl IpMulticast for MulticastControl {

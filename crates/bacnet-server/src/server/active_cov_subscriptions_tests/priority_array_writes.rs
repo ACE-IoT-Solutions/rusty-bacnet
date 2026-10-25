@@ -3,6 +3,7 @@ use super::*;
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn priority_array_wire_wp_must_not_ack_direct_slot_write() {
@@ -74,7 +75,7 @@ fn objects() -> Vec<Box<dyn BACnetObject>> {
 
 fn denied(result: Result<(), Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
         if class == ErrorClass::PROPERTY
         && code == ErrorCode::WRITE_ACCESS_DENIED),
         "{result:?}"

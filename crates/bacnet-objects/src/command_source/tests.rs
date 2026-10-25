@@ -10,6 +10,7 @@ use bacnet_encoding::{
     primitives::decode_timestamp_choice,
 };
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 use bacnet_types::{
     MacAddr,
     enums::{ErrorCode, PropertyIdentifier as P},
@@ -422,7 +423,7 @@ fn command_source_owner_matrix_retains_original_token() {
 #[test]
 fn command_source_correction_refuses_a_stranger_before_its_value() {
     let code = |result: Result<(), Error>| match result {
-        Err(Error::Protocol { code, .. }) => code,
+        Err(Error::Remote(RemoteError::Error { code, .. })) => code,
         other => panic!("expected a refusal, got {other:?}"),
     };
     for (mut o, value) in objects() {

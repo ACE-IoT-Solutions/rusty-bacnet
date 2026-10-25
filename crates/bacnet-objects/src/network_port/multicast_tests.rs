@@ -7,6 +7,7 @@ use crate::database::ObjectDatabase;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use bacnet_types::bip_port::{BipPortMode, IpMulticast};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
 const GROUP: [u8; 4] = [239, 255, 94, 1];
@@ -32,10 +33,7 @@ impl Group {
 }
 
 fn error(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code,
-    }
+    Error::protocol(ErrorClass::PROPERTY, code)
 }
 
 impl IpMulticast for Group {
@@ -114,7 +112,7 @@ fn octets(group: [u8; 4]) -> PropertyValue {
 
 fn code(result: Result<impl std::fmt::Debug, Error>) -> ErrorCode {
     match result {
-        Err(Error::Protocol { code, .. }) => code,
+        Err(Error::Remote(RemoteError::Error { code, .. })) => code,
         other => panic!("expected a protocol error, got {other:?}"),
     }
 }

@@ -5,6 +5,7 @@ use bacnet_objects::{
     traits::BACnetObject,
 };
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 fn accumulator_objects(configured: bool) -> [Box<dyn BACnetObject>; 2] {
@@ -192,9 +193,11 @@ fn rpm_accumulator_metadata_does_not_enable_create_object() {
             .encode(&mut request);
             let mut response = BytesMut::new();
             let result = handle_create_object(&mut db, &request, &mut response);
-            assert!(matches!(result, Err(Error::Protocol { class, code })
+            assert!(
+                matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
                 if class == ErrorClass::OBJECT
-                    && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE));
+                    && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
+            );
             assert!(response.is_empty());
             assert!(db.is_empty());
         }

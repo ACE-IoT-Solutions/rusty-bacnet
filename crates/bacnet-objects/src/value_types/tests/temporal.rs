@@ -4,6 +4,7 @@
 
 use super::super::*;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 
 // DateValueObject
 // -----------------------------------------------------------------------
@@ -396,7 +397,7 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
         )
         .expect_err("a bare Date is not a BACnetDateTime")
     {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
             assert_eq!(code, bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE);
         }

@@ -10,6 +10,7 @@ use bacnet_objects::multistate::{
 };
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
+use bacnet_types::error::RemoteError;
 
 fn octets(value: &PropertyValue) -> Vec<u8> {
     let mut bytes = BytesMut::new();
@@ -101,7 +102,7 @@ fn label(db: &ObjectDatabase, oid: ObjectIdentifier, index: u32) -> PropertyValu
 }
 
 fn out_of_range(result: Result<(), Error>) -> bool {
-    matches!(result, Err(Error::Protocol { class, code })
+    matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
         if class == ErrorClass::PROPERTY
             && code == ErrorCode::VALUE_OUT_OF_RANGE)
 }

@@ -6,7 +6,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
 use bacnet_types::MacAddr;
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
@@ -190,7 +190,7 @@ async fn expect_abort_result(task: RequestTask, expected_reason: AbortReason) {
         .expect("request remained pending")
         .expect("request task panicked")
     {
-        Err(Error::Abort { reason }) => assert_eq!(reason, expected_reason),
+        Err(Error::Remote(RemoteError::Abort { reason })) => assert_eq!(reason, expected_reason),
         other => panic!("expected local Abort indication, got {other:?}"),
     }
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bacnet_types::bip_port::BipPortMode;
 use bacnet_types::constructed::BACnetHostNPort;
 use bacnet_types::enums::ErrorCode;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 
 use super::*;
 use crate::port::TransportPort;
@@ -59,10 +59,10 @@ fn a_foreign_device_lends_a_registration_that_takes_changes_while_running() {
     assert!(
         matches!(
             error,
-            Error::Protocol {
+            Error::Remote(RemoteError::Error {
                 code: ErrorCode::WRITE_ACCESS_DENIED,
                 ..
-            }
+            })
         ),
         "{error:?}"
     );

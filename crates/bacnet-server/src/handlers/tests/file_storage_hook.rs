@@ -47,10 +47,10 @@ impl BACnetObject for HookLessFile {
             p if p == PropertyIdentifier::FILE_ACCESS_METHOD => Ok(PropertyValue::Enumerated(
                 ObjectFileAccessMethod::STREAM_ACCESS.to_raw(),
             )),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -61,10 +61,10 @@ impl BACnetObject for HookLessFile {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -345,10 +345,10 @@ impl BACnetObject for OpaqueReadOnlyFile {
             p if p == PropertyIdentifier::FILE_ACCESS_METHOD => Ok(PropertyValue::Enumerated(
                 ObjectFileAccessMethod::STREAM_ACCESS.to_raw(),
             )),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 

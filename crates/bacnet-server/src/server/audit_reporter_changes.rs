@@ -13,10 +13,7 @@ use bacnet_types::{
 };
 
 fn denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES,
-        code: ErrorCode::SERVICE_REQUEST_DENIED,
-    }
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
 impl<T: TransportPort + 'static> AuditReporterChangeSink
