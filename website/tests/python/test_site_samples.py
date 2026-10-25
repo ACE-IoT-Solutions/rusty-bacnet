@@ -35,9 +35,17 @@ LOOPBACK = "127.0.0.1"
 TIMEOUT = 30
 # Options that pick a transport or a peer that may be off the host.
 OFF_HOST_OPTIONS = {
-    "--sc", "--sc-url", "--mstp", "--mstp-monitor", "--ipv6", "--ipv6-interface",
+    "--sc", "--sc-url", "--sc-failover-url", "--mstp", "--mstp-monitor", "--ipv6", "--ipv6-interface",
     "--foreign-bbmd", "--bbmd", "--bip-multicast", "--dnet",
 }
+# The subcommands a run sample may use, and what names the peer: the first
+# operand (a device address or instance), or the --target option.
+TARGET_FIRST = {"read", "rp", "readm", "rpm", "write", "wp", "writem", "wpm", "subscribe", "cov"}
+TARGET_OPTION = {"discover", "whois"}
+# Global options a run sample may put before its subcommand; any other fails closed.
+GLOBAL_FLAGS = {"--json", "--allow-write", "--yes", "--version", "-V", "--help", "-h"}
+GLOBAL_VALUES = {"-i", "--interface", "-p", "--port", "-b", "--broadcast", "-t", "--timeout"}
+LOOPBACK_PEER = re.compile(r"(?:(127\.\d{1,3}\.\d{1,3}\.\d{1,3})|\[(::1)\])(?::\d{1,5})?|\d+")
 # Global options the harness adds when a sample doesn't set them, so the CLI
 # binds and broadcasts on loopback only.
 LOOPBACK_DEFAULTS = (("-i", "--interface", LOOPBACK), ("-p", "--port", "0"), ("-b", "--broadcast", LOOPBACK))
@@ -95,7 +103,40 @@ def cli_argv(cli: str, words: list[str], device: str, address: str) -> list[str]
         if not any(w in (short, long) or w.startswith(long + "=") for w in rest):
             added += [long, value]
     check_loopback(added + rest)
+    check_peer(added + rest)
     return [cli, *added, *rest]
+
+
+def check_peer(words: list[str]) -> None:
+    """The word naming the peer must be a loopback literal or a device
+    instance (found by a Who-Is on the loopback broadcast address). This
+    closes the gap check_loopback leaves for single-label host names, which
+    can't be told from an operand elsewhere on the line."""
+    index = 0
+    while index < len(words) and words[index].startswith("-"):
+        name = words[index].split("=", 1)[0]
+        if name in GLOBAL_VALUES and "=" not in words[index]:
+            index += 2
+        elif name in GLOBAL_FLAGS or name in GLOBAL_VALUES:
+            index += 1
+        else:
+            raise OffHost(f"{words[index]} before the subcommand is not allowed in a run sample")
+    if index >= len(words):
+        return  # no subcommand: --version or --help
+    command, operands = words[index], words[index + 1:]
+    if command in TARGET_FIRST:
+        peer = operands[0] if operands else ""
+    elif command in TARGET_OPTION:
+        peers = [operands[i + 1] for i, w in enumerate(operands[:-1]) if w == "--target"]
+        peers += [w.split("=", 1)[1] for w in operands if w.startswith("--target=")]
+        if not peers:
+            raise OffHost(f"{command} without --target would broadcast")
+        peer = peers[0]
+    else:
+        raise OffHost(f"{command} is not a subcommand run samples may use")
+    match = LOOPBACK_PEER.fullmatch(peer)
+    if not match or (match.group(1) and not ipaddress.ip_address(match.group(1)).is_loopback):
+        raise OffHost(f"{peer!r} is not a loopback peer")
 
 
 def parse_argv(cli: str, words: list[str], spec: Parse) -> list[str]:
@@ -254,12 +295,22 @@ class LoopbackGuard(unittest.TestCase):
             ["bacnet", "--foreign-bbmd", "127.0.0.1", "discover"],
             ["bacnet", "--bip-multicast", "239.255.66.1", "discover"],
             ["bacnet", "discover", "--dnet", "5"],
+            ["bacnet", "--sc-failover-url", "wss://127.0.0.1/hub", "discover"],
+            ["bacnet", "read", "controller", "ai:1", "pv"],
+            ["bacnet", "discover", "--target", "controller"],
+            ["bacnet", "discover", "1000-2000"],
+            ["bacnet", "whois-router"],
+            ["bacnet", "--format", "json", "read", "127.0.0.1:5", "ai:1", "pv"],
         ]:
             with self.subTest(words=words), self.assertRaises(OffHost):
                 cli_argv("cli", words, "192.168.1.100", "127.0.0.1:5")
 
     def test_accepts_loopback(self):
         check_loopback(["127.0.0.1:47808", "[::1]:47808", "ai:1", "5:1005", "72.5", "object-name,units,pv"])
+        for words in (["read", "[::1]:47808", "ai:1", "pv"], ["--json", "read", "1234", "ai:1", "pv"],
+                      ["discover", "--target", "127.0.0.1:5", "--wait", "3"], ["--version"]):
+            with self.subTest(words=words):
+                check_peer(["--interface", LOOPBACK, "--port", "0", *words])
 
 
 class CliSamples(unittest.TestCase):
@@ -272,6 +323,8 @@ class CliSamples(unittest.TestCase):
     def run_line(self, words: list[str], spec: Run, address: str) -> tuple[list[str], dict[str, str]]:
         env, words = split_env(words)
         if words[0] == ".venv/bin/python":
+            # Only a one-line `-c` program: a page's script must not run unguarded here.
+            self.assertEqual((len(words), words[1]), (3, "-c"), words)
             argv = [sys.executable, *words[1:]]
         else:
             argv = cli_argv(self.cli, words, spec.device, address)

@@ -1,6 +1,6 @@
 ---
 section: Added
 ---
-- CI runs the website's CLI samples against the loopback lab, and the lab's
-  own tests, in the Python bindings job. The lab also serves a commandable
-  analog value for the write guide's samples (#1989).
+- The website's loopback lab also serves a commandable analog value, `av:1`,
+  for the write guide's samples. CI now runs the lab's tests and the site's
+  CLI samples against it in the Python bindings job (#1989).

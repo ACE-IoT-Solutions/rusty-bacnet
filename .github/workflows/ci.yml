@@ -448,6 +448,9 @@ jobs:
           BACNET_CLI: ${{ github.workspace }}/target/debug/bacnet
         run: |
           . "$RUNNER_TEMP/venv/bin/activate"
+          # The lab expects the site's release; this wheel has the workspace's version.
+          BACNET_LAB_EXPECTED_VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          export BACNET_LAB_EXPECTED_VERSION
           python -m unittest discover -s website/tests/python -v
       # The crate's lib unit tests and integration tests, linked against
       # PYO3_PYTHON's libpython (#919), not the venv's, so this step doesn't

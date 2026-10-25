@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from importlib.metadata import PackageNotFoundError, version
+import os
 import sys
 
 LOOPBACK = "127.0.0.1"
@@ -31,12 +32,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def check_version() -> None:
+    # The project's CI sets this to the version of the wheel it just built.
+    expected = os.environ.get("BACNET_LAB_EXPECTED_VERSION") or EXPECTED_VERSION
     try:
         installed = version("rusty-bacnet")
     except PackageNotFoundError as exc:
-        raise RuntimeError(f"Install rusty-bacnet=={EXPECTED_VERSION} in this Python environment first.") from exc
-    if installed != EXPECTED_VERSION:
-        raise RuntimeError(f"This lab targets {EXPECTED_VERSION}; installed package is {installed}. Use a matching environment.")
+        raise RuntimeError(f"Install rusty-bacnet=={expected} in this Python environment first.") from exc
+    if installed != expected:
+        raise RuntimeError(f"This lab targets {expected}; installed package is {installed}. Use a matching environment.")
 
 
 def require_local_address(address: str) -> str:
