@@ -8,6 +8,7 @@
 //! [`TransportPort::bip6_port`], and publishes its VMAC and multicast group
 //! too.
 use super::*;
+use crate::network_port_registration as registration;
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
     /// Select the concrete built-in Network Port for this owned B/IP or
@@ -37,7 +38,7 @@ pub(super) fn prepare<T: TransportPort>(
         return Ok(());
     };
     let address = match transport.bip_port() {
-        Some(port) => port.endpoint,
+        Some(port) => registration::bip_address(&port, transport.bip_broadcast_endpoint())?,
         None if transport.bip6_port().is_some() => return prepare_bip6(db, transport, oid),
         // A B/IP link that reports no mode is configured both ways.
         None if transport.bip_broadcast_endpoint().is_some() => {
@@ -53,19 +54,7 @@ pub(super) fn prepare<T: TransportPort>(
             ));
         }
     };
-    let ip = *address.ip();
-    if ip.is_unspecified()
-        || ip.is_multicast()
-        || ip.is_broadcast()
-        || transport
-            .bip_broadcast_endpoint()
-            .is_some_and(|broadcast| *broadcast.ip() == ip)
-    {
-        return Err(Error::Encoding(
-            "registered B/IP requires a concrete unicast interface".into(),
-        ));
-    }
-    let (_, lease) = db.reserve_bip_port_internal(oid, ip.octets(), address.port())?;
+    let (_, lease) = db.reserve_bip_port_internal(oid, address.ip().octets(), address.port())?;
     transport.retain_network_port_lease_internal(lease)
 }
 
@@ -76,25 +65,11 @@ fn prepare_bip6<T: TransportPort>(
     transport: &mut T,
     oid: ObjectIdentifier,
 ) -> Result<(), Error> {
-    let address = transport
+    let port = transport
         .bip6_port()
-        .ok_or_else(|| Error::Encoding("registered port requires B/IP or B/IPv6".into()))?
-        .endpoint;
-    let ip = *address.ip();
-    let refused = if ip.is_unspecified() || ip.is_multicast() {
-        Some("registered B/IPv6 requires a concrete unicast interface")
-    } else if ip.to_ipv4_mapped().is_some() {
-        Some("registered B/IPv6 refuses an IPv4-mapped address: register IPv4 as B/IP")
-    } else if ip.is_unicast_link_local() {
-        // A link-local address needs IPv6_Zone_Index, which isn't modeled.
-        Some("registered B/IPv6 refuses a link-local address: no IPv6_Zone_Index is modeled")
-    } else {
-        None
-    };
-    if let Some(message) = refused {
-        return Err(Error::Encoding(message.into()));
-    }
-    let (_, lease) = db.reserve_bip6_port_internal(oid, ip.octets(), address.port())?;
+        .ok_or_else(|| Error::Encoding("registered port requires B/IP or B/IPv6".into()))?;
+    let address = registration::bip6_address(&port)?;
+    let (_, lease) = db.reserve_bip6_port_internal(oid, address.ip().octets(), address.port())?;
     transport.retain_network_port_lease_internal(lease)
 }
 
@@ -111,32 +86,13 @@ pub(super) fn publish<T: TransportPort + 'static>(
     let capacity = transport.local_receive_apdu_capacity() as u32;
     match transport.bip_port() {
         Some(port) => {
-            db.publish_bip_port_internal(
-                oid,
-                port.endpoint.ip().octets(),
-                port.endpoint.port(),
-                capacity,
-                port.mode,
-            )?;
-            // A port that can use B/IP multicast serves its group (#941).
-            db.set_network_port_multicast_internal(oid, port.multicast)?;
+            registration::publish_bip(db, oid, port, capacity)?;
         }
         _ => {
             let port = transport.bip6_port().ok_or_else(|| {
                 Error::Encoding("registered B/IP mode changed during bind".into())
             })?;
-            let vmac = port
-                .vmac
-                .ok_or_else(|| Error::Encoding("started B/IPv6 port reports no VMAC".into()))?;
-            db.publish_bip6_port_internal(
-                oid,
-                port.endpoint.ip().octets(),
-                port.endpoint.port(),
-                vmac,
-                port.multicast_group.octets(),
-                capacity,
-                port.mode,
-            )?;
+            registration::publish_bip6(db, oid, port, capacity)?;
         }
     }
     // Written values activate only through a ReinitializeDevice handler.

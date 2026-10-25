@@ -42,7 +42,11 @@ impl ObjectDatabase {
     }
 
     /// Snapshot only the concrete built-in B/IPv6 object.
-    fn configured_bip6_port_internal(&mut self, oid: &ObjectIdentifier) -> Option<Bip6PortConfig> {
+    #[doc(hidden)]
+    pub fn configured_bip6_port_internal(
+        &mut self,
+        oid: &ObjectIdentifier,
+    ) -> Option<Bip6PortConfig> {
         self.builtin_network_port_mut(oid)?
             .bip6_configuration_internal()
             .cloned()

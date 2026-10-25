@@ -150,7 +150,14 @@ enum SendRequest {
 /// an NPDU too long for the port with reject reason 4 (#1665). It follows
 /// the limit's changes after that, for a transport that publishes them
 /// ([`TransportPort::max_npdu_changes`], #1696).
-pub struct RouterPort<T: TransportPort> {
+///
+/// `T` defaults to [`AnyTransport`], so `RouterPort` alone names a port of a
+/// router that mixes link types; `RouterPort<BipTransport>` and the like
+/// name one of a router whose ports share a concrete transport.
+///
+/// [`AnyTransport`]: bacnet_transport::any::AnyTransport
+/// [`BipTransport`]: bacnet_transport::bip::BipTransport
+pub struct RouterPort<T: TransportPort = bacnet_transport::any::AnyTransport> {
     /// The transport for this port.
     pub transport: T,
     /// The network number assigned to this port: 1 to 65534.
