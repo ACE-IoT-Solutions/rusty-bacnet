@@ -15,7 +15,9 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
     /// B/IPv6 link, in whichever mode the transport runs. The object must
     /// already describe the concrete interface and configured UDP port
     /// (zero is allowed): an IPV4 object for B/IP, an IPV6 one for B/IPv6.
-    /// Startup validates, then publishes the actual bind and mode.
+    /// A B/IPv6 transport must be built with the served Device's instance,
+    /// which is its VMAC (#2057). Startup validates, then publishes the
+    /// actual bind and mode.
     pub fn registered_network_port(mut self, oid: ObjectIdentifier) -> Self {
         self.config.registered_network_port = Some(oid);
         self
@@ -29,17 +31,22 @@ impl BipServerBuilder {
     }
 }
 
+/// Validate and reserve the registered port `oid`, if any, before the bind.
+/// `device_instance` is the served Device's, which a B/IPv6 VMAC must match.
 pub(super) fn prepare<T: TransportPort>(
     db: &mut ObjectDatabase,
     transport: &mut T,
     oid: Option<ObjectIdentifier>,
+    device_instance: u32,
 ) -> Result<(), Error> {
     let Some(oid) = oid else {
         return Ok(());
     };
     let address = match transport.bip_port() {
         Some(port) => registration::bip_address(&port, transport.bip_broadcast_endpoint())?,
-        None if transport.bip6_port().is_some() => return prepare_bip6(db, transport, oid),
+        None if transport.bip6_port().is_some() => {
+            return prepare_bip6(db, transport, oid, device_instance);
+        }
         // A B/IP link that reports no mode is configured both ways.
         None if transport.bip_broadcast_endpoint().is_some() => {
             return Err(Error::Encoding(
@@ -59,16 +66,18 @@ pub(super) fn prepare<T: TransportPort>(
 }
 
 /// [`prepare`] for a B/IPv6 link: its configured address must be one
-/// concrete unicast address, as a B/IP link's must.
+/// concrete unicast address, as a B/IP link's must, and its VMAC the served
+/// Device's (#2057).
 fn prepare_bip6<T: TransportPort>(
     db: &mut ObjectDatabase,
     transport: &mut T,
     oid: ObjectIdentifier,
+    device_instance: u32,
 ) -> Result<(), Error> {
     let port = transport
         .bip6_port()
         .ok_or_else(|| Error::Encoding("registered port requires B/IP or B/IPv6".into()))?;
-    let address = registration::bip6_address(&port)?;
+    let address = registration::bip6_address(&port, Some(device_instance))?;
     let (_, lease) = db.reserve_bip6_port_internal(oid, address.ip().octets(), address.port())?;
     transport.retain_network_port_lease_internal(lease)
 }
@@ -165,7 +174,12 @@ pub(super) async fn start<T: TransportPort + 'static>(
     ),
     Error,
 > {
-    prepare(db, &mut transport, config.registered_network_port)?;
+    prepare(
+        db,
+        &mut transport,
+        config.registered_network_port,
+        config.device.instance(),
+    )?;
     let mut starting = StartingNetwork::new(transport);
     let started = async {
         let controls = if starting
