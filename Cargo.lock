@@ -294,6 +294,7 @@ dependencies = [
  "bacnet-network",
  "bacnet-npdu",
  "bacnet-objects",
+ "bacnet-ops",
  "bacnet-server",
  "bacnet-services",
  "bacnet-transport",
@@ -489,6 +490,23 @@ dependencies = [
  "libc",
  "libm",
  "spinning_top",
+ "tracing",
+]
+
+[[package]]
+name = "bacnet-ops"
+version = "0.14.0"
+dependencies = [
+ "bacnet-client",
+ "bacnet-encoding",
+ "bacnet-objects",
+ "bacnet-server",
+ "bacnet-services",
+ "bacnet-transport",
+ "bacnet-types",
+ "bytes",
+ "serde",
+ "tokio",
  "tracing",
 ]
 

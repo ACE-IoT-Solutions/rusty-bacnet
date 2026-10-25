@@ -22,6 +22,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::class::Class;
+use bacnet_ops::engine::{Halt, Reader, Wanted, unreachable};
+use bacnet_ops::limits::RequestLimits;
 use bacnet_transport::port::TransportPort;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -29,9 +32,6 @@ use tokio::time::Instant;
 
 use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
 use super::EventSink;
-use super::browse::limits::RequestLimits;
-use super::browse::read::{Halt, Reader, Wanted, unreachable};
-use crate::core::class::Class;
 use crate::tui::message::WorkerEvent;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::audit::{Audit, Context, utc_now};

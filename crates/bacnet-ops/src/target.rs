@@ -15,7 +15,7 @@ use bacnet_types::error::Error;
 
 /// A parsed target for a BACnet command.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Target {
+pub enum Target {
     /// A MAC on this network, as written.
     Mac(Vec<u8>),
     /// A B/IPv6 address. The node there is addressed by its VMAC, which
@@ -43,7 +43,7 @@ pub(crate) enum Target {
 ///
 /// The format is 4 bytes of IPv4 address followed by 2 bytes of port in
 /// big-endian byte order.
-pub(crate) fn ip_to_bip_mac(ip: Ipv4Addr, port: u16) -> Vec<u8> {
+pub fn ip_to_bip_mac(ip: Ipv4Addr, port: u16) -> Vec<u8> {
     let mut mac = Vec::with_capacity(6);
     mac.extend_from_slice(&ip.octets());
     mac.extend_from_slice(&port.to_be_bytes());
@@ -51,12 +51,12 @@ pub(crate) fn ip_to_bip_mac(ip: Ipv4Addr, port: u16) -> Vec<u8> {
 }
 
 /// The forms [`parse_target`] takes, for error messages.
-pub(crate) const TARGET_FORMS: &str = "IP[:port], a 6-octet MAC or SC VMAC \
+pub const TARGET_FORMS: &str = "IP[:port], a 6-octet MAC or SC VMAC \
      (02:00:00:00:00:01 or 020000000001), bip6:INSTANCE, bip6:0xVMAC, [IPv6][:port], \
      mstp:STATION, device instance, dnet:instance or dnet:0xMAC";
 
 /// The prefix of an MS/TP station's address, `mstp:5` or `mstp:0x05`.
-pub(crate) const MSTP_TEXT_PREFIX: &str = "mstp:";
+pub const MSTP_TEXT_PREFIX: &str = "mstp:";
 
 /// An MS/TP station's MAC from the text after `mstp:`: 0 to 254, in decimal
 /// or as `0x` and hex. 255 is the broadcast address, not a station.
@@ -92,7 +92,7 @@ fn parse_mstp_station(text: &str) -> Result<u8, String> {
 ///   whose VMAC [`bip6_vmac`] finds
 /// - `mstp:station` or `mstp:0xHH`: an MS/TP station's 1-octet MAC, 0 to 254
 /// - `instance`: a device instance number (e.g., `1234`)
-pub(crate) fn parse_target(s: &str) -> Result<Target, String> {
+pub fn parse_target(s: &str) -> Result<Target, String> {
     if let Some(station) = s.strip_prefix(MSTP_TEXT_PREFIX) {
         return parse_mstp_station(station).map(|mac| Target::Mac(vec![mac]));
     }
@@ -199,7 +199,7 @@ fn parse_bip6_address(s: &str) -> Result<SocketAddrV6, String> {
 
 /// `transport` as the B/IPv6 transport, when it is one. The commands are
 /// generic over the transport; only B/IPv6 maps addresses to VMACs.
-pub(crate) fn as_bip6<T: TransportPort + 'static>(transport: &T) -> Option<&Bip6Transport> {
+pub fn as_bip6<T: TransportPort + 'static>(transport: &T) -> Option<&Bip6Transport> {
     (transport as &dyn Any).downcast_ref()
 }
 
@@ -219,7 +219,7 @@ fn is_sc<T: TransportPort + 'static>(transport: &T) -> bool {
 
 /// True when `transport` is MS/TP: the only data link the CLI uses whose
 /// MACs are one octet.
-pub(crate) fn is_mstp<T: TransportPort + 'static>(transport: &T) -> bool {
+pub fn is_mstp<T: TransportPort + 'static>(transport: &T) -> bool {
     transport.local_mac().len() == 1
 }
 
@@ -227,7 +227,7 @@ pub(crate) fn is_mstp<T: TransportPort + 'static>(transport: &T) -> bool {
 /// B/IPv6 node and `mstp:` an MS/TP station, so any other transport refuses
 /// them here, rather than hand its link a MAC it can't send to; B/IPv6
 /// refuses a 6-octet MAC, and MS/TP any MAC but a 1-octet one.
-pub(crate) fn parse_target_on<T: TransportPort + 'static>(
+pub fn parse_target_on<T: TransportPort + 'static>(
     transport: &T,
     s: &str,
 ) -> Result<Target, String> {
@@ -267,7 +267,7 @@ pub(crate) fn parse_target_on<T: TransportPort + 'static>(
 /// (Clause U.5), unless the transport already knows which VMAC is there.
 /// Fails on any transport but B/IPv6, and when nothing answers within three
 /// seconds.
-pub(crate) async fn bip6_vmac<T: TransportPort + 'static>(
+pub async fn bip6_vmac<T: TransportPort + 'static>(
     transport: &T,
     peer: SocketAddrV6,
 ) -> Result<Vec<u8>, String> {
@@ -281,13 +281,13 @@ pub(crate) async fn bip6_vmac<T: TransportPort + 'static>(
 }
 
 /// Why a directed Who-Is refuses a device instance or routed target.
-pub(crate) const TARGET_NOT_AN_ADDRESS: &str =
+pub const TARGET_NOT_AN_ADDRESS: &str =
     "--target requires an address, not a device instance or routed address";
 
 /// The MAC of a target that must be an address, such as a directed
 /// Who-Is's: a MAC as written, or the VMAC [`bip6_vmac`] finds for a
 /// B/IPv6 address. A device instance or routed target fails with `refusal`.
-pub(crate) async fn address_mac<T: TransportPort + 'static>(
+pub async fn address_mac<T: TransportPort + 'static>(
     transport: &T,
     text: &str,
     refusal: &str,
@@ -303,7 +303,7 @@ pub(crate) async fn address_mac<T: TransportPort + 'static>(
 
 /// How a transport's MAC addresses are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AddressStyle {
+pub enum AddressStyle {
     /// 4-byte IPv4 address and 2-byte port.
     Bip,
     /// 3-byte B/IPv6 VMAC, as `bip6:0x0004D2` (Clause U.1.3).
@@ -316,7 +316,7 @@ pub(crate) enum AddressStyle {
 
 impl AddressStyle {
     /// The style of `transport`'s addresses.
-    pub(crate) fn of<T: TransportPort + 'static>(transport: &T) -> Self {
+    pub fn of<T: TransportPort + 'static>(transport: &T) -> Self {
         if as_bip6(transport).is_some() {
             Self::Bip6
         } else if is_mstp(transport) {
@@ -329,12 +329,10 @@ impl AddressStyle {
     }
 
     /// Format a MAC for display, in a form [`parse_target`] reads back.
-    pub(crate) fn format(self, mac: &[u8]) -> String {
+    pub fn format(self, mac: &[u8]) -> String {
         match (self, mac) {
             (Self::Mstp, [station]) => format!("{MSTP_TEXT_PREFIX}{station}"),
-            (Self::Bip, [_, _, _, _, _, _]) | (Self::Bip6, [_, _, _]) => {
-                crate::output::format_mac(mac)
-            }
+            (Self::Bip, [_, _, _, _, _, _]) | (Self::Bip6, [_, _, _]) => format_mac(mac),
             _ => hex(mac),
         }
     }
@@ -345,12 +343,7 @@ impl AddressStyle {
     /// the link peer `mac`, in this style. Otherwise, or when the routed
     /// MAC is empty and so names no station, `mac` in this style and no
     /// router.
-    #[cfg(feature = "tui")]
-    pub(crate) fn locate(
-        self,
-        mac: &[u8],
-        routed: Option<(u16, &[u8])>,
-    ) -> (String, Option<String>) {
+    pub fn locate(self, mac: &[u8], routed: Option<(u16, &[u8])>) -> (String, Option<String>) {
         match routed.and_then(|(network, station)| routed_station(network, station)) {
             Some(station) => (station, Some(self.format(mac))),
             None => (self.format(mac), None),
@@ -364,7 +357,7 @@ impl AddressStyle {
 /// empty MAC names no station (it is a broadcast on that network), so it
 /// has no target form and gives `None`; the capture, which shows routed
 /// broadcasts, writes those itself.
-pub(crate) fn routed_station(network: u16, mac: &[u8]) -> Option<String> {
+pub fn routed_station(network: u16, mac: &[u8]) -> Option<String> {
     if mac.is_empty() {
         return None;
     }
@@ -375,8 +368,28 @@ pub(crate) fn routed_station(network: u16, mac: &[u8]) -> Option<String> {
     Some(out)
 }
 
+/// Format a MAC address as a target the CLI reads back: a BIP MAC (6 bytes:
+/// 4 IP + 2 port) as `ip:port`, and a B/IPv6 VMAC (3 bytes, the only
+/// 3-byte MAC the CLI's transports use) as `bip6:0x0004D2`. Falls back to
+/// hex display for other MACs. A routed station is written with its network
+/// by [`routed_station`] instead.
+pub fn format_mac(mac: &[u8]) -> String {
+    if mac.len() == 6 {
+        let ip = Ipv4Addr::new(mac[0], mac[1], mac[2], mac[3]);
+        let port = u16::from_be_bytes([mac[4], mac[5]]);
+        format!("{ip}:{port}")
+    } else if let Ok(vmac) = <[u8; 3]>::try_from(mac) {
+        bacnet_transport::bip6::format_vmac_text(bacnet_transport::bip6::Bip6Vmac::new(vmac))
+    } else {
+        mac.iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
 /// Colon-separated lowercase hex.
-pub(crate) fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 3);
     for (i, b) in bytes.iter().enumerate() {
         if i > 0 {

@@ -39,9 +39,10 @@ const ROUTED_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
 /// never answers don't wait the full three seconds.
 const ROUTED_WAIT_VAR: &str = "BACNET_CLI_ROUTED_WAIT_MS";
 
-/// How long a routed target waits for its device: [`ROUTED_DISCOVERY_WAIT`],
+/// How long a routed target waits for its device: three seconds, as long as
+/// `discover` waits by default,
 /// unless the environment sets another wait for a test.
-pub(crate) fn routed_wait() -> Duration {
+pub fn routed_wait() -> Duration {
     std::env::var(ROUTED_WAIT_VAR)
         .ok()
         .and_then(|ms| ms.parse().ok())
@@ -50,7 +51,7 @@ pub(crate) fn routed_wait() -> Duration {
 
 /// Where a service request goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Destination {
+pub enum Destination {
     /// A MAC on this network.
     Mac(Vec<u8>),
     /// A device in the client's discovery table, local or routed.
@@ -69,7 +70,7 @@ fn not_found(instance: u32) -> String {
 /// Resolve `text` to a [`Destination`]. A routed target asks its network
 /// with a Who-Is when the discovery table doesn't hold it yet, and waits up
 /// to `wait` for the answer.
-pub(crate) async fn resolve<T: TransportPort + 'static>(
+pub async fn resolve<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     text: &str,
     wait: Duration,
@@ -93,7 +94,7 @@ pub(crate) async fn resolve<T: TransportPort + 'static>(
 /// Resolve `text` to a MAC on this network, for the commands that have no
 /// routed client call. A device instance is looked up in the discovery
 /// table; a routed target is refused.
-pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
+pub async fn resolve_mac<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     text: &str,
 ) -> Result<Vec<u8>, String> {
@@ -197,7 +198,7 @@ async fn find_routed<T: TransportPort + 'static>(
 
 impl Destination {
     /// One checked stream or record file window.
-    pub(crate) async fn atomic_read_file<T: TransportPort + 'static>(
+    pub async fn atomic_read_file<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         file: ObjectIdentifier,
@@ -214,7 +215,7 @@ impl Destination {
     }
 
     /// AtomicWriteFile, retaining its raw service acknowledgement.
-    pub(crate) async fn atomic_write_file<T: TransportPort + 'static>(
+    pub async fn atomic_write_file<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         file: ObjectIdentifier,
@@ -230,7 +231,7 @@ impl Destination {
         }
     }
     /// Create an object, retaining its raw service acknowledgement.
-    pub(crate) async fn create_object<T: TransportPort + 'static>(
+    pub async fn create_object<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         specifier: bacnet_services::object_mgmt::ObjectSpecifier,
@@ -247,7 +248,7 @@ impl Destination {
     }
 
     /// Delete the identified object.
-    pub(crate) async fn delete_object<T: TransportPort + 'static>(
+    pub async fn delete_object<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         object: ObjectIdentifier,
@@ -259,7 +260,7 @@ impl Destination {
     }
 
     /// Acknowledge an alarm with the caller's exact request.
-    pub(crate) async fn acknowledge_alarm_request<T: TransportPort + 'static>(
+    pub async fn acknowledge_alarm_request<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         request: &bacnet_services::alarm_event::AcknowledgeAlarmRequest,
@@ -275,7 +276,7 @@ impl Destination {
     }
 
     /// Dispatch device_communication_control through the resolved device or local MAC.
-    pub(crate) async fn device_communication_control<T: TransportPort + 'static>(
+    pub async fn device_communication_control<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         state: bacnet_types::enums::EnableDisable,
@@ -297,7 +298,7 @@ impl Destination {
     }
 
     /// Dispatch reinitialize_device through the resolved device or local MAC.
-    pub(crate) async fn reinitialize_device<T: TransportPort + 'static>(
+    pub async fn reinitialize_device<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         state: bacnet_types::enums::ReinitializedState,
@@ -314,7 +315,7 @@ impl Destination {
     }
 
     /// Send the selected unconfirmed time service once.
-    pub(crate) async fn time_synchronization<T: TransportPort + 'static>(
+    pub async fn time_synchronization<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         date: bacnet_types::primitives::Date,
@@ -338,7 +339,7 @@ impl Destination {
     }
 
     /// GetEventInformation, retaining its raw service acknowledgement.
-    pub(crate) async fn get_event_information<T: TransportPort + 'static>(
+    pub async fn get_event_information<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         last: Option<ObjectIdentifier>,
@@ -354,7 +355,7 @@ impl Destination {
     }
 
     /// ReadRange with the selected acknowledgement validation.
-    pub(crate) async fn read_range<T: TransportPort + 'static>(
+    pub async fn read_range<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         request: &ReadRangeRequest,
@@ -371,7 +372,7 @@ impl Destination {
     }
 
     /// One log page, including all metadata and range subrequests.
-    pub(crate) async fn read_log_page<T: TransportPort + 'static>(
+    pub async fn read_log_page<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         log: ObjectIdentifier,
@@ -389,7 +390,7 @@ impl Destination {
     }
 
     /// ReadProperty.
-    pub(crate) async fn read_property<T: TransportPort + 'static>(
+    pub async fn read_property<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         object: ObjectIdentifier,
@@ -407,7 +408,7 @@ impl Destination {
     }
 
     /// ReadPropertyMultiple.
-    pub(crate) async fn read_property_multiple<T: TransportPort + 'static>(
+    pub async fn read_property_multiple<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         specs: Vec<ReadAccessSpecification>,
@@ -423,7 +424,7 @@ impl Destination {
     }
 
     /// WriteProperty of an encoded value.
-    pub(crate) async fn write_property<T: TransportPort + 'static>(
+    pub async fn write_property<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         object: ObjectIdentifier,
@@ -447,7 +448,7 @@ impl Destination {
     }
 
     /// WritePropertyMultiple.
-    pub(crate) async fn write_property_multiple<T: TransportPort + 'static>(
+    pub async fn write_property_multiple<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         specs: Vec<WriteAccessSpecification>,
@@ -463,7 +464,7 @@ impl Destination {
     }
 
     /// SubscribeCOV for `object`, from process `process`.
-    pub(crate) async fn subscribe_cov<T: TransportPort + 'static>(
+    pub async fn subscribe_cov<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         process: u32,
@@ -486,7 +487,7 @@ impl Destination {
     }
 
     /// Cancel process `process`'s subscription to `object`.
-    pub(crate) async fn unsubscribe_cov<T: TransportPort + 'static>(
+    pub async fn unsubscribe_cov<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         process: u32,

@@ -33,7 +33,6 @@
 mod app;
 mod capture;
 mod event_loop;
-mod format;
 mod help;
 mod keymap;
 mod log_layer;

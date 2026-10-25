@@ -6,12 +6,12 @@
 //! symbol) and exactly, for the CSV log (every digit, no state texts).
 
 use bacnet_client::client::ReceivedCOVNotification;
+use bacnet_ops::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, units};
+use bacnet_ops::label::kebab;
 use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 use tokio::time::Instant;
 
-use crate::tui::app::objects::kebab;
-use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, units};
 use crate::tui::point::Health;
 use crate::tui::watched::{Point, Sample};
 

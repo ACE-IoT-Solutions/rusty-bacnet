@@ -7,6 +7,7 @@
 
 use std::ops::Range;
 
+use bacnet_ops::target::{hex, routed_station};
 use bacnet_transport::bip6::{Bvll6, decode_bvll6, format_vmac_text};
 use bacnet_transport::bvll::{self, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_transport::mstp::codec::{FrameType, decode_frame, decode_frame_in_place};
@@ -16,7 +17,6 @@ use bacnet_transport::sc_frame::{
 use bytes::Bytes;
 
 use super::decode_npdu_layer;
-use crate::core::target::{hex, routed_station};
 
 /// A routed address as the capture shows it: a station in the target
 /// syntax, `2:0x05`, and a broadcast on a network (an empty MAC), which

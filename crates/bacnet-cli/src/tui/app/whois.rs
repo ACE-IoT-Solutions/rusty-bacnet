@@ -6,8 +6,9 @@
 
 use std::time::Duration;
 
-use crate::core::target::AddressStyle;
-use crate::core::target::{MSTP_TEXT_PREFIX, Target, parse_target};
+use bacnet_ops::target::AddressStyle;
+use bacnet_ops::target::{MSTP_TEXT_PREFIX, Target, parse_target};
+
 use crate::tui::message::{DirectedTo, MAX_INSTANCE, WhoIsScope, WhoIsSpec};
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_transport::bip6::VMAC_TEXT_PREFIX;

@@ -19,6 +19,7 @@ pub(crate) mod lock;
 pub(crate) mod manage;
 pub(crate) mod plan;
 
+use bacnet_ops::class::Class;
 use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
@@ -26,7 +27,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use self::ledger::Entry;
 use super::profile::Safety;
-use crate::core::class::Class;
 
 /// Default write session length, in minutes.
 pub(crate) const DEFAULT_MINUTES: u32 = 15;
@@ -239,8 +239,8 @@ pub(crate) fn label(
     index: Option<u32>,
     priority: Option<u8>,
 ) -> String {
-    let object = super::app::objects::object_label(object);
-    let property = super::app::objects::kebab(property);
+    let object = bacnet_ops::label::object_label(object);
+    let property = bacnet_ops::label::kebab(property);
     let index = index.map(|i| format!("[{i}]")).unwrap_or_default();
     let priority = priority.map(|p| format!(" @{p}")).unwrap_or_default();
     format!("device {device} {object} {property}{index}{priority}")

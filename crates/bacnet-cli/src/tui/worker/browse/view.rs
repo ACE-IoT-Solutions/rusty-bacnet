@@ -1,14 +1,14 @@
 //! The browser's display data from property values as read: the device
 //! card, an object's properties, its health badges and its priority pane,
-//! each value written by the TUI's formatter ([`crate::tui::format`]).
+//! each value written by the shared formatter ([`bacnet_ops::format`]).
 
+use bacnet_ops::engine::ReadVia;
+use bacnet_ops::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, object_name, units};
+use bacnet_ops::label::PRIORITIES;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, ResolvedBits, resolve_bits};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
-use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, object_name, units};
-use crate::tui::point::{
-    DeviceCard, Health, ObjectView, PRIORITIES, PriorityView, PropertyRow, ReadVia,
-};
+use crate::tui::point::{DeviceCard, Health, ObjectView, PriorityView, PropertyRow};
 
 /// The single value of `property` among `rows`.
 fn single(rows: &[RawRow], property: PropertyIdentifier) -> Option<PropertyValue> {

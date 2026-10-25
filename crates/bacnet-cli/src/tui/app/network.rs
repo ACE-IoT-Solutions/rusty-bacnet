@@ -16,9 +16,9 @@
 use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
+use bacnet_ops::label::kebab;
 use bacnet_transport::bip::{ForeignRegistrationOutcome, ForeignRegistrationSnapshot};
 
-use super::objects::kebab;
 use super::watch::Screen;
 use super::{App, FLASH_FOR, Link};
 use crate::tui::message::Command;

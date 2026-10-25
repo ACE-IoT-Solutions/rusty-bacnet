@@ -12,13 +12,13 @@
 //! | priority 6, kept for minimum on and off times (Clause 19.2.3) | blocked, or T3 with `dangerous = true` |
 
 use bacnet_encoding::primitives::encode_property_value;
+use bacnet_ops::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all};
+use bacnet_ops::label::PRIORITIES;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::PropertyValue;
 use bytes::BytesMut;
 
 use super::{Effect, Gate, Occupancy, Planned, Preview, Stored, Tier, WriteSpec};
-use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all};
-use crate::tui::point::PRIORITIES;
 
 /// What is read before a write, besides the target property.
 pub(crate) const PRE_READ: [PropertyIdentifier; 4] = [
@@ -106,8 +106,8 @@ pub(crate) fn repeated_target(specs: &[&WriteSpec]) -> Option<String> {
             .then(|| {
                 format!(
                     "a batch writes each property once; {} {} appears twice",
-                    crate::tui::app::objects::object_label(spec.object),
-                    crate::tui::app::objects::kebab(spec.property)
+                    bacnet_ops::label::object_label(spec.object),
+                    bacnet_ops::label::kebab(spec.property)
                 )
             })
     })
@@ -252,7 +252,7 @@ fn plan(
         None => PropertyValue::Null,
         Some(text) => {
             let like = current.or(default).and_then(first);
-            coerce(crate::parse::parse_value(text)?, like.as_ref())
+            coerce(bacnet_ops::parse::parse_value(text)?, like.as_ref())
         }
     };
     // A typed `null` is a relinquish too, and is treated as one.

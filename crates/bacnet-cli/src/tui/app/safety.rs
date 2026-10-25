@@ -8,12 +8,12 @@
 
 use std::time::{Duration, Instant};
 
+use bacnet_ops::class::Class;
+use bacnet_ops::parse::{parse_property, parse_value};
 use bacnet_types::enums::PropertyIdentifier;
 
 use super::browser::ViewState;
 use super::{App, FLASH_FOR, Link, Overlay};
-use crate::core::class::Class;
-use crate::parse::{parse_property, parse_value};
 use crate::tui::message::Command;
 use crate::tui::point::BrowseRead;
 use crate::tui::profile::{Safety, Writes};

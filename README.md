@@ -305,10 +305,11 @@ How to configure each one:
 | [`bacnet-server`](https://crates.io/crates/bacnet-server) | Async server: dispatch, COV, events, scheduling, PICS |
 | [`bacnet-endpoint-core`](https://crates.io/crates/bacnet-endpoint-core) | Shared ownership and transaction coordination for endpoints |
 | [`bacnet-endpoint`](https://crates.io/crates/bacnet-endpoint) | One transport owner for both client and server roles |
+| `bacnet-ops` | New on `dev`: the UI-free operations core the `bacnet` tool's commands, TUI and planned MCP server share (target and value grammar, value formatting, request limits, read engine) |
 | [`bacnet-cli`](https://crates.io/crates/bacnet-cli) | The `bacnet` command-line tool (also as release binaries) |
 
 All are on crates.io at 0.14.0, except `bacnet-time`, which versions on its
-own and is at 0.13.1. The Python package is built from
+own and is at 0.13.1, and `bacnet-ops`, which is first published with 0.15.0. The Python package is built from
 [`crates/rusty-bacnet`](crates/rusty-bacnet) with [maturin](https://www.maturin.rs/).
 The [architecture guide](docs/architecture.md) shows how the layers fit
 together.

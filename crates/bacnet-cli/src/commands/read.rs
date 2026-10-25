@@ -5,6 +5,8 @@
 use bacnet_client::client::BACnetClient;
 use bacnet_client::tags::{TagsRead, decode_tags_read};
 use bacnet_encoding::primitives::decode_application_value;
+use bacnet_ops::destination::Destination;
+use bacnet_ops::parse;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::BACnetNameValue;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
@@ -12,9 +14,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::primitives::PropertyValue;
 
-use crate::core::destination::Destination;
 use crate::output::{self, OutputFormat};
-use crate::parse;
 
 /// Decode the application-tagged values in `data` and format each one, with
 /// the hex of whatever follows the last value that decoded.

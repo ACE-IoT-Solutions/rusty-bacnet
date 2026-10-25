@@ -1,5 +1,6 @@
-//! The TUI's one value formatter: property values as read, turned into the
-//! text the browser, the watch list and the write previews show.
+//! The one value formatter the TUI and the MCP server share: property
+//! values as read, turned into the text the browser, the watch list and the
+//! write previews show.
 //!
 //! It knows the object type, so a constructed value (timestamps, schedule
 //! days, references) is split with the element table from
@@ -28,14 +29,14 @@ use bacnet_types::primitives::PropertyValue;
 use units::unit_symbol;
 
 /// A property as read: its raw application-tagged value, or an error.
-pub(crate) type RawRow = (PropertyIdentifier, Result<Vec<u8>, String>);
+pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, String>);
 
 /// Values shown before the rest of a list is summarised.
 const MAX_LIST_SHOWN: usize = 8;
 
 /// Every application-tagged value in `data`, or `None` if any part of it
 /// doesn't decode. A context tag decodes as `ApplicationData`.
-pub(crate) fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
+pub fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
     let mut offset = 0;
     let mut values = Vec::new();
     while offset < data.len() {
@@ -48,7 +49,7 @@ pub(crate) fn decode_all(data: &[u8]) -> Option<Vec<PropertyValue>> {
 
 /// How floats are written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Floats {
+pub enum Floats {
     /// At most six significant digits, trailing zeros trimmed.
     Display,
     /// Every digit: the shortest text that reads back as the same value.
@@ -57,19 +58,19 @@ pub(crate) enum Floats {
 
 /// The object's own names for its states, when they were read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct StateTexts {
+pub struct StateTexts {
     /// A binary object's Active_Text.
-    pub(crate) active: Option<String>,
+    pub active: Option<String>,
     /// A binary object's Inactive_Text.
-    pub(crate) inactive: Option<String>,
+    pub inactive: Option<String>,
     /// A multi-state object's State_Text, state 1 first.
-    pub(crate) states: Vec<String>,
+    pub states: Vec<String>,
 }
 
 impl StateTexts {
     /// The properties that hold an object type's state texts, to read with
     /// the value; none for a type without them.
-    pub(crate) fn properties(object_type: ObjectType) -> &'static [PropertyIdentifier] {
+    pub fn properties(object_type: ObjectType) -> &'static [PropertyIdentifier] {
         if is_binary(object_type) {
             &[
                 PropertyIdentifier::ACTIVE_TEXT,
@@ -83,7 +84,7 @@ impl StateTexts {
     }
 
     /// The texts among properties as read.
-    pub(crate) fn from_rows(rows: &[RawRow]) -> Self {
+    pub fn from_rows(rows: &[RawRow]) -> Self {
         let values = |property| {
             rows.iter()
                 .find(|(p, _)| *p == property)
@@ -140,7 +141,7 @@ fn holds_state(property: PropertyIdentifier) -> bool {
 
 /// Formats the values of one object.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ValueFormat<'a> {
+pub struct ValueFormat<'a> {
     object_type: ObjectType,
     texts: &'a StateTexts,
     floats: Floats,
@@ -148,7 +149,7 @@ pub(crate) struct ValueFormat<'a> {
 
 impl<'a> ValueFormat<'a> {
     /// A formatter for an object of `object_type`.
-    pub(crate) fn new(object_type: ObjectType, texts: &'a StateTexts, floats: Floats) -> Self {
+    pub fn new(object_type: ObjectType, texts: &'a StateTexts, floats: Floats) -> Self {
         Self {
             object_type,
             texts,
@@ -159,7 +160,7 @@ impl<'a> ValueFormat<'a> {
     /// A property's value as display text: decoded as the element the table
     /// names for it when it has a renderer and the octets decode as those
     /// elements to the end, and otherwise as application values.
-    pub(crate) fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
+    pub fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
         if let Some((element, shape)) = property_element(self.object_type, property)
             && let Some(texts) = constructed::elements(self, element, data)
         {
@@ -197,7 +198,7 @@ impl<'a> ValueFormat<'a> {
 
     /// A value with the units after it, as the compact places show it:
     /// `72.5 °F`. Only numbers take units.
-    pub(crate) fn with_units(
+    pub fn with_units(
         &self,
         property: PropertyIdentifier,
         data: &[u8],
@@ -221,7 +222,7 @@ impl<'a> ValueFormat<'a> {
 
     /// A property's value as the device card shows it: a string without
     /// its quotes.
-    pub(crate) fn plain(&self, property: PropertyIdentifier, data: &[u8]) -> String {
+    pub fn plain(&self, property: PropertyIdentifier, data: &[u8]) -> String {
         match decode_all(data).as_deref() {
             Some([PropertyValue::CharacterString(text)]) => text.clone(),
             _ => self.value(property, data),
@@ -229,7 +230,7 @@ impl<'a> ValueFormat<'a> {
     }
 
     /// One application value of `property`.
-    pub(crate) fn element(&self, property: PropertyIdentifier, value: &PropertyValue) -> String {
+    pub fn element(&self, property: PropertyIdentifier, value: &PropertyValue) -> String {
         if holds_state(property)
             && let Some(state) = self.state(value)
         {
@@ -278,11 +279,11 @@ fn list(texts: Vec<String>, separator: &str) -> String {
 }
 
 /// Longest name kept, in characters; a device's longer name is cut.
-pub(crate) const MAX_NAME_CHARS: usize = 128;
+pub const MAX_NAME_CHARS: usize = 128;
 
 /// The Object_Name among properties as read; `None` when the device
 /// answered it with an error or left it out. See [`name_text`].
-pub(crate) fn object_name(rows: &[RawRow]) -> Option<String> {
+pub fn object_name(rows: &[RawRow]) -> Option<String> {
     let (_, value) = rows
         .iter()
         .find(|(p, _)| *p == PropertyIdentifier::OBJECT_NAME)?;
@@ -291,7 +292,7 @@ pub(crate) fn object_name(rows: &[RawRow]) -> Option<String> {
 
 /// An encoded Object_Name as text (see [`clean_name`]); `None` unless it
 /// is one character string.
-pub(crate) fn name_text(data: &[u8]) -> Option<String> {
+pub fn name_text(data: &[u8]) -> Option<String> {
     match decode_all(data)?.as_slice() {
         [PropertyValue::CharacterString(text)] => Some(clean_name(text)),
         _ => None,
@@ -300,7 +301,7 @@ pub(crate) fn name_text(data: &[u8]) -> Option<String> {
 
 /// A device's name for display: each control character as a space, so it
 /// can't move the cursor or break a row, and at most [`MAX_NAME_CHARS`].
-pub(crate) fn clean_name(text: &str) -> String {
+pub fn clean_name(text: &str) -> String {
     text.chars()
         .take(MAX_NAME_CHARS)
         .map(|ch| if ch.is_control() { ' ' } else { ch })
@@ -308,7 +309,7 @@ pub(crate) fn clean_name(text: &str) -> String {
 }
 
 /// The Units among properties as read.
-pub(crate) fn units(rows: &[RawRow]) -> Option<EngineeringUnits> {
+pub fn units(rows: &[RawRow]) -> Option<EngineeringUnits> {
     let (_, value) = rows.iter().find(|(p, _)| *p == PropertyIdentifier::UNITS)?;
     match decode_all(value.as_deref().ok()?)?.as_slice() {
         [PropertyValue::Enumerated(raw)] => Some(EngineeringUnits::from_raw(*raw)),

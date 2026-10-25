@@ -311,7 +311,7 @@ The project README asks for authorization before use on a network. The
 one-shot CLI guards writes with `--allow-write`, and DCC and reinitialize
 also with `--yes` or a typed confirmation (#972). The one-shots and the TUI
 take a command's class (read, write or device management) from one
-table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
+table, `bacnet_ops::class` (`crates/bacnet-ops/src/class.rs`); `Level::permits` maps the TUI's levels onto it.
 
 **Session levels** (always shown in the status bar):
 
@@ -495,7 +495,11 @@ distinctly.
 
 Everything stays in `crates/bacnet-cli`, behind the `tui` cargo feature
 (a default feature since 0.14.0, #974), and outside the workspace's `default-members` as before. A separate
-crate is not justified until a second consumer exists. Building with
+crate was not justified until a second consumer existed. The MCP server is that
+consumer (#2064): the UI-free parts the TUI shares with the one-shot commands (the
+class table, the target and value grammar, the value formatter, the request limits
+and the reader) moved to the `bacnet-ops` crate in #2065, and the write safety core
+follows in a later phase ([`mcp.md`](mcp.md)). Building with
 `--no-default-features` drops ratatui and crossterm; `bacnet tui` then prints
 rebuild advice and exits 1, and a bare `bacnet` prints the usage and exits 2.
 

@@ -24,6 +24,7 @@ bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport = { workspace = true, features = ["ipv6"] }
 bacnet-network.workspace = true
 bacnet-client = { workspace = true, features = ["ipv6"] }
+bacnet-ops.workspace = true
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time", "signal"] }
@@ -105,6 +106,7 @@ tui = [
 sc-tls = [
     "bacnet-client/sc-tls",
     "bacnet-transport/sc-tls",
+    "bacnet-ops/sc-tls",
     "dep:tokio-rustls",
     "dep:rustls",
     "dep:rustls-pki-types",

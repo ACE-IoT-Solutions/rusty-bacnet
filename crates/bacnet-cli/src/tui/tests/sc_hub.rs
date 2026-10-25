@@ -310,7 +310,7 @@ async fn stopping_the_primary_fails_over_and_its_return_restores_it_in_order() {
     let (commands, rx) = mpsc::channel(16);
     let serving = tokio::spawn(Box::pin(session::serve(
         client,
-        crate::core::target::AddressStyle::Hex,
+        bacnet_ops::target::AddressStyle::Hex,
         sink,
         rx,
         SessionOptions::default(),

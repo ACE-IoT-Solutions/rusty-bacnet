@@ -9,6 +9,8 @@
 use std::{io::IsTerminal, net::Ipv4Addr};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::destination::{self, Destination};
+use bacnet_ops::{parse, target};
 use bacnet_transport::{bip::BipTransport, port::TransportPort};
 use clap::{CommandFactory, FromArgMatches};
 
@@ -25,7 +27,6 @@ mod mstp;
 mod mstp_thread;
 mod multicast;
 mod output;
-mod parse;
 #[cfg(feature = "tui")]
 mod paths;
 mod sc_check;
@@ -34,10 +35,8 @@ mod transport;
 #[cfg(feature = "tui")]
 mod tui;
 
-use crate::core::destination::{self, Destination};
 use crate::core::guard;
 use crate::core::range::parse_discover_range;
-use crate::core::target;
 use args::{Cli, Command};
 use output::OutputFormat;
 
@@ -531,8 +530,8 @@ fn guard_one_shot(cli: &Cli, confirm: &mut dyn guard::Confirm) -> Result<(), gua
     };
     // A name that wasn't captured classifies as nothing, so it is refused.
     let name = cli.command_name.as_deref().unwrap_or_default();
-    let class = core::class::of(name).map(|class| match command {
-        Command::Subscribe { lifetime, .. } => core::class::of_subscribe(*lifetime),
+    let class = bacnet_ops::class::of(name).map(|class| match command {
+        Command::Subscribe { lifetime, .. } => bacnet_ops::class::of_subscribe(*lifetime),
         _ => class,
     });
     guard::check(name, class, target, cli.policy(), confirm)

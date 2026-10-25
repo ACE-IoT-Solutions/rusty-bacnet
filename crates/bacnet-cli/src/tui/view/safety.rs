@@ -2,6 +2,7 @@
 //! password prompt, the preview with its confirmation tier, the result,
 //! the ledger and the exit guard.
 
+use bacnet_ops::label::object_label;
 use bacnet_types::enums::EnableDisable;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -9,7 +10,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 
 use super::{Theme, centered};
-use crate::tui::app::objects::object_label;
 use crate::tui::app::safety::{Form, Modal};
 use crate::tui::app::{App, Link};
 use crate::tui::safety::audit::Secret;
