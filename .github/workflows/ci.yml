@@ -19,7 +19,8 @@ name: CI
 #           linked and checked against their size budgets,
 #           every-feature Linux tests plus bacnet-cli's feature-off tests
 #           and the no_std crates' tests and doctests without std,
-#           and the Python bindings built with maturin, their unittest suite
+#           and the Python bindings built with maturin, their unittest suite,
+#           the website's sample tests (the loopback lab and the CLI samples)
 #           and the PyO3 crate's own Rust tests.
 #   Heavy — PRs to main, push to main, v* tags, weekly schedule, manual:
 #           MSRV (Linux native, incl. optional features, the no_std builds
@@ -432,6 +433,22 @@ jobs:
           . "$RUNNER_TEMP/venv/bin/activate"
           openssl version
           python -m unittest discover -s crates/rusty-bacnet/tests
+      # The website's samples (#1989): the loopback lab's tests, and the CLI
+      # samples its pages show, run against that lab on 127.0.0.1. This is
+      # the only job with the extension installed, and its maturin build
+      # has already compiled the BACnet crates the CLI shares, in the same
+      # target directory and dev profile, so the CLI build adds little; the
+      # dev runs cache it with the rest.
+      - name: Build the CLI for the website samples
+        if: ${{ !cancelled() }}
+        run: cargo build -p bacnet-cli --locked
+      - name: Website sample tests
+        if: ${{ !cancelled() }}
+        env:
+          BACNET_CLI: ${{ github.workspace }}/target/debug/bacnet
+        run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
+          python -m unittest discover -s website/tests/python -v
       # The crate's lib unit tests and integration tests, linked against
       # PYO3_PYTHON's libpython (#919), not the venv's, so this step doesn't
       # depend on the maturin build.

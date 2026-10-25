@@ -3,6 +3,7 @@
 Requires rusty-bacnet==0.14.0 and Python >=3.11. No physical device is needed.
 Default: create an example server, read its analog input, verify it, and stop.
 --serve: keep that server available for directed CLI reads for a limited time.
+The server also holds a commandable analog value (av:1) for CLI write samples.
 Neither mode performs Who-Is discovery, a remote write, or a COV subscription.
 """
 from __future__ import annotations
@@ -59,6 +60,7 @@ async def run_lab(args: argparse.Namespace) -> None:
         broadcast_address=LOOPBACK,
     )
     server.add_analog_input(instance=1, name="Zone Temperature", units=64, present_value=72.5)
+    server.add_analog_value(instance=1, name="Zone Setpoint", units=64)
     try:
         await asyncio.wait_for(server.start(), timeout=5)
         address = require_local_address(await server.local_address())
