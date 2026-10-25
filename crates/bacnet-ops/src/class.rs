@@ -5,12 +5,12 @@
 //!
 //! - **Read**: discovery, reads, finite COV subscriptions and
 //!   foreign-device registration, plus the commands that never reach a
-//!   device (`mstp-ports`, `capture`, `sc-check`, `help`) and
-//!   `tui`, which guards its own writes. A subscription and a registration do leave an entry
-//!   on the remote side, but only to deliver what the client watches, and
-//!   it lapses on its own: `subscribe` cancels its subscription when it
-//!   stops, and a registration runs out with its TTL. The TUI makes both
-//!   from its read-only level.
+//!   device (`mstp-ports`, `capture`, `sc-check`, `help`), and `tui` and
+//!   `mcp`, which guard their own writes (the MCP server has none yet). A
+//!   subscription and a registration do leave an entry on the remote side,
+//!   but only to deliver what the client watches, and it lapses on its own:
+//!   `subscribe` cancels its subscription when it stops, and a registration
+//!   runs out with its TTL. The TUI makes both from its read-only level.
 //! - **Write**: anything that changes a value, an object, a file, an
 //!   alarm's acknowledgment, the device's clock or a BBMD table, and a
 //!   subscription that never expires ([`of_subscribe`]).
@@ -73,6 +73,7 @@ pub const COMMANDS: &[(&str, Class)] = &[
     ("capture", Read),
     ("sc-check", Read),
     ("tui", Read),
+    ("mcp", Read),
     ("help", Read),
     // Writes.
     ("write", Write),
@@ -149,6 +150,7 @@ mod tests {
         assert_eq!(of_subscribe(1), Read);
         assert_eq!(of_subscribe(0), Write);
         assert_eq!(of("register"), Some(Read));
+        assert_eq!(of("mcp"), Some(Read));
         assert_eq!(of("no-such-command"), None);
     }
 }

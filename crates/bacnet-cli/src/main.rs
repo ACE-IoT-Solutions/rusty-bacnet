@@ -24,6 +24,8 @@ mod core;
 mod decode;
 mod entry;
 mod foreign;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod mstp;
 mod mstp_thread;
 mod multicast;
@@ -120,7 +122,10 @@ async fn execute_command<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Tui { .. } | Command::ScCheck { .. } | Command::MstpPorts => {
+        Command::Tui { .. }
+        | Command::Mcp { .. }
+        | Command::ScCheck { .. }
+        | Command::MstpPorts => {
             unreachable!()
         }
         Command::Discover {
@@ -586,6 +591,10 @@ async fn cli_main(cli: Cli) -> CliResult {
         // while it is in raw mode. Boxed so its state stays out of this future.
         return Box::pin(run_tui(cli)).await;
     }
+    if matches!(cli.command, Some(Command::Mcp { .. })) {
+        // Stdout is the MCP stream: it sets up its own tracing, on stderr.
+        return Box::pin(run_mcp(cli)).await;
+    }
     setup_tracing(
         cli.verbose,
         cli.sc || cli.foreign_bbmd.is_some() || cli.mstp.is_some(),
@@ -689,6 +698,22 @@ async fn run_tui(cli: Cli) -> CliResult {
         let _ = cli;
         eprintln!(
             "Error: The terminal UI requires the 'tui' feature. Rebuild with:\n  cargo install bacnet-cli --features tui"
+        );
+        std::process::exit(1);
+    }
+}
+
+/// `bacnet mcp`, or the rebuild advice when the `mcp` feature is off.
+async fn run_mcp(cli: Cli) -> CliResult {
+    #[cfg(feature = "mcp")]
+    {
+        mcp::run(cli).await
+    }
+    #[cfg(not(feature = "mcp"))]
+    {
+        let _ = cli;
+        eprintln!(
+            "Error: The MCP server requires the 'mcp' feature. Rebuild with:\n  cargo install bacnet-cli --features mcp"
         );
         std::process::exit(1);
     }

@@ -19,6 +19,7 @@ Use `bacnet --help` and the subcommand's help from the exact installed binary as
 | Packet analysis | `capture` | In the Linux release executables; a source build needs the `pcap` feature |
 | Join an MS/TP trunk | `--mstp PORT --mstp-mac N`, `mstp-ports` | In the Linux release executables; a source build needs the `serial` feature |
 | Alarm/device/file operations | See the full reference | Not ordinary read-only onboarding |
+| Serve an AI agent host | `mcp serve --stdio`, `mcp authorize` | A read-only MCP server; a source build needs the `mcp` feature. See [AI agents](/rusty-bacnet/guides/ai-agents/) |
 | Interactive use | plain `bacnet` or `tui` | Plain `bacnet` on a terminal opens the terminal UI; the shell of earlier releases is gone |
 
 ## Exit status

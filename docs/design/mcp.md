@@ -1,8 +1,10 @@
 # Design: an MCP server for rusty-bacnet
 
 Status: accepted (2026-10-25). Epic #2064. Phase 0 (#2065) is implemented:
-the `bacnet-ops` crate and this document. Anything marked **planned** does not
-exist yet. BACnet references are clause numbers in ANSI/ASHRAE 135-2020,
+the `bacnet-ops` crate and this document. Phase 1 (#2066) is in progress: the
+`bacnet-mcp` crate, `bacnet mcp serve`, the safety layer and four of the nine
+read tools; [`../mcp.md`](../mcp.md) describes what exists. Anything marked
+**planned** does not exist yet. BACnet references are clause numbers in ANSI/ASHRAE 135-2020,
 paraphrased. MCP references are to the 2026-07-28 revision of the
 specification, linked in §14.
 
@@ -62,8 +64,11 @@ Recorded in the epic, #2064.
    gets `bacnet mcp serve` behind an `mcp` feature. No separate repository
    before 1.0.
 2. **Spec revision.** Target the latest revision, 2026-07-28, and design
-   forward. `rmcp` (3.7.0 or later) also serves clients on the older
-   revisions, which several hosts still default to.
+   forward. `rmcp` also serves clients on the older revisions, which several
+   hosts still default to. Phase 1 pins `rmcp` 3.5.1, the newest release at
+   least two weeks old when it landed; 3.6.0 and 3.7.0 fix advisories in the
+   HTTP transport and the OAuth client, neither of which stdio uses. Move to
+   3.7 or later once it has aged, and before phase 5 serves HTTP.
 3. **Elicitation approves T1 only, and only when the profile opts in.** A
    client-side confirmation is the client's claim; the server can't verify
    that a person answered it. It may approve T1 writes when the profile sets
@@ -92,7 +97,7 @@ Layer 6.5: bacnet-ops    the operations core: no UI, no MCP dependency
              engine       Reader, and the Engine facade over BACnetClient
              safety       plan, ledger, audit, lock                  (planned, phase 3)
              watch        ref-counted COV and poll hub               (planned, phase 2)
-           bacnet-mcp    the MCP surface over bacnet-ops::engine     (planned, phase 1)
+           bacnet-mcp    the MCP surface over bacnet-ops::engine     (phase 1)
              tools/, resources/, prompts/, untrusted text, approvers,
              policy, integrity-protected request state, signed cursors
 Layer 7:   bacnet-cli    `bacnet mcp serve` (feature `mcp`), later `connect`
@@ -104,13 +109,15 @@ Layer 7:   bacnet-cli    `bacnet mcp serve` (feature `mcp`), later `connect`
   feature. Its one feature, `sc-tls`, lets the address formatter recognise a
   BACnet/SC link. It is published, because the published `bacnet-cli`
   depends on it.
-- `bacnet-mcp` (**planned**) stays out of `default-members`, like
-  `bacnet-cli` and `rusty-bacnet`, so `cargo build` stays light. Its default
-  feature is `stdio`; `http` (axum, hyper, rustls and the OAuth resource
-  server) and `daemon-ipc` come later. It is `publish = false` until its API
-  settles.
-- The CLI's `mcp` feature is off by default in 0.15. A later `mcp-http`
-  feature adds the HTTP stack.
+- `bacnet-mcp` stays out of `default-members`, like `bacnet-cli` and
+  `rusty-bacnet`, so `cargo build` stays light. Its default feature is
+  `stdio`; `http` (axum, hyper, rustls and the OAuth resource server) and
+  `daemon-ipc` come later. It is published, like `bacnet-ops`, because the
+  published `bacnet-cli` depends on it (optionally, for `mcp`); its API is
+  small (`McpServer`, `Policy`) and may change in any release before 1.0.
+- The CLI's `mcp` feature is off by default in 0.15. It turns on `tui` as
+  well, because the server reads TUI profiles. A later `mcp-http` feature
+  adds the HTTP stack.
 - None of this is no_std. These are hosted adapters over the portable cores,
   in line with the no_std-cores-plus-std-adapters direction.
 - `rmcp` has had three major releases in 2026 (1.0, 2.0 and 3.0). It stays behind `bacnet-mcp`
@@ -167,8 +174,17 @@ stays `CLASS:CODE`, the form the one-shot commands print.
 
 Each request waits for its device's gate and a slot under the global cap.
 A call is cancelled by dropping its future: a turn's wait is cancel-safe.
-A trend page may take several requests under one turn; it counts as one
-slot today, and phase 1 charges the real request count.
+A trend page may take several requests under one turn; since phase 1 each
+takes a rate slot of its own, so a page is charged what it sends.
+
+Phase 1 adds two layers to `RequestLimits`: a rate per network
+(`with_network_rates`; a request whose device is on a network takes that
+network's slot before the global one), and a per-caller `Account`, carried
+in a task-local by `limits::charged`, that counts each request and its wait
+and first takes a token from the caller's `TokenBucket`. The TUI uses
+neither, so its requests are unchanged. The engine also sends Who-Is under
+the rate cap (`who_is`) and reads the discovery table (`devices`,
+`device`).
 
 Phase 3 adds `plan_write`, `execute` and `revert`, which own the ledger and
 audit, and phase 2 adds the watch hub (§6).
@@ -180,14 +196,17 @@ audit, and phase 2 adds the watch hub (§6).
 - The per-device gate means many sessions can't exhaust a device's invoke
   IDs; requests queue at the gate instead.
 - Tokio's semaphore is first in, first out, so one agent issuing 500 reads
-  would starve another. Phase 1 adds a per-principal queue with round-robin
-  dispatch in front of the slot allocator, charging each principal's token
-  bucket at dispatch.
-- `describe_device` and Object_List results are cached per device and
-  dropped when Database_Revision changes. Results carry `ttlMs` and
-  `cacheScope: private`.
-- The profile TOML gains an `[mcp]` table (`writes`, `networks`, `devices`,
-  `slow_networks`, rate limits, per-call caps), validated at start: a bad
+  would starve another. Phase 1 gives each principal a token bucket, taken
+  before the device's gate. A stdio server has one principal, so the
+  round-robin queue across principals in front of the slot allocator waits
+  for the multi-user service (phase 5).
+- Object_List results are cached per device for five minutes, so paging
+  doesn't read the list again (phase 1). Invalidation on a Database_Revision
+  change, a cached `describe_device`, and `ttlMs` with `cacheScope:
+  private` on results are planned.
+- The profile TOML gains an `[mcp]` table (`networks`, `devices`,
+  `slow_networks`, `fast_networks`, `broad_discovery`, rate limits and
+  per-call caps; `writes` in phase 3), validated at start: a bad
   configuration refuses to start.
 
 ## 5. The tool surface
@@ -271,13 +290,14 @@ an unknown tool or arguments that fail the input schema are JSON-RPC errors
 | Condition | Structured body |
 |---|---|
 | bad target or value grammar | `{ "error": "invalid-argument", "field", "message" }` |
-| BACnet Error PDU | `{ "error": "bacnet", "result": "error", "class", "code" }`, the shape the TUI's outcome JSON already uses |
-| Reject or Abort | `{ "error": "bacnet", "result": "reject" or "abort", "reason" }` |
+| BACnet Error PDU | `{ "error": "bacnet", "result": "error", "class", "class_number", "code", "code_number" }`, the keys of the TUI's outcome JSON, with names in kebab case like every other name MCP returns, and the numbers beside them |
+| Reject or Abort | `{ "error": "bacnet", "result": "reject" or "abort", "reason", "reason_number" }` |
 | a service-request-denied error | as above, with `"denied": true`, kept apart as the TUI keeps it |
 | timeout on a read | `{ "error": "timeout", "device", "after_ms" }` |
 | timeout on a write | `{ "error": "timeout", "applied": "unknown" }`; the ledger entry becomes `unknown` |
 | policy refusal | `{ "error": "refused", "reason": "write-not-granted" / "passive" / "rate-limited" / "priority-6" / "needs-verified-approver" / ..., "message" }`, modelled on the one-shot refusal JSON |
 | device not discovered | `{ "error": "unknown-device", "hint" }` |
+| an unknown or ill-formed cursor | `{ "error": "invalid-argument", "field": "cursor", "message" }` |
 
 "Refused, nothing was sent" and "sent, then failed" are always distinct,
 because an agent's retry logic depends on the difference.
@@ -508,7 +528,8 @@ the slow-network default matters.
     ends appending to it at once is acceptable. The lock file names its
     holder's front end and process id, so the message reads, for example,
     "in use by bacnet tui (pid 4242)" or "in use by bacnet mcp (pid 4242)";
-  - when the profile's port is taken it binds an ephemeral port instead,
+  - (planned; phase 1 doesn't fall back yet, so a taken port fails the
+    start) when the profile's port is taken it binds an ephemeral port instead,
     unless the profile pins the port, in which case it refuses to start and
     says the port is in use. On an ephemeral port broadcast I-Am answers
     don't reach it, so `bacnet_discover` and `bacnet://session` say so and

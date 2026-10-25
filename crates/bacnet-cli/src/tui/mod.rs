@@ -45,7 +45,7 @@ mod monitor;
 mod mstp;
 mod network;
 mod point;
-mod profile;
+pub(crate) mod profile;
 mod row_error;
 mod safety;
 // Without `sc-tls` nothing reports to the SC screen; it still draws.
