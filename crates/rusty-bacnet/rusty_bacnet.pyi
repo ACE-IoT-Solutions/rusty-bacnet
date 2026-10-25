@@ -3848,7 +3848,11 @@ class BACnetClient:
         time_duration: Optional[int] = None,
         password: Optional[str] = None,
     ) -> Awaitable[None]:
-        """Send DeviceCommunicationControl to a remote device."""
+        """Send DeviceCommunicationControl to a remote device.
+
+        Raises ValueError, before anything is sent, for a password over 20
+        characters.
+        """
         ...
 
     def reinitialize_device(
@@ -3857,7 +3861,11 @@ class BACnetClient:
         reinitialized_state: ReinitializedState,
         password: Optional[str] = None,
     ) -> Awaitable[None]:
-        """Send ReinitializeDevice to a remote device."""
+        """Send ReinitializeDevice to a remote device.
+
+        Raises ValueError, before anything is sent, for a password over 20
+        characters.
+        """
         ...
 
     # --- Alarms and events ---
