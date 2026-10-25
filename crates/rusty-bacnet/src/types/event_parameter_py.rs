@@ -2,12 +2,11 @@
 //! mapping whose `kind` names the algorithm, with that algorithm's members.
 //!
 //! - `change_of_bitstring`: `time_delay`, `bitmask` and `list_of_values`,
-//!   each bit string a `{"unused_bits", "data"}` mapping as a `bit_string`
-//!   PropertyValue reads.
+//!   each bit string a `BitString` as a `bit_string` PropertyValue reads.
 //! - `change_of_state`: `time_delay` and `list_of_values`, each state a
 //!   `(choice_tag, value)` pair: a bool for tag 0, an int otherwise, and the
 //!   contents as `bytes` for a vendor tag 64 to 254.
-//! - `change_of_value`: `time_delay`, then `bitmask` (a bit string mapping) or
+//! - `change_of_value`: `time_delay`, then `bitmask` (a `BitString`) or
 //!   `referenced_property_increment` (a float), the other `None`.
 //! - `floating_limit`: `time_delay`, `setpoint_reference` (a
 //!   `DeviceObjectPropertyReference` mapping), `low_diff_limit`,
@@ -32,6 +31,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
+use super::PyBitString;
 use super::constructed_py::property_reference_to_py;
 use crate::errors::to_py_err;
 
@@ -138,12 +138,14 @@ pub(super) fn event_parameter_to_py<'py>(
     Ok(dict)
 }
 
-/// A bit string as a `bit_string` PropertyValue's `.value` reads.
-fn bit_string<'py>(py: Python<'py>, unused_bits: u8, data: &[u8]) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    dict.set_item("unused_bits", unused_bits)?;
-    dict.set_item("data", PyBytes::new(py, data))?;
-    Ok(dict)
+/// A bit string as a `bit_string` PropertyValue's `.value` reads: a
+/// `BitString` of no known type.
+fn bit_string<'py>(
+    py: Python<'py>,
+    unused_bits: u8,
+    data: &[u8],
+) -> PyResult<Bound<'py, PyBitString>> {
+    Bound::new(py, PyBitString::raw(unused_bits, data))
 }
 
 /// One property state as `(choice_tag, value)`.

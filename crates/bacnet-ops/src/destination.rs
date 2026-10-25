@@ -212,13 +212,13 @@ impl Destination {
             }
         }
     }
-    /// Create an object, retaining its raw service acknowledgement.
+    /// Create an object, returning the identifier its acknowledgement names.
     pub async fn create_object<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         specifier: bacnet_services::object_mgmt::ObjectSpecifier,
         initial_values: Vec<bacnet_services::common::BACnetPropertyValue>,
-    ) -> Result<bytes::Bytes, Error> {
+    ) -> Result<bacnet_types::primitives::ObjectIdentifier, Error> {
         match self {
             Self::Mac(mac) => client.create_object(mac, specifier, initial_values).await,
             Self::Device(instance) => {

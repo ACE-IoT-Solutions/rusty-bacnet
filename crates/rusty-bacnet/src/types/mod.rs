@@ -29,6 +29,7 @@ mod address;
 mod audit;
 mod audit_projection;
 mod authentication_policy;
+mod bit_string;
 mod constructed_py;
 mod constructed_read;
 mod cov;
@@ -59,6 +60,7 @@ pub(crate) use audit::recipient as audit_recipient_from_py;
 pub(crate) use audit::{audit_log_query_request_from_py, audit_notification_request_from_py};
 pub(crate) use audit_projection::{audit_log_query_ack_to_py, audit_log_record_to_py};
 pub(crate) use authentication_policy::authentication_policies_from_py;
+pub use bit_string::PyBitString;
 pub use cov::{PyCovNotification, PyCovNotificationIterator};
 pub(crate) use date::{date_from_value, date_value, specific_date_time};
 pub(crate) use destination::destinations;
@@ -149,6 +151,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Composite types
     m.add_class::<PyObjectIdentifier>()?;
     m.add_class::<PyPropertyValue>()?;
+    m.add_class::<PyBitString>()?;
+    m.add_function(wrap_pyfunction!(bit_string::enum_name, m)?)?;
     m.add_class::<PyBACnetTimeStamp>()?;
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;
