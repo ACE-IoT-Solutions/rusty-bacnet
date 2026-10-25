@@ -3536,17 +3536,18 @@ group SADR is dropped only where the final router is a `BACnetRouter`.
 
 ### A client on the router itself
 
-`BACnetRouter::application_port(apdus)` turns the router's application entity
-into a `RouterApplicationPort`, a `TransportPort` with no wire behind it
-(#1808). Hand it the local APDU receiver `BACnetRouter::start` returned, raw
-or tracked, and build a client on it with
+`StartedRouter::into_application_port()` turns the router's application
+entity into a `RouterApplicationPort`, a `TransportPort` with no wire behind
+it, fed by the router's own local APDU receiver, raw or tracked (#1808). It
+returns the router, the port and the network-control receiver, if one was
+asked for. Build a client on the port with
 `BACnetClient::generic_builder().transport(port)`. The client keeps its own
 transaction state machine: invoke IDs, timeouts, retries and segmentation work
 as on any link.
 
 ```rust,ignore
 let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
-let port = started.router.application_port(started.apdus);
+let (router, port, _controls) = started.into_application_port();
 let client = BACnetClient::generic_builder().transport(port).build().await?;
 // Station 5 on network 2: the router MAC argument is ignored.
 let ack = client
@@ -3563,6 +3564,12 @@ let ack = client
   its origin as SNET and SADR. One a router relayed keeps its own; one from a
   device on an attached network gets that network and the device's MAC, so its
   reply completes the transaction keyed to the routed destination.
+- The client's answers to confirmed requests it receives, such as the
+  acknowledgement of a confirmed COV notification, go back through the reply
+  plan the router saved with each request, as a server's replies do: from the
+  endpoint that was asked, along the path the request came by. The port keeps
+  the plans of up to 64 requests for up to 30 seconds; an answer after that is
+  originated like any other send.
 - The port has no network of its own: a send with no DNET, such as a local
   broadcast, fails with `Error::Encoding`, and so do network messages. Who-Is
   goes out as a global broadcast, on every port.

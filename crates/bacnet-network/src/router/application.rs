@@ -11,11 +11,16 @@
 //! - **Sends** go to [`BACnetRouter::originate`]. The stack above writes an
 //!   NPDU as it would for any remote device: DNET and DADR, or a broadcast to
 //!   one network or to all of them. The port reads the destination, the
-//!   APDU, the priority and the expecting-reply bit back out of it, and the router's
-//!   table picks the route and the next hop. The link MAC the stack sends
-//!   to plays no part, so `router_mac` arguments are ignored. An NPDU with
-//!   no DNET, which would be a local send on a link the application lacks,
-//!   and network messages, which are the router's own business, are refused.
+//!   APDU, the priority and the expecting-reply bit back out of it, and the
+//!   router's table picks the route and the next hop. The link MAC the
+//!   stack sends to plays no part, so `router_mac` arguments are ignored. An
+//!   NPDU with no DNET, which would be a local send on a link the
+//!   application lacks, and network messages, which are the router's own
+//!   business, are refused.
+//! - **Answers** to the confirmed requests the stack received go back
+//!   through each request's saved reply plan instead
+//!   ([`application_replies`](super::application_replies)): from the
+//!   endpoint that was asked, along the path the request came by.
 //! - **Receives** come from the router's local APDU receiver: every APDU the
 //!   router delivers to its application is handed up as an NPDU whose SNET
 //!   and SADR say where it came from. An APDU a router relayed keeps its
@@ -42,15 +47,20 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+use super::application_replies::Replies;
 use super::dispatch::{Outputs, Shared};
 use super::options::sealed::ApduSource;
 use super::originate::{OriginateFailure, originate};
-use super::{BACnetRouter, LocalApduReceiver};
+use super::{BACnetRouter, LocalApduReceiver, StartedRouter};
 use crate::layer::ReceivedApdu;
 
-/// The NPDUs the port holds for the stack above, as many as the router's
-/// local queue holds for the port.
-const QUEUE: usize = 256;
+/// The NPDUs the port holds for the stack above. Few: the port's task takes
+/// an APDU off the router's local queue only once there is room here, so
+/// the router's queue, with its admission accounting and, when tracked, its
+/// per-source quota, stays the buffer that fills and drops under a slow
+/// stack. Taking more would free the router's slots, and the quota with
+/// them, for APDUs still waiting here.
+const QUEUE: usize = 4;
 
 /// Room for the network header in front of an APDU: what B/IP leaves
 /// between its 1,497-octet NPDU and 1,476-octet APDU.
@@ -61,7 +71,7 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// such as `bacnet-client`'s `BACnetClient`, and the stack's requests go
 /// through the router's table, and its replies come back from the router.
 ///
-/// Made by [`BACnetRouter::application_port`], which hands it the router's
+/// Made by [`StartedRouter::into_application_port`], from the router's own
 /// local APDU receiver: the stack on the port gets every APDU the router
 /// delivers to its application. A remote device is addressed by its network
 /// and MAC, as a routed device (with any MAC as the router's; the table picks
@@ -70,6 +80,12 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// The port has no local network, so a send with no DNET, such as a local
 /// broadcast, is refused with [`Error::Encoding`], and so is a network
 /// message.
+///
+/// The stack's answers to confirmed requests it receives, such as the
+/// acknowledgement of a confirmed COV notification, go back through the
+/// reply plan the router saved with each request, for up to 30 seconds and
+/// 64 requests at a time, as a server's replies do. A send the router
+/// refuses there fails with the transport error the plan reports.
 ///
 /// A refusal from [`BACnetRouter::originate`] fails the send:
 /// [`OriginateError::TooLong`] as [`Error::SendTooLong`], every other one
@@ -87,7 +103,7 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// # use bacnet_transport::loopback::LoopbackTransport;
 /// # async fn run(ports: Vec<RouterPort<LoopbackTransport>>) -> Result<(), bacnet_types::error::Error> {
 /// let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
-/// let port = started.router.application_port(started.apdus);
+/// let (router, port, _controls) = started.into_application_port();
 /// // `BACnetClient::generic_builder().transport(port).build()` gives a
 /// // client whose requests the router originates.
 /// # Ok(())
@@ -97,22 +113,33 @@ pub struct RouterApplicationPort {
     outputs: Weak<Outputs>,
     shared: Arc<Shared>,
     apdus: Option<ApduSource>,
+    replies: Arc<Replies>,
     local_mac: MacAddr,
     max_npdu: NpduLimits,
     source: SourceSelection,
     task: Option<JoinHandle<()>>,
 }
 
-impl BACnetRouter {
-    /// The router's application entity as a [`TransportPort`], fed by
-    /// `apdus`, the local APDU receiver [`BACnetRouter::start`] returned,
-    /// raw or tracked (#1808). See [`RouterApplicationPort`].
+impl<A: LocalApduReceiver, C> StartedRouter<A, C> {
+    /// The router, its application entity as a [`TransportPort`] fed by
+    /// the router's own local APDU receiver, raw or tracked, and the
+    /// network-control receiver, if one was asked for (#1808). See
+    /// [`RouterApplicationPort`].
     ///
     /// The port reports the smallest NPDU limits of the router's ports, as
     /// they are now, and the longest of the router's MACs on them as its
     /// own: a request routed on from any port with the router's address as
     /// its source then fits.
-    pub fn application_port<A: LocalApduReceiver>(&self, apdus: A) -> RouterApplicationPort {
+    pub fn into_application_port(self) -> (BACnetRouter, RouterApplicationPort, Option<C>) {
+        let port = self.router.application_port(self.apdus);
+        (self.router, port, self.network_control)
+    }
+}
+
+impl BACnetRouter {
+    /// [`StartedRouter::into_application_port`], with `apdus`, which must
+    /// be this router's own local receiver.
+    pub(super) fn application_port<A: LocalApduReceiver>(&self, apdus: A) -> RouterApplicationPort {
         let router = self.shared.engine.lock();
         let ports = router.ports();
         // A started router has at least one port.
@@ -142,6 +169,7 @@ impl BACnetRouter {
             outputs: self.outputs.clone(),
             shared: Arc::clone(&self.shared),
             apdus: Some(apdus.into_source()),
+            replies: Arc::default(),
             local_mac: MacAddr::from_slice(local_mac),
             max_npdu,
             source: SourceSelection::default(),
@@ -170,8 +198,9 @@ impl RouterApplicationPort {
         self
     }
 
-    /// Originate the NPDU a stack above wrote.
-    fn send(&self, npdu: &[u8]) -> Result<(), Error> {
+    /// Send the NPDU a stack above wrote: an answer through its request's
+    /// saved plan, anything else originated.
+    async fn send(&self, npdu: &[u8]) -> Result<(), Error> {
         let npdu = Npdu::decode(npdu)
             .map_err(|error| Error::Encoding(format!("router application send: {error}")))?;
         if npdu.message_type.is_some() {
@@ -188,6 +217,12 @@ impl RouterApplicationPort {
                     .into(),
             ));
         };
+        if let Some(response) = self.replies.plan_for(destination, npdu.payload) {
+            return self
+                .replies
+                .send(&response, npdu.payload, npdu.expecting_reply, npdu.priority)
+                .await;
+        }
         let mut request = Request::new(destination, npdu.payload);
         request.expecting_reply = npdu.expecting_reply;
         request.priority = npdu.priority;
@@ -199,6 +234,12 @@ impl RouterApplicationPort {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+    }
+
+    /// How many reply plans the port keeps now.
+    #[cfg(test)]
+    pub(super) fn saved_replies(&self) -> usize {
+        self.replies.len()
     }
 }
 
@@ -225,13 +266,14 @@ impl TransportPort for RouterApplicationPort {
             Error::Encoding("router application port already started".to_string())
         })?;
         let (tx, rx) = mpsc::channel(QUEUE);
-        // No lock is held here: the only waits are the router's local queue
-        // and room in the stack's, so a slow stack holds up only the
-        // router's local queue, which then drops new APDUs as it does for
-        // any slow consumer.
+        let replies = Arc::clone(&self.replies);
+        // No lock is held across an await: the only waits are the router's
+        // local queue and room in the stack's. A slow stack holds up only
+        // the router's local queue, which then drops new APDUs as it does
+        // for any slow consumer; the router itself never waits.
         self.task = Some(tokio::spawn(async move {
             while let Some(apdu) = apdus.recv().await {
-                let Some(npdu) = inbound(apdu) else {
+                let Some(npdu) = inbound(apdu, &replies) else {
                     continue;
                 };
                 if tx.send(npdu).await.is_err() {
@@ -256,11 +298,11 @@ impl TransportPort for RouterApplicationPort {
     }
 
     async fn send_unicast(&self, npdu: &[u8], _mac: &[u8]) -> Result<(), Error> {
-        self.send(npdu)
+        self.send(npdu).await
     }
 
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.send(npdu)
+        self.send(npdu).await
     }
 
     fn local_mac(&self) -> &[u8] {
@@ -286,12 +328,16 @@ fn apdu_room(max_npdu: u16) -> u16 {
 }
 
 /// `apdu`, delivered to the router's application, as the NPDU the stack
-/// above receives, with its origin as SNET and SADR; `None`, logged, when
-/// it has none that can be written.
-fn inbound(apdu: ReceivedApdu) -> Option<ReceivedNpdu> {
-    let (network, mac) = match &apdu.source_network {
-        Some(source) => (source.network, source.mac_address.as_slice()),
-        None => (apdu.ingress_network?, apdu.source_mac.as_slice()),
+/// above receives, with its origin as SNET and SADR, its reply plan kept in
+/// `replies`; `None`, logged, when it has no origin that can be written.
+fn inbound(apdu: ReceivedApdu, replies: &Replies) -> Option<ReceivedNpdu> {
+    let (network, mac) = match (&apdu.source_network, apdu.ingress_network) {
+        (Some(source), _) => (source.network, source.mac_address.as_slice()),
+        (None, Some(network)) => (network, apdu.source_mac.as_slice()),
+        (None, None) => {
+            debug!("router application: an APDU with no ingress network");
+            return None;
+        }
     };
     let npdu = Npdu {
         expecting_reply: false,
@@ -312,14 +358,17 @@ fn inbound(apdu: ReceivedApdu) -> Option<ReceivedNpdu> {
         debug!(%error, "router application: an APDU with no writable source");
         return None;
     }
+    if let Some(response) = apdu.router_response {
+        replies.save(network, mac, &apdu.apdu, response);
+    }
     Some(ReceivedNpdu {
         npdu: Bytes::from(buf),
         source_mac: apdu.source_mac,
         link_layer_group: apdu.is_group && !apdu.global_broadcast,
         data_attributes: apdu.data_attributes,
         provenance: apdu.provenance,
-        // The stack's replies go back through the router, routed, not on
-        // the arrival link's reply paths.
+        // Answers go back through the saved plan, not on the arrival
+        // link's reply paths.
         direct_response: None,
         reply_tx: None,
     })

@@ -236,8 +236,107 @@ async fn limits_and_address() {
     router.stop().await.unwrap();
 }
 
-/// The tracked receiver feeds a port too.
-#[allow(dead_code)]
-fn tracked(router: &super::BACnetRouter, apdus: AdmissionReceiver<ReceivedApdu>) {
-    let _: RouterApplicationPort = router.application_port(apdus);
+/// The tracked receiver feeds a port too, and keeps its accounting: an
+/// APDU the port took is no longer counted as queued.
+#[tokio::test]
+async fn a_tracked_receiver_feeds_the_port() {
+    let options = super::super::RouterOptions::new().track_admission();
+    let (mut router, apdus, peers): (_, AdmissionReceiver<ReceivedApdu>, _) =
+        start_any(2, options).await;
+    let counters = apdus.counters();
+    let mut port: RouterApplicationPort = router.application_port(apdus);
+    let mut frames = port.start().await.unwrap();
+    receive(&peers[0], vec![1, 0, 0x30, 0x05, 0x0C], 0).await;
+    let up = frames.recv().await.unwrap();
+    assert_eq!(
+        up.npdu.as_ref(),
+        [1, 0x08, 0x03, 0xE8, 1, 7, 0x30, 0x05, 0x0C]
+    );
+    assert_eq!(counters.snapshot().current_depth, 0);
+    router.stop().await.unwrap();
+    port.stop().await.unwrap();
+}
+
+/// A ConfirmedCOVNotification, invoke ID 9, from station 5 on network 3000,
+/// relayed by the router at MAC 7 on network 2000 and addressed to this
+/// router's address on network 1000.
+fn notification(invoke_id: u8) -> Vec<u8> {
+    vec![
+        1, 0x2C, 0x03, 0xE8, 1, 1, 0x0B, 0xB8, 1, 5, 255, 0x00, 0x05, invoke_id, 0x01,
+    ]
+}
+
+/// The stack's SimpleAck for `invoke_id`, to station 5 on network 3000.
+fn simple_ack(invoke_id: u8) -> Vec<u8> {
+    vec![1, 0x20, 0x0B, 0xB8, 1, 5, 255, 0x20, invoke_id, 0x01]
+}
+
+/// An answer to a request the port received goes back through the plan the
+/// router saved with it: from the addressed endpoint, network 1000's
+/// address, by the path it came, though the table has no route to 3000.
+#[tokio::test]
+async fn an_answer_goes_back_through_the_saved_plan() {
+    let (mut router, apdus, mut peers) = start(2).await;
+    let mut port = router.application_port(apdus);
+    let mut frames = port.start().await.unwrap();
+    receive(&peers[1], notification(9), 0).await;
+    let up = frames.recv().await.unwrap();
+    assert_eq!(&up.npdu[2..6], &[0x0B, 0xB8, 1, 5], "SNET 3000, SADR 5");
+    assert_eq!(port.saved_replies(), 1);
+
+    // The answer's send waits for the router to send it.
+    let ack = simple_ack(9);
+    let ((to, npdu), answered) = tokio::join!(
+        async {
+            let sent = sending(&mut peers[1]).await;
+            sent.complete.send(Ok(())).unwrap();
+            (sent.to, sent.npdu)
+        },
+        port.send_unicast(&ack, &[7])
+    );
+    answered.unwrap();
+    assert_eq!(to, Some(vec![7]));
+    assert_eq!(
+        npdu,
+        [
+            &[1, 0x28, 0x0B, 0xB8, 1, 5, 0x03, 0xE8, 1, 1, 255][..],
+            &[0x20, 9, 0x01]
+        ]
+        .concat()
+    );
+    assert_eq!(port.saved_replies(), 0, "the answer ends the transaction");
+    assert_eq!(router.counters().originated, 0);
+
+    // A second answer has no plan left: originated, and refused for want
+    // of a route.
+    let error = port.send_unicast(&simple_ack(9), &[7]).await.unwrap_err();
+    assert_eq!(
+        OriginateFailure::from_error(&error),
+        Some(OriginateFailure::Refused(OriginateError::NoRoute))
+    );
+    router.stop().await.unwrap();
+    port.stop().await.unwrap();
+}
+
+/// Plans are kept for a while, and for so many requests.
+#[tokio::test(start_paused = true)]
+async fn plans_expire_and_are_bounded() {
+    let (mut router, apdus, peers) = start(2).await;
+    let mut port = router.application_port(apdus);
+    let mut frames = port.start().await.unwrap();
+    receive(&peers[1], notification(1), 0).await;
+    frames.recv().await.unwrap();
+    tokio::time::advance(super::super::application_replies::LIFETIME).await;
+    // Expired: the answer is originated, and there is no route.
+    let error = port.send_unicast(&simple_ack(1), &[7]).await.unwrap_err();
+    assert!(OriginateFailure::from_error(&error).is_some(), "{error:?}");
+
+    let capacity = super::super::application_replies::CAPACITY;
+    for invoke_id in 0..=capacity as u8 {
+        receive(&peers[1], notification(invoke_id), 0).await;
+        frames.recv().await.unwrap();
+    }
+    assert_eq!(port.saved_replies(), capacity);
+    router.stop().await.unwrap();
+    port.stop().await.unwrap();
 }
