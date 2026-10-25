@@ -221,7 +221,9 @@ or contact a non-loopback host were run as parse checks: the same arguments
 with `--help` appended, which makes clap validate everything before it.
 
 The classes below (A to G) are this audit's labels, from strongest evidence to
-none.
+none. This table is the state at the audit (`d7df2c954`, 67 blocks); the
+[table after the sample harness](#coverage-after-the-sample-harness) is the
+current one.
 
 | Status | Count | Blocks (page:line) |
 |---|---|---|
@@ -240,9 +242,51 @@ both binaries. No sample is wrong. Observations for later PRs:
   page's "No matching distribution" section covers it, but the first command
   could name a supported interpreter explicitly.
 - The three B/IP read samples on the safe-writes page target `av:1`; the lab
-  has no Analog Value, so a lab-backed harness needs one.
+  has no Analog Value, so a lab-backed harness needs one. *Done in the sample
+  harness PR: the lab serves a commandable `av:1`.*
 - The lab's Python tests should join an existing CI job; otherwise class B
-  drifts silently.
+  drifts silently. *Done in the sample harness PR.*
+
+### Coverage after the sample harness
+
+Step 3 of section 8 (2026-10-25; run on macOS arm64, and on Ubuntu 24.04 arm64 in Docker). The pages had grown to 101
+blocks after the content PRs: 84 fences (59 shell, 10 text, 7 Python, 5
+PowerShell, 2 TOML, 1 Rust) and 17 components (5 TOML, 4 Rust, 4 shell, 3
+Python, 1 PowerShell).
+
+`website/tests/python/site_samples.py` lists every block, keyed by page and
+first line, with its class; `test_site_samples.py` fails on a block with no
+entry or an entry with no block. It runs each class A CLI sample against the
+loopback lab in `--serve` mode (the server guide's commands against that
+guide's own `server_device.py`), with the page's device address replaced by
+the server's and loopback bind and broadcast options added. Before a command
+starts, the harness refuses any address off 127.0.0.0/8 or `::1`, any host
+name or URL, and the SC, MS/TP, IPv6, foreign-device, multicast and remote
+network options. Each command's exit status and output are checked: values,
+names and units, the write guard's exit 4 without `--allow-write`, and the
+server program's lines after each command. Class D samples run with `--help`
+appended. Both files run, with `test_loopback_lab.py`, in the Python bindings
+job of `ci.yml`, after `maturin develop` and a debug `cargo build -p
+bacnet-cli` (12 seconds in that Docker run, on top of the maturin build, which has already
+compiled the crates the CLI shares).
+
+| Status | Count | Blocks (page:line) |
+|---|---|---|
+| **A. Run or compiled by a CI test** | 41 | Run against a loopback server by `test_site_samples.py` (14): start/first-read.md:14, :25, :37, :45, :54; start/installation.mdx:159; guides/discovery.mdx:14; guides/observe-changes.md:10; guides/safe-writes.md:16, :28, :39, :50; connect/bacnet-ip.md:26; integrate/server.mdx:73. Covered by another CI test (27): the lab, start/local-lab.mdx:40, :56, :78, :117 (`test_loopback_lab.py`, now in CI); start/rust.md:17, :31, :66; start/python.md:14, :65; integrate/shared-endpoints.mdx:34, :36, :42, :48; integrate/server.mdx:42, :44, :48, :56, :60, :66; integrate/router.mdx:105, :107, :111, :115; integrate/security.mdx:115, :117, :123, :129 (the `*_source` and program integration tests, and `test_website_*.py`) |
+| **B. Run by a test that no workflow runs** | 0 | |
+| **C. Run in the audit only** | 2 | start/installation.mdx:37 (needs the release download); start/embedded.md:72 (CI's all-targets clippy builds both examples) |
+| **D. Parse check** | 23 | By CI (22): connect/across-subnets.mdx:29, :40, :49; connect/bacnet-sc.md:37; connect/ipv6.mdx:32; connect/mstp-realtime.mdx:71, :101; connect/multicast.mdx:25, :31; connect/nat.mdx:63; guides/discovery.mdx:22, :34, :54; integrate/router.mdx:38; tui/mstp.mdx:15, :133, :141; tui/overview.mdx:27; tui/profiles.mdx:68, :103; tui/troubleshooting.mdx:33, :43. The Linux-only real-time options are expected to be refused elsewhere, as the pages say. By hand (1): connect/mstp.mdx:32 (argparse `--help`; needs a serial port) |
+| **E. Checked against source only** | 5 | As at the audit |
+| **F. Not run by CI** | 28 | Installs or builds (11): development/build-from-source.md:12, :25, :37; connect/bacnet-sc.md:31; start/installation.mdx:106, :113, :117, :153; start/rust.md:10; tui/overview.mdx:19; project/upgrading/v0-14.md:20 (installation.mdx:153 and the upgrade line ran in the audit, as class C; CI installs nothing from PyPI). Release download for another OS (1): start/installation.mdx:57. Changes the system (2): tui/mstp.mdx:168; connect/mstp-realtime.mdx:56. Benchmarks (2): connect/mstp-realtime.mdx:113; project/performance.mdx:78. PowerShell, and the job is Linux only (6): start/installation.mdx:77, :84, :170, :173; start/local-lab.mdx:47, :85. Python snippets that need real BBMD, multicast or IPv6 peers (6): connect/across-subnets.mdx:60, :95; connect/ipv6.mdx:42; connect/multicast.mdx:41, :66; connect/nat.mdx:29 |
+| **G. Illustration** | 2 | As at the audit |
+
+Mutation checks (each broke one thing, saw the named test fail, and restored
+it): a misspelt flag or keyword in a run sample, on its first line or a later
+one (`--wiat`, `pvx`, `priority-aray`, `--priorty`); a misspelt flag or
+subcommand in a parse sample (`--pasive`, `--renwal`, `whois-routr`); an
+off-host device address; `--allow-write` dropped from the write samples; the
+server guide writing `bo:2`; a new block with no entry; and the lab without
+`av:1`.
 
 Referenced but not displayed: the nine `examples/python/*.py` scripts parse;
 `mstp_mini_device.py --help` runs; the Rust examples in `start/embedded.md`
