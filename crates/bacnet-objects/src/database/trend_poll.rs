@@ -1,7 +1,8 @@
 //! Object-owned trend polling schedule. The caller owns synchronization and timers.
 
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use crate::collections::{HashMap, HashSet};
+use crate::prelude::*;
+use core::time::Duration;
 
 use bacnet_encoding::constructed::encode_log_multiple_record;
 use bacnet_encoding::primitives::encode_property_value;
@@ -15,7 +16,6 @@ use bacnet_types::enums::{
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
 use bytes::BytesMut;
-use tracing::warn;
 
 use super::{LocalDevice, ObjectDatabase};
 use crate::device_reference::decode_reference;
@@ -312,7 +312,7 @@ impl ObjectDatabase {
             };
             inserted
                 .inspect_err(|error| {
-                    warn!(object = %oid, %error, "trend-log record insertion failed");
+                    log_warn!(object = %oid, %error, "trend-log record insertion failed");
                 })
                 .is_ok()
         });

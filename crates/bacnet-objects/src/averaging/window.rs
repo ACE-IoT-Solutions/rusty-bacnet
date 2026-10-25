@@ -8,9 +8,9 @@
 //! first tells a reader how many attempts in the window failed (Clauses
 //! 12.5.11 and 12.5.12).
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::error::Error;
 

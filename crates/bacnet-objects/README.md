@@ -6,10 +6,22 @@ Build BACnet object state with [`traits::BACnetObject`] and
 owns registered objects and supports identifier-based lookup; object modules
 provide their property implementations.
 
-This hosted crate requires `std` and allocating storage. It has no public
-features and no Tokio dependency. Using it alone does not start a transport,
-a server executor or event/COV delivery, and does not provide an alloc-only or
-no-heap firmware profile.
+The crate has no Tokio dependency. Using it alone does not start a
+transport, a server executor or event/COV delivery.
+
+## Features
+
+| Profile | Features | What it has |
+| --- | --- | --- |
+| Hosted | `std` (default) | Everything, including the file persistence backends (`FileAuditLogPersistence`, `FileLogPersistence` and the others), a writer thread per saving object, and tracing. Enables `alloc`. |
+| `no_std` with a heap | `alloc` | Every object type, the database and the persistence traits, for a target with a global allocator and atomic compare-and-swap (#1615). A save runs on the caller's thread, and the application supplies the storage. |
+
+There is no build without `alloc`: the database boxes every object, so a
+heap-free device answers from a static table instead. ARMv6-M
+(`thumbv6m-none-eabi`) lacks compare-and-swap, which `alloc::sync::Arc`
+needs, so the crate doesn't build there.
+[The design note](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/design/objects-no-std.md)
+has the details.
 
 ## Initialize and read an object
 

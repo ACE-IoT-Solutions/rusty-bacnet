@@ -158,6 +158,13 @@ riscv = "0.16.1"
 # The host test of the apdu image's arena (#1635): the allocator
 # embedded-alloc's `llff` heap wraps, here with its own spin lock.
 linked_list_allocator = "0.10.6"
+# bacnet-objects without std (#1615): the hash maps, and the lock its objects
+# share between threads, in place of std's. Both are no_std, and neither picks
+# an atomics backend: they need compare-and-swap, as alloc::sync::Arc does.
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher"] }
+# And the float rounding core lacks (f64::trunc, ceil, round, hypot).
+libm = "0.2.16"
+spinning_top = "0.2.5"
 # The firmware link test's emulation build (#1651): its images print and
 # exit under QEMU through semihosting, on Cortex-M and RISC-V alike, without
 # cortex-m and the unmaintained bare-metal crate it depends on.

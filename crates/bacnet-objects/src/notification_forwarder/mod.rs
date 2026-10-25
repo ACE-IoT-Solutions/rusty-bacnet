@@ -51,9 +51,10 @@
 //!
 //! [`add_destination`]: NotificationForwarderObject::add_destination
 
-use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::constructed::{
     BACnetDestination, BACnetEventNotificationSubscription, BACnetPortPermission,
@@ -77,9 +78,9 @@ mod saving;
 mod selection;
 
 pub use crate::notification_class::MAX_RECIPIENT_LIST_DESTINATIONS;
-pub use persistence::{
-    FileNotificationForwarderPersistence, ForwarderSnapshot, NotificationForwarderPersistence,
-};
+#[cfg(feature = "std")]
+pub use persistence::FileNotificationForwarderPersistence;
+pub use persistence::{ForwarderSnapshot, NotificationForwarderPersistence};
 pub use saving::ForwarderSaveCounters;
 pub use selection::{ForwardingInput, ForwardingTargets, forwarding_targets};
 
@@ -225,7 +226,7 @@ impl NotificationForwarderObject {
     pub fn add_destination(&mut self, destination: BACnetDestination) -> Result<(), Error> {
         recipient_list::check_added(&destination)?;
         if self.recipient_list_saved() {
-            tracing::debug!(
+            log_debug!(
                 forwarder = %self.oid,
                 "Saved Recipient_List kept over a configured destination"
             );

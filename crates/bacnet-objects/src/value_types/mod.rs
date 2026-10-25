@@ -5,10 +5,11 @@
 //!
 //! A `define_value_object!` macro generates the struct + BACnetObject impl for each type.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
 use crate::property_metadata::{

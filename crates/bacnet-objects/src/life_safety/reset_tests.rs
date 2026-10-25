@@ -363,18 +363,22 @@ fn executor_failures_and_panics_map_exactly_without_mutation() {
         assert_eq!(point_state(&point), before);
     }
 
-    let mut zone = LifeSafetyZoneObject::new(1, "zone").unwrap();
-    zone.set_present_value(LifeSafetyState::ALARM);
-    zone.set_operation_expected(LifeSafetyOperation::RESET);
-    zone.set_reset_executor(Arc::new(|_| panic!("executor bug")));
-    let before = zone_state(&zone);
-    assert_error(
-        zone.apply_life_safety_operation(LifeSafetyOperation::RESET)
-            .unwrap_err(),
-        ErrorClass::SERVICES,
-        ErrorCode::SERVICE_REQUEST_DENIED,
-    );
-    assert_eq!(zone_state(&zone), before);
+    // Only std catches the executor's panic.
+    #[cfg(feature = "std")]
+    {
+        let mut zone = LifeSafetyZoneObject::new(1, "zone").unwrap();
+        zone.set_present_value(LifeSafetyState::ALARM);
+        zone.set_operation_expected(LifeSafetyOperation::RESET);
+        zone.set_reset_executor(Arc::new(|_| panic!("executor bug")));
+        let before = zone_state(&zone);
+        assert_error(
+            zone.apply_life_safety_operation(LifeSafetyOperation::RESET)
+                .unwrap_err(),
+            ErrorClass::SERVICES,
+            ErrorCode::SERVICE_REQUEST_DENIED,
+        );
+        assert_eq!(zone_state(&zone), before);
+    }
 }
 
 #[test]

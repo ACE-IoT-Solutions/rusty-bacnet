@@ -4,9 +4,10 @@ use crate::common::{
     write_generic_event_properties,
 };
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
+use crate::prelude::*;
 use crate::property_metadata::PropertyMetadata;
+use alloc::sync::Arc;
 use bacnet_types::enums::EngineeringUnits;
-use std::sync::Arc;
 
 mod metadata;
 
@@ -361,7 +362,7 @@ impl BACnetObject for AnalogOutputObject {
         self.profile.capability()
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
         self.profile.expire(now);
         false
     }

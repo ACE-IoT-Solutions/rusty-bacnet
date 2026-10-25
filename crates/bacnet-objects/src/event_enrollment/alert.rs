@@ -1,4 +1,5 @@
-use std::borrow::Cow;
+use crate::prelude::*;
+use alloc::borrow::Cow;
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{EventState, NotifyType, ObjectType, PropertyIdentifier};

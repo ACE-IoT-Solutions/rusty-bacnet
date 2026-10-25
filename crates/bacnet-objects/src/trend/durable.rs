@@ -1,6 +1,7 @@
 //! A Trend Log kept in storage (#1541); see [`crate::log_persistence`].
 
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::sync::Arc;
 
 use bacnet_types::constructed::BACnetLogRecord;
 use bacnet_types::error::Error;

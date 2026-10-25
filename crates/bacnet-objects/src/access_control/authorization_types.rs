@@ -3,6 +3,7 @@
 use super::{
     AccessRightsEvaluation, AccompanimentEvaluation, AccompanimentProblem, CredentialPresentation,
 };
+use crate::prelude::*;
 use bacnet_types::enums::{
     AccessCredentialDisableReason, AccessEvent, AuthorizationExemption, AuthorizationMode,
     BinaryPV, ErrorClass, ErrorCode, PropertyIdentifier,
@@ -58,7 +59,7 @@ impl AuthorizationOrder {
     pub fn new(checks: [AuthorizationCheck; 7]) -> Result<Self, Error> {
         let mut seen = [false; 7];
         for check in checks {
-            if std::mem::replace(&mut seen[check.index()], true) {
+            if core::mem::replace(&mut seen[check.index()], true) {
                 return Err(crate::common::value_out_of_range_error());
             }
         }
@@ -89,7 +90,7 @@ impl DisableReasonPriority {
             let slot = seen
                 .get_mut(index)
                 .ok_or_else(crate::common::value_out_of_range_error)?;
-            if std::mem::replace(slot, true) {
+            if core::mem::replace(slot, true) {
                 return Err(crate::common::value_out_of_range_error());
             }
         }

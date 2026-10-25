@@ -55,9 +55,12 @@
 //! this without a `Drop` of its own; [`stage`](StagedSaves::stage) takes
 //! the served state, and [`correct`](StagedSaves::correct) keeps it current.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::prelude::*;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::time::Duration;
+#[cfg(all(test, feature = "std"))]
+use std::time::Instant;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::{Error, RemoteError};
@@ -186,14 +189,23 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// save is running, or finished within
     /// [`STAGED_WRITE_LIFETIME`]. An older one
     /// is dropped.
+    /// Without std there is no clock to tell, so only the operation task's
+    /// call ([`expire`](Self::expire)) drops one.
     pub(crate) fn busy(&mut self) -> Option<SaveWait> {
-        self.busy_at(Instant::now())
+        self.busy_unless(SaveTicket::outlived)
     }
 
     /// [`busy`](Self::busy), judged at `now`.
+    #[cfg(all(test, feature = "std"))]
     pub(crate) fn busy_at(&mut self, now: Instant) -> Option<SaveWait> {
+        self.busy_unless(|ticket| ticket.outlived_at(now))
+    }
+
+    /// The wait for a staged write that holds the object, unless `outlived`
+    /// says it has gone on too long; then it is dropped.
+    fn busy_unless(&mut self, outlived: impl FnOnce(&SaveTicket) -> bool) -> Option<SaveWait> {
         let staged = self.staged.as_ref()?;
-        if !staged.ticket.outlived_at(now) {
+        if !outlived(&staged.ticket) {
             return Some(SaveWait::new(Arc::clone(&staged.released)));
         }
         self.drop_staged();

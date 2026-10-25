@@ -1,7 +1,8 @@
 //! Calendar (type 6), Clause 12.9.
 
-use std::borrow::Cow;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
 
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::constructed::BACnetCalendarEntry;

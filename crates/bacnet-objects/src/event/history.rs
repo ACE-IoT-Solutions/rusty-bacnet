@@ -1,5 +1,6 @@
 //! Shared storage for intrinsic-reporting event history properties.
 
+use crate::prelude::*;
 use bacnet_encoding::primitives::encode_timestamp_choice;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, PropertyIdentifier};
@@ -240,7 +241,7 @@ impl EventHistory {
     /// Back to the starting history, as Event_Detection_Enable FALSE asks;
     /// the [`ReportingOptions`] stay as configured.
     pub(crate) fn reset(&mut self) {
-        let options = std::mem::take(&mut self.options);
+        let options = core::mem::take(&mut self.options);
         *self = Self {
             options,
             ..Self::default()
@@ -357,7 +358,7 @@ fn timestamp_value(stamp: &BACnetTimeStamp) -> PropertyValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::borrow::Cow;
+    use alloc::borrow::Cow;
 
     use bacnet_types::enums::{EventState, ObjectType};
     use bacnet_types::primitives::{Date, ObjectIdentifier, Time};

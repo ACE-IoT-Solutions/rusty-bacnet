@@ -1,9 +1,10 @@
 //! Explicit evidence and stage results for local accompaniment evaluation.
 use super::AccessRightsEvaluation;
+use crate::prelude::*;
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{AccessEvent, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
-use std::time::Duration;
+use core::time::Duration;
 
 /// One caller-identified credential presentation. Times share a caller-chosen
 /// monotonic origin; they are not BACnet wall-clock timestamps.

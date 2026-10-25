@@ -1,5 +1,25 @@
 #![doc = include_str!("../README.md")]
+// Tests always build with std, so feature-off test runs need no imports of
+// their own.
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![forbid(unsafe_code)]
+
+// `format!` and `vec!` without std's prelude (#1615).
+#[macro_use]
+extern crate alloc;
+
+#[cfg(not(feature = "alloc"))]
+compile_error!(
+    "bacnet-objects needs the `alloc` feature (or `std`): the database boxes every object"
+);
+#[cfg(not(target_has_atomic = "ptr"))]
+compile_error!(
+    "bacnet-objects needs atomic compare-and-swap: its objects share state through alloc::sync::Arc"
+);
+
+#[macro_use]
+mod no_std_support;
+pub(crate) use no_std_support::{catch_panic, collections, float, prelude, sync};
 
 pub mod access_control;
 pub mod accumulator;

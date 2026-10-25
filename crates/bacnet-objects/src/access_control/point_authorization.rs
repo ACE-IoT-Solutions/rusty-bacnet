@@ -56,6 +56,7 @@
 //! The point stores these values and checks them; carrying out a policy or a
 //! mode, and commanding the doors, is the application's work.
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::encode_authentication_policy;
 use bacnet_types::constructed::{BACnetAuthenticationPolicy, device_identifier_is_device};
 use bacnet_types::enums::{AuthorizationMode, ObjectType, PropertyIdentifier as P};

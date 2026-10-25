@@ -1,9 +1,10 @@
 //! The Color object (type 63, Addendum 135-2020ca Clause 12.X): a CIE 1931
 //! xy colour.
 
-use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::constructed::{BACnetColorCommand, BACnetXyColor};
 use bacnet_types::enums::{ColorOperation, ColorTransition, ObjectType, PropertyIdentifier};

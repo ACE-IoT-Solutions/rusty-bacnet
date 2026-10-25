@@ -1,8 +1,9 @@
 use super::*;
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
+use crate::prelude::*;
 use crate::present_value_access::PresentValueAccess;
 use crate::property_metadata::PropertyMetadata;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 #[path = "value/metadata.rs"]
 mod metadata;
@@ -505,7 +506,7 @@ impl BACnetObject for BinaryValueObject {
         self.profile.capability()
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
         self.profile.expire(now);
         false
     }

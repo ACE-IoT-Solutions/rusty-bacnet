@@ -31,6 +31,7 @@
 //! successful writes then override configured Tags across reconstruction.
 //! Saved Tags never provision an absent row. See [`TagsPersistence`].
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::{decode_name_value, encode_name_value};
 use bacnet_encoding::tags::Tag;
 use bacnet_types::constructed::BACnetNameValue;
@@ -48,9 +49,9 @@ use crate::property_metadata::{
 
 mod persistence;
 mod saving;
-pub use persistence::{
-    FileTagsPersistence, MAX_TAGS_SNAPSHOT_BYTES, TagsPersistence, TagsSnapshot,
-};
+#[cfg(feature = "std")]
+pub use persistence::FileTagsPersistence;
+pub use persistence::{MAX_TAGS_SNAPSHOT_BYTES, TagsPersistence, TagsSnapshot};
 pub(crate) use saving::ProfileState;
 
 /// Resource cap on Tags elements, the bound Exception_Schedule and a
@@ -277,7 +278,7 @@ fn vendor_prefixed(name: &str) -> bool {
 #[path = "object_profile_tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod persistence_tests;
 #[cfg(test)]
 mod saving_tests;

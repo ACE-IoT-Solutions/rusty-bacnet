@@ -1,7 +1,7 @@
 //! Trusted single-port attachment; network writes never receive this authority.
 use super::*;
+use alloc::sync::Arc;
 use bacnet_types::bip_port::BipPortMode;
-use std::sync::Arc;
 
 impl NetworkPortObject {
     pub(crate) fn network_number_internal(
@@ -12,7 +12,7 @@ impl NetworkPortObject {
             && self.network_number.observe(number, flag)
                 == bacnet_types::network_number::Observation::ConfiguredConflict
         {
-            tracing::debug!(
+            log_debug!(
                 configured = self.network_number.snapshot().0,
                 announced = number,
                 "local Network Number configuration conflict"
