@@ -4,8 +4,8 @@
 use bacnet_mstp_codec::{FrameHeader, FrameType};
 use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, AllocQueues, Direction, Instant, MasterCore, MasterState, MstpCounters, QueueRefusal,
-    ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
+    Action, AllocQueues, Direction, Duration, Instant, MasterCore, MasterState, MstpCounters,
+    QueueRefusal, ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
 };
 
 use super::{Event, NodeKind, Sim, SimCore, decode_whole, describe, leak_core_storage};
@@ -50,7 +50,10 @@ pub(crate) struct MasterNode {
     /// The octets the core handed over with the last confirmed start.
     started: Option<Vec<u8>>,
     /// Late deadlines already accounted for.
-    late_seen: u32,
+    pub(super) late_seen: u32,
+    /// The largest deadline lateness the core had reported when last
+    /// checked.
+    pub(super) lateness_seen: Duration,
     /// The master generated a token and has held it since: a collision with
     /// another master doing the same is the generation race.
     pub(super) generating: bool,
@@ -96,6 +99,7 @@ impl MasterNode {
             started: None,
             generating: false,
             late_seen: 0,
+            lateness_seen: Duration::ZERO,
             deliveries: Vec::new(),
             rejects: Vec::new(),
             spin: (Instant::ZERO, 0),
@@ -122,6 +126,7 @@ impl MasterNode {
         self.deadline = core.next_deadline();
         self.fire_at = None;
         self.late_seen = 0;
+        self.lateness_seen = Duration::ZERO;
         self.core = Some(Box::new(core));
         self.pending = None;
         self.transmitting = None;
@@ -320,6 +325,10 @@ impl Sim {
                 .as_ref()
                 .is_some_and(|host| host.completion_reported == Some(self.now));
         let punctual = !adapter.may_miss_deadlines(late_deadline) && !completion_exposed_timer;
+        // An octet adapter services each deadline within a known bound; a
+        // host adapter can also hold one back while it transmits.
+        let bound = (!punctual && master.host.is_none())
+            .then(|| adapter.lateness_bound(master.spec.skew.clock_ppm));
         if master.fire_at.is_none() {
             self.arm_deadline(node);
         }
@@ -334,7 +343,7 @@ impl Sim {
             );
         }
         self.check_core_result(station, result);
-        self.check_counters(node, &counters, punctual);
+        self.check_counters(node, &counters, punctual, bound);
         // A deadline already due may wait for a late or jittery adapter; a
         // new one must not be set in the past.
         if rearmed && deadline.is_some_and(|deadline| deadline < now) {
@@ -410,43 +419,6 @@ impl Sim {
             self.violation(
                 ViolationKind::ContractBroken,
                 format!("station {station}: unexpected {error:?}"),
-            );
-        }
-    }
-
-    /// Counters that must not move: adapter errors, delivery drops and
-    /// frames from the station's own address ever, and late deadlines while
-    /// the adapter is punctual.
-    fn check_counters(&mut self, node: usize, counters: &MstpCounters, punctual: bool) {
-        let station = self.nodes[node].station;
-        let master = self.master_mut(node).expect("a master");
-        let new_late = counters.late_deadlines - master.late_seen;
-        master.late_seen = counters.late_deadlines;
-        let mut wrong = Vec::new();
-        if counters.adapter_errors != 0 {
-            wrong.push(format!("adapter_errors {}", counters.adapter_errors));
-        }
-        if counters.internal_errors != 0 {
-            wrong.push(format!("internal_errors {}", counters.internal_errors));
-        }
-        if counters.delivery_drops != 0 {
-            wrong.push(format!("delivery_drops {}", counters.delivery_drops));
-        }
-        // Every simulated station has its own address, so a frame from this
-        // one's is its own echo leaking past the adapter.
-        if counters.own_address_frames != 0 {
-            wrong.push(format!(
-                "own_address_frames {}",
-                counters.own_address_frames
-            ));
-        }
-        if punctual && new_late != 0 {
-            wrong.push(format!("{new_late} more late_deadlines"));
-        }
-        if !wrong.is_empty() {
-            self.violation(
-                ViolationKind::CoreCounter,
-                format!("station {station}: {}", wrong.join(", ")),
             );
         }
     }

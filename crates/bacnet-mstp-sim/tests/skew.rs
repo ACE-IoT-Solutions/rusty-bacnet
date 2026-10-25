@@ -280,6 +280,19 @@ impl Edges {
         sim
     }
 
+    /// Each core serviced its deadlines late, but by less than one tick:
+    /// the tick took effect, and no lateness of the core's own hides
+    /// behind it. The simulator checks the same bound as the run goes.
+    fn assert_late_by_under_a_tick(&self, sim: &Sim, context: &str) {
+        for station in [self.low, self.low + 1] {
+            let lateness = sim.core(station).unwrap().counters().deadline_lateness;
+            assert!(
+                lateness.max < self.tick && lateness.max > Duration::ZERO,
+                "{context}, station {station}: {lateness:?}"
+            );
+        }
+    }
+
     /// Both stations pass the token after `since`.
     fn ring_formed(&self, sim: &Sim, since: Instant) -> bool {
         let (low, high) = (self.low, self.low + 1);
@@ -345,9 +358,14 @@ fn adjacent_masters_at_opposite_clock_edges_race_once_then_form_a_ring() {
 /// from the end of the same garbled frame, so they send their next polls
 /// at instants a gap `D` apart. They fall out of step once `D` reaches a
 /// character time `c`: the later master then hears an octet before its
-/// silence runs out, and defers. With
-/// exact timers `D` is the same every cycle, a few tenths of a millisecond
-/// at one percent. A ticking timer adds each node's rounding up to its
+/// silence runs out, and defers. Clause 9.5.6.8 also lets a master send
+/// its next poll at once on ReceivedInvalidFrame. If that fired here, both
+/// would answer the same line event at once and no timer could part them,
+/// but it doesn't: each master's receiver is off while it drives its own
+/// poll, and the other poll outlasts it by less than a character, so
+/// neither sees an invalid frame and both wait out the timeout. With exact
+/// timers `D` is the same every cycle, a few tenths of a millisecond at
+/// one percent. A ticking timer adds each node's rounding up to its
 /// next tick, and those roundings move between cycles: each node's tick
 /// grid is fixed on its own clock, and the clocks part by `2 * ppm` of
 /// every cycle, so `D` grows by that much a cycle, or jumps by a whole
@@ -417,6 +435,7 @@ fn low_baud_masters_at_opposite_clock_edges_form_a_ring_on_ticking_timers() {
             };
             let sim = ticking.run();
             sim.assert_no_violations();
+            ticking.assert_late_by_under_a_tick(&sim, &format!("{baud} baud, seed {seed}"));
             let collisions = &sim.report().collisions;
             assert!(
                 collisions.len() <= tick_collision_bound(baud, MAX_SKEW_PPM),
@@ -458,6 +477,7 @@ fn adjacent_masters_at_opposite_edges_on_ticking_timers_form_rings() {
         let sim = edges.run();
         let context = format!("seed {seed}, {baud} baud, ±{ppm} ppm, low {}", edges.low);
         sim.assert_no_violations();
+        edges.assert_late_by_under_a_tick(&sim, &context);
         let collisions = &sim.report().collisions;
         assert!(
             collisions.len() <= tick_collision_bound(baud, ppm),
