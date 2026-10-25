@@ -7,7 +7,7 @@ import copy
 import pickle
 import unittest
 
-from rusty_bacnet import (BACnetClient, BACnetServer, BACnetTimeStamp, ObjectIdentifier,
+from rusty_bacnet import (BACnetClient, BACnetServer, BACnetTimeStamp, BitString, ObjectIdentifier,
                           ObjectType, PropertyIdentifier, PropertyValue)
 from typed_reference_peer import ReferencePeer, Target
 
@@ -76,9 +76,9 @@ EVENT_PARAMETERS = [
      {"kind": "change_of_state", "time_delay": 5, "list_of_values": [(0, True), (1, 1)]}),
     (bytes.fromhex("0e09021a05a02e8205a08205402f0f"),
      {"kind": "change_of_bitstring", "time_delay": 2,
-      "bitmask": {"unused_bits": 5, "data": b"\xa0"},
-      "list_of_values": [{"unused_bits": 5, "data": b"\xa0"},
-                         {"unused_bits": 5, "data": b"\x40"}]}),
+      "bitmask": BitString(5, b"\xa0"),
+      "list_of_values": [BitString(5, b"\xa0"),
+                         BitString(5, b"\x40")]}),
     (bytes.fromhex("9e0a022b19092e21052f9f"),
      {"kind": "extended", "vendor_id": 555, "extended_event_type": 9,
       "parameters": b"\x21\x05"}),

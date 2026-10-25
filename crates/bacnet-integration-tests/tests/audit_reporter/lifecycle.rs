@@ -61,7 +61,7 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
     for step in 0..4 {
         match step {
             0 => {
-                let ack = client
+                let acknowledged = client
                     .create_object(
                         target.local_mac(),
                         ObjectSpecifier::Type(ObjectType::BINARY_VALUE),
@@ -74,12 +74,7 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
                     )
                     .await
                     .unwrap();
-                assert_eq!(
-                    bacnet_encoding::primitives::decode_application_value(&ack, 0)
-                        .unwrap()
-                        .0,
-                    PropertyValue::ObjectIdentifier(created)
-                );
+                assert_eq!(acknowledged, created);
                 assert_eq!(
                     target
                         .database()

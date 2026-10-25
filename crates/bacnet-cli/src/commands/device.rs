@@ -283,14 +283,68 @@ pub async fn create_object_cmd<T: TransportPort + 'static>(
     use bacnet_services::object_mgmt::ObjectSpecifier;
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let specifier = ObjectSpecifier::Identifier(oid);
-    let response = to.create_object(client, specifier, vec![]).await?;
-    let hex: String = response
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    output::print_success(&format!("Created object (response: {hex})"), format);
+    // The client decodes the ACK; one that doesn't decode is an error, sent
+    // after the device acted on the request.
+    let created = to.create_object(client, specifier, vec![]).await.map_err(
+        |error| -> Box<dyn std::error::Error> {
+            match error {
+                bacnet_types::error::Error::Decoding(_) => format!(
+                    "{error}; the CreateObject acknowledgment didn't decode, \
+                     but the device may have created the object"
+                )
+                .into(),
+                other => other.into(),
+            }
+        },
+    )?;
+    let (message, json) = created_object_report(created);
+    match format {
+        OutputFormat::Table => output::print_success(&message, format),
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json).expect("serialize create-object result")
+        ),
+    }
     Ok(())
+}
+
+/// Render the object a CreateObject acknowledgment names as a text message
+/// and a JSON object: the identifier is what a user needs, since the server
+/// may have picked the instance.
+fn created_object_report(created: ObjectIdentifier) -> (String, serde_json::Value) {
+    let message = format!(
+        "Created {}:{}",
+        created.object_type(),
+        created.instance_number()
+    );
+    let json = serde_json::json!({
+        "status": "ok",
+        "message": message,
+        "object_type": created.object_type().to_string(),
+        "instance": created.instance_number(),
+    });
+    (message, json)
+}
+
+#[cfg(test)]
+mod create_object_report_tests {
+    use super::*;
+
+    #[test]
+    fn report_names_the_new_object() {
+        let created = ObjectIdentifier::new(ObjectType::BINARY_INPUT, 100).unwrap();
+        let (message, json) = created_object_report(created);
+        assert_eq!(message, "Created BINARY_INPUT:100");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "status": "ok",
+                "message": "Created BINARY_INPUT:100",
+                "object_type": "BINARY_INPUT",
+                "instance": 100,
+            })
+        );
+    }
 }
 
 #[cfg(test)]

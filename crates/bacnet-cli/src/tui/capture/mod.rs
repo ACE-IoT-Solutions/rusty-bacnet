@@ -11,7 +11,7 @@
 //!   frames the tap saw inside the process.
 //! - `libpcap` (`pcap` feature): wire capture on a blocking thread.
 //! - [`redact`]: DeviceCommunicationControl and ReinitializeDevice
-//!   passwords masked before a frame this node didn't receive is kept.
+//!   passwords masked before any frame is kept, whichever way it went.
 //!
 //! Sources:
 //!
