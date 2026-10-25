@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""Generate the Python reference page from the type stub (#1989).
+"""Generate the Python reference pages from the type stub (#1989).
 
 Reads ``crates/rusty-bacnet/rusty_bacnet.pyi`` with the ``ast`` module (the
-extension is never imported) and rewrites the region between the
-``generated:start`` and ``generated:end`` markers of
-``website/src/content/docs/reference/python.md``. The text around the
-markers is authored and kept.
+extension is never imported) and writes one page per group under
+``website/src/content/docs/reference/python/`` (all generated), and the
+group index between the ``generated:start`` and ``generated:end`` markers
+of ``website/src/content/docs/reference/python.md`` (the text around the
+markers is authored and kept).
 
-    python3 website/scripts/reference-python.py          # rewrite the page
+    python3 website/scripts/reference-python.py          # rewrite the pages
     python3 website/scripts/reference-python.py --check  # exit 1 if stale
 
 The stub's section comments (``# Client``, ``# Server``, ...) pick each
 item's group; a section this script doesn't know fails the run, so a new
-part of the API gets a deliberate place on the page. Errors (subclasses of
-an exception), enumerations and module functions get groups of their own
-wherever the stub puts them.
+part of the API gets a deliberate place. Errors (subclasses of an
+exception), enumerations and module functions get groups of their own
+wherever the stub puts them. The group pages' note names the release in
+``website/src/lib/site.mjs``, so a release bump makes them stale too.
 """
 
 from __future__ import annotations
@@ -28,20 +30,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STUB = ROOT / "crates/rusty-bacnet/rusty_bacnet.pyi"
-PAGE = ROOT / "website/src/content/docs/reference/python.md"
+INDEX = ROOT / "website/src/content/docs/reference/python.md"
+GROUP_DIR = ROOT / "website/src/content/docs/reference/python"
 START = "<!-- generated:start"
 END = "<!-- generated:end -->"
 
-# Group key -> heading and the sentence under it, in page order.
+# Group key (its page's slug) -> heading, the sentence under it and the
+# page's description, in index order.
 GROUPS = {
-    "client": ("Client", "The client, its options and what its methods return."),
-    "server": ("Server", "The server, its policies and counters, and the BACnet/SC hub."),
-    "router": ("Router", "Owned B/IP routing between numbered networks."),
-    "endpoints": ("Shared endpoints", "One transport that runs both the client and server roles."),
-    "types": ("Types and values", "Identifiers, property values, structured values and B/IP modes."),
-    "enums": ("Enumerations", "Named BACnet constants. Each also takes vendor or unknown values from their number."),
-    "errors": ("Errors", "The exceptions methods raise."),
-    "functions": ("Module functions", "Functions at the top of the `rusty_bacnet` module."),
+    "client": ("Client", "The client, its options and what its methods return.",
+               "BACnetClient and its options, results and SC credential inspection, generated from the type stub."),
+    "server": ("Server", "The server, its policies and counters, and the BACnet/SC hub.",
+               "BACnetServer, its policies and counters, and ScHub, generated from the type stub."),
+    "router": ("Router", "Owned B/IP routing between numbered networks.",
+               "BACnetRouter and its ports and routes, generated from the type stub."),
+    "endpoints": ("Shared endpoints", "One transport that runs both the client and server roles.",
+                  "The B/IP, SC and MS/TP endpoints and their client and server roles, generated from the type stub."),
+    "types": ("Types and values", "Identifiers, property values, structured values and B/IP modes.",
+              "Object identifiers, property values, structured values and B/IP modes, generated from the type stub."),
+    "enums": ("Enumerations", "Named BACnet constants. Each also takes vendor or unknown values from their number.",
+              "The BACnet enumerations and their constants, generated from the type stub."),
+    "errors": ("Errors", "The exceptions methods raise.",
+               "The exceptions rusty_bacnet raises, generated from the type stub."),
+    "functions": ("Module functions", "Functions at the top of the `rusty_bacnet` module.",
+                  "The functions at the top of the rusty_bacnet module, generated from the type stub."),
 }
 
 # The classes each group opens with, in this order; the rest follow in stub order.
@@ -271,12 +283,14 @@ def render_class(node: ast.ClassDef, group: str, errors: set[str], source_lines:
         kind = "class"
     item = Item(node.name, kind, group)
     out = item.lines
-    out.append(f"### {node.name}")
+    out.append(f"## {node.name}")
     out.append("")
     # The bases as one code span: a code block per class would double the page's weight.
     parents = bases + [f"{keyword.arg}={ast.unparse(keyword.value)}" for keyword in node.keywords]
     if parents:
         out += [f"`class {node.name}({', '.join(parents)})`", ""]
+    if node.name.startswith("_"):
+        out += ["Not importable: the stub defines it only to type what a method returns.", ""]
     doc = docstring_markdown(ast.get_docstring(node))
     if doc:
         out += doc + [""]
@@ -326,7 +340,7 @@ def render_class(node: ast.ClassDef, group: str, errors: set[str], source_lines:
             out.append(line)
         out.append("")
     for method in methods:
-        out.append(f"#### {node.name}.{method.name}")
+        out.append(f"### {node.name}.{method.name}")
         out.append("")
         out += ["```python", signature(method), "```", ""]
         doc = docstring_markdown(ast.get_docstring(method))
@@ -335,7 +349,8 @@ def render_class(node: ast.ClassDef, group: str, errors: set[str], source_lines:
     return item
 
 
-def render(source: str) -> str:
+def render(source: str) -> dict[str, list[Item]]:
+    """The stub's documented names, by group, in page order."""
     global SOURCE
     SOURCE = source
     tree = ast.parse(source)
@@ -357,51 +372,107 @@ def render(source: str) -> str:
         name = getattr(node, "name", None) or (node.target.id if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) else None)
         if name is None and isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
-        if name is None or name.startswith("_"):
+        # A private name is left out, except a TypedDict the stub uses in a
+        # public signature (`_DeviceReadBatchResult`, say).
+        private_typed = isinstance(node, ast.ClassDef) and "TypedDict" in base_names(node)
+        if name is None or (name.startswith("_") and not private_typed):
             continue
         group = section_group(node.lineno, banners)
         if isinstance(node, ast.ClassDef):
             items.append(render_class(node, group, errors, source_lines))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             item = Item(name, "function", "functions")
-            item.lines += [f"### {name}", "", "```python", signature(node), "```", ""]
+            item.lines += [f"## {name}", "", "```python", signature(node), "```", ""]
             doc = docstring_markdown(ast.get_docstring(node))
             if doc:
                 item.lines += doc + [""]
             items.append(item)
         elif isinstance(node, ast.AnnAssign):
             item = Item(name, "constant", group)
-            item.lines += [f"### {name}", "", "```python", f"{name}: {code(node.annotation)}", "```", ""]
+            item.lines += [f"## {name}", "", "```python", f"{name}: {code(node.annotation)}", "```", ""]
             following = body[index + 1] if index + 1 < len(body) else None
             if isinstance(following, ast.Expr) and isinstance(following.value, ast.Constant) and isinstance(following.value.value, str):
                 item.lines += docstring_markdown(following.value.value) + [""]
             items.append(item)
         elif isinstance(node, ast.Assign):
             item = Item(name, "alias", group)
-            item.lines += [f"### {name}", "", "```python", ast.get_source_segment(SOURCE, node), "```", ""]
+            item.lines += [f"## {name}", "", "```python", ast.get_source_segment(SOURCE, node), "```", ""]
             note = comments_above(source_lines, node.lineno)
             if note:
                 item.lines += [prose(note), ""]
             items.append(item)
 
-    out = [
-        "Each group opens with its main classes, then lists the other classes, the"
-        " dictionaries (`TypedDict`) and the type aliases, in stub order.",
-        "",
-    ]
+
     order = {"class": 0, "error": 0, "enum": 0, "function": 0, "constant": 1, "typeddict": 2, "alias": 3}
-    for key, (title, blurb) in GROUPS.items():
+    groups: dict[str, list[Item]] = {}
+    for key in GROUPS:
         primary = PRIMARY.get(key, [])
         members = [i for i in items if i.group == key]
         missing = set(primary) - {i.name for i in members}
         if missing:
             raise SystemExit(f"PRIMARY names {sorted(missing)}, not in group '{key}'; update {Path(__file__).name}")
-        members.sort(key=lambda i: (primary.index(i.name) if i.name in primary else len(primary), order[i.kind]))
         if not members:
             raise SystemExit(f"group '{key}' is empty; update GROUPS in {Path(__file__).name}")
-        out += [f"## {title}", "", blurb, ""]
-        for member in members:
-            out += member.lines
+        members.sort(key=lambda i: (primary.index(i.name) if i.name in primary else len(primary), order[i.kind]))
+        groups[key] = members
+    return groups
+
+
+def site_release() -> str:
+    """The release website/src/lib/site.mjs names."""
+    text = (ROOT / "website/src/lib/site.mjs").read_text(encoding="utf-8")
+    match = re.search(r"^export const release = '([^']+)';$", text, re.M)
+    if not match:
+        raise SystemExit("website/src/lib/site.mjs names no release")
+    return match.group(1)
+
+
+def callout(release: str) -> list[str]:
+    """The note every generated Python page opens with."""
+    return [
+        ":::note[On `dev` after the release]",
+        "This page is generated from the type stub on the `dev` branch and tracks the next release, so it can list"
+        f" classes, methods and keywords merged after v{release} that the released wheel doesn't have. The"
+        f" [v{release} release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v{release}) and the"
+        " [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d)"
+        " say what changed.",
+        ":::",
+        "",
+    ]
+
+
+def group_page(key: str, members: list[Item], release: str) -> str:
+    """One group's page, all generated."""
+    title, blurb, description = GROUPS[key]
+    out = [
+        "---",
+        f'title: "Python {title.lower()}"',
+        f'description: "{description}"',
+        "---",
+        "",
+        *callout(release),
+        f"{blurb} The [Python reference](/rusty-bacnet/reference/python/) lists every group. Each page opens"
+        " with its main classes, then the other classes, the dictionaries (`TypedDict`) and the type aliases,"
+        " in stub order.",
+        "",
+        f"{START} by website/scripts/reference-python.py; do not edit this page -->",
+        "",
+    ]
+    for member in members:
+        out += member.lines
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out + [END, ""])
+
+
+def index_region(groups: dict[str, list[Item]]) -> str:
+    """The index page's generated region: each group and the names on it."""
+    out = []
+    for key, members in groups.items():
+        title, blurb, _ = GROUPS[key]
+        out += [f"## [{title}](/rusty-bacnet/reference/python/{key}/)", "", blurb, ""]
+        names = [f"[`{m.name}`](/rusty-bacnet/reference/python/{key}/#{m.name.lower()})" for m in members]
+        out += [", ".join(names), ""]
     while out and not out[-1]:
         out.pop()
     return "\n".join(out)
@@ -410,31 +481,45 @@ def render(source: str) -> str:
 def splice(page: str, region: str) -> str:
     start = page.find(START)
     if start < 0:
-        raise SystemExit(f"{PAGE}: no generated:start marker")
+        raise SystemExit(f"{INDEX}: no generated:start marker")
     opened = page.index("-->", start) + 3
     end = page.find(END, opened)
     if end < 0:
-        raise SystemExit(f"{PAGE}: no generated:end marker after generated:start")
+        raise SystemExit(f"{INDEX}: no generated:end marker after generated:start")
     return f"{page[:opened]}\n\n{region}\n{page[end:]}"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--check", action="store_true", help="exit 1 when the page is stale; change nothing")
+    parser.add_argument("--check", action="store_true", help="exit 1 when a page is stale; change nothing")
     args = parser.parse_args()
-    page = PAGE.read_text(encoding="utf-8")
-    fresh = splice(page, render(STUB.read_text(encoding="utf-8")))
+    groups = render(STUB.read_text(encoding="utf-8"))
+    release = site_release()
+    wanted = {INDEX: splice(INDEX.read_text(encoding="utf-8"), index_region(groups))}
+    for key, members in groups.items():
+        wanted[GROUP_DIR / f"{key}.md"] = group_page(key, members, release)
+    extra = [path for path in GROUP_DIR.glob("*.md*") if path not in wanted]
+    stale = [path for path, text in wanted.items() if not path.exists() or path.read_text(encoding="utf-8") != text]
+    name = lambda path: path.relative_to(ROOT).as_posix()
     if args.check:
-        if fresh != page:
-            print(f"{PAGE.relative_to(ROOT)} is stale; run python3 website/scripts/reference-python.py", file=sys.stderr)
+        for path in stale:
+            print(f"{name(path)} is stale", file=sys.stderr)
+        for path in extra:
+            print(f"{name(path)} is not a group page", file=sys.stderr)
+        if stale or extra:
+            print("run python3 website/scripts/reference-python.py", file=sys.stderr)
             return 1
-        print(f"{PAGE.relative_to(ROOT)} is current")
+        print("the Python reference pages are current")
         return 0
-    if fresh != page:
-        PAGE.write_text(fresh, encoding="utf-8", newline="\n")
-        print(f"wrote {PAGE.relative_to(ROOT)}")
-    else:
-        print(f"{PAGE.relative_to(ROOT)} is current")
+    GROUP_DIR.mkdir(exist_ok=True)
+    for path in stale:
+        path.write_text(wanted[path], encoding="utf-8", newline="\n")
+        print(f"wrote {name(path)}")
+    for path in extra:
+        path.unlink()
+        print(f"removed {name(path)}")
+    if not stale and not extra:
+        print("the Python reference pages are current")
     return 0
 
 

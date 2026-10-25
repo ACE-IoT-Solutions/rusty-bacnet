@@ -1746,21 +1746,28 @@ To release:
    the same links. A tag fails if any fragment is still waiting.
 
    In the same PR, regenerate the website's generated references (#1989) so
-   the site published from the release describes it. Each script rewrites
-   the generated part of its page and leaves the authored text around it;
-   `--check` changes nothing and fails when the page is stale:
+   the site published from the release describes it. Run them after
+   `website/src/lib/site.mjs` names the new release: the Python pages' note
+   names it, and the crate map marks a crate whose Cargo.toml sets
+   `[package.metadata.website] first-release` to a later release as
+   unreleased, linking its source instead of docs.rs. Set that key on a
+   crate that is new since the last release. Each script rewrites the
+   generated part of its pages and leaves the authored text around it;
+   `--check` changes nothing and fails when a page is stale:
 
    ```bash
    node website/scripts/reference-cli.mjs       # reference/cli.md, from the clap definitions (all features; needs libpcap)
-   python3 website/scripts/reference-python.py  # reference/python.md, from rusty_bacnet.pyi
+   python3 website/scripts/reference-python.py  # reference/python.md and reference/python/*.md, from rusty_bacnet.pyi
    node website/scripts/reference-rust.mjs      # reference/rust.mdx, from cargo metadata
    ```
 
    PR CI doesn't run the `--check` modes: concurrent PRs that add an option
-   or a method would each fail on, and conflict over, the same pages. Docs
-   validation only checks that the pages parse and link correctly, list
-   every `bacnet` subcommand and list exactly the published crates; the CLI
-   generator also renders the page in every CI test run, so it can't rot.
+   or a method would each fail on, and conflict over, the same pages. What
+   it checks instead: Docs validation checks that the pages parse and link
+   correctly, list every `bacnet` subcommand and list exactly the published
+   crates; and bacnet-cli's tests run the CLI generator, so the generator
+   can't rot, and check that the committed page has a section for every
+   command. They don't compare the rendered page with the committed one.
 2. Optionally, dispatch a dry run on the release branch first: it runs
    everything the release does short of publishing.
 3. Tag a commit on `main`'s or `dev`'s first-parent history (a merge commit,

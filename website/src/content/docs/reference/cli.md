@@ -3,7 +3,11 @@ title: "CLI reference"
 description: "Every bacnet command and option with its defaults, generated from the CLI's own definitions, plus exit codes, targets and session behavior."
 ---
 
-The `bacnet` executable (Cargo package `bacnet-cli`) runs one command and exits, or opens the terminal UI. The command and option lists below are generated from the same definitions `bacnet --help` prints, so the installed binary's help and this page agree for the release. Use `bacnet <command> --help` for the binary you actually have.
+The `bacnet` executable (Cargo package `bacnet-cli`) runs one command and exits, or opens the terminal UI. The command and option lists below are generated from the definitions `bacnet --help` prints. Use `bacnet <command> --help` for the binary you actually have.
+
+:::note[On `dev` after the release]
+This page is generated from the `dev` branch and tracks the next release, so it can list commands and options merged after v0.14.0 that the released `bacnet` doesn't have. The [v0.14.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.14.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
+:::
 
 ## Features and release executables
 
@@ -180,7 +184,7 @@ Usage: bacnet discover [OPTIONS] [RANGE]
 
 Arguments:
 
-- `<RANGE>`: Device instance range (e.g., "1000-2000").
+- `[RANGE]`: Device instance range (e.g., "1000-2000").
 
 Options:
 
@@ -201,7 +205,7 @@ Usage: bacnet find [OPTIONS] [NAME]
 
 Arguments:
 
-- `<NAME>`: Object name to find (quote a name with spaces). `--name NAME` says the same; give one or the other.
+- `[NAME]`: Object name to find (quote a name with spaces). `--name NAME` says the same; give one or the other.
 
 Options:
 
@@ -237,7 +241,7 @@ Usage: bacnet readm [OPTIONS] <TARGET> [SPECS]...
 Arguments:
 
 - `<TARGET>`: Target device. Required.
-- `<SPECS>...`: Object and property specs: "ai:1 pv,object-name ao:1 pv".
+- `[SPECS]...`: Object and property specs: "ai:1 pv,object-name ao:1 pv".
 
 ### bacnet write
 
@@ -313,7 +317,7 @@ Arguments:
 Options:
 
 - `--duration <DURATION>`: Duration in minutes.
-- `--password <PASSWORD>`: Password.
+- `--password <PASSWORD>`: Password, at most 20 characters.
 
 ### bacnet reinit
 
@@ -330,7 +334,7 @@ Arguments:
 
 Options:
 
-- `--password <PASSWORD>`: Password.
+- `--password <PASSWORD>`: Password, at most 20 characters.
 
 ### bacnet alarms
 
@@ -489,7 +493,7 @@ Arguments:
 
 - `<TARGET>`: Target device. Required.
 - `<OBJECT>`: Object specifier (e.g., trend-log:1). Required.
-- `<PROPERTY>`: Property (default: log-buffer). Default: `log-buffer`.
+- `[PROPERTY]`: Property (default: log-buffer). Default: `log-buffer`.
 
 Options:
 

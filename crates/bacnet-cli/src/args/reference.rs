@@ -11,7 +11,8 @@
 //! copy: concurrent PRs that add an option would otherwise conflict over it.
 //! `BACNET_CLI_REFERENCE` picks what else it does:
 //!
-//! - unset: render only, and check the page still has its markers;
+//! - unset: render, and check that the committed page has its markers and a
+//!   section for every command and nested command (not that it is current);
 //! - `write`: replace the page's generated region;
 //! - `check`: fail if the page's generated region is stale.
 //!
@@ -31,18 +32,41 @@ const START: &str = "<!-- generated:start";
 /// Closes the generated region.
 const END: &str = "<!-- generated:end -->";
 
-/// The Cargo feature a command or option needs; the clap tree has no record
-/// of it, because the commands parse in every build and refuse to run in a
-/// build without the feature. Names here must exist in the tree.
+/// The Cargo feature a command needs, by its path below `bacnet` (`mcp` or
+/// `mcp serve`); a nested command takes its top-level command's entry unless
+/// it has its own. The clap tree has no record of features: most commands
+/// parse in every build and refuse to run in one without the feature.
+/// Names here must exist in the tree unless their feature is off in this
+/// build (see [`BUILD_FEATURES`]).
 const COMMAND_FEATURES: &[(&str, &str)] = &[
     ("sc-check", "sc-tls"),
     ("tui", "tui"),
     ("capture", "pcap"),
     ("mstp-ports", "serial"),
+    ("mcp", "mcp"),
 ];
 
-/// Global or per-command long options that need a feature: (command or ""
-/// for a global option, long option, feature).
+/// The features this test build knows to be on or off. A table entry whose
+/// command or option is missing from the tree is an error only when its
+/// feature is on here, so a command behind a `#[cfg(feature)]` gate doesn't
+/// fail a build without it. A feature missing from this list (such as
+/// `mcp` until bacnet-cli has it) counts as off: add its `cfg!` here when
+/// Cargo.toml gains the feature.
+const BUILD_FEATURES: &[(&str, bool)] = &[
+    ("tui", cfg!(feature = "tui")),
+    ("sc-tls", cfg!(feature = "sc-tls")),
+    ("pcap", cfg!(feature = "pcap")),
+    ("serial", cfg!(feature = "serial")),
+];
+
+fn feature_on(feature: &str) -> bool {
+    BUILD_FEATURES
+        .iter()
+        .any(|(name, on)| *name == feature && *on)
+}
+
+/// Global or per-command long options that need a feature: (command path,
+/// or "" for a global option, long option, feature).
 const OPTION_FEATURES: &[(&str, &str, &str)] = &[
     ("", "sc", "sc-tls"),
     ("", "sc-url", "sc-tls"),
@@ -141,14 +165,24 @@ fn help_of(arg: &Arg) -> String {
         .unwrap_or_default()
 }
 
-/// The `<NAME>` placeholders an argument takes, or "" for a flag.
+/// The `<NAME>` placeholders an argument takes, or "" for a flag; an
+/// optional positional is `[NAME]`, as clap's usage line writes it.
 fn placeholder(arg: &Arg) -> String {
+    let value = value_placeholder(arg);
+    if arg.is_positional() && !arg.is_required_set() {
+        value.replace('<', "[").replace('>', "]")
+    } else {
+        value
+    }
+}
+
+fn value_placeholder(arg: &Arg) -> String {
     if !arg.get_action().takes_values() {
         return String::new();
     }
     let names: Vec<String> = match arg.get_value_names() {
         Some(names) => names.iter().map(ToString::to_string).collect(),
-        None => vec![arg.get_id().as_str().to_uppercase()],
+        None => vec![arg.get_id().to_string()],
     };
     let many = arg
         .get_num_args()
@@ -217,11 +251,45 @@ fn option_feature(command: &str, long: Option<&str>) -> Option<&'static str> {
         .map(|(_, _, feature)| *feature)
 }
 
-fn command_feature(command: &str) -> Option<&'static str> {
-    COMMAND_FEATURES
-        .iter()
-        .find(|(name, _)| *name == command)
-        .map(|(_, feature)| *feature)
+/// The feature a command path needs: its own entry, or its top-level command's.
+fn command_feature(path: &str) -> Option<&'static str> {
+    let top = path.split(' ').next().unwrap_or(path);
+    [path, top].into_iter().find_map(|wanted| {
+        COMMAND_FEATURES
+            .iter()
+            .find(|(name, _)| *name == wanted)
+            .map(|(_, feature)| *feature)
+    })
+}
+
+/// Every visible command below `command`, depth first, with its path below
+/// `bacnet` (`mcp`, then `mcp serve`).
+fn walk<'a>(prefix: &str, command: &'a Command, out: &mut Vec<(String, &'a Command)>) {
+    for sub in command.get_subcommands() {
+        if sub.is_hide_set() || sub.get_name() == "help" {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            sub.get_name().to_string()
+        } else {
+            format!("{prefix} {}", sub.get_name())
+        };
+        out.push((path.clone(), sub));
+        walk(&path, sub, out);
+    }
+}
+
+/// Every visible command of `bacnet`, nested ones included.
+fn command_paths(cli: &Command) -> Vec<(String, &Command)> {
+    let mut out = Vec::new();
+    walk("", cli, &mut out);
+    out
+}
+
+/// The command at a path below `bacnet`.
+fn find<'a>(cli: &'a Command, path: &str) -> Option<&'a Command> {
+    path.split(' ')
+        .try_fold(cli, |command, name| command.find_subcommand(name))
 }
 
 /// One bullet per argument.
@@ -242,7 +310,11 @@ fn argument_list(out: &mut String, command: &str, args: &[&Arg]) {
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
-        writeln!(out, "- `{syntax}`: {text}").expect("write to a String");
+        if text.is_empty() {
+            writeln!(out, "- `{syntax}`").expect("write to a String");
+        } else {
+            writeln!(out, "- `{syntax}`: {text}").expect("write to a String");
+        }
     }
 }
 
@@ -264,7 +336,11 @@ fn global_options(cli: &Command) -> Vec<&Arg> {
 
 /// The generated region of the page.
 fn render() -> String {
-    let mut cli = Cli::command();
+    render_command(Cli::command())
+}
+
+/// The generated region for a clap tree named `bacnet`.
+fn render_command(mut cli: Command) -> String {
     cli.build();
     let mut out = String::new();
     let w = &mut out;
@@ -291,11 +367,8 @@ fn render() -> String {
 
     writeln!(w, "## Commands\n").expect("write to a String");
     writeln!(w, "| Command | Aliases | Summary |\n|---|---|---|").expect("write to a String");
-    let commands: Vec<&Command> = cli
-        .get_subcommands()
-        .filter(|command| !command.is_hide_set() && command.get_name() != "help")
-        .collect();
-    for command in &commands {
+    let commands = command_paths(&cli);
+    for (path, command) in &commands {
         let aliases: Vec<String> = command
             .get_all_aliases()
             .map(|alias| format!("`{alias}`"))
@@ -304,26 +377,28 @@ fn render() -> String {
             .get_about()
             .map(|about| paragraphs(&about.to_string()).replace("\n\n", " "))
             .unwrap_or_default();
-        if let Some(feature) = command_feature(command.get_name()) {
-            summary.push_str(&format!(" Needs the `{feature}` feature."));
+        if let Some(feature) = command_feature(path) {
+            summary = format!("{summary} Needs the `{feature}` feature.")
+                .trim_start()
+                .to_string();
         }
         writeln!(
             w,
-            "| [`{name}`](#bacnet-{name}) | {} | {} |",
+            "| [`{path}`](#bacnet-{anchor}) | {} | {} |",
             if aliases.is_empty() {
                 "—".into()
             } else {
                 aliases.join(", ")
             },
             summary.replace('|', "\\|"),
-            name = command.get_name(),
+            anchor = path.replace(' ', "-"),
         )
         .expect("write to a String");
     }
     writeln!(w).expect("write to a String");
 
-    for command in &commands {
-        let name = command.get_name();
+    for (path, command) in &commands {
+        let name = path.as_str();
         writeln!(w, "### bacnet {name}\n").expect("write to a String");
         let about = command
             .get_long_about()
@@ -373,25 +448,26 @@ fn render() -> String {
 /// Every feature-table entry names a command or option in the tree, so a
 /// rename can't leave a stale mark behind.
 fn check_feature_tables(cli: &Command) {
-    for (name, _) in COMMAND_FEATURES {
+    for (path, feature) in COMMAND_FEATURES {
         assert!(
-            cli.find_subcommand(name).is_some(),
-            "COMMAND_FEATURES names `{name}`, which is not a bacnet command"
+            find(cli, path).is_some() || !feature_on(feature),
+            "COMMAND_FEATURES names `{path}`, which is not a bacnet command"
         );
     }
-    for (owner, long, _) in OPTION_FEATURES {
-        let command = if owner.is_empty() {
-            cli
-        } else {
-            cli.find_subcommand(owner)
-                .unwrap_or_else(|| panic!("OPTION_FEATURES names command `{owner}`"))
-        };
-        assert!(
+    for (owner, long, feature) in OPTION_FEATURES {
+        let takes = |command: &Command| {
             command
                 .get_arguments()
-                .any(|arg| arg.get_long() == Some(long)),
-            "OPTION_FEATURES names `--{long}`, which `{}` does not take",
-            command.get_name()
+                .any(|arg| arg.get_long() == Some(long))
+        };
+        let command = if owner.is_empty() {
+            Some(cli)
+        } else {
+            find(cli, owner)
+        };
+        assert!(
+            command.is_some_and(takes) || !feature_on(feature),
+            "OPTION_FEATURES names `--{long}` of `{owner}`, which the tree does not have"
         );
     }
 }
@@ -399,23 +475,34 @@ fn check_feature_tables(cli: &Command) {
 #[test]
 fn cli_reference() {
     // Building the clap tree takes the parse thread's stack in debug builds.
-    let region = crate::parse_on_large_stack(|| {
-        check_feature_tables(&Cli::command());
-        render()
+    let (region, paths) = crate::parse_on_large_stack(|| {
+        let cli = Cli::command();
+        check_feature_tables(&cli);
+        let paths: Vec<String> = command_paths(&cli)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        (render(), paths)
     });
-    for command in Cli::command().get_subcommands() {
-        assert!(
-            region.contains(&format!("### bacnet {}\n", command.get_name())),
-            "{} has a section",
-            command.get_name()
-        );
-    }
     let path = page_path();
     let page = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let mode = std::env::var("BACNET_CLI_REFERENCE");
+    for command in &paths {
+        let heading = format!("### bacnet {command}\n");
+        assert!(region.contains(&heading), "bacnet {command} has a section");
+        // The committed page lists every command, so a PR that adds one
+        // regenerates the page itself; options aren't checked, so concurrent
+        // PRs adding them don't conflict over it.
+        assert!(
+            mode.as_deref() == Ok("write") || page.contains(&heading),
+            "{} has no section for bacnet {command}; run node website/scripts/reference-cli.mjs",
+            path.display()
+        );
+    }
     let fresh =
         splice(&page, &region).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    match std::env::var("BACNET_CLI_REFERENCE").as_deref() {
+    match mode.as_deref() {
         Ok("write") => {
             if fresh != page {
                 std::fs::write(&path, &fresh)
@@ -430,6 +517,36 @@ fn cli_reference() {
         Ok(other) => panic!("BACNET_CLI_REFERENCE is `write` or `check`, not `{other}`"),
         Err(_) => {}
     }
+}
+
+#[test]
+fn nested_commands_get_their_own_sections() {
+    let cli = Command::new("bacnet").subcommand(
+        Command::new("mcp")
+            .about("Run the MCP server")
+            .subcommand(
+                Command::new("serve")
+                    .about("Serve")
+                    .arg(Arg::new("port").long("port").default_value("1")),
+            )
+            .subcommand(Command::new("authorize").arg(Arg::new("name"))),
+    );
+    let region = render_command(cli);
+    for heading in [
+        "### bacnet mcp\n",
+        "### bacnet mcp serve\n",
+        "### bacnet mcp authorize\n",
+    ] {
+        assert!(region.contains(heading), "{heading}");
+    }
+    assert!(region.contains("| [`mcp serve`](#bacnet-mcp-serve) |"));
+    assert!(region.contains("Usage: bacnet mcp serve [OPTIONS]"));
+    assert!(region.contains("- `--port <port>`: Default: `1`."));
+    // An optional positional, as the usage line writes it.
+    assert!(region.ends_with("- `[name]`"), "{region}");
+    // A nested command takes its top-level command's feature.
+    assert_eq!(command_feature("mcp serve"), Some("mcp"));
+    assert!(region.contains("Needs the `mcp` feature."));
 }
 
 #[test]

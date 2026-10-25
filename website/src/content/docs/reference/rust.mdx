@@ -9,6 +9,10 @@ The stack is a set of crates, each built on the ones in the layers below it. Dep
 
 Each link opens the crate's documentation for v{release}. All crates but `bacnet-time` share that version; `bacnet-time` versions on its own, so its link opens the latest build, and docs.rs's version menu picks another. A crate's rustdoc lists the features its docs.rs build turns on.
 
+:::note[On `dev` after the release]
+This page is generated from the `dev` branch and tracks the next release. A crate merged after v{release} is marked unreleased and links to its source instead of docs.rs, and features or dependencies added since may not be in the released crates. The <a href={`${repository}/releases/tag/v${release}`}>v{release} release notes</a> and the <a href={`${repository}/tree/dev/changelog.d`}>changes waiting for the next release</a> say what changed.
+:::
+
 Lifecycle, ownership and migration contracts that span crates are in the <a href={`${repository}/blob/v${release}/docs/rust-api.md`}>Rust API guide</a> and the <a href={`${repository}/blob/v${release}/docs/architecture.md`}>architecture notes</a>. For a first program, start with [Embed with Rust](/rusty-bacnet/start/rust/) or [Run on a microcontroller](/rusty-bacnet/start/embedded/).
 
 `website/scripts/reference-rust.mjs` writes the tables below from `cargo metadata`: names, descriptions, features and workspace dependencies. Edit the crates' manifests, not this part of the page.
@@ -62,10 +66,10 @@ The object database, the client and server roles, and the shared endpoint that r
 
 ## Tools
 
-The operations core behind the command-line tool, and the tool itself.
+The operations core behind the command-line tools, and the tools.
 
 | Crate | Purpose | Features | Depends on |
 |---|---|---|---|
-| <a href={`https://docs.rs/bacnet-ops/${release}`}>bacnet-ops</a> | UI-free BACnet operations core shared by the bacnet CLI, its TUI and its MCP server. | `sc-tls` | `bacnet-client`, `bacnet-encoding`, `bacnet-services`, `bacnet-transport`, `bacnet-types` |
+| <a href={`${repository}/tree/dev/crates/bacnet-ops`}>bacnet-ops</a> (unreleased) | UI-free BACnet operations core shared by the bacnet CLI, its TUI and its MCP server. Merged on `dev` after the release, so not on crates.io or docs.rs yet; the link opens its source. | `sc-tls` | `bacnet-client`, `bacnet-encoding`, `bacnet-services`, `bacnet-transport`, `bacnet-types` |
 | <a href={`https://crates.io/crates/bacnet-cli`}>bacnet-cli</a> | BACnet command-line tool for device discovery, reading, and writing. A program, not a library: its commands are in the [CLI reference](/rusty-bacnet/reference/cli/). | `pcap`, `sc-tls`, `serial`, `tui` (default) | `bacnet-bip-core`, `bacnet-client`, `bacnet-encoding`, `bacnet-network`, `bacnet-npdu`, `bacnet-ops`, `bacnet-services`, `bacnet-transport`, `bacnet-types` |
 {/* generated:end */}

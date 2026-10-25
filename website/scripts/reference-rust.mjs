@@ -11,10 +11,18 @@
 //   node website/scripts/reference-rust.mjs --check  # exit 1 if stale
 //
 // LAYERS places each crate. A published crate missing from it, or a name in
-// it that isn't one, fails the run, so a new crate gets a deliberate place.
+// it that isn't one (outside PENDING), fails the run, so a new crate gets a
+// deliberate place.
+//
+// A crate first published after the release in site.mjs sets
+// `[package.metadata.website] first-release = "x.y.z"` in its Cargo.toml; it
+// is listed as unreleased, linked to its source on dev, since docs.rs has no
+// page for it yet.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { release } from '../src/lib/site.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const page = fileURLToPath(new URL('../src/content/docs/reference/rust.mdx', import.meta.url));
@@ -31,9 +39,19 @@ export const LAYERS = [
     ['bacnet-transport', 'bacnet-network']],
   ['Objects and roles', 'The object database, the client and server roles, and the shared endpoint that runs both on one transport.',
     ['bacnet-objects', 'bacnet-endpoint-core', 'bacnet-client', 'bacnet-server', 'bacnet-endpoint']],
-  ['Tools', 'The operations core behind the command-line tool, and the tool itself.',
-    ['bacnet-ops', 'bacnet-cli']],
+  ['Tools', 'The operations core behind the command-line tools, and the tools.',
+    ['bacnet-ops', 'bacnet-mcp', 'bacnet-cli']],
 ];
+
+/** Names LAYERS may hold before their crate lands on dev (#2097). */
+const PENDING = new Set(['bacnet-mcp']);
+
+/** Whether version `a` (x.y.z) comes after `b`. */
+export function newer(a, b) {
+  const [x, y] = [a, b].map(version => version.split('.').map(Number));
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
 
 /** Extra authored text for a crate's purpose cell. */
 const NOTES = {
@@ -57,28 +75,34 @@ export function render(meta) {
   const placed = LAYERS.flatMap(([, , crates]) => crates);
   const unplaced = [...byName.keys()].filter(name => !placed.includes(name));
   if (unplaced.length) throw new Error(`add ${unplaced.join(', ')} to LAYERS in reference-rust.mjs`);
-  const unknown = placed.filter(name => !byName.has(name));
+  const unknown = placed.filter(name => !byName.has(name) && !PENDING.has(name));
   if (unknown.length) throw new Error(`LAYERS names ${unknown.join(', ')}, not a published workspace crate`);
 
   const out = [];
   for (const [title, blurb, crates] of LAYERS) {
     out.push(`## ${title}`, '', blurb, '', '| Crate | Purpose | Features | Depends on |', '|---|---|---|---|');
-    for (const name of crates) {
+    for (const name of crates.filter(name => byName.has(name))) {
       const pkg = byName.get(name);
+      const first = pkg.metadata?.website?.['first-release'];
+      const unreleased = first !== undefined && newer(first, release);
+      const source = relative(repo, pkg.manifest_path).replaceAll('\\', '/').replace(/\/Cargo\.toml$/, '');
       const library = pkg.targets.some(target => target.kind.includes('lib'));
       // A crate with its own version (not version.workspace) versions on its
       // own (#1768); its link opens the latest docs.rs build.
       const manifest = readFileSync(pkg.manifest_path, 'utf8');
       const own = !/^version\.workspace = true$/m.test(manifest);
-      const link = library
-        ? `<a href={\`https://docs.rs/${name}/${own ? 'latest' : '${release}'}\`}>${name}</a>`
-        : `<a href={\`https://crates.io/crates/${name}\`}>${name}</a>`;
+      const link = unreleased
+        ? `<a href={\`\${repository}/tree/dev/${source}\`}>${name}</a> (unreleased)`
+        : library
+          ? `<a href={\`https://docs.rs/${name}/${own ? 'latest' : '${release}'}\`}>${name}</a>`
+          : `<a href={\`https://crates.io/crates/${name}\`}>${name}</a>`;
       const defaults = new Set(pkg.features.default ?? []);
       const features = Object.keys(pkg.features).filter(feature => feature !== 'default').sort()
         .map(feature => `\`${feature}\`${defaults.has(feature) ? ' (default)' : ''}`);
       const deps = [...new Set(pkg.dependencies.filter(dep => dep.kind === null && byName.has(dep.name)).map(dep => dep.name))].sort()
         .map(dep => `\`${dep}\``);
-      const purpose = [sentence(cell(pkg.description ?? '')), NOTES[name]].filter(Boolean).join(' ');
+      const later = unreleased ? 'Merged on `dev` after the release, so not on crates.io or docs.rs yet; the link opens its source.' : '';
+      const purpose = [sentence(cell(pkg.description ?? '')), NOTES[name], later].filter(Boolean).join(' ');
       out.push(`| ${link} | ${purpose} | ${features.join(', ') || '—'} | ${deps.join(', ') || '—'} |`);
     }
     out.push('');

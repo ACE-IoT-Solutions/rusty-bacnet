@@ -5,7 +5,9 @@ import legacyRoutes from '../../src/data/legacy-routes.json' with { type: 'json'
 import { release } from '../../src/lib/site.mjs';
 const base = '/rusty-bacnet/';
 const origin = 'https://jscott3201.github.io';
-const routes = ['', ...navigation.flatMap(group => group.items.map(item => `${item.slug}/`))];
+// A sidebar entry: a page, or a nested group of pages.
+type NavItem = { slug?: string; items?: NavItem[] };
+const routes = ['', ...navigation.flatMap(group => (group.items as NavItem[]).flatMap((item): NavItem[] => item.items ?? [item]).map(item => `${item.slug}/`))];
 
 test('canonical, sitemap, all local links and assets resolve under the project prefix', async ({ page, request }) => {
   const targets = new Map<string, Set<string>>();
