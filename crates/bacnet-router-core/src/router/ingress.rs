@@ -331,7 +331,8 @@ impl<
     /// network it heard the message on (Clause 6.5.4), so on arrival they
     /// can name this router only for a message it sent, come back: a
     /// global broadcast it already sent on every port (Clauses 6.3.2,
-    /// 6.5.3), or a search of its own for a network (Clause 6.6.3.2). Only
+    /// 6.5.3), or a search of its own for a network (Clauses 6.5.3,
+    /// 6.6.3.1; Clause 6.6.3.2 has the relays add its address). Only
     /// a loop, which the single path of Clauses 4.2 and 6.2.3 rules out,
     /// brings one back. It needs no record, so it holds with
     /// [`Options::duplicates`] off, as in firmware.

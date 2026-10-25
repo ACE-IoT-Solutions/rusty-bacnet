@@ -258,6 +258,14 @@ impl<A, C> RouterOptions<A, C> {
     /// [`Counters::own_source_drops`](super::Counters::own_source_drops)
     /// (#2021).
     ///
+    /// Entries are keyed by origin, so in a looped site this router's own
+    /// global broadcast sent from each port's own address (a bare copy per
+    /// port) is a different origin per port to the other routers, and may
+    /// reach their applications once per port. Send it from one port's
+    /// address there
+    /// ([`SourceSelection::Port`](super::SourceSelection::Port)), so every
+    /// copy names one origin.
+    ///
     /// Sizing: the record must hold every global broadcast the router sees
     /// within one time to live, or the oldest is forgotten before its
     /// looped copy returns. 512 covers 512 broadcasts a second at the

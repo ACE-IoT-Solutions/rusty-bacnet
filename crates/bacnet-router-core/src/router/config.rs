@@ -112,6 +112,13 @@ pub struct Options {
     /// queries it passes on (#2020): `None`, the default, suppresses
     /// nothing. A global broadcast or Who-Is-Router naming the router
     /// itself as its source is dropped either way (#2021).
+    ///
+    /// Entries are keyed by origin, so in a looped site the router's own
+    /// global broadcast sent with
+    /// [`SourceSelection::EgressPort`](super::SourceSelection::EgressPort),
+    /// a bare copy per port, is a different origin per port to the other
+    /// routers, and may reach their applications once per port; send it
+    /// with [`SourceSelection::Port`](super::SourceSelection::Port) there.
     pub duplicates: Option<Duplicates>,
 }
 

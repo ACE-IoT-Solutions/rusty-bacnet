@@ -50,6 +50,21 @@ async fn by_default_a_repeat_goes_through() {
     router.stop().await.unwrap();
 }
 
+/// A global Who-Is whose SNET and SADR name the router on port 1 (network
+/// 2000, MAC 2), arriving on port 0: its own, come back round a loop
+/// (#2021). Dropped with no option set, and counted in the totals.
+#[tokio::test]
+async fn the_routers_own_global_broadcast_coming_back_is_dropped() {
+    let own = vec![1, 0x28, 0xFF, 0xFF, 0, 0x07, 0xD0, 1, 2, 255, 0x10, 0x08];
+    let (mut router, mut apdus, mut peers) = start(2).await;
+    receive(&peers[0], own.clone(), 0).await;
+    receive(&peers[0], own, 0).await;
+    until(&router, |router| router.counters().own_source_drops == 2).await;
+    assert!(peers[1].sent.try_recv().is_err(), "not relayed");
+    assert!(apdus.try_recv().is_err(), "not delivered");
+    router.stop().await.unwrap();
+}
+
 /// Network 3000 learned through node 7 on port 1, then a reject naming it
 /// from node 7 on port 0: another router than its next.
 async fn off_path_reject(options: RouterOptions) -> (Option<Reachability>, u64) {

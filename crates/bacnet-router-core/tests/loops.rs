@@ -400,3 +400,55 @@ fn a_routers_own_search_is_dropped_when_it_comes_back() {
     assert_eq!((run.deliveries, run.own), (6, 2), "{run:?}");
     assert_eq!(routers[0].counters().own_source_drops, 2);
 }
+
+/// Only the router's exact address, a port's network with its MAC on that
+/// port, is its own: its MAC on another of its networks, or another MAC
+/// on its network, is some other node, and passes (#2021).
+#[test]
+fn only_the_routers_exact_address_is_its_own() {
+    use fixture::{NODE_A, OWN_0, OWN_1};
+    let global = |source| {
+        fixture::bytes(&Npdu {
+            destination: Some(Address {
+                network: GLOBAL_NETWORK,
+                mac: &[],
+            }),
+            source: Some(source),
+            ..Npdu::apdu(UNCONFIRMED)
+        })
+    };
+    let search = |source| {
+        fixture::bytes(&Npdu {
+            source: Some(source),
+            ..Npdu::message(
+                NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK,
+                &9u16.to_be_bytes(),
+            )
+        })
+    };
+    let addr = |network, mac| Address { network, mac };
+    for (source, own) in [
+        (addr(2, OWN_1), true),
+        (addr(1, OWN_0), true),
+        (addr(1, OWN_1), false),
+        (addr(2, OWN_0), false),
+        (addr(2, &[0x02]), false),
+        (addr(3, OWN_1), false),
+    ] {
+        for frame in [global(source), search(source)] {
+            let mut router = router_with(&fixture::two_ports(), Options::HOSTED);
+            let (outcome, sent) = deliver_broadcast(
+                &mut router,
+                &mut Permissive,
+                0,
+                NODE_A,
+                &frame,
+                Instant::ZERO,
+            );
+            let dropped = outcome == Outcome::Discarded(Discard::OwnSource);
+            assert_eq!(dropped, own, "{source:?}: {outcome:?}");
+            assert_eq!(sent.is_empty(), own, "{source:?}: passed on unless own");
+            assert_eq!(router.counters().own_source_drops, u32::from(own));
+        }
+    }
+}
