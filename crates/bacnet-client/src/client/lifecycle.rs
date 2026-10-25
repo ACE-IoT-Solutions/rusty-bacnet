@@ -65,14 +65,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         // takes the minimum with the transport's live limit, so it follows a
         // limit that rises after start as well as one that falls (#2086).
         // These checks only refuse a transport that leaves no APDU bucket.
-        cap_max_apdu_to_transport(config.max_apdu_length, transport.egress_apdu_limit())?;
+        let _bucket =
+            cap_max_apdu_to_transport(config.max_apdu_length, transport.egress_apdu_limit())?;
         config.validate_window()?;
         options.validate()?;
 
         let mut network = NetworkLayer::new(transport);
         let mut network_control_rx = network.enable_network_control_receiver()?;
         let mut apdu_rx = network.start().await?;
-        cap_max_apdu_to_transport(
+        let _bucket = cap_max_apdu_to_transport(
             config.max_apdu_length,
             network.transport().egress_apdu_limit(),
         )?;
