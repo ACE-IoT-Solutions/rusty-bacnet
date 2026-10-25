@@ -235,6 +235,14 @@ impl<A, C> RouterOptions<A, C> {
     /// The standard defines no such suppression, and a sender's own
     /// identical retry within the time to live is dropped too.
     ///
+    /// The same record covers the network messages the router passes on
+    /// with no origin, I-Am-Router, Router-Busy and Router-Available
+    /// (#1810), which carry no hop count, so around a loop nothing else
+    /// stops them: each is kept by its type and data, and a repeat within
+    /// the time to live is neither applied to the table nor passed on. Two
+    /// routers announcing the same networks within one time to live look
+    /// like one, and the second is dropped until it announces again.
+    ///
     /// Sizing: the record must hold every global broadcast the router sees
     /// within one time to live, or the oldest is forgotten before its
     /// looped copy returns. 512 covers 512 broadcasts a second at the

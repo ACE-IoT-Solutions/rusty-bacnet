@@ -118,9 +118,10 @@ pub enum Discard {
     /// Its rewrite can't be written: longer than the scratch, or with a
     /// field no NPDU may carry, such as an SNET of 0.
     Unwritable,
-    /// A global broadcast seen within the duplicate time to live
-    /// ([`Options::duplicates`](super::Options::duplicates), #1698):
-    /// neither relayed nor delivered.
+    /// A global broadcast, or an I-Am-Router, Router-Busy or
+    /// Router-Available the router would pass on, seen within the duplicate
+    /// time to live ([`Options::duplicates`](super::Options::duplicates),
+    /// #1698, #1810): neither relayed, delivered nor applied.
     Duplicate,
     /// Only a [`Node`](crate::node::Node) gives this: an NPDU whose DNET
     /// names one network is for a device elsewhere, which a node that

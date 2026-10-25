@@ -1,4 +1,5 @@
-//! Duplicate global-broadcast suppression (#1698), off by default.
+//! Duplicate suppression for global broadcasts (#1698) and relayed network
+//! messages (#1810), off by default.
 //!
 //! In a topology with a loop, routers pass one global broadcast around it
 //! until its hop count runs out, each copy fanned out again. The standard
@@ -9,6 +10,18 @@
 //! [`Duplicates::ttl`]. A copy that matches one within that time is
 //! dropped, neither relayed nor delivered, and counted in
 //! [`Counters::duplicate_drops`](super::Counters::duplicate_drops).
+//!
+//! The same record covers the network messages a router passes on as
+//! fresh messages of its own, I-Am-Router, Router-Busy and
+//! Router-Available (#1810). They carry no hop count, and the relay
+//! names no origin, so around a loop nothing else stops them. Each is kept
+//! by its type and data under network 0xFFFF, which no origin's network can
+//! be, and a repeat within the time to live is neither applied to the table
+//! nor passed on. With no origin in the key, two routers announcing the
+//! same networks within one time to live look like one: the second is
+//! dropped until it announces again. So is a Router-Busy repeated within
+//! the time to live of its first copy, even with a Router-Available
+//! between them.
 //!
 //! The record is a ring of `B` entries in the [`Storage`](super::Storage),
 //! all zero bits when empty; a full ring gives up its oldest entry, so `B`
@@ -25,7 +38,8 @@
 
 use crate::{Duration, Instant};
 
-/// How long a global broadcast is remembered for duplicate suppression.
+/// How long a global broadcast, or a relayed I-Am-Router, Router-Busy or
+/// Router-Available, is remembered for duplicate suppression.
 ///
 /// It is `#[non_exhaustive]`: start from [`Duplicates::DEFAULT`] and set
 /// the fields to change.

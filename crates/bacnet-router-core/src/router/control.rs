@@ -220,6 +220,35 @@ impl<
         }
     }
 
+    /// Whether a network message the router passes on as a fresh one, with
+    /// no origin, repeats one seen within the duplicate time to live
+    /// ([`Options::duplicates`], #1810); if so, it is counted. Nothing in
+    /// such a message bounds its travel: it has no DNET, so no hop count
+    /// (Clause 6.2.3), and the router passes it on whether or not it
+    /// changed the table (Clauses 6.6.3.3, 6.6.3.6, 6.6.3.7). Around a
+    /// loop, which Clause 4.2's single path rules out but a misconfigured
+    /// site can have, it would circulate for good. With no origin to key
+    /// it by, the record keys it by its type and data alone, under network
+    /// 0xFFFF, which no origin's network can be.
+    fn repeated_relay(
+        &mut self,
+        kind: NetworkMessageType,
+        data: &[u8],
+        now: crate::Instant,
+        options: &Options,
+    ) -> bool {
+        let Some(duplicates) = options.duplicates else {
+            return false;
+        };
+        let repeat =
+            self.recent
+                .repeat(GLOBAL_NETWORK, &[kind.to_raw()], data, now, duplicates.ttl);
+        if repeat {
+            bump(&mut self.counters.duplicate_drops);
+        }
+        repeat
+    }
+
     /// Pass a network message's data on, verbatim, as a fresh message of
     /// its type to every port but the arrival one.
     fn rebroadcast<'f>(
@@ -256,13 +285,17 @@ impl<
         if !self.authorize(at, npdu, ControlClass::IAm, Targets::Networks(list), host) {
             return Received::Discarded(Discard::Denied);
         }
+        let kind = NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
+        if self.repeated_relay(kind, npdu.payload, at.now, options) {
+            return Received::Discarded(Discard::Duplicate);
+        }
         let mut claimed = Claimed::new();
         for network in list.iter() {
             if !self.claim(at, network, &mut claimed, ControlClass::IAm, options, host) {
                 break;
             }
         }
-        self.rebroadcast(at, npdu, NetworkMessageType::I_AM_ROUTER_TO_NETWORK, host)
+        self.rebroadcast(at, npdu, kind, host)
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
@@ -438,6 +471,14 @@ impl<
         if !self.authorize(at, npdu, class, Targets::Networks(list), host) {
             return Received::Discarded(Discard::Denied);
         }
+        let kind = if busy {
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK
+        } else {
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
+        };
+        if self.repeated_relay(kind, npdu.payload, at.now, options) {
+            return Received::Discarded(Discard::Duplicate);
+        }
         let deadline = at.now + options.timing.busy_for;
         let mut mark = |table: &mut crate::table::Table<R, H>, network| {
             if busy {
@@ -478,11 +519,6 @@ impl<
                 }
             }
         }
-        let kind = if busy {
-            NetworkMessageType::ROUTER_BUSY_TO_NETWORK
-        } else {
-            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
-        };
         self.rebroadcast(at, npdu, kind, host)
     }
 

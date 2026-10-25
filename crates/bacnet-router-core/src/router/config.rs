@@ -106,8 +106,10 @@ pub struct Options {
     /// [`Counters::not_next_hop`](super::Counters::not_next_hop), and the
     /// message is passed on as before.
     pub next_hop_rejects: bool,
-    /// Duplicate global-broadcast suppression (#1698): `None`, the
-    /// default, suppresses nothing.
+    /// Duplicate suppression for global broadcasts (#1698) and for the
+    /// network messages the router passes on with no origin, I-Am-Router,
+    /// Router-Busy and Router-Available (#1810): `None`, the default,
+    /// suppresses nothing.
     pub duplicates: Option<Duplicates>,
 }
 
