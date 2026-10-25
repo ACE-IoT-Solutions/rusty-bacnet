@@ -41,8 +41,8 @@ fn database() -> ObjectDatabase {
     db
 }
 enum Owner {
-    Server(Box<BACnetServer<AnyTransport>>),
-    Endpoint(Box<EndpointSession<AnyTransport>>),
+    Server(Box<BACnetServer>),
+    Endpoint(Box<EndpointSession>),
 }
 impl Owner {
     async fn start(server: bool, transport: ScTransport<TlsWebSocket>) -> Self {
