@@ -1,5 +1,5 @@
 //! Duplicate suppression for global broadcasts (#1698) and relayed network
-//! messages (#1810), off by default.
+//! messages (#1810, #2020), off by default.
 //!
 //! In a topology with a loop, routers pass one global broadcast around it
 //! until its hop count runs out, each copy fanned out again. The standard
@@ -38,6 +38,14 @@
 //!   the other and the pair would circulate for good. Past the cap, the opposite's entry
 //!   is kept, so the next repeat of either is dropped until the entries
 //!   expire.
+//!
+//! A Who-Is-Router the router passes on, for a network its table lacks
+//! (#2020), has no hop count either. Each relay keeps the SNET and SADR of
+//! the node that asked, so it is kept as a global broadcast is, by that
+//! origin (or the arrival network and link source when it has none), with
+//! its own type tag and its data. A query the router itself sent never
+//! needs the record: its copy comes back naming the router, and is dropped
+//! before this (#2021).
 //!
 //! The record is a ring of `B` entries in the [`Storage`](super::Storage),
 //! all zero bits when empty; a full ring gives up its oldest entry, so `B`
@@ -114,8 +122,9 @@ const EMPTY: Seen = Seen {
 };
 
 /// The tag of a global broadcast's entry. A network message's entry is
-/// tagged with its type, never 0xFF here: only I-Am-Router (0x01),
-/// Router-Busy (0x04) and Router-Available (0x05) are kept.
+/// tagged with its type, never 0xFF here: only Who-Is-Router (0x00),
+/// I-Am-Router (0x01), Router-Busy (0x04) and Router-Available (0x05) are
+/// kept.
 pub(super) const APDU: u8 = 0xFF;
 
 /// The last `B` global broadcasts seen.
