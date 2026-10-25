@@ -50,6 +50,10 @@
       {
         "label": "MS/TP & RS-485",
         "slug": "connect/mstp"
+      },
+      {
+        "label": "MS/TP real-time",
+        "slug": "connect/mstp-realtime"
       }
     ]
   },
