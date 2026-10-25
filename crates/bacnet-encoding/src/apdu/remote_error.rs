@@ -49,6 +49,10 @@ impl AbortPdu {
 impl Apdu {
     /// How the peer turned the request down, for an Error, Reject or Abort
     /// PDU; `None` for every other PDU type.
+    ///
+    /// A convenience for code holding an `Apdu` of unknown type; the stack's
+    /// own dispatch has already matched the PDU type and calls the
+    /// per-PDU `remote_error()` instead.
     #[must_use]
     pub const fn remote_error(&self) -> Option<RemoteError> {
         match self {

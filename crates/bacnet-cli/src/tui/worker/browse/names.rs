@@ -397,14 +397,15 @@ fn named(name: Option<String>) -> ReadName {
 
 /// Object_Name of the objects in `batch` the UI still wants once the
 /// request's slot comes, with one RPM. An object the answer leaves out,
-/// or answers with an error, has no name.
+/// or answers with an error, has no name. A batch the UI no longer wants
+/// at all takes no turn; one it gave up on while the turn was coming is
+/// dropped then.
 async fn rpm_names<T: TransportPort + 'static>(
     reader: &Reader<'_, T>,
     queue: &Mutex<NameQueue>,
     batch: &[ObjectIdentifier],
 ) -> Result<Vec<NameRead>, Halt> {
-    let _turn = reader.turn().await?;
-    let batch: Vec<ObjectIdentifier> = {
+    let wanted = |batch: &[ObjectIdentifier]| -> Vec<ObjectIdentifier> {
         let queue = lock(queue);
         batch
             .iter()
@@ -412,6 +413,11 @@ async fn rpm_names<T: TransportPort + 'static>(
             .filter(|object| queue.still_wanted(*object))
             .collect()
     };
+    if wanted(batch).is_empty() {
+        return Ok(Vec::new());
+    }
+    let _turn = reader.turn().await?;
+    let batch = wanted(batch);
     if batch.is_empty() {
         return Ok(Vec::new());
     }

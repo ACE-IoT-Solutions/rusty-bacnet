@@ -330,6 +330,51 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
+    /// Cancel a COV subscription at `target`, the device a
+    /// [`manage_cov_subscription`](Self::manage_cov_subscription) went to.
+    /// The cancel goes the way the subscription did, with no device-table
+    /// lookup, so it reaches the same device even if the table has since
+    /// dropped or moved its entry.
+    pub async fn unsubscribe_cov_target(
+        &self,
+        target: &CovTarget,
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: ObjectIdentifier,
+    ) -> Result<(), Error> {
+        let request = Self::subscribe_cov_request(
+            subscriber_process_identifier,
+            monitored_object_identifier,
+            None,
+            None,
+        );
+        self.send_subscribe_cov_request(target.confirmed(), request)
+            .await
+    }
+
+    /// Cancel a single-property COV subscription at `target`:
+    /// [`unsubscribe_cov_target`](Self::unsubscribe_cov_target) for one
+    /// property.
+    pub async fn unsubscribe_cov_property_target(
+        &self,
+        target: &CovTarget,
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: ObjectIdentifier,
+        monitored_property_identifier: PropertyIdentifier,
+        monitored_property_array_index: Option<u32>,
+    ) -> Result<(), Error> {
+        let request = Self::subscribe_cov_property_request(
+            subscriber_process_identifier,
+            monitored_object_identifier,
+            None,
+            None,
+            monitored_property_identifier,
+            monitored_property_array_index,
+            None,
+        );
+        self.send_subscribe_cov_property_request(target.confirmed(), request)
+            .await
+    }
+
     /// Get a receiver for incoming COV notifications. Each call returns a new
     /// independent receiver.
     pub fn cov_notifications(&self) -> broadcast::Receiver<ReceivedCOVNotification> {

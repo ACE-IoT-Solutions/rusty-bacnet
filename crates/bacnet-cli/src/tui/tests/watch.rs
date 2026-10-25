@@ -153,7 +153,8 @@ async fn the_renewal_goes_before_the_lifetime_ends() {
     for pair in subscribes.windows(2) {
         let gap = pair[1] - pair[0];
         assert!(
-            gap < Duration::from_secs(60) && gap >= Duration::from_secs(50),
+            // Renewed two 8 s request budgets early (#1791).
+            gap < Duration::from_secs(60) && gap >= Duration::from_secs(44),
             "renewed after {gap:?}"
         );
     }

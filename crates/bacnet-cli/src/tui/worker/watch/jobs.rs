@@ -46,15 +46,21 @@ pub(crate) struct Lifetime {
 
 impl Lifetime {
     /// A lifetime of `secs`, renewed a tenth of it early (1 to 30 s), but
-    /// never later than `request_budget` before the end, the time a renewal
-    /// takes with every retry, so one lost packet can't let it lapse. The
-    /// margin stays at most half the lifetime.
+    /// never later than two `request_budget`s before the end. A budget is
+    /// the time one request takes with every retry: the renewal waits at
+    /// most one for the request holding the device's gate (#1791), which
+    /// may be a whole budget on a device that stops answering, then needs
+    /// one of its own, so neither a busy device nor one lost packet lets
+    /// it lapse. Each worker queues at most one request per device behind
+    /// that holder, and they rarely all coincide with a renewal, so two
+    /// budgets cover the case that matters without renewing far earlier
+    /// than needed. The margin stays at most half the lifetime.
     pub(crate) fn new(secs: u32, request_budget: Duration) -> Self {
         let tenth = Duration::from_secs(u64::from(secs / 10).clamp(1, 30));
         let half = Duration::from_secs(u64::from(secs)) / 2;
         Self {
             secs,
-            margin: tenth.max(request_budget).min(half),
+            margin: tenth.max(request_budget * 2).min(half),
         }
     }
 }
@@ -274,9 +280,9 @@ async fn subscribe<T: TransportPort + 'static>(
 
 /// Cancel row `row`'s subscription: stop renewing it, then send a
 /// subscription with neither a lifetime nor the confirmed flag, which the
-/// device takes as a cancellation (Clauses 13.14.2 and 13.15.2). A local
-/// device is sent it at the MAC it was subscribed at; a routed one through
-/// the device table's route to it.
+/// device takes as a cancellation (Clauses 13.14.2 and 13.15.2). It goes
+/// to `target`, the way the subscription went, so a device the table has
+/// since dropped or moved is still the one cancelled.
 pub(crate) async fn cancel<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     rate: &RequestLimits,
@@ -285,29 +291,24 @@ pub(crate) async fn cancel<T: TransportPort + 'static>(
     target: CovTarget,
     managed: Option<ManagedCOVSubscription>,
 ) -> Result<(), Error> {
-    // Stopping first lets go of the gate a renewal in flight holds.
+    // The turn first, then the stop. A renewal in flight holds the gate, so
+    // by the time the turn comes none is: the stop only ends a wait (for
+    // the renewal's time or for the gate), never a request. Aborting a
+    // routed renewal mid-request would quarantine the path through its
+    // router for a whole request budget, longer than the session's cancel
+    // wait, and every cancel through that router would give up.
+    let _turn = rate.turn(point.device).await;
     if let Some(managed) = managed {
         managed.stop().await;
     }
-    let _turn = rate.turn(point.device).await;
-    let (object, property) = (point.object, point.property);
-    match (target, point.whole_object()) {
-        (CovTarget::Local { mac }, true) => client.unsubscribe_cov(&mac, row, object).await,
-        (CovTarget::Local { mac }, false) => {
-            client
-                .unsubscribe_cov_property(&mac, row, object, property, None)
-                .await
-        }
-        (_, true) => {
-            client
-                .unsubscribe_cov_to_device(point.device, row, object)
-                .await
-        }
-        (_, false) => {
-            client
-                .unsubscribe_cov_property_to_device(point.device, row, object, property, None)
-                .await
-        }
+    if point.whole_object() {
+        client
+            .unsubscribe_cov_target(&target, row, point.object)
+            .await
+    } else {
+        client
+            .unsubscribe_cov_property_target(&target, row, point.object, point.property, None)
+            .await
     }
 }
 
@@ -484,10 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn the_margin_covers_a_renewal_with_its_retries_within_half_the_lifetime() {
+    fn the_margin_covers_a_gate_wait_and_a_renewal_within_half_the_lifetime() {
         let budget = Duration::from_secs(24);
-        assert_eq!(Lifetime::new(300, budget).margin, Duration::from_secs(30));
-        assert_eq!(Lifetime::new(120, budget).margin, budget);
+        assert_eq!(Lifetime::new(300, budget).margin, budget * 2);
+        assert_eq!(
+            Lifetime::new(600, Duration::from_secs(10)).margin,
+            Duration::from_secs(30)
+        );
+        assert_eq!(Lifetime::new(120, budget).margin, budget * 2);
+        assert_eq!(Lifetime::new(80, budget).margin, Duration::from_secs(40));
         assert_eq!(Lifetime::new(30, budget).margin, Duration::from_secs(15));
         assert_eq!(
             Lifetime::new(60, Duration::ZERO).margin,
@@ -499,3 +505,7 @@ mod tests {
 #[cfg(test)]
 #[path = "job_retry_tests.rs"]
 mod retry_tests;
+
+#[cfg(test)]
+#[path = "margin_tests.rs"]
+mod margin_tests;

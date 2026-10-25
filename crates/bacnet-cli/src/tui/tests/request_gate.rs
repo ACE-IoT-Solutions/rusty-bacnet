@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
+use ratatui::crossterm::event::KeyCode;
 
 use super::site::{ClientLimits, Quirks, Server, Site};
 use super::watch::{command, options, settle, sources};
@@ -122,6 +123,55 @@ async fn browsing_a_polled_device_keeps_one_request_outstanding() {
         sources(&site)
     );
     browse_for(&mut site, Duration::from_secs(20)).await;
+    assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
+    site.stop().await;
+}
+
+/// Writes while a COV row renews every 10 s: each write takes the device's
+/// turn, so it never overlaps a renewal.
+#[tokio::test(start_paused = true)]
+async fn writing_to_a_device_whose_rows_renew_keeps_one_request_outstanding() {
+    use super::browser::{open_device, open_object};
+    use super::writes::{arm, finished, write, writes_sent};
+    use crate::tui::profile::Safety;
+    use crate::tui::worker::watch::WatchOptions;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = super::writes::options(dir.path(), Safety::default(), false);
+    session.watch = WatchOptions {
+        lifetime: 20,
+        poll_every: Duration::from_secs(10),
+        workspace: None,
+        request_budget: Duration::from_secs(8),
+    };
+    let mut site = Site::start_with_options(
+        vec![slow_lab(Quirks::default())],
+        ClientLimits::default(),
+        session,
+    )
+    .await;
+    site.pump_until(|app| app.safety.policy.is_some()).await;
+    open_device(&mut site).await;
+    open_object(&mut site, "analog-output").await;
+    command(&mut site, "watch 100 ai:1").await;
+    settle(&mut site).await;
+    assert_eq!(sources(&site), [Source::Cov { lifetime: 20 }]);
+    arm(&mut site).await;
+    for i in 0..24 {
+        write(&mut site, &(40 + i).to_string(), "8").await;
+        site.press(KeyCode::Char('y')).await;
+        finished(&mut site).await;
+        site.press(KeyCode::Esc).await;
+        site.run_for(Duration::from_millis(900)).await;
+    }
+    assert_eq!(writes_sent(&site), 24);
+    let renewals = site
+        .hub
+        .services_to(&LAB_MAC)
+        .iter()
+        .filter(|s| **s == SUBSCRIBE_COV)
+        .count();
+    assert!(renewals >= 3, "{renewals} subscription requests");
     assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
     site.stop().await;
 }

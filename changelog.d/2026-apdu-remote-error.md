@@ -1,6 +1,6 @@
 ---
 section: Added
 ---
-- `Apdu::remote_error()` and `remote_error()` on `ErrorPdu`, `RejectPdu` and
-  `AbortPdu` read a refusal PDU as a `RemoteError`; the client and server use
-  them instead of mapping each PDU by hand (#2026).
+- `remote_error()` on `ErrorPdu`, `RejectPdu` and `AbortPdu` reads a refusal
+  PDU as a `RemoteError`, and the client and server use it instead of mapping
+  each PDU by hand; `Apdu::remote_error()` does the same for any APDU (#2026).

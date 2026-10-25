@@ -30,6 +30,12 @@ pub struct ManagedCOVSubscriptionOptions {
     /// The first request is not gated: it is sent from the caller's
     /// context, which may already hold a permit for it. A closed semaphore
     /// stops gating.
+    ///
+    /// A gated renewal goes only once the permit comes, so whatever holds
+    /// the gate delays it, by up to that request's whole time with retries
+    /// on a device that stops answering. Size
+    /// [`renewal_margin`](Self::renewal_margin) to cover that wait as well as
+    /// the renewal's own request, or the subscription can lapse first.
     pub renewal_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
@@ -246,6 +252,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// `time_remaining` than the requested lifetime-based schedule. A
     /// notification matches when it comes from `target`'s address (see
     /// [`CovTarget`]) and names this subscription's process and object.
+    /// The helper only renews; after [`ManagedCOVSubscription::stop`], cancel
+    /// with [`Self::unsubscribe_cov_target`].
     ///
     /// This method takes `Arc<Self>` so the renewal task can keep the client alive.
     /// Call it as `Arc::clone(&client).manage_cov_subscription(...)`.
@@ -277,8 +285,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///
     /// Every renewal repeats `subscription` as given, its lifetime included.
     /// The helper only renews; after [`ManagedCOVSubscription::stop`], cancel
-    /// with [`Self::unsubscribe_cov_property`] (or
-    /// [`Self::unsubscribe_cov_property_to_device`] for a routed device).
+    /// with [`Self::unsubscribe_cov_property_target`].
     pub async fn manage_cov_property_subscription(
         self: Arc<Self>,
         target: CovTarget,

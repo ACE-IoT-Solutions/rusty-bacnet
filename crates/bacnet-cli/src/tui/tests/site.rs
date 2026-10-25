@@ -661,4 +661,4 @@ impl Site {
 
 #[path = "site_routed.rs"]
 mod routed;
-pub(super) use routed::ROUTED_NETWORK;
+pub(super) use routed::{ROUTED_NETWORK, routed_parts};
