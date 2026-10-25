@@ -13,6 +13,7 @@ use PropertyIdentifier as P;
 use bacnet_objects::access_control::AccessRightsObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
+use bacnet_types::error::RemoteError;
 
 /// Access User 3 in this device: object [1] alone.
 const USER: &[u8] = &[0x1C, 0x08, 0xC0, 0x00, 0x03];
@@ -94,7 +95,7 @@ fn write_multiple(
 
 fn assert_refused(result: Result<(), Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
             if class == ErrorClass::PROPERTY
                 && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"

@@ -117,10 +117,7 @@ pub(super) struct Settled {
 }
 
 pub(super) fn operational_problem() -> Error {
-    Error::Protocol {
-        class: ErrorClass::DEVICE,
-        code: ErrorCode::OPERATIONAL_PROBLEM,
-    }
+    Error::protocol(ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
 }
 
 /// The writer that commits `oid`'s snapshots to `persistence`.
@@ -283,10 +280,10 @@ impl AuditLogObject {
             return Ok(AuditBatchStage::Busy(wait));
         }
         if !self.log_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::SERVICES,
-                code: ErrorCode::SERVICE_REQUEST_DENIED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::SERVICE_REQUEST_DENIED,
+            ));
         }
         if notifications.is_empty() {
             return Err(Error::OutOfRange(

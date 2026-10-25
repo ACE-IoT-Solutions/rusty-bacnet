@@ -26,7 +26,7 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PySet, PyTuple};
 
-use crate::types::{PyErrorClass, PyErrorCode, PyReinitializedState};
+use crate::types::{PyReinitializedState, int_enums};
 
 /// A ReinitializeDevice request a Python `on_reinitialize` callable is asked
 /// to accept, and that `after_reinitialize` then carries out.
@@ -223,7 +223,7 @@ impl PyReinitialize {
                 }
                 Ok(())
             }
-            Answer::Refuse(class, code) => Err(Error::Protocol { class, code }),
+            Answer::Refuse(class, code) => Err(Error::protocol(class, code)),
             // Answered SERVICES / OTHER, as a Rust handler's panic is.
             Answer::Failed => Err(Error::Encoding(
                 "Python on_reinitialize raised or answered with an unexpected value".into(),
@@ -247,9 +247,13 @@ fn answer(value: &Bound<'_, PyAny>) -> PyResult<Answer> {
         });
     }
     if let Ok(tuple) = value.cast::<PyTuple>()
-        && let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>()
+        && tuple.len() == 2
+        && let (Ok(class), Ok(code)) = (
+            int_enums::from_py::<ErrorClass>(&tuple.get_item(0)?),
+            int_enums::from_py::<ErrorCode>(&tuple.get_item(1)?),
+        )
     {
-        return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
+        return Ok(Answer::Refuse(class, code));
     }
     let py = value.py();
     if py

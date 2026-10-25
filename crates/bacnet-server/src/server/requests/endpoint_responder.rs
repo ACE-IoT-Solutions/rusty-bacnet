@@ -18,7 +18,7 @@ fn shutdown_error() -> Error {
 }
 
 fn property_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol { class, code }
+    Error::protocol(class, code)
 }
 
 /// Check existence, scope and typed authority under the database write guard.
@@ -198,10 +198,10 @@ impl EndpointResponder {
             device_write_target(&mut db, *device, &write)?;
         }
         if write.property_array_index.is_some() {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+            ));
         }
         // Description and Audit_Notification_Recipient, the only targets
         // `device_write_target` admits, are single values.
@@ -217,10 +217,10 @@ impl EndpointResponder {
                 PropertyValue::CharacterString(_) | PropertyValue::Null
             )
         {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         let context = MutationAuthorizationContext {
             source_mac: received.source_mac.clone(),

@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_encoding::{primitives, tags};
 use bacnet_services::cov::{SubscribeCOVPropertyRequest, SubscribeCOVRequest};
+use bacnet_types::error::RemoteError;
 use std::time::{Duration, Instant};
 
 fn object(instance: u32) -> ObjectIdentifier {
@@ -58,12 +59,16 @@ fn subscribe_cov_property_parameter_errors_precede_lookup_and_expired_entry_purg
             )
             .unwrap_err();
             if reject {
-                assert!(matches!(error, Error::Reject { reason }
-                    if reason == RejectReason::INCONSISTENT_PARAMETERS));
+                assert!(
+                    matches!(error, Error::Remote(RemoteError::Reject { reason })
+                    if reason == RejectReason::INCONSISTENT_PARAMETERS)
+                );
             } else {
-                assert!(matches!(error, Error::Protocol { class, code }
+                assert!(
+                    matches!(error, Error::Remote(RemoteError::Error { class, code })
                     if class == ErrorClass::SERVICES
-                    && code == ErrorCode::VALUE_OUT_OF_RANGE));
+                    && code == ErrorCode::VALUE_OUT_OF_RANGE)
+                );
             }
             assert_eq!(
                 table.len(),

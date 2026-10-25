@@ -60,7 +60,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use super::{
@@ -110,7 +110,9 @@ pub(crate) fn steps<N>(
 /// the wrong datatype: a value that encodes as one application NULL,
 /// refused with PROPERTY / INVALID_DATA_TYPE.
 fn relinquishes_nothing(value: &PropertyValue, error: &Error) -> bool {
-    let (Error::Protocol { class, code } | Error::Structured { class, code, .. }) = error else {
+    let (Error::Remote(RemoteError::Error { class, code }) | Error::Structured { class, code, .. }) =
+        error
+    else {
         return false;
     };
     is_null(value) && *class == ErrorClass::PROPERTY && *code == ErrorCode::INVALID_DATA_TYPE

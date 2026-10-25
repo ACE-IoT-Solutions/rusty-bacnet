@@ -3,6 +3,7 @@ use super::*;
 use crate::device_reference::{check_device_member, decode_reference, decode_references};
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 fn property_problem(
@@ -35,7 +36,7 @@ fn optional(
         .ok_or_else(|| property_problem(oid, property, "selected object is missing"))?;
     match object.read_property(property, None) {
         Ok(value) => Ok(Some(value)),
-        Err(Error::Protocol { class, code })
+        Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::UNKNOWN_PROPERTY
                 && !object.property_list().contains(&property) =>

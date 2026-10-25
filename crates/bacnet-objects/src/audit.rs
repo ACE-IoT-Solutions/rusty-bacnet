@@ -271,10 +271,10 @@ impl AuditLogObject {
             .as_ref()
             .and_then(|clock| clock.read_clock())
             .filter(|frame| frame.is_valid_actual_datetime())
-            .ok_or(Error::Protocol {
-                class: ErrorClass::DEVICE,
-                code: ErrorCode::OPERATIONAL_PROBLEM,
-            })?;
+            .ok_or(Error::protocol(
+                ErrorClass::DEVICE,
+                ErrorCode::OPERATIONAL_PROBLEM,
+            ))?;
         Ok((frame.local_date, frame.local_time))
     }
 
@@ -559,10 +559,10 @@ impl BACnetObject for AuditLogObject {
             p if p == PropertyIdentifier::LOG_BUFFER => {
                 Err(crate::log_buffer::log_buffer_read_denied())
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -580,10 +580,10 @@ impl BACnetObject for AuditLogObject {
                 }
                 return self.commit_change(staging::StagedChange::LogEnable(v));
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::BUFFER_SIZE {
             return self.write_buffer_size(&value);
@@ -591,20 +591,20 @@ impl BACnetObject for AuditLogObject {
         // Clause 12.64.11 keeps an Audit Log's Record_Count read-only, so no
         // peer can purge the log; the application uses `purge`.
         if property == PropertyIdentifier::RECORD_COUNT {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::WRITE_ACCESS_DENIED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::WRITE_ACCESS_DENIED,
+            ));
         }
         if property == PropertyIdentifier::DESCRIPTION {
             if let PropertyValue::CharacterString(s) = value {
                 self.description = s;
                 return Ok(());
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),

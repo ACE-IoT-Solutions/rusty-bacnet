@@ -8,7 +8,7 @@ use bacnet_types::constructed::{BACnetAuditLogDatum, BACnetAuditLogQueryParamete
 use bacnet_types::enums::{
     BACnetSuccessFilter, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use crate::durable::{DurableWrites, PendingWrite, StageStep};
@@ -53,7 +53,7 @@ fn read(log: &AuditLogObject, property: PropertyIdentifier) -> PropertyValue {
 
 fn assert_operational_problem(error: Error) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::DEVICE
                 && code == ErrorCode::OPERATIONAL_PROBLEM),
         "expected DEVICE / OPERATIONAL_PROBLEM, got {error:?}"
@@ -62,7 +62,7 @@ fn assert_operational_problem(error: Error) {
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == expected),
         "expected PROPERTY / {expected:?}, got {error:?}"
@@ -544,7 +544,7 @@ fn an_object_without_a_log_refuses_a_purge() {
     assert!(matches!(writes.stage_purge(), StageStep::Skip));
     let error = writes.commit_purge().unwrap_err();
     assert!(
-        matches!(error, Error::Protocol { class, code }
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::OBJECT
                 && code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED),
         "{error:?}"

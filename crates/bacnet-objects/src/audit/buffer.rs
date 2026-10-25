@@ -118,8 +118,5 @@ pub(super) fn apply_change(
 }
 
 fn property_error(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code,
-    }
+    Error::protocol(ErrorClass::PROPERTY, code)
 }

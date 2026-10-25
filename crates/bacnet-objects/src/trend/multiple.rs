@@ -396,10 +396,10 @@ impl BACnetObject for TrendLogMultipleObject {
             p if p == PropertyIdentifier::PROPERTY_LIST => {
                 read_property_list_property(&self.property_list(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -414,10 +414,10 @@ impl BACnetObject for TrendLogMultipleObject {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_enable(v);
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if let Some(result) = self.acquisition.write(property, &value) {
             return result;
@@ -432,19 +432,19 @@ impl BACnetObject for TrendLogMultipleObject {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_stop_when_full(v);
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::RECORD_COUNT {
             if let PropertyValue::Unsigned(0) = value {
                 return self.lifecycle().purge();
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY {
             return self.write_log_device_object_property(array_index, value);

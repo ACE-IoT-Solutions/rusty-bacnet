@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::server::test_transport::TestTransport;
+use bacnet_types::error::RemoteError;
 
 pub(super) fn expected_value_write(
     value: u8,
@@ -496,10 +497,7 @@ async fn audit_reporter_execution_failures_saturate_without_queue_retry_or_recur
 async fn audit_reporter_execution_error_mapping_matches_response_but_unknown_outcomes_are_silent() {
     for (error, expected) in [
         (
-            Error::Protocol {
-                class: ErrorClass::from_raw(128),
-                code: ErrorCode::from_raw(512),
-            },
+            Error::protocol(ErrorClass::from_raw(128), ErrorCode::from_raw(512)),
             Some((ErrorClass::from_raw(128), ErrorCode::from_raw(512))),
         ),
         (
@@ -507,21 +505,11 @@ async fn audit_reporter_execution_error_mapping_matches_response_but_unknown_out
             Some((ErrorClass::SERVICES, ErrorCode::OTHER)),
         ),
         (Error::Timeout(Duration::from_secs(1)), None),
-        (
-            Error::Reject {
-                reason: RejectReason::OTHER,
-            },
-            None,
-        ),
-        (
-            Error::Abort {
-                reason: AbortReason::OTHER,
-            },
-            None,
-        ),
+        (Error::reject(RejectReason::OTHER), None),
+        (Error::abort(AbortReason::OTHER), None),
     ] {
         let mut fixture = server(reporter()).await;
-        let rejected = matches!(error, Error::Reject { .. });
+        let rejected = matches!(error, Error::Remote(RemoteError::Reject { .. }));
         *fixture.execution_error.lock().unwrap() = Some(error);
         let response = write_value(&fixture.server, None).await;
         if rejected {

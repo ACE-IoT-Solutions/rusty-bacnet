@@ -4,6 +4,7 @@
 
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 
 const FRAMES: [ReferenceFrame; 2] = [ReferenceFrame::Bare, ReferenceFrame::Setpoint];
@@ -48,7 +49,7 @@ fn expect_protocol(
     context: &str,
 ) {
     match result {
-        Err(Error::Protocol { class, code }) => {
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
             assert_eq!(class, ErrorClass::PROPERTY, "{context}: wrong error class");
             assert_eq!(code, expected_code, "{context}: wrong code");
         }

@@ -3,6 +3,7 @@ use bacnet_types::enums::{
     ErrorClass, ErrorCode, LifeSafetyMode, LifeSafetyOperation, LifeSafetyState, ObjectType,
     SilencedState,
 };
+use bacnet_types::error::RemoteError;
 
 use crate::database::ObjectDatabase;
 use crate::traits::LifeSafetyOperationEffect;
@@ -17,10 +18,10 @@ fn read_enumerated(object: &dyn BACnetObject, property: PropertyIdentifier) -> u
 fn assert_protocol_error(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } if actual_class == class && actual_code == code
+        }) if actual_class == class && actual_code == code
     ));
 }
 

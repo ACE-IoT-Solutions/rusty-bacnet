@@ -55,19 +55,13 @@ pub(crate) struct ForeignTarget {
 /// The refusal of a change while no node runs: nothing could check it
 /// against the device's own address, or put it into effect.
 fn not_running() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::WRITE_ACCESS_DENIED,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED)
 }
 
 /// The WriteProperty refusal of a value the foreign device can't register
 /// with.
 fn out_of_range() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::VALUE_OUT_OF_RANGE,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE)
 }
 
 impl ForeignTarget {

@@ -296,10 +296,10 @@ impl BACnetObject for TestNotificationClass {
         match property {
             p if p == PropertyIdentifier::NOTIFICATION_CLASS => Ok(PropertyValue::Unsigned(0)),
             p if p == PropertyIdentifier::RECIPIENT_LIST => match self.recipient_list {
-                TestRecipientList::Unavailable => Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY,
-                    code: ErrorCode::UNKNOWN_PROPERTY,
-                }),
+                TestRecipientList::Unavailable => Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::UNKNOWN_PROPERTY,
+                )),
                 TestRecipientList::Invalid => Ok(PropertyValue::ApplicationData(vec![0x5E])),
                 TestRecipientList::Broadcasts(count) => {
                     let destinations: Vec<_> = (1..=count)
@@ -314,10 +314,10 @@ impl BACnetObject for TestNotificationClass {
                     Ok(PropertyValue::ApplicationData(list.to_vec()))
                 }
             },
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -328,10 +328,10 @@ impl BACnetObject for TestNotificationClass {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {

@@ -17,7 +17,7 @@ use bacnet_client::client::BACnetClient;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifier, RejectReason};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::limits::RateCap;
@@ -80,12 +80,18 @@ pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
         AbortReason::APDU_TOO_LONG,
     ];
     match error {
-        Error::Reject { reason } if *reason == RejectReason::BUFFER_OVERFLOW => {
+        Error::Remote(RemoteError::Reject { reason })
+            if *reason == RejectReason::BUFFER_OVERFLOW =>
+        {
             RpmFailure::TooLarge
         }
-        Error::Reject { .. } => RpmFailure::Refused,
-        Error::Protocol { class, .. } if *class == ErrorClass::SERVICES => RpmFailure::Refused,
-        Error::Abort { reason } if too_large.contains(reason) => RpmFailure::TooLarge,
+        Error::Remote(RemoteError::Reject { .. }) => RpmFailure::Refused,
+        Error::Remote(RemoteError::Error { class, .. }) if *class == ErrorClass::SERVICES => {
+            RpmFailure::Refused
+        }
+        Error::Remote(RemoteError::Abort { reason }) if too_large.contains(reason) => {
+            RpmFailure::TooLarge
+        }
         _ => RpmFailure::Other,
     }
 }
@@ -94,7 +100,7 @@ pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
 /// timeout or a transport failure. Reading on would only time out again.
 pub(crate) fn unreachable(error: &Error) -> bool {
     match error {
-        Error::Abort { reason } => *reason == AbortReason::TSM_TIMEOUT,
+        Error::Remote(RemoteError::Abort { reason }) => *reason == AbortReason::TSM_TIMEOUT,
         Error::Timeout(_) | Error::Transport(_) => true,
         _ => false,
     }

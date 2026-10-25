@@ -8,6 +8,7 @@ use bacnet_types::constructed::{
     BACnetLandingCallStatus, LandingCallCommand, PropertyReference, ReadAccessSpecification,
 };
 use bacnet_types::enums::LiftCarDirection;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 mod lift;
@@ -79,8 +80,10 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY && code == expected));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }

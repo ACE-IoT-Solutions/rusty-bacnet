@@ -8,6 +8,7 @@ use bacnet_types::MacAddr;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
 
 mod fold_tests;
@@ -92,10 +93,10 @@ fn port(port_id: u8, enabled: bool) -> PropertyValue {
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     match result {
         Err(
-            Error::Protocol {
+            Error::Remote(RemoteError::Error {
                 class: got_class,
                 code: got_code,
-            }
+            })
             | Error::Structured {
                 class: got_class,
                 code: got_code,

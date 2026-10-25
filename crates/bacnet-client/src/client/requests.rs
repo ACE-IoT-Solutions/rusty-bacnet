@@ -514,9 +514,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         false,
                                         None,
                                     );
-                                    return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
-                                    });
+                                    return Err(Error::abort(bacnet_types::enums::AbortReason::TSM_TIMEOUT));
                                 }
                                 RequestTimerExpiration::NoTransaction => {
                                     drop(tsm);
@@ -546,9 +544,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         false,
                                         None,
                                     );
-                                    return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
-                                    });
+                                    return Err(Error::abort(bacnet_types::enums::AbortReason::TSM_TIMEOUT));
                                 }
                                 SegmentTimerExpiration::NoTransaction => {
                                     drop(tsm);

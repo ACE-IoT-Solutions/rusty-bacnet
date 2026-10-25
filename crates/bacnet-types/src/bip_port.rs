@@ -296,10 +296,7 @@ pub trait IpMulticast: Send + Sync {
 }
 
 fn write_access_denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::WRITE_ACCESS_DENIED,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED)
 }
 
 /// A B/IP or B/IPv6 port's mode, with what that mode's Network Port

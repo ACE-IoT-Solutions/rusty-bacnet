@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 // -----------------------------------------------------------------------
 // Password validation tests (ReinitializeDevice: Clause 16.4)
@@ -31,7 +32,7 @@ fn reinit_wrong_password_rejected() {
 
     let err = handle_reinitialize_device(&buf, &pw).unwrap_err();
     match err {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, ErrorClass::SECURITY);
             assert_eq!(code, ErrorCode::PASSWORD_FAILURE);
         }
@@ -52,7 +53,7 @@ fn reinit_missing_password_when_required() {
 
     let err = handle_reinitialize_device(&buf, &pw).unwrap_err();
     match err {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, ErrorClass::SECURITY);
             assert_eq!(code, ErrorCode::PASSWORD_FAILURE);
         }

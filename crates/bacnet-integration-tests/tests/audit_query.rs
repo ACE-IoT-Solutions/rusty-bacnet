@@ -4,6 +4,7 @@
 //! dispatch, retained-storage filtering, ACK encode, and client decode —
 //! including the segmented-ACK path under a small max-APDU.
 
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -607,7 +608,7 @@ async fn audit_query_matches_address_recipient_and_unknown_audit_log_errors() {
     assert!(
         matches!(
             error,
-            Error::Protocol { class, code }
+            Error::Remote(RemoteError::Error { class, code })
                 if class == ErrorClass::OBJECT
                     && code == ErrorCode::UNKNOWN_OBJECT
         ),

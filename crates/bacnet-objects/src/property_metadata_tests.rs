@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use crate::access_control::{
@@ -42,7 +42,7 @@ pub(crate) fn metadata_row_reads(object: &dyn BACnetObject, property: PropertyId
             | ObjectType::TREND_LOG_MULTIPLE
     ) && property == PropertyIdentifier::LOG_BUFFER
     {
-        return matches!(result, Err(Error::Protocol { class, code })
+        return matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::READ_ACCESS_DENIED);
     }

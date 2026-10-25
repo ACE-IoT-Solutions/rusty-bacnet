@@ -10,6 +10,7 @@ use bacnet_objects::value_types::{
     IntegerValueObject, LargeAnalogValueObject, PositiveIntegerValueObject,
 };
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 /// The three numeric value objects, Units set to degrees Celsius when
@@ -115,7 +116,7 @@ fn numeric_value_units_read_over_the_wire_and_refuse_writes() {
             .unwrap();
             assert!(matches!(
                 handle_write_property(&mut db, &request),
-                Err(Error::Protocol { class, code })
+                Err(Error::Remote(RemoteError::Error { class, code }))
                     if class == ErrorClass::PROPERTY
                         && code == ErrorCode::WRITE_ACCESS_DENIED
             ));

@@ -786,10 +786,10 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
 
     drop(guard);
     if comm_state.initiation_restricted() {
-        return Err(Error::Protocol {
-            class: ErrorClass::SERVICES,
-            code: ErrorCode::COMMUNICATION_DISABLED,
-        });
+        return Err(Error::protocol(
+            ErrorClass::SERVICES,
+            ErrorCode::COMMUNICATION_DISABLED,
+        ));
     }
     if let Some(limiter) = limiter {
         limiter.record_i_am_sent(

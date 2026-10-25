@@ -174,7 +174,7 @@ error today. They are the work list for the release PR that moves `site.mjs` to
 | Change on `dev` | Pages |
 |---|---|
 | Edition 2024 and MSRV 1.95 (#1011) | start/choose-your-path, start/installation, start/rust, integrate/shared-endpoints |
-| `ServerPolicy` decides DCC by verified principal (#1964); policy contexts expose the verified leaf certificate, its subject and SANs (#1965) | guides/bacnet-sc, project/support, new security page |
+| `ServerPolicy` decides DCC by verified principal (#1964); policy contexts expose the verified leaf certificate, its subject and SANs (#1965) | guides/bacnet-sc, project/support, integrate/security (fold its "On `dev` after the release" section into the page, and pin `website/examples/rust/sc-operator-policy/Cargo.toml` and its test `sc_operator_policy_source` to the release instead of the `dev` branch) |
 | `TransportProvenance` no longer `Copy` (#1965); `router.stop()` returns `Result` (#2002); `OriginateError` changes (#1809); `MstpMonitor::start` is async (#1854) | 0.14 → 0.15 upgrade guide |
 | CLI `alarms`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` take routed targets (#1786) | guides/discovery.mdx:42, reference/cli.md:44, help/troubleshooting.md:28 (each lists only `read`, `readm`, `write`, `writem`, `subscribe`) |
 | TUI passive discovery and local `:find` (#1850); baud scan (#1873) | tui/profiles, tui/discovery, tui/keys, tui/mstp |

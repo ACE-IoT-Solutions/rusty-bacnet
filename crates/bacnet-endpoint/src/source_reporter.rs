@@ -154,10 +154,10 @@ impl BACnetObject for SourceReporter {
         priority: Option<u8>,
     ) -> Result<(), Error> {
         if self.active() && property == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::WRITE_ACCESS_DENIED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::WRITE_ACCESS_DENIED,
+            ));
         }
         self.wrapped
             .write_property(property, array_index, value, priority)
@@ -172,10 +172,10 @@ impl BACnetObject for SourceReporter {
         origin: &bacnet_objects::command_source::CommandOrigin,
     ) -> Result<(), Error> {
         if self.active() && property == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::WRITE_ACCESS_DENIED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::WRITE_ACCESS_DENIED,
+            ));
         }
         self.wrapped
             .write_property_from(property, array_index, value, priority, origin)

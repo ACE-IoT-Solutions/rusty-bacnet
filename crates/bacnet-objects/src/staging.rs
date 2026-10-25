@@ -655,7 +655,7 @@ fn validate_min_present_value(
 }
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol { class, code }
+    Error::protocol(class, code)
 }
 
 #[cfg(test)]

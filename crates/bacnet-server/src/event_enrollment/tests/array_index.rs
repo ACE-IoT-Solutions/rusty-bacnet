@@ -128,10 +128,10 @@ impl BACnetObject for IndexedReadProbe {
             return Err(Error::Encoding("transient indexed read".into()));
         }
         if array_index == Some(17) {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_ARRAY_INDEX,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_ARRAY_INDEX,
+            ));
         }
         Ok(PropertyValue::Real(90.0))
     }

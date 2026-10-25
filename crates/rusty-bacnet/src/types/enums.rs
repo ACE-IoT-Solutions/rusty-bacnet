@@ -86,8 +86,6 @@ py_bacnet_enum!(
     bacnet_enums::PropertyIdentifier,
     u32
 );
-py_bacnet_enum!("ErrorClass", PyErrorClass, bacnet_enums::ErrorClass, u16);
-py_bacnet_enum!("ErrorCode", PyErrorCode, bacnet_enums::ErrorCode, u16);
 py_bacnet_enum!(
     "AuditOperation",
     PyAuditOperation,

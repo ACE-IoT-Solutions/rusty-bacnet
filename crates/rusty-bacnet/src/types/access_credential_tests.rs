@@ -38,10 +38,10 @@ impl BACnetObject for Fixture {
         {
             return Ok(value.clone());
         }
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::UNKNOWN_PROPERTY,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::UNKNOWN_PROPERTY,
+        ))
     }
     fn write_property(
         &mut self,
@@ -50,10 +50,10 @@ impl BACnetObject for Fixture {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [P]> {
         Cow::Borrowed(&[])

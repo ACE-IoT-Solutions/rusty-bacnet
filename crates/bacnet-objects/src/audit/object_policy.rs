@@ -81,10 +81,10 @@ impl ObjectAuditPolicy {
         self.read(property, index).map(|present| {
             present?;
             if priority.is_some_and(|v| !(1..=16).contains(&v)) {
-                return Err(Error::Protocol {
-                    class: ErrorClass::SERVICES,
-                    code: ErrorCode::PARAMETER_OUT_OF_RANGE,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::SERVICES,
+                    ErrorCode::PARAMETER_OUT_OF_RANGE,
+                ));
             }
             // NULL relinquishes ordinary noncommandable properties without a
             // change. For the nullable priority filter it is the actual value.

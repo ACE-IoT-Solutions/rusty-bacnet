@@ -250,16 +250,23 @@ let val = PropertyValue::Null;
 ### Error
 
 ```rust
-use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::enums::{ErrorClass, ErrorCode, RejectReason};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 
-// Protocol error from a remote device: the class and code are typed.
-let e = Error::Protocol { class: ErrorClass::PROPERTY, code: ErrorCode::UNKNOWN_OBJECT };
+// A remote device's Error, Reject or Abort PDU is one RemoteError, held by
+// Error::Remote; the class, code and reasons are typed.
+let e = Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_OBJECT);
+assert!(matches!(
+    e,
+    Error::Remote(RemoteError::Error { code: ErrorCode::UNKNOWN_OBJECT, .. })
+));
+let e = Error::reject(RejectReason::INVALID_TAG);
+assert_eq!(e.remote(), Some(RemoteError::Reject { reason: RejectReason::INVALID_TAG }));
 
 // A structured error body: here an AddListElement/RemoveListElement
-// ChangeList-Error naming the failed element. Error::protocol builds
-// Error::Structured with a detail, Error::Protocol without one.
-let e = Error::protocol(
+// ChangeList-Error naming the failed element. Error::with_detail builds
+// Error::Structured with a detail, Error::Remote without one.
+let e = Error::with_detail(
     ErrorClass::SERVICES,
     ErrorCode::LIST_ELEMENT_NOT_FOUND,
     Some(ErrorDetail::FirstFailedElementNumber(2)),
@@ -268,9 +275,20 @@ if let Error::Structured { detail, .. } = &e {
     assert_eq!(**detail, ErrorDetail::FirstFailedElementNumber(2));
 }
 
-// Other variants: Timeout, Reject, Abort, RoutedPathTooLong,
-// RoutedPathCapacityExceeded, UnsupportedTransport, Encoding, etc.
+// Other variants: Timeout, RoutedPathTooLong, RoutedPathCapacityExceeded,
+// UnsupportedTransport, Encoding, etc.
 ```
+
+`RemoteError` has three arms, one per PDU: `Error { class, code }`,
+`Reject { reason }` and `Abort { reason }`. The same value travels from the
+wire to the API (#1815): the client TSM completes a transaction with
+`TsmResponse::Remote { error, detail }`, a client request fails with
+`Error::Remote(error)` (or `Error::Structured` when the Error PDU's body
+carried a detail), and a server keeps a peer's answer to its own confirmed
+request as `CovAckResult::Error(error)`. `Error::remote()` reads the
+`RemoteError` of either error variant. `Error::protocol`, `Error::reject` and
+`Error::abort` build `Error::Remote`, and `RemoteError` converts into `Error`
+with `From`. It displays as the error that holds it does.
 
 `ErrorDetail` has one variant per shape of structured error body (Clause 21):
 
@@ -283,7 +301,7 @@ if let Error::Structured { detail, .. } = &e {
 | `VtSessionIdentifiers(Vec<u8>)` | VTClose-Error with its list | Local identifiers of the sessions that could not be closed |
 
 A body with nothing beyond the error (SubscribeCOVPropertyMultiple's general
-choice, VTClose-Error without its list) is `Error::Protocol`.
+choice, VTClose-Error without its list) is `Error::Remote`.
 `bacnet_services::structured_error::detail(&error_pdu)` reads the detail of any
 Error PDU, and each body has its own type for encoding and decoding:
 `list_manipulation::ChangeListError`, `object_mgmt::CreateObjectError`,
@@ -312,9 +330,9 @@ displayed, so firmware that never displays it links no formatting code
 | A character set the decoder doesn't convert | `Decoding`, `Unsupported` | OTHER |
 
 `Error::into_request_reject()` turns a request's decode error into that
-`Error::Reject`. The bundled server answers every confirmed request it can't
+Reject, `Error::reject(reason)`. The bundled server answers every confirmed request it can't
 decode that way. A decoder that names a fault the table doesn't, such as
-GetEnrollmentSummary's undefined enumerations, returns its `Error::Reject`
+GetEnrollmentSummary's undefined enumerations, returns its `Error::reject(reason)`
 itself. A decoding error met once a service runs keeps its Error PDU.
 
 `Error::UnsupportedTransport { required, actual }` reports an operation the
@@ -4020,7 +4038,7 @@ framing, through the shared `bacnet-encoding` codecs.
   Present_Value. The shared endpoint's ReadProperty uses
   `SessionConfig::read_work_limit` (default 256) instead. A request that would
   pass the limit is aborted with OUT_OF_RESOURCES (`read_local` returns
-  `Error::Abort`).
+  `Error::abort(AbortReason::OUT_OF_RESOURCES)`).
 - **Structured View `Subordinate_List` and Command `Action`** (Clauses 12.29
   and 12.10) are arrays too, with the same per-index reads, as is
   `Subordinate_Annotations`. A Subordinate_List element is a
@@ -7552,7 +7570,7 @@ client.remove_list_element(&mac, nc_oid, PropertyIdentifier::RECIPIENT_LIST, Non
 
 A device that answers with a ChangeList-Error surfaces as `Error::Structured`
 with `ErrorDetail::FirstFailedElementNumber`; a device that sends only the
-class and code surfaces as `Error::Protocol`.
+class and code surfaces as `Error::Remote`.
 
 ### Private Transfer
 
@@ -8282,10 +8300,10 @@ later retries; a configured Device binding keeps its fixed next hop. The former
 public `ServerTsm` type and its unused transaction methods have been removed
 without a compatibility alias. `CovAckResult` remains available at its existing
 `bacnet_server::server` path. A refused confirmed request ends as
-`CovAckResult::Error(Refusal)`: `Refusal::Error { class, code }` for an Error
-PDU, `Refusal::Reject(reason)` or `Refusal::Abort(reason)` otherwise (#1323).
-`Error::from(refusal)` gives the `Error::Protocol`, `Error::Reject` or
-`Error::Abort` a client's WriteProperty would report. The notification senders
+`CovAckResult::Error(RemoteError)`: `RemoteError::Error { class, code }` for an
+Error PDU, `RemoteError::Reject { reason }` or `RemoteError::Abort { reason }`
+otherwise (#1323, #1815). `Error::from(error)` gives the `Error::Remote` a
+client's WriteProperty would report. The notification senders
 only ask whether the request was taken; a Channel member in another device
 uses the payload to tell a NULL refused as the wrong datatype, which counts as
 written, from other refusals.
@@ -8327,7 +8345,7 @@ source_mac, source_network, provenance, invoke_id)` builds one for calling a
 handler directly, as its unit tests would; outside `bacnet-transport` only
 `TransportProvenance::unverified()` is available for the provenance.
 
-`Ok(())` sends the SimpleACK and `Err(Error::Protocol { .. })` sends that
+`Ok(())` sends the SimpleACK and `Err(Error::protocol(class, code))` sends that
 class and code instead. The rules:
 
 - The SimpleACK leaves only after the handler returns, so it must not restart
@@ -8363,8 +8381,8 @@ class and code instead. The rules:
   the `ServerPolicy` covers ReinitializeDevice, so restrict sources
   through the context; its addresses are claims, not authenticated identities.
 - Once the handler has run, the request can no longer be rejected (Clause
-  20.1.8): a returned `Error::Reject`, or any error other than `Protocol` or
-  `Structured`, is answered `SERVICES / OTHER`, and so is a panic (caught with
+  20.1.8): a returned `Error::reject(..)`, or any error other than an Error
+  PDU's `Remote` or `Structured`, is answered `SERVICES / OTHER`, and so is a panic (caught with
   unwind builds), since the handler may have partly acted.
 
 ```rust,ignore
@@ -8388,10 +8406,10 @@ let server = BACnetServer::bip_builder()
                 request.after_reply(move || drop(restart_tx.try_send(state)));
                 Ok(())
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::SERVICES,
-                code: ErrorCode::SERVICE_REQUEST_DENIED,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::SERVICE_REQUEST_DENIED,
+            )),
         }
     })
     .build()
@@ -8737,11 +8755,9 @@ All async operations return `Result<T, bacnet_types::error::Error>`. Key variant
 
 | Variant | Meaning |
 |---------|---------|
-| `Error::Protocol { class, code }` | Remote BACnet error response, as an `ErrorClass` and an `ErrorCode` |
+| `Error::Remote(RemoteError)` | Remote device's Error PDU (`RemoteError::Error { class, code }`, an `ErrorClass` and an `ErrorCode`), Reject PDU (`RemoteError::Reject { reason }`, a `RejectReason`) or Abort PDU (`RemoteError::Abort { reason }`, an `AbortReason`) |
 | `Error::Structured { class, code, detail }` | Remote error whose Clause 21 body adds fields (ChangeList-Error, CreateObject-Error, WritePropertyMultiple-Error and others): `detail` is the boxed `ErrorDetail` |
 | `Error::Timeout(duration)` | APDU retry exhausted |
-| `Error::Reject { reason }` | Remote device rejected request, with its `RejectReason` |
-| `Error::Abort { reason }` | Remote device aborted request, with its `AbortReason` |
 | `Error::RoutedPathTooLong { dnet }` | Router rejected the active message as too long for DNET |
 | `Error::RoutedPathCapacityExceeded { capacity }` | No routed-path entry can be allocated without discarding protected safety state |
 | `Error::UnsupportedTransport { required, actual }` | The client's data link cannot carry the operation (a BBMD helper on a non-B/IP transport) |

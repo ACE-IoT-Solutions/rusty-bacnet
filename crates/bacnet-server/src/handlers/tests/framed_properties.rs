@@ -9,6 +9,7 @@ use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{
     BACnetDestination, BACnetEventParameter, BACnetRecipient, FaultParameters,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
 
 fn framed_event_parameters() -> Vec<u8> {
@@ -418,7 +419,7 @@ fn malformed_framed_event_parameters_write_rejected() {
         let err =
             write_framed(&mut db, oid, PropertyIdentifier::EVENT_PARAMETERS, bad).unwrap_err();
         match err {
-            Error::Protocol { class, .. } => {
+            Error::Remote(RemoteError::Error { class, .. }) => {
                 assert_eq!(class, ErrorClass::PROPERTY);
             }
             other => panic!("expected protocol error, got {other:?}"),

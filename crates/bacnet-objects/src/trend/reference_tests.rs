@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 
 const P: PropertyIdentifier = PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY;
@@ -51,7 +52,7 @@ fn reference(device: Option<ObjectIdentifier>) -> BACnetDeviceObjectPropertyRefe
 
 fn assert_error(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
             if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );

@@ -10,6 +10,7 @@ use super::*;
 use bacnet_encoding::primitives::{decode_timestamp_choice, encode_timestamp_choice};
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 use bytes::BytesMut;
 
@@ -40,10 +41,10 @@ fn assert_timestamp_array(actual: PropertyValue, expected: &[BACnetTimeStamp; 3]
 
 fn assert_protocol_error(result: Result<(), Error>, code: ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
+        }) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             assert_eq!(actual, code);
         }
@@ -53,10 +54,10 @@ fn assert_protocol_error(result: Result<(), Error>, code: ErrorCode) {
 
 fn assert_property_read_error(result: Result<PropertyValue, Error>, code: ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
+        }) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             assert_eq!(actual, code);
         }
@@ -74,7 +75,7 @@ fn assert_write_access_denied(
     label: &str,
 ) {
     match result.expect_err(&format!("{label}: {property:?} write must be refused")) {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 class,
                 ErrorClass::PROPERTY,

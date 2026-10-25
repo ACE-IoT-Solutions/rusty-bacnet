@@ -1,9 +1,10 @@
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 fn code(error: Error) -> (ErrorClass, ErrorCode) {
     match error {
-        Error::Protocol { class, code } => (class, code),
+        Error::Remote(RemoteError::Error { class, code }) => (class, code),
         other => panic!("expected protocol error, got {other:?}"),
     }
 }

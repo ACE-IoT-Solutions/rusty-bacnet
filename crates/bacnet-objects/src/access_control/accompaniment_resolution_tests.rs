@@ -2,6 +2,7 @@
 use super::accompaniment_test_support::*;
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 #[test]
@@ -336,26 +337,26 @@ fn accompaniment_original_rights_errors_are_preserved() {
     );
     assert!(matches!(
         evaluate_accompaniment(&db, request(&[])),
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             code: ErrorCode::READ_ACCESS_DENIED,
             ..
-        })
+        }))
     ));
     let mut wrong = request(&[]);
     wrong.original.credential = rights(1);
     assert!(matches!(
         evaluate_accompaniment(&db, wrong),
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             code: ErrorCode::UNKNOWN_OBJECT,
             ..
-        })
+        }))
     ));
     db.remove(&point()).unwrap();
     assert!(matches!(
         evaluate_accompaniment(&db, request(&[])),
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             code: ErrorCode::UNKNOWN_OBJECT,
             ..
-        })
+        }))
     ));
 }

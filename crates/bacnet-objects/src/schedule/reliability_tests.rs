@@ -10,6 +10,7 @@ use bacnet_encoding::constructed::encode_special_event;
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::constructed::SpecialEventPeriod;
 use bacnet_types::enums::RejectReason;
+use bacnet_types::error::RemoteError;
 
 type P = PropertyIdentifier;
 
@@ -419,9 +420,11 @@ fn the_reference_fault_combines_with_the_content_fault() {
 
 #[test]
 fn target_outcomes_classify_the_write_error() {
-    let protocol = |code: ErrorCode| Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code,
+    let protocol = |code: ErrorCode| {
+        Error::Remote(RemoteError::Error {
+            class: ErrorClass::PROPERTY,
+            code,
+        })
     };
     let cases = [
         (Ok(()), Accepted),
@@ -431,7 +434,7 @@ fn target_outcomes_classify_the_write_error() {
             DatatypeRefused,
         ),
         (
-            Err(Error::protocol(
+            Err(Error::with_detail(
                 ErrorClass::PROPERTY,
                 ErrorCode::INVALID_DATA_TYPE,
                 Some(bacnet_types::error::ErrorDetail::FirstFailedElementNumber(
@@ -441,10 +444,10 @@ fn target_outcomes_classify_the_write_error() {
             DatatypeRefused,
         ),
         (
-            Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::UNKNOWN_OBJECT,
-            }),
+            Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::UNKNOWN_OBJECT,
+            )),
             ReferenceRefused,
         ),
         (Err(protocol(ErrorCode::UNKNOWN_PROPERTY)), ReferenceRefused),
@@ -458,12 +461,7 @@ fn target_outcomes_classify_the_write_error() {
         ),
         (Err(protocol(ErrorCode::WRITE_ACCESS_DENIED)), Failed),
         (Err(protocol(ErrorCode::VALUE_OUT_OF_RANGE)), Failed),
-        (
-            Err(Error::Reject {
-                reason: RejectReason::OTHER,
-            }),
-            Failed,
-        ),
+        (Err(Error::reject(RejectReason::OTHER)), Failed),
     ];
     for (result, outcome) in cases {
         assert_eq!(ScheduleTargetOutcome::of(&result), outcome, "{result:?}");

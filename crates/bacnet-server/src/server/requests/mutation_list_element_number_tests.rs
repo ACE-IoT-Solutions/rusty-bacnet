@@ -237,7 +237,7 @@ struct Recipients {
 }
 
 fn protocol(class: ErrorClass, code: ErrorCode, element: Option<usize>) -> Error {
-    Error::protocol(
+    Error::with_detail(
         class,
         code,
         element.map(|index| ErrorDetail::FirstFailedElementNumber(index as u32 + 1)),

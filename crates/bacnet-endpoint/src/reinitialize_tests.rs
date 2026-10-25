@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_server::server::ReinitializeContext;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ReinitializedState};
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 
 const PASSWORD: &str = "reinit-pw";
@@ -90,7 +91,7 @@ async fn reinitialize(
 fn assert_protocol_error(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     let error = result.unwrap_err();
     assert!(
-        matches!(error, Error::Protocol { class: c, code: e }
+        matches!(error, Error::Remote(RemoteError::Error { class: c, code: e })
             if c == class && e == code),
         "got {error:?}"
     );

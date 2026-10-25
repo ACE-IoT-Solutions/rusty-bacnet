@@ -11,7 +11,7 @@ use bacnet_types::constructed::{
     LogDatum, LogValue,
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 use bytes::BytesMut;
 
@@ -334,10 +334,10 @@ fn assert_status(object: &Family, status: LogStatus) {
 
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
     match error {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } => {
+        }) => {
             assert_eq!(actual_class, class);
             assert_eq!(actual_code, code);
         }

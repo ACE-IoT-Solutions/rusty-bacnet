@@ -11,6 +11,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::ReceivedNpdu;
 use bacnet_types::MacAddr;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, Segmentation};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -386,10 +387,10 @@ async fn routed_file_services_preserve_protocol_errors_and_missing_device_sends_
         assert!(
             matches!(
                 error,
-                Error::Protocol {
+                Error::Remote(RemoteError::Error {
                     class: ErrorClass::SERVICES,
                     code: ErrorCode::FILE_ACCESS_DENIED
-                }
+                })
             ),
             "{error:?}"
         );

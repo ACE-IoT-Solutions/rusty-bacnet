@@ -10,6 +10,7 @@ use bacnet_objects::object_profile::ObjectProfile;
 use bacnet_objects::object_profile::{TagsPersistence, TagsSnapshot};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::BACnetNameValue;
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 fn profile() -> ObjectProfile {
@@ -126,7 +127,7 @@ fn saved_tags_do_not_provision_rows_and_each_profile_row_remains_independent() {
                 let read = object.read_property(property, None);
                 if mask & bit == 0 {
                     assert!(
-                        matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
+                        matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                     );
                 } else if property == P::TAGS {
                     assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -138,7 +139,7 @@ fn saved_tags_do_not_provision_rows_and_each_profile_row_remains_independent() {
                         None,
                     );
                     assert!(
-                        matches!(result, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED)
+                        matches!(result, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED)
                     );
                 }
             }
@@ -215,7 +216,7 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
-                            matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
+                            matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                         );
                     } else if property == P::TAGS {
                         assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -302,7 +303,7 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
-                            matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
+                            matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                         );
                     } else if property == P::TAGS {
                         assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -389,7 +390,7 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
-                            matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
+                            matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                         );
                     } else if property == P::TAGS {
                         assert_eq!(read.unwrap(), PropertyValue::List(vec![]));

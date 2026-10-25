@@ -5,6 +5,7 @@ use super::*;
 use bacnet_types::bip_port::ForeignDeviceChanges;
 use bacnet_types::constructed::{BACnetHostAddress, BACnetHostNPort};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use std::net::SocketAddrV4;
 
 /// Real loopback: generous, since nothing in these tests waits on a timer
@@ -72,7 +73,7 @@ fn changes(bbmd: Option<BACnetHostNPort>, ttl: Option<u16>) -> ForeignDeviceChan
 }
 
 fn is_out_of_range(error: &Error) -> bool {
-    matches!(error, Error::Protocol { class, code }
+    matches!(error, Error::Remote(RemoteError::Error { class, code })
         if *class == ErrorClass::PROPERTY && *code == ErrorCode::VALUE_OUT_OF_RANGE)
 }
 
@@ -252,7 +253,7 @@ async fn a_change_needs_a_running_transport() {
     let moved = changes(Some(address_of(&second)), Some(90));
     let refused = |error: Error| {
         assert!(
-            matches!(error, Error::Protocol { class, code }
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
                 if class == ErrorClass::PROPERTY && code == ErrorCode::WRITE_ACCESS_DENIED),
             "{error:?}"
         );

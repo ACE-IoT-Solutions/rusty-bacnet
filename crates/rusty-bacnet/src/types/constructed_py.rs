@@ -27,8 +27,7 @@ use super::read_value::decode_read_value;
 use super::rpm_wpm::read_access_result_to_py;
 use super::timestamp::time_value;
 use super::{
-    PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyObjectIdentifier, PyPropertyIdentifier,
-    PyPropertyValue,
+    IntEnumValue, PyBACnetTimeStamp, PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue,
 };
 
 /// One element, decoded.
@@ -411,10 +410,7 @@ fn property_access_result_to_py(
         }
         AccessResult::Error { class, code } => {
             dict.set_item("value", py.None())?;
-            dict.set_item(
-                "error",
-                (PyErrorClass { inner: *class }, PyErrorCode { inner: *code }),
-            )?;
+            dict.set_item("error", (IntEnumValue(*class), IntEnumValue(*code)))?;
         }
     }
     Ok(dict)

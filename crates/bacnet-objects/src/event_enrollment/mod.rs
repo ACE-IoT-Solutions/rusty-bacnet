@@ -569,10 +569,10 @@ impl BACnetObject for EventEnrollmentObject {
         transition_bit: EventTransitionBits,
     ) -> Result<(), bacnet_types::error::Error> {
         if !self.event_detection_enable {
-            return Err(bacnet_types::error::Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::OBJECT,
-                code: bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED,
-            });
+            return Err(bacnet_types::error::Error::protocol(
+                bacnet_types::enums::ErrorClass::OBJECT,
+                bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.acked_transitions |= transition_bit & EventTransitionBits::all();
         Ok(())
@@ -584,10 +584,10 @@ impl BACnetObject for EventEnrollmentObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<(), Error> {
         if !self.event_detection_enable || self.enrollment_summary_capability_internal().is_none() {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::NO_ALARM_CONFIGURED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated(
             &mut self.acked_transitions,
@@ -602,10 +602,10 @@ impl BACnetObject for EventEnrollmentObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<Option<crate::event::EventStateChange>, Error> {
         if !self.event_detection_enable || self.enrollment_summary_capability_internal().is_none() {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::NO_ALARM_CONFIGURED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated_detailed(
             &mut self.acked_transitions,

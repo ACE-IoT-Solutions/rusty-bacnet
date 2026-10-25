@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::ServiceSupported;
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 
 const SERVICES: PropertyIdentifier = PropertyIdentifier::PROTOCOL_SERVICES_SUPPORTED;
@@ -481,7 +482,7 @@ fn device_execution_view_keeps_context_free_helpers_on_raw_declared_profile() {
     }
     .encode(&mut request);
     assert!(
-        matches!(crate::handlers::handle_read_property(&db, &request, &mut BytesMut::new()), Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY)
+        matches!(crate::handlers::handle_read_property(&db, &request, &mut BytesMut::new()), Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY)
     );
     let mut request = BytesMut::new();
     bacnet_services::rpm::ReadPropertyMultipleRequest {
