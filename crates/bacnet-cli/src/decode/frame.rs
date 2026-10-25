@@ -112,6 +112,9 @@ pub(crate) struct Link {
     pub(crate) source: Option<String>,
     pub(crate) destination: Option<String>,
     pub(crate) problem: Option<String>,
+    /// Whether the link header refused to decode, so `npdu` is unknown
+    /// rather than absent.
+    pub(crate) malformed: bool,
     /// The NPDU, as a range of the frame's octets, or decoded on its own
     /// for an extended MS/TP frame, whose data is COBS-encoded on the wire.
     pub(crate) npdu: Option<Npdu>,
@@ -143,6 +146,7 @@ pub(crate) fn link(framing: Framing, frame: &[u8]) -> Link {
         source: None,
         destination: None,
         problem: None,
+        malformed: false,
         npdu: None,
     };
     let refused = match framing {
@@ -156,6 +160,7 @@ pub(crate) fn link(framing: Framing, frame: &[u8]) -> Link {
             link.name = "malformed".into();
         }
         link.problem = Some(format!("malformed: {error}"));
+        link.malformed = true;
     }
     link
 }

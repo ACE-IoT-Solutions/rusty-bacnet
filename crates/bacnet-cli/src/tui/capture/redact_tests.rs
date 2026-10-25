@@ -9,17 +9,18 @@ use bytes::BytesMut;
 
 use super::*;
 use crate::decode::testing;
+use crate::tui::capture::Direction;
 
 const DCC: ConfirmedServiceChoice = ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL;
 const REINIT: ConfirmedServiceChoice = ConfirmedServiceChoice::REINITIALIZE_DEVICE;
 
 /// An unsegmented confirmed request of `service` with `body`.
-fn request(service: ConfirmedServiceChoice, body: &[u8]) -> Vec<u8> {
+pub(super) fn request(service: ConfirmedServiceChoice, body: &[u8]) -> Vec<u8> {
     [&[0x00, 0x05, 0x01, service.to_raw()][..], body].concat()
 }
 
 /// A local NPDU expecting a reply, around `apdu`.
-fn npdu(apdu: &[u8]) -> Vec<u8> {
+pub(super) fn npdu(apdu: &[u8]) -> Vec<u8> {
     [&[0x01, 0x04][..], apdu].concat()
 }
 
@@ -37,7 +38,7 @@ fn dcc(password: Option<&str>) -> Vec<u8> {
 }
 
 /// A context-tagged character string, any character set and octets.
-fn ctx_string(tag: u8, charset: u8, text: &[u8]) -> Vec<u8> {
+pub(super) fn ctx_string(tag: u8, charset: u8, text: &[u8]) -> Vec<u8> {
     let length = text.len() + 1;
     let mut out = if length <= 4 {
         vec![(tag << 4) | 0x08 | length as u8]
@@ -50,12 +51,12 @@ fn ctx_string(tag: u8, charset: u8, text: &[u8]) -> Vec<u8> {
 }
 
 /// Whether `frame` still holds `secret` anywhere.
-fn holds(frame: &[u8], secret: &[u8]) -> bool {
+pub(super) fn holds(frame: &[u8], secret: &[u8]) -> bool {
     frame.windows(secret.len()).any(|w| w == secret)
 }
 
 /// The masked frame: same length, `secret` gone, and that many `*`.
-fn masked_in_place(framing: Framing, frame: &[u8], secret: &[u8]) -> Bytes {
+pub(super) fn masked_in_place(framing: Framing, frame: &[u8], secret: &[u8]) -> Bytes {
     let masked = redacted(framing, frame).expect("masked");
     assert_eq!(masked.len(), frame.len());
     assert!(!holds(&masked, secret), "{masked:?}");
@@ -174,7 +175,7 @@ fn an_sc_frame_with_header_options_is_masked() {
     masked_in_place(Framing::Sc, &frame, b"Zq7-hunter2");
 }
 
-fn reinit_npdu(password: &str) -> Vec<u8> {
+pub(super) fn reinit_npdu(password: &str) -> Vec<u8> {
     let mut body = BytesMut::new();
     ReinitializeDeviceRequest {
         reinitialized_state: ReinitializedState::COLDSTART,
@@ -216,9 +217,9 @@ fn an_mstp_frame_with_a_bad_data_crc_is_masked_in_place() {
     wire[last] ^= 0xFF;
     let masked = masked_in_place(Framing::Mstp, &wire, b"Zq7-hunter2-Xv9");
     assert_eq!(masked[last], wire[last]);
-    // A bad header CRC is left alone.
+    // With a bad header CRC too, the frame is searched as it stands (#2062).
     wire[7] ^= 0xFF;
-    assert_eq!(redacted(Framing::Mstp, &wire), None);
+    masked_in_place(Framing::Mstp, &wire, b"Zq7-hunter2-Xv9");
 }
 
 #[test]
@@ -226,10 +227,6 @@ fn malformed_and_out_of_scope_frames_are_left_alone() {
     let bip = |apdu: &[u8]| testing::bip(&npdu(apdu), false);
     // A short APDU.
     assert_eq!(redacted(Framing::Bip, &bip(&[0x00, 0x05, 0x01])), None);
-    // A segmented request.
-    let mut segmented = dcc(Some("Zq7-hunter2"));
-    segmented[0] |= 0x08;
-    assert_eq!(redacted(Framing::Bip, &bip(&segmented)), None);
     // A network-layer message whose octets look like a request.
     let mut network = vec![0x01, 0x80, 0x00];
     network.extend_from_slice(&dcc(Some("Zq7-hunter2")));
@@ -243,7 +240,8 @@ fn malformed_and_out_of_scope_frames_are_left_alone() {
     .concat();
     let masked = redacted(Framing::Bip, &bip(&request(DCC, &body))).expect("masked");
     assert!(!holds(&masked, b"hunter2"));
-    // An extended tag number before the password is walked past.
+    // An unexpected tag (here with an extended tag number) before the
+    // password: masked from there to the end (#2062).
     let body = [&[0xF9, 0x20, 0x00][..], &ctx_string(2, 0, b"Zq7-hunter2")].concat();
     let frame = bip(&request(DCC, &body));
     masked_in_place(Framing::Bip, &frame, b"Zq7-hunter2");
@@ -280,9 +278,10 @@ fn arbitrary_octets_never_panic() {
     }
 }
 
-/// Frames this node received are kept as heard; its own are scrubbed.
+/// Every frame is scrubbed, whichever way it went: a request addressed to
+/// this node keeps no password in the ring either.
 #[test]
-fn only_frames_not_received_here_are_scrubbed() {
+fn frames_are_scrubbed_whichever_way_they_went() {
     let frame = |direction| CaptureFrame {
         time: std::time::UNIX_EPOCH,
         framing: Framing::Bip,
@@ -295,8 +294,7 @@ fn only_frames_not_received_here_are_scrubbed() {
         summary: Default::default(),
         redacted: false,
     };
-    assert!(!scrub(frame(Direction::In)).redacted);
-    for direction in [Direction::Out, Direction::Wire] {
+    for direction in [Direction::In, Direction::Out, Direction::Wire] {
         let scrubbed = scrub(frame(direction));
         assert!(scrubbed.redacted);
         assert!(!holds(&scrubbed.bytes, b"hunter2"));
