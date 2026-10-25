@@ -6469,6 +6469,29 @@ async fn connect(ipv6: bool) -> Result<BACnetClient, bacnet_types::error::Error>
 }
 ```
 
+`build_any()` is `build_into()` with `AnyTransport` (#2071). `build_into::<T>()`
+builds the same client over any transport type the builder's link converts
+into, such as an application's own enum that also holds a transport
+`AnyTransport` can't, like a router's application port:
+
+```rust,ignore
+enum MyTransport {
+    Link(AnyTransport),
+    Router(RouterApplicationPort),
+}
+// `impl TransportPort for MyTransport` passes each call to the variant.
+impl From<BipTransport> for MyTransport {
+    fn from(link: BipTransport) -> Self {
+        Self::Link(link.into())
+    }
+}
+let client: BACnetClient<MyTransport> =
+    BACnetClient::bip_builder().port(0).build_into().await?;
+```
+
+The B/IPv6 and SC builders take `From<Bip6Transport>` and
+`From<ScTransport<TlsWebSocket>>`; SC also has `build_into_with_events()`.
+
 With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
 `build_any().await` call. SC validates identity, reconnect and
 client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;

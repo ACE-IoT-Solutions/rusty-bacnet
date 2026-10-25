@@ -242,6 +242,7 @@ mod tests {
             pending_objects: std::sync::Mutex::new(Vec::new()),
             pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
             forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
+            router: None,
         }
     }
 

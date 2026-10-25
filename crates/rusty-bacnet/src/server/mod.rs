@@ -46,6 +46,8 @@ use bacnet_objects::value_types::{
     TimePatternValueObject, TimeValueObject,
 };
 use bacnet_server::server;
+
+use crate::app_transport::AppTransport;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
@@ -81,6 +83,9 @@ use audit_configuration::AuditNotificationSink;
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
+/// - `"router"`: the server share of `router=`, a `BACnetRouter` built with
+///   `application="client_and_server"` (#2071). The server answers at the
+///   router's address on each of its networks.
 ///
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// start() loads the files before dialing or draining registrations; local TLS
@@ -88,7 +93,7 @@ use audit_configuration::AuditNotificationSink;
 /// Later startup failures retain existing behavior, not general rollback.
 #[pyclass(name = "BACnetServer", module = "rusty_bacnet")]
 pub struct BACnetServer {
-    inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport>>>>,
+    inner: Arc<Mutex<Option<server::BACnetServer<AppTransport>>>>,
     device_instance: u32,
     segmentation_supported: bacnet_types::enums::Segmentation,
     apdu_segment_timeout_ms: u64,
@@ -159,6 +164,9 @@ pub struct BACnetServer {
     /// Save counters of the forwarders the running server holds, replaced
     /// under the `inner` lock when a start publishes its server.
     forwarder_save_counters: Arc<std::sync::Mutex<Vec<ForwarderSaveCounterEntry>>>,
+    /// The router whose application entity `transport="router"` runs on
+    /// (#2071).
+    router: Option<crate::router::application::RouterApplication>,
 }
 
 /// One Notification Forwarder's instance and its shared save counters.

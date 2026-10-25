@@ -106,10 +106,14 @@ mod tests {
                     DeviceCommunicationControlRequest {
                         time_duration: duration,
                         enable_disable: mode,
-                        password: password.map(str::to_owned),
+                        password: None,
                     }
                     .encode(&mut data)
                     .unwrap();
+                    // Appended by hand: the encoder refuses 21 characters (#2085).
+                    if let Some(password) = password {
+                        primitives::encode_ctx_character_string(&mut data, 2, password).unwrap();
+                    }
                     assert_matches_decoder(&data);
                     data.extend_from_slice(&[0x39, 7, 0xff]); // Trailing octets: never recovery.
                     assert_matches_decoder(&data);

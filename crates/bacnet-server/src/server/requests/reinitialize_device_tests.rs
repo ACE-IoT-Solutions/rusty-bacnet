@@ -29,10 +29,15 @@ fn request_data(state: ReinitializedState, password: Option<&str>) -> Bytes {
     let mut data = BytesMut::new();
     ReinitializeDeviceRequest {
         reinitialized_state: state,
-        password: password.map(str::to_owned),
+        password: None,
     }
     .encode(&mut data)
     .unwrap();
+    // Appended by hand, so a test can send what the encoder refuses: a
+    // password over 20 characters (#2085).
+    if let Some(password) = password {
+        bacnet_encoding::primitives::encode_ctx_character_string(&mut data, 1, password).unwrap();
+    }
     data.freeze()
 }
 
@@ -235,7 +240,11 @@ async fn reinitialize_device_accepts_a_twenty_character_multi_octet_password() {
         DccState::Enable,
     )
     .await;
-    assert!(!matches!(apdu, Apdu::SimpleAck(_)), "{apdu:?}");
+    // Valid encoding, size out of the service's range (#2085).
+    let Apdu::Reject(reject) = apdu else {
+        panic!("expected a Reject, got {apdu:?}")
+    };
+    assert_eq!(reject.reject_reason, RejectReason::PARAMETER_OUT_OF_RANGE);
     assert!(states(&received).is_empty());
 }
 

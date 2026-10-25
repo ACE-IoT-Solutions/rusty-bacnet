@@ -3156,7 +3156,8 @@ class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
     Supports BACnet/IP (``"bip"``), BACnet/IPv6 (``"ipv6"``),
-    BACnet/SC (``"sc"``), and BACnet MS/TP (``"mstp"``) transports.
+    BACnet/SC (``"sc"``), and BACnet MS/TP (``"mstp"``) transports, and a
+    ``BACnetRouter``'s own application entity (``"router"``, #2071).
 
     For SC, sc_ca_cert, sc_client_cert, and sc_client_key must be nonempty
     paths; omission, None, or empty strings raise ValueError at construction.
@@ -3246,8 +3247,25 @@ class BACnetClient:
         sc_failover_hub: str | None = None,
         sc_connect_timeout_ms: int | None = None,
         sc_control_rate_limit: tuple[int, int] | None = None,
+        router: Optional[BACnetRouter] = None,
     ) -> None:
-        """``sc_failover_hub`` (SC only, needs ``reconnect``, else
+        """``transport="router"`` with ``router`` (a ``BACnetRouter`` built
+        with ``application="client"`` or ``"client_and_server"``): run the
+        client on the router's own application entity (#2071), with the
+        router's address on each network as its own. Entry takes the client's
+        share from the running router, once per router start: before the
+        router starts, or when a client already took it, entry raises
+        RuntimeError. Requests go out through the router's table, so name
+        each device by its network: discover it, then use the
+        ``_from_device`` / ``_to_device`` methods. A send to an ``ip:port``
+        names no network and raises BacnetError. Once the router closes,
+        each request fails at once with BacnetTransportError (errno
+        ENOTCONN); stop the client as usual. With
+        ``application="client_and_server"`` the APDU timeout must be under
+        60000 ms. ``router`` without ``transport="router"``, or the reverse,
+        raises ValueError.
+
+        ``sc_failover_hub`` (SC only, needs ``reconnect``, else
         ValueError): a second hub's ``wss://`` URL, dialled with the same TLS
         settings when the primary can't be reached; the client keeps trying
         the primary and returns to it. ``sc_connect_timeout_ms`` (SC only, at
@@ -3830,7 +3848,11 @@ class BACnetClient:
         time_duration: Optional[int] = None,
         password: Optional[str] = None,
     ) -> Awaitable[None]:
-        """Send DeviceCommunicationControl to a remote device."""
+        """Send DeviceCommunicationControl to a remote device.
+
+        Raises ValueError, before anything is sent, for a password over 20
+        characters.
+        """
         ...
 
     def reinitialize_device(
@@ -3839,7 +3861,11 @@ class BACnetClient:
         reinitialized_state: ReinitializedState,
         password: Optional[str] = None,
     ) -> Awaitable[None]:
-        """Send ReinitializeDevice to a remote device."""
+        """Send ReinitializeDevice to a remote device.
+
+        Raises ValueError, before anything is sent, for a password over 20
+        characters.
+        """
         ...
 
     # --- Alarms and events ---
@@ -4719,9 +4745,26 @@ class BACnetServer:
         sc_control_rate_limit: tuple[int, int] | None = None,
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
+        router: Optional[BACnetRouter] = None,
     ) -> None:
         """``dcc_password`` and ``reinit_password`` hold at most 20
         characters; a longer one raises ValueError here (#2060).
+
+        ``transport="router"`` with ``router`` (a ``BACnetRouter`` built
+        with ``application="client_and_server"``): host the device on the
+        router's own application entity (#2071), answering at the router's
+        address on each of its networks, beside a ``BACnetClient`` on the
+        same router. ``start()`` takes the server's share from the running
+        router, once per router start; before the router starts, or when a
+        server already took it, it raises RuntimeError. Confirmed requests
+        to the router reach this server, except confirmed COV notifications,
+        which go to the client, and confirmed event notifications, which
+        reach both with only this server's answer sent; confirmed audit
+        notifications reach this server alone. Unconfirmed requests reach
+        both. A start refused before the server runs, such as for a
+        duplicate object name, leaves the share for the next start.
+        ``apdu_segment_timeout_ms`` must be under 60000. ``router`` without
+        ``transport="router"``, or the reverse, raises ValueError.
 
         ``on_reinitialize`` (default None): carry out ReinitializeDevice
         (#1566). It is called with a ``ReinitializeRequest`` once a request
@@ -7182,10 +7225,20 @@ class BacnetRouterCloseError(BacnetError):
 class BACnetRouter:
     """Own B/IP forwarding across one to 255 uniquely numbered ports.
 
-    This binding has no local application role, other transport types, or
-    route administration. It uses native RouterOptions defaults, including
-    their permissive wire-control policy. The first asynchronous method binds
-    the object to the running asyncio loop; another loop raises RuntimeError.
+    This binding has no other transport types or route administration. It
+    uses native RouterOptions defaults, including their permissive
+    wire-control policy. The first asynchronous method binds the object to
+    the running asyncio loop; another loop raises RuntimeError.
+
+    Keyword-only ``application`` shares the router's own application entity
+    (#2071): None (the default) only forwards; ``"client"`` gives the whole
+    entity to one ``BACnetClient``; ``"client_and_server"`` splits it
+    between a ``BACnetClient`` and a ``BACnetServer``. Build each with
+    ``transport="router", router=router``; each takes its share when it
+    starts, once per router start. Closing the router ends both shares:
+    their requests then fail with BacnetTransportError, and a restarted
+    router makes new shares for newly started stacks. The network-control
+    receiver stays internal.
 
     Successful awaited close/context exit joins router and transport cleanup.
     Cancellation removes only a waiter: await close to observe the barrier.
@@ -7194,7 +7247,19 @@ class BACnetRouter:
     is supported only after successful cleanup. Destruction requests best-effort
     cleanup on the shared runtime; it is not an awaited cleanup guarantee.
     """
-    def __init__(self, ports: Sequence[BipRouterPort]) -> None: ...
+    def __init__(
+        self,
+        ports: Sequence[BipRouterPort],
+        *,
+        application: Optional[Literal["client", "client_and_server"]] = None,
+    ) -> None:
+        """An ``application`` other than None, ``"client"`` or
+        ``"client_and_server"`` raises ValueError."""
+        ...
+    @property
+    def application(self) -> Optional[Literal["client", "client_and_server"]]:
+        """How the router shares its application entity."""
+        ...
     def start(self) -> Awaitable[None]:
         """Start; duplicate start raises RuntimeError. Native startup errors
         retain their exception class and errno. An unsuccessful native start

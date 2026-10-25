@@ -447,8 +447,8 @@ pub(crate) enum Command {
         /// Duration in minutes.
         #[arg(long)]
         duration: Option<u16>,
-        /// Password.
-        #[arg(long)]
+        /// Password, at most 20 characters.
+        #[arg(long, value_parser = DevicePassword)]
         password: Option<String>,
     },
 
@@ -458,8 +458,8 @@ pub(crate) enum Command {
         target: String,
         /// State: coldstart, warmstart.
         state: String,
-        /// Password.
-        #[arg(long)]
+        /// Password, at most 20 characters.
+        #[arg(long, value_parser = DevicePassword)]
         password: Option<String>,
     },
 
@@ -657,6 +657,36 @@ pub(crate) enum McpAction {
         #[arg(long, value_name = "NAME")]
         profile: String,
     },
+}
+
+/// The `--password` of `control` and `reinit`: refused at parse time when
+/// longer than the requests carry (#2085), so nothing is resolved or sent.
+/// Its error names the limit but never echoes the password, which clap's
+/// mapped parsers would.
+#[derive(Clone, Copy)]
+struct DevicePassword;
+
+impl TypedValueParser for DevicePassword {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<String, clap::Error> {
+        use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_fits};
+        let password = clap::builder::StringValueParser::new().parse_ref(cmd, arg, value)?;
+        if password_fits(&password) {
+            return Ok(password);
+        }
+        let name = arg.map_or_else(|| "--password".to_owned(), ToString::to_string);
+        Err(clap::Error::raw(
+            clap::error::ErrorKind::ValueValidation,
+            format!("{name} exceeds the {MAX_PASSWORD_CHARS}-character limit\n"),
+        )
+        .with_cmd(cmd))
+    }
 }
 
 /// Capture global argument provenance and validate cross-command requirements.
@@ -986,5 +1016,36 @@ mod tests {
                 .to_string()
                 .contains("BACnetTimeStamp hour must be 0..=23 or 255 (unspecified), got 24")
         );
+    }
+
+    /// `control`/`dcc` and `reinit` refuse a `--password` over 20 characters
+    /// at parse time, before anything is resolved or sent, without echoing
+    /// it (#2085). Twenty multi-octet characters pass.
+    #[test]
+    fn device_passwords_over_the_limit_are_refused_at_parse_time() {
+        const TWENTY: &str = "éééééééééééééééééééé";
+        const TWENTY_ONE: &str = "ééééééééééééééééééééé";
+        assert_eq!(TWENTY.chars().count(), 20);
+        assert_eq!(TWENTY_ONE.chars().count(), 21);
+        for head in [
+            ["bacnet", "control", "10.0.0.1", "enable"],
+            ["bacnet", "dcc", "10.0.0.1", "enable"],
+            ["bacnet", "reinit", "10.0.0.1", "warmstart"],
+        ] {
+            let [a, b, c, d] = head;
+            let cli = parse([a, b, c, d, "--password", TWENTY]).unwrap();
+            let Some(Command::Control { password, .. } | Command::Reinit { password, .. }) =
+                cli.command
+            else {
+                panic!("unexpected command for {head:?}");
+            };
+            assert_eq!(password.as_deref(), Some(TWENTY));
+
+            let error = parse([a, b, c, d, "--password", TWENTY_ONE]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ValueValidation, "{head:?}");
+            let text = error.to_string();
+            assert!(text.contains("20-character limit"), "{text}");
+            assert!(!text.contains("éé"), "the password leaked: {text}");
+        }
     }
 }

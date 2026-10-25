@@ -82,7 +82,9 @@ These additions were merged on `dev` after v{release}. Until a release carries t
 
 `BACnetRouter([BipRouterPort(network, interface=..., port=..., broadcast_address=...), ...])` owns a B/IP router with 1 to 255 ports (#1858). The `bbmd=Bbmd(...)` and `foreign_device=ForeignDevice(...)` options the client and server take work on a port too. Start it with `async with` or `await router.start()`; `await router.ports()` gives each port's actual address, and `await router.routes()` copies the routing table. A successful `await router.close()`, or leaving the context, waits until every port's socket is closed.
 
-It routes between B/IP networks only and has no application of its own: host a device with a `BACnetServer` on one of the attached networks. It uses the native defaults, including the permissive policy for routing messages, and exposes none of the options above.
+It routes between B/IP networks only. It uses the native defaults, including the permissive policy for routing messages, and exposes none of the options above.
+
+The router's own application entity can host Python stacks too (#2071). Build the router with `application="client"` for one `BACnetClient`, or `application="client_and_server"` for a `BACnetClient` and a `BACnetServer`, and build each stack with `transport="router", router=router`. Each takes its share when it starts, once per router start. The client reaches every device through the router's table, so it names each one by its network: find devices with a Who-Is, then use the `_from_device` methods. The server answers at the router's address on each network. Closing the router ends both shares, and their requests then fail at once.
 
 ### Stopping reports failures
 

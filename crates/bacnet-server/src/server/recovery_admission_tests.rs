@@ -231,10 +231,15 @@ fn enable(id: u8, password: Option<&str>) -> Apdu {
     DeviceCommunicationControlRequest {
         time_duration: None,
         enable_disable: EnableDisable::ENABLE,
-        password: password.map(str::to_owned),
+        password: None,
     }
     .encode(&mut data)
     .unwrap();
+    // Appended by hand, so a test can send what the encoder refuses: a
+    // password over 20 characters (#2085).
+    if let Some(password) = password {
+        bacnet_encoding::primitives::encode_ctx_character_string(&mut data, 2, password).unwrap();
+    }
     req.service_request = data.freeze();
     Apdu::ConfirmedRequest(req)
 }
