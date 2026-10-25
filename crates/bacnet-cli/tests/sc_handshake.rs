@@ -34,7 +34,8 @@ async fn read_value(files: &Files, url: &str, leaf: &Leaf, ca: &std::path::Path,
     assert_eq!(
         json,
         serde_json::json!({
-            "object": "DEVICE:123", "property": "OBJECT_NAME", "value": "\"CLI site device\""
+            "object": "DEVICE:123", "property": "OBJECT_NAME", "value": "\"CLI site device\"",
+            "decoded": "CLI site device"
         })
     );
 }
@@ -116,7 +117,8 @@ async fn read_property_with_a_vmac_target() {
             assert_eq!(
                 json,
                 serde_json::json!({
-                    "object": "DEVICE:123", "property": "OBJECT_NAME", "value": "\"CLI site device\""
+                    "object": "DEVICE:123", "property": "OBJECT_NAME", "value": "\"CLI site device\"",
+                    "decoded": "CLI site device"
                 }),
                 "{vmac}"
             );

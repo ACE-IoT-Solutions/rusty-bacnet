@@ -131,7 +131,12 @@ async fn a_routed_read_reaches_the_device_behind_the_router() {
         // The same shape a local read prints.
         assert_eq!(
             value,
-            json!({ "object": "ANALOG_INPUT:2", "property": "PRESENT_VALUE", "value": "51" }),
+            json!({
+                "object": "ANALOG_INPUT:2",
+                "property": "PRESENT_VALUE",
+                "value": "51",
+                "decoded": 51.0
+            }),
             "{target}"
         );
     }

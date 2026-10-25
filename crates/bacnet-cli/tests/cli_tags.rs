@@ -84,7 +84,12 @@ async fn cli_tags_whole_read_has_named_values_in_existing_json_schema() {
     let mut server = server().await;
     let output = read(&target(&server), "json", "read", "color:1", "tags").await;
     server.stop().await.unwrap();
-    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    // The typed form sits beside the text (#2078).
+    assert_eq!(
+        value.as_object_mut().unwrap().remove("decoded"),
+        Some(json!([{"text": "exhaust"}, {"text": "floor = 3"}]))
+    );
     assert_eq!(
         value,
         json!({"object": "COLOR:1", "property": "TAGS", "value": "[\"exhaust\", \"floor\"=3]"})
@@ -147,6 +152,10 @@ async fn cli_tags_rp_and_rpm_table_json_preserve_shapes_and_property_errors() {
             if command == "readm" {
                 value = value.as_array().unwrap()[0].clone();
             }
+            assert!(
+                value.as_object_mut().unwrap().remove("decoded").is_some(),
+                "{output}"
+            );
             assert_eq!(
                 value,
                 json!({"object": object.to_uppercase(), "property": property.to_uppercase(), "value": expected})
@@ -161,10 +170,12 @@ async fn cli_tags_rp_and_rpm_table_json_preserve_shapes_and_property_errors() {
     assert_eq!(
         mixed,
         json!([
-            {"object":"COLOR:1","property":"TAGS","value":"[\"exhaust\", \"floor\"=3]"},
-            {"object":"COLOR:1","property":"TAGS[1]","value":"\"exhaust\""},
-            {"object":"COLOR:1","property":"TAGS[0]","value":"2"},
-            {"object":"COLOR:1","property":"OBJECT_NAME","value":"\"color\""},
+            {"object":"COLOR:1","property":"TAGS","value":"[\"exhaust\", \"floor\"=3]",
+             "decoded":[{"text":"exhaust"},{"text":"floor = 3"}]},
+            {"object":"COLOR:1","property":"TAGS[1]","value":"\"exhaust\"",
+             "decoded":{"text":"exhaust"}},
+            {"object":"COLOR:1","property":"TAGS[0]","value":"2","decoded":2},
+            {"object":"COLOR:1","property":"OBJECT_NAME","value":"\"color\"","decoded":"color"},
             {"object":"COLOR:1","property":"PROFILE_NAME","value":"ERROR: PROPERTY:UNKNOWN_PROPERTY"}
         ])
     );

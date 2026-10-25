@@ -254,7 +254,12 @@ mod pty {
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
             value,
-            json!({ "object": "ANALOG_INPUT:2", "property": "PRESENT_VALUE", "value": "51" })
+            json!({
+                "object": "ANALOG_INPUT:2",
+                "property": "PRESENT_VALUE",
+                "value": "51",
+                "decoded": 51.0
+            })
         );
         server.stop().await.unwrap();
         drop(cli_end);
