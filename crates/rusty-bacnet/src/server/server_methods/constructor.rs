@@ -72,7 +72,8 @@ impl BACnetServer {
         sc_npdu_per_origin_limit=None,
         sc_control_rate_limit=None,
         on_reinitialize=None,
-        after_reinitialize=None
+        after_reinitialize=None,
+        router=None
     ))]
     fn new(
         device_instance: u32,
@@ -144,7 +145,15 @@ impl BACnetServer {
         sc_control_rate_limit: Option<(u32, u32)>,
         on_reinitialize: Option<&Bound<'_, PyAny>>,
         after_reinitialize: Option<&Bound<'_, PyAny>>,
+        router: Option<PyRef<'_, crate::router::PyBACnetRouter>>,
     ) -> PyResult<Self> {
+        let router = crate::router::application::stack_router(
+            transport,
+            router,
+            crate::router::application::Role::Server,
+            apdu_segment_timeout_ms,
+            "apdu_segment_timeout_ms",
+        )?;
         let reinitialize = crate::reinitialize::parse(on_reinitialize, after_reinitialize)?;
         let sc_npdu_admission_policy =
             crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit, sc_control_rate_limit)?;
@@ -293,6 +302,7 @@ impl BACnetServer {
             pending_objects: std::sync::Mutex::new(Vec::new()),
             pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
             forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
+            router,
         })
     }
 

@@ -36,6 +36,7 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_types::enums::{AcknowledgmentFilter, ConfirmedServiceChoice, UnconfirmedServiceChoice};
 use bacnet_types::primitives::BACnetTimeStamp;
 
+use crate::app_transport::AppTransport;
 use crate::errors::to_py_err;
 use crate::types::{
     PeerAddresses, PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator,
@@ -48,7 +49,7 @@ use crate::types::{
 };
 use state::started;
 
-type CoreClient = client::BACnetClient<AnyTransport>;
+type CoreClient = client::BACnetClient<AppTransport>;
 type ClientInner = Arc<state::ClientState>;
 
 fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {
@@ -105,6 +106,10 @@ fn device_range(
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
+/// - `"router"`: the application entity of `router=`, a `BACnetRouter`
+///   built with `application=` (#2071). Address devices by network, through
+///   discovery and the `_from_device`/`_to_device` methods: an `ip:port`
+///   names no network, so a send to one fails.
 ///
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// Files are loaded on async entry; invalid TLS configuration raises RuntimeError
@@ -149,6 +154,9 @@ pub struct BACnetClient {
     ipv6_device_instance: Option<u32>,
     /// The MS/TP keywords, `serial_port` included.
     mstp: crate::mstp_py::MstpOptions,
+    /// The router whose application entity `transport="router"` runs on
+    /// (#2071).
+    router: Option<crate::router::application::RouterApplication>,
     /// Least time between confirmed requests to one destination (#1535).
     min_request_interval_ms: u64,
 }

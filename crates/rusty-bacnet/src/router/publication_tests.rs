@@ -1,3 +1,4 @@
+use super::super::application::Application;
 use super::super::config::PortConfig;
 use super::*;
 use bacnet_transport::bip::BipMode;
@@ -7,13 +8,16 @@ async fn started() -> (Lifecycle<NativeSession>, u64) {
     let owner = Lifecycle::new();
     let generation = owner
         .start(false, || {
-            NativeSession::new(vec![PortConfig {
-                network_number: 1,
-                interface: std::net::Ipv4Addr::LOCALHOST,
-                port: 0,
-                broadcast: std::net::Ipv4Addr::LOCALHOST,
-                mode: BipMode::Normal,
-            }])
+            NativeSession::new(
+                vec![PortConfig {
+                    network_number: 1,
+                    interface: std::net::Ipv4Addr::LOCALHOST,
+                    port: 0,
+                    broadcast: std::net::Ipv4Addr::LOCALHOST,
+                    mode: BipMode::Normal,
+                }],
+                Application::None,
+            )
         })
         .await
         .unwrap()
@@ -73,7 +77,7 @@ async fn unread_start_and_context_entry_clean_before_publication_is_armed() {
             broadcast: std::net::Ipv4Addr::LOCALHOST,
             mode: BipMode::Normal,
         }];
-        let mut start = Box::pin(publication.start(reenter, configs));
+        let mut start = Box::pin(publication.start(reenter, configs, Application::None));
         std::future::poll_fn(|cx| {
             assert!(start.as_mut().poll(cx).is_pending());
             std::task::Poll::Ready(())
@@ -114,6 +118,7 @@ async fn successful_receipt_transfer_arms_the_guard_and_keeps_delivered_owner() 
                     broadcast: std::net::Ipv4Addr::LOCALHOST,
                     mode: BipMode::Normal,
                 }],
+                Application::None,
             )
             .await
             .unwrap();
