@@ -633,6 +633,7 @@ impl TransportPort for BipTransport {
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
+            self.multicast.set_bbmd_serves_group(multicast.is_some());
             Some(ip)
         } else if let Some(bbmd) = self.bbmd.as_ref().filter(|_| wildcard_bind) {
             // An explicit interface keeps its IP and port, and its mask,
@@ -646,14 +647,17 @@ impl TransportPort for BipTransport {
             bbmd::lock(bbmd).set_subnet_mask(mask);
             Some(ip)
         } else {
-            // A restart may come with another group, or none, and a Network
-            // Port activation may have moved the group at run time (#1963):
-            // the state itself says which rule it holds.
-            if let Some(bbmd) = &self.bbmd {
-                let mut state = bbmd::lock(bbmd);
-                if state.serves_group() != multicast.is_some() {
-                    state.set_serves_group(multicast.is_some())?;
-                }
+            // A restart may come with another group, or none: only then is
+            // the state locked. The rule it holds is tracked beside it, a
+            // run-time activation of the group included (#1963).
+            let group = multicast.is_some();
+            if let Some(bbmd) = self
+                .bbmd
+                .as_ref()
+                .filter(|_| self.multicast.bbmd_serves_group() != group)
+            {
+                bbmd::lock(bbmd).set_serves_group(group)?;
+                self.multicast.set_bbmd_serves_group(group);
             }
             None
         };

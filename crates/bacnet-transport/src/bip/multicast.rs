@@ -372,6 +372,10 @@ pub(crate) struct MulticastControl {
     /// changes through this view alone (module docs). The transport sets it
     /// each time it lends the view.
     bbmd: std::sync::atomic::AtomicBool,
+    /// Whether the started BBMD's state holds the group's own-row rule
+    /// (`BbmdState::serves_group`), as a start or an activation of its
+    /// group last set it, so a restart locks the state only to change it.
+    bbmd_serves_group: std::sync::atomic::AtomicBool,
     /// Makes the next listener an activation opens fail, for tests. Not on
     /// Windows, which opens no listener.
     #[cfg(all(test, not(windows)))]
@@ -395,6 +399,7 @@ impl MulticastControl {
             interface,
             configured_port,
             bbmd: Default::default(),
+            bbmd_serves_group: Default::default(),
             #[cfg(all(test, not(windows)))]
             fail_next_listener: Default::default(),
             #[cfg(test)]
@@ -479,6 +484,18 @@ impl MulticastControl {
             state.port = multicast.port;
         }
         state.config = multicast;
+    }
+
+    /// Whether the started BBMD's state serves a group, as last set.
+    pub(super) fn bbmd_serves_group(&self) -> bool {
+        self.bbmd_serves_group
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Note whether the started BBMD's state serves a group.
+    pub(super) fn set_bbmd_serves_group(&self, serves: bool) {
+        self.bbmd_serves_group
+            .store(serves, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Say whether the transport is a BBMD, configured or started.
@@ -755,6 +772,7 @@ impl GroupChange for MulticastControl {
             return Err(error);
         }
         self.commit(&node, running, prepared, old);
+        self.set_bbmd_serves_group(next.is_some());
         info!(group = ?next.map(|multicast| multicast.group), "B/IP multicast BBMD moved to a new group");
         state.config = next;
         Self::persist(&state);
