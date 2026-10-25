@@ -34,6 +34,7 @@ fn provenance_variants_and_scope() {
 
     let direct = TransportProvenance::verified_direct_peer(
         crate::port::DirectScIdentity::verified([1; 32], 1),
+        Default::default(),
     );
     assert!(direct.is_direct_peer());
     assert!(direct.is_verified());
@@ -54,9 +55,11 @@ fn provenance_variants_and_scope() {
     assert_ne!(hub, direct);
     assert_ne!(hub, relayed);
 
-    fn value_traits<T: Copy + Eq + std::hash::Hash>() {}
+    fn value_traits<T: Clone + Eq + std::hash::Hash>() {}
+    fn copy_traits<T: Copy>() {}
     value_traits::<TransportProvenance>();
     value_traits::<crate::port::DirectScIdentity>();
+    copy_traits::<crate::port::DirectScIdentity>();
 
     // Snapshots compare by value; conflicting contexts fail closed elsewhere.
     assert_ne!(unverified, direct);
@@ -356,9 +359,10 @@ async fn queueing_cannot_change_provenance_meaning() {
     let (tx, mut rx) = mpsc::channel(4);
     for provenance in [
         TransportProvenance::unverified(),
-        TransportProvenance::verified_direct_peer(crate::port::DirectScIdentity::verified(
-            [1; 32], 1,
-        )),
+        TransportProvenance::verified_direct_peer(
+            crate::port::DirectScIdentity::verified([1; 32], 1),
+            Default::default(),
+        ),
         TransportProvenance::verified_relayed_origin(),
     ] {
         tx.send(ReceivedNpdu {
@@ -367,7 +371,7 @@ async fn queueing_cannot_change_provenance_meaning() {
             source_mac: MacAddr::from_slice(&[0x09]),
             link_layer_group: false,
             data_attributes: Vec::new(),
-            provenance,
+            provenance: provenance.clone(),
             reply_tx: None,
         })
         .await
@@ -388,6 +392,7 @@ fn debug_is_redacted_no_key_material() {
         data_attributes: Vec::new(),
         provenance: TransportProvenance::verified_direct_peer(
             crate::port::DirectScIdentity::verified([1; 32], 1),
+            Default::default(),
         ),
         reply_tx: None,
     };

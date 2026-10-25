@@ -114,7 +114,7 @@ fn preserve_inbound_context(
         received.link_layer_group,
         received.is_group,
         received.data_attributes.clone(),
-        received.provenance,
+        received.provenance.clone(),
         received.source_network.clone(),
         received.ingress_network,
     )

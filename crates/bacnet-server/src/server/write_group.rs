@@ -105,8 +105,8 @@ impl Requester<'_> {
             let context = MutationAuthorizationContext {
                 source_mac: MacAddr::from_slice(self.source_mac),
                 source_network: self.source_network.cloned(),
-                provenance: self.provenance,
-                trust: MutationTrust::from_provenance(self.provenance),
+                provenance: self.provenance.clone(),
+                trust: MutationTrust::from_provenance(&self.provenance),
                 invoke_id: None,
                 service_choice: WRITE_GROUP,
                 target: MutationTarget::WriteGroup(WriteGroupTarget {
@@ -268,7 +268,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             decisions: &services.mutation_decisions,
             source_mac: &received.source_mac,
             source_network: received.source_network.as_ref(),
-            provenance: received.provenance,
+            provenance: received.provenance.clone(),
             audit_source,
         };
         let runner = CommandRunner::for_unconfirmed(services);

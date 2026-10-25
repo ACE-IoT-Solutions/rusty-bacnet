@@ -54,7 +54,7 @@ impl LocalControl {
             source_mac: received.source_mac.clone(),
             link_layer_group: received.link_layer_group,
             data_attributes: received.data_attributes.clone(),
-            provenance: received.provenance,
+            provenance: received.provenance.clone(),
             ingress_sequence: next_ingress_sequence(&self.ingress_sequence),
         });
     }

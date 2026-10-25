@@ -470,7 +470,7 @@ pub(super) fn remove_peer_aborted_request(
             &received.source_mac,
             received.source_network.as_ref(),
             abort.invoke_id,
-            received.provenance,
+            received.provenance.clone(),
         );
         remove_matching_reassemblies(receivers, &key);
     }

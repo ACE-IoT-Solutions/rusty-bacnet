@@ -259,7 +259,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                     InboundApdu {
                                         source_mac: &received.source_mac,
                                         source_network: &received.source_network,
-                                        provenance: received.provenance,
+                                        provenance: received.provenance.clone(),
                                         response_route: received.response_route(),
                                         is_group: received.is_group,
                                         reply_tx: received.reply_tx,

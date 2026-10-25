@@ -933,7 +933,7 @@ async fn handle_inbound(parts: &mut DispatchParts, received: ReceivedApdu) {
     let _link_group = received.link_layer_group;
     let _is_group = received.is_group;
     let _attributes = received.data_attributes.clone();
-    let _provenance = received.provenance;
+    let _provenance = &received.provenance;
     let _ingress = received.ingress_network;
     let Some(responder) = parts.responder.as_ref() else {
         let mut counters = parts.shared.counters.lock().await;

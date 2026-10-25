@@ -76,8 +76,8 @@ impl Request<'_> {
         let context = MutationAuthorizationContext {
             source_mac: MacAddr::from_slice(self.source_mac),
             source_network: self.source_network.cloned(),
-            provenance: self.provenance,
-            trust: MutationTrust::from_provenance(self.provenance),
+            provenance: self.provenance.clone(),
+            trust: MutationTrust::from_provenance(&self.provenance),
             invoke_id: Some(self.req.invoke_id),
             service_choice: self.req.service_choice.into(),
             target,

@@ -268,7 +268,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         // Abort arm cancels in-flight segmented response
                         // senders and records server-TSM results (#377).
                         // Provenance snapshot for this ingress (RB-07, by value).
-                        let provenance = received.provenance;
+                        let provenance = received.provenance.clone();
                         let route = received.response_route();
                         super::segmented_receive::remove_peer_aborted_request(
                             &mut seg_receivers,
@@ -284,7 +284,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     source_mac.as_slice(),
                                     source_network.as_ref(),
                                     req.invoke_id,
-                                    provenance,
+                                    provenance.clone(),
                                 );
                                 if let Some(conflict) =
                                     super::segmented_receive::find_receive_provenance_conflict(

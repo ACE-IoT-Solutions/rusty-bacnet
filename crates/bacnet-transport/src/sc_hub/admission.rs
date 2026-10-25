@@ -184,7 +184,7 @@ impl super::HubClientRegistrationDecision {
 ///
 /// Only requests that already passed shape validation (nonzero UUID,
 /// nonzero limits) and reserved-VMAC screening reach the policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScHubAdmissionInput {
     /// Current registry relationship, classified before this policy executes
     /// under the same lock as the eventual registration decision. An Allow

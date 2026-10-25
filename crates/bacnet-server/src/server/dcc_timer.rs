@@ -1,4 +1,5 @@
 use super::*;
+use crate::device_communication_control::DeviceCommunicationControlAuthorizationContext;
 use bacnet_types::enums::AuditOperation;
 
 #[path = "comm_state.rs"]
@@ -63,6 +64,10 @@ pub(super) struct DccRequest<'a> {
     /// This network's own number as read for the request, against which a
     /// routed source restriction entry names a direct requester (#1458).
     pub(super) local_network: Option<u16>,
+    /// The ingress snapshot the policy's principal comes from (#1964).
+    pub(super) provenance: bacnet_transport::port::TransportProvenance,
+    /// The request's invoke ID, for the policy's context.
+    pub(super) invoke_id: u8,
 }
 
 /// Apply a DCC request and own its revert timer. Whenever communication is
@@ -95,20 +100,37 @@ pub(super) async fn replace<T: TransportPort + 'static>(
         source_mac,
         source,
         local_network,
+        provenance,
+        invoke_id,
     } = request;
     // Decode and validate once, retaining only non-secret proposed state and
     // metadata. Never change live state before a cancellable await.
     let (proposed, duration) =
         handlers::device_mgmt::validate_dcc(service_data, &config.dcc_password, config.dcc_policy)?;
     let mode = bacnet_types::enums::EnableDisable::from(proposed).to_raw();
-    // Short-circuit source refusal before touching the shared budget. ENABLE
-    // never checks it. A successful charge precedes every cancellable await.
+    // Short-circuit source refusal, then the installed ServerPolicy (#1964; a
+    // panic in it denies), before touching the shared disable budget, so a
+    // refused requester never spends it. ENABLE never checks the budget. A
+    // successful charge precedes every cancellable await.
     if config
         .dcc_source_restriction
         .as_ref()
         .is_some_and(|restriction| {
             config.dcc_policy != DccPolicy::RequirePassword
                 || !restriction.allows(source_mac, source, local_network)
+        })
+        || config.policy.as_ref().is_some_and(|policy| {
+            let context = DeviceCommunicationControlAuthorizationContext {
+                source_mac: MacAddr::from_slice(source_mac),
+                source_network: source.cloned(),
+                provenance,
+                invoke_id,
+                requested_state: proposed,
+                duration_minutes: duration,
+            };
+            !super::requests::fail_closed_authorize(|| {
+                policy.authorize_device_communication_control(&context)
+            })
         })
         || (proposed == DccState::DisableInitiation && !request_tasks.admit_dcc_disable())
     {

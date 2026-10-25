@@ -132,7 +132,7 @@ async fn direct_response_router_local_delivery_preserves_matching_capability() {
         ),
     ] {
         let mut envelope = f.capture(&mut a, &read_name(invoke)).await;
-        let expected = envelope.provenance;
+        let expected = envelope.provenance.clone();
         let mut npdu = decode_npdu(envelope.npdu).unwrap();
         npdu.destination = destination.clone();
         let mut bytes = BytesMut::new();

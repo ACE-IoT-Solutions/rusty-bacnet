@@ -66,12 +66,12 @@ pub(super) fn find_provenance_conflict(
     seg_state: &HashMap<SegKey, SegmentedReceiveState>,
     tsm_mac: &MacAddr,
     invoke_id: u8,
-    provenance: TransportProvenance,
+    provenance: &TransportProvenance,
 ) -> Option<SegKey> {
     seg_state
         .keys()
         .find(|existing| {
-            existing.0 == *tsm_mac && existing.1 == invoke_id && existing.2 != provenance
+            existing.0 == *tsm_mac && existing.1 == invoke_id && existing.2 != *provenance
         })
         .cloned()
 }

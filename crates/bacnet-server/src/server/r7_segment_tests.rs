@@ -18,7 +18,7 @@ fn open(
         &received.source_mac,
         received.source_network.as_ref(),
         request.invoke_id,
-        received.provenance,
+        received.provenance.clone(),
     );
     let (state, ack) = initial_state(
         payload,
@@ -326,7 +326,7 @@ async fn r7_segment_alternate_return_paths_keep_opening_reply_plan() {
                 &continuation.source_mac,
                 continuation.source_network.as_ref(),
                 last.invoke_id,
-                continuation.provenance,
+                continuation.provenance.clone(),
             ),
             "canonical routed requester did not change"
         );

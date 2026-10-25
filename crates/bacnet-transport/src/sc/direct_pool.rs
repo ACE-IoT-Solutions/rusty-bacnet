@@ -53,6 +53,10 @@ impl PooledDirect {
             .map(|leaf| crate::port::DirectScIdentity::verified(leaf, member.generation));
         #[cfg(feature = "sc-tls")]
         let response = identity.map(|identity| crate::port::DirectResponse::new(&member, identity));
+        #[cfg(feature = "sc-tls")]
+        let provenance = identity.map(|identity| {
+            crate::port::TransportProvenance::verified_direct_peer(identity, ws.leaf_certificate())
+        });
         let wait = member.egress.wait;
         let mut recv = member.take_writes();
         let owner = member.clone();
@@ -129,13 +133,13 @@ impl PooledDirect {
                                     #[cfg(feature = "sc-tls")]
                                     if let (
                                         Some(intake),
-                                        Some(identity),
+                                        Some(provenance),
                                         Some(response),
                                         Some(address),
                                         Some(npdu),
                                     ) = (
                                         &intake,
-                                        identity,
+                                        &provenance,
                                         &response,
                                         ws.peer_address(),
                                         direct_npdu(&message, local_limits.1),
@@ -148,7 +152,7 @@ impl PooledDirect {
                                                 DirectPeer {
                                                     vmac: owner.vmac,
                                                     addr: address,
-                                                    identity,
+                                                    provenance: provenance.clone(),
                                                     response: Some(response.clone()),
                                                 },
                                             )
