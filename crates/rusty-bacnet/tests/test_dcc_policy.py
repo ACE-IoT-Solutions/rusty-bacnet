@@ -336,9 +336,10 @@ class DccNativeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "password exceeds the 20-character limit"):
                     client.reinitialize_device(address, ReinitializedState.COLDSTART,
                                                password="é" * 21)
-                await client.device_communication_control(address, EnableDisable.DISABLE,
-                                                          time_duration=1, password="é" * 20)
-            self.assertEqual(await server.comm_state(), EnableDisable.DISABLE)
+                await client.device_communication_control(
+                    address, EnableDisable.DISABLE_INITIATION, time_duration=1,
+                    password="é" * 20)
+            self.assertEqual(await server.comm_state(), EnableDisable.DISABLE_INITIATION)
             self.assertEqual(await server.dcc_outcome_counters(), dict(
                 accepted_total=1, policy_denied_total=0, password_failure_total=0,
                 deprecated_denied_total=0, malformed_total=0))
