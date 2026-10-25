@@ -21,14 +21,28 @@ use bytes::BytesMut;
 
 /// Longest password, in characters, the DCC and ReinitializeDevice requests
 /// carry (Clauses 16.1.1.1.3 and 16.4.1.1.2).
-const MAX_PASSWORD_CHARS: usize = 20;
+pub const MAX_PASSWORD_CHARS: usize = 20;
+
+/// Whether `password` is within [`MAX_PASSWORD_CHARS`]. The limit counts
+/// characters, not octets, so a multi-octet UTF-8 character counts once. A
+/// server or endpoint checks its configured password with it, since a longer
+/// one could never be sent.
+///
+/// ```
+/// use bacnet_services::device_mgmt::password_fits;
+///
+/// assert!(password_fits(&"é".repeat(20)));
+/// assert!(!password_fits(&"a".repeat(21)));
+/// ```
+pub fn password_fits(password: &str) -> bool {
+    password.chars().count() <= MAX_PASSWORD_CHARS
+}
 
 /// Whether a decoded password is longer than [`MAX_PASSWORD_CHARS`]. The
-/// limit counts characters, not octets: the decoder has already converted
-/// UTF-8, UCS-2 and ISO 8859-1 contents to a `String`, one `char` per
-/// character of the sender's set, so a multi-octet UTF-8 character counts once.
+/// decoder has already converted UTF-8, UCS-2 and ISO 8859-1 contents to a
+/// `String`, one `char` per character of the sender's set.
 fn password_too_long(password: Option<&String>) -> bool {
-    password.is_some_and(|s| s.chars().count() > MAX_PASSWORD_CHARS)
+    password.is_some_and(|s| !password_fits(s))
 }
 
 // ---------------------------------------------------------------------------

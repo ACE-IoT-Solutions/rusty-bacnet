@@ -344,3 +344,25 @@ async fn a_password_without_a_handler_is_refused() {
         "got {error}"
     );
 }
+
+/// A configured password over 20 characters could never be sent, so startup
+/// refuses it; 20 multi-octet characters are within the limit (#2060).
+#[tokio::test]
+async fn a_password_over_twenty_characters_is_refused() {
+    let session = |password: String| {
+        let (transport, _peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
+        EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())
+            .unwrap()
+            .with_database(database(&[123]))
+            .with_reinitialize(|_: &ReinitializeContext, _: &mut ObjectDatabase| Ok(()))
+            .with_reinit_password(password)
+    };
+    assert_refused(
+        &mut session("é".repeat(21)),
+        "reinit_password exceeds 20 characters",
+    )
+    .await;
+    let mut fits = session("é".repeat(20));
+    fits.start().await.unwrap();
+    fits.stop().await.unwrap();
+}

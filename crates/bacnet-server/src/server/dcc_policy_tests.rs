@@ -364,6 +364,48 @@ async fn dcc_require_password_rejected_before_start() {
     assert!(debug.contains("DenyAll"));
 }
 
+/// A configured DCC or ReinitializeDevice password over 20 characters could
+/// never be sent, so the server refuses it before start; 20 multi-octet
+/// characters are within the limit (#2060).
+#[tokio::test]
+async fn configured_password_over_twenty_characters_rejected_before_start() {
+    let too_long = "é".repeat(21);
+    for (config, name) in [
+        (
+            ServerConfig {
+                dcc_password: Some(too_long.clone()),
+                ..Default::default()
+            },
+            "dcc_password",
+        ),
+        (
+            ServerConfig {
+                reinit_password: Some(too_long.clone()),
+                ..Default::default()
+            },
+            "reinit_password",
+        ),
+    ] {
+        let started = Arc::new(AtomicBool::new(false));
+        let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&error, Error::Encoding(m) if m == &format!("{name} exceeds 20 characters, so no request could match it")),
+            "{error:?}"
+        );
+        assert!(!started.load(Ordering::Acquire));
+    }
+    let fits = "é".repeat(20);
+    let config = ServerConfig {
+        dcc_password: Some(fits.clone()),
+        reinit_password: Some(fits),
+        ..Default::default()
+    };
+    config.validate_dcc_config().unwrap();
+}
+
 #[cfg(feature = "sc-tls")]
 #[tokio::test]
 async fn dcc_require_password_rejected_before_sc_dial() {

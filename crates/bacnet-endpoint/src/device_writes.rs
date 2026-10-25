@@ -129,6 +129,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "a ReinitializeDevice password requires a ReinitializeDevice handler".into(),
             ));
         }
+        // Past the 20-character limit no request could carry it (#2060).
+        if self
+            .reinit_password
+            .as_deref()
+            .is_some_and(|password| !bacnet_services::device_mgmt::password_fits(password))
+        {
+            return Err(Error::Encoding(format!(
+                "reinit_password exceeds {} characters, so no request could match it",
+                bacnet_services::device_mgmt::MAX_PASSWORD_CHARS
+            )));
+        }
         // Names the enabled capabilities that need the Device.
         let (capability, subject) = match (writes, reinitialize) {
             (true, true) => (
