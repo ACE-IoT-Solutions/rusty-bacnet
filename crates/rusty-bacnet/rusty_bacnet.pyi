@@ -4412,18 +4412,18 @@ MutationHandler = Callable[[MutationContext], bool]
 with SERVICES / SERVICE_REQUEST_DENIED (a denied WriteGroup Channel is
 skipped silently).
 
-It runs on the server's dispatch path, for WritePropertyMultiple with the
-device's objects write-locked, so decide from the context alone,
-synchronously and quickly: no awaiting, no I/O, no waiting on the event loop
-or another thread, no calls back into the server. A callable that waits (a
-``run_coroutine_threadsafe(...).result()``, say) holds that lock and hangs
-every client and ``stop()``, not just its own request.
+It runs with no database lock held, on a worker thread of its own while the
+request waits, and is asked about all of a WritePropertyMultiple's elements
+before any is written. A callable that blocks delays only its own request,
+not other clients or ``stop()``, which drops that request. Still decide from
+the context alone, synchronously and quickly; binding operations started from
+it are refused.
 
 An exception, a value other than a bool, or interpreter shutdown denies. The
 denied mutation changes nothing, but earlier elements of the same
-WritePropertyMultiple stay written; and an element that saves before it is
-served can be asked about (under a read lock) even when the request never
-reaches it."""
+WritePropertyMultiple stay written, and the callable can be asked about an
+element the request never reaches, when an earlier one fails as it is
+written."""
 
 
 class BACnetServer:

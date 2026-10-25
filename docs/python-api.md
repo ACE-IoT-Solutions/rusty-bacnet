@@ -4583,23 +4583,25 @@ listener, so `principal` is always `None` today, over B/IP as over a hub;
 `certificate` and `forwarding_peer_certificate` are always `None` for the same
 reason.
 
-The callable runs on the server's dispatch path, for WritePropertyMultiple with
-the device's objects write-locked. Decide from the context alone,
-synchronously and quickly: no awaiting, no I/O, no waiting on the event loop or
-another thread, and no calls back into the server (binding operations started
-from it are refused, WriteGroup's included, though WriteGroup asks with no lock
-held). **A callable that waits, such as one calling
-`asyncio.run_coroutine_threadsafe(...).result()`, holds the lock while it waits
-and hangs every client and `stop()`, not just its own request.**
+The callable runs on the server's dispatch path with no database lock held: a
+WritePropertyMultiple asks about all its elements before it takes the write
+lock (#2032), and it runs on a worker thread of its own while the request
+waits. A callable that blocks, such as one calling
+`asyncio.run_coroutine_threadsafe(...).result()`, delays only its own request:
+other clients' requests carry on, and `stop()` ends without waiting for it
+(the request is dropped and the callable's eventual answer ignored). Still
+decide from the context alone, synchronously and quickly, and make no calls
+back into the server (binding operations started from it are refused).
 
 It fails closed: an exception (reported through `sys.unraisablehook`), a return
 value that isn't a `bool` (a truthy `1` included), a coroutine or interpreter
 shutdown denies. The denied mutation changes nothing, but the elements of a
 WritePropertyMultiple before a denied one stay written, as a denial answers
-only from that element on. An element that an object saves before serving it
-(a Notification Forwarder's list, an Access Rights object's rules and the like,
-#1321) is asked about earlier, under a read lock, so the callable can be asked
-about an element the request never reaches.
+only from that element on. Since every element is asked about before any is
+written, the callable can be asked about an element the request never
+reaches, when an earlier one fails as it is written. An element whose object
+appears between the decisions and the writes was never asked about and is
+denied.
 
 Invalid mode strings raise `ValueError`; other non-callables raise `TypeError`
 during construction, before startup drains registrations or performs I/O. DCC,

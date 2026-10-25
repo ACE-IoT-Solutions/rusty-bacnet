@@ -27,6 +27,7 @@ mod enrollment_summary;
 mod event_information;
 mod issue;
 mod mutations;
+pub(super) use mutations::ask_mutation_policy;
 use mutations::{InitialCovNotification, MutationEffects};
 #[cfg(test)]
 mod audit_log_buffer_wire_tests;
@@ -56,6 +57,8 @@ mod mutation_tests;
 mod mutation_wpm_priority_tests;
 #[cfg(test)]
 mod mutation_wpm_tests;
+#[cfg(test)]
+mod mutation_wpm_unlocked_tests;
 #[cfg(test)]
 mod notification_class_durable_tests;
 

@@ -5,23 +5,23 @@
 //! The callable stands in for the Rust `ServerPolicy::authorize_mutation`,
 //! so it is asked wherever that is: each covered confirmed service, each
 //! WritePropertyMultiple element and each Channel an inbound WriteGroup would
-//! write. It runs on the server's dispatch path, for WritePropertyMultiple
-//! with the object database write-locked, so it is entered through
-//! [`crate::py_async::attach`] and must decide from the context alone,
-//! synchronously and quickly: no awaiting, no I/O, no waiting on the event
-//! loop or another thread, no calls back into the server. A callable that
-//! waits (a `run_coroutine_threadsafe(...).result()`, say) holds the write
-//! lock meanwhile and hangs every client and `stop()`, not just its own
-//! request. [`crate::py_async::under_native_lock`] refuses any binding
-//! operation it starts, WriteGroup included, which asks with no database
-//! guard held.
+//! write. It runs on the server's dispatch path, entered through
+//! [`crate::py_async::attach`], with no database guard held: a
+//! WritePropertyMultiple asks about its elements before it takes the write
+//! lock (#2032), and on Tokio's blocking pool while the request waits. A
+//! callable that blocks (a `run_coroutine_threadsafe(...).result()`, say)
+//! delays only its own request, not other clients or `stop()`, which aborts
+//! that request without waiting. It should still decide from the context
+//! alone, synchronously and quickly. [`crate::py_async::under_native_lock`]
+//! still refuses any binding operation it starts, since it runs inside the
+//! server's dispatch.
 //!
 //! It fails closed: an exception (shown through `sys.unraisablehook`), a
 //! return value that isn't a bool, and an exiting interpreter all deny. The
 //! denied mutation changes nothing, but the elements of a
 //! WritePropertyMultiple before a denied one stay written, and the callable
-//! can be asked, under a database read guard, about an element that saves
-//! before it is served (#1321) even when the request never reaches it.
+//! can be asked about an element the request never reaches, when an earlier
+//! one fails as it is written.
 
 use std::sync::Arc;
 
