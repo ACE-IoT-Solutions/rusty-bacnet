@@ -6,10 +6,18 @@
 //! Before a frame this node did not receive itself enters the ring (one it
 //! sent, or one libpcap or the monitor heard on the wire, which includes
 //! this node's own sends), a confirmed request for either service has the
-//! octets of its password overwritten with `*`. The length stays the same,
-//! so every offset and length field still holds and the export still
-//! parses; an MS/TP frame is encoded again so its data CRC matches. The
-//! frame is marked, and the detail view says the password was redacted.
+//! content octets of its password tag overwritten with `*`, whatever the
+//! character set, and however the rest of the request is formed: the tags
+//! are walked to the password's, nothing is decoded first, so a password
+//! too long, cut short, or in an encoding the decoder refuses is masked
+//! too. B/IP, B/IPv6 and BACnet/SC frames keep their length, so the export
+//! still parses. A valid MS/TP frame is encoded again so its data CRC
+//! matches; an extended frame's COBS encoding may then differ in length.
+//! An MS/TP frame whose data CRC was already wrong is masked in place by
+//! its header's length and keeps its wrong CRC; an extended frame that
+//! doesn't decode is left alone, since its COBS-encoded data can't be read
+//! in place. The frame is marked, and
+//! the detail view says the password was redacted.
 //!
 //! A segmented request is left alone: neither request can be segmented,
 //! since the largest (a DCC with a 20-character password) is about 35
@@ -17,7 +25,7 @@
 //! Frames this node received are other nodes' traffic and kept as heard.
 
 use bacnet_encoding::tags::{TagClass, decode_tag};
-use bacnet_services::device_mgmt::{DeviceCommunicationControlRequest, ReinitializeDeviceRequest};
+use bacnet_transport::mstp::codec::crc::crc8_valid;
 use bacnet_transport::mstp::codec::{Frame, FrameType};
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bytes::Bytes;
@@ -38,16 +46,43 @@ pub(crate) fn scrub(mut frame: CaptureFrame) -> CaptureFrame {
 
 /// The frame with its password masked, or `None` when it carries none.
 pub(crate) fn redacted(framing: Framing, frame: &[u8]) -> Option<Bytes> {
-    match link(framing, frame).npdu? {
-        Npdu::At(range) if framing != Framing::Mstp => {
+    if !might_carry(framing, frame) {
+        return None;
+    }
+    match link(framing, frame).npdu {
+        Some(Npdu::At(range)) if framing != Framing::Mstp => {
             let mut copy = frame.to_vec();
             mask_npdu(&mut copy[range]).then(|| Bytes::from(copy))
         }
         // An MS/TP frame's data has its own CRC, and an extended frame's
         // is COBS-encoded: mask the NPDU, then encode the frame again.
-        Npdu::At(range) => mstp(frame, frame[range].to_vec()),
-        Npdu::Encoded { data, .. } => mstp(frame, data),
+        Some(Npdu::At(range)) => mstp(frame, frame[range].to_vec()),
+        Some(Npdu::Encoded { data, .. }) => mstp(frame, data),
+        None if framing == Framing::Mstp => mstp_in_place(frame),
+        None => None,
     }
+}
+
+/// The two services' numbers.
+const SERVICES: [u8; 2] = [
+    ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL.to_raw(),
+    ConfirmedServiceChoice::REINITIALIZE_DEVICE.to_raw(),
+];
+
+/// A cheap look before parsing: four octets shaped like an unsegmented
+/// confirmed request for either service. An extended MS/TP frame's data is
+/// COBS-encoded, so it is always parsed.
+fn might_carry(framing: Framing, frame: &[u8]) -> bool {
+    if framing == Framing::Mstp
+        && frame
+            .get(2)
+            .is_some_and(|t| FrameType::from_raw(*t).is_cobs())
+    {
+        return true;
+    }
+    frame
+        .windows(4)
+        .any(|w| w[0] & 0xF8 == 0 && SERVICES.contains(&w[3]))
 }
 
 /// `frame` encoded again around `npdu`, masked; `None` when nothing was.
@@ -63,6 +98,27 @@ fn mstp(frame: &[u8], mut npdu: Vec<u8>) -> Option<Bytes> {
     Some(Bytes::from(wire))
 }
 
+/// An MS/TP frame that didn't decode, most likely for its data CRC: when
+/// its header is sound and names a data frame, mask the data in place by
+/// the header's length, as far as the frame holds it.
+fn mstp_in_place(frame: &[u8]) -> Option<Bytes> {
+    let header = frame.get(..8)?;
+    if header[..2] != [0x55, 0xFF] || !crc8_valid(&header[2..8]) {
+        return None;
+    }
+    let data = matches!(
+        FrameType::from_raw(header[2]),
+        FrameType::BACNET_DATA_EXPECTING_REPLY | FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+    );
+    let length = usize::from(u16::from_be_bytes([header[5], header[6]]));
+    if !data || length == 0 {
+        return None;
+    }
+    let mut copy = frame.to_vec();
+    let end = (8 + length).min(copy.len());
+    mask_npdu(&mut copy[8..end]).then(|| Bytes::from(copy))
+}
+
 /// Mask the password of the DCC or ReinitializeDevice request in `npdu`;
 /// true when there was one.
 fn mask_npdu(npdu: &mut [u8]) -> bool {
@@ -73,14 +129,14 @@ fn mask_npdu(npdu: &mut [u8]) -> bool {
         return false;
     }
     let offset = view.payload_offset;
-    mask_apdu(&mut npdu[offset..])
+    npdu.get_mut(offset..).is_some_and(mask_apdu)
 }
 
 /// The context tag of each service's password, the request's last field.
 fn password_tag(service: u8) -> Option<u8> {
-    if service == ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL.to_raw() {
+    if service == SERVICES[0] {
         Some(2)
-    } else if service == ConfirmedServiceChoice::REINITIALIZE_DEVICE.to_raw() {
+    } else if service == SERVICES[1] {
         Some(1)
     } else {
         None
@@ -88,7 +144,9 @@ fn password_tag(service: u8) -> Option<u8> {
 }
 
 /// Mask the password of an unsegmented confirmed request for either
-/// service: every octet of the string after its character set.
+/// service: every content octet of its tag after the character set, as
+/// far as the APDU holds them. The walk always moves forward (a tag
+/// consumes at least its first octet), and every end is clamped.
 fn mask_apdu(apdu: &mut [u8]) -> bool {
     // An unsegmented Confirmed-Request: type 0, no segmentation bit.
     if apdu.len() < 4 || apdu[0] & 0xF8 != 0 {
@@ -98,20 +156,19 @@ fn mask_apdu(apdu: &mut [u8]) -> bool {
         return false;
     };
     let body = &mut apdu[4..];
-    let has_password = if tag == 2 {
-        DeviceCommunicationControlRequest::decode(body).is_ok_and(|r| r.password.is_some())
-    } else {
-        ReinitializeDeviceRequest::decode(body).is_ok_and(|r| r.password.is_some())
-    };
-    if !has_password {
-        return false;
-    }
     let mut offset = 0;
     while let Ok((found, start)) = decode_tag(body, offset) {
         let end = start.saturating_add(found.length as usize).min(body.len());
-        if found.class == TagClass::Context && found.number == tag && !found.is_opening {
+        let password = found.class == TagClass::Context
+            && found.number == tag
+            && !found.is_opening
+            && !found.is_closing;
+        if password {
             // The first content octet is the character set.
             let text = (start + 1).min(end)..end;
+            if text.is_empty() {
+                return false;
+            }
             body[text].fill(b'*');
             return true;
         }
@@ -121,99 +178,5 @@ fn mask_apdu(apdu: &mut [u8]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use bacnet_types::enums::{EnableDisable, ReinitializedState};
-    use bytes::BytesMut;
-
-    use super::*;
-
-    /// A B/IP unicast of `apdu`.
-    fn bip(apdu: &[u8]) -> Vec<u8> {
-        let npdu = [&[0x01, 0x04][..], apdu].concat();
-        let length = (4 + npdu.len()) as u16;
-        [&[0x81, 0x0A][..], &length.to_be_bytes(), &npdu].concat()
-    }
-
-    fn request(service: ConfirmedServiceChoice, body: &[u8]) -> Vec<u8> {
-        [&[0x00, 0x05, 0x01, service.to_raw()][..], body].concat()
-    }
-
-    fn dcc(password: Option<&str>) -> Vec<u8> {
-        let mut body = BytesMut::new();
-        DeviceCommunicationControlRequest {
-            time_duration: Some(30),
-            enable_disable: EnableDisable::DISABLE_INITIATION,
-            password: password.map(str::to_string),
-        }
-        .encode(&mut body)
-        .unwrap();
-        request(ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL, &body)
-    }
-
-    #[test]
-    fn a_dcc_password_is_masked_in_place() {
-        let frame = bip(&dcc(Some("Zq7-hunter2")));
-        let masked = redacted(Framing::Bip, &frame).expect("masked");
-        assert_eq!(masked.len(), frame.len());
-        let text = String::from_utf8_lossy(&masked);
-        assert!(!text.contains("hunter2"), "{masked:?}");
-        let apdu = &masked[6..];
-        let sent = DeviceCommunicationControlRequest::decode(&apdu[4..]).unwrap();
-        assert_eq!(sent.password.as_deref(), Some("***********"));
-        assert_eq!(sent.time_duration, Some(30));
-        // Nothing to mask without a password, or in another service.
-        assert_eq!(redacted(Framing::Bip, &bip(&dcc(None))), None);
-        let read = request(ConfirmedServiceChoice::READ_PROPERTY, &[0x0C, 0, 0, 0, 1]);
-        assert_eq!(redacted(Framing::Bip, &bip(&read)), None);
-    }
-
-    #[test]
-    fn a_reinit_password_is_masked_and_an_mstp_frame_keeps_a_valid_crc() {
-        let mut body = BytesMut::new();
-        ReinitializeDeviceRequest {
-            reinitialized_state: ReinitializedState::COLDSTART,
-            password: Some("Zq7-hunter2-Xv9".into()),
-        }
-        .encode(&mut body)
-        .unwrap();
-        let npdu = [
-            &[0x01, 0x04][..],
-            &request(ConfirmedServiceChoice::REINITIALIZE_DEVICE, &body),
-        ]
-        .concat();
-        let mut wire = vec![0; 64];
-        let frame = Frame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, 5, 1, &npdu);
-        let length = frame.encode_into(&mut wire).unwrap();
-        wire.truncate(length);
-        let masked = redacted(Framing::Mstp, &wire).expect("masked");
-        assert_eq!(masked.len(), wire.len());
-        let (decoded, _) = bacnet_transport::mstp::codec::decode_frame(&masked).unwrap();
-        let apdu = &decoded.data[2..];
-        let sent = ReinitializeDeviceRequest::decode(&apdu[4..]).unwrap();
-        assert_eq!(sent.password.as_deref(), Some("***************"));
-        assert_eq!(sent.reinitialized_state, ReinitializedState::COLDSTART);
-    }
-
-    /// Frames this node received are kept as heard; its own are scrubbed.
-    #[test]
-    fn only_frames_not_received_here_are_scrubbed() {
-        let frame = |direction| CaptureFrame {
-            time: std::time::UNIX_EPOCH,
-            framing: Framing::Bip,
-            direction,
-            udp: None,
-            source: String::new(),
-            destination: String::new(),
-            via: None,
-            bytes: Bytes::from(bip(&dcc(Some("Zq7-hunter2")))),
-            summary: Default::default(),
-            redacted: false,
-        };
-        assert!(!scrub(frame(Direction::In)).redacted);
-        for direction in [Direction::Out, Direction::Wire] {
-            let scrubbed = scrub(frame(direction));
-            assert!(scrubbed.redacted);
-            assert!(!String::from_utf8_lossy(&scrubbed.bytes).contains("hunter2"));
-        }
-    }
-}
+#[path = "redact_tests.rs"]
+mod tests;

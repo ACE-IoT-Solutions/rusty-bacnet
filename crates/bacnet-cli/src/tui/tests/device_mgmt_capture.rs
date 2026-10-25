@@ -39,6 +39,21 @@ async fn lab_server(instance: u32) -> BACnetServer<BipTransport> {
         .unwrap()
 }
 
+/// The frames of either service, requests and replies, in ring order.
+fn ours(ring: &crate::tui::capture::ring::Ring) -> Vec<&crate::tui::capture::CaptureFrame> {
+    let services = ["device-communication-control", "reinitialize-device"];
+    ring.kept()
+        .iter()
+        .filter_map(|n| ring.get(*n))
+        .filter(|f| {
+            f.summary
+                .service
+                .as_deref()
+                .is_some_and(|s| services.contains(&s))
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn the_capture_masks_the_password_on_screen_and_in_the_export() {
     let dir = tempfile::tempdir().unwrap();
@@ -70,8 +85,9 @@ async fn the_capture_masks_the_password_on_screen_and_in_the_export() {
         assert!(dcc.await.is_ok());
         let reinit = client.reinitialize_device(&target, ReinitializedState::WARMSTART, password);
         assert!(reinit.await.is_ok());
-        // Two requests and their acknowledgements.
-        while app.capture.ring.len() < 4 {
+        // Both requests and both acknowledgements, whatever else the
+        // session sent.
+        while ours(&app.capture.ring).len() < 4 {
             worker(&mut app, events.recv().await.unwrap());
         }
         drop(start);
@@ -81,7 +97,8 @@ async fn the_capture_masks_the_password_on_screen_and_in_the_export() {
 
     let ring = &app.capture.ring;
     let frames: Vec<_> = ring.kept().iter().map(|n| ring.get(*n).unwrap()).collect();
-    let requests: Vec<_> = frames
+    let ours = ours(ring);
+    let requests: Vec<_> = ours
         .iter()
         .filter(|f| f.direction == Direction::Out)
         .collect();
@@ -99,12 +116,12 @@ async fn the_capture_masks_the_password_on_screen_and_in_the_export() {
         Some("*".repeat(PASSWORD.len()).as_str())
     );
     assert_eq!(sent.time_duration, Some(15));
-    assert!(
-        frames
-            .iter()
-            .filter(|f| f.direction == Direction::In)
-            .all(|f| !f.redacted)
-    );
+    let replies: Vec<_> = ours
+        .iter()
+        .filter(|f| f.direction == Direction::In)
+        .collect();
+    assert_eq!(replies.len(), 2, "{frames:?}");
+    assert!(replies.iter().all(|f| !f.redacted));
 
     // The export, to the workspace.
     let commands = press(&mut app, KeyCode::Char('e'));
