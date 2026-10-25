@@ -123,7 +123,7 @@ impl ValueFormat<'_> {
             let mut items: Vec<Datum> = texts
                 .into_iter()
                 .map(|text| Datum::Constructed {
-                    element: kind.clone(),
+                    element: kind.into(),
                     text,
                 })
                 .collect();
@@ -136,7 +136,6 @@ impl ValueFormat<'_> {
             return Datum::Raw { raw: hex(data, "") };
         };
         match values.as_slice() {
-            [PropertyValue::Unsigned(count)] if index == Some(0) => Datum::Unsigned(*count),
             [one] => self.element_data(property, one),
             many => Datum::List(
                 many.iter()

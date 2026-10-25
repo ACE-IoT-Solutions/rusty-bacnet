@@ -6,16 +6,16 @@ use bacnet_encoding::primitives::decode_application_value;
 use bacnet_encoding::tags::{TagClass, decode_tag};
 use bacnet_types::enums::PropertyIdentifier;
 
-use super::primitive::{hex, text};
+use super::primitive::text;
 use super::{Floats, raw_text};
 
 /// Deepest nesting of opening and closing tags shown before the rest is
 /// left as hex.
 const MAX_DEPTH: usize = 8;
 
-/// `data` as its tagged fields: a context primitive as `[n] value` (an
-/// Unsigned when one to four octets long, hex otherwise), a constructed
-/// field as `[n] (…)`, and an application value as its text. Octets that
+/// `data` as its tagged fields: a context primitive as `[n] [raw …]`
+/// (its datatype isn't known, so its octets aren't read as a number), a
+/// constructed field as `[n] (…)`, and an application value as its text. Octets that
 /// don't parse end the view as `[raw …]`.
 pub(super) fn fields_text(data: &[u8], floats: Floats) -> String {
     let mut parts = Vec::new();
@@ -90,15 +90,7 @@ fn fields(
             offset = contents;
             continue;
         }
-        let value = if octets.len() <= 4 {
-            octets
-                .iter()
-                .fold(0u32, |n, b| (n << 8) | u32::from(*b))
-                .to_string()
-        } else {
-            format!("0x{}", hex(octets, ""))
-        };
-        parts.push(format!("[{}] {value}", tag.number));
+        parts.push(format!("[{}] {}", tag.number, raw_text(octets)));
         offset = contents + octets.len();
     }
     (offset, closing.is_none())
@@ -116,12 +108,12 @@ mod tests {
         ];
         assert_eq!(
             fields_text(&data, Floats::Exact),
-            "[0] 30, [1] (1.5), [2] 0x0102030405"
+            "[0] [raw 1e], [1] (1.5), [2] [raw 01 02 03 04 05]"
         );
         // A field cut short ends the view as raw octets.
         assert_eq!(
             fields_text(&[0x09, 30, 0x1A, 1], Floats::Exact),
-            "[0] 30, [raw 1a 01]"
+            "[0] [raw 1e], [raw 1a 01]"
         );
     }
 }

@@ -23,9 +23,12 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::ValueFormat;
 use super::constructed::reference;
+use super::primitive;
 use super::primitive::{hex, plain_bits, time_text, weekday};
 use super::tagged::fields_text;
 use crate::label::kebab;
+use bacnet_encoding::tags::decode_tag;
+use bacnet_types::enums::PropertyIdentifier;
 
 /// The choice tag `decode_event_parameter` gives the forms that aren't the
 /// wire CHOICE (an application octet string, and a legacy wrapper); those
@@ -380,10 +383,78 @@ fn event_parameter_text(format: &ValueFormat<'_>, parameter: &BACnetEventParamet
                 format!("none {}", fields_text(data, format.floats))
             };
         }
-        // An algorithm with no model here: its fields by context tag.
-        BACnetEventParameter::Opaque { data, .. } => fields_text(data, format.floats),
+        // An algorithm with no model here: the out-of-range forms by their
+        // fields, any other by context tag.
+        BACnetEventParameter::Opaque { tag, data } => {
+            out_of_range(format, *tag, data).unwrap_or_else(|| fields_text(data, format.floats))
+        }
     };
     format!("{name}: {details}")
+}
+
+/// The datatype of an out-of-range limit.
+#[derive(Clone, Copy)]
+enum Limit {
+    Unsigned,
+    Signed,
+    Double,
+}
+
+/// The double-, signed- and unsigned-out-of-range parameters (choices 14,
+/// 15 and 16): a time delay, then low limit `[1]`, high limit `[2]` and
+/// deadband `[3]`, the limits of the choice's datatype and the deadband a
+/// Double for the double form and an Unsigned otherwise. `None` for any
+/// other choice, or a body of another shape.
+fn out_of_range(format: &ValueFormat<'_>, tag: u8, data: &[u8]) -> Option<String> {
+    let (limits, deadband) = match tag {
+        14 => (Limit::Double, Limit::Double),
+        15 => (Limit::Signed, Limit::Unsigned),
+        16 => (Limit::Unsigned, Limit::Unsigned),
+        _ => return None,
+    };
+    let mut offset = 0;
+    let mut field = |number: u8, kind: Limit| -> Option<String> {
+        let (tag, contents) = decode_tag(data, offset).ok()?;
+        if !tag.is_context(number) || tag.is_opening || tag.is_closing {
+            return None;
+        }
+        let octets = data.get(contents..contents.checked_add(tag.length as usize)?)?;
+        offset = contents + octets.len();
+        let text = match kind {
+            Limit::Unsigned if (1..=8).contains(&octets.len()) => octets
+                .iter()
+                .fold(0u64, |n, b| (n << 8) | u64::from(*b))
+                .to_string(),
+            Limit::Signed if (1..=8).contains(&octets.len()) => {
+                let negative = octets[0] & 0x80 != 0;
+                let start = if negative { -1i64 } else { 0 };
+                octets
+                    .iter()
+                    .fold(start, |n, b| (n << 8) | i64::from(*b))
+                    .to_string()
+            }
+            Limit::Double => {
+                let value = f64::from_be_bytes(octets.try_into().ok()?);
+                primitive::text(
+                    PropertyIdentifier::PRESENT_VALUE,
+                    &PropertyValue::Double(value),
+                    format.floats,
+                )
+            }
+            _ => return None,
+        };
+        Some(text)
+    };
+    let delay_seconds = field(0, Limit::Unsigned)?;
+    let low = field(1, limits)?;
+    let high = field(2, limits)?;
+    let band = field(3, deadband)?;
+    if offset != data.len() {
+        return None;
+    }
+    Some(format!(
+        "delay {delay_seconds} s, low {low}, high {high}, deadband {band}"
+    ))
 }
 
 pub(super) fn event_parameter(

@@ -1069,7 +1069,9 @@ Text output names what the device sent:
   Active_COV_Subscriptions, Device_Address_Binding, a Command's actions,
   Group and Global Group members, shed levels, Scale and Prescale, and the
   access control lists. An Event_Parameters algorithm the CLI has no model
-  for lists its fields by context tag, `unsigned-range: [0] 30, [1] 10`;
+  for lists its fields by context tag, each field's octets as
+  `[raw …]` since their datatype isn't known: `unsigned-range: [0] [raw 1e],
+  [1] [raw 0a]`;
 - a list or array whole, every element, in brackets; an indexed read of an
   array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
   as the array's size;
@@ -1107,7 +1109,16 @@ names' spelling:
 
 A constructed element's `text` is for display, like the table: its wording
 may change, so don't parse it. Branch on `element`; structured fields may
-join it later without removing `text`.
+join it later without removing `text`. The kinds are `access-rule`,
+`action-list`, `address-binding`, `authentication-factor`,
+`authentication-factor-format`, `authentication-policy`, `calendar-entry`,
+`cov-subscription`, `daily-schedule`, `date-range`, `destination`,
+`device-object-property-reference`, `device-object-reference`,
+`event-parameter`, `name-value`, `object-property-reference`,
+`port-permission`, `prescale`, `property-access-result`,
+`read-access-result`, `read-access-specification`, `recipient`, `scale`,
+`shed-level`, `special-event`, `stage-limit-value`, `time-stamp` and
+`value-source`.
 
 An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
 `items` for a list that isn't a log; log records keep their text form.

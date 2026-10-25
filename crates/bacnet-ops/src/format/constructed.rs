@@ -43,7 +43,7 @@ pub(super) fn elements(
     let render = renderer(element)?;
     let mut texts = Vec::new();
     let ends = split_elements(data, |octets, offset| {
-        render(format, first + texts.len(), octets, offset).map(|(text, end)| {
+        render(format, first.saturating_add(texts.len()), octets, offset).map(|(text, end)| {
             texts.push(text);
             end
         })
@@ -139,18 +139,43 @@ pub(super) fn renderer(element: ConstructedElement) -> Option<Render> {
     })
 }
 
-/// An element's kind in kebab case, as the typed data names it:
-/// `destination`, `daily-schedule`, `time-stamp`.
-pub(super) fn element_name(element: ConstructedElement) -> String {
-    let debug = format!("{element:?}");
-    let mut name = String::new();
-    for (i, ch) in debug.chars().enumerate() {
-        if ch.is_ascii_uppercase() && i > 0 {
-            name.push('-');
-        }
-        name.push(ch.to_ascii_lowercase());
+/// An element's kind, as the CLI's JSON names it (`docs/CLI.md`, "Value
+/// output"). Written out, so renaming an encoding variant can't change the
+/// JSON; `element` only for one added to the table after this match, which
+/// a test catches.
+pub(super) fn element_name(element: ConstructedElement) -> &'static str {
+    use ConstructedElement as E;
+    match element {
+        E::NameValue => "name-value",
+        E::Destination => "destination",
+        E::PortPermission => "port-permission",
+        E::ReadAccessSpecification => "read-access-specification",
+        E::ReadAccessResult => "read-access-result",
+        E::ActionList => "action-list",
+        E::DeviceObjectReference => "device-object-reference",
+        E::AuthenticationFactorFormat => "authentication-factor-format",
+        E::AuthenticationPolicy => "authentication-policy",
+        E::StageLimitValue => "stage-limit-value",
+        E::AccessRule => "access-rule",
+        E::DeviceObjectPropertyReference => "device-object-property-reference",
+        E::ObjectPropertyReference => "object-property-reference",
+        E::PropertyAccessResult => "property-access-result",
+        E::Recipient => "recipient",
+        E::DailySchedule => "daily-schedule",
+        E::SpecialEvent => "special-event",
+        E::CalendarEntry => "calendar-entry",
+        E::DateRange => "date-range",
+        E::TimeStamp => "time-stamp",
+        E::CovSubscription => "cov-subscription",
+        E::ValueSource => "value-source",
+        E::Scale => "scale",
+        E::Prescale => "prescale",
+        E::AddressBinding => "address-binding",
+        E::ShedLevel => "shed-level",
+        E::AuthenticationFactor => "authentication-factor",
+        E::EventParameter => "event-parameter",
+        _ => "element",
     }
-    name
 }
 
 /// What parts the elements of a collection: `; ` for the elements whose
