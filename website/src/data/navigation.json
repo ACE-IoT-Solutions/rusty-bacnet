@@ -44,6 +44,22 @@
         "slug": "connect/bacnet-ip"
       },
       {
+        "label": "Across subnets (BBMD)",
+        "slug": "connect/across-subnets"
+      },
+      {
+        "label": "BACnet/IP across NAT",
+        "slug": "connect/nat"
+      },
+      {
+        "label": "B/IP multicast",
+        "slug": "connect/multicast"
+      },
+      {
+        "label": "BACnet/IPv6",
+        "slug": "connect/ipv6"
+      },
+      {
         "label": "BACnet/SC & certificates",
         "slug": "connect/bacnet-sc"
       },
