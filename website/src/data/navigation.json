@@ -189,6 +189,10 @@
         "slug": "project/support"
       },
       {
+        "label": "Performance",
+        "slug": "project/performance"
+      },
+      {
         "label": "Upgrade notes",
         "slug": "project/upgrading"
       },

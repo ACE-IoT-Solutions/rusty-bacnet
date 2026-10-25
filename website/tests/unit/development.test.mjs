@@ -32,9 +32,11 @@ test('integration navigation resolves task guides with release-pinned source lin
       'connect/ipv6', 'connect/bacnet-sc', 'connect/mstp', 'connect/mstp-realtime']);
   assert.deepEqual(navigation.find(group => group.label === 'Contribute').items.map(item => item.slug),
     ['development/build-from-source', 'development/documentation']);
+  assert.deepEqual(navigation.find(group => group.label === 'Evaluate and get help').items.map(item => item.slug),
+    ['help/troubleshooting', 'project/support', 'project/performance', 'project/upgrading', 'project/upgrading/v0-14']);
   assert.equal(new Set(navigation.flatMap(group => group.items.map(item => item.slug))).size,
     navigation.reduce((sum, group) => sum + group.items.length, 0));
-  for (const slug of [...slugs, 'connect/overview', 'connect/bacnet-sc', 'reference/transports']) {
+  for (const slug of [...slugs, 'connect/overview', 'connect/bacnet-sc', 'reference/transports', 'project/performance']) {
     const path = await guidePath(slug);
     const source = await readFile(path, 'utf8');
     const page = frontmatter(source);
@@ -43,7 +45,7 @@ test('integration navigation resolves task guides with release-pinned source lin
     assert.ok(body.includes(`https://github.com/jscott3201/rusty-bacnet/blob/v${release}/docs/`), slug);
     // Post-release additions and their dev links stay in one section.
     const { onDev } = splitDevSection(body, slug);
-    assert.equal(onDev !== '', slug === 'integrate/security', `${slug}: dev section`);
+    assert.equal(onDev !== '', ['integrate/security', 'project/performance'].includes(slug), `${slug}: dev section`);
     assert.ok(body.includes(slug === 'reference/transports' ? '## Which guide next?' : '## Next steps'), slug);
     assert.ok(!body.includes('cargo install bacnet-cli --version'), slug);
   }

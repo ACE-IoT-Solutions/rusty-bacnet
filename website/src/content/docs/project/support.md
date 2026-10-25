@@ -49,7 +49,7 @@ Every transport but Ethernet has a bounded frame tap that shows the link-layer f
 | Installed Python tests pass | The tested interpreter and native artifact work together | Other wheels, interpreters and free-threaded builds |
 | A generated PICS lists an object or service | What that configured server declares | Complete object/profile conformance or BTL listing |
 
-A screenshot, test count or single-device demonstration does not establish all-device interoperability or fitness for an operating building. No green badge replaces the stated limits. External ignored fixtures, hardware tests and ordinary CI have different execution requirements.
+A screenshot, test count or single-device demonstration does not establish all-device interoperability or fitness for an operating building. For measured latency and throughput, and the conditions behind them, see [performance](/rusty-bacnet/project/performance/). No green badge replaces the stated limits. External ignored fixtures, hardware tests and ordinary CI have different execution requirements.
 
 ## Report a problem
 
