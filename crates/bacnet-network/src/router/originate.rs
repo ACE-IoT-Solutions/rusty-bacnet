@@ -69,11 +69,18 @@ impl BACnetRouter {
     /// retry once it is learned. After [`Self::stop`] every call fails with
     /// [`OriginateFailure::Stopped`].
     ///
-    /// A global broadcast (DNET 0xFFFF) has no path here yet and is refused
-    /// with [`OriginateError::ReservedNetwork`]: send a remote broadcast
-    /// (an empty DADR) to each network the router reaches instead, its own
-    /// ports' networks included, where each leaves as that port's local
-    /// broadcast.
+    /// A global broadcast (DNET 0xFFFF with an empty DADR, such as a
+    /// Who-Is for every network; #1809) goes on every port's queue as that
+    /// link's broadcast, still global with a full hop count so the routers
+    /// there pass it on. With [`SourceSelection::EgressPort`] each copy is
+    /// from its own port's address; with [`SourceSelection::Port`] the
+    /// other ports' copies name that port's address as SNET and SADR. A
+    /// queue that refuses its copy fails the call with
+    /// [`OriginateFailure::QueueFull`], though the other ports' copies
+    /// stay queued.
+    ///
+    /// [`SourceSelection::EgressPort`]: bacnet_router_core::router::SourceSelection::EgressPort
+    /// [`SourceSelection::Port`]: bacnet_router_core::router::SourceSelection::Port
     pub fn originate(&self, request: &Request<'_>) -> Result<(), OriginateFailure> {
         // Only the dispatch tasks own the queues: once `stop` has ended
         // them, nothing is left to send on.

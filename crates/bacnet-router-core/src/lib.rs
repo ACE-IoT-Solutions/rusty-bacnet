@@ -181,6 +181,7 @@
 //! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |
 //! | One port's sends leave in network-priority order: a frame's own output, then the router's own messages at Normal priority | 6.5.4 | `tests/congestion.rs`: `one_ports_sends_leave_in_priority_order` |
 //! | The router's own application reaches another network through the table, from the address it selects, and its replies come back to it; with no route it searches first | 6.1, 6.5.4, 6.6.3.1 | `tests/originate.rs` (#1699) |
+//! | The router's own global broadcast leaves by every port as that link's broadcast, still global with a full hop count, from the selected address on each | 6.2.3, 6.3.2, 6.5.3, 6.5.4 | `tests/originate_global.rs` (#1809) |
 //!
 //! With the opt-in [`Congestion`](router::Congestion) policy (#1697):
 //!
