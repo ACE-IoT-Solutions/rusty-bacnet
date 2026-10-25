@@ -39,7 +39,8 @@ impl BACnetClient {
         reconnect=None,
         sc_npdu_per_origin_limit=None,
         sc_failover_hub=None,
-        sc_connect_timeout_ms=None
+        sc_connect_timeout_ms=None,
+        sc_control_rate_limit=None
     ))]
     fn new(
         interface: &str,
@@ -77,8 +78,10 @@ impl BACnetClient {
         sc_npdu_per_origin_limit: Option<usize>,
         sc_failover_hub: Option<String>,
         sc_connect_timeout_ms: Option<u64>,
+        sc_control_rate_limit: Option<(u32, u32)>,
     ) -> PyResult<Self> {
-        let sc_npdu_admission_policy = crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit)?;
+        let sc_npdu_admission_policy =
+            crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit, sc_control_rate_limit)?;
         if reconnect.is_some() && transport != "sc" {
             return Err(PyValueError::new_err(
                 "reconnect applies only to transport='sc'",
@@ -249,6 +252,7 @@ impl BACnetClient {
                         .vmac(vmac)
                         .device_uuid(sc_device_uuid)
                         .npdu_per_origin_limit(sc_npdu_admission_policy.per_origin_limit)
+                        .control_rate_limit(sc_npdu_admission_policy.control_rate)
                         .apdu_timeout_ms(timeout_ms)
                         .min_request_interval_ms(min_request_interval_ms);
                     if let Some(ms) = sc_heartbeat_interval_ms {

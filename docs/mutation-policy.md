@@ -270,10 +270,19 @@ WritePropertyMultiple, CreateObject, DeleteObject, AddListElement,
 RemoveListElement, AtomicWriteFile, SubscribeCOV, SubscribeCOVProperty and
 SubscribeCOVPropertyMultiple decisions through the existing Rust gate. Denials
 use SERVICES / SERVICE_REQUEST_DENIED (with WPM's existing failed-reference shape).
-No Python policy callback is installed: Python has no direct BACnet/SC listener,
-so a principal would always be `None` there.
 
-Other strings raise `ValueError`, and non-strings raise `TypeError` synchronously
+The keyword also takes a callable (#1966), installed as the mutation decision of
+the server's `ServerPolicy`, so it is asked exactly where `authorize_mutation`
+is, WritePropertyMultiple elements and WriteGroup Channels included. It gets a
+frozen, redacted `MutationContext` (service, target coordinates, claimed source
+addresses, provenance kind, principal fingerprints and invoke ID) and returns a
+bool. An exception, a non-bool answer or interpreter shutdown denies, with no
+side effects. Python has no direct BACnet/SC listener, so the context's
+`principal` is always `None` there, and its `certificate` and
+`forwarding_peer_certificate` are `None` too. See
+[the Python API](python-api.md#runtime-object-access) for the calling rules.
+
+Other strings raise `ValueError`, and other non-callables raise `TypeError` synchronously
 in the constructor, before startup drains registrations or performs transport
 I/O. Reads and trusted local `write_property_local` calls remain available under
 `"deny_all"`. It also denies each Channel write of an inbound WriteGroup to a Channel

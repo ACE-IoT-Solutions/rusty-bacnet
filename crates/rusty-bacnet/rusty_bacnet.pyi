@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import enum
+import ipaddress
 import os
 import pathlib
 from collections.abc import Callable, Sequence
@@ -2430,8 +2431,8 @@ def decode_log_records(result: ReadRangeResult) -> list[dict[str, Any]]:
     same name holds its value: ``log_status`` (bits: 0 log-disabled, 1
     buffer-purged, 2 log-interrupted), ``boolean``, ``real``,
     ``enumerated``, ``unsigned``, ``signed``, ``bitstring`` (``(unused_bits,
-    bytes)``), ``null`` (no value), ``failure`` (``(error_class,
-    error_code)``), ``time_change`` (seconds), ``any`` (the value's encoding),
+    bytes)``), ``null`` (no value), ``failure`` (``(ErrorClass,
+    ErrorCode)`` members), ``time_change`` (seconds), ``any`` (the value's encoding),
     ``values`` (a Trend Log Multiple record's list of such dicts),
     ``notification`` (an Event Log record's event notification, its
     ``event_values`` as their encoding) or ``audit_notification`` (an Audit
@@ -2704,6 +2705,23 @@ class ScCertificateMetadata:
     def signature_algorithm_oid(self) -> str: ...
     @property
     def text_truncated(self) -> bool: ...
+    @property
+    def subject_alt_names(self) -> tuple[ScSubjectAltName, ...]:
+        """The DNS, URI, email and IP Subject Alternative Names, in
+        certificate order (#2022); other name forms are left out."""
+        ...
+
+class ScSubjectAltName:
+    """One Subject Alternative Name exactly as the certificate wrote it:
+    no case folding, wildcards such as ``*.example.com`` as written. Compare
+    ``value`` for equality, never by suffix. Frozen; its repr shows the
+    kind only."""
+    @property
+    def kind(self) -> Literal["dns", "uri", "email", "ip"]: ...
+    @property
+    def value(self) -> str | ipaddress.IPv4Address | ipaddress.IPv6Address:
+        """A ``str``, or an ``ipaddress`` address for an ``ip`` name."""
+        ...
 
 class ScInspectionFinding:
     """Frozen local interpretation finding; never a TLS acceptance decision."""
@@ -2896,11 +2914,11 @@ class ScEvent:
         """Diagnostic text for a ``websocket``, ``tls`` or ``other`` cause; not stable."""
         ...
     @property
-    def error_class(self) -> int | None:
+    def error_class(self) -> ErrorClass | None:
         """The NAK's error class, for a ``nak`` cause."""
         ...
     @property
-    def error_code(self) -> int | None:
+    def error_code(self) -> ErrorCode | None:
         """The NAK's error code, for a ``nak`` cause."""
         ...
     @property
@@ -3049,6 +3067,7 @@ class BACnetClient:
         sc_npdu_per_origin_limit: int | None = None,
         sc_failover_hub: str | None = None,
         sc_connect_timeout_ms: int | None = None,
+        sc_control_rate_limit: tuple[int, int] | None = None,
     ) -> None:
         """``sc_failover_hub`` (SC only, needs ``reconnect``, else
         ValueError): a second hub's ``wss://`` URL, dialled with the same TLS
@@ -3077,6 +3096,14 @@ class BACnetClient:
         transport raise ValueError before file or network I/O. Negative or
         unrepresentably large values raise OverflowError. The aggregate
         receive queue remains 256; see ``sc_npdu_drop_counts``.
+
+        ``sc_control_rate_limit`` (SC only, default None): ``(burst,
+        per_second)``, the network-layer messages one source may send back to
+        back and then each second (#1969). None keeps 256 then 32 a second.
+        The burst must be 1 through 4096 and the rate at least 1; invalid
+        values or a non-SC transport raise ValueError before file or network
+        I/O, and negative values raise OverflowError. A message over its
+        source's budget is dropped and counted in ``control_rate_drops``.
 
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
@@ -4282,6 +4309,114 @@ SimpleACK has been handed to the transport (on MS/TP: queued for the token);
 a returned coroutine runs as a task."""
 
 
+class MutationContext:
+    """One mutation a ``mutation_policy`` callable is asked to allow
+    (#1966): a frozen, redacted copy of the request. It holds the target's
+    coordinates, never written values or file data. The addresses are what
+    the request claims, not an authenticated identity. Its repr shows the
+    service and invoke ID only. Not copyable or picklable."""
+
+    @property
+    def service(self) -> Literal[
+        "write_property", "write_property_multiple", "create_object",
+        "delete_object", "add_list_element", "remove_list_element",
+        "atomic_write_file", "subscribe_cov", "subscribe_cov_property",
+        "subscribe_cov_property_multiple", "write_group",
+    ]:
+        """The service. WritePropertyMultiple asks once per element and
+        WriteGroup once per Channel."""
+        ...
+
+    @property
+    def object_identifier(self) -> Optional[ObjectIdentifier]:
+        """The target object (the Channel for WriteGroup, the File for
+        AtomicWriteFile); None for a CreateObject that names only a type and
+        for SubscribeCOVPropertyMultiple."""
+        ...
+
+    @property
+    def object_type(self) -> Optional[ObjectType]:
+        """The target's type, also for a CreateObject by type; None for
+        SubscribeCOVPropertyMultiple."""
+        ...
+
+    @property
+    def property_identifier(self) -> Optional[PropertyIdentifier]:
+        """The property written, listed or subscribed to, else None."""
+        ...
+
+    @property
+    def array_index(self) -> Optional[int]: ...
+
+    @property
+    def priority(self) -> Optional[int]:
+        """The write priority of a WriteProperty, a WritePropertyMultiple
+        element or a WriteGroup, when there is one."""
+        ...
+
+    @property
+    def source_mac(self) -> bytes:
+        """The immediate link source: the requester, or the last router."""
+        ...
+
+    @property
+    def source_network(self) -> Optional[int]:
+        """The originating network a routed request claims, else None."""
+        ...
+
+    @property
+    def source_address(self) -> Optional[bytes]:
+        """The originating MAC a routed request claims, else None."""
+        ...
+
+    @property
+    def provenance(self) -> Literal["unverified", "relayed_origin", "hub_channel", "direct_peer"]:
+        """How the request arrived: ``unverified`` for B/IP, B/IPv6, MS/TP
+        and Ethernet, ``relayed_origin`` through a BACnet/SC hub."""
+        ...
+
+    @property
+    def principal(self) -> Optional[bytes]:
+        """The SHA-256 of the originating peer's verified leaf certificate,
+        for a direct BACnet/SC connection without a routed source. A Python
+        server has no direct SC listener, so this is None."""
+        ...
+
+    @property
+    def forwarding_peer_principal(self) -> Optional[bytes]:
+        """The SHA-256 of the forwarding direct SC peer's leaf certificate,
+        a router included; None, like ``principal``, for a Python server."""
+        ...
+
+    @property
+    def certificate(self) -> None:
+        """Always None: a Python server has no direct BACnet/SC listener,
+        and hub-relayed, routed and non-SC requests carry no certificate."""
+        ...
+
+    @property
+    def forwarding_peer_certificate(self) -> None:
+        """Always None, for the reason ``certificate`` gives."""
+        ...
+
+    @property
+    def invoke_id(self) -> Optional[int]:
+        """A confirmed request's invoke ID; None for WriteGroup."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+MutationHandler = Callable[[MutationContext], bool]
+"""A ``mutation_policy`` callable: True allows the mutation, False denies it
+with SERVICES / SERVICE_REQUEST_DENIED (a denied WriteGroup Channel is
+skipped silently). It runs on the server's dispatch path, for
+WritePropertyMultiple with the device's objects locked, so it must return at
+once: a plain function that never awaits, never waits on the event loop or
+another thread and never calls back into the server. An exception, a value
+other than a bool, or interpreter shutdown denies, and nothing changes."""
+
+
 class BACnetServer:
     """BACnet server that hosts objects and responds to client requests.
 
@@ -4331,7 +4466,7 @@ class BACnetServer:
         dcc_password: Optional[str] = None,
         reinit_password: Optional[str] = None,
         *,
-        mutation_policy: Literal["permissive", "deny_all"] = "permissive",
+        mutation_policy: Literal["permissive", "deny_all"] | MutationHandler = "permissive",
         dcc_policy: str = "deny_all",
         dcc_source_restriction: list[tuple[int | None, bytes]] | None = None,
         dcc_disable_rate_limit: tuple[int, int] | None = None,
@@ -4380,6 +4515,7 @@ class BACnetServer:
         foreign_device: Optional[ForeignDevice] = None,
         multicast: Optional[Multicast] = None,
         sc_npdu_per_origin_limit: int | None = None,
+        sc_control_rate_limit: tuple[int, int] | None = None,
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
     ) -> None:
@@ -4434,6 +4570,14 @@ class BACnetServer:
         transport raise ValueError before file or network I/O. Negative or
         unrepresentably large values raise OverflowError. The aggregate
         receive queue remains 256; see ``sc_npdu_drop_counts``.
+
+        ``sc_control_rate_limit`` (SC only, default None): ``(burst,
+        per_second)``, the network-layer messages one source may send back to
+        back and then each second (#1969). None keeps 256 then 32 a second.
+        The burst must be 1 through 4096 and the rate at least 1; invalid
+        values or a non-SC transport raise ValueError before file or network
+        I/O, and negative values raise OverflowError. A message over its
+        source's budget is dropped and counted in ``control_rate_drops``.
 
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
@@ -6795,11 +6939,13 @@ class RouterCleanupFailure:
     @property
     def errno(self) -> int | None: ...
     @property
-    def error_class(self) -> int | None: ...
+    def error_class(self) -> ErrorClass | None: ...
     @property
-    def error_code(self) -> int | None: ...
+    def error_code(self) -> ErrorCode | None: ...
     @property
-    def reason(self) -> int | None: ...
+    def reason(self) -> RejectReason | AbortReason | None:
+        """A remote Reject's ``RejectReason`` or Abort's ``AbortReason``."""
+        ...
     @property
     def worker(self) -> str | None: ...
 

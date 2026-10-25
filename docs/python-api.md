@@ -139,8 +139,9 @@ while admitted startup or cleanup remains owned: await `close()` afterward to
 observe its barrier. A startup failure completes native rollback before raising
 its original exception, including the original transport errno. A failed cleanup
 raises `BacnetRouterCloseError`; its immutable `failures` records retain the port
-index/network, error kind/message, and applicable errno, protocol class/code,
-reject/abort reason or worker identity. Later close/start calls expose the same
+index/network, error kind/message, and applicable errno, protocol class/code
+(`ErrorClass`/`ErrorCode` members), reject/abort reason (a `RejectReason` or
+`AbortReason` member) or worker identity. Later close/start calls expose the same
 settled failure without retrying or admitting a fresh generation.
 
 Context exit waits for cleanup and preserves an exception from the body as the
@@ -182,10 +183,10 @@ constructors take a member or an int, and a raised error's `error_class`,
 A value without a name, such as a proprietary error code or unit, is a
 pseudo-member: `ErrorCode(300)` and `ErrorCode.from_raw(300)` give an
 `ErrorCode` equal to 300 whose `name` is `None` and whose repr is
-`ErrorCode(300)`. So a raised error's attributes, and the error pairs in read
-and audit results, are instances of their classes whatever the value. Other
-fields that carry these numbers, such as a trend log record's failure datum,
-stay plain ints. Pseudo-members aren't cached: two `ErrorCode(300)` calls give
+`ErrorCode(300)`. So a raised error's attributes, the error pairs in read
+and audit results, a trend log record's failure datum, a router cleanup
+failure's error fields and an SC `nak` event's class and code (#2025) are
+instances of their classes whatever the value. Pseudo-members aren't cached: two `ErrorCode(300)` calls give
 equal values (`==` holds) but not the same object (`is` doesn't). Whether
 `300 in ErrorCode` is true depends on the Python version, so test a value with
 `ErrorCode(300)` or by comparing numbers instead. A number outside the field's range (0 to 255 for the reasons, 0 to
@@ -674,6 +675,7 @@ client = BACnetClient(
     min_request_interval_ms=0,   # Keyword-only; least ms between confirmed requests to one destination
     reconnect=None,              # Keyword-only; SC only, a ScReconnect configuration
     sc_npdu_per_origin_limit=None, # Keyword-only; SC only, None uses native quota 32
+    sc_control_rate_limit=None,  # Keyword-only; SC only, (burst, per_second); None is (256, 32)
 )
 ```
 
@@ -1079,7 +1081,8 @@ the failover hub, each restore probe of the primary that fails reads one
 interval (#1828).
 
 `cause` is `local_close`, `peer_close`, `heartbeat_timeout`, `websocket`,
-`tls`, `nak` (with `error_class` and `error_code`), `dial_timeout`,
+`tls`, `nak` (with `error_class` and `error_code`, `ErrorClass` and
+`ErrorCode` members), `dial_timeout`,
 `connect_accept_timeout`, `upgrade_refused`, `malformed_result`,
 `unexpected_connect_reply`, `rejection_expired` or `other`; `cause_detail`
 adds text for `websocket`, `tls` and `other`. A `dial_timeout` is a dial
@@ -1130,12 +1133,23 @@ usual unsigned-conversion `OverflowError`; nonintegers raise `TypeError`.
 The aggregate SC NPDU queue stays fixed at 256. This is a local receive policy,
 independent of the server's request-handler admission budgets.
 
+Both also accept the keyword-only `sc_control_rate_limit: tuple[int, int] | None
+= None` (#1969): `(burst, per_second)`, the network-layer messages one source
+may hand in back to back and then each second once the burst is spent. `None`
+keeps the native 256 then 32 a second. The burst must be 1 to 4096 and the rate
+at least 1, with `transport="sc"`; other values raise `ValueError` during
+construction, before credential file access or dialing, negative ones
+`OverflowError`. A source is the originating VMAC of a hub-relayed message.
+Only network-layer messages are charged, never APDUs, and one over its source's
+budget is dropped and counted in `control_rate_drops`. Raise it for a peer that
+legitimately announces many networks at once, such as a router in front of many.
+
 `await client.sc_npdu_drop_counts()` and `await server.sc_npdu_drop_counts()`
 return an owned dictionary with required integer fields:
 
 | Field | Counted NPDU admission failure |
 | --- | --- |
-| `control_rate_drops` | Network-layer message over its source's rate limit (#518): a burst of 256, then 32 a second, fixed for now; Python can't change it yet |
+| `control_rate_drops` | Network-layer message over its source's rate limit (#518): `sc_control_rate_limit`, by default a burst of 256, then 32 a second |
 | `fairness_drops` | Per-origin quota reached |
 | `full_drops` | Quota passed but aggregate queue full |
 | `closed_drops` | Receive queue closed |
@@ -1207,8 +1221,17 @@ not-after dates, public-key and signature algorithm OIDs. Names and OIDs are
 ASCII escaped and bounded to 1024 bytes each; `text_truncated` signals any
 truncation. `metadata=None` with `inspection_error="certificate_parse_failed"`
 means display parsing failed, while original DER remains available. Parsing
-never changes TLS acceptance. SAN, KU and EKU interpretation is outside this
-API. The underlying TLS implementation bounds the certificate message to 64 KiB.
+never changes TLS acceptance. KU and EKU interpretation is outside this
+API.
+
+`metadata.subject_alt_names` (#2022) is a tuple of frozen `ScSubjectAltName`
+values, the certificate's DNS, URI, email and IP names in certificate order;
+other name forms are left out. Each has `kind` (`"dns"`, `"uri"`, `"email"` or
+`"ip"`) and `value`, a `str` exactly as the certificate wrote it (no case
+folding, a wildcard such as `*.example.com` as written) or an
+`ipaddress.IPv4Address`/`IPv6Address`. Compare names for equality, never by
+suffix, and allow on a name found rather than deny on one missing. A repr
+names the kind only, so logging one never prints the name. The underlying TLS implementation bounds the certificate message to 64 KiB.
 
 Certificate display does not authorize a VMAC/UUID, identify a relayed BACnet
 origin, establish current validity, or report a revocation check. Existing
@@ -2580,12 +2603,13 @@ server = BACnetServer(
     segmentation_supported=Segmentation.NONE, # keyword-only; full-server capabilities
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
-    mutation_policy="permissive", # keyword-only; "deny_all" denies covered network mutations
+    mutation_policy="permissive", # keyword-only; "deny_all", or a callable deciding each mutation
     dcc_password=None,           # password alone does not enable DCC
     dcc_policy="deny_all",       # keyword-only; explicit require_password or INSECURE legacy_permissive
     dcc_source_restriction=None, # optional list[(network_or_None, bytes)]; [] denies all; requires require_password
     dcc_disable_rate_limit=None, # optional (capacity, refill_interval_ms); (3, 20000) enables default rate
     reinit_password=None,        # password for ReinitializeDevice
+    sc_control_rate_limit=None,  # keyword-only; SC only, see "SC ingress quotas and drop counters"
     on_reinitialize=None,        # keyword-only; see "ReinitializeDevice"
     after_reinitialize=None,     # keyword-only; runs after the SimpleACK
     cov_policy=None,             # keyword-only dict of COV limits; see COV policy below
@@ -4525,13 +4549,52 @@ Rust gate. Denials return SERVICES / SERVICE_REQUEST_DENIED, preserving WPM's
 failed-reference error shape. It also denies each Channel write of an inbound
 WriteGroup, silently, since nothing answers one. Remote reads and trusted local
 writes still work.
-No Python callback or duplicate gate is involved.
 
-Invalid mode strings raise `ValueError`; non-strings raise `TypeError` during
-construction, before startup drains registrations or performs I/O. DCC,
+`mutation_policy` also takes a callable (#1966), asked about every mutation
+`"deny_all"` covers, wherever the Rust `ServerPolicy::authorize_mutation` is:
+once per WritePropertyMultiple element and once per Channel an inbound
+WriteGroup would write. It gets a frozen `MutationContext` and returns `True`
+to allow or `False` to deny, with the same SERVICES / SERVICE_REQUEST_DENIED
+answer:
+
+```python
+OPERATOR_NET = 7
+
+def policy(context: MutationContext) -> bool:
+    # Subscriptions from anyone; writes only from the operator network.
+    if context.service.startswith("subscribe_cov"):
+        return True
+    return context.source_network == OPERATOR_NET
+
+server = BACnetServer(1234, mutation_policy=policy)
+```
+
+The context is redacted: `service` (`"write_property"`, `"create_object"`,
+`"write_group"` and so on), the target's `object_identifier`, `object_type`,
+`property_identifier`, `array_index` and `priority` where the service has them,
+`source_mac`, `source_network` and `source_address` (claimed addresses, not an
+identity), `provenance` (`"unverified"` for B/IP, B/IPv6 and MS/TP,
+`"relayed_origin"` through an SC hub), `principal` and
+`forwarding_peer_principal` (certificate fingerprints, or `None`), and
+`invoke_id` (`None` for WriteGroup). Written values and file data are not in
+it, and its repr shows only the service and invoke ID. A principal exists only
+for a verified direct BACnet/SC connection, and Python has no direct SC
+listener, so `principal` is always `None` today, over B/IP as over a hub;
+`certificate` and `forwarding_peer_certificate` are always `None` for the same
+reason.
+
+The callable runs on the server's dispatch path, for WritePropertyMultiple with
+the device's objects locked, so it must be fast and must not block: a plain
+function that never awaits, never waits on the event loop or another thread,
+and never calls back into the server. It fails closed: an exception (reported
+through `sys.unraisablehook`), a return value that isn't a `bool` (a truthy
+`1` included), a coroutine or interpreter shutdown denies, and the request
+changes nothing.
+
+Invalid mode strings raise `ValueError`; other non-callables raise `TypeError`
+during construction, before startup drains registrations or performs I/O. DCC,
 ReinitializeDevice, LifeSafety and Audit keep separate policies; this option
-neither configures endpoint Device-write authorization nor identifies certificate
-principals. See [Server authorization policy](mutation-policy.md) for exact
+doesn't configure endpoint Device-write authorization. See [Server authorization policy](mutation-policy.md) for exact
 service coverage, validation precedence and exclusions.
 
 #### `purge_audit_log(object_id)`

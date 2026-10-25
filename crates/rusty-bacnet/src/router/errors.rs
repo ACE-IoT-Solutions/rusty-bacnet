@@ -1,6 +1,6 @@
 //! Fresh Python error snapshots borrow the retained native cleanup report.
 use super::lifecycle::{CloseError, StartError};
-use super::records::PyRouterCleanupFailure;
+use super::records::{PyRouterCleanupFailure, RemoteReason};
 use bacnet_network::router::{RouterStopError, RouterStopFailure};
 use bacnet_types::error::{Error, RemoteError};
 use pyo3::exceptions::PyRuntimeError;
@@ -36,9 +36,7 @@ pub(super) fn close_error(error: &CloseError<RouterStopError>, networks: &[u16])
                 } => {
                     let (error_class, error_code) = match error {
                         Error::Remote(RemoteError::Error { class, code })
-                        | Error::Structured { class, code, .. } => {
-                            (Some(class.to_raw()), Some(code.to_raw()))
-                        }
+                        | Error::Structured { class, code, .. } => (Some(*class), Some(*code)),
                         _ => (None, None),
                     };
                     PyRouterCleanupFailure {
@@ -55,8 +53,12 @@ pub(super) fn close_error(error: &CloseError<RouterStopError>, networks: &[u16])
                         error_class,
                         error_code,
                         reason: match error {
-                            Error::Remote(RemoteError::Reject { reason }) => Some(reason.to_raw()),
-                            Error::Remote(RemoteError::Abort { reason }) => Some(reason.to_raw()),
+                            Error::Remote(RemoteError::Reject { reason }) => {
+                                Some(RemoteReason::Reject(*reason))
+                            }
+                            Error::Remote(RemoteError::Abort { reason }) => {
+                                Some(RemoteReason::Abort(*reason))
+                            }
                             _ => None,
                         },
                         worker: None,

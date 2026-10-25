@@ -216,6 +216,7 @@ mod tests {
             },
             dcc_password: None,
             mutation_policy: bacnet_server::mutation::MutationPolicy::default(),
+            mutation_callback: None,
             dcc_policy: server::DccPolicy::default(),
             dcc_source_restriction: None,
             dcc_disable_rate_limit: None,

@@ -1,6 +1,9 @@
 //! Frozen owned snapshots; none retain a router, table guard, or socket.
+use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode, RejectReason};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+
+use crate::types::{IntEnumValue, int_enums};
 
 /// Actual address of one started B/IP router port.
 #[pyclass(name = "RouterPortInfo", module = "rusty_bacnet", frozen)]
@@ -105,12 +108,41 @@ pub(crate) struct PyRouterCleanupFailure {
     pub(super) message: String,
     #[pyo3(get)]
     pub(super) errno: Option<i32>,
-    #[pyo3(get)]
-    pub(super) error_class: Option<u16>,
-    #[pyo3(get)]
-    pub(super) error_code: Option<u16>,
-    #[pyo3(get)]
-    pub(super) reason: Option<u8>,
+    pub(super) error_class: Option<ErrorClass>,
+    pub(super) error_code: Option<ErrorCode>,
+    pub(super) reason: Option<RemoteReason>,
     #[pyo3(get)]
     pub(super) worker: Option<&'static str>,
+}
+
+/// A remote Reject's or Abort's reason, kept with its kind so Python gets a
+/// member of the right class.
+#[derive(Clone, Copy)]
+pub(super) enum RemoteReason {
+    Reject(RejectReason),
+    Abort(AbortReason),
+}
+
+#[pymethods]
+impl PyRouterCleanupFailure {
+    /// The remote error's class, an `ErrorClass` member, else None.
+    #[getter]
+    fn error_class(&self) -> Option<IntEnumValue<ErrorClass>> {
+        self.error_class.map(IntEnumValue)
+    }
+    /// The remote error's code, an `ErrorCode` member, else None.
+    #[getter]
+    fn error_code(&self) -> Option<IntEnumValue<ErrorCode>> {
+        self.error_code.map(IntEnumValue)
+    }
+    /// A remote Reject's `RejectReason` or Abort's `AbortReason`, else None.
+    #[getter]
+    fn reason<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.reason
+            .map(|reason| match reason {
+                RemoteReason::Reject(reason) => int_enums::to_py(py, reason),
+                RemoteReason::Abort(reason) => int_enums::to_py(py, reason),
+            })
+            .transpose()
+    }
 }
