@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub mod lab;
+pub mod paused;
 #[cfg(feature = "sc-tls")]
 pub mod sc;
 
