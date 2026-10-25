@@ -3119,6 +3119,11 @@ described below (`network_control_receiver_with_admission()` for a tracked
 one). The start returns a `StartedRouter` holding the router, the
 local APDU receiver and, when asked for, the network-control receiver.
 
+Every port of one router has the same transport type. `RouterPort`'s
+defaults to `AnyTransport` (#2043), so a router that mixes link types takes
+a `Vec<RouterPort>` of `AnyTransport` ports; one whose ports share a
+concrete transport names it, as in `RouterPort<BipTransport>`.
+
 ```rust
 use bacnet_network::router::{BACnetRouter, RouterOptions, StartedRouter};
 
@@ -9064,7 +9069,31 @@ Registration refuses, besides `::` and multicast addresses, an IPv4-mapped addre
 the registration lease to its socket, which every task that owns it shares, so the
 port stays registered until the last of them ends: a start that fails, or a stop,
 leaves the port free for the next owner, which binds the UDP port the port last
-published. The shared endpoint has no B/IPv6 builder and registers B/IP only.
+published.
+
+The shared endpoint registers a B/IPv6 port the same way (#1940). It has no B/IPv6
+builder, as the full server has none: compose `EndpointSession::new` over a
+`Bip6Transport`, then `device(identity)` and `with_registered_network_port(oid)`.
+`DeviceIdentity::with_bip6_port` (or `NetworkPortEntry::bip6`) declares the IPV6
+port, with a zero VMAC as a placeholder. Before reserving the port, startup checks
+the identity entry's address, UDP port and network number against the database's
+port, so a mismatch reserves nothing (the VMAC is not compared, since publication
+replaces it); after bind it publishes the bound
+port and the VMAC the transport uses into both. Stop releases the port.
+
+```rust
+use std::net::Ipv6Addr;
+use bacnet_endpoint::{DeviceIdentity, EndpointSession, SessionConfig, SessionRole};
+use bacnet_transport::bip6::Bip6Transport;
+use bacnet_types::{enums::ObjectType, primitives::ObjectIdentifier};
+
+let identity = DeviceIdentity::new(1234, 42)?.with_bip6_port(1, 6, Ipv6Addr::LOCALHOST, 0)?;
+let transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(identity.instance()));
+let mut session = EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())?
+    .device(identity)
+    .with_registered_network_port(ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1)?);
+session.start().await?;
+```
 
 The BBMD state lock is a synchronous `std::sync::Mutex` (it was a Tokio mutex before #939): the transport and the Network Port view hold it only for short, synchronous critical sections, so the object can read it under the database read lock without awaiting. Lock order stays ObjectDatabase, then the BBMD state; the transport never takes the database.
 
@@ -9158,6 +9187,10 @@ lifecycle. Standalone `BACnetClient` and `BACnetServer` remain public APIs with
 their own service and data-link capabilities; they are not deprecated. The
 endpoint responder's narrower service scope is described below.
 
+`EndpointSession`'s transport type defaults to `AnyTransport` (#2043), so
+`EndpointSession` alone names a session over any built-in transport. The
+builders return the concrete form, such as `EndpointSession<BipTransport>`.
+
 ### Builders
 
 ```rust
@@ -9222,8 +9255,10 @@ registration) stay on `BipTransport` and on `BACnetClient` over B/IP (see
 standalone builders (see [B/IP modes on the builders](#bip-modes-on-the-builders)),
 and `EndpointSession::foreign_registration()` reports a foreign device's
 registration.
-BIPv6/Ethernet have no endpoint builder — keep the standalone path there and
-do not expect identical administration across data links.
+B/IPv6 has no endpoint builder: compose `EndpointSession::new` over a
+`Bip6Transport` (see [Registered B/IPv6 Network Port](#registered-bipv6-network-port)).
+Ethernet has no endpoint builder: keep the standalone path there. Do not expect
+identical administration across data links.
 
 ### Endpoint shutdown and the object database
 
