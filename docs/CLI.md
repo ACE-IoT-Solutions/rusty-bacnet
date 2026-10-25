@@ -1038,14 +1038,90 @@ bacnet read-range 192.168.1.100 trend-log:1 --all --count 100            # the w
 bacnet --min-interval-ms 50 read-range 192.168.1.100 trend-log:1 --all --sequence 1201
 ```
 
+`read`, `readm`, `read-range` and `subscribe` show values decoded for the
+object and property they belong to, the same way the terminal UI does; see
+[Value output](#value-output) below.
+
 `read` and `readm` interpret Tags as named values: a whole array looks like
 `["exhaust", "floor"=3]`, an indexed element like `"floor"=3`, and index zero
 prints the count. An empty array prints `[]`. Names and text values are quoted
 and escaped; a semantic tag has no equals sign, while a valued NULL prints
-`"name"=null`. Invalid Tags bytes produce one `[invalid Tags; raw: ...]`
-marker for the complete payload. JSON keeps the existing `object`, `property`
-and string `value` fields, with an array index included in the property name.
-Other properties and `read-range` retain their existing formatting.
+`"name"=null`. Invalid Tags bytes produce one `[invalid Tags] [raw ...]`
+marker for the complete payload. JSON keeps the `object`, `property` and
+string `value` fields, with an array index included in the property name, and
+adds the typed `decoded` form.
+
+#### Value output
+
+Text output names what the device sent:
+
+- enumerations by name in kebab case: `offnormal`, `open-loop`,
+  `degrees-fahrenheit`; a binary object's state as `active` or `inactive`. A
+  number the property's enumeration doesn't name prints as the number;
+- bit strings with names as the set bits, `in-alarm | fault`, or `none`;
+  other bit strings as their bits, `bits(0101)`;
+- objects as `analog-input 1`, dates as `2026-10-19`, times as `07:00`
+  (seconds and hundredths when they aren't zero), REALs with every digit;
+- constructed values decoded: timestamps, Weekly_Schedule days (`Mon 07:00 =
+  72.5, 18:00 = null`), exception schedules, Date_List entries, references,
+  Recipient_List destinations (`device 99 process 7: Mon-Fri 08:00-17:00,
+  confirmed, to-offnormal | to-fault | to-normal`), Event_Parameters,
+  Active_COV_Subscriptions, Device_Address_Binding, a Command's actions,
+  Group and Global Group members, shed levels, Scale and Prescale, and the
+  access control lists. An Event_Parameters algorithm the CLI has no model
+  for lists its fields by context tag, each field's octets as
+  `[raw …]` since their datatype isn't known: `unsigned-range: [0] [raw 1e],
+  [1] [raw 0a]`;
+- a list or array whole, every element, in brackets; an indexed read of an
+  array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
+  as the array's size;
+- anything that doesn't decode as hex, `[raw 0e 0f]`, the one spelling every
+  command uses for undecoded octets.
+
+Names follow one rule: identifiers the command echoes back, the `object` and
+`property` columns and fields, keep their canonical UPPER_SNAKE form
+(`ANALOG_INPUT:1`, `PRESENT_VALUE`), the form the arguments and the Python
+bindings use; values are written in kebab case, as the terminal UI writes
+them. A property that `readm` couldn't read is such an echoed outcome and
+prints in the canonical form, `ERROR: PROPERTY:UNKNOWN_PROPERTY`; an error
+inside a value, such as a Group member's, is part of the value and prints in
+kebab case, `error property:unknown-property`.
+
+JSON keeps each value's text in `value` and adds its typed form under
+`decoded`; `subscribe` puts the texts in a `values` map and the typed forms
+in a `decoded` map, both keyed by property. Enumerations, bit strings,
+objects and numbers carry their numbers, so scripts needn't depend on the
+names' spelling:
+
+| Value | `decoded` |
+|-------|-----------|
+| NULL, BOOLEAN | `null`, `true`, `false` |
+| Unsigned, Signed, REAL, Double | a number (`{"float": "NaN"}` for a non-finite one); JSON doesn't say which of the four it was |
+| CharacterString | a string |
+| OCTET STRING | `{"octets": "0a0b"}` |
+| ENUMERATED | `{"value": 2, "name": "offnormal"}`; no `name` when the enumeration isn't known |
+| BIT STRING | `{"bits": "0100", "names": ["fault"]}`, first bit first; no `names` when the bits have none |
+| Date, Time | `{"date": "2026-10-19"}`, `{"time": "07:00"}` |
+| Object identifier | `{"type": "analog-input", "type_number": 0, "instance": 1}` |
+| Constructed element | `{"element": "daily-schedule", "text": "Mon 07:00 = 72.5"}`: its kind and the text form |
+| Several values, a list or array | an array of the above |
+| Octets that don't decode | `{"raw": "0e0f"}` |
+
+A constructed element's `text` is for display, like the table: its wording
+may change, so don't parse it. Branch on `element`; structured fields may
+join it later without removing `text`. The kinds are `access-rule`,
+`action-list`, `address-binding`, `authentication-factor`,
+`authentication-factor-format`, `authentication-policy`, `calendar-entry`,
+`cov-subscription`, `daily-schedule`, `date-range`, `destination`,
+`device-object-property-reference`, `device-object-reference`,
+`event-parameter`, `name-value`, `object-property-reference`,
+`port-permission`, `prescale`, `property-access-result`,
+`read-access-result`, `read-access-specification`, `recipient`, `scale`,
+`shed-level`, `special-event`, `stage-limit-value`, `time-stamp` and
+`value-source`.
+
+An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
+`items` for a list that isn't a log; log records keep their text form.
 
 `--position`, `--sequence` and `--time` pick the range, each with `--count`
 (default 100; negative reads backward). `--time` takes the device's local time
@@ -1067,9 +1143,10 @@ Multiple or Audit Log record by record, showing each record's timestamp, datum
 and, for a Trend Log, status flags (blank when none is set). JSON output
 lists them under `records`, with `result_flags` and `first_sequence_number`,
 and the hex of anything from the first record that doesn't decode under
-`undecoded`. Other properties decode as application
-values under `items`, where anything that doesn't decode ends the list as
-`[raw: ..]` hex.
+`undecoded`. A logged value prints as a value does; the log doesn't say which
+property it came from, so an enumeration prints as `enum 3`. Other
+properties list their elements under `items`, each decoded as above, where
+anything that doesn't decode ends the list as `[raw ..]`.
 
 **Aliases:** `rp` = read, `rpm` = readm, `rr` = read-range
 
@@ -1140,6 +1217,9 @@ for a subscription that never expires (Clause 13.14.1.1.4): it is not renewed
 or cancelled, it stays after the CLI exits, and it needs `--allow-write`. A
 process killed outright (SIGKILL) can't cancel; its subscription runs out with
 its lifetime.
+
+Each notification's values are decoded for the monitored object, as `read`
+decodes them; JSON adds their typed forms under `decoded`, keyed by property.
 
 **Alias:** `cov` = subscribe
 
