@@ -27,7 +27,7 @@ use tokio::time::Instant;
 
 use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
 use super::EventSink;
-use super::browse::limits::RateCap;
+use super::browse::limits::RequestLimits;
 use super::browse::read::{Halt, Reader, Wanted, unreachable};
 use crate::core::class::Class;
 use crate::tui::message::WorkerEvent;
@@ -175,7 +175,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     sink: &EventSink,
     mut commands: mpsc::Receiver<SafetyCommand>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     options: &SafetyOptions,
     local: &str,
 ) {
@@ -348,7 +348,7 @@ impl<'a> Runner<'a> {
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
         command: SafetyCommand,
     ) {
         match command {
@@ -475,7 +475,7 @@ impl<'a> Runner<'a> {
         &self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
         specs: &[WriteSpec],
         batch: bool,
     ) -> Result<Preview, String> {
@@ -557,7 +557,7 @@ impl<'a> Runner<'a> {
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
         preview: &Preview,
     ) -> Vec<(String, Outcome)> {
         if sink.is_cancelled() {
@@ -613,8 +613,11 @@ impl<'a> Runner<'a> {
         // The exit guard counts a write in flight; by now it is on disk
         // in both the ledger and the audit log.
         tell(sink, SafetyEvent::Ledger(self.entries())).await;
-        rate.acquire().await;
+        // One turn at the device for the preview's writes, sent one after
+        // another (#1791).
+        let turn = rate.turn(preview.device).await;
         let outcomes = send(client, preview).await;
+        drop(turn);
         for ((item, id), outcome) in preview.items.iter().zip(&ids).zip(&outcomes) {
             if let Some(ledger) = &mut self.ledger {
                 ledger.finish(*id, outcome.applied(), &backup);
@@ -658,7 +661,7 @@ impl<'a> Runner<'a> {
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
     ) -> usize {
         let entries = self
             .ledger
@@ -670,7 +673,7 @@ impl<'a> Runner<'a> {
                 _ if sink.is_cancelled() => Outcome::NotSent("the session ended first".into()),
                 (Some(undo), Some(object)) => {
                     find(client, entry.device).await;
-                    rate.acquire().await;
+                    let turn = rate.turn(entry.device).await;
                     let result = client
                         .write_property_to_device(
                             entry.device,
@@ -681,6 +684,7 @@ impl<'a> Runner<'a> {
                             entry.priority,
                         )
                         .await;
+                    drop(turn);
                     Outcome::of(&result)
                 }
                 _ => Outcome::NotSent(UNKNOWN_PRE_IMAGE.into()),

@@ -2,8 +2,10 @@
 //!
 //! [`run`] takes browse commands from the session loop and runs each as a
 //! job: a sequence of confirmed requests to one device, made one after
-//! another. The [`Scheduler`] lets a device run one job at a time, and a
-//! [`RateCap`] spaces every request across all jobs. Results carry the
+//! another. The [`Scheduler`] lets a device run one job at a time, and the
+//! session's [`RequestLimits`] gives each request its turn at the device
+//! (shared with the watch list and writes) and spaces every request across
+//! all jobs. Results carry the
 //! request id the UI chose, so it drops a result it no longer wants.
 //! Object names for the rows on screen are read by [`names`], through the
 //! same scheduler and cap.
@@ -29,7 +31,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
-use self::limits::{Job, RateCap, Scheduler, Started, Task};
+use self::limits::{Job, RequestLimits, Scheduler, Started, Task};
 use self::names::NameQueue;
 use self::read::{Halt, Reader, Wanted};
 use super::EventSink;
@@ -98,7 +100,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     sink: &EventSink,
     mut commands: mpsc::Receiver<Command>,
-    rate: &RateCap,
+    rate: &RequestLimits,
 ) {
     let mut scheduler = Scheduler::default();
     // Devices that refused RPM go straight to ReadProperty next time.
@@ -159,7 +161,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
 async fn job<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     sink: &EventSink,
-    rate: &RateCap,
+    rate: &RequestLimits,
     started: Started,
     rpm: bool,
     queue: Arc<Mutex<NameQueue>>,

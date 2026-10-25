@@ -74,6 +74,9 @@ pub(super) struct Quirks {
     /// Swallow this many confirmed requests, retries included, then
     /// answer: a device that was away for a while.
     pub(super) swallow_first: u8,
+    /// How long frames take to reach this port: a slow device, whose
+    /// requests stay outstanding that long.
+    pub(super) latency: Duration,
 }
 
 struct Port {
@@ -307,10 +310,10 @@ impl HubPort {
             .ports
             .iter()
             .filter(|port| port.mac != self.mac && to.is_none_or(|to| port.mac.as_slice() == to))
-            .map(|port| port.inbox.clone())
+            .map(|port| (port.inbox.clone(), port.quirks.latency))
             .collect();
         drop(inner);
-        for tx in targets {
+        for (tx, latency) in targets {
             let npdu = ReceivedNpdu::unverified(
                 Bytes::copy_from_slice(npdu),
                 self.mac.clone(),
@@ -318,7 +321,14 @@ impl HubPort {
                 Vec::new(),
                 None,
             );
-            let _ = tx.try_send(npdu);
+            if latency.is_zero() {
+                let _ = tx.try_send(npdu);
+            } else {
+                tokio::spawn(async move {
+                    tokio::time::sleep(latency).await;
+                    let _ = tx.send(npdu).await;
+                });
+            }
         }
     }
 }
@@ -439,6 +449,8 @@ pub(super) struct Site {
     events: mpsc::Receiver<WorkerEvent>,
     commands: Option<mpsc::Sender<Command>>,
     worker: Option<JoinHandle<()>>,
+    /// A router and the device behind it, for a routed site.
+    routed: Option<routed::Routed>,
 }
 
 impl Site {
@@ -494,7 +506,17 @@ impl Site {
             .max_apdu_length(limits.max_apdu)
             .segmented_response_accepted(limits.segmented);
         let client = bounded(Box::pin(client.build())).await.unwrap();
+        Self::launch(hub, started, client, options).await
+    }
 
+    /// Serve `client`'s session with `options`, beside `servers` on `hub`,
+    /// and wait until it is connected.
+    async fn launch<T: TransportPort + 'static>(
+        hub: Arc<Hub>,
+        servers: Vec<BACnetServer<HubPort>>,
+        client: BACnetClient<T>,
+        options: SessionOptions,
+    ) -> Self {
         let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
         let (commands, command_rx) = mpsc::channel(16);
         let worker = tokio::spawn(Box::pin(session::serve(
@@ -506,11 +528,12 @@ impl Site {
         )));
         let mut site = Self {
             hub,
-            servers: started,
+            servers,
             app: new_app(None),
             events,
             commands: Some(commands),
             worker: Some(worker),
+            routed: None,
         };
         site.pump_until(|app| matches!(app.link, Link::Up { .. }))
             .await;
@@ -562,7 +585,19 @@ impl Site {
     /// send it (confirming the warning if one appears), wait out the window,
     /// and then until the table holds at least `rows` devices.
     pub(super) async fn who_is(&mut self, range: &str, rows: usize) {
+        self.who_is_in(false, range, rows).await;
+    }
+
+    /// [`Self::who_is`] as a global broadcast, which routers pass on.
+    pub(super) async fn global_who_is(&mut self, range: &str, rows: usize) {
+        self.who_is_in(true, range, rows).await;
+    }
+
+    async fn who_is_in(&mut self, global: bool, range: &str, rows: usize) {
         press(&mut self.app, KeyCode::Char('d'));
+        if global {
+            press(&mut self.app, KeyCode::Right);
+        }
         press(&mut self.app, KeyCode::Tab);
         type_text(&mut self.app, range);
         press(&mut self.app, KeyCode::Tab);
@@ -618,5 +653,12 @@ impl Site {
         for server in &mut self.servers {
             bounded(server.stop()).await.unwrap();
         }
+        if let Some(routed) = self.routed.take() {
+            routed.stop().await;
+        }
     }
 }
+
+#[path = "site_routed.rs"]
+mod routed;
+pub(super) use routed::{ROUTED_NETWORK, routed_parts};

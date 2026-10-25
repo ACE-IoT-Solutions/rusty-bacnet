@@ -1,16 +1,24 @@
-//! The browser's request limits: one job per device at a time, so a device
-//! never has more than one of our confirmed requests outstanding, and a
-//! global cap on how many requests a second leave across every device.
-//! Name reads for the rows on screen (#1896) are jobs too, the lowest
-//! priority: any other read stops one, and it resumes after. They take no
-//! slot of their own, so under a cap that watch polling keeps saturated
-//! they can wait indefinitely.
+//! The session's request limits, and the browser's scheduling under them.
+//!
+//! [`RequestLimits`] is shared by every worker that asks devices anything:
+//! a global cap on how many requests a second leave across every device,
+//! and one gate per device, so a device never has more than one of our
+//! confirmed requests outstanding, whether the browser, the watch list, a
+//! write or a managed COV renewal sent it (#1791). Small devices often
+//! handle one transaction at a time.
+//!
+//! Within the browser, a device runs one job at a time. Name reads for the
+//! rows on screen (#1896) are jobs too, the lowest priority: any other read
+//! stops one, and it resumes after. They take no slot of their own, so
+//! under a cap that watch polling keeps saturated they can wait
+//! indefinitely.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::tui::point::{BrowseRead, ReqId};
@@ -20,9 +28,23 @@ use crate::tui::point::{BrowseRead, ReqId};
 /// slot and sleeps until it; the lock is held only to take the slot, never
 /// across the sleep. It also remembers when recent requests went, for the
 /// request-rate meter.
-pub(crate) struct RateCap {
+///
+/// It also holds each device's gate: a one-permit semaphore that a request
+/// to the device holds from before its slot until its answer (see
+/// [`turn`](Self::turn)). The std mutex around the map is held only to look
+/// a gate up, never across an await.
+pub(crate) struct RequestLimits {
     interval: Duration,
     state: Mutex<Slots>,
+    gates: Mutex<HashMap<u32, Arc<Semaphore>>>,
+}
+
+/// A request's turn at its device: the device's gate, held until this is
+/// dropped, on every path out of the request (an answer, an error, or the
+/// request's future dropped).
+#[must_use = "the device's gate is held only while the turn lives"]
+pub(crate) struct Turn {
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 #[derive(Default)]
@@ -36,7 +58,7 @@ struct Slots {
 /// How long the meter remembers a request.
 const METER_WINDOW: Duration = Duration::from_secs(crate::tui::watched::METER_WINDOW_SECS);
 
-impl RateCap {
+impl RequestLimits {
     /// A cap of `per_second` requests a second; 0 means no cap.
     pub(crate) fn new(per_second: u32) -> Self {
         let interval = match per_second {
@@ -46,7 +68,41 @@ impl RateCap {
         Self {
             interval,
             state: Mutex::new(Slots::default()),
+            gates: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// `device`'s gate: one permit, held by whichever request to it is
+    /// outstanding. A managed COV subscription takes it for its renewals.
+    pub(crate) fn gate(&self, device: u32) -> Arc<Semaphore> {
+        let mut gates = self.gates.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            gates
+                .entry(device)
+                .or_insert_with(|| Arc::new(Semaphore::new(1))),
+        )
+    }
+
+    /// Wait for `device`'s gate, then for this request's slot. The turn
+    /// holds the gate until it is dropped, so keep it for exactly the one
+    /// request: a job that takes a second turn while holding the first
+    /// waits on itself.
+    ///
+    /// The gate comes first so a request queued behind another one to the
+    /// same device holds no slot meanwhile. The wait is cancel-safe: a
+    /// dropped wait leaves the semaphore's queue.
+    pub(crate) async fn turn(&self, device: u32) -> Turn {
+        // The gate is never closed, so the permit always comes.
+        let permit = self.gate(device).acquire_owned().await.ok();
+        self.acquire().await;
+        Turn { _permit: permit }
+    }
+
+    /// Wait until `device`'s gate is free and a request could go at once,
+    /// taking neither; see [`wait_free`](Self::wait_free) for why.
+    pub(crate) async fn wait_device_free(&self, device: u32) {
+        drop(self.gate(device).acquire_owned().await);
+        self.wait_free().await;
     }
 
     /// The instant this request may go, reserving it.
@@ -65,7 +121,8 @@ impl RateCap {
         slot
     }
 
-    /// Wait for this request's turn.
+    /// Wait for this request's slot under the rate cap alone; a request to
+    /// a device takes a [`turn`](Self::turn), which includes one.
     pub(crate) async fn acquire(&self) {
         let slot = self.reserve(Instant::now());
         if !self.interval.is_zero() {
@@ -342,7 +399,7 @@ mod tests {
     /// and a cap of zero never waits.
     #[tokio::test(start_paused = true)]
     async fn the_rate_cap_spaces_requests_evenly() {
-        let cap = RateCap::new(4);
+        let cap = RequestLimits::new(4);
         let start = Instant::now();
         let mut slots = Vec::new();
         for _ in 0..3 {
@@ -362,7 +419,7 @@ mod tests {
         let before = Instant::now();
         cap.acquire().await;
         assert_eq!(Instant::now(), before);
-        let none = RateCap::new(0);
+        let none = RequestLimits::new(0);
         let before = Instant::now();
         for _ in 0..10 {
             none.acquire().await;
@@ -374,7 +431,7 @@ mod tests {
     /// as soon as it would have.
     #[tokio::test(start_paused = true)]
     async fn waiting_for_a_free_slot_takes_none() {
-        let cap = RateCap::new(4);
+        let cap = RequestLimits::new(4);
         let start = Instant::now();
         cap.acquire().await;
         cap.wait_free().await;

@@ -20,7 +20,7 @@ use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifie
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::limits::RateCap;
+use super::limits::{RequestLimits, Turn};
 use crate::tui::format::{RawRow, decode_all};
 use crate::tui::point::ReadVia;
 
@@ -118,36 +118,41 @@ pub(crate) struct ListRead {
     pub(crate) stopped: Option<String>,
 }
 
-/// Reads one device, one request at a time, each after the global rate cap.
+/// Reads one device, one request at a time, each with its turn at the
+/// device's gate and the global rate cap.
 pub(crate) struct Reader<'a, T: TransportPort + 'static> {
     pub(crate) client: &'a BACnetClient<T>,
     pub(crate) device: u32,
-    pub(crate) rate: &'a RateCap,
+    pub(crate) rate: &'a RequestLimits,
     pub(crate) cancel: &'a AtomicBool,
     /// False once the device has refused RPM.
     pub(crate) rpm: bool,
 }
 
 impl<T: TransportPort + 'static> Reader<'_, T> {
-    /// Wait for this request's slot, unless the job was stopped.
-    pub(super) async fn turn(&self) -> Result<(), Halt> {
+    /// Wait for this request's turn at the device, unless the job was
+    /// stopped. Hold it for the one request (see [`RequestLimits::turn`]).
+    pub(super) async fn turn(&self) -> Result<Turn, Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
-        self.rate.acquire().await;
+        let turn = self.rate.turn(self.device).await;
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
-        Ok(())
+        Ok(turn)
     }
 
-    /// Wait until a request could go at once, without taking the slot,
-    /// unless the job was stopped (see [`RateCap::wait_free`]).
+    /// Wait until a request could go at once, without taking the device's
+    /// gate or a slot, unless the job was stopped (see
+    /// [`RequestLimits::wait_free`]). Another worker can take the gate
+    /// before [`Self::turn`]; the name reads check again then which names
+    /// are still wanted.
     pub(super) async fn free_turn(&self) -> Result<(), Halt> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
-        self.rate.wait_free().await;
+        self.rate.wait_device_free(self.device).await;
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
@@ -166,7 +171,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
         property: PropertyIdentifier,
         index: Option<u32>,
     ) -> Result<Vec<u8>, Halt> {
-        self.turn().await?;
+        let _turn = self.turn().await?;
         self.client
             .read_property_from_device(self.device, object, property, index)
             .await
@@ -193,7 +198,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
                 })
                 .collect(),
         };
-        self.turn().await?;
+        let _turn = self.turn().await?;
         let ack = self
             .client
             .read_property_multiple_from_device(self.device, vec![spec])
