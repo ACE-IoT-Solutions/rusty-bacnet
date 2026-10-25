@@ -212,6 +212,34 @@ async fn reinitialize_device_passes_every_defined_state_to_the_handler() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn reinitialize_device_accepts_a_twenty_character_multi_octet_password() {
+    // 20 characters, 40 UTF-8 octets: the limit counts characters (#2060).
+    let password = "é".repeat(20);
+    let (config, received) = recording_config(Some(&password), || Ok(()));
+    let state = ReinitializedState::START_BACKUP;
+    let apdu = dispatch_with(
+        request_data(state, Some(&password)),
+        config,
+        DccState::Enable,
+    )
+    .await;
+    assert!(matches!(apdu, Apdu::SimpleAck(_)), "{apdu:?}");
+    assert_eq!(states(&received), vec![state]);
+
+    // One character more is refused before the password check or the handler.
+    let too_long = format!("{password}é");
+    let (config, received) = recording_config(Some(&too_long), || Ok(()));
+    let apdu = dispatch_with(
+        request_data(state, Some(&too_long)),
+        config,
+        DccState::Enable,
+    )
+    .await;
+    assert!(!matches!(apdu, Apdu::SimpleAck(_)), "{apdu:?}");
+    assert!(states(&received).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn reinitialize_device_refuses_an_undefined_state_without_the_handler() {
     for state in UNDEFINED_STATES {
         let (config, received) = recording_config(Some("reinit-pw"), || Ok(()));
