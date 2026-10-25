@@ -28,8 +28,9 @@ These documents follow the `dev` branch. The latest release is **0.14.0**, and t
 ## Design
 
 - [Terminal UI](design/tui.md): the `bacnet` TUI's architecture, screens, safety model and test strategy.
-- [Website audit for 0.15.0](design/website-audit-0.15.md): page inventory, sample verification, sitemap and PR plan (proposed).
-- [Conformance and support reporting](design/conformance-reporting.md): options for showing support on the website (proposed, OD-07).
+- [Website audit for 0.15.0](design/website-audit-0.15.md): page inventory, sample verification, and the task sitemap and PR plan the maintainer approved for the 0.15 site.
+- [Conformance and support reporting](design/conformance-reporting.md): how the website will show support (decided: generated capability tables and a sample PICS, #1496).
+
 ## Website and engineering docs
 
 The website explains tasks and summarizes what is supported; these references define the engineering contracts. Keep related updates together without duplicating full API tables. Examples and source inspection establish their stated scope, not hardware interoperability or certification.

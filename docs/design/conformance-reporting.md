@@ -1,16 +1,19 @@
 # Design: conformance and support reporting on the website
 
-Status: proposed (2026-10-25) for decision OD-07, #1496 (folded into #1989).
-Nothing here is built. Spec references are clause numbers only.
+Status: **decided** (maintainer, 2026-10-25): option C in section 4, in two
+PRs, tables first; no BIBBs, no ledger. This settles the project's open
+decision OD-07 ("how to present conformance", #1496, folded into #1989). The
+options stay below for context. Nothing here is built yet. Spec references are clause numbers only.
 
 ## 1. Problem
 
 Integrators deciding whether the stack fits, and anyone preparing a PICS or a
 BTL submission, need to know which object types, services and data links each
 surface supports, and what is known to be missing. Today they get one
-hand-written section, "What's supported" on `project/support`, which names 64
-object types, 25 confirmed services the server executes, 24 services the
-client sends, the data links and the Python and CLI surfaces. It is accurate for v0.14.0, but every count and
+hand-written section, "What's supported" on `project/support`, which, for v0.14.0,
+names 64 object types, 25 confirmed services the server executes and 24
+services the client sends (counted from that page's "Full server" and
+"Client" paragraphs), the data links and the Python and CLI surfaces. It is accurate for v0.14.0, but every count and
 list in it is typed by hand, so it goes stale the first time a PR adds a
 service without touching the page.
 
@@ -41,6 +44,8 @@ entry point.
 
 ### 3.1 Level of detail
 
+The levels are labelled L1 (least detail) to L4 (most).
+
 | Level | Content | Readers served | Cost |
 |---|---|---|---|
 | L1 Summary | Today's prose section | Evaluators skimming | Drifts unless tested |
@@ -54,6 +59,9 @@ overclaim. If BIBBs appear later, they need a reviewed mapping and tests, not
 generation.
 
 ### 3.2 Generated versus hand-written
+
+Three mechanisms: H keeps the page hand-written, G1 commits generated files,
+G2 generates during the site build.
 
 - **H. Hand-written, with a guard.** Keep the prose, and add a Rust test that
   reads the support page and fails when its counts disagree with the code.
@@ -98,8 +106,17 @@ discussion.
 - New tests close the two gaps: the representative list becomes a public,
   documented function (or a `#[doc(hidden)]` one behind a feature), and a test
   ties `INITIATED_SERVICES` and a client-sent list to the client's methods.
+- **A sample PICS can be copied as a device's claim.** It carries a banner
+  and a title naming the reference configuration, says it is generated
+  output for that configuration only, and is never offered as a download
+  without the banner.
+- **"Supported object types" counts constructible types, not tested
+  behaviour.** The tables say so in their heading, and link each surface to
+  the evidence guidance on `project/support`.
+- Generated tables and pages never use the words "conformant", "compliant" or
+  "certified".
 
-## 4. Options for OD-07
+## 4. Options (decision OD-07)
 
 | Option | Detail | Generated | Effort | Staleness risk |
 |---|---|---|---|---|
@@ -108,12 +125,17 @@ discussion.
 | **C** | B + L3 sample PICS + `integrate/pics` task page | Yes | Medium, plus one page | Low |
 | **D** | C + L4 per-property matrix | Yes | Large | Low, but long and spec-adjacent |
 
-**Recommendation: C, in two PRs.** First B: the generator, `support.json`, the
+**Decision: C, in two PRs** (the recommendation, accepted on 2026-10-25). First B: the generator, `support.json`, the
 freshness test and a `project/conformance` page whose tables replace the lists
 in "What's supported" (the support page keeps the evidence-reading guidance and
 links to the new page). Then the sample PICS and the task page. This answers
-both audiences, uses only code that already exists and is already tested, and
-adds no workflow. Option A is the fallback if the maintainer wants no new page
+both audiences and adds no workflow. It builds on the PICS generator, the
+executed-service list and the dispatch cross-check, which exist and are
+tested, but it needs two changes first: `supported_representatives()` is a
+private function in a test-only module (`bacnet-objects/src/property_metadata_audit.rs:144`)
+and must become a public, documented catalogue; and `INITIATED_SERVICES` is a
+private constant (`bacnet-server/src/pics/mod.rs:523`) with no test tying it,
+or a client-sent list, to what `bacnet-client` can send. Option A is the fallback if the maintainer wants no new page
 before 0.15.0; D is not recommended.
 
 ## 5. Out of scope

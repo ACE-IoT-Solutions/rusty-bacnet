@@ -1,13 +1,19 @@
 # Website audit for 0.15.0
 
-Status: proposed (2026-10-25), part of #1989. Audited tree: `dev` at
+Status: decided (2026-10-25), part of #1989. The maintainer approved the sitemap
+in section 7 as written and chose to run the loopback lab's Python tests in
+the existing Python bindings CI job (section 8). Audited tree: `dev` at
 `d7df2c954`, after the navigation split (#1995), the Python first-read
 execution test (#1996), the Rust first-read validation (#2010) and the
 runnable shared-endpoint guide (#2014). This note records what the site holds,
 how it divides work with `docs/`, where it is thin, how far each code sample is
 verified, and a sitemap and PR sequence for the restructure. It builds on the
-two audit comments on #1989 (revision `714497ec`) and the sitemap direction the
-maintainer approved there; it does not repeat their evidence.
+two audit comments on #1989 of 2026-10-21
+([part 1](https://github.com/jscott3201/rusty-bacnet/issues/1989#issuecomment-6318838606),
+[part 2](https://github.com/jscott3201/rusty-bacnet/issues/1989#issuecomment-6318839533),
+at revision [`714497ec`](https://github.com/jscott3201/rusty-bacnet/commit/714497ec8621262366db86a99cb351f3dc097274))
+and the sitemap direction the maintainer
+[approved the same day](https://github.com/jscott3201/rusty-bacnet/issues/1989#issuecomment-6318941536); it does not repeat their evidence.
 
 Nothing here is a support claim. Spec references are clause numbers only.
 
@@ -15,16 +21,17 @@ Nothing here is a support claim. Spec references are clause numbers only.
 
 - **The site is accurate for v0.14.0.** Every CLI sample that can run against
   loopback ran against the v0.14.0 macOS arm64 release binary and against a
-  `dev` build with the same results. All 74 links into the repository resolve,
+  `dev` build with the same results. All 74 links into the repository (count at `d7df2c954`) resolve,
   anchors included. Every Python keyword and Rust item the pages name exists in
   the 0.14.0 stub and on `dev`. One stale statement was fixed (section 9).
-- **Only five displayed sources are executed by CI.** The Rust first read, the
-  shared-endpoint program and its manifest, and the Python first read run in
-  the workspace and Python CI jobs. The loopback lab's tests exist but no
+- **Only five displayed sources (nine blocks, counting their run lines and
+  expected output) are executed by CI.** The Rust first read and its manifest,
+  the shared-endpoint program and its manifest, and the Python first read run
+  in the workspace and Python CI jobs. The loopback lab's tests exist but no
   workflow runs them. Everything else is parse-checked or reviewed by hand.
 - **The 0.15 changes on `dev` touch about a dozen pages.** The MSRV moves from
   1.93 to 1.95, server policy gains a DCC decision and certificate accessors,
-  routed targets reach `alarms` and `read-range`, `--passive` discovery listens
+  routed targets reach ten more one-shot commands (#1786), `--passive` discovery listens
   for announcements, the baud scan ships, and Python gains `BipRouter`.
   Section 4 lists each page's change.
 - **The biggest gaps are tasks, not facts.** There is no page for serving
@@ -92,7 +99,7 @@ stream and outside the site PRs; the site only changes where it links.
 compatibility pages for moved routes. Audience codes: **Ev** evaluator,
 **R** Rust application developer, **Py** Python developer, **Op**
 integrator or operator using the CLI or TUI, **Em** embedded developer, **C**
-contributor. "0.15 Δ" names what the page needs when the site moves to 0.15;
+contributor. The "0.15 Δ" (delta) column names what the page needs when the site moves to 0.15;
 "none" means the page is correct for both.
 
 ### Start
@@ -105,8 +112,8 @@ contributor. "0.15 Δ" names what the page needs when the site moves to 0.15;
 | `start/installation.mdx` | Install the tools | Op, Py, R | Install and check each artifact | `ci.md#artifacts` | MSRV text; crate list if a crate is added |
 | `start/local-lab.mdx` | Try a local client/server lab | Py, Op | Loopback read without hardware | `python-api.md` | Rerun lab tests on the new wheel |
 | `start/first-read.md` | Your first read | Op | Read one property with the CLI | `CLI.md` | none for the samples; version text |
-| `start/python.md` | Read with Python | Py | Complete async first read | `python-api.md`, `.pyi` | Watch stream A: the script catches `BacnetError` |
-| `start/rust.md` | Embed the Rust client | R | Complete Rust first read | `rust-api.md` | MSRV; pinned versions; watch stream A's error types |
+| `start/python.md` | Read with Python | Py | Complete async first read | `python-api.md`, `.pyi` | Watch the error-type PR (#1815): the script catches `BacnetError` |
+| `start/rust.md` | Embed the Rust client | R | Complete Rust first read | `rust-api.md` | MSRV; pinned versions; watch the error-type PR (#1815) |
 | `start/embedded.md` | Run on a microcontroller | Em | Crates, clock, sizes, adapter rules | `encoding-sinks.md`, `ci.md` | Sources link to `dev`, not the release; sizes follow `size-budget.toml` (unit-tested) |
 
 ### Build and integrate
@@ -122,7 +129,7 @@ contributor. "0.15 Δ" names what the page needs when the site moves to 0.15;
 | Path | Title | Audience | Purpose | `docs/` overlap | 0.15 Δ |
 |---|---|---|---|---|---|
 | `guides/configuration.md` | Configure your connection | Op, Py, R | Local vs remote settings, units | `CLI.md` | none known |
-| `guides/discovery.mdx` | Discover devices deliberately | Op, Py | Directed, ranged, foreign, routed discovery | `CLI.md` | Routed targets now reach `alarms` and `read-range` (#1786) |
+| `guides/discovery.mdx` | Discover devices deliberately | Op, Py | Directed, ranged, foreign, routed discovery | `CLI.md` | Routed targets now reach `alarms`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` (#1786); line 42 lists only the original five |
 | `guides/bacnet-sc.md` | Configure BACnet/SC | Op, Py, R | Credentials, identity, failure stages | `CLI.md`, `python-api.md`, `rust-api.md` | Certificate subject and SAN accessors for policy (#1965) |
 | `guides/mstp.mdx` | Commission an MS/TP lab | Op, Py, R | Serial lab, adapter options | `mstp-qualification.md` | none known; real-time detail belongs on a new page |
 | `guides/observe-changes.md` | Observe changes with COV | Op, Py | Bounded subscriptions | `CLI.md`, `python-api.md` | none known |
@@ -148,11 +155,11 @@ contributor. "0.15 Δ" names what the page needs when the site moves to 0.15;
 
 | Path | Title | Audience | Purpose | `docs/` overlap | 0.15 Δ |
 |---|---|---|---|---|---|
-| `reference/cli.md` | CLI reference entry points | Op | Command families, exit codes | `CLI.md` | Routed `alarms`/`read-range` (#1786); replace with generated reference |
+| `reference/cli.md` | CLI reference entry points | Op | Command families, exit codes | `CLI.md` | Routed targets for the ten commands of #1786 (line 44 lists five); replace with generated reference |
 | `reference/transports.mdx` | Transport paths and boundaries | all | Choose a link; evidence scope | `rust-api.md`, `mstp-qualification.md` | Split: selection moves to a connect page, evidence stays |
 | `reference/api.md` | API and example library | R, Py, Em | Find exact signatures | `rust-api.md`, `python-api.md`, `architecture.md` | Versioned docs.rs links; list all nine Python examples |
-| `help/troubleshooting.md` | Troubleshoot by symptom | all | Isolate the failing layer | — | Routed-target sentence (#1786); link policy denials |
-| `project/support.md` | Support status and evidence | Ev | What is supported, what evidence means | — | DCC policy, SAN accessors, `BipRouter`, routed CLI reads, access authorization (#1569–#1572); conformance per #1496 |
+| `help/troubleshooting.md` | Troubleshoot by symptom | all | Isolate the failing layer | — | Routed-target sentence at line 28 (#1786); link policy denials |
+| `project/support.md` | Support status and evidence | Ev | What is supported, what evidence means | — | DCC policy, SAN accessors, `BipRouter`, routed CLI reads, access authorization (#1569–#1572); generated conformance tables per #1496 (decided: option C) |
 | `project/upgrading.md` | Upgrade from v0.13.0 to v0.14.0 | all | Breaking changes by area | changelog | Becomes history; a 0.14 → 0.15 guide is needed |
 | `development/build-from-source.md` | Build from source | C | Checkout, CLI and Python builds | `ci.md` | none |
 | `development/documentation.md` | Improve the documentation | C | Writing and validation rules | `website/README.md` | none |
@@ -169,14 +176,14 @@ error today. They are the work list for the release PR that moves `site.mjs` to
 | Edition 2024 and MSRV 1.95 (#1011) | start/choose-your-path, start/installation, start/rust, integrate/shared-endpoints |
 | `ServerPolicy` decides DCC by verified principal (#1964); policy contexts expose the verified leaf certificate, its subject and SANs (#1965) | guides/bacnet-sc, project/support, new security page |
 | `TransportProvenance` no longer `Copy` (#1965); `router.stop()` returns `Result` (#2002); `OriginateError` changes (#1809); `MstpMonitor::start` is async (#1854) | 0.14 → 0.15 upgrade guide |
-| CLI `alarms` and `read-range` take routed targets (#1786) | guides/discovery, reference/cli, help/troubleshooting |
+| CLI `alarms`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` take routed targets (#1786) | guides/discovery.mdx:42, reference/cli.md:44, help/troubleshooting.md:28 (each lists only `read`, `readm`, `write`, `writem`, `subscribe`) |
 | TUI passive discovery and local `:find` (#1850); baud scan (#1873) | tui/profiles, tui/discovery, tui/keys, tui/mstp |
 | Python `BipRouter` (#1858); access rights and local authorization (#1569–#1572) | integrate/overview, project/support, new router page |
-| In flight: stream A (Rust and Python error types), stream B (B/IP follow-ups) | start/python, start/rust, guides/discovery, NAT and multicast pages |
+| In flight: the error-type PR (#1815, Rust and Python error types) and the B/IP follow-ups PR | start/python, start/rust, guides/discovery, NAT and multicast pages |
 
 The Rust and shared-endpoint samples compile against `dev` in CI today, so a
 breaking API change fails there first. The Python first read runs against the
-`dev` extension in CI's Python job, so stream A's error rename would fail it
+`dev` extension in CI's Python job, so an error rename in #1815 would fail it
 too. That is the intended behaviour of #1996 and #2010.
 
 ## 5. Thin or missing coverage
@@ -190,15 +197,18 @@ too. That is the intended behaviour of #1996 and #2010.
 | **Performance** | Nothing, apart from one figure in project/upgrading | An evaluator page: what is measured, units, environments, how to reproduce, what a budget is versus a measurement | `Benchmarks.md` (sections 1, 2, 10, 11) |
 | **Serving objects** | A table row in integrate/overview | A full-server task in Rust and Python: database, objects, Device identity, start and stop, resource limits | `rust-api.md`, `python-api.md`, `examples/python/bip_client_server.py` |
 | **Routing** | Nothing beyond the embedded router example | Rust `BACnetRouter` and Python `BipRouter` tasks with lifecycle (#2002) | `bacnet-network`, `rust-api.md`, #1858 |
-| **Upgrade 0.14 → 0.15** | None yet | A guide in the shape of the 0.13 → 0.14 page, written once streams A and B land | `changelog.d/*-migration.md` |
-| **PICS and conformance** | One paragraph in project/support | See `docs/design/conformance-reporting.md` (#1496) | `bacnet_server::pics` |
+| **Upgrade 0.14 → 0.15** | None yet | A guide in the shape of the 0.13 → 0.14 page, written once the error-type PR (#1815) and the B/IP follow-ups PR land | `changelog.d/*-migration.md` |
+| **PICS and conformance** | One paragraph in project/support | Generated capability tables and a sample PICS, decided in `docs/design/conformance-reporting.md` (#1496) | `bacnet_server::pics` |
 
 ## 6. Code samples
 
-67 displayed blocks: 46 shell, 7 text, 6 PowerShell, 4 TOML, 2 Rust and 2
-Python (two of the TOML and Rust blocks are imported from
-`website/examples/rust/shared-endpoint/`, and the lab's Python from
-`website/examples/python/loopback_lab.py`). Every shell block passes `sh -n`
+67 displayed blocks, counted as 58 Markdown fences (42 shell, 7 text, 5
+PowerShell, 2 TOML, 1 Rust, 1 Python) plus 9 Starlight `<Code>` components
+(4 shell, 1 PowerShell, 2 TOML, 1 Rust, 1 Python). Three of the components show
+files imported with `?raw`: the shared-endpoint manifest and program from
+`website/examples/rust/shared-endpoint/`, and the lab from
+`website/examples/python/loopback_lab.py`. Totals: 46 shell, 7 text, 6
+PowerShell, 4 TOML, 2 Rust, 2 Python. Every shell block passes `sh -n`
 with the release substituted.
 
 **How this audit ran them (2026-10-25, macOS arm64):** a CPython 3.14 venv
@@ -209,6 +219,9 @@ verified with the page's own command) and a `dev` build with
 address and port; nothing was sent off the host. Samples that would broadcast
 or contact a non-loopback host were run as parse checks: the same arguments
 with `--help` appended, which makes clap validate everything before it.
+
+The classes below (A to G) are this audit's labels, from strongest evidence to
+none.
 
 | Status | Count | Blocks (page:line) |
 |---|---|---|
@@ -238,7 +251,8 @@ Python examples.
 
 ## 7. Proposed sitemap by user task
 
-This follows the approved direction on #1989: keep Start and the TUI, keep
+**Approved as written by the maintainer on 2026-10-25.** It follows the
+direction approved on #1989: keep Start and the TUI, keep
 application guides in `integrate/`, keep `development/` for contributors, and
 add connection, server, router, security and performance tasks. Existing URLs
 stay where the content stays; a page moves only when its folder would mislead.
@@ -263,8 +277,9 @@ stay where the content stays; a page moves only when its folder would mislead.
 - **Build applications** (`integrate/`): overview, shared-endpoints,
   network-ports (unchanged); `integrate/server` **new**; `integrate/router`
   **new**; `integrate/security` **new**; `integrate/lifecycle-and-errors`
-  **new**, after stream A; `integrate/resource-limits` **new**;
-  `integrate/audit` **new**, optional; `integrate/pics` **new**, per #1496.
+  **new**, after the error-type PR (#1815); `integrate/resource-limits` **new**;
+  `integrate/audit` **new**, optional; `integrate/pics` **new**, per #1496: how to generate a PICS for your own
+  configuration.
 - **Terminal UI** (`tui/`, unchanged): the eleven pages.
 - **Reference** (`reference/`): `reference/cli` (generated from clap plus
   authored notes); `reference/api` stays as the hub, with
@@ -272,7 +287,8 @@ stay where the content stays; a page moves only when its folder would mislead.
   `reference/python` **new** (generated from the stub);
   `reference/transports` keeps the evidence tables.
 - **Evaluate and get help** (`project/`, `help/`): help/troubleshooting;
-  project/support; `project/conformance` **new**, if OD-07 picks it;
+  project/support; `project/conformance` **new**, per #1496: the generated capability tables and
+  the sample PICS;
   `project/performance` **new**; `project/upgrading` becomes a hub whose
   current guide is 0.14 → 0.15, with the 0.13 → 0.14 guide at
   `project/upgrading/v0-14` **moved**.
@@ -288,10 +304,24 @@ stay where the content stays; a page moves only when its folder would mislead.
 | `guides/bacnet-sc/` | `connect/bacnet-sc/` | Same |
 | `guides/mstp/` | `connect/mstp/` | Same |
 | `development/bacnet-sc/` (already a compatibility page) | `connect/bacnet-sc/` | Retarget the existing entry so a saved link takes one hop |
-| `development/transports/` (compatibility page) | sections split between `connect/overview/` and `reference/transports/` | Retarget per section |
+| `development/transports/` (compatibility page) | sections split between `connect/overview/` and `reference/transports/` | Retarget per section. `legacy-routes.json` already gives each section its own `target`, and `development/overview` already mixes targets in two sections (`integrate/overview/…` and `development/build-from-source/…`), so the split needs no generator change |
 | `project/upgrading/` sections of the 0.13 → 0.14 guide | `project/upgrading/v0-14/#…` | The hub keeps each old heading as an anchor with a link, the pattern the compatibility pages use; the hub itself is a real page, so it cannot be a `legacy-routes` entry |
 | `raw/<old>.md` exports | `raw/<new>.md` | Generated by the same entries |
 | Every other route | unchanged | — |
+
+**Two pages for conformance, on purpose.** `project/conformance` answers an
+evaluator's question (what does the stack support, shown by generated tables
+and one sample PICS); `integrate/pics` is a developer task (generate the PICS
+of your own configuration with `generate_pics`). They link to each other; the
+sample PICS lives only on `project/conformance`.
+
+**The release test must follow the upgrade move.** `website/tests/unit/release.test.mjs`
+lets only the pages in its `history` set (line 20) name the previous release,
+and checks the 0.13 → 0.14 guide's title at `project/upgrading.md`. The IA PR
+adds the new `project/upgrading/v0-14` page to `history`, points the title
+check at it, and keeps the hub under the ordinary `{release}` rule; at the
+0.15 release, `previous` becomes 0.14.0 and the hub's current guide takes
+the title check.
 
 Inbound links to update in the same PR: the repository `README.md`
 (`guides/bacnet-sc`, `guides/mstp`, `project/contributing`),
@@ -314,7 +344,7 @@ a changelog fragment.
    page once; screenshots of the changed navigation at phone and desktop width
    in both themes.
 2. **Content, one PR per area,** in this order: (a) security page; (b)
-   across-subnets, NAT, multicast and IPv6, after stream B lands; (c) MS/TP
+   across-subnets, NAT, multicast and IPv6, after the B/IP follow-ups PR lands; (c) MS/TP
    real-time; (d) server and router tasks, each with a complete program kept in
    `website/examples/` and run by an integration test, as #2014 did; (e)
    performance page drawn from `Benchmarks.md`; (f) the 0.14 → 0.15 upgrade
@@ -323,13 +353,14 @@ a changelog fragment.
    PR; no support claim without a test; facts link to rustdoc or `docs/`
    rather than restating them.
 3. **Sample coverage.** A harness that runs the CLI samples against the
-   loopback lab (class C becomes A), and the lab's Python tests added to an
-   existing CI job. Adding them to a workflow is the maintainer's call: the
-   project avoids new CI without a request. *Acceptance:* breaking a sample's
-   flag or keyword fails a test.
+   loopback lab (class C becomes A), and `website/tests/python/test_loopback_lab.py`
+   run in the existing Python bindings job of `ci.yml` (maintainer decision,
+   2026-10-25; no new workflow), which moves class B to A. *Acceptance:*
+   breaking a sample's flag or keyword fails a test, and the lab tests appear
+   in the Python bindings job's log.
 4. **Generated reference.** CLI reference generated from the clap definitions;
    crate map with docs.rs links pinned to the release; Python reference
-   generated from the stub; conformance pages per OD-07. A unit test fails
+   generated from the stub; the conformance tables decided in #1496. A unit test fails
    when a generated file is stale. *Acceptance:* no hand-maintained option or
    signature table remains on the site.
 5. **Presentation.** Landing page with evaluator, Python, Rust, operator and
@@ -356,7 +387,7 @@ a changelog fragment.
   `legacy-routes.json`.
 - Links: each `github.com/jscott3201/rusty-bacnet/(blob|tree)/<ref>/<path>#<anchor>`
   link checked with `git cat-file` at its ref and against the heading slugs of
-  the target Markdown: 74 links, none broken. Site-internal links are covered
+  the target Markdown: 74 links at `d7df2c954`, none broken. Site-internal links are covered
   by the existing e2e suite.
 - Names: Python keywords and classes checked against
   `crates/rusty-bacnet/rusty_bacnet.pyi`; Rust items against the crate
