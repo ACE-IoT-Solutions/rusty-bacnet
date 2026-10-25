@@ -5,6 +5,7 @@ import navigation from '../../src/data/navigation.json' with { type: 'json' };
 import { frontmatter, plainBody } from '../../scripts/content.mjs';
 import { fileURLToPath } from 'node:url';
 import { release } from '../../src/lib/site.mjs';
+import { splitDevSection } from './dev-section.mjs';
 
 const root = new URL('../../', import.meta.url);
 async function guidePath(slug) {
@@ -25,9 +26,10 @@ test('integration navigation resolves task guides with release-pinned source lin
   const group = navigation.find(group => group.label === 'Build applications');
   assert.ok(group);
   const slugs = group.items.map(item => item.slug);
-  assert.deepEqual(slugs, ['integrate/overview', 'integrate/shared-endpoints', 'integrate/network-ports']);
+  assert.deepEqual(slugs, ['integrate/overview', 'integrate/shared-endpoints', 'integrate/network-ports', 'integrate/security']);
   assert.deepEqual(navigation.find(group => group.label === 'Connect to a network').items.map(item => item.slug),
-    ['connect/overview', 'connect/bacnet-ip', 'connect/bacnet-sc', 'connect/mstp']);
+    ['connect/overview', 'connect/bacnet-ip', 'connect/across-subnets', 'connect/nat', 'connect/multicast',
+      'connect/ipv6', 'connect/bacnet-sc', 'connect/mstp']);
   assert.deepEqual(navigation.find(group => group.label === 'Contribute').items.map(item => item.slug),
     ['development/build-from-source', 'development/documentation']);
   assert.equal(new Set(navigation.flatMap(group => group.items.map(item => item.slug))).size,
@@ -39,7 +41,9 @@ test('integration navigation resolves task guides with release-pinned source lin
     assert.ok(page.title && page.description, slug);
     const body = await plainBody(page.body, path, []);
     assert.ok(body.includes(`https://github.com/jscott3201/rusty-bacnet/blob/v${release}/docs/`), slug);
-    assert.ok(!body.includes('https://github.com/jscott3201/rusty-bacnet/blob/dev/'), slug);
+    // Post-release additions and their dev links stay in one section.
+    const { onDev } = splitDevSection(body, slug);
+    assert.equal(onDev !== '', slug === 'integrate/security', `${slug}: dev section`);
     assert.ok(body.includes(slug === 'reference/transports' ? '## Which guide next?' : '## Next steps'), slug);
     assert.ok(!body.includes('cargo install bacnet-cli --version'), slug);
   }
