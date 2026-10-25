@@ -25,7 +25,7 @@ for (const example of ['shared-endpoint', 'sc-operator-policy']) {
     await copyFile(join(root, relative), target);
   }
 }
-const links = ['# Rusty BACnet', '', `> Guides for the v${release} release; pre-1.0 APIs and partial conformance.`, '', `Use start/ to install and make a first read, integrate/ for application owners, shared endpoints, Network Port and Number controls and server authorization, development/ for source builds and documentation contributions, connect/ to choose and set up a data link (BACnet/IP, BACnet/SC, MS/TP), guides/ for discovery, subscriptions and writes, reference/transports for transport evidence, tui/ for the terminal UI on the development branch, and project/upgrading for the upgrade guides between releases. A dev checkout may differ from v${release}; record its commit. The local lab is loopback-only.`, '', '## Guides', ''];
+const links = ['# Rusty BACnet', '', `> Guides for the v${release} release; pre-1.0 APIs and partial conformance.`, '', `Use start/ to install and make a first read, integrate/ for application owners, shared endpoints, Network Port and Number controls and server authorization, development/ for source builds and documentation contributions, connect/ to choose and set up a data link (BACnet/IP with BBMDs, NAT and multicast, BACnet/IPv6, BACnet/SC, MS/TP), guides/ for discovery, subscriptions and writes, reference/transports for transport evidence, tui/ for the terminal UI on the development branch, and project/upgrading for the upgrade guides between releases. A dev checkout may differ from v${release}; record its commit. The local lab is loopback-only.`, '', '## Guides', ''];
 let count = 0;
 for (const file of await walk(docs)) {
   if (!isGuideFile(file)) continue;

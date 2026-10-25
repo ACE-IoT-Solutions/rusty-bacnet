@@ -4,9 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { frontmatter, plainBody } from '../../scripts/content.mjs';
 import { release } from '../../src/lib/site.mjs';
+import { repo, splitDevSection } from './dev-section.mjs';
 
 const root = new URL('../../', import.meta.url);
-const repo = 'https://github.com/jscott3201/rusty-bacnet';
 test('security page shows the exact policy program and keeps dev additions apart', async () => {
   const file = fileURLToPath(new URL('src/content/docs/integrate/security.mdx', root));
   const source = await readFile(file, 'utf8');
@@ -33,15 +33,9 @@ test('security page shows the exact policy program and keeps dev additions apart
     'On `dev` after the release',
     'Next steps',
   ]) assert.ok(body.includes(`\n## ${heading}\n`), heading);
-  // Release-scoped above the dev section; dev links only inside it.
-  const [before, after] = body.split('\n## On `dev` after the release\n');
-  assert.ok(after);
-  // The dev section ends at the next H2; everything else is release-scoped.
-  const next = after.indexOf('\n## ');
-  assert.notEqual(next, -1, 'a section follows the dev one');
-  const onDev = after.slice(0, next);
-  const released = before + after.slice(next);
-  assert.ok(!released.includes(`${repo}/blob/dev/`));
+  // Release-scoped outside the dev section; dev links only inside it.
+  const { released, onDev } = splitDevSection(body, 'integrate/security');
+  assert.ok(onDev);
   for (const doc of ['mutation-policy', 'dcc-policy', 'time-sync-policy']) {
     assert.ok(released.includes(`${repo}/blob/v${release}/docs/${doc}.md`), doc);
   }
