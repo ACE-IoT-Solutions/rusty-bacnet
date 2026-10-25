@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use bacnet_encoding::npdu::Npdu;
 use bacnet_npdu::MAX_MAC_LEN;
 use bacnet_router_core::PortId;
 use bacnet_router_core::router::{Discard, Frame, Received};
@@ -83,8 +84,10 @@ pub(super) struct Outputs {
 enum Outcome {
     /// Its APDU is for the router's application.
     Local(Delivery),
-    /// A reject addressed to the router.
-    ToRouter,
+    /// A reject addressed to the router: its control information, read
+    /// from the engine's view, and where its data starts, when the router
+    /// has a network-control consumer.
+    ToRouter(Option<(Npdu, usize)>),
     /// Discarded, and counted, for this reason.
     Discarded(Discard),
     /// Routed, answered or taken: the sends say the rest.
@@ -129,7 +132,12 @@ impl PortDispatch {
                     &local,
                     router.ports()[usize::from(port.0)].max_npdu.unicast,
                 )),
-                Received::ToRouter(_) => Outcome::ToRouter,
+                Received::ToRouter(npdu) => Outcome::ToRouter(
+                    outputs
+                        .local_control
+                        .wanted()
+                        .then(|| (Npdu::header_from(&npdu), npdu.payload_offset)),
+                ),
                 Received::Discarded(reason) => Outcome::Discarded(reason),
                 Received::Handled => Outcome::Handled,
             };
@@ -161,7 +169,10 @@ impl PortDispatch {
                     &self.outputs,
                 ));
             }
-            Outcome::ToRouter => outputs.local_control.deliver(&received),
+            Outcome::ToRouter(Some((header, offset))) => {
+                outputs.local_control.deliver(header, offset, &received);
+            }
+            Outcome::ToRouter(None) => {}
             Outcome::Discarded(reason) => {
                 log_discard(reason, self.port, received.source_mac.len());
             }

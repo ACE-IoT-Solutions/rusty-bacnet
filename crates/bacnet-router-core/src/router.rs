@@ -440,11 +440,11 @@ where
     /// [`receive`](Self::receive), it drops what an earlier call left
     /// unpolled.
     ///
-    /// A global broadcast (DNET 0xFFFF) is refused as
-    /// [`OriginateError::ReservedNetwork`]: there is no engine path for one
-    /// yet. To reach every network, send a remote broadcast (an empty
-    /// DADR) to each network in the table, the attached ones included,
-    /// where it leaves as that port's local broadcast.
+    /// A global broadcast (DNET 0xFFFF, an empty DADR; #1809) has no route
+    /// to look up: it is polled as one send per port, each that link's
+    /// broadcast, still global with a hop count of 255 so the routers there
+    /// pass it on, from the address [`Request::source`] selects on each
+    /// (Clauses 6.3.2, 6.5.3). It must fit every port's broadcast limit.
     pub fn originate(&mut self, request: &Request<'_>, now: Instant) -> Result<(), OriginateError> {
         let now = self.clock(now);
         let options = self.options;

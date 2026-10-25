@@ -181,6 +181,7 @@
 //! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |
 //! | One port's sends leave in network-priority order: a frame's own output, then the router's own messages at Normal priority | 6.5.4 | `tests/congestion.rs`: `one_ports_sends_leave_in_priority_order` |
 //! | The router's own application reaches another network through the table, from the address it selects, and its replies come back to it; with no route it searches first | 6.1, 6.5.4, 6.6.3.1 | `tests/originate.rs` (#1699) |
+//! | The router's own global broadcast leaves by every port as that link's broadcast, still global with a full hop count, from the selected address on each | 6.2.3, 6.3.2, 6.5.3, 6.5.4 | `tests/originate_global.rs` (#1809) |
 //!
 //! With the opt-in [`Congestion`](router::Congestion) policy (#1697):
 //!
@@ -196,7 +197,10 @@
 //! from any other router is counted, as it always was ignored
 //! (`flow_control_from_another_router_is_counted_and_changes_nothing`); and
 //! with `duplicates`, a global broadcast seen again within its time to live
-//! is dropped (`a_looped_copy_within_the_ttl_is_dropped`).
+//! is dropped (`a_looped_copy_within_the_ttl_is_dropped`), and so is a
+//! relayed I-Am-Router, Router-Busy or Router-Available, which no hop count
+//! bounds: around a loop of routers one circulates for good without it, and
+//! with it each router takes the first copy only (`tests/loops.rs`, #1810).
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF

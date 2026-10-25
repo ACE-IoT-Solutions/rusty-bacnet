@@ -65,8 +65,9 @@ pub struct Counters {
     /// Router-Available announcements started for a port that drained
     /// (#1697).
     pub available_announced: u32,
-    /// Global broadcasts dropped as repeats of one seen within the
-    /// [`Duplicates`](super::Duplicates) time to live (#1698).
+    /// Global broadcasts, and relayed I-Am-Router, Router-Busy and
+    /// Router-Available messages, dropped as repeats of one seen within the
+    /// [`Duplicates`](super::Duplicates) time to live (#1698, #1810).
     pub duplicate_drops: u32,
     /// Networks a received reject or flow-control message named whose
     /// learned route goes through another router, left unchanged (#1698):

@@ -220,6 +220,62 @@ impl<
         }
     }
 
+    /// Whether a network message the router passes on as a fresh one, with
+    /// no origin, repeats one seen within the duplicate time to live
+    /// ([`Options::duplicates`], #1810); if so, it is counted. Nothing in
+    /// such a message bounds its travel: it has no DNET, so no hop count
+    /// (Clause 6.2.3), and the router passes it on whether or not it
+    /// changed the table (Clauses 6.6.3.3, 6.6.3.6, 6.6.3.7). Around a
+    /// loop, which Clause 4.2's single path rules out but a misconfigured
+    /// site can have, it would circulate for good.
+    ///
+    /// An I-Am-Router is keyed by its data alone, under network 0xFFFF,
+    /// which no origin's network can be. A Router-Busy or Router-Available
+    /// is keyed by its sender too, `at`'s network and link source, as its
+    /// effect is scoped to the routes through that sender; accepting one
+    /// forgets its opposite from the same sender, at most
+    /// [`Duplicates::RESET_LIMIT`](super::Duplicates::RESET_LIMIT) times
+    /// within one time to live (the module docs of `duplicates` say more).
+    fn repeated_relay(
+        &mut self,
+        at: &Arrival<'_>,
+        kind: NetworkMessageType,
+        data: &[u8],
+        options: &Options,
+    ) -> bool {
+        let Some(duplicates) = options.duplicates else {
+            return false;
+        };
+        let opposite = match kind {
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK => {
+                Some(NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK)
+            }
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK => {
+                Some(NetworkMessageType::ROUTER_BUSY_TO_NETWORK)
+            }
+            _ => None,
+        };
+        let (network, source) = match opposite {
+            Some(_) => (at.network, at.source),
+            None => (GLOBAL_NETWORK, &[][..]),
+        };
+        let (tag, now, ttl) = (kind.to_raw(), at.now, duplicates.ttl);
+        let repeat = match opposite {
+            Some(opposite) => {
+                let opposite = opposite.to_raw();
+                self.recent
+                    .repeat_flow(network, source, tag, opposite, data, now, ttl)
+            }
+            None => self
+                .recent
+                .repeat_tagged(network, source, tag, data, now, ttl),
+        };
+        if repeat {
+            bump(&mut self.counters.duplicate_drops);
+        }
+        repeat
+    }
+
     /// Pass a network message's data on, verbatim, as a fresh message of
     /// its type to every port but the arrival one.
     fn rebroadcast<'f>(
@@ -256,13 +312,17 @@ impl<
         if !self.authorize(at, npdu, ControlClass::IAm, Targets::Networks(list), host) {
             return Received::Discarded(Discard::Denied);
         }
+        let kind = NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
+        if self.repeated_relay(at, kind, npdu.payload, options) {
+            return Received::Discarded(Discard::Duplicate);
+        }
         let mut claimed = Claimed::new();
         for network in list.iter() {
             if !self.claim(at, network, &mut claimed, ControlClass::IAm, options, host) {
                 break;
             }
         }
-        self.rebroadcast(at, npdu, NetworkMessageType::I_AM_ROUTER_TO_NETWORK, host)
+        self.rebroadcast(at, npdu, kind, host)
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
@@ -438,6 +498,14 @@ impl<
         if !self.authorize(at, npdu, class, Targets::Networks(list), host) {
             return Received::Discarded(Discard::Denied);
         }
+        let kind = if busy {
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK
+        } else {
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
+        };
+        if self.repeated_relay(at, kind, npdu.payload, options) {
+            return Received::Discarded(Discard::Duplicate);
+        }
         let deadline = at.now + options.timing.busy_for;
         let mut mark = |table: &mut crate::table::Table<R, H>, network| {
             if busy {
@@ -478,11 +546,6 @@ impl<
                 }
             }
         }
-        let kind = if busy {
-            NetworkMessageType::ROUTER_BUSY_TO_NETWORK
-        } else {
-            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
-        };
         self.rebroadcast(at, npdu, kind, host)
     }
 
