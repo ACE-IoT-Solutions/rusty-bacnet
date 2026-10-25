@@ -16,7 +16,7 @@ use crate::trend::{TrendLogMultipleObject, TrendLogObject};
 use bacnet_types::enums::{
     EngineeringUnits, ErrorClass, ErrorCode, EventState, PropertyIdentifier, Reliability,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 
 fn read(object: &dyn BACnetObject, property: PropertyIdentifier) -> PropertyValue {
@@ -210,7 +210,7 @@ fn calendar_has_no_status_flags_to_compute() {
         assert!(
             matches!(
                 calendar.read_property(property, None),
-                Err(Error::Protocol { class, code })
+                Err(Error::Remote(RemoteError::Error { class, code }))
                     if class == ErrorClass::PROPERTY
                         && code == ErrorCode::UNKNOWN_PROPERTY
             ),

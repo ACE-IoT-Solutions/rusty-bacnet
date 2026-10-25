@@ -5,6 +5,7 @@ use bacnet_objects::{
     traits::BACnetObject,
 };
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
 type ExpectedRead = Result<&'static [u8], ErrorCode>;
@@ -174,8 +175,10 @@ fn assert_indexed_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY && code == expected));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }

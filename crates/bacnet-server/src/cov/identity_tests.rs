@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 fn proposal(index: Option<u32>, confirmed: bool) -> CovSubscription {
@@ -31,9 +32,11 @@ fn context(sub: &CovSubscription) -> MultipleContextKey {
 }
 
 fn resource_error(error: Error) {
-    assert!(matches!(error, Error::Protocol { class, code }
+    assert!(
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
         if class == ErrorClass::RESOURCES
-        && code == ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT));
+        && code == ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT)
+    );
 }
 
 #[test]

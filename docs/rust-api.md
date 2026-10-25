@@ -250,16 +250,23 @@ let val = PropertyValue::Null;
 ### Error
 
 ```rust
-use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::enums::{ErrorClass, ErrorCode, RejectReason};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 
-// Protocol error from a remote device: the class and code are typed.
-let e = Error::Protocol { class: ErrorClass::PROPERTY, code: ErrorCode::UNKNOWN_OBJECT };
+// A remote device's Error, Reject or Abort PDU is one RemoteError, held by
+// Error::Remote; the class, code and reasons are typed.
+let e = Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_OBJECT);
+assert!(matches!(
+    e,
+    Error::Remote(RemoteError::Error { code: ErrorCode::UNKNOWN_OBJECT, .. })
+));
+let e = Error::reject(RejectReason::INVALID_TAG);
+assert_eq!(e.remote(), Some(RemoteError::Reject { reason: RejectReason::INVALID_TAG }));
 
 // A structured error body: here an AddListElement/RemoveListElement
-// ChangeList-Error naming the failed element. Error::protocol builds
-// Error::Structured with a detail, Error::Protocol without one.
-let e = Error::protocol(
+// ChangeList-Error naming the failed element. Error::with_detail builds
+// Error::Structured with a detail, Error::Remote without one.
+let e = Error::with_detail(
     ErrorClass::SERVICES,
     ErrorCode::LIST_ELEMENT_NOT_FOUND,
     Some(ErrorDetail::FirstFailedElementNumber(2)),
@@ -268,9 +275,20 @@ if let Error::Structured { detail, .. } = &e {
     assert_eq!(**detail, ErrorDetail::FirstFailedElementNumber(2));
 }
 
-// Other variants: Timeout, Reject, Abort, RoutedPathTooLong,
-// RoutedPathCapacityExceeded, UnsupportedTransport, Encoding, etc.
+// Other variants: Timeout, RoutedPathTooLong, RoutedPathCapacityExceeded,
+// UnsupportedTransport, Encoding, etc.
 ```
+
+`RemoteError` has three arms, one per PDU: `Error { class, code }`,
+`Reject { reason }` and `Abort { reason }`. The same value travels from the
+wire to the API (#1815): the client TSM completes a transaction with
+`TsmResponse::Remote { error, detail }`, a client request fails with
+`Error::Remote(error)` (or `Error::Structured` when the Error PDU's body
+carried a detail), and a server keeps a peer's answer to its own confirmed
+request as `CovAckResult::Error(error)`. `Error::remote()` reads the
+`RemoteError` of either error variant. `Error::protocol`, `Error::reject` and
+`Error::abort` build `Error::Remote`, and `RemoteError` converts into `Error`
+with `From`. It displays as the error that holds it does.
 
 `ErrorDetail` has one variant per shape of structured error body (Clause 21):
 
@@ -283,7 +301,7 @@ if let Error::Structured { detail, .. } = &e {
 | `VtSessionIdentifiers(Vec<u8>)` | VTClose-Error with its list | Local identifiers of the sessions that could not be closed |
 
 A body with nothing beyond the error (SubscribeCOVPropertyMultiple's general
-choice, VTClose-Error without its list) is `Error::Protocol`.
+choice, VTClose-Error without its list) is `Error::Remote`.
 `bacnet_services::structured_error::detail(&error_pdu)` reads the detail of any
 Error PDU, and each body has its own type for encoding and decoding:
 `list_manipulation::ChangeListError`, `object_mgmt::CreateObjectError`,
@@ -312,9 +330,9 @@ displayed, so firmware that never displays it links no formatting code
 | A character set the decoder doesn't convert | `Decoding`, `Unsupported` | OTHER |
 
 `Error::into_request_reject()` turns a request's decode error into that
-`Error::Reject`. The bundled server answers every confirmed request it can't
+Reject, `Error::reject(reason)`. The bundled server answers every confirmed request it can't
 decode that way. A decoder that names a fault the table doesn't, such as
-GetEnrollmentSummary's undefined enumerations, returns its `Error::Reject`
+GetEnrollmentSummary's undefined enumerations, returns its `Error::reject(reason)`
 itself. A decoding error met once a service runs keeps its Error PDU.
 
 `Error::UnsupportedTransport { required, actual }` reports an operation the
@@ -2884,7 +2902,24 @@ transport.set_multicast(Some(group))?;
   its group waits on that hand-off; the others' receive loops pay nothing
   for it. On Windows the primary socket joins the new group, the link
   moves, and only then is the old group left. `BipTransport::multicast()` reports the group in effect, and a
-  later start keeps it; it isn't persisted to a file.
+  later start keeps it. With `BipTransport::set_multicast_persist_path`
+  it is also saved to a small file of its own (11 octets: a tag, the group,
+  the TTL and the group's port; 0.0.0.0 when multicast was turned off), on a
+  thread of its own after each activation, so a new process over the same
+  path starts in it ahead of its configured group, with a warning when the
+  two differ (#1954; Clause 12.56). A failed save is logged and counted in
+  `multicast_persist_failures()`, and the group stays in use; a file that
+  can't be read is logged and the configured group is used. It is not a
+  trailer in the persisted-BDT file: that file tells its one NAT trailer
+  apart by length, and a plain member has no BDT file. On a group BBMD
+  with both files the two are saved independently, after the same
+  activation, so a crash between the two writes can leave the new group
+  saved beside the old BDT. If that BDT's own row isn't two-hop, the next
+  start refuses it for the group (with a warning) and falls back to the
+  configured BDT, and if the configured BDT doesn't fit the group either the
+  start fails. To recover, give the configured BDT an all-ones own row (or
+  write a fitting BDT to the persisted file), or delete the persisted-group
+  file to start in the configured group.
 - **The BBMD for a group (J.8.3).** A BBMD with a group serves it: enable
   the BBMD and set the group on one transport (`BipMode::Bbmd` and
   `.multicast(...)` on a builder). It joins the group as a member does, and
@@ -2919,14 +2954,19 @@ transport.set_multicast(Some(group))?;
   group: both rules want a two-hop own row, and the origin rules for what it
   forwards are the NAT ones. The group stays on the private side.
 - **The BBMD's Network Port.** Its port serves
-  BACnet_IP_Multicast_Address beside the BBMD rows, read-only (a write
-  answers WRITE_ACCESS_DENIED, and the PICS draft lists the row read-only).
-  The group and the BBMD's own BDT row go together under the all-ones rule,
-  and an activation applies the BBMD rows and the group through separate
-  views, so a joint change could take effect half way (#1963 tracks one
-  activation for both); change the group by restarting with another one.
-  The row is read-only before start too. A restart without a group makes it a plain
-  BBMD again.
+  BACnet_IP_Multicast_Address beside the BBMD rows, writable as on a NORMAL
+  port, with Changes_Pending and ReinitializeDevice (#1963). The group and
+  the BBMD's own BDT row go together under the all-ones rule, so a written
+  group waits with the BBMD rows and goes in with them through
+  `BbmdTables` (`BbmdChanges::multicast_group`, offered when
+  `BbmdTables::changes_multicast_group` is true): the check before the
+  handler runs judges the BDT under the rule the new group sets, and
+  activation readies the new group's listener first, then puts the tables
+  in, then moves the link, undoing the steps before any that fails, so both
+  change or neither does. A set that doesn't fit, such as a new group with a
+  one-hop own row, answers PROPERTY / INVALID_CONFIGURATION_DATA and stays
+  pending; leaving the group (0.0.0.0) lifts the rule. A restart without a
+  group makes it a plain BBMD again.
 
 ### bacnet-bip-core (firmware)
 
@@ -3998,7 +4038,7 @@ framing, through the shared `bacnet-encoding` codecs.
   Present_Value. The shared endpoint's ReadProperty uses
   `SessionConfig::read_work_limit` (default 256) instead. A request that would
   pass the limit is aborted with OUT_OF_RESOURCES (`read_local` returns
-  `Error::Abort`).
+  `Error::abort(AbortReason::OUT_OF_RESOURCES)`).
 - **Structured View `Subordinate_List` and Command `Action`** (Clauses 12.29
   and 12.10) are arrays too, with the same per-index reads, as is
   `Subordinate_Annotations`. A Subordinate_List element is a
@@ -6537,7 +6577,10 @@ The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,
 `AsBip`: a client over `BipTransport`, or one over `AnyTransport` whose variant
 is `Bip`. Each fails with a `BvlcExchangeError` (#1822): `Nak` with the
 result code a peer refused with, `NoReply` when nothing answered within the
-three-second wait, `UnexpectedResponse`, or `Transport` for a local failure.
+three-second wait, `UnexpectedResponse`, `Refused` with the transport's
+`ExchangeRefusal` when it turned the request down unsent (the same request in
+flight, or every exchange slot in use, #1841), or `Transport` for a local
+failure.
 The three a success answers return `Ok(())` on success, so a refusal is
 always an error. On any other variant they return
 `BvlcExchangeError::Transport(Error::UnsupportedTransport { .. })` before
@@ -7527,7 +7570,7 @@ client.remove_list_element(&mac, nc_oid, PropertyIdentifier::RECIPIENT_LIST, Non
 
 A device that answers with a ChangeList-Error surfaces as `Error::Structured`
 with `ErrorDetail::FirstFailedElementNumber`; a device that sends only the
-class and code surfaces as `Error::Protocol`.
+class and code surfaces as `Error::Remote`.
 
 ### Private Transfer
 
@@ -8257,10 +8300,10 @@ later retries; a configured Device binding keeps its fixed next hop. The former
 public `ServerTsm` type and its unused transaction methods have been removed
 without a compatibility alias. `CovAckResult` remains available at its existing
 `bacnet_server::server` path. A refused confirmed request ends as
-`CovAckResult::Error(Refusal)`: `Refusal::Error { class, code }` for an Error
-PDU, `Refusal::Reject(reason)` or `Refusal::Abort(reason)` otherwise (#1323).
-`Error::from(refusal)` gives the `Error::Protocol`, `Error::Reject` or
-`Error::Abort` a client's WriteProperty would report. The notification senders
+`CovAckResult::Error(RemoteError)`: `RemoteError::Error { class, code }` for an
+Error PDU, `RemoteError::Reject { reason }` or `RemoteError::Abort { reason }`
+otherwise (#1323, #1815). `Error::from(error)` gives the `Error::Remote` a
+client's WriteProperty would report. The notification senders
 only ask whether the request was taken; a Channel member in another device
 uses the payload to tell a NULL refused as the wrong datatype, which counts as
 written, from other refusals.
@@ -8302,7 +8345,7 @@ source_mac, source_network, provenance, invoke_id)` builds one for calling a
 handler directly, as its unit tests would; outside `bacnet-transport` only
 `TransportProvenance::unverified()` is available for the provenance.
 
-`Ok(())` sends the SimpleACK and `Err(Error::Protocol { .. })` sends that
+`Ok(())` sends the SimpleACK and `Err(Error::protocol(class, code))` sends that
 class and code instead. The rules:
 
 - The SimpleACK leaves only after the handler returns, so it must not restart
@@ -8338,8 +8381,8 @@ class and code instead. The rules:
   the `ServerPolicy` covers ReinitializeDevice, so restrict sources
   through the context; its addresses are claims, not authenticated identities.
 - Once the handler has run, the request can no longer be rejected (Clause
-  20.1.8): a returned `Error::Reject`, or any error other than `Protocol` or
-  `Structured`, is answered `SERVICES / OTHER`, and so is a panic (caught with
+  20.1.8): a returned `Error::reject(..)`, or any error other than an Error
+  PDU's `Remote` or `Structured`, is answered `SERVICES / OTHER`, and so is a panic (caught with
   unwind builds), since the handler may have partly acted.
 
 ```rust,ignore
@@ -8363,10 +8406,10 @@ let server = BACnetServer::bip_builder()
                 request.after_reply(move || drop(restart_tx.try_send(state)));
                 Ok(())
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::SERVICES,
-                code: ErrorCode::SERVICE_REQUEST_DENIED,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::SERVICE_REQUEST_DENIED,
+            )),
         }
     })
     .build()
@@ -8712,11 +8755,9 @@ All async operations return `Result<T, bacnet_types::error::Error>`. Key variant
 
 | Variant | Meaning |
 |---------|---------|
-| `Error::Protocol { class, code }` | Remote BACnet error response, as an `ErrorClass` and an `ErrorCode` |
+| `Error::Remote(RemoteError)` | Remote device's Error PDU (`RemoteError::Error { class, code }`, an `ErrorClass` and an `ErrorCode`), Reject PDU (`RemoteError::Reject { reason }`, a `RejectReason`) or Abort PDU (`RemoteError::Abort { reason }`, an `AbortReason`) |
 | `Error::Structured { class, code, detail }` | Remote error whose Clause 21 body adds fields (ChangeList-Error, CreateObject-Error, WritePropertyMultiple-Error and others): `detail` is the boxed `ErrorDetail` |
 | `Error::Timeout(duration)` | APDU retry exhausted |
-| `Error::Reject { reason }` | Remote device rejected request, with its `RejectReason` |
-| `Error::Abort { reason }` | Remote device aborted request, with its `AbortReason` |
 | `Error::RoutedPathTooLong { dnet }` | Router rejected the active message as too long for DNET |
 | `Error::RoutedPathCapacityExceeded { capacity }` | No routed-path entry can be allocated without discarding protected safety state |
 | `Error::UnsupportedTransport { required, actual }` | The client's data link cannot carry the operation (a BBMD helper on a non-B/IP transport) |
@@ -8963,7 +9004,7 @@ A transport reports its registration capability through `TransportPort::bip_port
 - **BBMD** adds BBMD_Broadcast_Distribution_Table and BBMD_Foreign_Device_Table (BACnetLISTs of `BACnetBDTEntry` and `BACnetFDTEntry`) and BBMD_Accept_FD_Registrations. The object holds the transport's own BBMD state through the `bacnet_types::bip_port::BbmdTables` view and reads it on every property read, so a BDT change, a new or expired registration, or a policy change made through `BipTransport::bbmd_state()` shows on the next read. FDT entries carry each registrant's time to live and the seconds it has left, grace period included; an entry past its time no longer appears even before the purge task removes it. The BDT includes the BBMD's own row.
 - **NORMAL** has none of them: reading one answers UNKNOWN_PROPERTY.
 
-In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked on its own against the transport's BDT policy at once, through `BbmdTables::check_value` (whose default checks it with `check_broadcast_distribution_table`; `BipTransport`'s view checks the rows itself and leaves the NAT rules for activation, below): a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. On an IPv4 BBMD port the transport can run behind a NAT router, so the port also serves BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clauses 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10, #940): FALSE and the unset address (no host, port 0) until NAT is configured. Both are writable the same way, since this stack never discovers the global address, and the three NAT-related rows can be written in any order. A write is checked on its own (`BbmdTables::check_value`): a BDT against the row policy, a global address as an IPv4 unicast host and nonzero port (not the unspecified, broadcast, a multicast or a loopback address), or the unset sentinel; a host name, an IPv6 host or anything else answers PROPERTY / VALUE_OUT_OF_RANGE. The rules that tie them together are checked at ReinitializeDevice, before the handler runs (`BbmdTables::check`): behind NAT a BDT with rows must list the global address, every row must be two-hop, and NAT needs a global address; a set that breaks them answers PROPERTY / INVALID_CONFIGURATION_DATA and stays pending. So moving the global address while NAT is on takes a new address and a BDT that lists it, activated together (`Tables::set_nat_and_bdt` in the core). Turning NAT off drops the BDT row of the old global address, from a BDT written in the same activation too, and adds the local own row. The private ranges are configuration only. With a persisted-BDT file, an activation that changed BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address saves the NAT setting (on or off, and the global address) with the BDT, and every later save carries it, as does every save after a start that loaded a file holding one; a restart loads the three together, and the saved setting wins over the configured one, as the saved BDT does, with a warning when the two differ. Until then a BDT-only activation saves the rows alone, so a NAT setting changed in the configuration still applies at the next start. A pending set that's invalid as a whole (NAT on with no global address, or with a BDT that doesn't list it or has a one-hop row) makes every ReinitializeDevice ACTIVATE_CHANGES and WARMSTART on the device answer PROPERTY / INVALID_CONFIGURATION_DATA until it's fixed, since the check covers all pending Network Port values. To clear it, write BACnet_IP_NAT_Traversal FALSE, or write back the BDT and global address the BBMD runs with (a Read-BDT still answers with the BDT in use), or a pair that fits together, then activate. A port whose transport can use B/IP multicast (an explicit interface, NORMAL or BBMD mode, not sharing its port by address, and a port for the group) also serves BACnet_IP_Multicast_Address, in whichever state, through the `bacnet_types::bip_port::IpMulticast` view in `BipPort::multicast` (Clause 12.56.26; Table 12-71 footnote 7, #941): the group as four octets, or 0.0.0.0 while multicast is off. So every NORMAL or BBMD B/IP port with an explicit interface now lists the row, multicast on or off. On a NORMAL port it is writable the same way, with a ReinitializeDevice handler: a written group must be four octets, class D outside 224.0.0.0/24, or 0.0.0.0, or it answers PROPERTY / VALUE_OUT_OF_RANGE; the written value reads back with Changes_Pending TRUE while the old group stays in use, and activation moves the running transport to it ([B/IP multicast](#bip-multicast-bip-m)). A listener that can't be bound or joined fails the activation with the old group still in use. **Deviation:** Clause 12.56.26 makes the property writable whenever it is present, but on a server or endpoint without a ReinitializeDevice handler nothing could activate a written group, so, as with the BBMD rows (#1578), the row is served read-only there (WRITE_ACCESS_DENIED, and the PICS lists it read-only) rather than left out. A group activated this way lasts until the process exits; it isn't persisted. Endpoint sessions publish it too. On a BBMD port the row is read-only, since the BBMD's own BDT row depends on the group ([B/IP multicast](#bip-multicast-bip-m), J.8.3; #1963 tracks activating both together).
+In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked on its own against the transport's BDT policy at once, through `BbmdTables::check_value` (whose default checks it with `check_broadcast_distribution_table`; `BipTransport`'s view checks the rows itself and leaves the NAT rules for activation, below): a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). With `BipTransport::set_release_previous_bbmd(true)` (off by default), a move to another BBMD also sends the old BBMD a Delete-Foreign-Device-Table-Entry for the device's own address, on the side, so its entry goes before its time-to-live and grace period run out (Annex J.2.9, J.5.2.3, #1852); a NAK or silence never fails the move and is counted in the snapshot's `previous_release_refused` and `previous_release_unanswered`. This stack's own BBMD refuses such a deletion unless its management access list names the device. The request names the device's own local address (`link().address`; on a wildcard bind, the default-route address): behind a NAT router, or on a multi-homed host whose registration left from another address, the old BBMD knows the device by another address and will usually refuse (counted), and in a rare case it could delete another device's entry registered from the same private address and port on its side. Those are further reasons the option is off by default. The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. On an IPv4 BBMD port the transport can run behind a NAT router, so the port also serves BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clauses 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10, #940): FALSE and the unset address (no host, port 0) until NAT is configured. Both are writable the same way, since this stack never discovers the global address, and the three NAT-related rows can be written in any order. A write is checked on its own (`BbmdTables::check_value`): a BDT against the row policy, a global address as an IPv4 unicast host and nonzero port (not the unspecified, broadcast, a multicast or a loopback address), or the unset sentinel; a host name, an IPv6 host or anything else answers PROPERTY / VALUE_OUT_OF_RANGE. The rules that tie them together are checked at ReinitializeDevice, before the handler runs (`BbmdTables::check`): behind NAT a BDT with rows must list the global address, every row must be two-hop, and NAT needs a global address; a set that breaks them answers PROPERTY / INVALID_CONFIGURATION_DATA and stays pending. So moving the global address while NAT is on takes a new address and a BDT that lists it, activated together (`Tables::set_nat_and_bdt` in the core). Turning NAT off drops the BDT row of the old global address, from a BDT written in the same activation too, and adds the local own row. The private ranges are configuration only. With a persisted-BDT file, an activation that changed BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address saves the NAT setting (on or off, and the global address) with the BDT, and every later save carries it, as does every save after a start that loaded a file holding one; a restart loads the three together, and the saved setting wins over the configured one, as the saved BDT does, with a warning when the two differ. Until then a BDT-only activation saves the rows alone, so a NAT setting changed in the configuration still applies at the next start. A pending set that's invalid as a whole (NAT on with no global address, or with a BDT that doesn't list it or has a one-hop row) makes every ReinitializeDevice ACTIVATE_CHANGES and WARMSTART on the device answer PROPERTY / INVALID_CONFIGURATION_DATA until it's fixed, since the check covers all pending Network Port values. To clear it, write BACnet_IP_NAT_Traversal FALSE, or write back the BDT and global address the BBMD runs with (a Read-BDT still answers with the BDT in use), or a pair that fits together, then activate. A port whose transport can use B/IP multicast (an explicit interface, NORMAL or BBMD mode, not sharing its port by address, and a port for the group) also serves BACnet_IP_Multicast_Address, in whichever state, through the `bacnet_types::bip_port::IpMulticast` view in `BipPort::multicast` (Clause 12.56.26; Table 12-71 footnote 7, #941): the group as four octets, or 0.0.0.0 while multicast is off. So every NORMAL or BBMD B/IP port with an explicit interface now lists the row, multicast on or off. On a NORMAL port it is writable the same way, with a ReinitializeDevice handler: a written group must be four octets, class D outside 224.0.0.0/24, or 0.0.0.0, or it answers PROPERTY / VALUE_OUT_OF_RANGE; the written value reads back with Changes_Pending TRUE while the old group stays in use, and activation moves the running transport to it ([B/IP multicast](#bip-multicast-bip-m)). A listener that can't be bound or joined fails the activation with the old group still in use. **Deviation:** Clause 12.56.26 makes the property writable whenever it is present, but on a server or endpoint without a ReinitializeDevice handler nothing could activate a written group, so, as with the BBMD rows (#1578), the row is served read-only there (WRITE_ACCESS_DENIED, and the PICS lists it read-only) rather than left out. A group activated this way is kept by a later start, and across a new process with `BipTransport::set_multicast_persist_path` (#1954). Endpoint sessions publish it too. On a BBMD port the row is writable the same way, and a written group goes in with the BBMD rows in one activation, both or neither, since the BBMD's own BDT row depends on the group ([B/IP multicast](#bip-multicast-bip-m), J.8.3, #1963).
 
 ### Registered B/IPv6 Network Port
 

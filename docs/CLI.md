@@ -908,7 +908,9 @@ profile starts; one a crash cut off mid-request is recorded as unknown.
 flushed and synced: UTC time, OS user, host, profile, transport and local
 address, session level, the event, and for a write its target, service,
 parameters, priority, pre-image and outcome (ack, error class and code,
-denied, reject, abort, timeout or not sent). A `sending` record goes in before
+denied, reject, abort, timeout or not sent). An outcome's `class`, `code` and
+`reason` are strings: the name, or the decimal number for a value without one
+(`"WRITE_ACCESS_DENIED"`, `"300"`). A `sending` record goes in before
 each request. Arming, disarming, refusals, declined confirmations, reverts and
 kept entries are recorded too; a session that ran out shows as
 `write-session (expired)`. Fields

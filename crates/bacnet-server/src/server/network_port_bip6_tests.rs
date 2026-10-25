@@ -17,6 +17,7 @@ use bacnet_transport::port::{Bip6Port, BipPort};
 use bacnet_types::bip_port::{BbmdChanges, BbmdTables, BipPortMode};
 use bacnet_types::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
 use bacnet_types::enums::{PropertyIdentifier as P, ReinitializedState};
+use bacnet_types::error::RemoteError;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Mutex as StdMutex;
 
@@ -233,10 +234,10 @@ impl BbmdTables for Tables {
         // B/IPv6 rows carry no mask.
         match table.iter().all(|entry| entry.broadcast_mask.is_none()) {
             true => Ok(()),
-            false => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::VALUE_OUT_OF_RANGE,
-            }),
+            false => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::VALUE_OUT_OF_RANGE,
+            )),
         }
     }
     fn activate(&self, changes: &BbmdChanges) -> Result<(), Error> {
@@ -392,10 +393,10 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
     };
     assert!(matches!(
         NetworkPortObject::new_bip6(1, "Port", mapped_config),
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             code: ErrorCode::VALUE_OUT_OF_RANGE,
             ..
-        })
+        }))
     ));
     // A B/IP link can't register the B/IPv6 object either.
     let config = ServerConfig {

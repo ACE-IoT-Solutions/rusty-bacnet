@@ -722,8 +722,5 @@ impl BACnetObject for Probe {
 /// What the probe's log-record hooks answer: an error of the wrapped
 /// object's own, unlike the default's OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
 fn own_record_error() -> Error {
-    Error::Protocol {
-        class: ErrorClass::DEVICE,
-        code: ErrorCode::OPERATIONAL_PROBLEM,
-    }
+    Error::protocol(ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
 }

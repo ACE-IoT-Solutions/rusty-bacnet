@@ -132,10 +132,7 @@ impl BACnetObject for Declared {
             None
         };
         if let Some(code) = error {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code,
-            });
+            return Err(Error::protocol(ErrorClass::PROPERTY, code));
         }
         Ok(PropertyValue::Unsigned(if index == Some(0) {
             2

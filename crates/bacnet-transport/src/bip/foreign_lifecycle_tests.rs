@@ -167,12 +167,11 @@ async fn foreign_mode_refuses_manual_requests_that_could_change_its_registration
     for refusal in refusals {
         let error = refusal.unwrap_err();
         assert!(
-            matches!(error, BvlcExchangeError::Transport(Error::Encoding(_))),
+            matches!(
+                error,
+                BvlcExchangeError::Refused(ExchangeRefusal::ManagedRegistration)
+            ),
             "{error:?}"
-        );
-        assert!(
-            error.to_string().contains("managed automatically"),
-            "{error}"
         );
     }
     let snapshot = transport.bvlc_client_snapshot();

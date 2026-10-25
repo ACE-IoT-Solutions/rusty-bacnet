@@ -18,6 +18,7 @@ use bacnet_transport::{
     bip::BipTransport,
     bvll::{BvlcFunction, decode_bvll},
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::{
     constructed::{PropertyReference, ReadAccessSpecification},
     enums::{
@@ -310,7 +311,7 @@ async fn bip_identity_matches_discovery_reads_and_preserves_supplied_device_stat
                     .map(|_| ()),
             ] {
                 assert!(
-                    matches!(result, Err(Error::Protocol { class, code })
+                    matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
                     if class == ErrorClass::OBJECT && code == ErrorCode::UNKNOWN_OBJECT),
                     "{result:?}"
                 );

@@ -722,10 +722,10 @@ pub trait DurableWrites {
     /// object serves, if there is one, or purge in place. The default
     /// refuses with OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
     fn commit_purge(&mut self) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// The request that staged a write is done, whether or not the write

@@ -1,5 +1,6 @@
 //! A source records only the concrete identity established by a valid ACK.
 use super::*;
+use bacnet_types::error::RemoteError;
 
 fn start_object(
     session: &EndpointSession<BipTransport>,
@@ -156,7 +157,10 @@ async fn source_read_alias_failure_keeps_requested_identity_without_trusting_bad
             }
             let result = read.await.unwrap();
             match failure {
-                5 => assert!(matches!(result, Err(Error::Protocol { .. }))),
+                5 => assert!(matches!(
+                    result,
+                    Err(Error::Remote(RemoteError::Error { .. }))
+                )),
                 6 => assert!(matches!(result, Err(Error::Timeout(_)))),
                 _ => assert!(matches!(result, Err(Error::Decoding(_)))),
             }

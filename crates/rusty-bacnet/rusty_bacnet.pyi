@@ -7,6 +7,7 @@ as class attributes; vendor-proprietary values are available via ``from_raw()``.
 from __future__ import annotations
 
 import datetime
+import enum
 import os
 import pathlib
 from collections.abc import Callable, Sequence
@@ -617,8 +618,16 @@ class PropertyIdentifier:
         ...
 
 
-class ErrorClass:
-    """BACnet error class enumeration (Clause 18)."""
+class ErrorClass(enum.IntEnum):
+    """BACnet error class enumeration (Clause 18).
+
+    An ``enum.IntEnum`` (#1816): members are ints, compare equal to their
+    numbers and hash like them, so an int works wherever a member does. A
+    value without a name (a proprietary or unknown one) is a pseudo-member:
+    ``ErrorClass(1000)`` and ``ErrorClass.from_raw(1000)`` both give one, equal to
+    1000, with ``name`` None and repr ``ErrorClass(1000)``. A number outside
+    0 to 65535 raises ValueError.
+    """
 
     DEVICE: ErrorClass
     OBJECT: ErrorClass
@@ -629,23 +638,24 @@ class ErrorClass:
     VT: ErrorClass
     COMMUNICATION: ErrorClass
 
-    @staticmethod
-    def from_raw(value: int) -> ErrorClass: ...
-    def to_raw(self) -> int: ...
-    def __repr__(self) -> str: ...
-    def __eq__(self, other: object) -> bool: ...
-    def __hash__(self) -> int: ...
-    def __reduce__(self) -> tuple[Any, tuple[int]]:
-        """Rebuild with ``from_raw(to_raw())``, for ``copy`` and ``pickle``."""
+    @classmethod
+    def from_raw(cls, value: int) -> ErrorClass:
+        """The member for ``value``; a pseudo-member when it has no name."""
+        ...
+    def to_raw(self) -> int:
+        """The raw integer value."""
         ...
 
 
-class ErrorCode:
+class ErrorCode(enum.IntEnum):
     """BACnet error code enumeration (Clause 18).
 
-    All 151 registered standard codes are available as class attributes
-    (value 33 removed).
-    Use ``ErrorCode.from_raw(n)`` for vendor-proprietary codes.
+    An ``enum.IntEnum`` (#1816): members are ints, compare equal to their
+    numbers and hash like them, so an int works wherever a member does. A
+    value without a name (a proprietary or unknown one) is a pseudo-member:
+    ``ErrorCode(1000)`` and ``ErrorCode.from_raw(1000)`` both give one, equal to
+    1000, with ``name`` None and repr ``ErrorCode(1000)``. A number outside
+    0 to 65535 raises ValueError.
     """
 
     OTHER: ErrorCode
@@ -800,14 +810,367 @@ class ErrorCode:
     UNEXPECTED_DATA: ErrorCode
     NODE_DUPLICATE_VMAC: ErrorCode
 
-    @staticmethod
-    def from_raw(value: int) -> ErrorCode: ...
-    def to_raw(self) -> int: ...
-    def __repr__(self) -> str: ...
-    def __eq__(self, other: object) -> bool: ...
-    def __hash__(self) -> int: ...
-    def __reduce__(self) -> tuple[Any, tuple[int]]:
-        """Rebuild with ``from_raw(to_raw())``, for ``copy`` and ``pickle``."""
+    @classmethod
+    def from_raw(cls, value: int) -> ErrorCode:
+        """The member for ``value``; a pseudo-member when it has no name."""
+        ...
+    def to_raw(self) -> int:
+        """The raw integer value."""
+        ...
+
+
+class RejectReason(enum.IntEnum):
+    """BACnet reject reason enumeration (Clause 18.9).
+
+    An ``enum.IntEnum`` (#1816): members are ints, compare equal to their
+    numbers and hash like them, so an int works wherever a member does. A
+    value without a name (a proprietary or unknown one) is a pseudo-member:
+    ``RejectReason(200)`` and ``RejectReason.from_raw(200)`` both give one, equal to
+    200, with ``name`` None and repr ``RejectReason(200)``. A number outside
+    0 to 255 raises ValueError.
+    """
+
+    OTHER: RejectReason
+    BUFFER_OVERFLOW: RejectReason
+    INCONSISTENT_PARAMETERS: RejectReason
+    INVALID_PARAMETER_DATA_TYPE: RejectReason
+    INVALID_TAG: RejectReason
+    MISSING_REQUIRED_PARAMETER: RejectReason
+    PARAMETER_OUT_OF_RANGE: RejectReason
+    TOO_MANY_ARGUMENTS: RejectReason
+    UNDEFINED_ENUMERATION: RejectReason
+    UNRECOGNIZED_SERVICE: RejectReason
+    INVALID_DATA_ENCODING: RejectReason
+
+    @classmethod
+    def from_raw(cls, value: int) -> RejectReason:
+        """The member for ``value``; a pseudo-member when it has no name."""
+        ...
+    def to_raw(self) -> int:
+        """The raw integer value."""
+        ...
+
+
+class AbortReason(enum.IntEnum):
+    """BACnet abort reason enumeration (Clause 18.10).
+
+    An ``enum.IntEnum`` (#1816): members are ints, compare equal to their
+    numbers and hash like them, so an int works wherever a member does. A
+    value without a name (a proprietary or unknown one) is a pseudo-member:
+    ``AbortReason(200)`` and ``AbortReason.from_raw(200)`` both give one, equal to
+    200, with ``name`` None and repr ``AbortReason(200)``. A number outside
+    0 to 255 raises ValueError.
+    """
+
+    OTHER: AbortReason
+    BUFFER_OVERFLOW: AbortReason
+    INVALID_APDU_IN_THIS_STATE: AbortReason
+    PREEMPTED_BY_HIGHER_PRIORITY_TASK: AbortReason
+    SEGMENTATION_NOT_SUPPORTED: AbortReason
+    SECURITY_ERROR: AbortReason
+    INSUFFICIENT_SECURITY: AbortReason
+    WINDOW_SIZE_OUT_OF_RANGE: AbortReason
+    APPLICATION_EXCEEDED_REPLY_TIME: AbortReason
+    OUT_OF_RESOURCES: AbortReason
+    TSM_TIMEOUT: AbortReason
+    APDU_TOO_LONG: AbortReason
+
+    @classmethod
+    def from_raw(cls, value: int) -> AbortReason:
+        """The member for ``value``; a pseudo-member when it has no name."""
+        ...
+    def to_raw(self) -> int:
+        """The raw integer value."""
+        ...
+
+
+class EngineeringUnits(enum.IntEnum):
+    """BACnet engineering units (Clause 21, BACnetEngineeringUnits).
+
+    An ``enum.IntEnum`` (#1816): members are ints, compare equal to their
+    numbers and hash like them, so an int works wherever a member does. A
+    value without a name (a proprietary or unknown one) is a pseudo-member:
+    ``EngineeringUnits(1000)`` and ``EngineeringUnits.from_raw(1000)`` both give one, equal to
+    1000, with ``name`` None and repr ``EngineeringUnits(1000)``. A number outside
+    0 to 4294967295 raises ValueError.
+    """
+
+    METERS_PER_SECOND_PER_SECOND: EngineeringUnits
+    SQUARE_METERS: EngineeringUnits
+    SQUARE_CENTIMETERS: EngineeringUnits
+    SQUARE_FEET: EngineeringUnits
+    SQUARE_INCHES: EngineeringUnits
+    CURRENCY1: EngineeringUnits
+    CURRENCY2: EngineeringUnits
+    CURRENCY3: EngineeringUnits
+    CURRENCY4: EngineeringUnits
+    CURRENCY5: EngineeringUnits
+    CURRENCY6: EngineeringUnits
+    CURRENCY7: EngineeringUnits
+    CURRENCY8: EngineeringUnits
+    CURRENCY9: EngineeringUnits
+    CURRENCY10: EngineeringUnits
+    MILLIAMPERES: EngineeringUnits
+    AMPERES: EngineeringUnits
+    AMPERES_PER_METER: EngineeringUnits
+    AMPERES_PER_SQUARE_METER: EngineeringUnits
+    AMPERE_SQUARE_METERS: EngineeringUnits
+    DECIBELS: EngineeringUnits
+    DECIBELS_MILLIVOLT: EngineeringUnits
+    DECIBELS_VOLT: EngineeringUnits
+    FARADS: EngineeringUnits
+    HENRYS: EngineeringUnits
+    OHMS: EngineeringUnits
+    OHM_METER_SQUARED_PER_METER: EngineeringUnits
+    OHM_METERS: EngineeringUnits
+    MILLIOHMS: EngineeringUnits
+    KILOHMS: EngineeringUnits
+    MEGOHMS: EngineeringUnits
+    MICROSIEMENS: EngineeringUnits
+    MILLISIEMENS: EngineeringUnits
+    SIEMENS: EngineeringUnits
+    SIEMENS_PER_METER: EngineeringUnits
+    TESLAS: EngineeringUnits
+    VOLTS: EngineeringUnits
+    MILLIVOLTS: EngineeringUnits
+    KILOVOLTS: EngineeringUnits
+    MEGAVOLTS: EngineeringUnits
+    VOLT_AMPERES: EngineeringUnits
+    KILOVOLT_AMPERES: EngineeringUnits
+    MEGAVOLT_AMPERES: EngineeringUnits
+    VOLT_AMPERES_REACTIVE: EngineeringUnits
+    KILOVOLT_AMPERES_REACTIVE: EngineeringUnits
+    MEGAVOLT_AMPERES_REACTIVE: EngineeringUnits
+    VOLTS_PER_DEGREE_KELVIN: EngineeringUnits
+    VOLTS_PER_METER: EngineeringUnits
+    DEGREES_PHASE: EngineeringUnits
+    POWER_FACTOR: EngineeringUnits
+    WEBERS: EngineeringUnits
+    AMPERE_SECONDS: EngineeringUnits
+    VOLT_AMPERE_HOURS: EngineeringUnits
+    KILOVOLT_AMPERE_HOURS: EngineeringUnits
+    MEGAVOLT_AMPERE_HOURS: EngineeringUnits
+    VOLT_AMPERE_HOURS_REACTIVE: EngineeringUnits
+    KILOVOLT_AMPERE_HOURS_REACTIVE: EngineeringUnits
+    MEGAVOLT_AMPERE_HOURS_REACTIVE: EngineeringUnits
+    VOLT_SQUARE_HOURS: EngineeringUnits
+    AMPERE_SQUARE_HOURS: EngineeringUnits
+    JOULES: EngineeringUnits
+    KILOJOULES: EngineeringUnits
+    KILOJOULES_PER_KILOGRAM: EngineeringUnits
+    MEGAJOULES: EngineeringUnits
+    WATT_HOURS: EngineeringUnits
+    KILOWATT_HOURS: EngineeringUnits
+    MEGAWATT_HOURS: EngineeringUnits
+    WATT_HOURS_REACTIVE: EngineeringUnits
+    KILOWATT_HOURS_REACTIVE: EngineeringUnits
+    MEGAWATT_HOURS_REACTIVE: EngineeringUnits
+    BTUS: EngineeringUnits
+    KILO_BTUS: EngineeringUnits
+    MEGA_BTUS: EngineeringUnits
+    THERMS: EngineeringUnits
+    TON_HOURS: EngineeringUnits
+    JOULES_PER_KILOGRAM_DRY_AIR: EngineeringUnits
+    KILOJOULES_PER_KILOGRAM_DRY_AIR: EngineeringUnits
+    MEGAJOULES_PER_KILOGRAM_DRY_AIR: EngineeringUnits
+    BTUS_PER_POUND_DRY_AIR: EngineeringUnits
+    BTUS_PER_POUND: EngineeringUnits
+    JOULES_PER_DEGREE_KELVIN: EngineeringUnits
+    KILOJOULES_PER_DEGREE_KELVIN: EngineeringUnits
+    MEGAJOULES_PER_DEGREE_KELVIN: EngineeringUnits
+    JOULES_PER_KILOGRAM_DEGREE_KELVIN: EngineeringUnits
+    NEWTON: EngineeringUnits
+    CYCLES_PER_HOUR: EngineeringUnits
+    CYCLES_PER_MINUTE: EngineeringUnits
+    HERTZ: EngineeringUnits
+    KILOHERTZ: EngineeringUnits
+    MEGAHERTZ: EngineeringUnits
+    PER_HOUR: EngineeringUnits
+    GRAMS_OF_WATER_PER_KILOGRAM_DRY_AIR: EngineeringUnits
+    PERCENT_RELATIVE_HUMIDITY: EngineeringUnits
+    MICROMETERS: EngineeringUnits
+    MILLIMETERS: EngineeringUnits
+    CENTIMETERS: EngineeringUnits
+    KILOMETERS: EngineeringUnits
+    METERS: EngineeringUnits
+    INCHES: EngineeringUnits
+    FEET: EngineeringUnits
+    CANDELAS: EngineeringUnits
+    CANDELAS_PER_SQUARE_METER: EngineeringUnits
+    WATTS_PER_SQUARE_FOOT: EngineeringUnits
+    WATTS_PER_SQUARE_METER: EngineeringUnits
+    LUMENS: EngineeringUnits
+    LUXES: EngineeringUnits
+    FOOT_CANDLES: EngineeringUnits
+    MILLIGRAMS: EngineeringUnits
+    GRAMS: EngineeringUnits
+    KILOGRAMS: EngineeringUnits
+    POUNDS_MASS: EngineeringUnits
+    TONS: EngineeringUnits
+    GRAMS_PER_SECOND: EngineeringUnits
+    GRAMS_PER_MINUTE: EngineeringUnits
+    KILOGRAMS_PER_SECOND: EngineeringUnits
+    KILOGRAMS_PER_MINUTE: EngineeringUnits
+    KILOGRAMS_PER_HOUR: EngineeringUnits
+    POUNDS_MASS_PER_SECOND: EngineeringUnits
+    POUNDS_MASS_PER_MINUTE: EngineeringUnits
+    POUNDS_MASS_PER_HOUR: EngineeringUnits
+    TONS_PER_HOUR: EngineeringUnits
+    MILLIWATTS: EngineeringUnits
+    WATTS: EngineeringUnits
+    KILOWATTS: EngineeringUnits
+    MEGAWATTS: EngineeringUnits
+    BTUS_PER_HOUR: EngineeringUnits
+    KILO_BTUS_PER_HOUR: EngineeringUnits
+    JOULE_PER_HOURS: EngineeringUnits
+    HORSEPOWER: EngineeringUnits
+    TONS_REFRIGERATION: EngineeringUnits
+    PASCALS: EngineeringUnits
+    HECTOPASCALS: EngineeringUnits
+    KILOPASCALS: EngineeringUnits
+    MILLIBARS: EngineeringUnits
+    BARS: EngineeringUnits
+    POUNDS_FORCE_PER_SQUARE_INCH: EngineeringUnits
+    MILLIMETERS_OF_WATER: EngineeringUnits
+    CENTIMETERS_OF_WATER: EngineeringUnits
+    INCHES_OF_WATER: EngineeringUnits
+    MILLIMETERS_OF_MERCURY: EngineeringUnits
+    CENTIMETERS_OF_MERCURY: EngineeringUnits
+    INCHES_OF_MERCURY: EngineeringUnits
+    DEGREES_CELSIUS: EngineeringUnits
+    DEGREES_KELVIN: EngineeringUnits
+    DEGREES_KELVIN_PER_HOUR: EngineeringUnits
+    DEGREES_KELVIN_PER_MINUTE: EngineeringUnits
+    DEGREES_FAHRENHEIT: EngineeringUnits
+    DEGREE_DAYS_CELSIUS: EngineeringUnits
+    DEGREE_DAYS_FAHRENHEIT: EngineeringUnits
+    DELTA_DEGREES_FAHRENHEIT: EngineeringUnits
+    DELTA_DEGREES_KELVIN: EngineeringUnits
+    YEARS: EngineeringUnits
+    MONTHS: EngineeringUnits
+    WEEKS: EngineeringUnits
+    DAYS: EngineeringUnits
+    HOURS: EngineeringUnits
+    MINUTES: EngineeringUnits
+    SECONDS: EngineeringUnits
+    HUNDREDTHS_SECONDS: EngineeringUnits
+    MILLISECONDS: EngineeringUnits
+    NEWTON_METERS: EngineeringUnits
+    MILLIMETERS_PER_SECOND: EngineeringUnits
+    MILLIMETERS_PER_MINUTE: EngineeringUnits
+    METERS_PER_SECOND: EngineeringUnits
+    METERS_PER_MINUTE: EngineeringUnits
+    METERS_PER_HOUR: EngineeringUnits
+    KILOMETERS_PER_HOUR: EngineeringUnits
+    FEET_PER_SECOND: EngineeringUnits
+    FEET_PER_MINUTE: EngineeringUnits
+    MILES_PER_HOUR: EngineeringUnits
+    CUBIC_FEET: EngineeringUnits
+    CUBIC_METERS: EngineeringUnits
+    IMPERIAL_GALLONS: EngineeringUnits
+    MILLILITERS: EngineeringUnits
+    LITERS: EngineeringUnits
+    US_GALLONS: EngineeringUnits
+    CUBIC_FEET_PER_SECOND: EngineeringUnits
+    CUBIC_FEET_PER_MINUTE: EngineeringUnits
+    MILLION_STANDARD_CUBIC_FEET_PER_MINUTE: EngineeringUnits
+    CUBIC_FEET_PER_HOUR: EngineeringUnits
+    CUBIC_FEET_PER_DAY: EngineeringUnits
+    STANDARD_CUBIC_FEET_PER_DAY: EngineeringUnits
+    MILLION_STANDARD_CUBIC_FEET_PER_DAY: EngineeringUnits
+    THOUSAND_CUBIC_FEET_PER_DAY: EngineeringUnits
+    THOUSAND_STANDARD_CUBIC_FEET_PER_DAY: EngineeringUnits
+    POUNDS_MASS_PER_DAY: EngineeringUnits
+    CUBIC_METERS_PER_SECOND: EngineeringUnits
+    CUBIC_METERS_PER_MINUTE: EngineeringUnits
+    CUBIC_METERS_PER_HOUR: EngineeringUnits
+    CUBIC_METERS_PER_DAY: EngineeringUnits
+    IMPERIAL_GALLONS_PER_MINUTE: EngineeringUnits
+    MILLILITERS_PER_SECOND: EngineeringUnits
+    LITERS_PER_SECOND: EngineeringUnits
+    LITERS_PER_MINUTE: EngineeringUnits
+    LITERS_PER_HOUR: EngineeringUnits
+    US_GALLONS_PER_MINUTE: EngineeringUnits
+    US_GALLONS_PER_HOUR: EngineeringUnits
+    DEGREES_ANGULAR: EngineeringUnits
+    DEGREES_CELSIUS_PER_HOUR: EngineeringUnits
+    DEGREES_CELSIUS_PER_MINUTE: EngineeringUnits
+    DEGREES_FAHRENHEIT_PER_HOUR: EngineeringUnits
+    DEGREES_FAHRENHEIT_PER_MINUTE: EngineeringUnits
+    JOULE_SECONDS: EngineeringUnits
+    KILOGRAMS_PER_CUBIC_METER: EngineeringUnits
+    KILOWATT_HOURS_PER_SQUARE_METER: EngineeringUnits
+    KILOWATT_HOURS_PER_SQUARE_FOOT: EngineeringUnits
+    WATT_HOURS_PER_CUBIC_METER: EngineeringUnits
+    JOULES_PER_CUBIC_METER: EngineeringUnits
+    MEGAJOULES_PER_SQUARE_METER: EngineeringUnits
+    MEGAJOULES_PER_SQUARE_FOOT: EngineeringUnits
+    MOLE_PERCENT: EngineeringUnits
+    NO_UNITS: EngineeringUnits
+    NEWTON_SECONDS: EngineeringUnits
+    NEWTONS_PER_METER: EngineeringUnits
+    PARTS_PER_MILLION: EngineeringUnits
+    PARTS_PER_BILLION: EngineeringUnits
+    PASCAL_SECONDS: EngineeringUnits
+    PERCENT: EngineeringUnits
+    PERCENT_OBSCURATION_PER_FOOT: EngineeringUnits
+    PERCENT_OBSCURATION_PER_METER: EngineeringUnits
+    PERCENT_PER_SECOND: EngineeringUnits
+    PER_MINUTE: EngineeringUnits
+    PER_SECOND: EngineeringUnits
+    PSI_PER_DEGREE_FAHRENHEIT: EngineeringUnits
+    RADIANS: EngineeringUnits
+    RADIANS_PER_SECOND: EngineeringUnits
+    REVOLUTIONS_PER_MINUTE: EngineeringUnits
+    SQUARE_METERS_PER_NEWTON: EngineeringUnits
+    WATTS_PER_METER_PER_DEGREE_KELVIN: EngineeringUnits
+    WATTS_PER_SQUARE_METER_DEGREE_KELVIN: EngineeringUnits
+    PER_MILLE: EngineeringUnits
+    GRAMS_PER_GRAM: EngineeringUnits
+    KILOGRAMS_PER_KILOGRAM: EngineeringUnits
+    GRAMS_PER_KILOGRAM: EngineeringUnits
+    MILLIGRAMS_PER_GRAM: EngineeringUnits
+    MILLIGRAMS_PER_KILOGRAM: EngineeringUnits
+    GRAMS_PER_MILLILITER: EngineeringUnits
+    GRAMS_PER_LITER: EngineeringUnits
+    MILLIGRAMS_PER_LITER: EngineeringUnits
+    MICROGRAMS_PER_LITER: EngineeringUnits
+    GRAMS_PER_CUBIC_METER: EngineeringUnits
+    MILLIGRAMS_PER_CUBIC_METER: EngineeringUnits
+    MICROGRAMS_PER_CUBIC_METER: EngineeringUnits
+    NANOGRAMS_PER_CUBIC_METER: EngineeringUnits
+    GRAMS_PER_CUBIC_CENTIMETER: EngineeringUnits
+    BECQUERELS: EngineeringUnits
+    KILOBECQUERELS: EngineeringUnits
+    MEGABECQUERELS: EngineeringUnits
+    GRAY: EngineeringUnits
+    MILLIGRAY: EngineeringUnits
+    MICROGRAY: EngineeringUnits
+    SIEVERTS: EngineeringUnits
+    MILLISIEVERTS: EngineeringUnits
+    MICROSIEVERTS: EngineeringUnits
+    MICROSIEVERTS_PER_HOUR: EngineeringUnits
+    MILLIREMS: EngineeringUnits
+    MILLIREMS_PER_HOUR: EngineeringUnits
+    DECIBELS_A: EngineeringUnits
+    NEPHELOMETRIC_TURBIDITY_UNIT: EngineeringUnits
+    PH: EngineeringUnits
+    GRAMS_PER_SQUARE_METER: EngineeringUnits
+    MINUTES_PER_DEGREE_KELVIN: EngineeringUnits
+    DEGREES_LOVIBOND: EngineeringUnits
+    ALCOHOL_BY_VOLUME: EngineeringUnits
+    INTERNATIONAL_BITTERING_UNITS: EngineeringUnits
+    EUROPEAN_BITTERNESS_UNITS: EngineeringUnits
+    DEGREES_PLATO: EngineeringUnits
+    SPECIFIC_GRAVITY: EngineeringUnits
+    EUROPEAN_BREWING_CONVENTION: EngineeringUnits
+
+    @classmethod
+    def from_raw(cls, value: int) -> EngineeringUnits:
+        """The member for ``value``; a pseudo-member when it has no name."""
+        ...
+    def to_raw(self) -> int:
+        """The raw integer value."""
         ...
 
 
@@ -1926,8 +2289,9 @@ class BacnetProtocolError(BacnetError):
     carried it.
 
     Attributes:
-        error_class: The BACnet error class (integer).
-        error_code: The BACnet error code (integer).
+        error_class: The BACnet error class, an ``ErrorClass`` member
+            (an int equal to the wire value, #1816).
+        error_code: The BACnet error code, an ``ErrorCode`` member.
         first_failed_element_number: For an AddListElement or
             RemoveListElement ChangeList-Error, or a CreateObject-Error, the
             position (from 1) of the list element or initial value that
@@ -1948,8 +2312,8 @@ class BacnetProtocolError(BacnetError):
         vt_session_identifiers: For a VT-Close error that lists them, the
             local identifiers of the VT sessions that could not be closed.
     """
-    error_class: int
-    error_code: int
+    error_class: ErrorClass
+    error_code: ErrorCode
     first_failed_element_number: Optional[int]
     first_failed_write_attempt: Optional[ObjectPropertyReference]
     first_failed_subscription: Optional[ObjectPropertyReference]
@@ -1966,17 +2330,19 @@ class BacnetRejectError(BacnetError):
     """Raised when a BACnet request is rejected.
 
     Attributes:
-        reason: The reject reason code (integer).
+        reason: The reject reason, a ``RejectReason`` member (an int equal
+            to the wire value, #1816).
     """
-    reason: int
+    reason: RejectReason
 
 class BacnetAbortError(BacnetError):
     """Raised when a BACnet transaction is aborted.
 
     Attributes:
-        reason: The abort reason code (integer).
+        reason: The abort reason, an ``AbortReason`` member (an int equal
+            to the wire value, #1816).
     """
-    reason: int
+    reason: AbortReason
 
 class BacnetLogNotAdvancingError(BacnetError):
     """Raised when a paged log read can't advance (#1530).
@@ -4084,7 +4450,7 @@ class BACnetServer:
         ...
 
     # --- Analog objects ---
-    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
         """``tags``, ``profile_location`` and ``profile_name`` provision the
         optional Tags, Profile_Location and Profile_Name rows; each is served
         only when given. Tags takes writes over the network, the other two
@@ -4094,10 +4460,10 @@ class BACnetServer:
         raises BacnetProtocolError, and wrong shapes TypeError or
         ValueError."""
         ...
-    def add_analog_output(self, instance: int, name: str, units: int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_output(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
         """Profile keywords as on ``add_analog_input``."""
         ...
-    def add_analog_value(self, instance: int, name: str, units: int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
 
         ``present_value_access`` is ``"commandable"`` (writes go through
@@ -4482,12 +4848,12 @@ class BACnetServer:
         self,
         instance: int,
         name: str,
-        output_units: int = 62,
+        output_units: EngineeringUnits | int = 62,
         *,
-        controlled_variable_units: Optional[int] = None,
-        proportional_constant_units: Optional[int] = None,
-        integral_constant_units: Optional[int] = None,
-        derivative_constant_units: Optional[int] = None,
+        controlled_variable_units: Optional[EngineeringUnits | int] = None,
+        proportional_constant_units: Optional[EngineeringUnits | int] = None,
+        integral_constant_units: Optional[EngineeringUnits | int] = None,
+        derivative_constant_units: Optional[EngineeringUnits | int] = None,
         priority_for_writing: Optional[int] = None,
     ) -> None:
         """Add a Loop (PID) object to the server (before starting).
@@ -5052,7 +5418,7 @@ class BACnetServer:
         name: str,
         present_value: float,
         min_present_value: float,
-        units: int,
+        units: EngineeringUnits | int,
         priority_for_writing: int,
         stages: list[tuple[float, list[bool], float]],
         target_references: list[ObjectIdentifier],
@@ -5097,7 +5463,7 @@ class BACnetServer:
         self,
         instance: int,
         name: str,
-        units: int = 62,
+        units: EngineeringUnits | int = 62,
         *,
         scale: float | int | None = None,
         prescale: Optional[tuple[int, int]] = None,
@@ -5117,7 +5483,7 @@ class BACnetServer:
         ValueError; nothing is registered then.
         """
         ...
-    def add_pulse_converter(self, instance: int, name: str, units: int = 62) -> None:
+    def add_pulse_converter(self, instance: int, name: str, units: EngineeringUnits | int = 62) -> None:
         """Add a Pulse Converter (Clause 12.23) to the server (before starting).
 
         Input_Reference reads as ``application_data`` holding the
@@ -6062,8 +6428,8 @@ class BipEndpoint:
         unconfirmed requests aren't paced."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
         ...
     def add_binary_input(self, instance: int, name: str) -> None: ...
@@ -6172,8 +6538,8 @@ class ScEndpoint:
         are as for ``BipEndpoint``."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
         ...
     def add_binary_input(self, instance: int, name: str) -> None: ...
@@ -6300,8 +6666,8 @@ class MstpEndpoint:
         """
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
         ...
     def add_binary_input(self, instance: int, name: str) -> None: ...

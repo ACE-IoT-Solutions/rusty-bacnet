@@ -27,7 +27,7 @@ use std::ffi::CStr;
 
 use crate::types::read_value::decode_read_value;
 use crate::types::{
-    PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyObjectIdentifier, PyPropertyIdentifier,
+    IntEnumValue, PyBACnetTimeStamp, PyObjectIdentifier, PyPropertyIdentifier,
     access_rules_from_py, audit_recipient_from_py, device_object_reference,
 };
 
@@ -70,12 +70,8 @@ fn eval<'py>(py: Python<'py>, source: &CStr) -> Bound<'py, PyAny> {
         .set_item(
             "NOT_INITIALIZED",
             (
-                PyErrorClass {
-                    inner: ErrorClass::PROPERTY,
-                },
-                PyErrorCode {
-                    inner: ErrorCode::VALUE_NOT_INITIALIZED,
-                },
+                IntEnumValue(ErrorClass::PROPERTY),
+                IntEnumValue(ErrorCode::VALUE_NOT_INITIALIZED),
             ),
         )
         .unwrap();

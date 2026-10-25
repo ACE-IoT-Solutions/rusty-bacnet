@@ -8,6 +8,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
 use bacnet_types::constructed::{BACnetLandingCallStatus, LandingCallCommand};
 use bacnet_types::enums::LiftCarDirection;
+use bacnet_types::error::RemoteError;
 
 const LCC: PropertyIdentifier = PropertyIdentifier::LANDING_CALL_CONTROL;
 const LANDING_CALLS: PropertyIdentifier = PropertyIdentifier::LANDING_CALLS;
@@ -73,7 +74,7 @@ fn control(db: &ObjectDatabase, oid: ObjectIdentifier) -> BACnetLandingCallStatu
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode, context: &str) {
     match result.expect_err(context) {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, ErrorClass::PROPERTY, "{context}");
             assert_eq!(code, expected, "{context}: {expected:?}");
         }

@@ -30,10 +30,7 @@ pub(super) struct TargetAudit<T: TransportPort> {
 }
 
 pub(super) fn denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES,
-        code: ErrorCode::SERVICE_REQUEST_DENIED,
-    }
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
 /// Validate before transport startup and before installing any capability.

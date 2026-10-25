@@ -6,7 +6,7 @@ use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
 use bacnet_types::MacAddr;
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::{Duration, timeout};
@@ -160,7 +160,7 @@ async fn ready_terminal_before_final_send_aborts_without_polling_final_send() {
     assert_eq!(abort.abort_reason, AbortReason::INVALID_APDU_IN_THIS_STATE);
     assert!(matches!(
         result,
-        Err(Error::Abort { reason })
+        Err(Error::Remote(RemoteError::Abort { reason }))
             if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert!(

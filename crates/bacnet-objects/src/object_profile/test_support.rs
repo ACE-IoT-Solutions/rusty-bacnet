@@ -1,6 +1,7 @@
 use super::*;
 use crate::durable::{PendingWrite, SaveWait, StageStep};
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -106,5 +107,7 @@ pub(super) fn apply(state: &mut ProfileState, write: &PendingWrite) -> Result<()
         .unwrap()
 }
 pub(super) fn assert_code<T>(result: Result<T, Error>, expected: ErrorCode) {
-    assert!(matches!(result, Err(Error::Protocol { code, .. }) if code == expected));
+    assert!(
+        matches!(result, Err(Error::Remote(RemoteError::Error { code, .. })) if code == expected)
+    );
 }

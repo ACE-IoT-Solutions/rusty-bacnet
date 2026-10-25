@@ -34,12 +34,12 @@ mod tests {
     use super::*;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY && code == expected),
             "expected {expected:?}, got {error:?}"
         );

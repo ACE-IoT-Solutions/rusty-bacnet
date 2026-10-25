@@ -4,6 +4,7 @@
 //! (Table 12-72) with that mode's own.
 #![cfg(feature = "ipv6")]
 
+use bacnet_types::error::RemoteError;
 use std::net::{Ipv6Addr, SocketAddrV6};
 
 // The rebind of a stopped owner's port can lose it to another process.
@@ -262,10 +263,10 @@ async fn a_foreign_b_ipv6_server_serves_its_bbmd_and_lifetime() {
     assert!(
         matches!(
             refused,
-            Err(Error::Protocol {
+            Err(Error::Remote(RemoteError::Error {
                 code: ErrorCode::WRITE_ACCESS_DENIED,
                 ..
-            })
+            }))
         ),
         "{refused:?}"
     );
@@ -330,10 +331,10 @@ async fn activate_changes_moves_a_b_ipv6_foreign_registration() {
     assert!(
         matches!(
             refused,
-            Err(Error::Protocol {
+            Err(Error::Remote(RemoteError::Error {
                 code: ErrorCode::VALUE_OUT_OF_RANGE,
                 ..
-            })
+            }))
         ),
         "{refused:?}"
     );

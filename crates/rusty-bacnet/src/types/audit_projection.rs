@@ -11,8 +11,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 use super::date::date_value;
 use super::timestamp::time_value;
 use super::{
-    PyAuditOperation, PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyObjectIdentifier,
-    PyPropertyIdentifier,
+    IntEnumValue, PyAuditOperation, PyBACnetTimeStamp, PyObjectIdentifier, PyPropertyIdentifier,
 };
 
 pub(super) fn recipient_to_py<'py>(
@@ -119,12 +118,9 @@ fn notification_to_py<'py>(
     }
     result.set_item(
         "result",
-        notification.result.map(|(error_class, error_code)| {
-            (
-                PyErrorClass { inner: error_class },
-                PyErrorCode { inner: error_code },
-            )
-        }),
+        notification
+            .result
+            .map(|(error_class, error_code)| (IntEnumValue(error_class), IntEnumValue(error_code))),
     )?;
     Ok(result)
 }

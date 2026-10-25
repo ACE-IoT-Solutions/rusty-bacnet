@@ -1,6 +1,7 @@
 use super::boundary::*;
 use super::fixture::*;
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test(start_paused = true)]
 async fn local_authorization_nonterminal_intermediate_intents_never_publish_even_on_retry() {
@@ -213,7 +214,7 @@ async fn local_authorization_admission_refuses_before_evaluation_and_healthy_con
             _ => ErrorCode::INVALID_DATA_TYPE,
         };
         assert!(
-            matches!(h.server.authorize_access_local(request(false),42).await,Err(Error::Protocol{code,..}) if code==expected_code)
+            matches!(h.server.authorize_access_local(request(false),42).await,Err(Error::Remote(RemoteError::Error {code,..})) if code==expected_code)
         );
         assert_eq!(reads.load(Ordering::SeqCst), 0);
         assert_eq!(snapshot(&h).await, before);

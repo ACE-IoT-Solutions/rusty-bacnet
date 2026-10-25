@@ -15,7 +15,7 @@ use bacnet_types::enums::{
     AbortReason, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier, RejectReason,
     Segmentation,
 };
-use bacnet_types::error::{ErrorDetail, SegmentationError};
+use bacnet_types::error::{ErrorDetail, RemoteError, SegmentationError};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, Time};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -345,10 +345,10 @@ async fn object_mgmt_routed_structured_error_protocol_error_reject_and_abort_sur
     );
     assert!(matches!(
         result,
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: ErrorClass::OBJECT,
             code: ErrorCode::UNKNOWN_OBJECT
-        })
+        }))
     ));
     let expected = alarm_request(0, time(), date_time());
     for abort in [false, true] {
@@ -377,16 +377,16 @@ async fn object_mgmt_routed_structured_error_protocol_error_reject_and_abort_sur
         if abort {
             assert!(matches!(
                 result,
-                Err(Error::Abort {
+                Err(Error::Remote(RemoteError::Abort {
                     reason: AbortReason::OUT_OF_RESOURCES
-                })
+                }))
             ));
         } else {
             assert!(matches!(
                 result,
-                Err(Error::Reject {
+                Err(Error::Remote(RemoteError::Reject {
                     reason: RejectReason::UNRECOGNIZED_SERVICE
-                })
+                }))
             ));
         }
     }

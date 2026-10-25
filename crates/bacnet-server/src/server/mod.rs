@@ -50,7 +50,7 @@ use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, NotifyType,
     ObjectType, PropertyIdentifier, RejectReason, Segmentation, UnconfirmedServiceChoice,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use crate::audit_notification::{
@@ -523,7 +523,7 @@ mod network_port_tests;
 #[cfg(test)]
 #[path = "../../../bacnet-endpoint/tests/support/port_retry.rs"]
 mod port_retry;
-pub use confirmed_answer::{CovAckResult, Refusal};
+pub use confirmed_answer::CovAckResult;
 mod remote_writes;
 pub(crate) use remote_writes::RemoteRequestError;
 mod notification_transactions;

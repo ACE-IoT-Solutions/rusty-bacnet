@@ -168,10 +168,7 @@ pub(crate) fn check_executor_owned_write(oid: ObjectIdentifier, property: P) -> 
 }
 
 fn property_error(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code,
-    }
+    Error::protocol(ErrorClass::PROPERTY, code)
 }
 
 impl DeviceReadView<'_> {

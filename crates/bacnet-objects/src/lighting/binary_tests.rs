@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 fn write(object: &mut BinaryLightingOutputObject, value: PropertyValue, priority: u8) {
     object
@@ -47,7 +48,7 @@ fn slot(object: &BinaryLightingOutputObject, priority: u32) -> PropertyValue {
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             assert_eq!(code, expected);
         }

@@ -85,10 +85,10 @@ impl BACnetObject for CustomProposal {
                 || p == PropertyIdentifier::EVENT_MESSAGE_TEXTS =>
             {
                 let Some(index @ 1..=3) = index else {
-                    return Err(Error::Protocol {
-                        class: ErrorClass::PROPERTY,
-                        code: ErrorCode::INVALID_ARRAY_INDEX,
-                    });
+                    return Err(Error::protocol(
+                        ErrorClass::PROPERTY,
+                        ErrorCode::INVALID_ARRAY_INDEX,
+                    ));
                 };
                 let index = index as usize - 1;
                 if p == PropertyIdentifier::EVENT_MESSAGE_TEXTS {
@@ -104,10 +104,10 @@ impl BACnetObject for CustomProposal {
                 }
             }
             _ => {
-                return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY,
-                    code: ErrorCode::UNKNOWN_PROPERTY,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::UNKNOWN_PROPERTY,
+                ));
             }
         };
         Ok(value)
@@ -119,10 +119,10 @@ impl BACnetObject for CustomProposal {
         _: PropertyValue,
         _: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         Cow::Borrowed(&[])

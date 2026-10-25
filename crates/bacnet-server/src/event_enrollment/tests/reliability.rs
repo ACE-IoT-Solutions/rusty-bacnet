@@ -47,10 +47,10 @@ impl BACnetObject for OptionalReliabilityTarget {
         } else if property == PropertyIdentifier::RELIABILITY && self.malformed_reliability {
             Ok(PropertyValue::Real(0.0))
         } else {
-            Err(bacnet_types::error::Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            })
+            Err(bacnet_types::error::Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))
         }
     }
 

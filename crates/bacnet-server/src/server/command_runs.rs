@@ -227,10 +227,10 @@ impl<T: TransportPort + 'static> RunHost for CommandRunner<T> {
         // checks the index again (#1426).
         let value = {
             let db = self.db.read().await;
-            let object = db.get(&command.object_identifier).ok_or(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::UNKNOWN_OBJECT,
-            })?;
+            let object = db.get(&command.object_identifier).ok_or(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::UNKNOWN_OBJECT,
+            ))?;
             handlers::gate_and_decode_write(
                 object,
                 command.property_identifier,

@@ -109,8 +109,5 @@ impl ObjectDatabase {
 }
 
 fn protected() -> Error {
-    Error::Protocol {
-        class: ErrorClass::OBJECT,
-        code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
-    }
+    Error::protocol(ErrorClass::OBJECT, ErrorCode::OBJECT_DELETION_NOT_PERMITTED)
 }

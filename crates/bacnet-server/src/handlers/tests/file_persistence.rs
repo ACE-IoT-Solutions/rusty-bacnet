@@ -34,6 +34,7 @@ use bacnet_services::file::{
     AtomicReadFileAck, AtomicWriteFileAck, FileAccessMethod, FileReadAckMethod,
     FileWriteAccessMethod, FileWriteAckMethod,
 };
+use bacnet_types::error::RemoteError;
 
 pub(super) fn assert_protocol_error(
     result: Result<(), Error>,
@@ -42,10 +43,10 @@ pub(super) fn assert_protocol_error(
     context: &str,
 ) {
     match result.expect_err(&format!("{context}: request must be refused")) {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: got_class,
             code: got_code,
-        } => {
+        }) => {
             assert_eq!(got_class, class, "{context}: wrong error class");
             assert_eq!(got_code, code, "{context}: wrong error code");
         }
@@ -521,7 +522,7 @@ fn record_write_with_short_payload_list_is_rejected_without_mutation() {
     let mut buf = BytesMut::from(SENTINEL);
     let result = handle_atomic_write_file(&mut db, &wire, &mut buf);
     match result.expect_err("short record list must be refused") {
-        Error::Reject { reason } => assert_eq!(
+        Error::Remote(RemoteError::Reject { reason }) => assert_eq!(
             reason,
             RejectReason::MISSING_REQUIRED_PARAMETER,
             "wrong reject reason"

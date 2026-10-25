@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn endpoint_rp_only_wire_omits_nonexecuted_cov_properties() {
@@ -88,7 +89,7 @@ async fn wire_contract(writes: bool, custom: bool) {
             "RP-only endpoint must omit {property:?} from Property_List"
         );
         assert!(
-            matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY),
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY),
             "nonexecuted COV property must be unknown"
         );
     }
@@ -312,7 +313,7 @@ async fn endpoint_wildcard_keeps_frozen_identity_and_identity_free_selection_sta
                 let result = client.read_property(&mac, wildcard, property, None).await;
                 if composed && phase == 1 {
                     assert!(
-                        matches!(result, Err(Error::Protocol { class, code })
+                        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
                         if class == ErrorClass::OBJECT && code == ErrorCode::UNKNOWN_OBJECT),
                         "{result:?}"
                     );

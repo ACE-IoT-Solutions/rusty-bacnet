@@ -1,6 +1,7 @@
 //! Route-level refusal and observable clockless triggers.
 use super::fixture::*;
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test(start_paused = true)]
 async fn local_authorization_exhausted_second_stamp_refuses_without_mutation_or_capture() {
@@ -45,10 +46,10 @@ async fn local_authorization_exhausted_second_stamp_refuses_without_mutation_or_
     assert_eq!(evaluation.events.len(), 2);
     assert!(matches!(
         h.server.authorize_access_local(req, 42).await,
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             code: ErrorCode::VALUE_OUT_OF_RANGE,
             ..
-        })
+        }))
     ));
     assert_eq!(snapshot(&h).await, before);
     h.no_notification().await;

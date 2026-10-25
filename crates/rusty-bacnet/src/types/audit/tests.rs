@@ -12,8 +12,8 @@ use pyo3::PyTypeInfo;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::types::{PyBytes, PyDict, PyList};
 
-use crate::types::PyObjectIdentifier;
 use crate::types::audit_projection::audit_log_query_ack_to_py;
+use crate::types::{IntEnumValue, PyObjectIdentifier};
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -133,12 +133,8 @@ fn notification_mapping_preserves_every_field_and_native_unsigned_bounds() {
             .set_item(
                 "result",
                 (
-                    PyErrorClass {
-                        inner: ErrorClass::PROPERTY,
-                    },
-                    PyErrorCode {
-                        inner: ErrorCode::WRITE_ACCESS_DENIED,
-                    },
+                    IntEnumValue(ErrorClass::PROPERTY),
+                    IntEnumValue(ErrorCode::WRITE_ACCESS_DENIED),
                 ),
             )
             .unwrap();

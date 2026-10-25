@@ -551,10 +551,10 @@ async fn audit_reporter_auditing_failure_counts_execution_error_but_not_normal_a
                 .unwrap()
         })
         .collect();
-    *fixture.execution_error.lock().unwrap() = Some(Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::WRITE_ACCESS_DENIED,
-    });
+    *fixture.execution_error.lock().unwrap() = Some(Error::protocol(
+        ErrorClass::PROPERTY,
+        ErrorCode::WRITE_ACCESS_DENIED,
+    ));
     assert!(matches!(
         write_value(&fixture.server, None).await,
         Apdu::Error(_)

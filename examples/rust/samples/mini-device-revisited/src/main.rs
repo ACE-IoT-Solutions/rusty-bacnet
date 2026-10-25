@@ -10,6 +10,7 @@
 //! subnet Who-Is reaches the socket on Linux; advertise the NIC IP in I-Am.
 #![forbid(unsafe_code)]
 
+use bacnet_types::error::RemoteError;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::process;
@@ -277,7 +278,7 @@ fn verify_server_mac(device_ip: Ipv4Addr, port: u16, mac: &[u8]) {
 /// Whether an announcement failed only because a remote DeviceCommunicationControl
 /// has disabled initiation: an expected state while it lasts, not a fault.
 fn held_back_by_dcc(error: &Error) -> bool {
-    matches!(error, Error::Protocol { class, code }
+    matches!(error, Error::Remote(RemoteError::Error { class, code })
         if *class == ErrorClass::SERVICES
             && *code == ErrorCode::COMMUNICATION_DISABLED)
 }

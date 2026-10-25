@@ -1,6 +1,7 @@
 use super::*;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 // Independent Clause12.56 profile oracle, not copied from production metadata.
 const ALL: &[P] = &[
@@ -31,7 +32,7 @@ fn bip(config: BipPortConfig) -> NetworkPortObject {
 }
 fn error(result: Result<PropertyValue, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == expected),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == expected),
         "{result:?}"
     );
 }
@@ -262,7 +263,7 @@ fn configured_snapshot_refuses_activation_writes_without_state_change() {
             result.unwrap();
         } else {
             assert!(
-                matches!(result,Err(Error::Protocol {code,..}) if code==ErrorCode::WRITE_ACCESS_DENIED),
+                matches!(result,Err(Error::Remote(RemoteError::Error {code,..})) if code==ErrorCode::WRITE_ACCESS_DENIED),
                 "{p:?}"
             );
         }
@@ -270,7 +271,7 @@ fn configured_snapshot_refuses_activation_writes_without_state_change() {
     }
     for p in [P::COMMAND_NP, P::MAX_APDU_LENGTH_ACCEPTED] {
         assert!(
-            matches!(object.write_property(p,None,PropertyValue::Unsigned(1),None),Err(Error::Protocol {code,..}) if code==ErrorCode::UNKNOWN_PROPERTY)
+            matches!(object.write_property(p,None,PropertyValue::Unsigned(1),None),Err(Error::Remote(RemoteError::Error {code,..})) if code==ErrorCode::UNKNOWN_PROPERTY)
         );
     }
     assert_eq!(

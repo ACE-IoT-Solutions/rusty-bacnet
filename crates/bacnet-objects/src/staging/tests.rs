@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_encoding::constructed::encode_device_object_reference;
+use bacnet_types::error::RemoteError;
 
 fn reference(object_type: ObjectType, instance: u32) -> BACnetDeviceObjectReference {
     BACnetDeviceObjectReference {
@@ -37,10 +38,10 @@ fn config() -> StagingConfig {
 
 fn assert_protocol_error(error: Error, class: ErrorClass, code: ErrorCode) {
     match error {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } => {
+        }) => {
             assert_eq!(actual_class, class);
             assert_eq!(actual_code, code);
         }

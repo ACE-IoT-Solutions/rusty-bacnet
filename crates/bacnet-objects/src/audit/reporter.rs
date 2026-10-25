@@ -4,7 +4,7 @@ use bacnet_types::enums::{
     AuditLevel, AuditOperation, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier,
     Reliability,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
@@ -19,7 +19,7 @@ fn read(reporter: &AuditReporterObject, property: PropertyIdentifier) -> Propert
 fn assert_write_access_denied(error: Error) {
     assert!(matches!(
         error,
-        Error::Protocol { class, code }
+        Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
@@ -34,7 +34,7 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
         other.configure_audit_reporter_internal(
             AuditLevel::AUDIT_ALL, operations, true, None, BACnetPriorityFilter::all(),
          None,),
-        Err(Error::Protocol { class, code })
+        Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::OBJECT
                 && code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
     ));
@@ -181,7 +181,7 @@ fn audit_reporter_monitored_objects_is_an_optional_array_even_when_absent() {
     for index in [None, Some(0), Some(1)] {
         assert!(matches!(
             reporter.read_property(PropertyIdentifier::MONITORED_OBJECTS, index),
-            Err(Error::Protocol { class, code })
+            Err(Error::Remote(RemoteError::Error { class, code }))
                 if class == ErrorClass::PROPERTY
                     && code == ErrorCode::UNKNOWN_PROPERTY
         ));
@@ -235,7 +235,7 @@ fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful
     for index in [4, u32::MAX] {
         assert!(
             matches!(reporter.read_property(PropertyIdentifier::MONITORED_OBJECTS, Some(index)),
-            Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == ErrorCode::INVALID_ARRAY_INDEX)
+            Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::INVALID_ARRAY_INDEX)
         );
     }
     assert_eq!(reporter.required_properties().as_ref(), required);
@@ -290,7 +290,7 @@ fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful
     assert!(reporter.monitors_object_internal(input));
     assert!(
         matches!(reporter.read_property(PropertyIdentifier::MONITORED_OBJECTS, None),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY)
+        Err(Error::Remote(RemoteError::Error { code, .. })) if code == ErrorCode::UNKNOWN_PROPERTY)
     );
 }
 
@@ -497,7 +497,7 @@ fn audit_reporter_property_list_preserves_bacnet_array_projection() {
         .unwrap_err();
     assert!(matches!(
         error,
-        Error::Protocol { class, code }
+        Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::INVALID_ARRAY_INDEX
     ));
@@ -661,7 +661,7 @@ fn audit_reporter_description_write_and_metadata_remain_compatible() {
         .unwrap_err();
     assert!(matches!(
         error,
-        Error::Protocol { class, code }
+        Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::INVALID_DATA_TYPE
     ));

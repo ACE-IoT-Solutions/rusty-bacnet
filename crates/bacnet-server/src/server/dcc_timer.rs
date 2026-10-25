@@ -135,10 +135,7 @@ pub(super) async fn replace<T: TransportPort + 'static>(
         || (proposed == DccState::DisableInitiation && !request_tasks.admit_dcc_disable())
     {
         return Err(handlers::device_mgmt::DccFailure {
-            error: Error::Protocol {
-                class: ErrorClass::SERVICES,
-                code: ErrorCode::SERVICE_REQUEST_DENIED,
-            },
+            error: Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED),
             outcome: dcc_outcomes::DccOutcome::PolicyDenied,
             metadata: dcc_outcomes::DccMetadata {
                 mode: Some(mode),

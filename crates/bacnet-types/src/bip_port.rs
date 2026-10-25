@@ -89,7 +89,10 @@ pub trait BbmdTables: Send + Sync {
     /// [`check_broadcast_distribution_table`](Self::check_broadcast_distribution_table)
     /// and refuses the NAT values, as for a BBMD that can't run behind NAT.
     fn check(&self, changes: &BbmdChanges) -> Result<(), Error> {
-        if changes.nat_traversal.is_some() || changes.global_address.is_some() {
+        if changes.nat_traversal.is_some()
+            || changes.global_address.is_some()
+            || changes.multicast_group.is_some()
+        {
             return Err(write_access_denied());
         }
         match &changes.broadcast_distribution_table {
@@ -116,10 +119,24 @@ pub trait BbmdTables: Send + Sync {
     fn can_change(&self) -> bool {
         false
     }
+
+    /// Whether this BBMD's B/IP multicast group (Annex J.8.3) changes
+    /// through this view, together with its rows: a written
+    /// BACnet_IP_Multicast_Address then waits in
+    /// [`BbmdChanges::multicast_group`], is checked with the other values
+    /// waiting, and takes effect in the same [`activate`](Self::activate),
+    /// all or nothing (#1963). A BBMD that serves a group must give its own
+    /// BDT row an all-ones mask, so the group and the table can only change
+    /// as one. The default, `false`, leaves the row to the port's
+    /// [`IpMulticast`] view.
+    fn changes_multicast_group(&self) -> bool {
+        false
+    }
 }
 
 /// Values written to a BBMD's Network Port properties and not yet in effect
-/// (Clause 12.56.32 to 12.56.35): `None` leaves that setting as it is.
+/// (Clause 12.56.26, 12.56.32 to 12.56.35): `None` leaves that setting as it
+/// is.
 ///
 /// It is `#[non_exhaustive]`: outside this crate, start from
 /// [`BbmdChanges::default`] and set the fields that change.
@@ -136,6 +153,10 @@ pub struct BbmdChanges {
     /// The NAT router's public address and port: BACnet_IP_Global_Address.
     /// The `None` host with port 0 clears it.
     pub global_address: Option<BACnetHostNPort>,
+    /// A new B/IP multicast group, most significant octet first, or
+    /// 0.0.0.0 to leave multicast: BACnet_IP_Multicast_Address, on a BBMD
+    /// whose view takes it ([`BbmdTables::changes_multicast_group`]).
+    pub multicast_group: Option<[u8; 4]>,
 }
 
 impl BbmdChanges {
@@ -145,6 +166,7 @@ impl BbmdChanges {
             && self.accept_foreign_device_registrations.is_none()
             && self.nat_traversal.is_none()
             && self.global_address.is_none()
+            && self.multicast_group.is_none()
     }
 }
 
@@ -274,10 +296,7 @@ pub trait IpMulticast: Send + Sync {
 }
 
 fn write_access_denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::WRITE_ACCESS_DENIED,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED)
 }
 
 /// A B/IP or B/IPv6 port's mode, with what that mode's Network Port

@@ -43,7 +43,7 @@ use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
 use bacnet_types::MacAddr;
 use bacnet_types::enums::{ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 
 use crate::discovery::{DeviceTable, DeviceUpsertResult, DiscoveredDevice, RoutedDeviceConfig};
 use crate::segmentation::{
@@ -203,13 +203,11 @@ pub(crate) fn confirmed_response_result(response: TsmResponse) -> Result<Bytes, 
     match response {
         TsmResponse::SimpleAck => Ok(Bytes::new()),
         TsmResponse::ComplexAck { service_data } => Ok(service_data),
-        TsmResponse::Error {
-            class,
-            code,
+        TsmResponse::Remote {
+            error: RemoteError::Error { class, code },
             detail,
-        } => Err(Error::protocol(class, code, detail)),
-        TsmResponse::Reject { reason } => Err(Error::Reject { reason }),
-        TsmResponse::Abort { reason } => Err(Error::Abort { reason }),
+        } => Err(Error::with_detail(class, code, detail)),
+        TsmResponse::Remote { error, .. } => Err(Error::Remote(error)),
         TsmResponse::NetworkPathTooLong { dnet } => Err(Error::RoutedPathTooLong { dnet }),
     }
 }

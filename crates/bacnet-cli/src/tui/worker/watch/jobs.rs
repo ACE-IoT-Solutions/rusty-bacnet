@@ -19,7 +19,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::MacAddr;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{ErrorClass, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 
 use super::sample::{self, Reading, RowFormat};
 use crate::tui::format::{RawRow, StateTexts};
@@ -203,7 +203,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
 /// error) would fail the same way without the name.
 fn name_may_explain(error: &Error) -> bool {
     match error {
-        Error::Protocol { class, .. } => *class == ErrorClass::PROPERTY,
+        Error::Remote(RemoteError::Error { class, .. }) => *class == ErrorClass::PROPERTY,
         Error::Decoding(_) => true,
         _ => false,
     }
@@ -453,19 +453,19 @@ mod tests {
     #[test]
     fn only_a_property_error_or_a_bad_answer_retries_without_the_name() {
         use bacnet_types::enums::{AbortReason, ErrorCode, RejectReason};
-        let error = |class| Error::Protocol {
-            class,
-            code: ErrorCode::UNKNOWN_PROPERTY,
+        let error = |class| {
+            Error::Remote(RemoteError::Error {
+                class,
+                code: ErrorCode::UNKNOWN_PROPERTY,
+            })
         };
         assert!(name_may_explain(&error(ErrorClass::PROPERTY)));
         assert!(name_may_explain(&Error::decoding(3, "read access result")));
         assert!(!name_may_explain(&error(ErrorClass::OBJECT)));
-        assert!(!name_may_explain(&Error::Reject {
-            reason: RejectReason::UNRECOGNIZED_SERVICE
-        }));
-        assert!(!name_may_explain(&Error::Abort {
-            reason: AbortReason::TSM_TIMEOUT
-        }));
+        assert!(!name_may_explain(&Error::reject(
+            RejectReason::UNRECOGNIZED_SERVICE
+        )));
+        assert!(!name_may_explain(&Error::abort(AbortReason::TSM_TIMEOUT)));
         assert!(!name_may_explain(&Error::Timeout(Duration::from_secs(6))));
     }
 

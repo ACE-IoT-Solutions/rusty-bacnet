@@ -402,10 +402,10 @@ impl BACnetObject for ScheduleObject {
             p if p == PropertyIdentifier::PROPERTY_LIST => {
                 read_property_list_property(&self.property_list(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -476,10 +476,10 @@ impl BACnetObject for ScheduleObject {
                 self.reliability = v;
                 return Ok(());
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if let Some(result) = common::write_out_of_service_with_reliability_restore(
             &mut self.out_of_service,

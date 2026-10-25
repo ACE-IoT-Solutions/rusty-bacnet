@@ -299,6 +299,14 @@ impl NodeHandle {
         self.lock().stopped
     }
 
+    /// Whether the node's link would take `subnet` ([`set_subnet`](Self::set_subnet)),
+    /// changing nothing.
+    pub(super) fn check_subnet(&self, subnet: LocalSubnet) -> Result<(), Error> {
+        let mut link = self.link();
+        link.subnet = subnet;
+        link.validate().map_err(config_error)
+    }
+
     /// Whether this node, a foreign device, would take `foreign` as its
     /// registration ([`retarget`](Self::retarget)), changing nothing.
     pub(super) fn check_retarget(&self, foreign: Foreign) -> Result<(), Error> {
@@ -344,6 +352,11 @@ impl NodeHandle {
             *self.link.write().unwrap_or_else(PoisonError::into_inner) = *state.node.link();
             Ok(())
         })
+    }
+
+    /// Where this node's exchanges are counted.
+    pub(super) fn record(&self) -> &ClientRecord {
+        &self.record
     }
 
     /// The node's clock.

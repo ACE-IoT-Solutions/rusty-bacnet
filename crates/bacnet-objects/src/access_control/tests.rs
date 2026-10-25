@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 // --- AccessDoorObject ---
 
@@ -590,7 +591,7 @@ fn access_door_relinquish_default_write_recaptures_present_value() {
             .write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, value, None)
             .expect_err("out-of-production Relinquish_Default must refuse")
         {
-            Error::Protocol { class, code: c } => {
+            Error::Remote(RemoteError::Error { class, code: c }) => {
                 assert_eq!(class, ErrorClass::PROPERTY);
                 assert_eq!(c, code);
             }
