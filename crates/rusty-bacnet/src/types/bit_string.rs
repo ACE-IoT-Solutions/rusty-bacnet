@@ -191,6 +191,14 @@ impl PyBitString {
         self.bit_count()
     }
 
+    /// The bits as bools, bit 0 first, as `bits` lists them.
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pyo3::types::PyList::new(py, self.bits())?
+            .as_any()
+            .try_iter()
+            .map(Bound::into_any)
+    }
+
     /// The wire form as the constructor takes it, `BitString(5, b'\xa0')`,
     /// so `eval` rebuilds an equal value. `names` isn't shown: read it.
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {

@@ -278,6 +278,9 @@ class BitStringTests(unittest.TestCase):
         self.assertEqual(repr(BitString(4, b"@")), "BitString(4, b'@')")
         self.assertEqual(eval(repr(named), {"BitString": BitString}), named)
         self.assertEqual((plain[0], plain[1], plain[-1]), (True, False, True))
+        self.assertEqual(list(plain), [True, False, True])
+        first, second, third = plain
+        self.assertEqual((first, second, third), (True, False, True))
         for index in (3, -4):
             with self.assertRaises(IndexError):
                 plain[index]

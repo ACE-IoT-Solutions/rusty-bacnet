@@ -11,7 +11,7 @@ import enum
 import ipaddress
 import os
 import pathlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
 
 UNSPECIFIED: Literal[255]
@@ -2010,6 +2010,9 @@ class BitString:
         without a name (a vendor or reserved position) is left out."""
         ...
     def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[bool]:
+        """The bits as bools, bit 0 first."""
+        ...
     def __getitem__(self, index: int) -> bool:
         """Bit ``index`` (negative counts from the last bit); IndexError
         past the end."""

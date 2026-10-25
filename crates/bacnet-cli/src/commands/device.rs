@@ -283,8 +283,20 @@ pub async fn create_object_cmd<T: TransportPort + 'static>(
     use bacnet_services::object_mgmt::ObjectSpecifier;
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let specifier = ObjectSpecifier::Identifier(oid);
-    // The client decodes the ACK; one that doesn't decode is an error.
-    let created = to.create_object(client, specifier, vec![]).await?;
+    // The client decodes the ACK; one that doesn't decode is an error, sent
+    // after the device acted on the request.
+    let created = to.create_object(client, specifier, vec![]).await.map_err(
+        |error| -> Box<dyn std::error::Error> {
+            match error {
+                bacnet_types::error::Error::Decoding(_) => format!(
+                    "{error}; the CreateObject acknowledgment didn't decode, \
+                     but the device may have created the object"
+                )
+                .into(),
+                other => other.into(),
+            }
+        },
+    )?;
     let (message, json) = created_object_report(created);
     match format {
         OutputFormat::Table => output::print_success(&message, format),
