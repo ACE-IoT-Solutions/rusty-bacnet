@@ -563,7 +563,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         };
         if let Err(error) = self
             .publish_registered_port(
-                receivers.bip_port.clone(),
+                (receivers.bip_port.clone(), receivers.bip6_port.clone()),
                 receivers.egress.local_network_number(),
             )
             .await
@@ -1085,6 +1085,9 @@ async fn handle_ingress_policy(shared: &Arc<SessionShared>, outcome: PolicyOutco
 #[path = "source_read_tests.rs"]
 mod source_read_tests;
 
+#[cfg(test)]
+#[path = "registered_port_bip6_tests.rs"]
+mod registered_port_bip6_tests;
 #[cfg(test)]
 #[path = "registered_port_lifetime_tests.rs"]
 mod registered_port_lifetime_tests;

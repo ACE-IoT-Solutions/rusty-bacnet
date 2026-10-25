@@ -3,7 +3,7 @@ mod network_port;
 use crate::{
     database::ObjectDatabase,
     device::{DeviceConfig, DeviceObject},
-    network_port::BipPortConfig,
+    network_port::{Bip6PortConfig, BipPortConfig},
     traits::BACnetObject,
 };
 use bacnet_types::{
@@ -12,7 +12,7 @@ use bacnet_types::{
     primitives::{ObjectIdentifier, PropertyValue},
 };
 pub use network_port::NetworkPortEntry;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Single Device identity source.
 ///
@@ -133,7 +133,8 @@ impl DeviceIdentity {
     ///
     /// Rejects duplicate instances and out-of-range Network-Port instances
     /// and invalid profile configuration.
-    /// Prefer [`with_bip_port`](Self::with_bip_port) /
+    /// Prefer [`with_bip_port`](Self::with_bip_port),
+    /// [`with_bip6_port`](Self::with_bip6_port) or
     /// [`with_sc_port`](Self::with_sc_port), which encode the population rule.
     pub fn with_network_port(mut self, entry: NetworkPortEntry) -> Result<Self, Error> {
         entry.build_object()?;
@@ -167,6 +168,23 @@ impl DeviceIdentity {
         ))
     }
 
+    /// Adds a B/IPv6 port entry with the configured IPv6 address and UDP
+    /// port, including UDP zero. See [`NetworkPortEntry::bip6`].
+    pub fn with_bip6_port(
+        self,
+        instance: u32,
+        network_number: u32,
+        ip: Ipv6Addr,
+        udp_port: u16,
+    ) -> Result<Self, Error> {
+        self.with_network_port(NetworkPortEntry::bip6(
+            instance,
+            network_number,
+            ip,
+            udp_port,
+        ))
+    }
+
     /// Adds an SC port entry keyed by VMAC.
     pub fn with_sc_port(
         self,
@@ -177,18 +195,25 @@ impl DeviceIdentity {
         self.with_network_port(NetworkPortEntry::sc(instance, network_number, vmac))
     }
 
-    #[doc(hidden)]
-    pub fn validate_registered_bip_internal(
-        &self,
-        oid: ObjectIdentifier,
-        config: &BipPortConfig,
-    ) -> Result<(), Error> {
+    /// The identity's entry for the selected port, checked as a
+    /// declaration.
+    fn registered_entry(&self, oid: ObjectIdentifier) -> Result<&NetworkPortEntry, Error> {
         let entry = self
             .network_ports
             .iter()
             .find(|entry| entry.instance == oid.instance_number())
             .ok_or_else(|| Error::Encoding("selected Network Port missing from identity".into()))?;
         entry.build_object()?;
+        Ok(entry)
+    }
+
+    #[doc(hidden)]
+    pub fn validate_registered_bip_internal(
+        &self,
+        oid: ObjectIdentifier,
+        config: &BipPortConfig,
+    ) -> Result<(), Error> {
+        let entry = self.registered_entry(oid)?;
         if entry.network_type != NetworkType::IPV4.to_raw()
             || entry.ip != config.ip_address
             || entry.udp_port != config.udp_port
@@ -199,6 +224,51 @@ impl DeviceIdentity {
             ));
         }
         Ok(())
+    }
+
+    /// Check the selected B/IPv6 entry against the database's configured
+    /// port: address, UDP port, VMAC and network number.
+    #[doc(hidden)]
+    pub fn validate_registered_bip6_internal(
+        &self,
+        oid: ObjectIdentifier,
+        config: &Bip6PortConfig,
+    ) -> Result<(), Error> {
+        let entry = self.registered_entry(oid)?;
+        if entry.network_type != NetworkType::IPV6.to_raw()
+            || entry.ipv6 != config.ip_address
+            || entry.udp_port != config.udp_port
+            || entry.mac.as_slice() != config.vmac
+            || entry.network_number != u32::from(config.network_number)
+        {
+            return Err(Error::Encoding(
+                "selected identity Network Port differs from database".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Record the started B/IPv6 port's bound address and the VMAC it uses
+    /// in the selected entry.
+    #[doc(hidden)]
+    pub fn publish_registered_bip6_internal(
+        &mut self,
+        oid: ObjectIdentifier,
+        address: std::net::SocketAddrV6,
+        vmac: [u8; 3],
+    ) {
+        let entry = self
+            .network_ports
+            .iter_mut()
+            .find(|entry| entry.instance == oid.instance_number())
+            .expect("validated identity registration");
+        *entry = NetworkPortEntry::bip6_with_vmac(
+            entry.instance,
+            entry.network_number,
+            *address.ip(),
+            address.port(),
+            vmac,
+        );
     }
 
     #[doc(hidden)]
