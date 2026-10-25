@@ -13,6 +13,10 @@ use bacnet_types::primitives::BACnetTimeStamp;
 use clap::builder::{OsStringValueParser, TypedValueParser};
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod mcp;
+
+pub(crate) use mcp::McpAction;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum FileReadAccess {
     Stream,
@@ -319,6 +323,17 @@ pub(crate) enum Command {
         /// capture rights).
         #[arg(long, value_name = "DEVICE")]
         capture_device: Option<String>,
+    },
+
+    /// Serve a read-only MCP server to an AI agent host (needs the `mcp`
+    /// feature).
+    ///
+    /// `bacnet mcp serve --stdio --profile NAME` is what an agent host's
+    /// configuration launches; `bacnet mcp authorize --profile NAME`, run
+    /// once in a terminal, records the person's consent first.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
     },
 
     /// Discover BACnet devices (WhoIs).
