@@ -109,7 +109,7 @@ thiserror = { version = "2", default-features = false }
 bitflags = "2"
 bytes = { version = "1", default-features = false }
 tracing = "0.1"
-tokio = "1.47"
+tokio = "1.53.3"
 socket2 = "0.6"
 # maturin turns on extension-module for wheel builds (crates/rusty-bacnet/pyproject.toml);
 # without it, cargo links libpython so the crate's own tests can run (#919).
