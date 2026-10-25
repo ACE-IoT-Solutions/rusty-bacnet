@@ -54,6 +54,18 @@ pub(super) async fn stopped(hub: &mut CountedHub) {
     assert_eq!(hub.hub.tasks.len(), 0);
 }
 
+/// Ends a [`matrix_pair`] case: stops the hub as [`stopped`] does, then
+/// closes both peers hub end first, so the case's TIME_WAITs stay on the
+/// listener port that `TestTls::pair` shares rather than taking a fresh
+/// client port per peer. The matrices open hundreds of cases, and a port per
+/// peer ran the Windows job out of ephemeral ports (#2055).
+pub(super) async fn retired(mut hub: CountedHub, peers: [ControlledPeer; 2]) {
+    stopped(&mut hub).await;
+    for peer in peers {
+        peer.close_after_hub().await;
+    }
+}
+
 // Semantic matrices must not consume an entire real Connect deadline across
 // hundreds of cases. Each fresh fixture handles only two body/result variants.
 // The observer is registered before the source's five-second deadline starts.
@@ -230,8 +242,7 @@ async fn unknown_transit_local_preregistered_and_invalid_envelopes_no_state_effe
                         {
                             continue;
                         }
-                        let (mut hub, mut a, mut b) =
-                            matrix_pair(&tls, registered, 0x42, 0x43).await;
+                        let (hub, mut a, mut b) = matrix_pair(&tls, registered, 0x42, 0x43).await;
                         let expires = a.deadline.expires();
                         let before: Vec<_> = hub
                             .clients
@@ -279,7 +290,8 @@ async fn unknown_transit_local_preregistered_and_invalid_envelopes_no_state_effe
                             assert_eq!(a.deadline.expires(), expires);
                             assert_eq!(hub.clients.lock().await.len(), 2);
                         }
-                        stopped(&mut hub).await;
+                        drop(before); // its snapshots hold the peers' sinks
+                        retired(hub, [a, b]).await;
                     }
                 }
             }
@@ -392,8 +404,7 @@ async fn unknown_transit_result_ack_nak_routing_and_invalid_result_silence() {
                         Some([0; 6]),
                         Some(BROADCAST_VMAC),
                     ] {
-                        let (mut hub, mut b, mut a) =
-                            matrix_pair(&tls, registered, 0x43, 0x42).await;
+                        let (hub, mut b, mut a) = matrix_pair(&tls, registered, 0x43, 0x42).await;
                         let expires = b.deadline.expires();
                         for result in [
                             vec![function, 0],
@@ -423,7 +434,7 @@ async fn unknown_transit_result_ack_nak_routing_and_invalid_result_silence() {
                             );
                             cases[usize::from(registered)] += 1;
                         }
-                        stopped(&mut hub).await;
+                        retired(hub, [a, b]).await;
                     }
                 }
             }

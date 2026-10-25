@@ -56,6 +56,7 @@ pub const MAX_VMAC_RETRIES: u32 = 3;
 mod addressing;
 mod collision_probe;
 mod foreign_target;
+pub use foreign_target::Bip6ForeignDeviceRefusal;
 mod frame;
 pub use frame::{bvll6_error, decode_bvll6, encode_bvll6};
 mod ingress;

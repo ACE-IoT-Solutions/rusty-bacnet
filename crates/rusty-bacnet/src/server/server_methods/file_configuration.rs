@@ -192,6 +192,7 @@ mod tests {
             broadcast_address: "255.255.255.255".into(),
             share_port_by_address: false,
             bip_mode: Default::default(),
+            bip6_foreign: None,
             multicast: None,
             sc_hub: None,
             sc_vmac: None,

@@ -64,6 +64,8 @@
 //!   count-only saturating and never affect decisions.
 
 mod actions;
+mod application;
+mod application_replies;
 pub mod control_policy;
 mod counters;
 mod dispatch;
@@ -81,6 +83,7 @@ mod send_warning;
 mod sender;
 mod shutdown;
 mod startup;
+pub use application::RouterApplicationPort;
 pub use replies::RouterResponse;
 pub use shutdown::{RouterStopError, RouterStopFailure};
 
