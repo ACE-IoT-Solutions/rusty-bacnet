@@ -10,7 +10,6 @@ use std::future::Future;
 use std::time::Duration;
 
 use bacnet_client::client::{BACnetClient, COVNotificationDelivery, ReceivedCOVNotification};
-use bacnet_encoding::primitives::decode_application_value;
 use bacnet_ops::destination::Destination;
 use bacnet_ops::target::routed_station;
 use bacnet_transport::port::TransportPort;
@@ -191,11 +190,18 @@ fn cov_notification_text(received: &ReceivedCOVNotification, format: OutputForma
         .zip(received.source_address.as_ref())
         .and_then(|(network, address)| routed_station(network, address));
 
-    // Decode property values
+    // The values through the shared formatter, named for the object.
+    let values = super::read::formatter(notification.monitored_object_identifier.object_type());
     let mut props = Vec::new();
+    let mut decoded = serde_json::Map::new();
     for pv in &notification.list_of_values {
         let prop_name = format!("{}", pv.property_identifier);
-        let value_str = decode_cov_value(&pv.value);
+        let value_str = values.value(pv.property_identifier, &pv.value);
+        let data = values.data(pv.property_identifier, &pv.value);
+        decoded.insert(
+            prop_name.clone(),
+            serde_json::to_value(data).unwrap_or_default(),
+        );
         props.push((prop_name, value_str));
     }
 
@@ -228,6 +234,7 @@ fn cov_notification_text(received: &ReceivedCOVNotification, format: OutputForma
                 "routed_source": routed_source,
                 "time_remaining": notification.time_remaining,
                 "values": prop_map,
+                "decoded": decoded,
             });
             serde_json::to_string(&json).unwrap_or_default()
         }
@@ -247,29 +254,6 @@ fn format_mac(mac: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
         .join(":")
-}
-
-fn decode_cov_value(data: &[u8]) -> String {
-    let mut offset = 0;
-    let mut values = Vec::new();
-    while offset < data.len() {
-        match decode_application_value(data, offset) {
-            Ok((value, next)) => {
-                values.push(crate::output::format_property_value(&value));
-                offset = next;
-            }
-            Err(_) => {
-                let hex: String = data[offset..]
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                values.push(format!("[raw: {hex}]"));
-                break;
-            }
-        }
-    }
-    values.join(", ")
 }
 
 #[cfg(test)]
@@ -358,6 +342,40 @@ mod tests {
                 })
             );
         }
+        // Values are named for the monitored object (#2078): the text, and
+        // in JSON the typed form beside it.
+        let mut named = received(None);
+        named.notification.monitored_object_identifier =
+            ObjectIdentifier::new(ObjectType::BINARY_INPUT, 1).unwrap();
+        named.notification.list_of_values = vec![
+            bacnet_types::constructed::BACnetPropertyValue {
+                property_identifier: bacnet_types::enums::PropertyIdentifier::PRESENT_VALUE,
+                property_array_index: None,
+                value: vec![0x91, 0x01],
+                priority: None,
+            },
+            bacnet_types::constructed::BACnetPropertyValue {
+                property_identifier: bacnet_types::enums::PropertyIdentifier::STATUS_FLAGS,
+                property_array_index: None,
+                value: vec![0x82, 0x04, 0x80],
+                priority: None,
+            },
+        ];
+        let table = cov_notification_text(&named, OutputFormat::Table);
+        assert!(table.contains("\n  PRESENT_VALUE = active"), "{table}");
+        assert!(table.contains("\n  STATUS_FLAGS = in-alarm"), "{table}");
+        let json: serde_json::Value =
+            serde_json::from_str(&cov_notification_text(&named, OutputFormat::Json)).unwrap();
+        assert_eq!(json["values"]["PRESENT_VALUE"], "active");
+        assert_eq!(
+            json["decoded"]["PRESENT_VALUE"],
+            serde_json::json!({"value": 1, "name": "active"})
+        );
+        assert_eq!(
+            json["decoded"]["STATUS_FLAGS"],
+            serde_json::json!({"bits": "1000", "names": ["in-alarm"]})
+        );
+
         // A local source has no routed source.
         let local = received(None);
         assert!(!cov_notification_text(&local, OutputFormat::Table).contains("routed-source"));
