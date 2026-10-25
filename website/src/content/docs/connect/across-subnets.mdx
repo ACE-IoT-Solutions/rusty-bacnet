@@ -31,7 +31,7 @@ bacnet bdt 192.168.1.10
 bacnet fdt 192.168.1.10
 ```
 
-A BDT row is a peer's address, port and broadcast mask; the BBMD's own row is in it too. An FDT row is a registered foreign device with the TTL it asked for and the seconds left, which include a 30-second grace period. A device that isn't a BBMD answers with a BVLC-Result NAK, and the command fails. In Python, `read_bdt` and `read_fdt` return the same rows; see <a href={`${repository}/blob/v${release}/docs/python-api.md#bbmd-management`}>BBMD management</a>.
+A BDT row is a peer's address, port and broadcast mask; the BBMD's own row is in it too. An FDT row is a registered foreign device with the TTL it asked for and the seconds left, which include a 30-second grace period. A device that isn't a BBMD answers with a BVLC-Result NAK, or stays silent until the request times out; either way the command fails. In Python, `read_bdt` and `read_fdt` return the same rows; see <a href={`${repository}/blob/v${release}/docs/python-api.md#bbmd-management`}>BBMD management</a>.
 
 ## Register the CLI as a foreign device
 
@@ -75,7 +75,7 @@ async def main():
 asyncio.run(main())
 ```
 
-The owner registers when it starts, and its first broadcasts wait for that registration to be answered. `foreign_registration()` reads the state without sending anything. `registered` and `lease_remaining` describe the lease; `last_outcome` and `last_result` describe the latest attempt. They are separate: a lease can still be live while a renewal is pending, refused or timed out. The totals (`attempts`, `accepted`, `refused`, `lapses`, `renewal_hints`) survive a stop. See <a href={`${repository}/blob/v${release}/docs/python-api.md#bbmd-and-foreign-device-modes`}>BBMD and foreign-device modes</a> for every field.
+The client, server or endpoint registers when it starts, and its first broadcasts wait for that registration to be answered. `foreign_registration()` reads the state without sending anything. `registered` and `lease_remaining` describe the lease; `last_outcome` and `last_result` describe the latest attempt. They are separate: a lease can still be live while a renewal is pending, refused or timed out. The totals (`attempts`, `accepted`, `refused`, `lapses`, `renewal_hints`) survive a stop. See <a href={`${repository}/blob/v${release}/docs/python-api.md#bbmd-and-foreign-device-modes`}>BBMD and foreign-device modes</a> for every field.
 
 ## Register from Rust
 
@@ -84,9 +84,9 @@ Pass `BipMode::Foreign(ForeignDeviceConfig { bbmd_ip, bbmd_port, ttl, renewal_in
 ## Choose a TTL and a renewal interval
 
 - **TTL** is how many seconds the BBMD keeps the entry: 300 by default in the CLI and Python, 1 to 65535 on the wire. This stack's BBMD refuses a TTL over 3600 seconds under its default policy, so check what the BBMD you use accepts.
-- **Renewal** is the time between registrations, half the TTL by default. It must be shorter than the TTL. Python takes 0.1 seconds or more; Rust takes any interval from 100 ms up.
+- **Renewal** is the time between registrations, half the TTL by default. It must be shorter than the TTL. Python takes 0.1 seconds or more; Rust takes any positive interval and raises one below 100 ms to 100 ms.
 - **Behind a NAT router**, keep the renewal below the router's UDP mapping timeout, which is 30 seconds or less on many routers, and keep the TTL long. The [NAT page](/rusty-bacnet/connect/nat/#register-a-foreign-device-from-behind-nat) explains why.
-- **When the BBMD has no entry for you**, it refuses the broadcasts you send through it (Distribute-Broadcast-To-Network) with a NAK. The owner counts each one in `renewal_hints` and brings its next registration forward. A lease that ran out with no newer success counts in `lapses`.
+- **When the BBMD has no entry for you**, it refuses the broadcasts you send through it (Distribute-Broadcast-To-Network) with a NAK. The client, server or endpoint counts each one in `renewal_hints` and brings its next registration forward. A lease that ran out with no newer success counts in `lapses`.
 
 ## Run a BBMD
 
@@ -118,6 +118,10 @@ A BBMD answers anyone who can send it a datagram, and B/IP has no authentication
 - **Fan-out budgets.** `FanoutPolicy` bounds how many datagrams one broadcast can turn into, and `fanout_counters()` shows what was throttled.
 
 The <a href={`${repository}/blob/v${release}/docs/rust-api.md#bbmd`}>BBMD</a> section covers forwarding and the budgets in detail.
+
+## What is tested
+
+CLI tests run `--foreign-bbmd` discovery through a BBMD, a refused and a silent registration, and `register` and `unregister` against an accepting and a refusing BBMD. Python tests cover a foreign client discovering a server through its BBMD, a refused registration, and the BDT and FDT round trip with its NAKs. All run on one host's loopback interface; none qualifies a routed site network.
 
 ## On `dev` after the release
 

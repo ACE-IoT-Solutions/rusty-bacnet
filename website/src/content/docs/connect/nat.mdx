@@ -18,7 +18,7 @@ The page describes **v{release}**.
 - Each site exposes one device to the other sites: a BBMD, usually a BBMD and BACnet router in one.
 - The site's NAT router port-forwards one public UDP port to that BBMD. The public address and port are the BBMD's *global address*.
 - Every other device at the site sits on its own BACnet network behind that router-BBMD.
-- Each BBMD's BDT lists the global address of every site, its own included, and every row has the all-ones mask: a directed broadcast can't cross a NAT router.
+- Each BBMD's BDT lists the global address of every site, its own included, and every row has the all-ones mask, which makes it *two-hop*: a peer BBMD sends the network's broadcasts to that BBMD by unicast, and that BBMD rebroadcasts them on its own subnet. A *one-hop* row's mask lets peers send straight to the subnet's directed broadcast address, which can't cross a NAT router.
 
 The stack can't check this layout from one node, so set it up that way. Nothing discovers the global address either: you configure it, as an IPv4 address, never a host name.
 
@@ -35,7 +35,7 @@ bbmd = Bbmd(["203.0.113.1:47809", "198.51.100.2:47809"],
             bdt_persist_path="/var/lib/bacnet/bdt.bin")
 ```
 
-Give it to a `BACnetServer`, `BACnetClient` or `BipEndpoint` as `bbmd=`, bound to the BBMD's private address. `Bbmd` checks the rules when it is built and raises `ValueError` when the BDT doesn't list the global address as its own row, when a row isn't two-hop (use plain `"ip:port"` rows), or when the global address is loopback. An empty BDT is accepted: a BBMD with no peers that serves only foreign devices.
+Give it to a `BACnetServer`, `BACnetClient` or `BipEndpoint` as `bbmd=`, bound to the BBMD's private address. `Bbmd` checks the rules when it is built and raises `ValueError` when the BDT doesn't list the global address as its own row, when a row isn't two-hop (plain `"ip:port"` rows have the all-ones mask), or when the global address is loopback. An empty BDT is accepted: a BBMD with no peers that serves only foreign devices.
 
 `alone_on_subnet=True` fits most NAT sites: the BBMD is then the only device of its B/IP network on its subnet, and it skips the local rebroadcast of forwarded and distributed broadcasts.
 
@@ -43,7 +43,7 @@ In Rust, set `BbmdOptions::nat` to `Some(NatTraversal::new(global))`, or call `B
 
 ## What the BBMD does differently
 
-- The Forwarded-NPDUs it builds, for its own broadcasts and those of devices on its subnet, name the global address as their origin, so devices at other sites can answer. A Forwarded-NPDU it passes on keeps its origin.
+- When it forwards a broadcast to other BBMDs (a Forwarded-NPDU, which carries the address of the device that first sent it), a broadcast of its own or from a device on its subnet names the global address as that origin, so devices at other sites can answer. A forwarded broadcast it passes on from another BBMD keeps its origin.
 - A foreign device that registered from a private address has its broadcasts forwarded from the global address too. Private means RFC 1918, or one of up to four extra ranges: `nat_private_ranges` in Python (such as `"100.64.0.0/10"`), `NatTraversal::with_private_range` in Rust. A device that registered from a public address keeps its own.
 - The socket, its subnet lookup and its echo filter stay on the private side.
 - Turning NAT off drops the BDT row of the old global address and adds the local own row.

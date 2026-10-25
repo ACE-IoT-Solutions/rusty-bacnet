@@ -21,7 +21,7 @@ A node needs its own VMAC too. Give it a device instance (`--device-instance`, `
 
 ## Select one interface
 
-With `::`, which is the default, startup picks one unambiguous usable link and address: a non-loopback multicast interface first, then a unique non-link-local address on it, otherwise a unique link-local one. Several candidates fail startup rather than guessing; give a concrete local IPv6 address instead. There is no silent fallback to `::1`, and explicit loopback stays on the host. See [Select IPv6 explicitly](/rusty-bacnet/reference/transports/#select-ipv6-explicitly-when-discovery-is-ambiguous).
+With `::`, which is the default, startup picks one unambiguous usable link and address: a non-loopback multicast interface first, then a unique non-link-local address on it, otherwise a unique link-local one. Loopback is the last choice, taken only when no other interface qualifies. Several candidates fail startup rather than guessing; give a concrete local IPv6 address instead. Older releases asked the routing table for an address and fell back to `::1` when that failed; that fallback is gone. Loopback, chosen or given, stays on the host. See [Select IPv6 explicitly](/rusty-bacnet/reference/transports/#select-ipv6-explicitly-when-discovery-is-ambiguous).
 
 Broadcasts go to `FF05::BAC0`, the site-local group, by default. In Rust, `Bip6Transport::set_broadcast_scope` selects the link-local (`FF02::BAC0`) or organization-local (`FF08::BAC0`) group instead. A group's scope alone doesn't prove that the group reaches another link: check what your routers forward.
 

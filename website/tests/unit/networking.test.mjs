@@ -8,13 +8,15 @@ import { release } from '../../src/lib/site.mjs';
 const root = new URL('../../', import.meta.url);
 const repo = 'https://github.com/jscott3201/rusty-bacnet';
 const devHeading = '\n## On `dev` after the release\n';
+// Any link into the repository at the dev branch: blob/, tree/, raw/, commits/ and so on.
+const devRef = new RegExp(`${repo.replaceAll('.', '\\.')}/[a-z]+/dev/`);
 // The networking pages describe the release. A page with post-release
 // additions keeps them, and their dev links, in one section; everything
 // outside that section (later sections included) is release-scoped.
 const pages = {
   'connect/across-subnets': { dev: ['set_release_previous_bbmd', 'previous_release_refused'] },
   'connect/nat': { dev: null },
-  'connect/multicast': { dev: ['set_multicast_persist_path', 'multicast_persist_failures'] },
+  'connect/multicast': { dev: ['set_multicast_persist_path', 'multicast_persist_failures', 'BbmdChanges::multicast_group'] },
   'connect/ipv6': { dev: null },
 };
 
@@ -42,12 +44,13 @@ test('networking pages are release-scoped, with dev additions in one section', a
     assert.ok(body.includes('\n## Next steps\n'), slug);
     const { released, onDev } = split(body, slug);
     assert.ok(released.includes(`${repo}/blob/v${release}/docs/`), `${slug}: release-pinned docs links`);
-    assert.ok(!released.includes(`${repo}/blob/dev/`), `${slug}: dev links only in the dev section`);
+    assert.doesNotMatch(released, devRef, `${slug}: dev links only in the dev section`);
     if (dev === null) {
       assert.equal(onDev, '', `${slug}: no dev section`);
       continue;
     }
     assert.ok(onDev.includes(`${repo}/blob/dev/docs/`), `${slug}: the dev section links dev docs`);
+    assert.match(onDev, devRef);
     assert.ok(body.includes('(#on-dev-after-the-release)'), `${slug}: the intro points at the dev section`);
     for (const name of dev) {
       assert.ok(onDev.includes(name), `${slug}: ${name} in the dev section`);
@@ -56,17 +59,58 @@ test('networking pages are release-scoped, with dev additions in one section', a
   }
 });
 
-test('every CLI flag in a networking sample is defined by the CLI', async () => {
+// The CLI's long options, from the `#[arg(...)]` fields in args.rs: name
+// (`long = "..."` or the field name in kebab case) to whether it takes a value.
+function cliOptions(args) {
+  const options = new Map();
+  const paren = String.raw`(?:[^()]|\((?:[^()]|\([^()]*\))*\))*`;
+  const field = new RegExp(String.raw`#\[arg\((${paren})\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\(crate\)\s+)?(\w+):\s*([^,\n]+)`, 'g');
+  for (const [, attr, name, type] of args.matchAll(field)) {
+    if (!/\blong\b/.test(attr)) continue;
+    const long = attr.match(/\blong\s*=\s*"([^"]+)"/)?.[1] ?? name.replaceAll('_', '-');
+    options.set(long, type.trim() !== 'bool');
+  }
+  return options;
+}
+
+// The subcommands: the variants of `enum Command`, in kebab case, and their aliases.
+function cliCommands(args) {
+  const start = args.indexOf('pub(crate) enum Command {');
+  assert.notEqual(start, -1, 'args.rs defines enum Command');
+  const body = args.slice(start, args.indexOf('\n}\n', start));
+  const names = new Set();
+  for (const [, variant] of body.matchAll(/^ {4}([A-Z]\w*)\s*(?:\{|,|\()/gm)) {
+    names.add(variant.replace(/(?<!^)[A-Z]/g, letter => `-${letter}`).toLowerCase());
+  }
+  for (const [, alias] of body.matchAll(/#\[command\(alias = "([^"]+)"\)\]/g)) names.add(alias);
+  return names;
+}
+
+test('every CLI option and subcommand in a networking sample is defined by the CLI', async () => {
   const args = await readFile(new URL('../crates/bacnet-cli/src/args.rs', root), 'utf8');
+  const options = cliOptions(args);
+  const commands = cliCommands(args);
+  // The parsers must see the options and commands the samples rely on.
+  assert.equal(options.get('foreign-bbmd'), true);
+  assert.equal(options.get('allow-write'), false);
+  assert.ok(commands.has('bdt') && commands.has('whois-router') && commands.has('whois'));
   for (const slug of Object.keys(pages)) {
     const { body } = await page(slug);
     const blocks = [...body.matchAll(/^```sh\n([\s\S]*?)^```/gm)].map(match => match[1]);
-    for (const block of blocks) {
-      assert.match(block, /^bacnet /m, `${slug}: shell samples run the CLI`);
-      for (const [, flag] of block.matchAll(/\s--([a-z][a-z0-9-]*)/g)) {
-        const field = flag.replaceAll('-', '_');
-        assert.match(args, new RegExp(`pub\\(crate\\) ${field}:`), `${slug}: --${flag} is a CLI option`);
+    for (const line of blocks.flatMap(block => block.split('\n')).filter(Boolean)) {
+      const words = line.split(/\s+/);
+      assert.equal(words[0], 'bacnet', `${slug}: shell samples run the CLI`);
+      let command;
+      for (let i = 1; i < words.length; i++) {
+        const option = words[i].match(/^--([a-z][a-z0-9-]*)$/)?.[1];
+        if (option) {
+          assert.ok(options.has(option), `${slug}: --${option} is a CLI option`);
+          if (options.get(option)) i++;
+        } else if (command === undefined) {
+          command = words[i];
+        }
       }
+      assert.ok(commands.has(command), `${slug}: ${command} is a CLI subcommand`);
     }
   }
 });

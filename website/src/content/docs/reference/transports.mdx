@@ -32,7 +32,7 @@ Standalone-client BBMD/foreign cases retain BDT/FDT admission, alternate-sender 
 
 ## Select IPv6 explicitly when discovery is ambiguous
 
-Normal IPv6 startup chooses one unambiguous usable local link/address. A non-loopback multicast interface and a unique non-link-local address are preferred. If selection is ambiguous, supply a concrete local IPv6 address rather than assuming `::` means all interfaces. There is no silent physical-selection fallback to `::1`.
+Normal IPv6 startup chooses one unambiguous usable local link/address. A non-loopback multicast interface and a unique non-link-local address are preferred. If selection is ambiguous, supply a concrete local IPv6 address rather than assuming `::` means all interfaces. Loopback is chosen only as the last choice, when no other interface qualifies; the old routing-table fallback to `::1` is gone.
 
 Incoming destination and interface checks run before VMAC learning/application delivery; outgoing data and controls keep the selected source and bound port. Explicit loopback remains node-local. Windows has compile evidence for the described selection path, not the isolated Linux runtime qualification. See the <a href={`${repository}/blob/v${release}/docs/python-api.md#bacnetipv6`}>Python IPv6 contract</a> before migrating an application that relied on `::` choosing an address for it.
 
