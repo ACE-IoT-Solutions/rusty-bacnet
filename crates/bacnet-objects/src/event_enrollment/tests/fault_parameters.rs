@@ -4,6 +4,7 @@
 
 use super::super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode, FaultType, LifeSafetyState};
+use bacnet_types::error::RemoteError;
 
 /// Decode the read arm's framed wire form back to a structured value.
 fn decode_framed(val: PropertyValue) -> FaultParameters {
@@ -422,7 +423,7 @@ fn fault_parameters_application_null_is_another_datatype() {
         )
         .unwrap_err();
     assert!(
-        matches!(err, Error::Protocol { class, code }
+        matches!(err, Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::INVALID_DATA_TYPE),
         "{err:?}"

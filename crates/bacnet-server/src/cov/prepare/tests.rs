@@ -12,6 +12,7 @@ use bacnet_services::{
 };
 use bacnet_types::constructed::PropertyReference;
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 use bacnet_types::{
     constructed::{BACnetPrescale, BACnetScale},
     primitives::ObjectIdentifier,
@@ -359,7 +360,7 @@ fn cov_sample_admission_coordinate_and_size_failure_preserve_entire_context() {
         )
         .unwrap_err();
         assert!(
-            matches!(error,Error::Protocol{code,..} if code==ErrorCode::PROPERTY_IS_NOT_AN_ARRAY)
+            matches!(error,Error::Remote(RemoteError::Error {code,..}) if code==ErrorCode::PROPERTY_IS_NOT_AN_ARRAY)
         );
     }
     let error = crate::handlers::handle_subscribe_cov_property(
@@ -369,7 +370,9 @@ fn cov_sample_admission_coordinate_and_size_failure_preserve_entire_context() {
         &single(PropertyIdentifier::from_raw(999), Some(0)),
     )
     .unwrap_err();
-    assert!(matches!(error,Error::Protocol{code,..} if code==ErrorCode::UNKNOWN_PROPERTY));
+    assert!(
+        matches!(error,Error::Remote(RemoteError::Error {code,..}) if code==ErrorCode::UNKNOWN_PROPERTY)
+    );
     *value.lock().unwrap() = PropertyValue::List(vec![PropertyValue::List(vec![]); 1024]);
     let error = crate::handlers::handle_subscribe_cov_property_multiple_request_endpoint(
         &mut table,
@@ -399,7 +402,9 @@ fn cov_sample_admission_coordinate_and_size_failure_preserve_entire_context() {
         &single(VARIABLE, None),
     )
     .unwrap_err();
-    assert!(matches!(error,Error::Protocol{class,..} if class==ErrorClass::RESOURCES));
+    assert!(
+        matches!(error,Error::Remote(RemoteError::Error {class,..}) if class==ErrorClass::RESOURCES)
+    );
     assert!(table.is_current(&first));
     assert_eq!(
         table.get_subscription(first.key()).unwrap().expires_at,

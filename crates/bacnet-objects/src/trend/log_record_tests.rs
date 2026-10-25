@@ -2,6 +2,7 @@ use super::*;
 use bacnet_encoding::constructed::{decode_log_multiple_record, decode_log_record};
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetLogMultipleRecord, LogData, LogDatum, LogValue};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, StatusFlags, Time};
 use bytes::BytesMut;
 
@@ -63,7 +64,7 @@ fn trend_logs_refuse_read_property_of_log_buffer() {
         .unwrap();
     for object in [&trend as &dyn BACnetObject, &multiple] {
         match object.read_property(PropertyIdentifier::LOG_BUFFER, None) {
-            Err(Error::Protocol { class, code }) => {
+            Err(Error::Remote(RemoteError::Error { class, code })) => {
                 assert_eq!(class, ErrorClass::PROPERTY);
                 assert_eq!(code, ErrorCode::READ_ACCESS_DENIED);
             }

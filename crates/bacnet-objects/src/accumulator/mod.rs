@@ -238,6 +238,7 @@ impl BACnetObject for AccumulatorObject {
 mod tests {
     use super::*;
     use bacnet_types::constructed::BACnetPrescale;
+    use bacnet_types::error::RemoteError;
 
     // --- AccumulatorObject ---
 
@@ -310,7 +311,7 @@ mod tests {
             .read_property(PropertyIdentifier::PRESCALE, None)
             .unwrap_err();
         assert!(
-            matches!(err, Error::Protocol { class, code }
+            matches!(err, Error::Remote(RemoteError::Error { class, code })
                 if class == bacnet_types::enums::ErrorClass::PROPERTY
                     && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY),
             "{err:?}"

@@ -207,8 +207,5 @@ fn operational_problem(
     detail: impl std::fmt::Display,
 ) -> Error {
     tracing::warn!(?object_identifier, reason = %detail, "GetAlarmSummary projection failed");
-    Error::Protocol {
-        class: ErrorClass::DEVICE,
-        code: ErrorCode::OPERATIONAL_PROBLEM,
-    }
+    Error::protocol(ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
 }

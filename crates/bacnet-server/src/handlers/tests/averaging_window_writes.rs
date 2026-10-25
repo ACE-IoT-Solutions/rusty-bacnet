@@ -8,6 +8,7 @@ use PropertyIdentifier as P;
 use bacnet_objects::averaging::AveragingObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
+use bacnet_types::error::RemoteError;
 
 fn averaging_db(samples: &[f32]) -> (ObjectDatabase, ObjectIdentifier) {
     averaging_db_with(None, samples)
@@ -111,7 +112,7 @@ fn empty() -> [Vec<u8>; 5] {
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode, context: &str) {
     match result {
-        Err(Error::Protocol { class, code }) => {
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
             assert_eq!(class, ErrorClass::PROPERTY, "{context}");
             assert_eq!(code, expected, "{context}");
         }

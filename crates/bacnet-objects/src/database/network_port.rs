@@ -318,10 +318,10 @@ impl ObjectDatabase {
             .as_ref()
             .is_some_and(|port| port.oid == *oid && port.lease.strong_count() != 0)
         {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
+            ));
         }
         Ok(())
     }

@@ -3,7 +3,7 @@
 use bacnet_transport::bip::BvlcExchangeError;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 use pyo3::create_exception;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
@@ -77,7 +77,7 @@ const DETAIL_ATTRIBUTES: [&str; 7] = [
 /// threads, so the attributes are set through the exit gate (#1002).
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
-        Error::Protocol { class, code } => protocol_error(
+        Error::Remote(RemoteError::Error { class, code }) => protocol_error(
             format!(
                 "BACnet error: class={} code={}",
                 class.to_raw(),
@@ -102,7 +102,7 @@ pub fn to_py_err(err: Error) -> PyErr {
             Some(*detail),
         ),
         Error::Timeout(_) => BacnetTimeoutError::new_err(err.to_string()),
-        Error::Reject { reason } => {
+        Error::Remote(RemoteError::Reject { reason }) => {
             let py_err =
                 BacnetRejectError::new_err(format!("BACnet reject: reason={}", reason.to_raw()));
             let _ = crate::py_async::attach(|py| {
@@ -112,7 +112,7 @@ pub fn to_py_err(err: Error) -> PyErr {
             });
             py_err
         }
-        Error::Abort { reason } => {
+        Error::Remote(RemoteError::Abort { reason }) => {
             let py_err =
                 BacnetAbortError::new_err(format!("BACnet abort: reason={}", reason.to_raw()));
             let _ = crate::py_async::attach(|py| {
@@ -376,7 +376,7 @@ mod tests {
             };
             let none = |error: &PyErr, name: &str| error.value(py).getattr(name).unwrap().is_none();
             // SERVICES / LIST_ELEMENT_NOT_FOUND at element 2 (#1026).
-            let change_list = to_py_err(Error::protocol(
+            let change_list = to_py_err(Error::with_detail(
                 ErrorClass::SERVICES,
                 ErrorCode::LIST_ELEMENT_NOT_FOUND,
                 Some(ErrorDetail::FirstFailedElementNumber(2)),
@@ -387,16 +387,16 @@ mod tests {
             assert_eq!(number(&change_list, "first_failed_element_number"), Some(2));
             assert!(none(&change_list, "vendor_id"));
 
-            let plain = to_py_err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_OBJECT,
-            });
+            let plain = to_py_err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_OBJECT,
+            ));
             assert!(plain.is_instance_of::<BacnetProtocolError>(py));
             assert_eq!(number(&plain, "error_code"), Some(31));
             assert_eq!(number(&plain, "first_failed_element_number"), None);
 
             // #1047: the other bodies.
-            let write = to_py_err(Error::protocol(
+            let write = to_py_err(Error::with_detail(
                 ErrorClass::PROPERTY,
                 ErrorCode::WRITE_ACCESS_DENIED,
                 Some(ErrorDetail::FirstFailedWriteAttempt(
@@ -428,7 +428,7 @@ mod tests {
             assert_eq!(index, Some(3));
             assert!(none(&write, "first_failed_subscription"));
 
-            let private = to_py_err(Error::protocol(
+            let private = to_py_err(Error::with_detail(
                 ErrorClass::SERVICES,
                 ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
                 Some(ErrorDetail::PrivateTransfer {
@@ -447,7 +447,7 @@ mod tests {
                 .unwrap();
             assert_eq!(parameters, [0x21, 1]);
 
-            let vt_close = to_py_err(Error::protocol(
+            let vt_close = to_py_err(Error::with_detail(
                 ErrorClass::SERVICES,
                 ErrorCode::VT_SESSION_TERMINATION_FAILURE,
                 Some(ErrorDetail::VtSessionIdentifiers(vec![1, 4])),

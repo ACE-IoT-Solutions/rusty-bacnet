@@ -4,6 +4,7 @@
 use super::*;
 use crate::durable::SaveWait;
 use bacnet_types::enums::PropertyIdentifier as P;
+use bacnet_types::error::RemoteError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -162,10 +163,10 @@ pub(super) fn positive_only(rules: &[BACnetAccessRule]) -> AccessRightsSnapshot 
 
 pub(super) fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     match result {
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: got_class,
             code: got_code,
-        }) => assert_eq!(
+        })) => assert_eq!(
             (got_class, got_code),
             (class, code),
             "expected {class:?} / {code:?}"

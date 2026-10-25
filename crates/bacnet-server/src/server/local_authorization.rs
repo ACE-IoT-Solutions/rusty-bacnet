@@ -137,15 +137,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
 /// Reject unhealthy or malformed admission before invoking the pure evaluator.
 fn admit(db: &ObjectDatabase, oid: &ObjectIdentifier) -> Result<(), Error> {
-    let object = db.get(oid).ok_or(Error::Protocol {
-        class: ErrorClass::OBJECT,
-        code: ErrorCode::UNKNOWN_OBJECT,
-    })?;
+    let object = db.get(oid).ok_or(Error::protocol(
+        ErrorClass::OBJECT,
+        ErrorCode::UNKNOWN_OBJECT,
+    ))?;
     if oid.object_type() != ObjectType::ACCESS_POINT {
-        return Err(Error::Protocol {
-            class: ErrorClass::OBJECT,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-        });
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ));
     }
     let healthy = match (
         object.read_property(PropertyIdentifier::OUT_OF_SERVICE, None)?,
@@ -155,23 +155,23 @@ fn admit(db: &ObjectDatabase, oid: &ObjectIdentifier) -> Result<(), Error> {
             !out_of_service && reliability == Reliability::NO_FAULT_DETECTED.to_raw()
         }
         _ => {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
     };
     if !healthy {
-        return Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        });
+        return Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ));
     }
     if !object.supports_access_event_batch_internal() {
-        return Err(Error::Protocol {
-            class: ErrorClass::OBJECT,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-        });
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ));
     }
     Ok(())
 }

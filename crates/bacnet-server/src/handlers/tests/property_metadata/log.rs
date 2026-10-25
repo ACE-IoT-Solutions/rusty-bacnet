@@ -11,6 +11,7 @@ use bacnet_types::constructed::{
     BACnetLogRecord, EventLogDatum, LogData, LogDatum, LogValue,
 };
 use bacnet_types::enums::LoggingType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, PropertyValue, StatusFlags, Time};
 
 fn log_objects(capacity: u32, configured: bool) -> [Box<dyn BACnetObject>; 3] {
@@ -359,8 +360,10 @@ fn rpm_log_indexed_property_list_and_list_gates_preserve_bytes() {
                 Err(code) => {
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, code)));
                     assert!(result.property_value.is_none());
-                    assert!(matches!(rp_result, Err(Error::Protocol { class, code: c })
-                        if class == ErrorClass::PROPERTY && c == code));
+                    assert!(
+                        matches!(rp_result, Err(Error::Remote(RemoteError::Error { class, code: c }))
+                        if class == ErrorClass::PROPERTY && c == code)
+                    );
                 }
             }
         }
@@ -431,9 +434,11 @@ fn rpm_and_rp_refuse_log_buffer_while_read_range_serves_framed_records() {
                     Some((ErrorClass::PROPERTY, ErrorCode::READ_ACCESS_DENIED))
                 );
                 assert!(result.property_value.is_none());
-                assert!(matches!(rp_result, Err(Error::Protocol { class, code })
+                assert!(
+                    matches!(rp_result, Err(Error::Remote(RemoteError::Error { class, code }))
                     if class == ErrorClass::PROPERTY
-                        && code == ErrorCode::READ_ACCESS_DENIED));
+                        && code == ErrorCode::READ_ACCESS_DENIED)
+                );
             } else {
                 assert!(result.error.is_none());
                 assert_eq!(result.property_value.as_deref(), Some(&[0x21, 2][..]));

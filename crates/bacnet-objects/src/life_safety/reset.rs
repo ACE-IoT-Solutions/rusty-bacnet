@@ -143,10 +143,9 @@ fn reset_error(error: LifeSafetyResetError) -> Error {
         LifeSafetyResetError::InvalidOperationInThisState => {
             life_safety_error(ErrorCode::INVALID_OPERATION_IN_THIS_STATE)
         }
-        LifeSafetyResetError::ServiceRequestDenied => Error::Protocol {
-            class: ErrorClass::SERVICES,
-            code: ErrorCode::SERVICE_REQUEST_DENIED,
-        },
+        LifeSafetyResetError::ServiceRequestDenied => {
+            Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
+        }
     }
 }
 

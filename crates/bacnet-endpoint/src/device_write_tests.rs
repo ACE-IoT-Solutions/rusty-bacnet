@@ -6,6 +6,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::ReceivedNpdu;
 use bacnet_types::enums::{ConfirmedServiceChoice, ServiceSupported};
+use bacnet_types::error::RemoteError;
 use bytes::BytesMut;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
@@ -508,7 +509,7 @@ async fn bip_device_writes_reach_the_lowest_of_several_devices() {
     assert!(
         matches!(
             refused,
-            Error::Protocol { code, .. }
+            Error::Remote(RemoteError::Error { code, .. })
                 if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED
         ),
         "{refused:?}"

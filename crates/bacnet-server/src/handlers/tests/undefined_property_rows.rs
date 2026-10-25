@@ -20,6 +20,7 @@ use bacnet_objects::group::{GroupObject, StructuredViewObject};
 use bacnet_objects::load_control::LoadControlObject;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 
 const STATUS_ROWS: &[P] = &[P::STATUS_FLAGS, P::RELIABILITY, P::OUT_OF_SERVICE];
 
@@ -103,7 +104,7 @@ fn db_with(object: Box<dyn BACnetObject>) -> (ObjectDatabase, ObjectIdentifier) 
 
 fn assert_unknown_property<T: std::fmt::Debug>(result: Result<T, Error>, context: &str) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::UNKNOWN_PROPERTY),
         "{context}: expected PROPERTY/UNKNOWN_PROPERTY, got {result:?}"

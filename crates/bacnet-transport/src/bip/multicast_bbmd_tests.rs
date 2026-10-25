@@ -11,6 +11,7 @@
 
 use super::*;
 use bacnet_types::enums::ErrorCode;
+use bacnet_types::error::RemoteError;
 use tokio::time::timeout;
 
 const GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 94, 7);
@@ -84,7 +85,7 @@ async fn a_bbmd_for_a_group_needs_a_two_hop_own_row_and_keeps_its_group() {
     assert_eq!(view.group(), GROUP.octets());
     assert!(!view.can_change());
     for group in [[239, 255, 94, 8], [0; 4]] {
-        let Err(Error::Protocol { code, .. }) = view.check(group) else {
+        let Err(Error::Remote(RemoteError::Error { code, .. })) = view.check(group) else {
             panic!("refused");
         };
         assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED);

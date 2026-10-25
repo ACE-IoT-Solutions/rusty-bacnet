@@ -175,10 +175,10 @@ impl ObjectDatabase {
         if let Some(&owner) = self.name_index.get(new_name)
             && owner != *oid
         {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::DUPLICATE_NAME,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::DUPLICATE_NAME,
+            ));
         }
         Ok(())
     }

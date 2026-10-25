@@ -635,10 +635,10 @@ impl BACnetObject for DeviceObject {
                     if i < self.object_list.len() {
                         Ok(PropertyValue::ObjectIdentifier(self.object_list[i]))
                     } else {
-                        Err(Error::Protocol {
-                            class: ErrorClass::PROPERTY,
-                            code: ErrorCode::INVALID_ARRAY_INDEX,
-                        })
+                        Err(Error::protocol(
+                            ErrorClass::PROPERTY,
+                            ErrorCode::INVALID_ARRAY_INDEX,
+                        ))
                     }
                 }
             };
@@ -661,10 +661,10 @@ impl BACnetObject for DeviceObject {
                 | PropertyIdentifier::UTC_OFFSET
                 | PropertyIdentifier::DAYLIGHT_SAVINGS_STATUS
         ) {
-            let frame = self.clock_frame().ok_or(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            })?;
+            let frame = self.clock_frame().ok_or(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))?;
             return Ok(match property {
                 PropertyIdentifier::LOCAL_DATE => PropertyValue::Date(frame.local_date),
                 PropertyIdentifier::LOCAL_TIME => PropertyValue::Time(frame.local_time),
@@ -719,10 +719,10 @@ impl BACnetObject for DeviceObject {
             return if self.cov_property_present(property) {
                 Ok(PropertyValue::ApplicationData(Vec::new()))
             } else {
-                Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY,
-                    code: ErrorCode::UNKNOWN_PROPERTY,
-                })
+                Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::UNKNOWN_PROPERTY,
+                ))
             };
         }
 
@@ -732,10 +732,10 @@ impl BACnetObject for DeviceObject {
         self.properties
             .get(&property)
             .cloned()
-            .ok_or(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            })
+            .ok_or(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))
     }
 
     fn write_property(
@@ -753,10 +753,10 @@ impl BACnetObject for DeviceObject {
         }
         if property == PropertyIdentifier::DESCRIPTION {
             if array_index.is_some() {
-                return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY,
-                    code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+                ));
             }
             // Clause 15.9: relinquishing a non-commandable writable property
             // succeeds without changing its value when no other error exists.
@@ -767,10 +767,10 @@ impl BACnetObject for DeviceObject {
                 self.properties.insert(property, value);
                 return Ok(());
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::INVALID_DATA_TYPE,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::BACKUP_FAILURE_TIMEOUT
             && self.properties.contains_key(&property)

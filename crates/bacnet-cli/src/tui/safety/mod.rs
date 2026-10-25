@@ -17,7 +17,7 @@ pub(crate) mod lock;
 pub(crate) mod plan;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -291,7 +291,10 @@ impl Outcome {
         };
         match result {
             Ok(()) => Self::Ack,
-            Err(Error::Protocol { class, code } | Error::Structured { class, code, .. }) => {
+            Err(
+                Error::Remote(RemoteError::Error { class, code })
+                | Error::Structured { class, code, .. },
+            ) => {
                 if denied(*class, *code) {
                     Self::Denied
                 } else {
@@ -301,13 +304,13 @@ impl Outcome {
                     }
                 }
             }
-            Err(Error::Reject { reason }) => Self::Reject(reason.to_raw()),
-            Err(Error::Abort { reason })
+            Err(Error::Remote(RemoteError::Reject { reason })) => Self::Reject(reason.to_raw()),
+            Err(Error::Remote(RemoteError::Abort { reason }))
                 if *reason == bacnet_types::enums::AbortReason::TSM_TIMEOUT =>
             {
                 Self::Timeout
             }
-            Err(Error::Abort { reason }) => Self::Abort(reason.to_raw()),
+            Err(Error::Remote(RemoteError::Abort { reason })) => Self::Abort(reason.to_raw()),
             Err(Error::Timeout(_)) => Self::Timeout,
             Err(other) => Self::Failed(other.to_string()),
         }

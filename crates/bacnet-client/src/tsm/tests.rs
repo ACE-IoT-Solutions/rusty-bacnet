@@ -1,4 +1,6 @@
 use super::*;
+use bacnet_types::enums::RejectReason;
+use bacnet_types::error::RemoteError;
 use tokio::time::{Duration, timeout};
 
 fn assert_initial_response_aborted(
@@ -149,15 +151,18 @@ async fn a_response_without_a_service_choice_completes_any_transaction() {
         &mac,
         invoke_id,
         None,
-        TsmResponse::Reject {
+        TsmResponse::remote(RemoteError::Reject {
             reason: RejectReason::UNRECOGNIZED_SERVICE,
-        },
+        }),
     );
     assert_eq!(outcome, CompletionOutcome::Delivered);
     assert!(matches!(
         rx.await.unwrap(),
-        TsmResponse::Reject {
-            reason: RejectReason::UNRECOGNIZED_SERVICE
+        TsmResponse::Remote {
+            error: RemoteError::Reject {
+                reason: RejectReason::UNRECOGNIZED_SERVICE
+            },
+            ..
         }
     ));
 }
@@ -183,7 +188,7 @@ async fn segmented_request_rejects_premature_terminal_response_kinds() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
                 if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
@@ -210,7 +215,7 @@ async fn segmented_complex_ack_zero_is_rejected_until_all_segments_are_sent() {
     ));
     assert!(matches!(
         registration.response.await.unwrap(),
-        TsmResponse::Abort { reason }
+        TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
             if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert_eq!(tsm.pending_count(), 0);
@@ -238,7 +243,7 @@ async fn awaiting_response_initial_segment_admission_matrix() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
                 if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
@@ -301,7 +306,7 @@ async fn segmented_request_initial_segment_admission_matrix() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
                 if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
@@ -339,7 +344,7 @@ async fn sent_all_segments_still_applies_initial_segment_admission() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
                 if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
@@ -409,7 +414,7 @@ async fn invalid_initial_segment_resolves_final_send_polling() {
             .expect("final-send admission waiter remained blocked");
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
                 if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
     }
@@ -420,12 +425,12 @@ async fn reject_and_abort_are_valid_throughout_segmented_request() {
     let mac = MacAddr::from_slice(&[127, 0, 0, 1, 0xBA, 0xC0]);
 
     for response in [
-        TsmResponse::Reject {
+        TsmResponse::remote(RemoteError::Reject {
             reason: RejectReason::INVALID_PARAMETER_DATA_TYPE,
-        },
-        TsmResponse::Abort {
+        }),
+        TsmResponse::remote(RemoteError::Abort {
             reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-        },
+        }),
     ] {
         let mut tsm = Tsm::new(TsmConfig::default());
         let invoke_id = tsm.allocate_invoke_id(&mac).unwrap();
@@ -440,10 +445,16 @@ async fn reject_and_abort_are_valid_throughout_segmented_request() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Reject {
-                reason: RejectReason::INVALID_PARAMETER_DATA_TYPE
-            } | TsmResponse::Abort {
-                reason: AbortReason::SEGMENTATION_NOT_SUPPORTED
+            TsmResponse::Remote {
+                error: RemoteError::Reject {
+                    reason: RejectReason::INVALID_PARAMETER_DATA_TYPE
+                },
+                ..
+            } | TsmResponse::Remote {
+                error: RemoteError::Abort {
+                    reason: AbortReason::SEGMENTATION_NOT_SUPPORTED
+                },
+                ..
             }
         ));
         assert_eq!(tsm.pending_count(), 0);

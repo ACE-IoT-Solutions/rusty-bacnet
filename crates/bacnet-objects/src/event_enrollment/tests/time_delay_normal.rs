@@ -4,6 +4,7 @@
 
 use super::super::*;
 use bacnet_types::bitstring::EventTransitionBits;
+use bacnet_types::error::RemoteError;
 
 /// Absent a write, the property reads back the `Event_Parameters`
 /// `Time_Delay` — the Clause 13.3 fallback to pTimeDelay,
@@ -91,7 +92,7 @@ fn time_delay_normal_write_validation() {
         )
         .unwrap_err()
     {
-        bacnet_types::error::Error::Protocol { class, code } => {
+        bacnet_types::error::Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 (class, code),
                 (
@@ -112,7 +113,7 @@ fn time_delay_normal_write_validation() {
         )
         .unwrap_err()
     {
-        bacnet_types::error::Error::Protocol { class, code } => {
+        bacnet_types::error::Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 (class, code),
                 (

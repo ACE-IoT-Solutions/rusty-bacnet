@@ -6,6 +6,7 @@ use crate::database::ObjectDatabase;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use bacnet_types::bip_port::BipPortMode;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 use std::net::Ipv6Addr;
 
 // Independent oracle from Tables 12-71 and 12-72, not copied from production
@@ -70,7 +71,9 @@ fn octets(value: &[u8]) -> PropertyValue {
 
 fn error_code(result: Result<impl std::fmt::Debug, Error>) -> ErrorCode {
     match result {
-        Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY => code,
+        Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY => {
+            code
+        }
         other => panic!("expected a property error: {other:?}"),
     }
 }

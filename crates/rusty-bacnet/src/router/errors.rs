@@ -2,7 +2,7 @@
 use super::lifecycle::{CloseError, StartError};
 use super::records::PyRouterCleanupFailure;
 use bacnet_network::router::{RouterStopError, RouterStopFailure};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -35,7 +35,8 @@ pub(super) fn close_error(error: &CloseError<RouterStopError>, networks: &[u16])
                     error,
                 } => {
                     let (error_class, error_code) = match error {
-                        Error::Protocol { class, code } | Error::Structured { class, code, .. } => {
+                        Error::Remote(RemoteError::Error { class, code })
+                        | Error::Structured { class, code, .. } => {
                             (Some(class.to_raw()), Some(code.to_raw()))
                         }
                         _ => (None, None),
@@ -54,8 +55,8 @@ pub(super) fn close_error(error: &CloseError<RouterStopError>, networks: &[u16])
                         error_class,
                         error_code,
                         reason: match error {
-                            Error::Reject { reason } => Some(reason.to_raw()),
-                            Error::Abort { reason } => Some(reason.to_raw()),
+                            Error::Remote(RemoteError::Reject { reason }) => Some(reason.to_raw()),
+                            Error::Remote(RemoteError::Abort { reason }) => Some(reason.to_raw()),
                             _ => None,
                         },
                         worker: None,

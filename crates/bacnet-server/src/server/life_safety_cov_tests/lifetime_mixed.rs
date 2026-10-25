@@ -30,10 +30,10 @@ impl BACnetObject for ReadProbe {
             self.selected_reads.fetch_add(1, Ordering::Relaxed);
         }
         if property == PropertyIdentifier::OPERATION_EXPECTED && self.fail.load(Ordering::Acquire) {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::READ_ACCESS_DENIED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::READ_ACCESS_DENIED,
+            ));
         }
         self.inner.read_property(property, index)
     }

@@ -6,7 +6,7 @@ use bacnet_types::constructed::{
     EventNotificationRequest, NotificationParameters,
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 use tracing::{debug, warn};
 
@@ -201,7 +201,7 @@ fn reports_an_event_log_buffer(notification: &EventNotificationRequest) -> bool 
 /// The trait default's answer: an object of type Event Log that has no
 /// record insertion.
 fn is_unsupported(error: &Error) -> bool {
-    matches!(error, Error::Protocol { class, code }
+    matches!(error, Error::Remote(RemoteError::Error { class, code })
         if *class == ErrorClass::OBJECT
             && *code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED)
 }

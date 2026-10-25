@@ -14,7 +14,7 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, UnconfirmedServiceChoice};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::network_number::NetworkNumber;
 use std::net::Ipv4Addr;
 use tokio::sync::mpsc;
@@ -77,7 +77,7 @@ async fn a_confirmed_request_to_the_broadcast_mac_is_refused_before_any_state() 
         )
         .await;
     assert!(
-        matches!(routed, Err(Error::Abort { reason })
+        matches!(routed, Err(Error::Remote(RemoteError::Abort { reason }))
             if reason == AbortReason::TSM_TIMEOUT),
         "{routed:?}"
     );
@@ -160,7 +160,7 @@ async fn refuses_each_group_form(groups: GroupDestinations, forms: &[Vec<u8>], u
         .confirmed_request(unicast, ConfirmedServiceChoice::READ_PROPERTY, &[0x0C])
         .await;
     assert!(
-        matches!(sent, Err(Error::Abort { reason })
+        matches!(sent, Err(Error::Remote(RemoteError::Abort { reason }))
             if reason == AbortReason::TSM_TIMEOUT),
         "{sent:?}"
     );

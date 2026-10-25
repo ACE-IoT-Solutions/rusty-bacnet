@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 /// Handle a WhoHas request and return an IHave response if we have the object.
 ///
@@ -48,7 +49,7 @@ pub fn handle_who_has(
 /// Returns the encoded ObjectIdentifier of the created object (ComplexAck payload).
 /// A refused initial value is `Error::Structured` naming its position in the
 /// List of Initial Values (Clause 15.3.1.3); any other refusal is
-/// `Error::Protocol` or a decoding error.
+/// `Error::protocol` or a decoding error.
 pub fn handle_create_object(
     db: &mut ObjectDatabase,
     service_data: &[u8],
@@ -79,13 +80,12 @@ impl CreateObjectRefusal {
     /// it.
     fn of_initial_value(self, position: u32) -> Self {
         let named = |error| match error {
-            Error::Protocol { class, code } | Error::Structured { class, code, .. } => {
-                Error::protocol(
-                    class,
-                    code,
-                    Some(ErrorDetail::FirstFailedElementNumber(position)),
-                )
-            }
+            Error::Remote(RemoteError::Error { class, code })
+            | Error::Structured { class, code, .. } => Error::with_detail(
+                class,
+                code,
+                Some(ErrorDetail::FirstFailedElementNumber(position)),
+            ),
             other => other,
         };
         match self {
@@ -213,10 +213,10 @@ fn create(
 ) -> Result<ObjectIdentifier, Error> {
     const MAX_OBJECTS: usize = 10_000;
     if db.len() >= MAX_OBJECTS {
-        return Err(Error::Protocol {
-            class: ErrorClass::RESOURCES,
-            code: ErrorCode::NO_SPACE_FOR_OBJECT,
-        });
+        return Err(Error::protocol(
+            ErrorClass::RESOURCES,
+            ErrorCode::NO_SPACE_FOR_OBJECT,
+        ));
     }
 
     let (object_type, instance) = match &request.object_specifier {
@@ -229,18 +229,18 @@ fn create(
             let next =
                 (1u32..=4_194_303)
                     .find(|i| !existing.contains(i))
-                    .ok_or(Error::Protocol {
-                        class: ErrorClass::RESOURCES,
-                        code: ErrorCode::NO_SPACE_FOR_OBJECT,
-                    })?;
+                    .ok_or(Error::protocol(
+                        ErrorClass::RESOURCES,
+                        ErrorCode::NO_SPACE_FOR_OBJECT,
+                    ))?;
             (*obj_type, next)
         }
         ObjectSpecifier::Identifier(oid) => {
             if db.get(oid).is_some() {
-                return Err(Error::Protocol {
-                    class: ErrorClass::OBJECT,
-                    code: ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::OBJECT,
+                    ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
+                ));
             }
             (oid.object_type(), oid.instance_number())
         }
@@ -320,10 +320,10 @@ fn create(
             2,
         )?)
     } else {
-        return Err(Error::Protocol {
-            class: ErrorClass::OBJECT,
-            code: ErrorCode::UNSUPPORTED_OBJECT_TYPE,
-        });
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::UNSUPPORTED_OBJECT_TYPE,
+        ));
     };
 
     let created_oid = object.object_identifier();
@@ -427,12 +427,9 @@ fn initialize(
     // The labels have to fit the count the request gives; the caller drops
     // the object on a refusal, so the resize needs no undoing.
     match fixed_count {
-        Some(count) if state_count(db, created_oid) != count => {
-            Err(CreateObjectRefusal::Failed(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::VALUE_OUT_OF_RANGE,
-            }))
-        }
+        Some(count) if state_count(db, created_oid) != count => Err(CreateObjectRefusal::Failed(
+            Error::protocol(ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE),
+        )),
         _ => Ok(()),
     }
 }
@@ -464,17 +461,17 @@ pub fn handle_delete_object(
 
     match request.object_identifier.object_type() {
         ObjectType::DEVICE | ObjectType::NETWORK_PORT => {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
+            ));
         }
         _ => {}
     }
 
     db.remove(&request.object_identifier)?
-        .ok_or(Error::Protocol {
-            class: ErrorClass::OBJECT,
-            code: ErrorCode::UNKNOWN_OBJECT,
-        })
+        .ok_or(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::UNKNOWN_OBJECT,
+        ))
 }

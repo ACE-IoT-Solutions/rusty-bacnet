@@ -1,5 +1,6 @@
 //! Shared Device identity validation and segmentation-derived declarations.
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn mode_derived_max_segments_accepted() {
@@ -47,7 +48,7 @@ fn mode_derived_max_segments_accepted() {
             ),
             None => assert!(matches!(
                 max_segments,
-                Err(Error::Protocol { class, code })
+                Err(Error::Remote(RemoteError::Error { class, code }))
                     if class == ErrorClass::PROPERTY
                         && code == ErrorCode::UNKNOWN_PROPERTY
             )),
@@ -64,7 +65,7 @@ fn segment_timeout_absence_custom_value_and_zero_validation() {
     .unwrap();
     assert!(
         matches!(none.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY)
+        Err(Error::Remote(RemoteError::Error { code, .. })) if code == ErrorCode::UNKNOWN_PROPERTY)
     );
     assert!(
         !none

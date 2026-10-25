@@ -4,6 +4,7 @@
 
 use super::*;
 use bacnet_types::enums::{Action, EngineeringUnits};
+use bacnet_types::error::RemoteError;
 
 const UNITS_ROWS: [PropertyIdentifier; 4] = [
     PropertyIdentifier::CONTROLLED_VARIABLE_UNITS,
@@ -22,7 +23,7 @@ fn read(lo: &LoopObject, property: PropertyIdentifier) -> PropertyValue {
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY && code == expected),
         "expected PROPERTY/{expected:?}, got {result:?}"
     );

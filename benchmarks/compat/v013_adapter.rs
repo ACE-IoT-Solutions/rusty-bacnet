@@ -11,7 +11,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::enums::ObjectType;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 
 /// Build an ObjectDatabase with `object_count` AnalogInput objects, plus
@@ -78,9 +78,9 @@ pub async fn make_stress_client() -> Result<BACnetClient<BipTransport>, Error> {
 pub fn classify(error: &Error) -> FailureKind {
     match error {
         Error::Timeout(_) => FailureKind::Timeout,
-        Error::Abort { reason } => FailureKind::Abort { reason: *reason },
-        Error::Reject { reason } => FailureKind::Reject { reason: *reason },
-        Error::Protocol { class, code } | Error::Structured { class, code, .. } => {
+        Error::Remote(RemoteError::Abort { reason }) => FailureKind::Abort { reason: *reason },
+        Error::Remote(RemoteError::Reject { reason }) => FailureKind::Reject { reason: *reason },
+        Error::Remote(RemoteError::Error { class, code }) | Error::Structured { class, code, .. } => {
             FailureKind::Protocol {
                 class: *class,
                 code: *code,
@@ -103,17 +103,17 @@ mod tests {
                 Error::Timeout(std::time::Duration::from_secs(5)),
                 FailureKind::Timeout,
             ),
-            (Error::Abort { reason: 1 }, FailureKind::Abort { reason: 1 }),
+            (Error::abort(1), FailureKind::Abort { reason: 1 }),
             (
-                Error::Abort { reason: 65 },
+                Error::abort(65),
                 FailureKind::Abort { reason: 65 },
             ),
             (
-                Error::Reject { reason: 9 },
+                Error::reject(9),
                 FailureKind::Reject { reason: 9 },
             ),
             (
-                Error::Protocol { class: 2, code: 32 },
+                Error::protocol(2, 32),
                 FailureKind::Protocol { class: 2, code: 32 },
             ),
             (

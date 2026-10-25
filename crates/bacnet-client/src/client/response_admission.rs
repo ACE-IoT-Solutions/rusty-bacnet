@@ -213,9 +213,9 @@ pub(super) async fn complete_terminal_response(
                     invoke_id,
                     &owner,
                     None,
-                    TsmResponse::Abort {
+                    TsmResponse::remote(RemoteError::Abort {
                         reason: bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
-                    },
+                    }),
                 );
                 return TerminalDispatchOutcome::PrematureSegmentedRequestAborted;
             }

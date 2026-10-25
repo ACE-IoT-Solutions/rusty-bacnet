@@ -91,18 +91,16 @@ impl FileStorage for Probe {
 }
 fn backend_error(kind: u8) -> Error {
     if kind == 2 {
-        Error::Abort {
-            reason: AbortReason::OUT_OF_RESOURCES,
-        }
+        Error::abort(AbortReason::OUT_OF_RESOURCES)
     } else {
-        Error::Protocol {
-            class: if kind == 0 {
+        Error::protocol(
+            if kind == 0 {
                 ErrorClass::OBJECT
             } else {
                 ErrorClass::SERVICES
             },
-            code: ErrorCode::FILE_FULL,
-        }
+            ErrorCode::FILE_FULL,
+        )
     }
 }
 fn probe(record: bool) -> Probe {

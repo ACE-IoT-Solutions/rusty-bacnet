@@ -12,7 +12,7 @@ use bacnet_types::constructed::{
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, LoggingType, ObjectType, PropertyIdentifier as P,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
 use bytes::BytesMut;
 use tracing::warn;
@@ -383,9 +383,10 @@ impl ObjectDatabase {
         }
         match target.read_property(property, index) {
             Ok(value) => Ok((value, target)),
-            Err(Error::Protocol { class, code } | Error::Structured { class, code, .. }) => {
-                Err(failure(class, code))
-            }
+            Err(
+                Error::Remote(RemoteError::Error { class, code })
+                | Error::Structured { class, code, .. },
+            ) => Err(failure(class, code)),
             // An error with no BACnet class and code reports as ReadProperty
             // would answer it.
             Err(_) => Err(failure(ErrorClass::SERVICES, ErrorCode::OTHER)),

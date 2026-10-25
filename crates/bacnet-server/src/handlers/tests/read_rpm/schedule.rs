@@ -5,6 +5,7 @@ use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetObjectPropertyReference, BACnetSpecialEvent, BACnetTimeValue,
     PropertyReference, ReadAccessSpecification, SpecialEventPeriod,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 
 #[test]
@@ -238,8 +239,10 @@ fn rpm_schedule_indexed_reads_and_reference_wire_bytes() {
                 Err(expected) => {
                     assert!(result.property_value.is_none());
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                    assert!(matches!(rp, Err(Error::Protocol { class, code })
-                        if class == ErrorClass::PROPERTY && code == expected));
+                    assert!(
+                        matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                        if class == ErrorClass::PROPERTY && code == expected)
+                    );
                     assert!(response.is_empty());
                 }
             }

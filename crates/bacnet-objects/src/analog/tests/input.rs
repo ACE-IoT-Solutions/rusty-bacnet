@@ -1,6 +1,7 @@
 use super::super::*;
 use bacnet_types::bitstring::LimitEnable;
 use bacnet_types::enums::EventState;
+use bacnet_types::error::RemoteError;
 
 // --- AnalogInput ---
 
@@ -350,10 +351,10 @@ fn ai_is_writable_property_mirrors_write_property() {
 
 fn assert_property_error_code(result: Result<(), Error>, code: bacnet_types::enums::ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
+        }) => {
             assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
             assert_eq!(actual, code);
         }
@@ -516,10 +517,10 @@ fn ai_limit_enable_rejects_noncanonical_bit_strings() {
 
 fn assert_tdn_protocol_error(result: Result<(), Error>, code: bacnet_types::enums::ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
+        }) => {
             assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
             assert_eq!(actual, code);
         }

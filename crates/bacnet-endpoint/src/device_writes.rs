@@ -48,8 +48,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// task. Without a password set by
     /// [`with_reinit_password`](Self::with_reinit_password) any peer reaches
     /// it, and the Device-write authorizer doesn't cover this service, so
-    /// restrict sources through the context. Refuse with [`Error::Protocol`];
-    /// a panic or an [`Error::Reject`] is answered SERVICES / OTHER and the
+    /// restrict sources through the context. Refuse with [`Error::protocol`];
+    /// a panic or an [`Error::reject`] is answered SERVICES / OTHER and the
     /// session keeps serving.
     ///
     /// # Panics

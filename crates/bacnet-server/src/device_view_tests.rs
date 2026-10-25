@@ -9,6 +9,7 @@
 //! forwards it.
 
 use super::*;
+use bacnet_types::error::RemoteError;
 #[path = "../../bacnet-objects/tests/support/forwarding/mod.rs"]
 mod forwarding;
 
@@ -86,10 +87,10 @@ fn a_read_view_refuses_batch_mutation_without_calling_the_wrapped_object() {
     take(&log);
     assert!(matches!(
         view.record_access_event_batch_internal(&[]),
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: ErrorClass::OBJECT,
             code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-        })
+        }))
     ));
     assert!(forwarded(&log).is_empty());
 }

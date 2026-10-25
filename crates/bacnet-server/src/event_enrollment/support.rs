@@ -8,7 +8,7 @@ use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier, Reliability,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::EventEnrollmentReliabilityCause;
@@ -137,7 +137,7 @@ pub(super) fn queue_invalid_reference(
 pub(super) fn invalid_indexed_target_error(error: &Error) -> bool {
     matches!(
         error,
-        Error::Protocol { class, code }
+        Error::Remote(RemoteError::Error { class, code })
             if *class == ErrorClass::PROPERTY
                 && matches!(
                     *code,
@@ -151,7 +151,7 @@ pub(super) fn invalid_indexed_target_error(error: &Error) -> bool {
 pub(super) fn classify_required_property_read_error(error: &Error) -> LocalConfigurationReadError {
     if matches!(
         error,
-        Error::Protocol { class, code }
+        Error::Remote(RemoteError::Error { class, code })
             if *class == ErrorClass::PROPERTY
                 && *code == ErrorCode::UNKNOWN_PROPERTY
     ) {

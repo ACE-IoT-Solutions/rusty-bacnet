@@ -67,7 +67,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// against the ReadPropertyMultiple work limit
     /// ([`ReadPropertyMultipleBudget::max_result_elements`](crate::server::ReadPropertyMultipleBudget))
     /// as for network ReadProperty; past it the read fails with
-    /// [`Error::Abort`] carrying OUT_OF_RESOURCES.
+    /// [`Error::abort`] carrying OUT_OF_RESOURCES.
     pub async fn read_local(
         &self,
         oid: &ObjectIdentifier,
@@ -95,9 +95,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             handlers::plan_read_property(&db, Some(&view), lookup_oid, property, array_index)
                 .map_err(|failure| match failure {
                     handlers::ReadFailure::Service(error) => error,
-                    handlers::ReadFailure::Work | handlers::ReadFailure::Bytes => Error::Abort {
-                        reason: AbortReason::OUT_OF_RESOURCES,
-                    },
+                    handlers::ReadFailure::Work | handlers::ReadFailure::Bytes => {
+                        Error::abort(AbortReason::OUT_OF_RESOURCES)
+                    }
                 })?;
         use super::requests::confirmed_response::{active_cov_snapshot, address_bindings};
         let live = match plan.live_cov(&db) {
@@ -150,10 +150,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         self.active_network()?;
         let value = {
             let db = self.db.read().await;
-            let object = db.get(oid).ok_or(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::UNKNOWN_OBJECT,
-            })?;
+            let object = db.get(oid).ok_or(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::UNKNOWN_OBJECT,
+            ))?;
             handlers::gate_and_decode_write(object, property, array_index, value)?
         };
         self.write_local(oid, property, array_index, value, priority, source)

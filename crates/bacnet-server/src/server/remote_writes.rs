@@ -86,7 +86,7 @@ pub(crate) enum RemoteRequestError {
     /// The server is stopping.
     Stopping,
     /// The device answered with an Error, Reject or Abort, saying this.
-    Refused(Refusal),
+    Refused(RemoteError),
     /// No answer to the first attempt or any retry.
     Unanswered,
     /// The runner has no network to send on: a run made without a server.

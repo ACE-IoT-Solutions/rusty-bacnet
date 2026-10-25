@@ -207,10 +207,10 @@ impl ChangeOfStateReporting {
         timestamp: &BACnetTimeStamp,
     ) -> Result<Option<EventStateChange>, Error> {
         if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT,
-                code: ErrorCode::NO_ALARM_CONFIGURED,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated_detailed(
             &mut self.event_detector.acked_transitions,
@@ -281,10 +281,10 @@ pub(crate) fn enumerated_list(
     states: ListedStates,
 ) -> Result<Vec<u32>, Error> {
     if array_index.is_some() {
-        return Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
-        });
+        return Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+        ));
     }
     let items = match value {
         PropertyValue::List(items) => items.as_slice(),
@@ -292,10 +292,7 @@ pub(crate) fn enumerated_list(
     };
     let cap = crate::multistate::MAX_ALARM_VALUES;
     if items.len() > cap {
-        let full = Error::Protocol {
-            class: ErrorClass::RESOURCES,
-            code: ErrorCode::NO_SPACE_TO_WRITE_PROPERTY,
-        };
+        let full = Error::protocol(ErrorClass::RESOURCES, ErrorCode::NO_SPACE_TO_WRITE_PROPERTY);
         return Err(common::at_list_element(full, cap));
     }
     items

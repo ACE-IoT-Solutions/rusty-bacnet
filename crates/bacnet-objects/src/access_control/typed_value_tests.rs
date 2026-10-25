@@ -10,6 +10,7 @@
 
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 const P: PropertyIdentifier = PropertyIdentifier::PRESENT_VALUE;
 const PA: PropertyIdentifier = PropertyIdentifier::PRIORITY_ARRAY;
@@ -23,7 +24,7 @@ const OUTSIDE_DOOR_VALUE: [u32; 4] = [4, 200, 1024, u32::MAX];
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             assert_eq!(code, expected, "expected {expected:?}");
         }

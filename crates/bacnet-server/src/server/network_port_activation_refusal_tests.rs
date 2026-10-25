@@ -23,10 +23,7 @@ struct Tables {
 }
 
 fn refusal() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY,
-        code: ErrorCode::VALUE_OUT_OF_RANGE,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE)
 }
 
 impl BbmdTables for Tables {

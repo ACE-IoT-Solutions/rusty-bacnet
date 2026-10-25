@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn source_write_preflight_is_silent_with_and_without_reporter() {
@@ -267,7 +268,10 @@ async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error
             .await;
         assert_eq!(result.is_ok(), success);
         if !success {
-            assert!(matches!(result, Err(Error::Protocol { .. })));
+            assert!(matches!(
+                result,
+                Err(Error::Remote(RemoteError::Error { .. }))
+            ));
         }
         let (record, _) = notification(&receive(&mut records).await, false);
         assert_eq!(record.target_value, Some(vec![]));

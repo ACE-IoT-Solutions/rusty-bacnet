@@ -75,10 +75,7 @@ async fn native_cleanup_causes_survive_repeated_python_conversion_and_context_bo
     Python::initialize();
     let router = native(vec![
         Some(Error::Transport(std::io::Error::from_raw_os_error(13))),
-        Some(Error::Protocol {
-            class: ErrorClass::SERVICES,
-            code: ErrorCode::OTHER,
-        }),
+        Some(Error::protocol(ErrorClass::SERVICES, ErrorCode::OTHER)),
         None,
     ])
     .await;
