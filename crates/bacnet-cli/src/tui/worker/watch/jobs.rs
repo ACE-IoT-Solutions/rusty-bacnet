@@ -1,12 +1,14 @@
 //! The watch list's requests to one device: starting a row (a first read,
 //! then a managed COV subscription), cancelling one, and polling a batch.
 //!
-//! Each runs as one job, and a device runs one job at a time, so the watch
-//! list never has more than one confirmed request outstanding to a device.
-//! Every request first takes a slot from the shared [`RateCap`]. The
-//! managed subscription's own renewals are sent by its task, outside both
-//! limits, once per lifetime. A routed device is subscribed to like a local
-//! one, through its router (#1790).
+//! Each runs as one job, and a device runs one job at a time. Every request
+//! also takes its turn at the device's gate in the shared
+//! [`RequestLimits`], with a slot under the rate cap, so the watch list, the
+//! browser and the writes never have more than one confirmed request
+//! outstanding to a device between them (#1791). The managed
+//! subscription's renewals, sent by its task once per lifetime, take the
+//! same gate, though no rate slot. A routed device is subscribed to like a
+//! local one, through its router (#1790).
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -25,7 +27,7 @@ use bacnet_types::error::{Error, RemoteError};
 use super::sample::{self, Reading, RowFormat};
 use crate::tui::format::{RawRow, StateTexts};
 use crate::tui::watched::{Point, RowId};
-use crate::tui::worker::browse::limits::RateCap;
+use crate::tui::worker::browse::limits::RequestLimits;
 use crate::tui::worker::browse::read::{
     Halt, Reader, RpmFailure, Wanted, rpm_failure, unreachable,
 };
@@ -90,7 +92,7 @@ pub(crate) struct Started {
 /// Read the point once, then subscribe for `lifetime`.
 pub(crate) async fn start<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     row: RowId,
     point: Point,
     lifetime: Lifetime,
@@ -225,14 +227,18 @@ async fn state_texts<T: TransportPort + 'static>(
 /// both with unconfirmed notifications and a finite lifetime.
 async fn subscribe<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     target: &CovTarget,
     row: RowId,
     point: Point,
     lifetime: Lifetime,
 ) -> Result<ManagedCOVSubscription, Refusal> {
-    let options = ManagedCOVSubscriptionOptions::default().with_renewal_margin(lifetime.margin);
-    rate.acquire().await;
+    let options = ManagedCOVSubscriptionOptions::default()
+        .with_renewal_margin(lifetime.margin)
+        .with_renewal_gate(rate.gate(point.device));
+    // The first request goes under this turn; the renewals take the gate
+    // themselves.
+    let _turn = rate.turn(point.device).await;
     let managed = if point.whole_object() {
         Arc::clone(client)
             .manage_cov_subscription(
@@ -273,16 +279,17 @@ async fn subscribe<T: TransportPort + 'static>(
 /// the device table's route to it.
 pub(crate) async fn cancel<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     row: RowId,
     point: Point,
     target: CovTarget,
     managed: Option<ManagedCOVSubscription>,
 ) -> Result<(), Error> {
+    // Stopping first lets go of the gate a renewal in flight holds.
     if let Some(managed) = managed {
         managed.stop().await;
     }
-    rate.acquire().await;
+    let _turn = rate.turn(point.device).await;
     let (object, property) = (point.object, point.property);
     match (target, point.whole_object()) {
         (CovTarget::Local { mac }, true) => client.unsubscribe_cov(&mac, row, object).await,
@@ -322,7 +329,7 @@ pub(crate) struct Polled {
 /// answering ends the poll: the rows left get the error at once.
 pub(crate) async fn poll<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     device: u32,
     rows: Vec<(RowId, Point)>,
     mut rpm: bool,
@@ -364,11 +371,12 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
                 samples.push((*row, failed(error)));
                 continue;
             }
-            rate.acquire().await;
-            let value = match client
+            let turn = rate.turn(device).await;
+            let read = client
                 .read_property_from_device(device, point.object, point.property, None)
-                .await
-            {
+                .await;
+            drop(turn);
+            let value = match read {
                 Ok(ack) => Ok(ack.property_value),
                 Err(error) if unreachable(&error) => {
                     samples.push((*row, failed(&error)));
@@ -401,7 +409,7 @@ fn failed_with(error: String) -> Reading {
 /// One ReadPropertyMultiple for `batch`, one access specification per row.
 async fn rpm_batch<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     device: u32,
     batch: &[(RowId, Point)],
 ) -> Result<Vec<(RowId, Reading)>, Error> {
@@ -418,10 +426,12 @@ async fn rpm_batch<T: TransportPort + 'static>(
                 .collect(),
         })
         .collect();
-    rate.acquire().await;
+    let turn = rate.turn(device).await;
     let ack = client
         .read_property_multiple_from_device(device, specs)
-        .await?;
+        .await;
+    drop(turn);
+    let ack = ack?;
     // The answer lists the objects in the order they were asked for; a row
     // it leaves out, or answers without the property, gets an error.
     let mut results = ack.list_of_read_access_results.into_iter();

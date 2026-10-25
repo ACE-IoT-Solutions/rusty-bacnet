@@ -32,7 +32,7 @@ async fn subscription_retry_classification_uses_typed_failures() {
         let (client, _) = retry_support::client(reply).await;
         let result = subscribe(
             &client,
-            &RateCap::new(0),
+            &RequestLimits::new(0),
             &CovTarget::local(&[2]),
             1,
             point(),
@@ -70,7 +70,7 @@ async fn routed_rows_subscribe_through_their_router_and_retry_like_local_ones() 
             .unwrap();
         let result = start(
             &client,
-            &RateCap::new(0),
+            &RequestLimits::new(0),
             1,
             point(),
             Lifetime::new(300, Duration::from_secs(8)),
@@ -98,7 +98,7 @@ async fn missing_device_is_fatal_without_retry_or_cancellation() {
     let (client, requests) = retry_support::client(Reply::Silent).await;
     let result = start(
         &client,
-        &RateCap::new(0),
+        &RequestLimits::new(0),
         1,
         point(),
         Lifetime::new(300, Duration::from_secs(8)),

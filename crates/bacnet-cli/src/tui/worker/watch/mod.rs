@@ -35,7 +35,7 @@ use self::csv::{CsvLog, field, unix_ms};
 use self::jobs::{Lifetime, Polled, Refusal, Started};
 use self::sample::{Reading, RowFormat};
 use super::EventSink;
-use super::browse::limits::RateCap;
+use super::browse::limits::RequestLimits;
 use crate::tui::app::objects::{kebab, object_label};
 use crate::tui::message::{Command, WorkerEvent};
 use crate::tui::watched::{Point, RowId, Sample, Source, WatchCommand, WatchEvent, WatchStats};
@@ -492,7 +492,7 @@ impl<'s> State<'s> {
 
     /// Every tick: hand samples on, notice ended renewals, queue the
     /// subscriptions due again, and report the counters.
-    fn tick(&mut self, rate: &RateCap) {
+    fn tick(&mut self, rate: &RequestLimits) {
         self.flush();
         let now = Instant::now();
         for (id, row) in &mut self.rows {
@@ -564,7 +564,7 @@ impl<'s> State<'s> {
     fn launch<'a, T: TransportPort + 'static>(
         &mut self,
         client: &'a Arc<BACnetClient<T>>,
-        rate: &'a RateCap,
+        rate: &'a RequestLimits,
         jobs: &mut FuturesUnordered<Job<'a>>,
     ) {
         for log in self.closing.drain(..) {
@@ -720,7 +720,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
     sink: &EventSink,
     mut commands: mpsc::Receiver<Command>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     options: &WatchOptions,
 ) {
     let mut state = State::new(sink, options);

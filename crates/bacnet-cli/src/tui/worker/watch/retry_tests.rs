@@ -59,7 +59,7 @@ async fn initial_timeout_schedules_one_start_after_thirty_seconds() {
     let options = WatchOptions::default();
     let mut state = retrying(&sink, &options, false);
     state.started(1, failed(false, false));
-    let rate = RateCap::new(0);
+    let rate = RequestLimits::new(0);
     tokio::time::advance(Duration::from_secs(29)).await;
     state.tick(&rate);
     assert!(state.devices[&DEVICE].ops.is_empty());
@@ -81,14 +81,14 @@ async fn queued_retry_remove_and_shutdown_keep_prior_cancellation() {
             row.mode = Mode::Polled;
             row.resubscribe = Some((Instant::now(), Duration::from_secs(30)));
             state.devices.get_mut(&DEVICE).unwrap().busy = true;
-            state.tick(&RateCap::new(0));
+            state.tick(&RequestLimits::new(0));
             assert!(matches!(state.devices[&DEVICE].ops[0], Op::Start(1)));
             if shutdown {
                 state.shutdown();
             } else {
                 state.remove(1);
             }
-            state.tick(&RateCap::new(0));
+            state.tick(&RequestLimits::new(0));
             assert_cancel(&state, ambiguous);
         }
     }
@@ -111,7 +111,7 @@ async fn inflight_retry_remove_and_shutdown_keep_old_mac_and_cancellation() {
                 let mut outcome = failed(false, fatal);
                 outcome.outcome.as_mut().err().unwrap().retryable = retryable;
                 state.started(1, outcome);
-                state.tick(&RateCap::new(0));
+                state.tick(&RequestLimits::new(0));
                 assert_cancel(&state, ambiguous);
             }
         }
@@ -132,7 +132,7 @@ async fn repeated_failures_back_off_to_cap_and_permanent_refusal_stops_retry_onl
     let (sink, _events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let options = WatchOptions::default();
     let mut state = retrying(&sink, &options, true);
-    let rate = RateCap::new(0);
+    let rate = RequestLimits::new(0);
     for seconds in [30, 60, 120, 240, 300, 300] {
         state.started(1, failed(false, false));
         assert!(
@@ -222,7 +222,7 @@ async fn successful_retry(shutdown: bool) {
             panic!("late success was not cancelled")
         };
         assert!(managed.is_some(), "cleanup owns and stops the renewal task");
-        jobs::cancel(&client, &RateCap::new(0), row, point, target, managed)
+        jobs::cancel(&client, &RequestLimits::new(0), row, point, target, managed)
             .await
             .unwrap();
         assert_eq!(requests.load(Ordering::Relaxed), 2);
@@ -241,7 +241,7 @@ async fn successful_retry(shutdown: bool) {
         managed.stop().await;
         state.started(1, failed(false, false));
         tokio::time::advance(Duration::from_secs(30)).await;
-        state.tick(&RateCap::new(0));
+        state.tick(&RequestLimits::new(0));
         assert!(
             matches!(state.devices[&DEVICE].ops.front(), Some(Op::Start(1))),
             "successful start reset the backoff"

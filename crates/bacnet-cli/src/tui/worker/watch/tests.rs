@@ -71,7 +71,7 @@ async fn notifications_fold_into_their_row() {
     // Another object, or another row's process id, is not this row's.
     state.notification(Ok(notification(1, ai(2), 1.0)));
     state.notification(Ok(notification(9, ai(1), 2.0)));
-    state.tick(&RateCap::new(0));
+    state.tick(&RequestLimits::new(0));
     let Some(WorkerEvent::Watch(WatchEvent::Samples(samples))) = events.recv().await else {
         panic!("expected samples");
     };

@@ -74,6 +74,9 @@ pub(super) struct Quirks {
     /// Swallow this many confirmed requests, retries included, then
     /// answer: a device that was away for a while.
     pub(super) swallow_first: u8,
+    /// How long frames take to reach this port: a slow device, whose
+    /// requests stay outstanding that long.
+    pub(super) latency: Duration,
 }
 
 struct Port {
@@ -307,10 +310,10 @@ impl HubPort {
             .ports
             .iter()
             .filter(|port| port.mac != self.mac && to.is_none_or(|to| port.mac.as_slice() == to))
-            .map(|port| port.inbox.clone())
+            .map(|port| (port.inbox.clone(), port.quirks.latency))
             .collect();
         drop(inner);
-        for tx in targets {
+        for (tx, latency) in targets {
             let npdu = ReceivedNpdu::unverified(
                 Bytes::copy_from_slice(npdu),
                 self.mac.clone(),
@@ -318,7 +321,14 @@ impl HubPort {
                 Vec::new(),
                 None,
             );
-            let _ = tx.try_send(npdu);
+            if latency.is_zero() {
+                let _ = tx.try_send(npdu);
+            } else {
+                tokio::spawn(async move {
+                    tokio::time::sleep(latency).await;
+                    let _ = tx.send(npdu).await;
+                });
+            }
         }
     }
 }

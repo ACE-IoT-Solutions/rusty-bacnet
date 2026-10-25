@@ -960,6 +960,8 @@ mod coordinator_tests;
 #[cfg(test)]
 mod cov_notification_tests;
 #[cfg(test)]
+mod cov_renewal_gate_tests;
+#[cfg(test)]
 mod cov_renewal_routed_tests;
 #[cfg(test)]
 mod cov_renewal_tests;

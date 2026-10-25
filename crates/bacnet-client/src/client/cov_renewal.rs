@@ -21,6 +21,16 @@ pub struct ManagedCOVSubscriptionOptions {
     ///
     /// Accepted range is `1..=MAX_COV_CHANNEL_CAPACITY`.
     pub event_channel_capacity: usize,
+    /// A semaphore each renewal takes one permit of before it is sent and
+    /// holds until its answer, its failure or [`ManagedCOVSubscription::stop`]
+    /// (#1791). An application that limits its own requests to a device
+    /// (one outstanding at a time, say) passes that limit here, so renewals
+    /// keep to it too. `None` (the default) sends renewals ungated.
+    ///
+    /// The first request is not gated: it is sent from the caller's
+    /// context, which may already hold a permit for it. A closed semaphore
+    /// stops gating.
+    pub renewal_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl Default for ManagedCOVSubscriptionOptions {
@@ -28,6 +38,7 @@ impl Default for ManagedCOVSubscriptionOptions {
         Self {
             renewal_margin: DEFAULT_COV_RENEWAL_MARGIN,
             event_channel_capacity: DEFAULT_COV_RENEWAL_EVENT_CAPACITY,
+            renewal_gate: None,
         }
     }
 }
@@ -42,6 +53,13 @@ impl ManagedCOVSubscriptionOptions {
     /// Set the renewal event broadcast channel capacity.
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
         self.event_channel_capacity = capacity;
+        self
+    }
+
+    /// Gate every renewal on a permit of `gate` (see
+    /// [`renewal_gate`](Self::renewal_gate)).
+    pub fn with_renewal_gate(mut self, gate: Arc<tokio::sync::Semaphore>) -> Self {
+        self.renewal_gate = Some(gate);
         self
     }
 
@@ -300,7 +318,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     _ = &mut renew_sleep => {
-                        let renewal = request.send(&client, &target);
+                        // The permit lives as long as this future: until the
+                        // answer, or until a stop drops it mid-wait or
+                        // mid-request.
+                        let renewal = async {
+                            let _permit = match &options.renewal_gate {
+                                Some(gate) => gate.acquire().await.ok(),
+                                None => None,
+                            };
+                            request.send(&client, &target).await
+                        };
                         tokio::pin!(renewal);
                         tokio::select! {
                             _ = &mut stop_rx => break,

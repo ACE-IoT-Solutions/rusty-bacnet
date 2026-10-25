@@ -93,6 +93,7 @@ mod passive_retention;
 #[path = "../../../../bacnet-endpoint/tests/support/port_retry.rs"]
 mod port_retry;
 mod profile_ui;
+mod request_gate;
 #[cfg(feature = "sc-tls")]
 mod sc_hub;
 mod sc_layout;
