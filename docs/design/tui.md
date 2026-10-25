@@ -425,7 +425,9 @@ Hardening after review (#964):
 **Audit log** (#964). `audit.jsonl` in the profile workspace is append-only.
 Each record holds UTC time, OS user, host, profile, transport and local
 address, target, service, decoded parameters, priority, pre-image, outcome
-(ack, error class and code, reject, abort, timeout) and session level.
+(ack, error class and code, reject, abort, timeout; `class`, `code` and
+`reason` are strings holding the name, or the decimal number when there is
+none) and session level.
 Passwords are redacted (an `audit::Secret` serialises as `[redacted]`, and any
 field named like a password is redacted on the way out), file payloads will be
 reduced to size plus SHA-256 when file writes arrive, and key material never

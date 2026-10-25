@@ -17,7 +17,7 @@ import pickle
 import unittest
 
 from rusty_bacnet import (
-    AbortReason, BACnetServer, BacnetProtocolError, EngineeringUnits, ErrorClass,
+    AbortReason, AuditOperation, BACnetClient, BACnetServer, BacnetProtocolError, EngineeringUnits, ErrorClass,
     ErrorCode, ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue,
     RejectReason,
 )
@@ -82,6 +82,37 @@ class IntEnumClassTests(unittest.TestCase):
             for raw in (-1, top + 1):
                 with self.subTest(enum=cls.__name__, raw=raw), self.assertRaises(ValueError):
                     cls.from_raw(raw)
+
+
+class ErrorPairInputTests(unittest.TestCase):
+    """An (ErrorClass, ErrorCode) input takes members or ints in range: an
+    int out of range is a ValueError, a value of the wrong type a
+    TypeError. Both are refused before anything is sent."""
+
+    def test_audit_result_range_and_type(self) -> None:
+        client = BACnetClient()
+        device = lambda instance: {  # noqa: E731
+            "kind": "device",
+            "object_identifier": ObjectIdentifier(ObjectType.DEVICE, instance),
+        }
+
+        def send(result):
+            notification = {
+                "source_device": device(1),
+                "operation": AuditOperation.READ,
+                "target_device": device(2),
+                "result": result,
+            }
+            return client.confirmed_audit_notification_typed(
+                "127.0.0.1:47808", {"notifications": [notification]}
+            )
+
+        for result in [(2, 2**16), (ErrorClass.PROPERTY, -1)]:
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                send(result)
+        for result in [(True, 0), (ErrorClass.PROPERTY, "32")]:
+            with self.subTest(result=result), self.assertRaises(TypeError):
+                send(result)
 
 
 class IntEnumApiTests(unittest.IsolatedAsyncioTestCase):

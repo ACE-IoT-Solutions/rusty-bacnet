@@ -144,14 +144,27 @@ fn result(
             "{name} must be an (ErrorClass, ErrorCode) tuple"
         )));
     }
+    // An int out of range keeps from_py's ValueError; any other refusal is
+    // a TypeError naming the item.
+    let py = value.py();
+    let item = |index: usize, what: &str| {
+        let what = what.to_owned();
+        move |error: PyErr| {
+            if error.is_instance_of::<PyValueError>(py) {
+                error
+            } else {
+                PyTypeError::new_err(format!("{name}[{index}] must be an {what} or int"))
+            }
+        }
+    };
     let error_class = value
         .get_item(0)
         .and_then(|value| int_enums::from_py(&value))
-        .map_err(|_| PyTypeError::new_err(format!("{name}[0] must be an ErrorClass or int")))?;
+        .map_err(item(0, "ErrorClass"))?;
     let error_code = value
         .get_item(1)
         .and_then(|value| int_enums::from_py(&value))
-        .map_err(|_| PyTypeError::new_err(format!("{name}[1] must be an ErrorCode or int")))?;
+        .map_err(item(1, "ErrorCode"))?;
     Ok((error_class, error_code))
 }
 

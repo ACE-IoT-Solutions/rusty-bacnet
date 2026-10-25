@@ -275,12 +275,6 @@ pub(crate) enum Outcome {
     Failed(String),
 }
 
-/// A name for the audit log: the value's name, or its number when it has
-/// none (a proprietary value, say).
-fn name_or_number(name: Option<&str>, raw: u16) -> serde_json::Value {
-    name.map_or_else(|| raw.into(), Into::into)
-}
-
 impl Outcome {
     /// From a client result.
     pub(crate) fn of(result: &Result<(), Error>) -> Self {
@@ -326,8 +320,8 @@ impl Outcome {
         }
     }
 
-    /// The audit record's `outcome`: a class, code or reason by name, or by
-    /// number when it has none.
+    /// The audit record's `outcome`. A class, code or reason is always a
+    /// string: its name, or its decimal number when it has none.
     pub(crate) fn json(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
@@ -335,12 +329,11 @@ impl Outcome {
             Self::Denied => json!({ "result": "error", "class": "SERVICES",
                                     "code": "SERVICE_REQUEST_DENIED", "denied": true }),
             Self::Refused(RemoteError::Error { class, code }) => json!({ "result": "error",
-                "class": name_or_number(class.name(), class.to_raw()),
-                "code": name_or_number(code.name(), code.to_raw()) }),
+                "class": class.to_string(), "code": code.to_string() }),
             Self::Refused(RemoteError::Reject { reason }) => json!({ "result": "reject",
-                "reason": name_or_number(reason.name(), reason.to_raw().into()) }),
+                "reason": reason.to_string() }),
             Self::Refused(RemoteError::Abort { reason }) => json!({ "result": "abort",
-                "reason": name_or_number(reason.name(), reason.to_raw().into()) }),
+                "reason": reason.to_string() }),
             Self::Timeout => json!({ "result": "timeout" }),
             Self::NotSent(why) => json!({ "result": "not-sent", "why": why }),
             Self::Failed(why) => json!({ "result": "failed", "why": why }),

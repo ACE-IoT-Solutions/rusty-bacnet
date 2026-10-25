@@ -1,6 +1,6 @@
 //! How a refused write reads (#1814): the result view and the audit log name
 //! a refusal's class and code, or its reject or abort reason, and give the
-//! number for a value without a name.
+//! number for a value without a name; in the audit log each is a string.
 
 use std::time::Duration;
 
@@ -51,9 +51,9 @@ fn the_audit_log_names_refusals_and_numbers_the_unnamed() {
         records,
         [
             json!({ "result": "error", "class": "PROPERTY", "code": "WRITE_ACCESS_DENIED" }),
-            json!({ "result": "error", "class": 64, "code": 300 }),
+            json!({ "result": "error", "class": "64", "code": "300" }),
             json!({ "result": "reject", "reason": "INVALID_PARAMETER_DATA_TYPE" }),
-            json!({ "result": "abort", "reason": 200 }),
+            json!({ "result": "abort", "reason": "200" }),
         ]
     );
     assert!(refusals().iter().all(|(_, o)| o.applied() == Some(false)));

@@ -1,6 +1,6 @@
 ---
 section: Changed
 ---
-- **CLI:** The TUI's write result view and audit log name a refusal's reject
-  or abort reason as they do its error class and code, and give the number
-  for a value without a name, in the audit log as a JSON number (#1814).
+- **Breaking (CLI):** In the TUI audit log a reject or abort outcome's `reason`
+  is now a string, the reason's name (or its decimal number when unnamed)
+  instead of a number; the result view also names reasons (#1814).

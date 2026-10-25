@@ -185,7 +185,10 @@ pseudo-member: `ErrorCode(300)` and `ErrorCode.from_raw(300)` give an
 `ErrorCode(300)`. So a raised error's attributes, and the error pairs in read
 and audit results, are instances of their classes whatever the value. Other
 fields that carry these numbers, such as a trend log record's failure datum,
-stay plain ints. A number outside the field's range (0 to 255 for the reasons, 0 to
+stay plain ints. Pseudo-members aren't cached: two `ErrorCode(300)` calls give
+equal values (`==` holds) but not the same object (`is` doesn't). Whether
+`300 in ErrorCode` is true depends on the Python version, so test a value with
+`ErrorCode(300)` or by comparing numbers instead. A number outside the field's range (0 to 255 for the reasons, 0 to
 65535 for the error class and code) raises `ValueError`. `str()` of a member
 is its number, as for any `IntEnum`; `repr()` names it (`ErrorClass.PROPERTY`).
 
