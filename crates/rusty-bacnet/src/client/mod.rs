@@ -100,6 +100,8 @@ fn device_range(
 /// - `"bip"` (default): BACnet/IP over UDP
 /// - `"ipv6"`: BACnet/IPv6 over UDP multicast. Peers are named by VMAC
 ///   (`"bip6:1234"`); `resolve_vmac` finds the VMAC at an `"[ip]:port"`.
+///   `foreign_device=` with a B/IPv6 BBMD, and `ipv6_device_instance`,
+///   registers it as a foreign device (#1941).
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
@@ -119,6 +121,9 @@ pub struct BACnetClient {
     share_port_by_address: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IPv6 foreign-device registration `foreign_device=` asked for
+    /// (#1941).
+    bip6_foreign: Option<bacnet_transport::bip6::Bip6ForeignDeviceConfig>,
     /// The B/IP multicast group `multicast=` asked for (#941).
     multicast: Option<bacnet_transport::bip::BipMulticast>,
     apdu_timeout_ms: u64,

@@ -2489,19 +2489,28 @@ def refresh_logging() -> None:
 
 class ForeignDevice:
     """A foreign-device registration, for the ``foreign_device=`` keyword of
-    ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
+    ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP), and of
+    ``BACnetClient`` and ``BACnetServer`` with ``transport="ipv6"`` (#1941).
 
-    ``bbmd`` is ``"ip"`` or ``"ip:port"`` (port 47808 by default). ``ttl`` is
-    how many seconds the BBMD keeps the entry, 1 to 65535. ``renewal`` is
-    the seconds between registrations, at least 0.1 and less than ``ttl``;
-    ``None`` renews at half the TTL. Behind NAT, renew often so the mapping
-    the BBMD's replies come back on stays open, while the TTL stays long.
-    Invalid values raise ValueError, or OverflowError for an integer out of
-    range.
+    ``bbmd`` names a B/IP BBMD as ``"ip"`` or ``"ip:port"``, or a B/IPv6 one
+    as ``"ip"`` or ``"[ip]:port"`` (port 47808 by default); the owner's
+    transport must match, else its constructor raises ValueError. A B/IPv6
+    BBMD must be a unicast host: an unspecified, multicast, link-local,
+    IPv4-mapped or IPv4-compatible address, a zone index or port 0 raises
+    ValueError saying which. ``ttl`` is how many seconds the BBMD keeps the
+    entry, 1 to 65535. ``renewal`` (B/IP only) is the seconds between
+    registrations, at least 0.1 and less than ``ttl``; ``None`` renews at
+    half the TTL, which a B/IPv6 foreign device always does (at least every
+    30 s), so a B/IPv6 BBMD with ``renewal`` raises ValueError. Behind NAT,
+    renew often so the mapping the BBMD's replies come back on stays open,
+    while the TTL stays long. Invalid values raise ValueError, or
+    OverflowError for an integer out of range.
 
     The owner registers at start and renews on its own. Its broadcasts go
-    through the BBMD; the first few wait for the first registration to be
-    answered. ``foreign_registration()`` reports how it goes.
+    through the BBMD; on B/IP the first few wait for the first registration
+    to be answered, and ``foreign_registration()`` reports how it goes (B/IP
+    only). A B/IPv6 client needs ``ipv6_device_instance``: a B/IPv6 foreign
+    device uses its instance's VMAC.
     """
 
     def __init__(self, bbmd: str, ttl: int = 300, renewal: Optional[float] = None) -> None: ...
@@ -3077,10 +3086,13 @@ class BACnetClient:
         Follow the link with ``connection_events()`` and
         ``connection_status()`` (#1829).
 
-        ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
-        ValueError): run the client as a BBMD, or register it with a BBMD
-        on another subnet as a foreign device, so its Who-Is reaches that
-        subnet (#938). See ``Bbmd`` and ``ForeignDevice``.
+        ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
+        the client as a BBMD (B/IP only), or register it with a BBMD on
+        another subnet as a foreign device, so its Who-Is reaches that
+        subnet (#938). ``foreign_device`` also applies to
+        ``transport="ipv6"`` with a B/IPv6 BBMD, and then needs
+        ``ipv6_device_instance`` (#1941). See ``Bbmd`` and
+        ``ForeignDevice``.
 
         ``ipv6_device_instance`` (B/IPv6 only, default None): the device
         instance whose VMAC the client uses (Clause H.7.2), 0 to 4194303, so
@@ -4560,11 +4572,13 @@ class BACnetServer:
         can share the port. Needs an explicit interface and a nonzero port;
         broadcasts and unicast are still handled in the order they arrived.
 
-        ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
-        ValueError): run the device as a BBMD, or register it with a BBMD
-        on another subnet as a foreign device (#938). See ``Bbmd`` and
-        ``ForeignDevice``. A registered Network Port reports the mode in
-        BACnet_IP_Mode (normal 0, foreign 1, BBMD 2).
+        ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
+        the device as a BBMD (B/IP only), or register it with a BBMD on
+        another subnet as a foreign device (#938). ``foreign_device`` also
+        applies to ``transport="ipv6"`` with a B/IPv6 BBMD (#1941). See
+        ``Bbmd`` and ``ForeignDevice``. A registered Network Port reports
+        the mode in BACnet_IP_Mode (normal 0, foreign 1, BBMD 2), or on
+        B/IPv6 in BACnet_IPv6_Mode (normal 0, foreign 1).
 
         ``registered_network_port`` (B/IP or B/IPv6, 1 to 255): the Network
         Port object, added with ``add_bip_network_port`` (``transport="bip"``)
@@ -4572,7 +4586,11 @@ class BACnetServer:
         the server's link. Start checks the object's address and UDP port
         against the transport's, then publishes the bound port. A B/IPv6
         port also publishes its VMAC and multicast group, and reports
-        BACnet_IPv6_Mode NORMAL (0).
+        BACnet_IPv6_Mode NORMAL (0), or FOREIGN (1) with ``foreign_device=``
+        and its FD_BBMD_Address and FD_Subscription_Lifetime rows. With
+        ``on_reinitialize``, a client may write those two rows; a
+        ReinitializeDevice ACTIVATE_CHANGES then registers with the new
+        values at once.
 
         ``sc_npdu_per_origin_limit`` (SC only, default None): maximum
         queued, unconsumed NPDUs per ingress path and source. None keeps 32;

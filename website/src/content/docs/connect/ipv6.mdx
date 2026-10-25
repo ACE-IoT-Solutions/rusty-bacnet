@@ -64,16 +64,16 @@ B/IPv6 needs the `ipv6` feature of `bacnet-transport` (or `bacnet-client`). Buil
 
 ## Register as a foreign device
 
-Only Rust can make a B/IPv6 node a foreign device: call `register_as_foreign_device` with a `Bip6ForeignDeviceConfig` (the BBMD's address, its port and a TTL) before `start()`. The node needs a configured device instance, since a random VMAC is refused in this mode. With `::`, it picks the source address it would use to reach the BBMD. A registered Network Port can move the registration to another BBMD at a ReinitializeDevice.
+In Rust, call `register_as_foreign_device` with a `Bip6ForeignDeviceConfig` (the BBMD's address, its port and a TTL) before `start()`, or pass one to `foreign_device(..)` on the B/IPv6 client builder. In Python, give `BACnetClient` or `BACnetServer` with `transport="ipv6"` a `foreign_device=ForeignDevice("[2001:db8::10]:47808", ttl=600)`; the client also needs `ipv6_device_instance`. The node needs a configured device instance, since a random VMAC is refused in this mode. With `::`, it picks the source address it would use to reach the BBMD. The BBMD must be an IPv6 unicast host: an unspecified, multicast, link-local, IPv4-mapped or IPv4-compatible address is refused (`ValueError` in Python, and `start()` fails in Rust). A B/IPv6 foreign device renews at half the TTL, at least every 30 seconds, so Python's `renewal=` is B/IP only. A registered Network Port reports BACnet_IPv6_Mode FOREIGN and can move the registration to another BBMD, or change its TTL, at a ReinitializeDevice.
 
-The CLI has no B/IPv6 foreign-device option, and Python has no B/IPv6 foreign-device entry point; that is tracked in [#1941](https://github.com/jscott3201/rusty-bacnet/issues/1941). The stack is never a B/IPv6 BBMD: requests meant for one are refused with a NAK.
+The CLI has no B/IPv6 foreign-device option. The stack is never a B/IPv6 BBMD: requests meant for one are refused with a NAK.
 
 ## What is supported
 
 | Surface | B/IPv6 support in v{release} |
 |---|---|
 | CLI | `--ipv6` for device commands and the terminal UI (the BBMD commands are B/IP only); VMAC and bracketed targets; no foreign-device mode |
-| Python | Client and server with `transport="ipv6"`; `resolve_vmac`; `add_bip6_network_port`; no foreign-device mode and no shared endpoint |
+| Python | Client and server with `transport="ipv6"`; `resolve_vmac`; `add_bip6_network_port`; foreign-device mode (`foreign_device=`); no shared endpoint |
 | Rust | Standalone client and server; foreign-device mode; registered Network Port; no shared endpoint builder |
 | BBMD | None: the stack doesn't act as a B/IPv6 BBMD |
 

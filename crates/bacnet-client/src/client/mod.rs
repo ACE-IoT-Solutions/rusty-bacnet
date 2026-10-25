@@ -38,7 +38,7 @@ use bacnet_services::cov::COVNotificationRequest;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 #[cfg(feature = "ipv6")]
-use bacnet_transport::bip6::Bip6Transport;
+use bacnet_transport::bip6::{Bip6ForeignDeviceConfig, Bip6Transport};
 use bacnet_transport::port::{TransportPort, TransportProvenance};
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
@@ -608,6 +608,7 @@ impl BACnetClient<Bip6Transport> {
             options: ClientOptions::default(),
             interface: Ipv6Addr::UNSPECIFIED,
             device_instance: None,
+            foreign_device: None,
         }
     }
 }
@@ -620,6 +621,7 @@ pub struct Bip6ClientBuilder {
     options: ClientOptions,
     interface: Ipv6Addr,
     device_instance: Option<u32>,
+    foreign_device: Option<Bip6ForeignDeviceConfig>,
 }
 
 #[cfg(feature = "ipv6")]
