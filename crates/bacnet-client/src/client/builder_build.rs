@@ -40,6 +40,16 @@ impl BipClientBuilder {
     /// # Ok(()) }
     /// ```
     pub async fn build_any(self) -> Result<BACnetClient<AnyTransport>, Error> {
+        self.build_into().await
+    }
+
+    /// Build and start a configured B/IP client over any transport type a
+    /// [`BipTransport`] converts into, such as an application's own enum of
+    /// transports (#2071). [`Self::build_any`] is this with [`AnyTransport`].
+    pub async fn build_into<T>(self) -> Result<BACnetClient<T>, Error>
+    where
+        T: TransportPort + From<BipTransport> + 'static,
+    {
         Box::pin(async move {
             let (config, transport, options) = self.prepare()?;
             Box::pin(BACnetClient::start_with_options(
@@ -88,6 +98,16 @@ impl Bip6ClientBuilder {
     /// # Ok(()) }
     /// ```
     pub async fn build_any(self) -> Result<BACnetClient<AnyTransport>, Error> {
+        self.build_into().await
+    }
+
+    /// Build and start a configured B/IPv6 client over any transport type a
+    /// [`Bip6Transport`] converts into (#2071). [`Self::build_any`] is this
+    /// with [`AnyTransport`].
+    pub async fn build_into<T>(self) -> Result<BACnetClient<T>, Error>
+    where
+        T: TransportPort + From<Bip6Transport> + 'static,
+    {
         Box::pin(async move {
             let (config, transport, options) = self.prepare();
             Box::pin(BACnetClient::start_with_options(
@@ -351,6 +371,18 @@ impl ScClientBuilder {
     /// }
     /// ```
     pub async fn build_any(self) -> Result<BACnetClient<AnyTransport>, Error> {
+        self.build_into().await
+    }
+
+    /// Connect to the hub and start a BACnet/SC client over any transport
+    /// type an [`ScTransport`](bacnet_transport::sc::ScTransport) converts
+    /// into (#2071). [`Self::build_any`] is this with [`AnyTransport`].
+    pub async fn build_into<T>(self) -> Result<BACnetClient<T>, Error>
+    where
+        T: TransportPort
+            + From<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>
+            + 'static,
+    {
         Box::pin(async move {
             let (config, transport, options) = Box::pin(self.prepare()).await?;
             Box::pin(BACnetClient::start_with_options(
@@ -399,6 +431,25 @@ impl ScClientBuilder {
         ),
         Error,
     > {
+        self.build_into_with_events().await
+    }
+
+    /// [`Self::build_into`], also returning the hub-connector event receiver
+    /// that [`Self::build_any_with_events`] returns (#2071).
+    pub async fn build_into_with_events<T>(
+        self,
+    ) -> Result<
+        (
+            BACnetClient<T>,
+            tokio::sync::broadcast::Receiver<bacnet_transport::sc::ScEvent>,
+        ),
+        Error,
+    >
+    where
+        T: TransportPort
+            + From<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>
+            + 'static,
+    {
         Box::pin(async move {
             let (config, transport, options, events) = Box::pin(self.prepare_subscribed()).await?;
             let client = Box::pin(BACnetClient::start_with_options(
