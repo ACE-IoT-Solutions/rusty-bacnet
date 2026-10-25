@@ -2,7 +2,7 @@
 use super::*;
 use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::primitives::PropertyValue;
-use std::time::Duration;
+use core::time::Duration;
 
 pub(super) fn check(
     db: &ObjectDatabase,

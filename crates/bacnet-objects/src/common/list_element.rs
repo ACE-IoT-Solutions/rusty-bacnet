@@ -27,7 +27,7 @@ pub(crate) fn at_list_element(
 /// Assert that a list-valued write was refused with `class` / `code`, naming
 /// the element at `position` (from 1) of the list it carried.
 #[cfg(test)]
-pub(crate) fn assert_list_element_refused<T: std::fmt::Debug>(
+pub(crate) fn assert_list_element_refused<T: core::fmt::Debug>(
     result: Result<T, bacnet_types::error::Error>,
     class: bacnet_types::enums::ErrorClass,
     code: bacnet_types::enums::ErrorCode,

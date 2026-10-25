@@ -1,7 +1,7 @@
 //! Configured Network Port declarations, independent of a running transport.
 use crate::network_port::{Bip6PortConfig, BipPortConfig, NetworkPortObject};
 use bacnet_types::{MacAddr, enums::NetworkType, error::Error};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use core::net::{Ipv4Addr, Ipv6Addr};
 
 /// One configured Network-Port entry (see module docs for the profile boundary).
 ///
@@ -37,7 +37,7 @@ impl NetworkPortEntry {
     /// selected entry with its actual ephemeral port during startup.
     ///
     /// ```
-    /// use std::net::Ipv4Addr;
+    /// use core::net::Ipv4Addr;
     /// use bacnet_objects::device_identity::NetworkPortEntry;
     ///
     /// let entry = NetworkPortEntry::bip(1, 0, Ipv4Addr::LOCALHOST, 47808);
@@ -68,7 +68,7 @@ impl NetworkPortEntry {
     /// actual UDP port.
     ///
     /// ```
-    /// use std::net::Ipv6Addr;
+    /// use core::net::Ipv6Addr;
     /// use bacnet_objects::device_identity::NetworkPortEntry;
     ///
     /// let entry = NetworkPortEntry::bip6(1, 0, Ipv6Addr::LOCALHOST, 47808);

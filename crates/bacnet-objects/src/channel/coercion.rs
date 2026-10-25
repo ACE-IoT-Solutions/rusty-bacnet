@@ -241,13 +241,13 @@ fn rule_3_bound(value: u64) -> Option<u32> {
 fn float_to_unsigned(value: f64) -> Option<u64> {
     (0.0..=FLOAT_TO_INTEGER_LIMIT)
         .contains(&value)
-        .then(|| value.trunc() as u64)
+        .then(|| crate::float::trunc(value) as u64)
 }
 
 fn float_to_integer(value: f64) -> Option<i32> {
     (-FLOAT_TO_INTEGER_LIMIT..=FLOAT_TO_INTEGER_LIMIT)
         .contains(&value)
-        .then(|| value.trunc() as i32)
+        .then(|| crate::float::trunc(value) as i32)
 }
 
 /// The value a member of datatype `target` gets when a Channel holding

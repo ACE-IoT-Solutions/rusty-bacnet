@@ -1,5 +1,7 @@
 //! EventEnrollment (type 9) object per ASHRAE 135-2020 Clause 12.12.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, FaultParameters,
@@ -10,7 +12,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue, StatusFlags};
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
 use crate::event::history::EventHistory;

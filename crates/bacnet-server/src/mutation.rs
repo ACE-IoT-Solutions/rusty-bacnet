@@ -272,7 +272,9 @@ pub struct MutationServiceCounters {
 /// New servers start at zero. Each field is independently sampled and saturates at
 /// `u64::MAX`, so snapshots are not atomic aggregates. Counters never affect policy.
 /// WPM counts each element reaching its gate, not requests or an unvisited suffix,
-/// even one the policy was asked about ahead of the handler (#1321).
+/// even one the policy was asked about ahead of the handler (#1321, #2032).
+/// An element whose object appeared between that ahead pass and the writes,
+/// so the policy never saw it, is denied and counted in `deny_total`.
 /// Pre-gate failures and duplicates do not count. In permissive mode without
 /// a policy, a decision allows without decoding, so a later handler failure still counts.
 /// An inbound WriteGroup counts once per Channel write it would make.
@@ -302,7 +304,7 @@ pub struct MutationDecisionCounters {
     pub write_group: MutationServiceCounters,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MutationDecision {
     Allow,
     Deny,

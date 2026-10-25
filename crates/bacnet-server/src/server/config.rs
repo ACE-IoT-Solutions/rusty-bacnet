@@ -226,9 +226,9 @@ impl ServerConfig {
     /// The installed policy, if it decides mutations
     /// ([`ServerPolicy::decides_mutations`]). `None` takes the no-policy
     /// path: allowed without decoding for authorization.
-    pub(crate) fn mutation_decider(&self) -> Option<&dyn ServerPolicy> {
+    pub(crate) fn mutation_decider(&self) -> Option<&Arc<dyn ServerPolicy>> {
         self.policy
-            .as_deref()
+            .as_ref()
             .filter(|policy| policy.decides_mutations())
     }
 }

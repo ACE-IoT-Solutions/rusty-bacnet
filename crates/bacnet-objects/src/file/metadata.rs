@@ -1,5 +1,5 @@
 use super::{FileObject, resize};
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -61,11 +61,11 @@ pub(super) fn for_object(object: &FileObject) -> Cow<'_, [PropertyMetadata]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections::HashSet;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode, FileAccessMethod};
     use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
-    use std::collections::HashSet;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(

@@ -99,6 +99,17 @@ impl Fixture {
         bytes: Bytes,
         id: u8,
     ) -> Option<Bytes> {
+        self.dispatch_from(SOURCE, service, bytes, id).await
+    }
+
+    /// [`dispatch`](Self::dispatch) from the client at `source`.
+    pub async fn dispatch_from(
+        &self,
+        source: &[u8],
+        service: ConfirmedServiceChoice,
+        bytes: Bytes,
+        id: u8,
+    ) -> Option<Bytes> {
         let (tx, rx) = oneshot::channel();
         BACnetServer::<TestTransport>::handle_confirmed_request(
             &RequestServices {
@@ -110,7 +121,7 @@ impl Fixture {
             },
             &self.tracker,
             &Arc::new(crate::server::request_tasks::RequestTasks::default()).spawner(),
-            SOURCE,
+            source,
             route(),
             ConfirmedRequestPdu {
                 segmented: false,

@@ -1,5 +1,6 @@
 //! Shared Device declarations and stock object construction.
 mod network_port;
+use crate::prelude::*;
 use crate::{
     database::ObjectDatabase,
     device::{DeviceConfig, DeviceObject},
@@ -11,8 +12,8 @@ use bacnet_types::{
     error::Error,
     primitives::{ObjectIdentifier, PropertyValue},
 };
+use core::net::{Ipv4Addr, Ipv6Addr};
 pub use network_port::NetworkPortEntry;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Single Device identity source.
 ///
@@ -254,7 +255,7 @@ impl DeviceIdentity {
     pub fn publish_registered_bip6_internal(
         &mut self,
         oid: ObjectIdentifier,
-        address: std::net::SocketAddrV6,
+        address: core::net::SocketAddrV6,
         vmac: [u8; 3],
     ) {
         let entry = self
@@ -275,7 +276,7 @@ impl DeviceIdentity {
     pub fn publish_registered_bip_internal(
         &mut self,
         oid: ObjectIdentifier,
-        address: std::net::SocketAddrV4,
+        address: core::net::SocketAddrV4,
     ) {
         let entry = self
             .network_ports

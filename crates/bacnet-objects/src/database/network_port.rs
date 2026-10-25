@@ -5,8 +5,8 @@ use super::*;
 use crate::network_port::{
     Bip6Bind, Bip6PortConfig, BipPortConfig, NetworkPortObject, PortAddress, PortBind,
 };
+use alloc::sync::Weak;
 use bacnet_types::bip_port::BipPortMode;
-use std::sync::Weak;
 
 pub(super) struct NetworkPortRegistration {
     oid: ObjectIdentifier,
@@ -257,7 +257,7 @@ impl ObjectDatabase {
     pub fn set_network_port_multicast_internal(
         &mut self,
         oid: ObjectIdentifier,
-        multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+        multicast: Option<alloc::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
     ) -> Result<(), Error> {
         self.builtin_network_port_mut(&oid)
             .ok_or_else(|| invalid("selected Network Port authority disappeared"))?

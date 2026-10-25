@@ -2,11 +2,12 @@
 
 #[path = "object_storage.rs"]
 mod object_storage;
+use crate::prelude::*;
 pub(crate) use object_storage::ObjectStorageAccess;
 
-use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::calendar::SpecificDate;

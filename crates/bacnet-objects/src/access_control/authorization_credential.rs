@@ -81,7 +81,7 @@ pub(super) fn check(
                 value: reason.to_raw().into(),
             });
         };
-        if std::mem::replace(slot, true) {
+        if core::mem::replace(slot, true) {
             return Err(read::malformed(
                 oid,
                 P::REASON_FOR_DISABLE,

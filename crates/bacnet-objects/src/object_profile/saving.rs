@@ -1,7 +1,8 @@
 //! One shared Tags owner for profile-bearing objects.
 
-use std::sync::Arc;
-use std::time::Duration;
+use crate::prelude::*;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::constructed::BACnetNameValue;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
@@ -49,7 +50,7 @@ impl ProfileState {
             move |snapshot: &TagsSnapshot| persistence.save(oid, snapshot),
             move |_, result| {
                 if let Err(error) = result {
-                    tracing::warn!(object = %oid, %error, "Failed to save object Tags");
+                    log_warn!(object = %oid, %error, "Failed to save object Tags");
                 }
             },
         );

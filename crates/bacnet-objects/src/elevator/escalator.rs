@@ -1,5 +1,7 @@
 //! The Escalator object (type 58, Clause 12.60).
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{
     EscalatorFault, EscalatorMode, EscalatorOperationDirection, ObjectType, PropertyIdentifier,
@@ -7,7 +9,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
-use std::borrow::Cow;
 
 use super::energy_meter::{EnergyMeter, energy_meter_accessors};
 use super::membership::{GroupMembership, group_membership_accessors};

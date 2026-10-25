@@ -1,5 +1,6 @@
 //! Optional instance-owned Audit overrides: Analog and Binary Values, and
 //! the Color and Color Temperature objects (#1525).
+use crate::prelude::*;
 use crate::{
     common,
     property_metadata::{

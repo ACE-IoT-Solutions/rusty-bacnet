@@ -72,6 +72,7 @@ fn timed_endpoint(
         None,
         None,
         None,
+        None,
     )
 }
 

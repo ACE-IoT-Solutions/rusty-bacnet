@@ -11,11 +11,14 @@ use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
 
+#[cfg(feature = "std")]
 mod fold_tests;
+#[cfg(feature = "std")]
 mod persistence_tests;
 mod properties;
 mod recipient_list_restart_tests;
 mod selection_tests;
+#[cfg(feature = "std")]
 mod staging_tests;
 mod storage;
 

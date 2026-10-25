@@ -55,6 +55,7 @@
 //! that leaves or returns to NO_FAULT_DETECTED flips the FAULT flag and
 //! reports, and the return to service reports when it changes any of them.
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::decode_authentication_factor;
 use bacnet_types::constructed::BACnetAuthenticationFactor;
 use bacnet_types::enums::{PropertyIdentifier, Reliability};

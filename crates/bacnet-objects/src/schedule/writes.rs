@@ -28,6 +28,7 @@
 //! object gives it a calendar-entry date with every octet unspecified and
 //! event priority 16, which never supplies a value.
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::{
     decode_daily_schedule, decode_date_range, decode_special_event,
 };

@@ -4,8 +4,8 @@ use crate::property_metadata::{
     PropertyMetadata,
     PropertyWriteCapability::{Always, ReadOnly},
 };
+use alloc::borrow::Cow;
 use bacnet_types::enums::{IPMode, PropertyIdentifier as P};
-use std::borrow::Cow;
 
 // 135-2020 Table12-71 incl application footnote25; Link_Speed optional per
 // 2024-04-29 errata item23. Readonly configured snapshot: no activation owner.
