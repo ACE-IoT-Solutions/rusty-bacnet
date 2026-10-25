@@ -79,13 +79,13 @@ bacnet --interface 127.0.0.1 --port 0 --allow-write write 127.0.0.1:<assigned-po
 
 The first read returns 21.5 and the second 19, and the program prints `Supply fan: on`. Writing NULL at priority 8 relinquishes the command, and the program prints `Supply fan: off`. Press Enter in the program's terminal to stop it.
 
-CI compiles the Rust file and runs it in the `server_device` integration tests, and runs the Python file in `test_website_server.py`. Each test reads the temperature and the object names with a client, commands the fan, relinquishes it, and checks every line the program prints and that the port is free after `Stopped`. CI builds the Rust file against the development workspace; for this page it was also built from the release-pinned manifest and run, as was the Python file with the published v{release} package, and the commands above were run by hand against both.
+CI compiles the Rust file and runs it in the `server_device` integration tests, and runs the Python file in `test_website_server.py`. Each test reads the temperature and the object names with a client, commands the fan, relinquishes it, and checks every line the program prints and that the port is free after `Stopped`.
 
 ## Supply values from your application
 
 An input's value comes from your application, not from the network. Set it through the server, so that subscribers are notified:
 
-- Rust's `set_present_value_local(&oid, value)` takes Analog, Binary and Multi-state Inputs, Values whose Present_Value isn't commandable, a Loop's output, and Life Safety Points and Zones. It refuses an object whose Out_Of_Service is TRUE, since a client is then simulating its value. `write_local(..)` makes the same write a network WriteProperty would, at a priority, for commandable objects.
+- Rust's `set_present_value_local(&oid, value)` takes Analog, Binary and Multi-state Inputs, Values whose Present_Value isn't commandable, a Loop's output, and Life Safety Points and Zones. For the Inputs, Values and Loop it refuses an object whose Out_Of_Service is TRUE, since a client is then simulating its value; a Life Safety object takes the value either way. `write_local(..)` makes the same write a network WriteProperty would, at a priority, for commandable objects.
 - Python's `set_present_value_local(object_id, value)` takes Analog, Binary and Multi-state Inputs, a Loop's output and Life Safety objects. `write_property_local(..., source_object=None)` makes a network-equivalent write.
 
 Local writes are trusted: no [server policy](/rusty-bacnet/integrate/security/) is asked. Read a served value back with Rust's `read_local(..)` or Python's `read_property(..)`, which evaluate it as a network ReadProperty does. In Rust, `server.database()` is the raw object database, behind a Tokio lock; don't hold its guard across an `.await`.

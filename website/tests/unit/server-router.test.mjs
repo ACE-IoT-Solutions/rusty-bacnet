@@ -164,8 +164,8 @@ test('every CLI sample on the router page is defined by the CLI', async () => {
 test('the router page states the limits the source defines', async () => {
   const table = await readCrate('bacnet-network/src/router_table.rs');
   const routes = Number(table.match(/pub const ROUTE_CAP: usize = (\d+);/)[1]);
-  const options = await readCrate('bacnet-network/src/router/options.rs');
-  const queued = Number(options.match(/Each port queues at most (\d+) sends\./)[1]);
+  const queue = await readCrate('bacnet-network/src/router/send_queue.rs');
+  const queued = Number(queue.match(/const CAPACITY: usize = (\d+);/)[1]);
   const start = await readCrate('bacnet-network/src/router/mod.rs');
   const ports = Number(start.match(/Fails if there are no ports or more than (\d+)/)[1]);
   const { body } = await page('integrate/router');

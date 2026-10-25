@@ -76,6 +76,22 @@ async fn network_creation_stops_at_ten_thousand_objects() {
     );
     assert_eq!(server.database().read().await.len(), 10_000);
 
+    // The application itself can still add one past the limit.
+    server
+        .database()
+        .write()
+        .await
+        .add(Box::new(
+            AnalogValueObject::new(
+                10_000,
+                "Added by the application",
+                EngineeringUnits::NO_UNITS,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(server.database().read().await.len(), 10_001);
+
     client.stop().await.unwrap();
     server.stop().await.unwrap();
 }

@@ -4,14 +4,17 @@
 #![forbid(unsafe_code)]
 
 #[path = "support/guide_process.rs"]
-mod process;
+mod guide;
+#[path = "support/guide_interactive.rs"]
+mod interactive;
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::primitives::{decode_application_value, encode_property_value};
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
-use process::{Process, WAIT};
+use guide::{Process, WAIT};
+use interactive::Interactive;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::Path;
 use tokio::time::timeout;
@@ -23,7 +26,7 @@ fn binary() -> &'static Path {
 }
 
 /// Wait for the two ready lines and return the address they name.
-async fn ready(child: &Process) -> SocketAddrV4 {
+async fn ready(child: &Interactive) -> SocketAddrV4 {
     let text = wait_for(child, READY).await;
     let lines: Vec<_> = text.lines().collect();
     assert_eq!(lines.len(), 2, "{text}");
@@ -38,7 +41,7 @@ async fn ready(child: &Process) -> SocketAddrV4 {
 }
 
 /// Wait until stdout ends with `tail`, and return all of it.
-async fn wait_for(child: &Process, tail: &str) -> String {
+async fn wait_for(child: &Interactive, tail: &str) -> String {
     let mut stdout = child.stdout();
     let seen = timeout(
         WAIT,
@@ -107,7 +110,7 @@ async fn command_fan(client: &BACnetClient<BipTransport>, device: &[u8], value: 
 
 #[tokio::test]
 async fn a_peer_reads_the_input_and_commands_the_output() {
-    let mut child = Process::interactive(binary(), &[]).unwrap();
+    let mut child = Interactive::start(binary(), &[]).unwrap();
     let address = ready(&child).await;
     let device = mac(address);
     let mut client = client().await;
@@ -189,7 +192,7 @@ async fn a_peer_reads_the_input_and_commands_the_output() {
 
 #[tokio::test]
 async fn end_of_input_also_stops_the_server() {
-    let child = Process::interactive(binary(), &[]).unwrap();
+    let child = Interactive::start(binary(), &[]).unwrap();
     let address = ready(&child).await;
     // No input: finish closes stdin.
     let output = child.finish().await;
