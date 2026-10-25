@@ -38,12 +38,11 @@ fn shared() -> Arc<Shared> {
         NpduLimits::default(),
         PortGroups::default(),
     );
-    Arc::new(Shared {
-        engine: Engine::new(&[port], tokio_clock(), OPTIONS).unwrap(),
-        gate: Arc::new(ControlGate::permissive()),
-        networks: vec![1000],
-        warnings: Default::default(),
-    })
+    Arc::new(Shared::new(
+        Engine::new(&[port], tokio_clock(), OPTIONS).unwrap(),
+        Arc::new(ControlGate::permissive()),
+        vec![1000],
+    ))
 }
 
 struct ReadyPort {

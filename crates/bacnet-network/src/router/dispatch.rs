@@ -14,11 +14,11 @@
 use std::sync::Arc;
 
 use bacnet_encoding::npdu::Npdu;
-use bacnet_npdu::MAX_MAC_LEN;
+use bacnet_npdu::{MAX_MAC_LEN, NpduLimits};
 use bacnet_router_core::PortId;
 use bacnet_router_core::router::{Discard, Frame, Received};
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, warn};
 
 use super::actions::drain;
@@ -40,9 +40,25 @@ pub(super) struct Shared {
     pub(super) networks: Vec<u16>,
     /// The throttles for the engine's per-frame warnings.
     pub(super) warnings: EngineWarnings,
+    /// The smallest NPDU limits among the ports, as they change: what the
+    /// router's application ports report (#2070).
+    pub(super) application_limits: watch::Sender<NpduLimits>,
 }
 
 impl Shared {
+    /// The state the dispatch tasks share, for `engine` on ports with
+    /// `networks`, gated by `gate`.
+    pub(super) fn new(engine: Engine, gate: Arc<ControlGate>, networks: Vec<u16>) -> Self {
+        let limits = super::limits::smallest(engine.lock().ports());
+        Self {
+            engine,
+            gate,
+            networks,
+            warnings: EngineWarnings::default(),
+            application_limits: watch::Sender::new(limits),
+        }
+    }
+
     /// Queue the startup announcements and send them on `send_txs`.
     pub(super) fn announce(&self, send_txs: &[send_queue::Sender]) {
         let mut router = self.engine.lock();
