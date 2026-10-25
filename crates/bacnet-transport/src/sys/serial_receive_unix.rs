@@ -3,9 +3,12 @@ use crate::mstp::monitor::MonitorAdmissionError;
 use bacnet_types::error::Error;
 
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::task::{Context, Poll};
+use tokio::io::unix::AsyncFd;
+use tokio::io::{Interest, ReadBuf};
 
 #[derive(Debug)]
 pub(crate) struct Input {
@@ -98,18 +101,78 @@ impl AsRawFd for Input {
         self.file.as_ref().expect("live serial input").as_raw_fd()
     }
 }
-impl io::Read for Input {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.file
+impl Input {
+    /// Read into `bytes` through the open file.
+    fn read(&self, bytes: &mut [u8]) -> io::Result<usize> {
+        let mut file = self
+            .file
             .as_ref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "closed serial input"))?
-            .read(bytes)
-            .map_err(|error| phase(error, "read input"))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "closed serial input"))?;
+        file.read(bytes).map_err(|error| phase(error, "read input"))
     }
 }
 impl Drop for Input {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+/// An [`Input`] registered with Tokio's reactor for read readiness.
+///
+/// Tokio's `AsyncFd::register` is unsafe (RUSTSEC-2026-0386): the reactor
+/// keeps the descriptor number, so the descriptor must stay open, on the
+/// same file description, while it is registered. This type owns the
+/// `AsyncFd` and never hands out the `Input` mutably, so nothing can close it
+/// or swap it for another while it is registered; [`close`](Self::close)
+/// deregisters before it closes.
+#[derive(Debug)]
+pub(crate) struct AsyncInput(AsyncFd<Input>);
+
+impl AsyncInput {
+    /// Register `input` for read readiness. On failure the input comes back,
+    /// still open, with the reactor's error.
+    pub(crate) fn register(input: Input) -> Result<Self, (Input, io::Error)> {
+        // SAFETY: `input` is open (only `close` empties it), and its file
+        // closes only in `close` or its drop, both of which need it by
+        // `&mut` or by value. The `AsyncFd` owns it and this type hands out
+        // only `&Input`, so neither runs while it is registered: `close`
+        // below takes it back with `into_inner`, which deregisters first, and
+        // `AsyncFd`'s drop deregisters before it drops the input. While open,
+        // `as_raw_fd` returns the same descriptor on every call.
+        unsafe { AsyncFd::register_with_interest(input, Interest::READABLE) }
+            .map(Self)
+            .map_err(|error| error.into_parts())
+    }
+
+    /// The registered input, for tests that inspect its descriptor.
+    #[cfg(test)]
+    pub(crate) fn get_ref(&self) -> &Input {
+        self.0.get_ref()
+    }
+
+    /// Read what is queued into `buf`, or register `cx` for readiness.
+    pub(crate) fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        loop {
+            let mut ready = std::task::ready!(self.0.poll_read_ready(cx))?;
+            match ready.try_io(|input| input.get_ref().read(buf.initialize_unfilled())) {
+                Ok(Ok(count)) => {
+                    buf.advance(count);
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(Err(error)) => return Poll::Ready(Err(error)),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Deregister, then release exclusivity and close the descriptor.
+    pub(crate) fn close(self) -> io::Result<()> {
+        self.0.into_inner().close()
     }
 }
 pub(super) fn check(result: libc::c_int) -> io::Result<()> {

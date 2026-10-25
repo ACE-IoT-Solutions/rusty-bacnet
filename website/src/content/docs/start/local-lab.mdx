@@ -93,6 +93,8 @@ The script prints a **complete command containing the actual server port**. Copy
 
 The printed command sets the CLI's interface to `127.0.0.1` and its local port to `0`, while the target uses the server's assigned port. These are **different sockets**. Do not copy port zero into general discovery or persistent COV recipes.
 
+The server also holds a commandable analog value, `av:1`, so the read, write and relinquish samples in [Write and relinquish deliberately](/rusty-bacnet/guides/safe-writes/) work against it too.
+
 The server stops after the requested duration. Ctrl+C stops it earlier. This is an optional CLI extension of the tutorial; the Python-only round trip above does not require the CLI.
 
 ## When the lab does not pass
@@ -120,7 +122,7 @@ Do not solve a failed local lab by replacing `127.0.0.1` with `0.0.0.0` or a bui
 
 This exercises **one directed BACnet/IP property read** through the native extension, with application-owned sample data and bounded lifecycle handling. It does not establish discovery, routed operation, MS/TP timing, BACnet/SC security, or full conformance.
 
-With v{release}, **all eight tutorial tests and the standalone lab passed on macOS arm64 with CPython 3.14**, using the release's wheel from PyPI. The **v{release} macOS arm64 CLI** also read the served value (`72.5`) and units (`64`) through a separate ephemeral socket. These tests run by hand, not in CI. The results cover these local tutorial flows, not a general wheel/platform matrix or physical-network interoperability.
+With v{release}, **all eight tutorial tests and the standalone lab passed on macOS arm64 with CPython 3.14**, using the release's wheel from PyPI. The **v{release} macOS arm64 CLI** also read the served value (`72.5`) and units (`64`) through a separate ephemeral socket. CI also runs these tests on every change, on Linux x86-64 with development builds of the wheel and the CLI, and runs the guides' CLI samples against this lab. The results cover these local tutorial flows, not a general wheel/platform matrix or physical-network interoperability.
 
 An **earlier release**, whose build is linked under Sources, also passed a Python-only round trip on **Linux x86-64 with CPython 3.13**. That Linux run has not been repeated with v{release}.
 
