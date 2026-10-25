@@ -33,7 +33,7 @@ async fn subscription_retry_classification_uses_typed_failures() {
         let result = subscribe(
             &client,
             &RateCap::new(0),
-            &[2],
+            &CovTarget::local(&[2]),
             1,
             point(),
             Lifetime::new(300, Duration::from_secs(8)),
@@ -49,8 +49,11 @@ async fn subscription_retry_classification_uses_typed_failures() {
     }
 }
 
+/// A routed row subscribes through its router (#1790): a first read the
+/// device never answers is retried as a local one's is, and any other
+/// failure goes on to the subscription, which fails here too.
 #[tokio::test(start_paused = true)]
-async fn routed_first_read_timeout_and_other_failure_never_retry_or_expose_router_mac() {
+async fn routed_rows_subscribe_through_their_router_and_retry_like_local_ones() {
     for reply in [Reply::Silent, Reply::Transport, Reply::SendProtocol] {
         let (client, _) = retry_support::client(reply).await;
         client
@@ -74,18 +77,17 @@ async fn routed_first_read_timeout_and_other_failure_never_retry_or_expose_route
             true,
         )
         .await;
-        assert!(result.mac.is_none());
+        assert_eq!(result.target, Some(CovTarget::routed(&[2], 10, &[3])));
         let Err(refusal) = result.outcome else {
-            panic!("routed row subscribed")
+            panic!("the peer never answers, yet the row subscribed")
         };
-        assert!(
-            !refusal.retryable && !refusal.maybe_subscribed && !refusal.fatal,
-            "{refusal:?}"
-        );
+        assert!(!refusal.maybe_subscribed && !refusal.fatal, "{refusal:?}");
         if matches!(reply, Reply::SendProtocol) {
-            assert_eq!(refusal.reason, "routed device");
+            assert!(!refusal.retryable, "{refusal:?}");
+            assert!(refusal.reason.starts_with("COV refused:"), "{refusal:?}");
         } else {
-            assert!(refusal.reason.starts_with("no answer:"));
+            assert!(refusal.retryable, "{refusal:?}");
+            assert!(refusal.reason.starts_with("no answer:"), "{refusal:?}");
         }
         retry_support::stop(client).await;
     }
@@ -103,7 +105,7 @@ async fn missing_device_is_fatal_without_retry_or_cancellation() {
         true,
     )
     .await;
-    assert!(result.mac.is_none());
+    assert!(result.target.is_none());
     let Err(refusal) = result.outcome else {
         panic!("missing device subscribed")
     };

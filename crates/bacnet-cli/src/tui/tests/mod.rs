@@ -104,6 +104,7 @@ mod sc_screen;
 mod site;
 mod values;
 mod watch;
+mod watch_routed;
 mod watch_rows;
 mod writes;
 mod writes_app;

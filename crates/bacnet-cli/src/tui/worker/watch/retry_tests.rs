@@ -2,11 +2,16 @@
 
 use super::*;
 
+/// The lab device, on this network.
+fn lab() -> CovTarget {
+    CovTarget::local(&[10, 0, 0, 100, 0xBA, 0xC0])
+}
+
 fn failed(maybe_subscribed: bool, fatal: bool) -> Started {
     Started {
         first: None,
         name: None,
-        mac: None,
+        target: None,
         outcome: Err(Refusal {
             reason: "no answer".into(),
             maybe_subscribed,
@@ -21,7 +26,7 @@ fn retrying<'a>(sink: &'a EventSink, options: &'a WatchOptions, ambiguous: bool)
     let mut state = state_with_row(sink, options);
     state.devices.get_mut(&DEVICE).unwrap().ops.clear();
     let row = state.rows.get_mut(&1).unwrap();
-    row.mac = Some(MacAddr::from_slice(&[10, 0, 0, 100, 0xBA, 0xC0]));
+    row.target = Some(lab());
     row.maybe_subscribed = ambiguous;
     state
 }
@@ -35,7 +40,7 @@ fn assert_cancel(state: &State<'_>, expected: bool) {
         let Op::Cancel {
             row,
             point,
-            mac,
+            target,
             managed,
         } = &ops[0]
         else {
@@ -43,7 +48,7 @@ fn assert_cancel(state: &State<'_>, expected: bool) {
         };
         assert_eq!(*row, 1);
         assert_eq!(point.device, DEVICE);
-        assert_eq!(mac.as_slice(), [10, 0, 0, 100, 0xBA, 0xC0]);
+        assert_eq!(*target, lab());
         assert!(managed.is_none());
     }
 }
@@ -168,7 +173,7 @@ async fn successful_retry(shutdown: bool) {
     let (client, requests) = retry_support::client(Reply::Ack).await;
     let managed = Arc::clone(&client)
         .manage_cov_subscription(
-            &[10, 0, 0, 100, 0xBA, 0xC0],
+            lab(),
             1,
             ai(1),
             false,
@@ -186,7 +191,7 @@ async fn successful_retry(shutdown: bool) {
         Started {
             first: None,
             name: None,
-            mac: Some(MacAddr::from_slice(&[10, 0, 0, 100, 0xBA, 0xC0])),
+            target: Some(lab()),
             outcome: Ok(managed),
             refused_rpm: false,
         },
@@ -204,7 +209,7 @@ async fn successful_retry(shutdown: bool) {
         let Op::Cancel {
             row,
             point,
-            mac,
+            target,
             managed,
         } = state
             .devices
@@ -217,7 +222,7 @@ async fn successful_retry(shutdown: bool) {
             panic!("late success was not cancelled")
         };
         assert!(managed.is_some(), "cleanup owns and stops the renewal task");
-        jobs::cancel(&client, &RateCap::new(0), row, point, mac, managed)
+        jobs::cancel(&client, &RateCap::new(0), row, point, target, managed)
             .await
             .unwrap();
         assert_eq!(requests.load(Ordering::Relaxed), 2);

@@ -24,7 +24,7 @@ pub struct CovPropertySubscription {
 }
 
 impl CovPropertySubscription {
-    fn into_request(self) -> SubscribeCOVPropertyRequest {
+    pub(super) fn into_request(self) -> SubscribeCOVPropertyRequest {
         SubscribeCOVPropertyRequest {
             subscriber_process_identifier: self.subscriber_process_identifier,
             monitored_object_identifier: self.monitored_object_identifier,
@@ -38,7 +38,7 @@ impl CovPropertySubscription {
 }
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
-    fn subscribe_cov_request(
+    pub(super) fn subscribe_cov_request(
         subscriber_process_identifier: u32,
         monitored_object_identifier: ObjectIdentifier,
         confirmed: Option<bool>,
@@ -52,7 +52,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
-    async fn send_subscribe_cov_request(
+    pub(super) async fn send_subscribe_cov_request(
         &self,
         target: ConfirmedTarget<'_>,
         request: SubscribeCOVRequest,
@@ -87,7 +87,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
-    async fn send_subscribe_cov_property_request(
+    pub(super) async fn send_subscribe_cov_property_request(
         &self,
         target: ConfirmedTarget<'_>,
         request: SubscribeCOVPropertyRequest,

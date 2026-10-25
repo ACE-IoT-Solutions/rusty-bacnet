@@ -24,11 +24,11 @@ const LAB_MAC: [u8; 6] = [10, 0, 0, 100, 0xBA, 0xC0];
 const SUBSCRIBE_COV: u8 = 5;
 const SUBSCRIBE_COV_PROPERTY: u8 = 28;
 
-fn ai(instance: u32) -> ObjectIdentifier {
+pub(super) fn ai(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
 }
 
-fn options(lifetime: u32, poll_secs: u64, max_rate: u32) -> SessionOptions {
+pub(super) fn options(lifetime: u32, poll_secs: u64, max_rate: u32) -> SessionOptions {
     SessionOptions {
         max_rate,
         watch: WatchOptions {
@@ -50,14 +50,14 @@ async fn lab_site(server: Server, options: SessionOptions) -> Site {
 }
 
 /// Type `line` on the command bar and run it.
-async fn command(site: &mut Site, line: &str) {
+pub(super) async fn command(site: &mut Site, line: &str) {
     site.press(KeyCode::Char(':')).await;
     type_text(&mut site.app, line);
     site.press(KeyCode::Enter).await;
 }
 
 /// Run until every row has left `Starting`.
-async fn settle(site: &mut Site) {
+pub(super) async fn settle(site: &mut Site) {
     site.pump_until(|app| {
         app.watch
             .rows()
@@ -67,7 +67,7 @@ async fn settle(site: &mut Site) {
     .await;
 }
 
-fn sources(site: &Site) -> Vec<Source> {
+pub(super) fn sources(site: &Site) -> Vec<Source> {
     site.app
         .watch
         .rows()

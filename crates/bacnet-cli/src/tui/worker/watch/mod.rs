@@ -21,10 +21,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_client::client::{
-    BACnetClient, ManagedCOVSubscription, ManagedCOVSubscriptionEvent, ReceivedCOVNotification,
+    BACnetClient, CovTarget, ManagedCOVSubscription, ManagedCOVSubscriptionEvent,
+    ReceivedCOVNotification,
 };
 use bacnet_transport::port::TransportPort;
-use bacnet_types::MacAddr;
 use bacnet_types::error::Error;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
@@ -111,7 +111,8 @@ enum Mode {
 struct Row {
     point: Point,
     mode: Mode,
-    mac: Option<MacAddr>,
+    /// Where its device is, once a start has looked it up.
+    target: Option<CovTarget>,
     /// Removed while starting: cancel once the start job ends.
     removing: bool,
     /// A subscription may exist although the row isn't subscribed.
@@ -131,7 +132,7 @@ enum Op {
     Cancel {
         row: RowId,
         point: Point,
-        mac: MacAddr,
+        target: CovTarget,
         managed: Option<ManagedCOVSubscription>,
     },
 }
@@ -220,7 +221,7 @@ impl<'s> State<'s> {
                     Row {
                         point,
                         mode: Mode::Queued,
-                        mac: None,
+                        target: None,
                         removing: false,
                         maybe_subscribed: false,
                         resubscribe: None,
@@ -240,7 +241,7 @@ impl<'s> State<'s> {
         &mut self,
         row: RowId,
         point: Point,
-        mac: MacAddr,
+        target: CovTarget,
         managed: Option<ManagedCOVSubscription>,
     ) {
         self.cancels += 1;
@@ -248,7 +249,7 @@ impl<'s> State<'s> {
         device.ops.push_back(Op::Cancel {
             row,
             point,
-            mac,
+            target,
             managed,
         });
     }
@@ -281,8 +282,8 @@ impl<'s> State<'s> {
             _ if row.maybe_subscribed => Some(None),
             _ => None,
         };
-        if let (Some(managed), Some(mac)) = (held, row.mac) {
-            self.cancel(id, row.point, mac, managed);
+        if let (Some(managed), Some(target)) = (held, row.target) {
+            self.cancel(id, row.point, target, managed);
         }
     }
 
@@ -374,7 +375,7 @@ impl<'s> State<'s> {
         };
         // A retry can fail before discovering an address; retain the one
         // needed to cancel a possible subscription from an earlier attempt.
-        row.mac = started.mac.or_else(|| row.mac.take());
+        row.target = started.target.or_else(|| row.target.take());
         let read_first = started.first.is_some();
         if let Some((reading, format)) = started.first {
             row.format = format;
@@ -387,12 +388,12 @@ impl<'s> State<'s> {
         }
         let leaving = row.removing || self.shutting_down;
         let point = row.point;
-        let mac = row.mac.clone();
+        let target = row.target.clone();
         match started.outcome {
             Ok(managed) if leaving => {
                 self.rows.remove(&id);
-                if let Some(mac) = mac {
-                    self.cancel(id, point, mac, Some(managed));
+                if let Some(target) = target {
+                    self.cancel(id, point, target, Some(managed));
                 }
             }
             Ok(managed) => {
@@ -410,8 +411,8 @@ impl<'s> State<'s> {
             Err(refusal) if leaving || refusal.fatal => {
                 let cancel = row.maybe_subscribed || refusal.maybe_subscribed;
                 self.rows.remove(&id);
-                if let (true, Some(mac)) = (cancel, mac) {
-                    self.cancel(id, point, mac, None);
+                if let (true, Some(target)) = (cancel, target) {
+                    self.cancel(id, point, target, None);
                 }
                 if !leaving {
                     self.source(id, Source::Failed(refusal.reason));
@@ -598,10 +599,10 @@ impl<'s> State<'s> {
                 Some(Op::Cancel {
                     row,
                     point,
-                    mac,
+                    target,
                     managed,
                 }) => Box::pin(async move {
-                    let result = jobs::cancel(client, rate, row, point, mac, managed).await;
+                    let result = jobs::cancel(client, rate, row, point, target, managed).await;
                     Done::Cancelled {
                         row,
                         device: id,

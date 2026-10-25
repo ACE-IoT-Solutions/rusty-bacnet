@@ -5,6 +5,7 @@ use bacnet_client::client::COVNotificationDelivery;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::COVNotificationRequest;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;

@@ -5,7 +5,8 @@
 //! list never has more than one confirmed request outstanding to a device.
 //! Every request first takes a slot from the shared [`RateCap`]. The
 //! managed subscription's own renewals are sent by its task, outside both
-//! limits, once per lifetime.
+//! limits, once per lifetime. A routed device is subscribed to like a local
+//! one, through its router (#1790).
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -13,10 +14,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use bacnet_client::client::{
-    BACnetClient, CovPropertySubscription, ManagedCOVSubscription, ManagedCOVSubscriptionOptions,
+    BACnetClient, CovPropertySubscription, CovTarget, ManagedCOVSubscription,
+    ManagedCOVSubscriptionOptions,
 };
 use bacnet_transport::port::TransportPort;
-use bacnet_types::MacAddr;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{ErrorClass, PropertyIdentifier};
 use bacnet_types::error::{Error, RemoteError};
@@ -77,8 +78,9 @@ pub(crate) struct Started {
     pub(crate) first: Option<(Reading, RowFormat)>,
     /// The object's Object_Name, when the first read returned it.
     pub(crate) name: Option<String>,
-    /// The device's MAC, for a device on this network.
-    pub(crate) mac: Option<MacAddr>,
+    /// Where the device is, to subscribe and cancel; `None` when it isn't
+    /// in the device table.
+    pub(crate) target: Option<CovTarget>,
     /// The subscription, or why there is none.
     pub(crate) outcome: Result<ManagedCOVSubscription, Refusal>,
     /// The device refused RPM.
@@ -98,7 +100,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         return Started {
             first: None,
             name: None,
-            mac: None,
+            target: None,
             outcome: Err(Refusal {
                 reason: format!("device {} is not in the device table", point.device),
                 maybe_subscribed: false,
@@ -158,40 +160,21 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         Err(_) => None,
     };
     let refused_rpm = rpm && !reader.rpm;
+    let target = CovTarget::of_device(&device);
     let outcome = match read {
         // Subscribing would only time out too.
         Err(Halt::Device(error)) if unreachable(&error) => Err(Refusal {
             reason: format!("no answer: {error}"),
             maybe_subscribed: false,
-            retryable: device.source_network.is_none(),
+            retryable: true,
             fatal: false,
         }),
-        _ if device.source_network.is_some() => Err(Refusal {
-            reason: "routed device".into(),
-            maybe_subscribed: false,
-            retryable: false,
-            fatal: false,
-        }),
-        _ => {
-            subscribe(
-                client,
-                rate,
-                device.mac_address.as_slice(),
-                row,
-                point,
-                lifetime,
-            )
-            .await
-        }
+        _ => subscribe(client, rate, &target, row, point, lifetime).await,
     };
-    let mac = device
-        .source_network
-        .is_none()
-        .then_some(device.mac_address);
     Started {
         first,
         name,
-        mac,
+        target: Some(target),
         outcome,
         refused_rpm,
     }
@@ -243,7 +226,7 @@ async fn state_texts<T: TransportPort + 'static>(
 async fn subscribe<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
     rate: &RateCap,
-    mac: &[u8],
+    target: &CovTarget,
     row: RowId,
     point: Point,
     lifetime: Lifetime,
@@ -252,7 +235,14 @@ async fn subscribe<T: TransportPort + 'static>(
     rate.acquire().await;
     let managed = if point.whole_object() {
         Arc::clone(client)
-            .manage_cov_subscription(mac, row, point.object, false, lifetime.secs, options)
+            .manage_cov_subscription(
+                target.clone(),
+                row,
+                point.object,
+                false,
+                lifetime.secs,
+                options,
+            )
             .await
     } else {
         let subscription = CovPropertySubscription {
@@ -265,7 +255,7 @@ async fn subscribe<T: TransportPort + 'static>(
             cov_increment: None,
         };
         Arc::clone(client)
-            .manage_cov_property_subscription(mac, subscription, options)
+            .manage_cov_property_subscription(target.clone(), subscription, options)
             .await
     };
     managed.map_err(|error| Refusal {
@@ -278,25 +268,39 @@ async fn subscribe<T: TransportPort + 'static>(
 
 /// Cancel row `row`'s subscription: stop renewing it, then send a
 /// subscription with neither a lifetime nor the confirmed flag, which the
-/// device takes as a cancellation (Clauses 13.14.2 and 13.15.2).
+/// device takes as a cancellation (Clauses 13.14.2 and 13.15.2). A local
+/// device is sent it at the MAC it was subscribed at; a routed one through
+/// the device table's route to it.
 pub(crate) async fn cancel<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     rate: &RateCap,
     row: RowId,
     point: Point,
-    mac: MacAddr,
+    target: CovTarget,
     managed: Option<ManagedCOVSubscription>,
 ) -> Result<(), Error> {
     if let Some(managed) = managed {
         managed.stop().await;
     }
     rate.acquire().await;
-    if point.whole_object() {
-        client.unsubscribe_cov(&mac, row, point.object).await
-    } else {
-        client
-            .unsubscribe_cov_property(&mac, row, point.object, point.property, None)
-            .await
+    let (object, property) = (point.object, point.property);
+    match (target, point.whole_object()) {
+        (CovTarget::Local { mac }, true) => client.unsubscribe_cov(&mac, row, object).await,
+        (CovTarget::Local { mac }, false) => {
+            client
+                .unsubscribe_cov_property(&mac, row, object, property, None)
+                .await
+        }
+        (_, true) => {
+            client
+                .unsubscribe_cov_to_device(point.device, row, object)
+                .await
+        }
+        (_, false) => {
+            client
+                .unsubscribe_cov_property_to_device(point.device, row, object, property, None)
+                .await
+        }
     }
 }
 
