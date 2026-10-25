@@ -11,7 +11,7 @@ import enum
 import ipaddress
 import os
 import pathlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
 
 UNSPECIFIED: Literal[255]
@@ -102,6 +102,10 @@ class ObjectType:
     @staticmethod
     def from_raw(value: int) -> ObjectType: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"ANALOG_INPUT"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -611,6 +615,10 @@ class PropertyIdentifier:
     @staticmethod
     def from_raw(value: int) -> PropertyIdentifier: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"ACKED_TRANSITIONS"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1203,6 +1211,10 @@ class AuditOperation:
     @staticmethod
     def from_raw(value: int) -> AuditOperation: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"READ"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1221,6 +1233,10 @@ class EnableDisable:
     @staticmethod
     def from_raw(value: int) -> EnableDisable: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"ENABLE"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1244,6 +1260,10 @@ class ReinitializedState:
     @staticmethod
     def from_raw(value: int) -> ReinitializedState: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"COLDSTART"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1263,6 +1283,10 @@ class Segmentation:
     @staticmethod
     def from_raw(value: int) -> Segmentation: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"BOTH"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1284,6 +1308,10 @@ class EventState:
     @staticmethod
     def from_raw(value: int) -> EventState: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"NORMAL"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1302,6 +1330,10 @@ class AcknowledgmentFilter:
     @staticmethod
     def from_raw(value: int) -> AcknowledgmentFilter: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"ALL"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1322,6 +1354,10 @@ class EnrollmentSummaryEventStateFilter:
     @staticmethod
     def from_raw(value: int) -> EnrollmentSummaryEventStateFilter: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"OFFNORMAL"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1357,6 +1393,10 @@ class EventType:
     @staticmethod
     def from_raw(value: int) -> EventType: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"CHANGE_OF_BITSTRING"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1374,6 +1414,10 @@ class MessagePriority:
     @staticmethod
     def from_raw(value: int) -> MessagePriority: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"NORMAL"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1396,6 +1440,10 @@ class VTClass:
     @staticmethod
     def from_raw(value: int) -> VTClass: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"DEFAULT_TERMINAL"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1421,6 +1469,10 @@ class LifeSafetyOperation:
     @staticmethod
     def from_raw(value: int) -> LifeSafetyOperation: ...
     def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"NONE"``), or None for a value without one."""
+        ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -1843,10 +1895,49 @@ class AuditNotification(TypedDict):
     result: tuple[ErrorClass, ErrorCode] | None
 
 
+class AtomicReadFileStreamResult(TypedDict):
+    """What ``atomic_read_file`` returns for stream access."""
+
+    access_method: Literal["stream"]
+    end_of_file: bool
+    start_position: int
+    data: bytes
+
+
+class AtomicReadFileRecordResult(TypedDict):
+    """What ``atomic_read_file`` returns for record access."""
+
+    access_method: Literal["record"]
+    end_of_file: bool
+    start_record: int
+    record_count: int
+    records: list[bytes]
+
+
+AtomicReadFileResult = Union[AtomicReadFileStreamResult, AtomicReadFileRecordResult]
+
+
+class AtomicWriteFileStreamResult(TypedDict):
+    """What ``atomic_write_file`` returns for stream access."""
+
+    access_method: Literal["stream"]
+    start_position: int
+
+
+class AtomicWriteFileRecordResult(TypedDict):
+    """What ``atomic_write_file`` returns for record access."""
+
+    access_method: Literal["record"]
+    start_record: int
+
+
+AtomicWriteFileResult = Union[AtomicWriteFileStreamResult, AtomicWriteFileRecordResult]
+
+
 class AuditLogStatusDatum(TypedDict):
     kind: Literal["log_status"]
-    # BACnetLogStatus flags: 1 log-disabled, 2 buffer-purged, 4 log-interrupted.
-    log_status: int
+    # BACnetLogStatus, named LOG_DISABLED, BUFFER_PURGED, LOG_INTERRUPTED.
+    log_status: BitString
 
 
 class AuditNotificationDatum(TypedDict):
@@ -1876,6 +1967,71 @@ class AuditLogQueryAck(TypedDict):
     audit_log: ObjectIdentifier
     records: list[AuditLogRecordResult]
     no_more_items: bool
+
+
+class BitString:
+    """A BACnet bit string (#2080): the wire form plus its bits and names.
+
+    ``bits`` has one bool per bit, bit 0 first. ``names`` lists the set bits
+    by their constant names (``"IN_ALARM"``, ``"TO_OFFNORMAL"``) when the bit
+    string's type is known from where it was read, or is None when it isn't.
+    Two bit strings are equal when their wire forms are; ``names`` doesn't
+    take part.
+    """
+
+    def __init__(
+        self,
+        unused_bits: int,
+        data: bytes,
+        property: Optional[PropertyIdentifier] = None,
+    ) -> None:
+        """A bit string from its wire form. With ``property``, the bits are
+        named as that property's bit-string type names them (Status_Flags,
+        Event_Enable, Acked_Transitions, Limit_Enable,
+        Protocol_Services_Supported, Protocol_Object_Types_Supported).
+        ``unused_bits`` is 0 to 7, and 0 when ``data`` is empty; anything
+        else raises ValueError."""
+        ...
+    @property
+    def unused_bits(self) -> int:
+        """How many trailing bits of the final octet of ``data`` are padding."""
+        ...
+    @property
+    def data(self) -> bytes:
+        """The octets as carried on the wire."""
+        ...
+    @property
+    def bits(self) -> list[bool]:
+        """One bool per bit, bit 0 first."""
+        ...
+    @property
+    def names(self) -> list[str] | None:
+        """The set bits by name when the type is known, else None. A set bit
+        without a name (a vendor or reserved position) is left out."""
+        ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[bool]:
+        """The bits as bools, bit 0 first."""
+        ...
+    def __getitem__(self, index: int) -> bool:
+        """Bit ``index`` (negative counts from the last bit); IndexError
+        past the end."""
+        ...
+    def __repr__(self) -> str:
+        """``BitString(5, b'\\xa0')``: ``eval`` rebuilds an equal value.
+        ``names`` isn't shown."""
+        ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __reduce__(self) -> tuple[Any, tuple[int, bytes, list[str] | None]]: ...
+
+
+def enum_name(property: PropertyIdentifier, value: int) -> str | None:
+    """The name of enumerated ``value`` as read from ``property``
+    (``enum_name(PropertyIdentifier.EVENT_STATE, 3) == "HIGH_LIMIT"``), or
+    None when the property's enumeration isn't known from the property alone
+    (Present_Value, vendor properties) or the number has no name in it."""
+    ...
 
 
 class PropertyValue:
@@ -2043,11 +2199,22 @@ class PropertyValue:
     @property
     def value(self) -> Any:
         """The Python-native value (int, float, str, bytes, bool, dict, tuple,
-        ObjectIdentifier, list, or None); ``application_data`` is ``bytes``,
+        ObjectIdentifier, BitString, list, or None); ``application_data`` is ``bytes``,
         and a typed constructed element the form its typed write takes, or
         the form docs/python-api.md gives it. A date is ``(year, month, day,
         day_of_week)`` with the full year, or 255 for an unspecified year,
-        as in every other date the binding reads."""
+        as in every other date the binding reads. A bit string is a
+        ``BitString``, named when the value was read from a property of
+        known bit-string type."""
+        ...
+
+    @property
+    def name(self) -> str | None:
+        """The name of an enumerated value read from a property whose
+        enumeration is known (``"HIGH_LIMIT"`` for an Event_State of 3), else
+        None. ``value`` stays the number. Values built with the constructors
+        carry no property, so their name is None; copies and pickles of a
+        read value keep it."""
         ...
 
     @property
@@ -2428,17 +2595,17 @@ def decode_log_records(result: ReadRangeResult) -> list[dict[str, Any]]:
 
     Each record is a dict with ``timestamp`` as a ``(date, time)`` pair and
     ``datum``, a dict whose ``kind`` names the choice and whose key of the
-    same name holds its value: ``log_status`` (bits: 0 log-disabled, 1
-    buffer-purged, 2 log-interrupted), ``boolean``, ``real``,
-    ``enumerated``, ``unsigned``, ``signed``, ``bitstring`` (``(unused_bits,
-    bytes)``), ``null`` (no value), ``failure`` (``(ErrorClass,
+    same name holds its value: ``log_status`` (a ``BitString`` naming
+    ``LOG_DISABLED``, ``BUFFER_PURGED``, ``LOG_INTERRUPTED``), ``boolean``,
+    ``real``, ``enumerated``, ``unsigned``, ``signed``, ``bitstring`` (a
+    ``BitString`` of no known type), ``null`` (no value), ``failure`` (``(ErrorClass,
     ErrorCode)`` members), ``time_change`` (seconds), ``any`` (the value's encoding),
     ``values`` (a Trend Log Multiple record's list of such dicts),
     ``notification`` (an Event Log record's event notification, its
     ``event_values`` as their encoding) or ``audit_notification`` (an Audit
     Log record, as ``audit_log_query`` shows it). A Trend Log record adds
-    ``status_flags`` (bits: 0 in-alarm, 1 fault, 2 overridden, 3
-    out-of-service), or None.
+    ``status_flags`` (a ``BitString`` naming ``IN_ALARM``, ``FAULT``,
+    ``OVERRIDDEN``, ``OUT_OF_SERVICE``), or None.
 
     Raises ValueError for a result that isn't a log's Log_Buffer, or whose
     item data doesn't decode as ``item_count`` records, naming the first
@@ -3640,13 +3807,15 @@ class BACnetClient:
         initial_values: Optional[
             list[tuple[PropertyIdentifier, PropertyValue, Optional[int], Optional[int]]]
         ] = None,
-    ) -> Awaitable[bytes]:
+    ) -> Awaitable[ObjectIdentifier]:
         """Create an object on a remote device (CreateObject service).
 
         ``object_specifier`` is an ``ObjectType`` (server assigns instance) or
         ``ObjectIdentifier`` (specific instance). ``initial_values`` is
         ``[(property_id, value, priority, array_index), ...]``.
-        Returns the raw CreateObject-ACK response bytes. A device error raises
+        Returns the created object's identifier from the CreateObject-ACK; an
+        acknowledgment that doesn't decode raises BacnetError (the device may
+        still have created the object). A device error raises
         BacnetProtocolError with first_failed_element_number set when the
         device answers with a CreateObject-Error.
         """
@@ -3719,7 +3888,8 @@ class BACnetClient:
         """Get alarm summary from a remote device.
 
         Returns ``[{"object_id": ObjectIdentifier, "alarm_state": EventState,
-        "acknowledged_transitions": {"unused_bits": int, "data": bytes}}, ...]``.
+        "acknowledged_transitions": BitString}, ...]``, the bit string naming
+        ``TO_OFFNORMAL``, ``TO_FAULT`` and ``TO_NORMAL``.
         """
         ...
 
@@ -3819,9 +3989,13 @@ class BACnetClient:
         requested_octet_count: int = 0,
         start_record: int = 0,
         requested_record_count: int = 0,
-    ) -> Awaitable[bytes]:
+    ) -> Awaitable[AtomicReadFileResult]:
         """Read from a file object. ``access_method`` is ``"stream"`` or ``"record"``.
-        Returns raw response bytes."""
+        Returns the decoded acknowledgment: ``access_method``, ``end_of_file``,
+        then ``start_position`` and ``data`` for stream access, or
+        ``start_record``, ``record_count`` and ``records`` for record access.
+        An acknowledgment in the other access method, or with more octets or
+        records than requested, raises BacnetError."""
         ...
 
     def atomic_write_file(
@@ -3834,9 +4008,12 @@ class BACnetClient:
         start_record: int = 0,
         record_count: int = 0,
         file_record_data: Optional[list[bytes]] = None,
-    ) -> Awaitable[bytes]:
+    ) -> Awaitable[AtomicWriteFileResult]:
         """Write to a file object. ``access_method`` is ``"stream"`` or ``"record"``.
-        Returns raw response bytes."""
+        Returns the decoded acknowledgment: ``access_method``, then
+        ``start_position`` for stream access or ``start_record`` for record
+        access, where the device says the write took place. An
+        acknowledgment in the other access method raises BacnetError."""
         ...
 
     # --- List manipulation ---
@@ -6326,7 +6503,7 @@ class ReadRangeResult(TypedDict):
     object_id: ObjectIdentifier
     property_id: PropertyIdentifier
     array_index: int | None
-    result_flags: tuple[bool, bool, bool]
+    result_flags: BitString
     item_count: int
     item_data: bytes
     first_sequence_number: int | None
@@ -6363,7 +6540,7 @@ class LogPage(TypedDict):
     """
     records: list[dict[str, Any]]
     first_sequence_number: int | None
-    result_flags: tuple[bool, bool, bool]
+    result_flags: BitString
     gap: LogGap | None
     violations: list[str]
     next: LogCursor
