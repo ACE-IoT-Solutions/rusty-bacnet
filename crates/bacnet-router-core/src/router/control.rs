@@ -65,7 +65,9 @@ impl<
             return self.forward(at, npdu, &route, host);
         }
         match kind {
-            NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, host),
+            NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK => {
+                self.who_is_router(at, npdu, options, host)
+            }
             NetworkMessageType::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
             NetworkMessageType::I_COULD_BE_ROUTER_TO_NETWORK => {
                 self.i_could_be_router(at, npdu, options, host)
@@ -181,12 +183,22 @@ impl<
     /// SNET and SADR, and no DNET. Scoped to one reached through the
     /// arrival port, it is left to the router there: the clause searches
     /// only for a network the table lacks. Network 0 is refused.
+    ///
+    /// One whose SNET and SADR name the router itself is its own search
+    /// come back round a loop, and is dropped (#2021). Nothing else bounds
+    /// a relayed one: it has no DNET, so no hop count. With
+    /// [`Options::duplicates`] a relay is also dropped when it repeats one
+    /// from the same origin seen within the time to live (#2020).
     fn who_is_router<'f>(
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
+        options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
+        if self.dropped_as_own(npdu) {
+            return Received::Discarded(Discard::OwnSource);
+        }
         let network = match WhoIsRouter::parse(npdu.payload) {
             Err(_) | Ok(WhoIsRouter::Network(0)) => return self.bad_message(),
             Ok(WhoIsRouter::All) => {
@@ -203,16 +215,17 @@ impl<
             Some(_) => return Received::Handled,
             None => {}
         }
+        let kind = NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK;
+        if self.repeated_relay(at, npdu, kind, options) {
+            return Received::Discarded(Discard::Duplicate);
+        }
         let relay = Npdu {
             destination: None,
-            source: npdu.source.or(Some(Address {
-                network: at.network,
-                mac: at.source,
-            })),
+            source: Some(origin(at, npdu)),
             vendor_id: None,
             ..*npdu
         };
-        let kind = Kind::Relay(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK);
+        let kind = Kind::Relay(kind);
         if self.write_fan_out(&relay, kind, at.port, host) {
             Received::Handled
         } else {
@@ -220,14 +233,14 @@ impl<
         }
     }
 
-    /// Whether a network message the router passes on as a fresh one, with
-    /// no origin, repeats one seen within the duplicate time to live
-    /// ([`Options::duplicates`], #1810); if so, it is counted. Nothing in
-    /// such a message bounds its travel: it has no DNET, so no hop count
-    /// (Clause 6.2.3), and the router passes it on whether or not it
-    /// changed the table (Clauses 6.6.3.3, 6.6.3.6, 6.6.3.7). Around a
-    /// loop, which Clause 4.2's single path rules out but a misconfigured
-    /// site can have, it would circulate for good.
+    /// Whether a network message the router would pass on repeats one seen
+    /// within the duplicate time to live ([`Options::duplicates`], #1810,
+    /// #2020); if so, it is counted. Nothing in such a message bounds its
+    /// travel: it has no DNET, so no hop count (Clause 6.2.3), and the
+    /// router passes it on whether or not it changed the table (Clauses
+    /// 6.6.3.2, 6.6.3.3, 6.6.3.6, 6.6.3.7). Around a loop, which Clause
+    /// 4.2's single path rules out but a misconfigured site can have, it
+    /// would circulate for good.
     ///
     /// An I-Am-Router is keyed by its data alone, under network 0xFFFF,
     /// which no origin's network can be. A Router-Busy or Router-Available
@@ -236,11 +249,13 @@ impl<
     /// forgets its opposite from the same sender, at most
     /// [`Duplicates::RESET_LIMIT`](super::Duplicates::RESET_LIMIT) times
     /// within one time to live (the module docs of `duplicates` say more).
+    /// A Who-Is-Router, relayed with the SNET and SADR of the node that
+    /// asked, is keyed by that origin, as a global broadcast is.
     fn repeated_relay(
         &mut self,
         at: &Arrival<'_>,
+        npdu: &Npdu<'_>,
         kind: NetworkMessageType,
-        data: &[u8],
         options: &Options,
     ) -> bool {
         let Some(duplicates) = options.duplicates else {
@@ -257,9 +272,14 @@ impl<
         };
         let (network, source) = match opposite {
             Some(_) => (at.network, at.source),
+            None if kind == NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK => {
+                let origin = origin(at, npdu);
+                (origin.network, origin.mac)
+            }
             None => (GLOBAL_NETWORK, &[][..]),
         };
-        let (tag, now, ttl) = (kind.to_raw(), at.now, duplicates.ttl);
+        let (tag, data) = (kind.to_raw(), npdu.payload);
+        let (now, ttl) = (at.now, duplicates.ttl);
         let repeat = match opposite {
             Some(opposite) => {
                 let opposite = opposite.to_raw();
@@ -313,7 +333,7 @@ impl<
             return Received::Discarded(Discard::Denied);
         }
         let kind = NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
-        if self.repeated_relay(at, kind, npdu.payload, options) {
+        if self.repeated_relay(at, npdu, kind, options) {
             return Received::Discarded(Discard::Duplicate);
         }
         let mut claimed = Claimed::new();
@@ -503,7 +523,7 @@ impl<
         } else {
             NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
         };
-        if self.repeated_relay(at, kind, npdu.payload, options) {
+        if self.repeated_relay(at, npdu, kind, options) {
             return Received::Discarded(Discard::Duplicate);
         }
         let deadline = at.now + options.timing.busy_for;
@@ -614,6 +634,15 @@ impl<const R: usize> Claimed<R> {
             }
         }
     }
+}
+
+/// Who first sent `npdu`: its SNET and SADR, or, with none, the arrival
+/// network and link source, the address a relay adds (Clause 6.5.4).
+fn origin<'f>(at: &Arrival<'f>, npdu: &Npdu<'f>) -> Address<'f> {
+    npdu.source.unwrap_or(Address {
+        network: at.network,
+        mac: at.source,
+    })
 }
 
 /// Whether a message of `class` with no networks covers every network its
