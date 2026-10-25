@@ -71,8 +71,9 @@ async fn no_configuration_lists_a_write_tool() {
     }
 }
 
-/// Passive mode has no client at all: the discovery table is empty, a
-/// Who-Is is refused, and a read is refused as passive.
+/// Passive mode has no client at all: discovery lists by default (an
+/// empty table, said plainly), a Who-Is is refused, and a read tool isn't
+/// listed, so calling it is a protocol error.
 #[tokio::test(start_paused = true)]
 async fn passive_mode_sends_nothing() {
     let policy = Policy {
@@ -83,13 +84,19 @@ async fn passive_mode_sends_nothing() {
         Agent::connect(McpServer::<BipTransport>::new(None, policy, "tester"));
     agent.initialize().await;
     let table = agent
-        .call("bacnet_discover", json!({ "send": false }))
+        .call("bacnet_discover", json!({ "range": "1-2" }))
         .await;
     assert_eq!(table["isError"], json!(false), "{table}");
     assert_eq!(table["structuredContent"]["devices"], json!([]));
     assert_eq!(table["structuredContent"]["sent"], json!(false));
+    assert!(
+        table["structuredContent"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("already heard")
+    );
     let who_is = agent
-        .call("bacnet_discover", json!({ "range": "1-2" }))
+        .call("bacnet_discover", json!({ "send": true, "range": "1-2" }))
         .await;
     assert_eq!(
         who_is["structuredContent"]["reason"],
@@ -97,17 +104,14 @@ async fn passive_mode_sends_nothing() {
         "{who_is}"
     );
     let read = agent
-        .call(
-            "bacnet_read",
-            json!({ "device": "1", "reads": [{ "object": "ai:1" }] }),
+        .request(
+            "tools/call",
+            json!({ "name": "bacnet_read",
+                    "arguments": { "device": "1", "reads": [{ "object": "ai:1" }] } }),
         )
         .await;
-    assert_eq!(
-        read["structuredContent"]["reason"],
-        json!("passive"),
-        "{read}"
-    );
-    for result in [&table, &who_is, &read] {
+    assert_eq!(read["error"]["code"], json!(-32602), "{read}");
+    for result in [&table, &who_is] {
         assert_eq!(result["structuredContent"]["cost"]["requests"], json!(0));
     }
     drop(agent);
@@ -270,7 +274,11 @@ async fn hostile_device_text_comes_back_enveloped() {
     assert!(text.contains("hxxps://evil.example/x"), "{text}");
     assert!(!text.contains("https://"));
     assert!(
-        !text.chars().any(|ch| ch.is_control() || ch == '\u{202E}'),
+        !text.chars().any(|ch| ch.is_control()
+            || ch == '\u{2028}'
+            || crate::untrusted::HIDDEN
+                .iter()
+                .any(|&(l, h)| (l..=h).contains(&ch))),
         "{text:?}"
     );
     let display = &row["value"]["display"];
@@ -308,10 +316,11 @@ async fn the_policy_limits_reach_before_sending() {
         json!("device-not-allowed"),
         "{read}"
     );
+    // With the devices named, a Who-Is must ask inside them.
     let broad = lab.agent.call("bacnet_discover", json!({})).await;
     assert_eq!(
         broad["structuredContent"]["reason"],
-        json!("broad-discovery"),
+        json!("device-not-allowed"),
         "{broad}"
     );
     let global = lab
@@ -323,7 +332,7 @@ async fn the_policy_limits_reach_before_sending() {
         .await;
     assert_eq!(
         global["structuredContent"]["reason"],
-        json!("broad-discovery")
+        json!("device-not-allowed")
     );
     // The discovery table leaves the device out too.
     let table = lab

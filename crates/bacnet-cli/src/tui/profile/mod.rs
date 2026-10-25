@@ -231,9 +231,22 @@ impl Profile {
             self.authorized_at_unix = None;
             self.authorized_safety = None;
         }
+        let link = self.link();
         if let Some(mcp) = &mut self.mcp {
-            mcp.revoke_if_raised();
+            mcp.revoke_if_raised(&link);
         }
+    }
+
+    /// The transport settings as one string, which MCP consent records:
+    /// the transport and its table, in JSON. Any change to them changes it.
+    pub(crate) fn link(&self) -> String {
+        serde_json::json!({
+            "transport": self.transport,
+            "bip": self.bip,
+            "sc": self.sc,
+            "mstp": self.mstp,
+        })
+        .to_string()
     }
 
     /// Deterministic validation before any bind, probe, or registration.

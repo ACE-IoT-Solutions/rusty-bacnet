@@ -9,7 +9,6 @@
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,13 +23,38 @@ use crate::args::{Cli, Command, McpAction};
 use crate::core::guard::Confirm;
 use crate::transport::TransportArgs;
 use crate::tui::profile::mcp::device_range;
-use crate::tui::profile::overrides::Overrides;
+use crate::tui::profile::overrides::has_transport_flags;
 use crate::tui::profile::store::Store;
 use crate::tui::profile::{McpSection, Profile};
 
+/// Logs on stderr, never stdout: `-v` raises the level, or `RUST_LOG`
+/// sets it, and the read log (`bacnet_mcp::reads`, a line per call and a
+/// summary at shutdown) is always on at info, whatever either says.
+/// Colour only on a terminal.
+fn init_tracing(verbosity: u8) {
+    use std::io::IsTerminal as _;
+    use tracing_subscriber::EnvFilter;
+    let level = match verbosity {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    };
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(text) if !text.is_empty() => EnvFilter::new(text),
+        _ => EnvFilter::new(level),
+    };
+    let reads = "bacnet_mcp::reads=info".parse().expect("a fixed directive");
+    tracing_subscriber::fmt()
+        .with_env_filter(filter.add_directive(reads))
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .init();
+}
+
 /// `bacnet mcp ...`.
 pub(crate) async fn run(cli: Cli) -> crate::CliResult {
-    crate::setup_tracing(cli.verbose, true);
+    init_tracing(cli.verbose);
     match &cli.command {
         Some(Command::Mcp {
             action: McpAction::Serve {
@@ -112,33 +136,51 @@ fn unauthorized(name: &str) -> String {
     )
 }
 
+/// Why live traffic needs a profile.
+const NEEDS_PROFILE: &str = "a live MCP server needs an authorized profile: give --profile NAME \
+     (authorized with `bacnet mcp authorize --profile NAME`); without one only --passive, which \
+     sends nothing, is served";
+
+/// Why transport flags can't go with a profile.
+const FLAGS_WITH_PROFILE: &str = "transport flags can't change an authorized profile's transport; \
+     edit the profile and authorize it again, or leave the flags out";
+
 /// The profile's transport and policy, checked: it must be authorized for
-/// MCP. Transport flags given beside it override its settings, as in the TUI.
-fn from_profile(cli: &Cli, name: &str, passive: bool) -> Result<(TransportArgs, Policy), String> {
+/// MCP, for this table and these transport settings, and the command line
+/// may not change them.
+fn from_profile(cli: &Cli, name: &str) -> Result<(TransportArgs, Policy), String> {
+    if has_transport_flags(cli) {
+        return Err(FLAGS_WITH_PROFILE.into());
+    }
     let profile = Store::discover()?.load(name)?;
     let section = profile.mcp.as_deref().cloned().unwrap_or_default();
     if !section.authorized() {
         return Err(unauthorized(name));
     }
-    let resolved = Overrides::from_cli(cli)?.resolve(&profile)?;
-    let policy = policy(&section, passive)?;
-    Ok((resolved.transport_args()?, policy))
+    Ok((profile.transport_args()?, policy(&section, false)?))
 }
 
 async fn serve(cli: &Cli, profile: Option<&str>, passive: bool) -> crate::CliResult {
-    let (args, policy) = match profile {
-        Some(name) => from_profile(cli, name, passive)?,
-        None => {
-            let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);
-            let args = TransportArgs::from_cli(cli, interface, cli.broadcast)?;
-            (args, policy(&McpSection::default(), passive)?)
-        }
-    };
     if passive {
+        // Nothing is sent, so no consent is needed: a profile only sets the
+        // policy, and the transport flags are left unused.
+        let section = match profile {
+            Some(name) => Store::discover()?
+                .load(name)?
+                .mcp
+                .as_deref()
+                .cloned()
+                .unwrap_or_default(),
+            None => McpSection::default(),
+        };
         tracing::info!("passive MCP server: no client is built, nothing is sent");
-        let server = McpServer::<BipTransport>::new(None, policy, principal());
+        let server = McpServer::<BipTransport>::new(None, policy(&section, true)?, principal());
         return Ok(server.serve_stdio().await?);
     }
+    let Some(name) = profile else {
+        return Err(NEEDS_PROFILE.into());
+    };
+    let (args, policy) = from_profile(cli, name)?;
     if args.mstp.is_some() {
         return serve_mstp(cli, &args, policy).await;
     }
@@ -229,7 +271,8 @@ pub(crate) fn authorize(store: &Store, name: &str, confirm: &mut dyn Confirm) ->
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("cannot timestamp authorization: {e}"))?
         .as_secs();
-    profile.mcp.get_or_insert_default().authorize(now);
+    let link = profile.link();
+    profile.mcp.get_or_insert_default().authorize(now, link);
     store.save(name, &profile, false)?;
     // stderr, as the question was: an explicit write, not a print.
     let _ = writeln!(std::io::stderr(), "Profile {name} is authorized for MCP.");

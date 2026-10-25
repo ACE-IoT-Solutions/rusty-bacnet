@@ -10,7 +10,7 @@ use bacnet_types::primitives::PropertyValue;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Spec, list::object_list, schema};
+use super::{Spec, list::listing, schema};
 use crate::context::{Call, Ctx, DeviceArg};
 use crate::errors::{ToolError, row_error_json};
 use crate::untrusted::envelope;
@@ -67,7 +67,12 @@ fn output() -> Value {
         "services_supported": names,
         "object_types_supported": names,
         "errors": { "type": "object", "description": "Properties the device couldn't give, with why" },
-        "object_counts": { "type": "object" },
+        "object_counts": {
+            "type": ["object", "null"],
+            "description": "Objects by type; null while a long Object_List is still being read \
+                            (call again to go on)",
+        },
+        "object_list": { "type": "object" },
         "via": { "enum": ["rpm", "rp"] },
     }))
 }
@@ -176,12 +181,17 @@ pub(super) async fn run<T: TransportPort + 'static>(
         "limits": ctx.limits(None),
     });
     if args.count_objects {
-        let (objects, _) = object_list(ctx, &device).await?;
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for object in objects.iter() {
-            *counts.entry(kebab(object.object_type())).or_default() += 1;
-        }
-        body["object_counts"] = json!(counts);
+        let listing = listing(ctx, call, &device).await?;
+        body["object_list"] = listing.progress();
+        body["object_counts"] = if listing.complete() {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for object in listing.objects.iter() {
+                *counts.entry(kebab(object.object_type())).or_default() += 1;
+            }
+            json!(counts)
+        } else {
+            Value::Null
+        };
     }
     Ok(body)
 }

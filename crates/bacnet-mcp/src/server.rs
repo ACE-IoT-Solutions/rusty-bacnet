@@ -153,12 +153,21 @@ impl<T: TransportPort + 'static> ServerHandler for McpServer<T> {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let args = request.arguments.unwrap_or_default();
-        tools::call(&self.ctx, &request.name, args)
-            .await
-            .map(Into::into)
+        // A cancelled call (`notifications/cancelled`, or the host going
+        // away) drops the call's future, and with it any gate or slot it
+        // waits for: nothing more is sent. The call's own engine requests
+        // run one after another inside that one future, so none is left
+        // queued and unpolled.
+        tokio::select! {
+            result = tools::call(&self.ctx, &request.name, args) => result.map(Into::into),
+            () = context.ct.cancelled() => {
+                tracing::info!(target: "bacnet_mcp::reads", tool = %request.name, "call cancelled");
+                Err(ErrorData::internal_error("the call was cancelled", None))
+            }
+        }
     }
 
     async fn list_prompts(

@@ -1,7 +1,7 @@
 //! Signed pagination cursors (design §5.1).
 //!
 //! A cursor is opaque to the client, as MCP requires. Ours carries the
-//! position to resume from, the tool, the principal, a digest of the
+//! position to resume from, the tool, a digest of the principal and of the
 //! call's other arguments and an expiry, and is signed with HMAC-SHA256
 //! under a key drawn for this process. A forged cursor, or one presented
 //! by another principal, for another tool or other arguments, or after it
@@ -56,7 +56,7 @@ impl Cursors {
     ) -> String {
         let sealed = Sealed {
             tool: tool.into(),
-            principal: principal.into(),
+            principal: who(principal),
             args: digest(args),
             expires: now().saturating_add(LIFETIME.as_secs()),
             position,
@@ -90,11 +90,21 @@ impl Cursors {
         if sealed.expires < now() {
             return Err("expired");
         }
-        if sealed.tool != tool || sealed.principal != principal || sealed.args != digest(args) {
+        if sealed.tool != tool || sealed.principal != who(principal) || sealed.args != digest(args)
+        {
             return Err("issued for another call");
         }
         Ok(sealed.position)
     }
+}
+
+/// The principal as the cursor carries it: a digest, so a cursor doesn't
+/// show the OS user's name to whoever sees it.
+fn who(principal: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"principal:");
+    hash.update(principal.as_bytes());
+    hex(&hash.finalize()[..16])
 }
 
 fn now() -> u64 {
@@ -158,6 +168,7 @@ mod tests {
         let cursors = Cursors::new();
         let call = args(json!({ "device": "1201", "types": ["ai"], "cursor": "old" }));
         let token = cursors.seal("bacnet_list_objects", "alice", &call, 200);
+        assert!(!token.contains(&hex(b"alice")), "the user's name stays out");
         let reordered = args(json!({ "types": ["ai"], "device": "1201" }));
         assert_eq!(
             cursors.open(&token, "bacnet_list_objects", "alice", &reordered),
@@ -216,7 +227,7 @@ mod tests {
         let call = args(json!({}));
         let sealed = Sealed {
             tool: "t".into(),
-            principal: "p".into(),
+            principal: who("p"),
             args: digest(&call),
             expires: now() - 1,
             position: 0,

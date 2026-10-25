@@ -28,9 +28,12 @@ pub(super) const SPEC: Spec = Spec {
                   answered: instance, address, network, vendor id, APDU size and \
                   segmentation. scope local (the default) asks this network, network asks one \
                   remote network, directed asks one address, global asks every network. A \
-                  global or unbounded Who-Is needs broad discovery in the server's policy, at \
-                  most one a minute: give a range (1000-1999) otherwise. names: true also reads \
-                  each listed device's name. send: false only lists what is known. Read-only.",
+                  global Who-Is, or one without a range or wider than 1000 instances, needs \
+                  broad discovery in the server's policy, at most one a minute: give a range \
+                  (1000-1999) otherwise. When the policy names the devices it may reach, the \
+                  range must lie inside them. names: true also reads each listed device's \
+                  name. send: false only lists what is known; pages index a live table. \
+                  Read-only.",
     input,
     output,
     idempotent: true,
@@ -40,6 +43,10 @@ pub(super) const SPEC: Spec = Spec {
 
 /// How long one broad Who-Is holds off the next.
 const BROAD_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The widest range of instances a Who-Is may ask without broad
+/// discovery, when the policy doesn't name the devices.
+pub(crate) const BROAD_WIDTH: u32 = 1000;
 
 fn input() -> Value {
     schema::input(
@@ -119,7 +126,7 @@ pub(super) struct Args {
     send: Option<bool>,
     #[serde(default)]
     scope: Scope,
-    network: Option<u16>,
+    network: Option<u32>,
     address: Option<String>,
     range: Option<String>,
     wait_s: Option<u64>,
@@ -154,11 +161,28 @@ pub(super) async fn run<T: TransportPort + 'static>(
     raw: &Map<String, Value>,
 ) -> Result<Value, ToolError> {
     let range = args.range.as_deref().map(parse_range).transpose()?;
+    let network = args
+        .network
+        .map(|n| {
+            u16::try_from(n)
+                .ok()
+                .filter(|n| (1..=65534).contains(n))
+                .ok_or_else(|| ToolError::invalid("network", "a network is 1 to 65534"))
+        })
+        .transpose()?;
     let first = start(ctx, NAME, args.cursor.as_deref(), raw)? as usize;
-    // A later page lists what the first one found; it sends nothing.
-    let send = args.send.unwrap_or(true) && args.cursor.is_none();
+    // A later page lists what the first one found; it sends nothing. A
+    // passive server sends nothing either, so it only lists.
+    let send = args.send.unwrap_or(ctx.engine.is_some()) && args.cursor.is_none();
+    if send && ctx.engine.is_none() {
+        return Err(ToolError::refused(
+            "passive",
+            "the server is passive: it sends no Who-Is and only lists devices already heard, \
+             which, with no client, is none; call with send false",
+        ));
+    }
     let wait = Duration::from_secs(args.wait_s.unwrap_or(3).clamp(1, 30));
-    let scope_text = match (args.scope, args.network, &args.address) {
+    let scope_text = match (args.scope, network, &args.address) {
         (Scope::Local, ..) => "local".to_string(),
         (Scope::Network, Some(network), _) => format!("network {network}"),
         (Scope::Directed, _, Some(address)) => format!("directed {address}"),
@@ -177,7 +201,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
         }
     };
     if send {
-        who_is(ctx, &args, range).await?;
+        who_is(ctx, &args, network, range).await?;
         tokio::time::sleep(wait).await;
     }
     let mut devices = match &ctx.engine {
@@ -187,15 +211,15 @@ pub(super) async fn run<T: TransportPort + 'static>(
     };
     devices.retain(|found| {
         let instance = found.object_identifier.instance_number();
-        let network = found.source_network.unwrap_or(0);
+        let on = found.source_network.unwrap_or(0);
         let in_scope = match args.scope {
             Scope::Local => found.is_local(),
-            Scope::Network => found.source_network == args.network,
+            Scope::Network => found.source_network == network,
             Scope::Directed | Scope::Global => true,
         };
         in_scope
             && range.is_none_or(|(low, high)| (low..=high).contains(&instance))
-            && ctx.policy.allows_network(network)
+            && ctx.policy.allows_network(on)
             && ctx.policy.allows_device(instance)
     });
     devices.sort_by_key(|found| found.object_identifier.instance_number());
@@ -242,7 +266,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
         }
         rows.push(row);
     }
-    Ok(json!({
+    let mut body = json!({
         "devices": rows,
         "total": devices.len(),
         "sent": send,
@@ -250,17 +274,22 @@ pub(super) async fn run<T: TransportPort + 'static>(
         "truncated": resume.is_some(),
         "next_cursor": resume.map(|at| next(ctx, NAME, raw, at as u64)),
         "limits": ctx.limits(Some(page)),
-    }))
+    });
+    if ctx.engine.is_none() {
+        body["note"] = json!("passive: nothing is sent, and only devices already heard are listed");
+    }
+    Ok(body)
 }
 
 /// Send the Who-Is the arguments ask for, if the policy allows it.
 async fn who_is<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     args: &Args,
+    network: Option<u16>,
     range: Option<(u32, u32)>,
 ) -> Result<(), ToolError> {
     let engine = ctx.engine()?;
-    let scope = match (args.scope, args.network, &args.address) {
+    let scope = match (args.scope, network, &args.address) {
         (Scope::Local, ..) => {
             ctx.allow_network(0)?;
             WhoIsScope::Local
@@ -285,10 +314,7 @@ async fn who_is<T: TransportPort + 'static>(
         }
         _ => unreachable!("checked by the caller"),
     };
-    let full =
-        range.is_none_or(|(low, high)| low == 0 && high >= ObjectIdentifier::MAX_INSTANCE - 1);
-    let broad = args.scope == Scope::Global || (full && args.scope != Scope::Directed);
-    if broad {
+    if broad(ctx, args.scope, range)? {
         broad_allowed(ctx)?;
     }
     let range = range
@@ -301,14 +327,45 @@ async fn who_is<T: TransportPort + 'static>(
     })
 }
 
+/// Whether a Who-Is is broad, after refusing one that would make devices
+/// outside the policy answer.
+///
+/// - When the policy names its devices, the range must lie inside one of
+///   its ranges, whatever the scope; such a range isn't broad, since the
+///   profile allows every device in it.
+/// - Otherwise a global Who-Is is broad, and so is one without a range or
+///   wider than [`BROAD_WIDTH`] instances, except a directed one, which
+///   only the station addressed answers.
+fn broad<T: TransportPort + 'static>(
+    ctx: &Ctx<T>,
+    scope: Scope,
+    range: Option<(u32, u32)>,
+) -> Result<bool, ToolError> {
+    if let Some(allowed) = &ctx.policy.devices {
+        let inside =
+            range.is_some_and(|(low, high)| allowed.iter().any(|&(l, h)| l <= low && high <= h));
+        if !inside {
+            return Err(ToolError::refused(
+                "device-not-allowed",
+                "this server's [mcp] devices limit which devices it may reach: give a range \
+                 inside them",
+            ));
+        }
+        return Ok(scope == Scope::Global);
+    }
+    let wide = range.is_none_or(|(low, high)| high - low >= BROAD_WIDTH);
+    Ok(scope == Scope::Global || (wide && scope != Scope::Directed))
+}
+
 /// A broad Who-Is: allowed by the policy, and not within a minute of the
 /// last one.
 fn broad_allowed<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Result<(), ToolError> {
     if !ctx.policy.broad_discovery {
         return Err(ToolError::refused(
             "broad-discovery",
-            "a global or unbounded Who-Is needs broad_discovery = true in the profile's [mcp] \
-             table; give a range, such as 1000-1999, instead",
+            "a global Who-Is, or one without a range or wider than 1000 instances, needs \
+             broad_discovery = true in the profile's [mcp] table; give a narrower range, such as \
+             1000-1999, instead",
         ));
     }
     let mut last = ctx.broad.lock().unwrap_or_else(PoisonError::into_inner);

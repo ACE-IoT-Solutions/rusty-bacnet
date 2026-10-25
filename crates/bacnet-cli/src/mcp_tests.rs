@@ -125,3 +125,66 @@ fn widening_reach_needs_authorizing_again() {
     assert!(!authorized(&store));
     assert!(unauthorized("site").contains("bacnet mcp authorize --profile site"));
 }
+
+/// Raising a rate or a cap, or changing the transport, also needs
+/// authorizing again.
+#[test]
+fn faster_or_another_transport_needs_authorizing_again() {
+    let changes: [fn(&mut Profile); 4] = [
+        |p| p.mcp.as_mut().unwrap().max_rate = Some(50),
+        |p| p.mcp.as_mut().unwrap().call_budget_s = Some(120),
+        |p| p.mcp.as_mut().unwrap().page_objects = Some(1000),
+        |p| p.bip.as_mut().unwrap().port = 47809,
+    ];
+    for change in changes {
+        let (_dir, store) = store_with(Some(McpSection::default()));
+        authorize(&store, "site", &mut typed(true, Some("site"))).unwrap();
+        assert!(authorized(&store));
+        let mut profile = store.load("site").unwrap();
+        change(&mut profile);
+        store.save("site", &profile, false).unwrap();
+        assert!(!authorized(&store), "{profile:?}");
+    }
+}
+
+/// A consent time without the table and transport it covered, as a hand
+/// edit might leave, authorizes nothing.
+#[test]
+fn a_bare_consent_time_authorizes_nothing() {
+    let (_dir, store) = store_with(Some(McpSection {
+        authorized_at_unix: Some(1),
+        ..McpSection::default()
+    }));
+    assert!(!authorized(&store));
+    let stored = store.load("site").unwrap().mcp.unwrap();
+    assert_eq!(stored.authorized_at_unix, None, "cleared on load");
+}
+
+/// The defaults an absent key means agree with the server's.
+#[test]
+fn the_profile_defaults_are_the_servers() {
+    use crate::tui::profile::mcp::{DEFAULT_CAPS, DEFAULT_RATES};
+    let (rates, caps) = (Rates::default(), Caps::default());
+    assert_eq!(
+        DEFAULT_RATES,
+        [
+            rates.global,
+            rates.network,
+            rates.slow,
+            rates.fast,
+            rates.principal,
+            rates.burst
+        ]
+    );
+    let size = |n: usize| u64::try_from(n).unwrap();
+    assert_eq!(
+        DEFAULT_CAPS,
+        [
+            size(caps.values),
+            size(caps.devices),
+            size(caps.objects),
+            size(caps.text),
+            caps.budget.as_secs()
+        ]
+    );
+}

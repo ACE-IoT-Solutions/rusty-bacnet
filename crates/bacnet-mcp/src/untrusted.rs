@@ -5,9 +5,10 @@
 //! comes back as an envelope, never spliced into prose:
 //! `{"untrusted": "...", "source": "device 1201 analog-output:3 description",
 //! "truncated": false}`. The text inside is cleaned first: control
-//! characters (C0 and C1) become spaces, bidirectional overrides and
-//! invisible formatting characters are dropped, URLs are defanged
-//! (`hxxp://`), and the result is capped.
+//! characters (C0 and C1) and line and paragraph separators become spaces,
+//! format characters (bidirectional overrides, zero-width and tag
+//! characters), variation selectors and Hangul fillers are dropped, URLs
+//! are defanged (`hxxp://`), and the result is capped.
 
 use serde_json::{Value, json};
 
@@ -23,7 +24,7 @@ pub(crate) fn clean(text: &str, cap: usize) -> (String, bool) {
     let mut cleaned: String = text
         .chars()
         .filter(|ch| !hidden(*ch))
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .map(|ch| if breaks(ch) { ' ' } else { ch })
         .collect();
     cleaned = defang(&cleaned);
     match cleaned.char_indices().nth(cap) {
@@ -35,19 +36,53 @@ pub(crate) fn clean(text: &str, cap: usize) -> (String, bool) {
     }
 }
 
-/// Characters that change how text around them reads without showing:
-/// the bidirectional embeddings, overrides and isolates (U+202A to U+202E,
-/// U+2066 to U+2069), the directional marks, and the zero-width ones.
+/// Characters that break a line or move the cursor: the controls (C0, DEL
+/// and C1) and the line and paragraph separators. Each becomes a space.
+fn breaks(ch: char) -> bool {
+    ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')
+}
+
+/// The characters dropped: every format character (general category Cf,
+/// Unicode 16: the bidirectional embeddings, overrides, isolates and marks,
+/// the zero-width ones, the tag characters and the rest), the variation
+/// selectors, and the Hangul fillers, which show as nothing. Each change
+/// how the text around them reads without showing themselves.
+pub(crate) const HIDDEN: &[(char, char)] = &[
+    // Format characters (Cf).
+    ('\u{00AD}', '\u{00AD}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061C}', '\u{061C}'),
+    ('\u{06DD}', '\u{06DD}'),
+    ('\u{070F}', '\u{070F}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08E2}', '\u{08E2}'),
+    ('\u{180E}', '\u{180E}'),
+    ('\u{200B}', '\u{200F}'),
+    ('\u{202A}', '\u{202E}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFF9}', '\u{FFFB}'),
+    ('\u{110BD}', '\u{110BD}'),
+    ('\u{110CD}', '\u{110CD}'),
+    ('\u{13430}', '\u{1343F}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    // The tag block, Cf and unassigned alike.
+    ('\u{E0000}', '\u{E007F}'),
+    // Variation selectors, Mongolian ones included.
+    ('\u{180B}', '\u{180D}'),
+    ('\u{180F}', '\u{180F}'),
+    ('\u{FE00}', '\u{FE0F}'),
+    ('\u{E0100}', '\u{E01EF}'),
+    // Hangul fillers.
+    ('\u{115F}', '\u{1160}'),
+    ('\u{3164}', '\u{3164}'),
+    ('\u{FFA0}', '\u{FFA0}'),
+];
+
 fn hidden(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{061C}'
-            | '\u{2060}'
-            | '\u{FEFF}'
-    )
+    HIDDEN.iter().any(|&(low, high)| (low..=high).contains(&ch))
 }
 
 /// URLs made inert: `http://` and `https://` as `hxxp://` and `hxxps://`,
@@ -104,6 +139,33 @@ mod tests {
             "Supply  Fan gnp.exe see hxxps://evil.example/x and ftp[:]//h/f or HXXP://A"
         );
         assert!(!cleaned.chars().any(|ch| ch.is_control() || hidden(ch)));
+    }
+
+    /// Every range of the table, at both ends, is dropped; the separators
+    /// become spaces; the characters around each range stay.
+    #[test]
+    fn every_hidden_range_is_dropped() {
+        for &(low, high) in HIDDEN {
+            for ch in [low, high] {
+                let text = format!("a{ch}b");
+                assert_eq!(clean(&text, 256).0, "ab", "U+{:04X}", u32::from(ch));
+            }
+        }
+        for named in [
+            '\u{E0041}',
+            '\u{FE0F}',
+            '\u{E0100}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{3164}',
+            '\u{FFA0}',
+        ] {
+            assert!(hidden(named), "U+{:04X}", u32::from(named));
+        }
+        assert_eq!(clean("a\u{2028}b\u{2029}c", 256).0, "a b c");
+        for kept in ['A', 'é', '\u{4E2D}', '\u{1F600}', '\u{FE10}', '\u{3165}'] {
+            assert!(!hidden(kept), "U+{:04X}", u32::from(kept));
+        }
     }
 
     #[test]

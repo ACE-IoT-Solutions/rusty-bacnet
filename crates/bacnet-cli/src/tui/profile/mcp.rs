@@ -80,7 +80,21 @@ pub(crate) struct McpSection {
     /// consent); a table that widens it needs authorizing again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) authorized: Option<Box<McpSection>>,
+    /// The profile's transport settings that consent covered, as written
+    /// by [`Profile::link`](super::Profile::link); any change to them needs
+    /// authorizing again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) authorized_transport: Option<String>,
 }
+
+/// The rates an absent key means, in [`McpSection::rates`] order: the MCP
+/// server's defaults (`bacnet_mcp::policy::Rates`; a test of the `mcp`
+/// feature checks they agree).
+pub(crate) const DEFAULT_RATES: [u32; 6] = [20, 20, 2, 5, 5, 20];
+
+/// The caps an absent key means, in [`McpSection::caps`] order
+/// (`bacnet_mcp::policy::Caps`).
+pub(crate) const DEFAULT_CAPS: [u64; 5] = [100, 200, 200, 256, 30];
 
 /// One `devices` entry: `low-high` or one instance.
 pub(crate) fn device_range(text: &str) -> Result<(u32, u32), String> {
@@ -120,33 +134,105 @@ impl McpSection {
         })
     }
 
-    /// Whether consent covers this table's reach now.
+    /// Whether consent covers this table now: a time, and the table and
+    /// transport it covered. A time alone, as a hand edit might leave,
+    /// authorizes nothing.
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub(crate) fn authorized(&self) -> bool {
         self.authorized_at_unix.is_some()
+            && self.authorized.is_some()
+            && self.authorized_transport.is_some()
     }
 
-    /// Record consent, given at `at`, to this table's reach.
+    /// Record consent, given at `at`, to this table and to the transport
+    /// settings `link`.
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
-    pub(crate) fn authorize(&mut self, at: u64) {
+    pub(crate) fn authorize(&mut self, at: u64, link: String) {
         let mut covered = self.clone();
         covered.authorized_at_unix = None;
         covered.authorized = None;
+        covered.authorized_transport = None;
         self.authorized_at_unix = Some(at);
         self.authorized = Some(Box::new(covered));
+        self.authorized_transport = Some(link);
     }
 
-    /// Drop a consent that doesn't cover this table's reach.
-    pub(crate) fn revoke_if_raised(&mut self) {
-        let covered = self.authorized.as_deref().cloned().unwrap_or_default();
-        if self.authorized() && self.raises(&covered) {
+    /// Drop a consent that doesn't cover this table, or the transport
+    /// settings `link`, any more.
+    pub(crate) fn revoke_if_raised(&mut self, link: &str) {
+        let stands = match (&self.authorized, &self.authorized_transport) {
+            (Some(covered), Some(transport)) => transport == link && !self.raises(covered),
+            _ => false,
+        };
+        if !stands {
             self.authorized_at_unix = None;
             self.authorized = None;
+            self.authorized_transport = None;
         }
     }
 
-    /// True when `self` lets the server reach something `from` did not: a
-    /// network or device outside `from`'s lists, or broad discovery.
+    /// The rates, defaults filled in: max, network, slow, fast, principal,
+    /// burst.
+    fn rates(&self) -> [u32; 6] {
+        let keys = [
+            self.max_rate,
+            self.network_rate,
+            self.slow_rate,
+            self.fast_rate,
+            self.principal_rate,
+            self.principal_burst,
+        ];
+        std::array::from_fn(|i| keys[i].unwrap_or(DEFAULT_RATES[i]))
+    }
+
+    /// The caps, defaults filled in: values, devices and objects a page,
+    /// text characters, call budget seconds.
+    fn caps(&self) -> [u64; 5] {
+        let size = |key: Option<usize>| key.map(|n| u64::try_from(n).unwrap_or(u64::MAX));
+        let keys = [
+            size(self.max_values),
+            size(self.page_devices),
+            size(self.page_objects),
+            size(self.max_text),
+            self.call_budget_s,
+        ];
+        std::array::from_fn(|i| keys[i].unwrap_or(DEFAULT_CAPS[i]))
+    }
+
+    /// True when `self` lets the server do more than `from` did: reach a
+    /// network or device outside `from`'s lists, discover broadly, send
+    /// faster (a higher rate, or a network no longer held to its slow or
+    /// fast rate), or do more in one call (a higher cap).
     pub(crate) fn raises(&self, from: &Self) -> bool {
+        let faster = self
+            .rates()
+            .iter()
+            .zip(from.rates())
+            .any(|(now, was)| *now > was);
+        let bigger = self
+            .caps()
+            .iter()
+            .zip(from.caps())
+            .any(|(now, was)| *now > was);
+        let unpaced = from
+            .slow_networks
+            .iter()
+            .any(|n| !self.slow_networks.contains(n))
+            || from
+                .fast_networks
+                .iter()
+                .any(|n| !self.fast_networks.contains(n))
+            || (self.rates()[3] > self.rates()[1]
+                && self
+                    .fast_networks
+                    .iter()
+                    .any(|n| !from.fast_networks.contains(n)));
+        faster || bigger || unpaced || self.reaches_further(from)
+    }
+
+    /// True when `self` reaches a network or device outside `from`'s
+    /// lists, or discovers broadly where `from` didn't.
+    fn reaches_further(&self, from: &Self) -> bool {
         let networks = match (&self.networks, &from.networks) {
             (_, None) => false,
             (None, Some(_)) => true,
@@ -197,6 +283,27 @@ mod tests {
             !narrow.raises(&all),
             "narrowing never needs a new authorization"
         );
+        let faster = McpSection {
+            max_rate: Some(21),
+            ..narrow.clone()
+        };
+        assert!(faster.raises(&narrow), "a higher rate");
+        let longer = McpSection {
+            call_budget_s: Some(31),
+            ..narrow.clone()
+        };
+        assert!(longer.raises(&narrow), "a longer budget");
+        let more_values = McpSection {
+            max_values: Some(101),
+            ..narrow.clone()
+        };
+        assert!(more_values.raises(&narrow), "a higher cap");
+        let paced = McpSection {
+            slow_networks: vec![7],
+            ..narrow.clone()
+        };
+        assert!(narrow.raises(&paced), "a network no longer slow");
+        assert!(!paced.raises(&narrow), "a network newly slow");
         assert!(all.raises(&narrow));
         let more_networks = McpSection {
             networks: Some(vec![0, 7]),

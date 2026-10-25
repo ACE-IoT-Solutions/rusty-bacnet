@@ -22,7 +22,7 @@ The server connects through a [TUI profile](/rusty-bacnet/tui/profiles/), whose 
 networks = [0, 2001]          # 0 is the local network
 devices = ["1000-1999", "5"]
 slow_networks = [2001]        # an MS/TP trunk behind a router: 2 requests a second
-broad_discovery = false       # true allows a global or unbounded Who-Is, one a minute
+broad_discovery = false       # true allows a global or wide Who-Is, one a minute
 ```
 
 Before an agent host can use the profile, a person consents in a terminal. The command shows what the table lets an agent reach and asks for the profile's name:
@@ -31,7 +31,9 @@ Before an agent host can use the profile, a person consents in a terminal. The c
 bacnet mcp authorize --profile plant-a
 ```
 
-Widening the table later (another network or device, or broad discovery) clears the authorization, so the server refuses to start until it is given again. Narrowing it doesn't.
+The authorization covers the table and the profile's transport settings. Widening the table later (another network or device, broad discovery, a higher rate or a larger cap) or changing the transport clears it, so the server refuses to start until it is given again. Narrowing the table doesn't.
+
+A Who-Is is broad when it is global, has no range, or asks more than 1000 instances, and needs `broad_discovery`. When the table names `devices`, a Who-Is must ask a range inside them.
 
 ## Add it to the agent host
 
@@ -48,7 +50,7 @@ Claude Code reads a project's `.mcp.json`. The host launches the command and spe
 }
 ```
 
-Without `--profile`, the global transport flags pick the network, as for a one-shot command. `--passive` builds no client and sends nothing; only the discovery table, empty then, is offered. Logs go to stderr (`-v` for more), never to stdout, which carries only the protocol.
+A live server needs an authorized profile, and refuses transport flags beside it: they would change the transport that was authorized. Without a profile only `--passive` runs: it builds no client and sends nothing, and offers only the discovery table, empty then. Logs go to stderr (`-v` or `RUST_LOG` for more), never to stdout, which carries only the protocol.
 
 ```sh
 bacnet mcp serve --stdio --profile plant-a --passive
@@ -67,10 +69,10 @@ Two prompts start common jobs: `survey_site` surveys a range of devices, and `in
 
 ## Safety
 
-- **Device text is data.** Names, descriptions and vendor strings come back in an `untrusted` envelope that says where each came from, with control characters and bidirectional overrides removed, links defanged and the length capped. A device can still say anything in them, so a model can still be misled by what it reads; the server's answer is that it can't change anything.
+- **Device text is data.** Names, descriptions and vendor strings come back in an `untrusted` envelope that says where each came from, with control characters, bidirectional overrides and other invisible format characters removed, links defanged and the length capped. A device can still say anything in them, so a model can still be misled by what it reads; the server's answer is that it can't change anything.
 - **Limits hold on the server.** One request at a time per device, 20 a second in all, 20 a second per network (2 on a network marked slow, 5 on one marked fast), and 5 a second for the agent, with bursts of 20. Each result reports what it cost, including the time spent waiting, so an agent can slow down.
-- **Results are paged.** Large lists end with a signed cursor that only resumes the same call.
-- **Reads are logged as summaries** on stderr: a line per call, and the counts per device when the server stops.
+- **Results are paged.** Large lists end with a signed cursor that only resumes the same call. A long object list read element by element goes on where the last call stopped.
+- **Reads are logged as summaries** on stderr, always: a line per call, and the counts per device when the server stops.
 - **Site data reaches the agent's host.** Don't share an agent session that reads a sensitive site with tools that can send data elsewhere.
 
 The design, including the write tools of a later phase, is in [`docs/design/mcp.md`](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/design/mcp.md).

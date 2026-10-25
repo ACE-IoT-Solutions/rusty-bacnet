@@ -124,18 +124,19 @@ pub(crate) async fn call<T: TransportPort + 'static>(
     name: &str,
     args: Map<String, Value>,
 ) -> Result<CallToolResult, ErrorData> {
+    if !names(&ctx.policy).contains(&name) {
+        // Not listed in this configuration (a passive server's read tools,
+        // say): the same protocol error as a tool that doesn't exist.
+        return Err(ErrorData::invalid_params(
+            format!("unknown tool in this configuration: {name}"),
+            None,
+        ));
+    }
     let request = request(name, &args)?;
     let account = Arc::new(Account::new(Some(Arc::clone(&ctx.bucket))));
     let budget = ctx.policy.caps.budget;
     let call = Call::new(budget, Arc::clone(&account));
-    let listed = names(&ctx.policy).contains(&name);
     let run = async {
-        if !listed {
-            return Err(ToolError::refused(
-                "passive",
-                "the server is passive: it builds no client and sends nothing",
-            ));
-        }
         match request {
             Request::Discover(a) => discover::run(ctx, &call, a, &args).await,
             Request::Read(a) => read::run(ctx, &call, a, &args).await,

@@ -30,7 +30,7 @@ pub(crate) fn list() -> Vec<Prompt> {
         .with_title("Survey a BACnet site"),
         Prompt::new(
             "investigate_point",
-            Some("Investigate one point: its value, status, reliability and who is commanding it."),
+            Some("Investigate one point: its value, status, reliability and which priority array slots command it."),
             Some(vec![
                 PromptArgument::new("device")
                     .with_description("Device instance, or dnet:instance")

@@ -46,7 +46,15 @@ impl<T: TransportPort + 'static> Engine<T> {
             ),
             _ => None,
         };
-        self.limits.slot(None).await;
+        // The network the Who-Is goes out on takes its slot, so a slow one
+        // is paced; a global one reaches every network and takes the
+        // global slot alone.
+        let network = match scope {
+            WhoIsScope::Local | WhoIsScope::Directed(_) => Some(0),
+            WhoIsScope::Network(network) => Some(network),
+            WhoIsScope::Global => None,
+        };
+        self.limits.slot(network).await;
         match (scope, mac) {
             (WhoIsScope::Local, _) => {
                 let mut buf = BytesMut::new();

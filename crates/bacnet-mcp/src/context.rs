@@ -38,8 +38,24 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     pub(crate) reads: Mutex<BTreeMap<u32, (u64, u64)>>,
 }
 
-/// An object list as read, and when.
-pub(crate) type CachedList = (Instant, Arc<Vec<ObjectIdentifier>>);
+/// A device's Object_List as read so far.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedList {
+    /// When it was last read from.
+    pub(crate) at: Instant,
+    /// The entries read, in device order.
+    pub(crate) objects: Arc<Vec<ObjectIdentifier>>,
+    /// Read element by element: the element count, and the next element to
+    /// read (past `total` once complete).
+    pub(crate) indexed: Option<(u32, u32)>,
+}
+
+impl CachedList {
+    /// Whether every entry has been read.
+    pub(crate) fn complete(&self) -> bool {
+        self.indexed.is_none_or(|(total, next)| next > total)
+    }
+}
 
 /// How long an object list read for one page serves the next ones.
 pub(crate) const LIST_TTL: Duration = Duration::from_secs(300);

@@ -642,7 +642,7 @@ pub(crate) enum McpAction {
         #[arg(long, required = true)]
         stdio: bool,
         /// Named profile to connect with; its mcp table limits what the
-        /// agent may reach. Without one, the global transport flags.
+        /// agent may reach. Needed unless --passive; no transport flags with it.
         #[arg(long, value_name = "NAME")]
         profile: Option<String>,
         /// Build no client and send nothing: only the tools that need no

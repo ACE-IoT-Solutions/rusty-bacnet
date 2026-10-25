@@ -261,8 +261,11 @@ Notes:
   and the ones the write preview reads: Present_Value, Status_Flags, Units,
   Out_Of_Service, Reliability, Priority_Array, Relinquish_Default,
   COV_Increment, Event_State and Object_Name.
-- A global or full-range Who-Is is refused unless the profile or grant
-  allows broad discovery, and then limited to one a minute per principal.
+- A broad Who-Is (global, without a range, or wider than 1000 instances)
+  is refused unless the profile or grant allows broad discovery, and then
+  limited to one a minute per principal. When the profile names its
+  devices, a Who-Is must ask a range inside them, broad discovery or not,
+  so devices outside the policy are never asked to answer.
 - `bacnet_read_trend` with `summary: true` pages the whole window on the
   server under the rate limit and returns only statistics, for analysis
   without flooding the agent's context.
@@ -296,7 +299,7 @@ an unknown tool or arguments that fail the input schema are JSON-RPC errors
 | timeout on a read | `{ "error": "timeout", "device", "after_ms" }` |
 | timeout on a write | `{ "error": "timeout", "applied": "unknown" }`; the ledger entry becomes `unknown` |
 | policy refusal | `{ "error": "refused", "reason": "write-not-granted" / "passive" / "rate-limited" / "priority-6" / "needs-verified-approver" / ..., "message" }`, modelled on the one-shot refusal JSON |
-| device not discovered | `{ "error": "unknown-device", "hint" }` |
+| device not discovered | `{ "error": "unknown-device", "target", "hint" }`, the target as given |
 | an unknown or ill-formed cursor | `{ "error": "invalid-argument", "field": "cursor", "message" }` |
 
 "Refused, nothing was sent" and "sent, then failed" are always distinct,
@@ -502,14 +505,20 @@ the slow-network default matters.
   and cursors are per process on stdio. OAuth tokens are validated, never
   logged and never forwarded.
 - The first-use authorization attestation the TUI records per profile gets
-  an MCP counterpart, cleared whenever MCP permissions are raised.
+  an MCP counterpart, `bacnet mcp authorize`, which records the `[mcp]`
+  table and the transport settings it covered. It is cleared whenever MCP
+  permissions are raised (reach, broad discovery, a rate or a cap) or the
+  transport changes, and a consent time without them authorizes nothing.
 
 ## 8. Access patterns
 
 ### 8.1 One local user (phases 1 to 3)
 
 - **stdio.** The host launches `bacnet mcp serve --stdio --profile X` as a
-  child process. Per the spec, stdio uses no OAuth; credentials come from the
+  child process. Live traffic needs an authorized profile (maintainer
+  decision, 2026-10-25): without one only `--passive` runs, and transport
+  flags beside a profile are refused, since they would change what was
+  authorized. Per the spec, stdio uses no OAuth; credentials come from the
   profile and the environment. The process's OS user is the one principal.
   Tracing goes to stderr or a file only. The CLI allows `print_stdout`
   crate-wide (a command-line tool prints its results), so the guards are a

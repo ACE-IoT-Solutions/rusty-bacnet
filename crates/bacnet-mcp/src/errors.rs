@@ -105,7 +105,7 @@ impl ToolError {
                 body
             }
             Self::UnknownDevice { device, hint } => {
-                json!({ "error": "unknown-device", "device": device, "hint": hint })
+                json!({ "error": "unknown-device", "target": device, "hint": hint })
             }
             Self::Failed(message) => json!({ "error": "failed", "message": message }),
         }
