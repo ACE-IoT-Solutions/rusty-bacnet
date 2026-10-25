@@ -77,8 +77,11 @@ pub(super) fn request(vmac: Vmac, uuid: DeviceUuid) -> Message {
 }
 
 pub(super) struct DeadlinePeer {
-    pub ws: ClientWs,
+    // `sink` before `ws`, as in `ControlledPeer`: once the served task has
+    // ended, a dropped peer closes the hub's end first, so its TIME_WAIT
+    // stays on the port `TestTls::pair` shares (#2055).
     pub sink: Arc<Mutex<WsSink>>,
+    pub ws: ClientWs,
     pub deadline: Arc<super::deadlines::ConnectDeadline>,
     pub task: JoinHandle<()>,
     pub active: Arc<std::sync::atomic::AtomicUsize>,
@@ -120,8 +123,8 @@ impl DeadlinePeer {
             operation.await;
         });
         Self {
-            ws,
             sink,
+            ws,
             deadline,
             task,
             active,
