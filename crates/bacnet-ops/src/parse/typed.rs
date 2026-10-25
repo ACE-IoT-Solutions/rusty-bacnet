@@ -13,7 +13,7 @@ use bacnet_types::primitives::{PropertyValue, Time};
 use bytes::BytesMut;
 
 use super::datetime::{parse_date_time, parse_time, parse_timestamp};
-use super::{parse_value, split_priority};
+use super::{json, parse_value, split_priority};
 use crate::format::{holds_state, is_binary, is_multistate};
 use crate::label::kebab;
 
@@ -52,6 +52,12 @@ enum Kind {
     DateTime,
     /// One BACnetTimeStamp.
     TimeStamp,
+    /// A constructed element typed as JSON, or a list of them when
+    /// `whole`.
+    Json {
+        element: ConstructedElement,
+        whole: bool,
+    },
     /// Nothing known: the untyped grammar.
     Untyped,
 }
@@ -192,6 +198,10 @@ fn kind(object_type: ObjectType, property: PropertyIdentifier, index: Option<u32
         {
             Kind::TimeStamp
         }
+        Some((element, shape)) if json::takes_json(element) => Kind::Json {
+            element,
+            whole: shape == ElementShape::Collection && index.is_none(),
+        },
         _ => Kind::Untyped,
     }
 }
@@ -400,6 +410,11 @@ fn parse_date_time_value(text: &str) -> Result<PropertyValue, String> {
 ///   nothing) for no bit set;
 /// - a BACnetDateTime as `2026-10-19 07:00` (a date alone leaves the time
 ///   unspecified), and a timestamp as `seq 42`, a time, or a date and time;
+/// - a Weekly_Schedule day, an Exception_Schedule special event, a
+///   Date_List calendar entry or a Recipient_List destination as JSON, or
+///   the whole list of them for a write of the whole property, in the
+///   shapes of the Python bindings' typed constructors (`docs/CLI.md`,
+///   "Constructed values as JSON");
 /// - anything else, and the explicit forms (`null`, `true`, a quoted
 ///   string, `enumerated:N`, `date:`, `time:`, `object:`, `bits(0101)`),
 ///   as [`parse_value`] reads them.
@@ -431,7 +446,10 @@ pub fn parse_value_for(
                 .map_err(|e| format!("cannot encode the timestamp: {e}"))?;
             Ok(PropertyValue::ApplicationData(buf.to_vec()))
         }
-        Kind::Untyped => parse_value(text),
+        Kind::Json { element, whole } if text.starts_with(['[', '{']) => {
+            json::parse(element, whole, text)
+        }
+        Kind::Json { .. } | Kind::Untyped => parse_value(text),
     }
 }
 

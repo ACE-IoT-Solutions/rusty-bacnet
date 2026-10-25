@@ -1237,6 +1237,35 @@ Error: unknown BinaryPV 'actve'; expected one of: inactive, active (or a number)
 The explicit forms (`enumerated:N`, `date:`, `time:`, `object:`, a quoted
 string, `null`, `true`/`false`) keep their meaning for every property.
 
+**Constructed values as JSON.** A Weekly_Schedule day, an
+Exception_Schedule special event, a Date_List calendar entry and a
+Recipient_List destination are typed as JSON: one element for an indexed
+write (`weekly-schedule[2]`, `exception-schedule[1]`), a JSON list of them
+for the whole property (a Weekly_Schedule is seven days, Monday first). The
+shapes follow the Python bindings' typed constructors, with dates and times
+written as above:
+
+| Element | JSON |
+|---------|------|
+| Day | `[["07:00", 72.5], ["18:00", null]]`; an entry may also be `{"time": "07:00", "value": 72.5}` |
+| Calendar entry | `{"kind": "date", "date": "2026-12-25"}`, `{"kind": "date_range", "start_date": "2026-07-01", "end_date": "2026-07-04"}` or `{"kind": "week_n_day", "month": 12, "week_of_month": 1, "day_of_week": 1}` (`null` or 255 for any) |
+| Special event | `{"period": <calendar entry or "calendar:1">, "time_values": <day>, "priority": 10}` |
+| Destination | `{"recipient": "device:99", "process_identifier": 7}`, optionally with `valid_days` (`["mon", "tue"]` or Python's bit number), `from_time`, `to_time`, `issue_confirmed_notifications` and `transitions` (`["to-offnormal"]` or a number); left out, a destination covers every day, all day, every transition, unconfirmed. A recipient may also be `{"kind": "device", "object_identifier": "device:99"}` or `{"kind": "address", "network_number": 5, "mac_address": "0a:00:00:64:ba:c0"}` |
+
+An entry's value is a JSON null, boolean or number (a whole number is
+Unsigned, or Signed when negative; one with a decimal point is a REAL) or a
+string in the value grammar above (`"active"`, `"enumerated:3"`; a
+CharacterString keeps its inner quotes, `"\"Occupied\""`). A field the
+shape doesn't know is refused, and every error names where it is:
+
+```bash
+bacnet --allow-write write 192.168.1.100 schedule:1 weekly-schedule[2] '[["07:00", 72.5], ["18:00", null]]'
+bacnet --allow-write write 192.168.1.100 calendar:1 date-list '[{"kind": "date", "date": "2026-12-25"}]'
+```
+
+In the TUI, type JSON in the write form's Value field; the `:writem` bar
+splits on spaces and reads a quoted word as a string.
+
 ### COV Subscriptions
 
 ```bash
