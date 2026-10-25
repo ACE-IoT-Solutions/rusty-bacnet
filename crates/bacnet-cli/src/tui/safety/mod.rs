@@ -16,7 +16,7 @@ pub(crate) mod ledger;
 pub(crate) mod lock;
 pub(crate) mod plan;
 
-use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
+use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -264,17 +264,9 @@ pub(crate) enum Outcome {
     /// The device's mutation policy refused it: SERVICES /
     /// SERVICE_REQUEST_DENIED, shown apart from other errors.
     Denied,
-    /// Another Error PDU.
-    Error {
-        /// Error class.
-        class: u32,
-        /// Error code.
-        code: u32,
-    },
-    /// A Reject PDU.
-    Reject(u8),
-    /// An Abort PDU.
-    Abort(u8),
+    /// Another Error PDU, or a Reject or Abort PDU, with its typed class and
+    /// code or reason (#1814).
+    Refused(RemoteError),
     /// No answer: it may or may not have been applied.
     Timeout,
     /// Never sent, and why.
@@ -283,36 +275,30 @@ pub(crate) enum Outcome {
     Failed(String),
 }
 
+/// A name for the audit log: the value's name, or its number when it has
+/// none (a proprietary value, say).
+fn name_or_number(name: Option<&str>, raw: u16) -> serde_json::Value {
+    name.map_or_else(|| raw.into(), Into::into)
+}
+
 impl Outcome {
     /// From a client result.
     pub(crate) fn of(result: &Result<(), Error>) -> Self {
-        let denied = |class: ErrorClass, code: ErrorCode| {
-            class == ErrorClass::SERVICES && code == ErrorCode::SERVICE_REQUEST_DENIED
+        let error = match result {
+            Ok(()) => return Self::Ack,
+            Err(Error::Timeout(_)) => return Self::Timeout,
+            Err(error) => error,
         };
-        match result {
-            Ok(()) => Self::Ack,
-            Err(
-                Error::Remote(RemoteError::Error { class, code })
-                | Error::Structured { class, code, .. },
-            ) => {
-                if denied(*class, *code) {
-                    Self::Denied
-                } else {
-                    Self::Error {
-                        class: u32::from(class.to_raw()),
-                        code: u32::from(code.to_raw()),
-                    }
-                }
-            }
-            Err(Error::Remote(RemoteError::Reject { reason })) => Self::Reject(reason.to_raw()),
-            Err(Error::Remote(RemoteError::Abort { reason }))
-                if *reason == bacnet_types::enums::AbortReason::TSM_TIMEOUT =>
-            {
-                Self::Timeout
-            }
-            Err(Error::Remote(RemoteError::Abort { reason })) => Self::Abort(reason.to_raw()),
-            Err(Error::Timeout(_)) => Self::Timeout,
-            Err(other) => Self::Failed(other.to_string()),
+        match error.remote() {
+            Some(RemoteError::Error {
+                class: ErrorClass::SERVICES,
+                code: ErrorCode::SERVICE_REQUEST_DENIED,
+            }) => Self::Denied,
+            Some(RemoteError::Abort {
+                reason: AbortReason::TSM_TIMEOUT,
+            }) => Self::Timeout,
+            Some(remote) => Self::Refused(remote),
+            None => Self::Failed(error.to_string()),
         }
     }
 
@@ -320,42 +306,41 @@ impl Outcome {
     pub(crate) fn applied(&self) -> Option<bool> {
         match self {
             Self::Ack => Some(true),
-            Self::Denied | Self::Error { .. } | Self::Reject(_) | Self::Abort(_) => Some(false),
-            Self::NotSent(_) => Some(false),
+            Self::Denied | Self::Refused(_) | Self::NotSent(_) => Some(false),
             Self::Timeout | Self::Failed(_) => None,
         }
     }
 
-    /// One line for the result view.
+    /// One line for the result view: names, or numbers for values without
+    /// one.
     pub(crate) fn describe(&self) -> String {
         match self {
             Self::Ack => "acknowledged".into(),
             Self::Denied => "DENIED by the device's write policy (SERVICE_REQUEST_DENIED)".into(),
-            Self::Error { class, code } => format!(
-                "error {} / {}",
-                ErrorClass::from_raw(*class as u16),
-                ErrorCode::from_raw(*code as u16)
-            ),
-            Self::Reject(reason) => format!("rejected, reason {reason}"),
-            Self::Abort(reason) => format!("aborted, reason {reason}"),
+            Self::Refused(RemoteError::Error { class, code }) => format!("error {class} / {code}"),
+            Self::Refused(RemoteError::Reject { reason }) => format!("rejected, reason {reason}"),
+            Self::Refused(RemoteError::Abort { reason }) => format!("aborted, reason {reason}"),
             Self::Timeout => "no answer: it may or may not have been applied".into(),
             Self::NotSent(why) => format!("not sent: {why}"),
             Self::Failed(why) => format!("failed: {why}"),
         }
     }
 
-    /// The audit record's `outcome`.
+    /// The audit record's `outcome`: a class, code or reason by name, or by
+    /// number when it has none.
     pub(crate) fn json(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
             Self::Ack => json!({ "result": "ack" }),
             Self::Denied => json!({ "result": "error", "class": "SERVICES",
                                     "code": "SERVICE_REQUEST_DENIED", "denied": true }),
-            Self::Error { class, code } => json!({ "result": "error",
-                "class": ErrorClass::from_raw(*class as u16).to_string(),
-                "code": ErrorCode::from_raw(*code as u16).to_string() }),
-            Self::Reject(reason) => json!({ "result": "reject", "reason": reason }),
-            Self::Abort(reason) => json!({ "result": "abort", "reason": reason }),
+            Self::Refused(RemoteError::Error { class, code }) => json!({ "result": "error",
+                "class": name_or_number(class.name(), class.to_raw()),
+                "code": name_or_number(code.name(), code.to_raw()) }),
+            Self::Refused(RemoteError::Reject { reason }) => json!({ "result": "reject",
+                "reason": name_or_number(reason.name(), reason.to_raw().into()) }),
+            Self::Refused(RemoteError::Abort { reason }) => json!({ "result": "abort",
+                "reason": name_or_number(reason.name(), reason.to_raw().into()) }),
             Self::Timeout => json!({ "result": "timeout" }),
             Self::NotSent(why) => json!({ "result": "not-sent", "why": why }),
             Self::Failed(why) => json!({ "result": "failed", "why": why }),

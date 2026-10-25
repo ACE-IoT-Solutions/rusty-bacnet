@@ -110,6 +110,7 @@ mod writes_app;
 mod writes_arrays;
 mod writes_indexed;
 mod writes_ledger;
+mod writes_outcomes;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
