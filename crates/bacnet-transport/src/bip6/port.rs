@@ -170,6 +170,8 @@ impl Bip6Transport {
     /// Foreign `::` derives a concrete source from the route to the BBMD and
     /// binds the production socket to it. An explicit address is retained.
     /// Foreign startup does not require normal-mode multicast membership.
+    /// `start()` refuses a registration that fails
+    /// [`Bip6ForeignDeviceConfig::check`] (a link-local BBMD, say).
     /// A foreign device must also have a configured Device instance. Random
     /// VMAC startup is rejected until BBMD-assisted collision resolution is
     /// implemented.
@@ -310,6 +312,12 @@ impl TransportPort for Bip6Transport {
             return Err(Error::Transport(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "BIP6 foreign devices require a configured Device instance until BBMD-assisted random-VMAC resolution is implemented",
+            )));
+        }
+        if let Some(Err(refusal)) = self.foreign_device.as_ref().map(|fd| fd.config().check()) {
+            return Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("BIP6 foreign-device registration refused: {refusal}"),
             )));
         }
 

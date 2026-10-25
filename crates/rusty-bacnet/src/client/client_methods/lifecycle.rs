@@ -94,7 +94,10 @@ impl BACnetClient {
             sc_connect_timeout_ms,
         )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
-        let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
+        let crate::bip_options::IpModes {
+            bip: bip_mode,
+            bip6_foreign,
+        } = crate::bip_options::ip_modes(transport, bbmd, foreign_device)?;
         let multicast = crate::bip_options::bip_multicast(
             transport,
             interface,
@@ -104,6 +107,14 @@ impl BACnetClient {
             multicast,
         )?;
         let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
+        if bip6_foreign.is_some() && ipv6_device_instance.is_none() {
+            // A random VMAC would need the BBMD's help to settle a
+            // collision, which the transport doesn't do yet.
+            return Err(PyValueError::new_err(
+                "foreign_device with transport='ipv6' needs ipv6_device_instance: a B/IPv6 \
+                 foreign device uses its instance's VMAC",
+            ));
+        }
         if transport == "sc" {
             crate::tls::required_sc_credentials(
                 sc_ca_cert.as_deref(),
@@ -122,6 +133,7 @@ impl BACnetClient {
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
             bip_mode,
+            bip6_foreign,
             multicast,
             apdu_timeout_ms,
             sc_hub,
@@ -168,6 +180,7 @@ impl BACnetClient {
         let broadcast_str = slf.borrow().broadcast_address.clone();
         let share_port_by_address = slf.borrow().share_port_by_address;
         let bip_mode = slf.borrow().bip_mode.clone();
+        let bip6_foreign = slf.borrow().bip6_foreign.clone();
         let multicast = slf.borrow().multicast;
         let timeout_ms = slf.borrow().apdu_timeout_ms;
         let sc_hub = slf.borrow().sc_hub.clone();
@@ -223,6 +236,9 @@ impl BACnetClient {
                         .min_request_interval_ms(min_request_interval_ms);
                     if let Some(instance) = ipv6_device_instance {
                         builder = builder.device_instance(instance);
+                    }
+                    if let Some(foreign) = bip6_foreign {
+                        builder = builder.foreign_device(foreign);
                     }
                     Box::pin(builder.build_any()).await
                 }

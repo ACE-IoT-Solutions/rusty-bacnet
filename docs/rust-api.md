@@ -1244,6 +1244,13 @@ usable for the configured BBMD; an explicit source is retained. The production
 socket is bound to that source, so registration, DBTN and ordinary unicast agree
 with `local_address()`. This branch requires the existing configured Device instance
 and preserves trusted-BBMD handling without normal multicast prerequisites.
+`Bip6ForeignDeviceConfig::check()` says whether a registration can work: the
+BBMD must be an IPv6 unicast host with a nonzero port (not unspecified,
+multicast, link-local, IPv4-mapped or IPv4-compatible) and the TTL nonzero;
+it returns the `Bip6ForeignDeviceRefusal` otherwise. `start()` fails with
+`InvalidInput` for such a registration, and a Network Port activation refuses
+one. The B/IPv6 client builder takes a registration with
+`.foreign_device(config)` alongside `.device_instance(..)` (#1941).
 
 A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
 group destination at any port, is malformed for the same reason as on B/IP:

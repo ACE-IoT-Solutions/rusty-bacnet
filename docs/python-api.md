@@ -659,7 +659,7 @@ client = BACnetClient(
     transport="bip",             # "bip", "ipv6", "sc" or "mstp"
     share_port_by_address=False, # Keyword-only; B/IP, see "Sharing a port by address"
     bbmd=None,                   # Keyword-only; B/IP, a Bbmd: see "BBMD and foreign-device modes"
-    foreign_device=None,         # Keyword-only; B/IP, a ForeignDevice; not with bbmd
+    foreign_device=None,         # Keyword-only; B/IP or B/IPv6, a ForeignDevice; not with bbmd
     # IPv6 options:
     ipv6_interface=None,         # IPv6 selected local address; None means ::
     ipv6_device_instance=None,   # Keyword-only; 0..=4194303 for the VMAC of that instance, None for random
@@ -726,7 +726,8 @@ A B/IP `BACnetClient`, `BACnetServer` or `BipEndpoint` is a normal node by
 default. The keyword-only `bbmd=` makes it a BBMD, and `foreign_device=`
 registers it with a BBMD on another subnet as a foreign device, so its
 broadcasts, Who-Is among them, reach that subnet (#938). Each takes a typed
-object; giving both, or either on another transport, raises `ValueError`.
+object; giving both, `bbmd=` on another transport, or `foreign_device=` on
+SC or MS/TP raises `ValueError` (B/IPv6 foreign devices are below).
 
 ```python
 from rusty_bacnet import BACnetClient, BACnetServer, Bbmd, ForeignDevice
@@ -751,6 +752,33 @@ async with BACnetClient(port=0, foreign_device=ForeignDevice(
 `ttl`; `None` renews at half the TTL. The owner registers when it starts and renews
 on its own; its first broadcasts wait for the first registration to be
 answered.
+
+`foreign_device=` also works with `transport="ipv6"` on `BACnetClient` and
+`BACnetServer` (#1941): give `ForeignDevice` a B/IPv6 BBMD as `"ip"`,
+`"[ip]"` or `"[ip]:port"`. A port needs the brackets: `"2001:db8::10:4780"`
+is read as a bare address with the default port. The BBMD's family must match the transport, else the
+constructor raises `ValueError`. The BBMD must be an IPv6 unicast host: an
+unspecified, multicast, link-local, IPv4-mapped or IPv4-compatible address, a
+zone index or port 0 raises `ValueError` naming the reason, as does a `ttl`
+of 0. A B/IPv6 foreign device renews at half the TTL, but never more often
+than every 30 seconds, so `renewal=` is B/IP only and raises `ValueError` with a B/IPv6
+BBMD. The client needs `ipv6_device_instance`, since a B/IPv6 foreign device
+uses its instance's VMAC. Its broadcasts go to the BBMD as
+Distribute-Broadcast-To-Network. A registered Network Port
+(`add_bip6_network_port`) reads BACnet_IPv6_Mode FOREIGN (1) with the
+FD_BBMD_Address and FD_Subscription_Lifetime rows; with `on_reinitialize`, a
+written lifetime or BBMD takes effect at ReinitializeDevice ACTIVATE_CHANGES,
+and the next registration, sent at once, carries it. `foreign_registration()`
+is B/IP only.
+
+```python
+from rusty_bacnet import BACnetClient, ForeignDevice
+
+async with BACnetClient(transport="ipv6", port=0, ipv6_device_instance=4321,
+                        foreign_device=ForeignDevice("[2001:db8::10]:47808",
+                                                     ttl=600)) as client:
+    await client.who_is()
+```
 
 `Bbmd(bdt=None, *, accept_foreign_devices=False, management_acl=None,
 bdt_persist_path=None, alone_on_subnet=False, nat_global_address=None,
@@ -2599,7 +2627,7 @@ server = BACnetServer(
     transport="bip",             # "bip", "ipv6", "sc" or "mstp"
     share_port_by_address=False, # keyword-only; B/IP, see "Sharing a port by address"
     bbmd=None,                   # keyword-only; B/IP, see "BBMD and foreign-device modes"
-    foreign_device=None,         # keyword-only; B/IP; not with bbmd
+    foreign_device=None,         # keyword-only; B/IP or B/IPv6; not with bbmd
     segmentation_supported=Segmentation.NONE, # keyword-only; full-server capabilities
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
@@ -4334,13 +4362,13 @@ remain outside this registration contract.
 
 ### Local Network Number controls
 
-Three Python owners consume the two local nonrouter controls automatically, one per transport: `BACnetServer`, the endpoint classes and `BACnetClient`. `BACnetServer` and `BACnetClient` own them with `transport="bip"` (NORMAL B/IP), `"ipv6"` (normal multicast B/IPv6), `"sc"` and `"mstp"`; `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` own them on their links. Python's B/IP owners take `bbmd=` and `foreign_device=` for those two modes; the B/IPv6 foreign-device and Ethernet paragraphs below describe Rust-only modes. A valid local unicast or broadcast What-Is-Network-Number receives a local-broadcast Network-Number-Is when the owner knows its number (Clauses 6.4.19–6.4.20). There is no proactive startup announcement: the Standard asks that of configured routers, not of every nonrouter node. An explicit registered Network Port with a nonzero configured number reports `CONFIGURED` and never replaces that number from an announcement. Zero starts `UNKNOWN`; an owner without registration also starts unknown, regardless of other declared objects.
+Three Python owners consume the two local nonrouter controls automatically, one per transport: `BACnetServer`, the endpoint classes and `BACnetClient`. `BACnetServer` and `BACnetClient` own them with `transport="bip"` (NORMAL B/IP), `"ipv6"` (normal multicast or foreign B/IPv6), `"sc"` and `"mstp"`; `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` own them on their links. Python's B/IP owners take `bbmd=` and `foreign_device=` for those two modes, and its B/IPv6 client and server take `foreign_device=` (#1941); the Ethernet paragraph below describes a Rust-only mode. A valid local unicast or broadcast What-Is-Network-Number receives a local-broadcast Network-Number-Is when the owner knows its number (Clauses 6.4.19–6.4.20). There is no proactive startup announcement: the Standard asks that of configured routers, not of every nonrouter node. An explicit registered Network Port with a nonzero configured number reports `CONFIGURED` and never replaces that number from an announcement. Zero starts `UNKNOWN`; an owner without registration also starts unknown, regardless of other declared objects.
 
 A valid local-broadcast announcement with flag zero updates an unknown/learned owner to `LEARNED`. Flag one sets `LEARNED_CONFIGURED` and takes precedence over all subsequent flag-zero announcements. Further flag-one announcements may replace that learned value, including conflicts; an equal value still upgrades its quality. Both learned qualities transmit flag zero in their own responses. Selected-object `Network_Number` and `Network_Number_Quality` reads use the same database-owned state. Configuration remains immutable, so a new registration resets the pair from configured provenance; a new unregistered runtime starts unknown. There is no persistence of learned state across constructing a new runtime. After stop, the object retains the last observed pair until reconstruction or a new registration.
 
 Routed controls, malformed payloads and unicast Network-Number-Is are ignored. A BBMD Forwarded-NPDU is a logical broadcast even when its UDP hop is unicast and remains eligible. Ignoring number zero, 65535 and flags outside zero/one is this implementation's validation policy, rather than an additional quoted Standard mandate. Conflicting announcements against a locally configured number produce a debug diagnostic without changing configuration.
 
-Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python B/IPv6 foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, the refusal of another sender's Forwarded-NPDU in foreign mode, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. Rust MS/TP LoopbackSerial tests also cover the standalone client in both execution modes; see the MS/TP paragraph below.
+Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, the refusal of another sender's Forwarded-NPDU in foreign mode, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. Rust MS/TP LoopbackSerial tests also cover the standalone client in both execution modes; see the MS/TP paragraph below.
 
 Once `BACnetClient` has learned its network's number, a device its table holds as routed through a network with that number is on the client's own network (#1358). `read_property_from_device`, `write_property_to_device` and the other `_from_device` and `_to_device` methods send to it as a local request: a unicast to the device's own address with no DNET, not through the router it was heard through. An answer from that address completes the request, and so does one a router relays back with that number as its SNET and that address as its SADR (#1465): network numbers are unique, so both name the same device. While the number is unknown, these requests go through the router as before.
 
@@ -4348,7 +4376,7 @@ SC starts UNKNOWN with no configured SC Network Port API; unrelated configured o
 
 B/IP BBMD and configured foreign-mode owners without a registered Network Port start UNKNOWN; a registered port in either mode reports its configured number as above. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
 
-B/IPv6 starts UNKNOWN unless a B/IPv6 Network Port is registered (`add_bip6_network_port` with `registered_network_port`, #1579), which then supplies configured authority as on B/IP. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python B/IPv6 foreign-device API.
+B/IPv6 starts UNKNOWN unless a B/IPv6 Network Port is registered (`add_bip6_network_port` with `registered_network_port`, #1579), which then supplies configured authority as on B/IP. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In configured foreign-device mode (Rust, or Python's `foreign_device=`, #1941), an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder or number setter.
 
 Linux Ethernet full servers and standalone Rust clients start UNKNOWN with no configured Ethernet Network Port authority. The AF_PACKET receive path admits only the bound MAC and all-FF broadcast, before UI, XID or TEST handling; only all-FF is a logical group. This is the local single-link admission policy, not an additional quoted Clause 7 mandate. Existing self-source refusal remains. Actual isolated Docker Ethernet tests independently inspect destination/source, 802.3 length, LLC bytes, exact learned reply flag zero and padding, and verify stop/drop raw-FD release plus canceled transport-stop resumption. No privileged host interface or physical LAN is involved. The [opt-in fixture](../crates/bacnet-integration-tests/tests/ethernet_network_numbers/README.md) requires Linux and CAP_NET_RAW and is excluded from ordinary CI. There is no Ethernet endpoint builder or Python Ethernet API in this slice.
 
@@ -5642,8 +5670,9 @@ The selected address and actual bound port are used for outgoing data and contro
 frames. Incoming packets must belong to that interface and the selected unicast
 address or BACnet multicast group before they can populate the VMAC table or
 reach the application. Link-local addresses retain the interface zone internally;
-multicast scope does not make them routable beyond their link. There is no Python
-B/IPv6 foreign-device entry point in this change.
+multicast scope does not make them routable beyond their link. A foreign device
+(`foreign_device=`, see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes))
+binds the source it would use to reach its BBMD instead.
 
 Fresh installed Linux tests cover default and explicit ULA server Who-Is/I-Am and
 client discovery. macOS loopback covers transport multicast intake and

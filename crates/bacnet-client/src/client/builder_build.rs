@@ -56,7 +56,11 @@ impl BipClientBuilder {
 #[cfg(feature = "ipv6")]
 impl Bip6ClientBuilder {
     fn prepare(self) -> (ClientConfig, Bip6Transport, ClientOptions) {
-        let transport = Bip6Transport::new(self.interface, self.config.port, self.device_instance);
+        let mut transport =
+            Bip6Transport::new(self.interface, self.config.port, self.device_instance);
+        if let Some(foreign) = self.foreign_device {
+            transport.register_as_foreign_device(foreign);
+        }
         (self.config, transport, self.options)
     }
 

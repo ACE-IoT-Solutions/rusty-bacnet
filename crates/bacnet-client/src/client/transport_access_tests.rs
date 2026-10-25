@@ -164,3 +164,34 @@ async fn bbmd_helpers_on_a_non_bip_any_transport_fail_typed_before_sending() {
 
     client.stop().await.unwrap();
 }
+
+/// A B/IPv6 client built with a foreign registration registers with its
+/// BBMD at start (#1941).
+#[cfg(feature = "ipv6")]
+#[tokio::test]
+async fn a_bip6_client_with_a_foreign_registration_registers_at_start() {
+    use bacnet_transport::bip6::Bip6ForeignDeviceConfig;
+    let bbmd = tokio::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let mut client = BACnetClient::bip6_builder()
+        .interface(Ipv6Addr::LOCALHOST)
+        .port(0)
+        .device_instance(0x12_3456)
+        .foreign_device(Bip6ForeignDeviceConfig {
+            bbmd_ip: Ipv6Addr::LOCALHOST,
+            bbmd_port: bbmd.local_addr().unwrap().port(),
+            ttl: 90,
+        })
+        .build_any()
+        .await
+        .unwrap();
+    let mut buf = [0u8; 64];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(5), bbmd.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    // Register-Foreign-Device from the instance's VMAC, for 90 s.
+    assert_eq!(&buf[..len], [0x82, 0x09, 0, 9, 0x12, 0x34, 0x56, 0, 90]);
+    client.stop().await.unwrap();
+}
