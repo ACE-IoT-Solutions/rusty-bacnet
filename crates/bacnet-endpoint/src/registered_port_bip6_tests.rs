@@ -306,8 +306,8 @@ async fn a_b_ipv6_vmac_from_another_device_reserves_nothing() {
     };
     let mismatch = "registered B/IPv6 refused: the transport's VMAC 0x00000A is not Device 1234's \
                     VMAC 0x0004D2; build the transport with the served Device instance";
-    let none = "registered B/IPv6 refused: the transport has no Device instance, so its VMAC \
-                would be random; build it with Device instance 1234";
+    let none = "registered B/IPv6 refused: the transport has no Device instance in \
+                0..=4194303, so its VMAC would be random; build it with Device instance 1234";
     for (case, mut endpoint, expected) in [
         ("other", endpoint(other(), identity()), mismatch),
         ("random", endpoint(random(), identity()), none),

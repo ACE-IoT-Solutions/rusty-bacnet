@@ -435,8 +435,8 @@ async fn registration_refuses_a_vmac_that_is_not_the_served_devices() {
         ),
         (
             None,
-            "registered B/IPv6 refused: the transport has no Device instance, so its VMAC \
-             would be random; build it with Device instance 1193046",
+            "registered B/IPv6 refused: the transport has no Device instance in 0..=4194303, \
+             so its VMAC would be random; build it with Device instance 1193046",
         ),
     ] {
         let port = Bip6Port {

@@ -3,6 +3,7 @@
 //! so both owners refuse the same addresses and publish the same fields.
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::port::{Bip6Port, BipPort};
+use bacnet_types::bip6_vmac::{VmacHex, device_instance_vmac};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use std::net::{SocketAddrV4, SocketAddrV6};
@@ -25,8 +26,15 @@ pub fn bip_address(port: &BipPort, broadcast: Option<SocketAddrV4>) -> Result<So
 }
 
 /// The configured B/IPv6 address a port registers: one concrete unicast
-/// address, as a B/IP link's must be, on a link whose VMAC the served
-/// Device's instance gives (see [`bip6_vmac`]).
+/// address, as a B/IP link's must be, on a link whose VMAC is the one
+/// `served_device` gives (#2057).
+///
+/// `served_device` is the instance of the Device the owner serves. A B/IPv6
+/// node with a Device instance uses it as its VMAC (Annex U.1.3, Clause
+/// H.7.2), and peers find it by that instance, so a transport built for
+/// another instance, or with none (a random VMAC), would publish a VMAC that
+/// isn't this Device's. `None`, no served Device, is refused too: there is
+/// no instance to check the VMAC against.
 pub fn bip6_address(port: &Bip6Port, served_device: Option<u32>) -> Result<SocketAddrV6, Error> {
     let address = port.endpoint;
     let ip = *address.ip();
@@ -43,45 +51,34 @@ pub fn bip6_address(port: &Bip6Port, served_device: Option<u32>) -> Result<Socke
     if let Some(message) = refused {
         return Err(invalid(message));
     }
-    bip6_vmac(port, served_device)?;
+    check_vmac(port, served_device)?;
     Ok(address)
 }
 
-/// The VMAC a registered B/IPv6 port publishes, refused unless the transport
-/// derived it from `served_device`, the instance of the Device the owner
-/// serves (#2057). A B/IPv6 node with a Device instance uses that instance as
-/// its VMAC (Annex U.1.3, Clause H.7.2), and peers find it by that instance;
-/// a transport built for another instance, or with none (a random VMAC),
-/// would publish a VMAC that isn't this Device's. `None` (no served Device)
-/// is refused too: there is no instance to check the VMAC against.
-pub fn bip6_vmac(port: &Bip6Port, served_device: Option<u32>) -> Result<[u8; 3], Error> {
+/// [`bip6_address`]'s VMAC check.
+fn check_vmac(port: &Bip6Port, served_device: Option<u32>) -> Result<(), Error> {
     let Some(instance) = served_device else {
         return Err(invalid(
             "registered B/IPv6 requires a served Device: the port's VMAC is its instance",
         ));
     };
-    // H.7.2: the instance's 22 bits, high octet first. A Device instance is
-    // below 2^22, so the dropped top octet is zero.
-    let [_, high, middle, low] = instance.to_be_bytes();
-    let expected = [high, middle, low];
+    let expected = device_instance_vmac(instance)
+        .ok_or_else(|| invalid("registered B/IPv6 requires a Device instance in 0..=4194303"))?;
     match port.vmac {
-        Some(vmac) if vmac == expected => Ok(vmac),
+        Some(vmac) if vmac == expected => Ok(()),
         Some(vmac) => Err(Error::Encoding(format!(
             "registered B/IPv6 refused: the transport's VMAC {} is not Device {instance}'s \
              VMAC {}; build the transport with the served Device instance",
-            hex(vmac),
-            hex(expected),
+            VmacHex(vmac),
+            VmacHex(expected),
         ))),
+        // Before start a transport reports a VMAC only when a valid Device
+        // instance gave it one.
         None => Err(Error::Encoding(format!(
-            "registered B/IPv6 refused: the transport has no Device instance, so its VMAC \
-             would be random; build it with Device instance {instance}"
+            "registered B/IPv6 refused: the transport has no Device instance in 0..=4194303, \
+             so its VMAC would be random; build it with Device instance {instance}"
         ))),
     }
-}
-
-/// A VMAC as six hex digits, as `bip6:0x` text writes it.
-fn hex([high, middle, low]: [u8; 3]) -> String {
-    format!("0x{high:02X}{middle:02X}{low:02X}")
 }
 
 /// Publish a started B/IP port's bind, mode and multicast group.
@@ -155,15 +152,17 @@ mod tests {
             (1234, [0x00, 0x04, 0xD2]),
             (0x3F_FFFE, [0x3F, 0xFF, 0xFE]),
         ] {
-            assert_eq!(bip6_vmac(&port(Some(vmac)), Some(instance)).unwrap(), vmac);
+            check_vmac(&port(Some(vmac)), Some(instance)).unwrap();
             // One bit off in each octet is another Device's.
             for octet in 0..3 {
                 let mut other = vmac;
                 other[octet] ^= 1;
-                assert!(bip6_vmac(&port(Some(other)), Some(instance)).is_err());
+                assert!(check_vmac(&port(Some(other)), Some(instance)).is_err());
             }
-            assert!(bip6_vmac(&port(None), Some(instance)).is_err());
+            assert!(check_vmac(&port(None), Some(instance)).is_err());
         }
+        // A served instance past 4194303 has no VMAC to match.
+        assert!(check_vmac(&port(Some([0x40, 0, 0])), Some(0x40_0000)).is_err());
         // No served Device: nothing to check the VMAC against.
         let error = bip6_address(&port(Some([0, 0, 1])), None).unwrap_err();
         assert_eq!(
