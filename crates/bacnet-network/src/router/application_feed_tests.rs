@@ -514,3 +514,64 @@ async fn an_event_notification_is_answered_by_the_server_alone() {
     assert_eq!(router.counters().originated, 0);
     router.stop().await.unwrap();
 }
+
+/// The client's answer to a ConfirmedEventNotification, sent through the
+/// plan the client's port kept because the server's couldn't take it: one
+/// Simple-ACK to station 7, and nothing more.
+async fn the_client_answers(
+    router: &super::super::BACnetRouter,
+    ports: &RouterApplicationPorts,
+    peer: &mut Peer,
+) {
+    assert_eq!(ports.client.saved_replies(), 1);
+    let ack = [1, 0x20, 0x07, 0xD0, 1, 7, 255, 0x20, 9, 0x02];
+    let (sent, result) = tokio::join!(
+        async {
+            let sent = sending(peer).await;
+            sent.complete.send(Ok(())).unwrap();
+            (sent.to, sent.npdu)
+        },
+        ports.client.send_unicast(&ack, &[0xEE])
+    );
+    result.unwrap();
+    assert_eq!(sent.0, Some(vec![7]));
+    assert_eq!(&sent.1[2..], [0x20, 9, 0x02]);
+    assert!(peer.sent.try_recv().is_err(), "one answer only");
+    assert_eq!(router.counters().originated, 0, "through the plan");
+}
+
+const EVENT_NOTIFICATION: [u8; 6] = [0x00, 0x05, 9, 0x02, 0x09, 0x01];
+
+/// With the server's port not started, the client answers an event
+/// notification.
+#[tokio::test]
+async fn without_a_server_the_client_answers_an_event_notification() {
+    let (mut router, apdus, mut peers) = start(2).await;
+    let mut ports = router.application_ports(apdus);
+    let mut client = ports.client.start().await.unwrap();
+    receive(&peers[1], [&[1, 0x04][..], &EVENT_NOTIFICATION].concat(), 0).await;
+    assert_eq!(&next(&mut client).await[6..], EVENT_NOTIFICATION);
+    assert_eq!(ports.server.saved_replies(), 0);
+    the_client_answers(&router, &ports, &mut peers[1]).await;
+    router.stop().await.unwrap();
+}
+
+/// With the server's queue full, the client answers an event notification.
+#[tokio::test(start_paused = true)]
+async fn with_the_server_full_the_client_answers_an_event_notification() {
+    let (mut router, ports, [mut client, mut server], mut peers) = split().await;
+    for _ in 0..QUEUE {
+        receive(&peers[0], vec![1, 0, 0x10, 0x08], 0).await;
+        next(&mut client).await;
+    }
+    receive(&peers[1], [&[1, 0x04][..], &EVENT_NOTIFICATION].concat(), 0).await;
+    assert_eq!(&next(&mut client).await[6..], EVENT_NOTIFICATION);
+    assert_eq!(ports.server.saved_replies(), 0);
+    the_client_answers(&router, &ports, &mut peers[1]).await;
+    // The server got only the Who-Is it had room for.
+    for _ in 0..QUEUE {
+        assert_eq!(&server.recv().await.unwrap().npdu[6..], [0x10, 0x08]);
+    }
+    assert!(server.try_recv().is_err());
+    router.stop().await.unwrap();
+}

@@ -15,7 +15,8 @@
 //! A ConfirmedEventNotification goes to both stacks on
 //! [split ports](super::RouterApplicationPorts), and the server's answer is
 //! the one sent: the client's port keeps a silenced plan for it, which
-//! swallows the client's answer.
+//! swallows the client's answer. When the server's port can't take the
+//! notification, the client's port keeps the real plan instead.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};

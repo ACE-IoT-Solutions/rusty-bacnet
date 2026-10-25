@@ -142,8 +142,9 @@ pub struct RouterApplicationPort {
 /// - a Confirmed-Request goes to the server, except a
 ///   ConfirmedCOVNotification, which goes to the client, and a
 ///   ConfirmedEventNotification, which goes to both: the server's answer is
-///   sent and the client's dropped. A ConfirmedAuditNotification goes to the
-///   server alone;
+///   sent and the client's dropped, unless the server's port can't take it
+///   (not started, stopped or full), when the client's answer is sent. A
+///   ConfirmedAuditNotification goes to the server alone;
 /// - an Unconfirmed-Request goes to both, so the client hears I-Am, I-Have
 ///   and unconfirmed notifications, and the server Who-Is and Who-Has;
 /// - an answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK or

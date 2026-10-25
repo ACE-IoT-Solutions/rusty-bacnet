@@ -3625,8 +3625,10 @@ The router shares out what it delivers to its application:
   ConfirmedCOVNotification goes to the client alone. A
   ConfirmedEventNotification goes to both: the client hears it, and the server
   takes it for its Notification Forwarders. The server's answer is the one
-  sent; the client's is dropped. A ConfirmedAuditNotification goes to the
-  server alone, since only the server handles it.
+  sent; the client's is dropped. When the server's port can't take it (not
+  started, stopped, or its queue full), the client's answer is sent instead. A
+  ConfirmedAuditNotification goes to the server alone, since only the server
+  handles it.
 - An Unconfirmed-Request goes to both. The client hears I-Am, I-Have and
   unconfirmed notifications; the server hears Who-Is, Who-Has and the rest.
   Each ignores what it doesn't use.

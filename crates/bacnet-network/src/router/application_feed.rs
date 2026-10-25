@@ -11,7 +11,8 @@
 //! - a Confirmed-Request goes to the server, unless it is a COV
 //!   notification, which only the client takes, or an event notification,
 //!   which goes to both: the server's answer is sent, and the client's is
-//!   dropped;
+//!   dropped, unless the server's port can't take it, when the client
+//!   answers;
 //! - an Unconfirmed-Request goes to both: the client takes I-Am, I-Have and
 //!   notifications, the server Who-Is, Who-Has and the rest, and each
 //!   ignores what it doesn't use;
@@ -29,13 +30,14 @@
 //!
 //! Each port holds a few NPDUs, and the task takes an APDU off the router's
 //! queue only once each consumer that is keeping up has room for it, so the
-//! router's queue, with its admission accounting and per-source quota,
-//! stays the buffer that fills and drops. A consumer that gives no room for
+//! router's queue, with its admission accounting and per-source quota, stays
+//! the buffer that fills and drops. A consumer that gives no room for
 //! [`STALL`] is taken as stalled: the task stops waiting for it, and the
 //! APDUs meant for it are dropped while its queue stays full, until it has
 //! room again. A stalled consumer therefore holds the other one up for at
-//! most [`STALL`] each time it frees a slot and then stays full again. When no consumer has room, the task waits for
-//! one, and the router's queue drops. The router itself never waits.
+//! most [`STALL`] each time it frees a slot and then stays full again. When
+//! no consumer has room, the task waits for one, and the router's queue
+//! drops. The router itself never waits.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -239,19 +241,23 @@ async fn run(mut apdus: ApduSource, consumers: Arc<watch::Sender<Consumers>>, ro
             Some(Some(apdu)) => apdu,
             Some(None) => break,
         };
-        for (index, npdu) in router.deliver(apdu).into_iter().enumerate() {
-            let Some(npdu) = npdu else { continue };
-            if let Some(permit) = permits[index].take() {
-                permit.send(npdu);
-                continue;
+        // A stalled consumer gets an APDU only if it has room now. Which
+        // consumers can take it is settled before delivery, so a reply plan
+        // goes to a stack that receives its request.
+        for (index, permit) in permits.iter_mut().enumerate() {
+            if permit.is_none() {
+                *permit = live[index].and_then(|tx| tx.try_reserve().ok());
             }
-            // A stalled consumer gets it only if it has room now.
-            match live[index].map(mpsc::Sender::try_reserve) {
-                Some(Ok(permit)) => {
+        }
+        let room = permits.each_ref().map(Option::is_some);
+        for (index, npdu) in router.deliver(apdu, room).into_iter().enumerate() {
+            let Some(npdu) = npdu else { continue };
+            match permits[index].take() {
+                Some(permit) => {
                     permit.send(npdu);
                     stalled[index] = false;
                 }
-                _ => debug!(
+                None => debug!(
                     slot = index,
                     "router application: an APDU dropped for a consumer without room"
                 ),
@@ -307,9 +313,10 @@ struct Router {
 impl Router {
     /// `apdu` as the NPDU each slot gets, if any: with its origin as SNET
     /// and SADR, an answer's invoke ID given back as its stack chose it, and
-    /// a Confirmed-Request's reply plan kept for the stack it goes to.
-    /// Nothing, logged, when it has no origin that can be written.
-    fn deliver(&self, apdu: ReceivedApdu) -> [Option<ReceivedNpdu>; 2] {
+    /// a Confirmed-Request's reply plan kept for the stack that answers it,
+    /// of those with `room` for it. Nothing, logged, when it has no origin
+    /// that can be written.
+    fn deliver(&self, apdu: ReceivedApdu, room: [bool; 2]) -> [Option<ReceivedNpdu>; 2] {
         let (network, mac) = match (&apdu.source_network, apdu.ingress_network) {
             (Some(source), _) => (source.network, source.mac_address.as_slice()),
             (None, Some(network)) => (network, apdu.source_mac.as_slice()),
@@ -369,11 +376,18 @@ impl Router {
         }
         if let Some(response) = apdu.router_response {
             // A Confirmed-Request. One that goes to both is the server's to
-            // answer; the client's answer is swallowed.
-            let slot = usize::from(slots[1]);
-            self.replies[slot].save(network, mac, &apdu.apdu, response);
-            if slots == [true, true] {
+            // answer, and the client's answer is swallowed, when the server
+            // gets it; else the client answers.
+            if slots == [true, true] && room[1] {
+                self.replies[1].save(network, mac, &apdu.apdu, response);
                 self.replies[0].silence(network, mac, &apdu.apdu);
+            } else {
+                let slot = if slots == [true, true] {
+                    0
+                } else {
+                    usize::from(slots[1])
+                };
+                self.replies[slot].save(network, mac, &apdu.apdu, response);
             }
         }
         let npdu = Bytes::from(buf);
