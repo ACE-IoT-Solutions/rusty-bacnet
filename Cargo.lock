@@ -3016,6 +3016,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-objects",
  "bacnet-server",
  "bacnet-services",

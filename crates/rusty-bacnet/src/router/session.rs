@@ -1,4 +1,5 @@
 //! Actual multiport activity belongs to the admitted native session.
+use super::application::{Application, Slots};
 use super::config::PortConfig;
 use super::lifecycle::Session;
 use super::records::{PyRouterPortInfo, PyRouterRoute};
@@ -8,7 +9,10 @@ use bacnet_types::error::Error;
 
 pub(super) struct NativeSession {
     configs: Vec<PortConfig>,
+    application: Application,
     pub router: Option<BACnetRouter>,
+    /// The application ports this start made, until their stacks take them.
+    pub slots: Slots,
 }
 
 impl NativeSession {
@@ -16,13 +20,17 @@ impl NativeSession {
     pub(super) fn from_started(router: BACnetRouter) -> Self {
         Self {
             configs: Vec::new(),
+            application: Application::None,
             router: Some(router),
+            slots: Slots::default(),
         }
     }
-    pub fn new(configs: Vec<PortConfig>) -> Self {
+    pub fn new(configs: Vec<PortConfig>, application: Application) -> Self {
         Self {
             configs,
+            application,
             router: None,
+            slots: Slots::default(),
         }
     }
     pub fn ports(&self) -> Vec<PyRouterPortInfo> {
@@ -74,13 +82,16 @@ impl Session for NativeSession {
             })
             .collect();
         let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
-        // This binding is a forwarding owner, with no local application role.
-        drop(started.apdus);
-        drop(started.network_control);
-        self.router = Some(started.router);
+        // The network-control receiver stays internal: none was asked for.
+        let (router, slots) = Slots::split(self.application, started);
+        self.router = Some(router);
+        self.slots = slots;
         Ok(())
     }
     async fn stop(&mut self) -> Result<(), RouterStopError> {
-        self.router.as_mut().unwrap().stop().await
+        let stopped = self.router.as_mut().unwrap().stop().await;
+        // Ports no stack took end with this start.
+        self.slots = Slots::default();
+        stopped
     }
 }

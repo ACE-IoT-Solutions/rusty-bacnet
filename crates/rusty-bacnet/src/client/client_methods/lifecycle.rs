@@ -40,7 +40,8 @@ impl BACnetClient {
         sc_npdu_per_origin_limit=None,
         sc_failover_hub=None,
         sc_connect_timeout_ms=None,
-        sc_control_rate_limit=None
+        sc_control_rate_limit=None,
+        router=None
     ))]
     fn new(
         interface: &str,
@@ -79,7 +80,15 @@ impl BACnetClient {
         sc_failover_hub: Option<String>,
         sc_connect_timeout_ms: Option<u64>,
         sc_control_rate_limit: Option<(u32, u32)>,
+        router: Option<PyRef<'_, crate::router::PyBACnetRouter>>,
     ) -> PyResult<Self> {
+        let router = crate::router::application::stack_router(
+            transport,
+            router,
+            crate::router::application::Role::Client,
+            apdu_timeout_ms,
+            "apdu_timeout_ms",
+        )?;
         let sc_npdu_admission_policy =
             crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit, sc_control_rate_limit)?;
         if reconnect.is_some() && transport != "sc" {
@@ -165,6 +174,7 @@ impl BACnetClient {
                     reply_timeout_ms: mstp_reply_timeout_ms,
                 },
             },
+            router,
             min_request_interval_ms,
         })
     }
@@ -199,6 +209,7 @@ impl BACnetClient {
         let ipv6_device_instance = slf.borrow().ipv6_device_instance;
         let mstp = slf.borrow().mstp.clone();
         let min_request_interval_ms = slf.borrow().min_request_interval_ms;
+        let router = slf.borrow().router.clone();
 
         crate::py_async::future_into_py(py, async move {
             let mut slot = state::starting(&inner).await?;
@@ -220,7 +231,7 @@ impl BACnetClient {
                             .multicast(multicast)
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
-                            .build_any(),
+                            .build_into(),
                     )
                     .await
                 }
@@ -240,7 +251,7 @@ impl BACnetClient {
                     if let Some(foreign) = bip6_foreign {
                         builder = builder.foreign_device(foreign);
                     }
-                    Box::pin(builder.build_any()).await
+                    Box::pin(builder.build_into()).await
                 }
                 "sc" => {
                     let hub_url = sc_hub.ok_or_else(|| {
@@ -288,7 +299,7 @@ impl BACnetClient {
                     }
                     // Subscribed before the client starts, so the first
                     // connection_events() sees the first Connected (#1908).
-                    Box::pin(builder.build_any_with_events())
+                    Box::pin(builder.build_into_with_events())
                         .await
                         .map(|(client, events)| {
                             inner.keep_first_sc_events(events);
@@ -299,7 +310,26 @@ impl BACnetClient {
                     let transport = crate::mstp_py::build_mstp_transport(&mstp)?;
                     Box::pin(
                         client::BACnetClient::generic_builder()
-                            .transport(transport)
+                            .transport(AppTransport::from(transport))
+                            .apdu_timeout_ms(timeout_ms)
+                            .min_request_interval_ms(min_request_interval_ms)
+                            .build(),
+                    )
+                    .await
+                }
+                "router" => {
+                    let router = router.ok_or_else(|| {
+                        PyRuntimeError::new_err("transport='router' needs router=")
+                    })?;
+                    // Nothing the build checks before starting the port
+                    // can fail here: the constructor checked the pacing
+                    // interval, the rest are defaults, and every router
+                    // port carries a full APDU. So a taken port is a
+                    // started one.
+                    let port = router.take().await?;
+                    Box::pin(
+                        client::BACnetClient::generic_builder()
+                            .transport(AppTransport::Router(port))
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
                             .build(),
@@ -308,7 +338,8 @@ impl BACnetClient {
                 }
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
-                        "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"
+                        "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', 'mstp' or \
+                         'router'"
                     )));
                 }
             }
