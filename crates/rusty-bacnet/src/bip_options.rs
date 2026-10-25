@@ -33,13 +33,14 @@ const MIN_RENEWAL_SECS: f64 = 0.1;
 /// #1941).
 ///
 /// `bbmd` names a B/IP BBMD as `"ip"` or `"ip:port"`, or a B/IPv6 one as
-/// `"ip"` or `"[ip]:port"` (port 47808 by default); the owner's transport
-/// must match. A B/IPv6 BBMD must be a unicast host: not unspecified,
+/// `"ip"`, `"[ip]"` or `"[ip]:port"` (port 47808 by default; a port needs
+/// the brackets, since `"2001:db8::10:4780"` is a bare address); the owner's
+/// transport must match. A B/IPv6 BBMD must be a unicast host: not unspecified,
 /// multicast, link-local, IPv4-mapped or IPv4-compatible. `ttl`, at least
 /// 1, is how many seconds the BBMD keeps the entry. `renewal` (B/IP only)
 /// is the seconds between registrations, at least 0.1 and shorter than
 /// `ttl`; `None` renews at half the TTL, which is what a B/IPv6 foreign
-/// device always does (at least every 30 s). Behind NAT, renew often so the
+/// device always does (but never more often than every 30 s). Behind NAT, renew often so the
 /// mapping the BBMD's replies come back on stays open, while the TTL stays
 /// long. A bad value raises ValueError, or OverflowError for an integer out
 /// of range.
@@ -154,7 +155,7 @@ impl PyForeignDevice {
         if renewal.is_some() {
             return Err(PyValueError::new_err(
                 "renewal applies only to a B/IP BBMD: a B/IPv6 foreign device renews at \
-                 half the ttl, at least every 30 seconds",
+                 half the ttl, but never more often than every 30 seconds",
             ));
         }
         let config = Bip6ForeignDeviceConfig {
@@ -173,16 +174,23 @@ impl PyForeignDevice {
     }
 }
 
-/// `"ip"` or `"[ip]:port"` as a B/IPv6 address, port 47808 by default;
+/// `"ip"`, `"[ip]"` or `"[ip]:port"` as a B/IPv6 address, port 47808 by default;
 /// `None` for any other text, which the B/IP parser then reads. A zone or
 /// flow label is refused: neither travels with a B/IPv6 address.
 fn parse_ipv6_address(text: &str) -> PyResult<Option<SocketAddrV6>> {
     let address = match text.parse::<SocketAddrV6>() {
         Ok(address) => address,
-        Err(_) => match text.parse::<Ipv6Addr>() {
-            Ok(ip) => SocketAddrV6::new(ip, DEFAULT_BACNET_PORT, 0, 0),
-            Err(_) => return Ok(None),
-        },
+        Err(_) => {
+            // "ip" or "[ip]", both with the default port.
+            let bare = text
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+                .unwrap_or(text);
+            match bare.parse::<Ipv6Addr>() {
+                Ok(ip) => SocketAddrV6::new(ip, DEFAULT_BACNET_PORT, 0, 0),
+                Err(_) => return Ok(None),
+            }
+        }
     };
     if address.scope_id() != 0 || address.flowinfo() != 0 {
         return Err(PyValueError::new_err(format!(

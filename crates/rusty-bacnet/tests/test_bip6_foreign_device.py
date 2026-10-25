@@ -81,6 +81,11 @@ class OptionTests(unittest.TestCase):
         self.assertEqual((foreign.bbmd, foreign.ttl, foreign.renewal),
                          ("[2001:db8::bb]:47808", 600, None))
         self.assertEqual(ForeignDevice("[::1]:47809").bbmd, "[::1]:47809")
+        # Brackets without a port take the default one.
+        self.assertEqual(ForeignDevice("[::1]").bbmd, "[::1]:47808")
+        # Without brackets a trailing group is part of the address.
+        self.assertEqual(ForeignDevice("2001:db8::10:4780").bbmd,
+                         "[2001:db8::10:4780]:47808")
         self.assertEqual(ForeignDevice("[fd00::bb]:47809").ttl, 300)
         self.assertEqual(repr(ForeignDevice("::1", ttl=60)),
                          "ForeignDevice(bbmd='[::1]:47808', ttl=60, renewal=None)")

@@ -754,13 +754,14 @@ on its own; its first broadcasts wait for the first registration to be
 answered.
 
 `foreign_device=` also works with `transport="ipv6"` on `BACnetClient` and
-`BACnetServer` (#1941): give `ForeignDevice` a B/IPv6 BBMD as `"ip"` or
-`"[ip]:port"`. The BBMD's family must match the transport, else the
+`BACnetServer` (#1941): give `ForeignDevice` a B/IPv6 BBMD as `"ip"`,
+`"[ip]"` or `"[ip]:port"`. A port needs the brackets: `"2001:db8::10:4780"`
+is read as a bare address with the default port. The BBMD's family must match the transport, else the
 constructor raises `ValueError`. The BBMD must be an IPv6 unicast host: an
 unspecified, multicast, link-local, IPv4-mapped or IPv4-compatible address, a
 zone index or port 0 raises `ValueError` naming the reason, as does a `ttl`
-of 0. A B/IPv6 foreign device renews at half the TTL, at least every 30
-seconds, so `renewal=` is B/IP only and raises `ValueError` with a B/IPv6
+of 0. A B/IPv6 foreign device renews at half the TTL, but never more often
+than every 30 seconds, so `renewal=` is B/IP only and raises `ValueError` with a B/IPv6
 BBMD. The client needs `ipv6_device_instance`, since a B/IPv6 foreign device
 uses its instance's VMAC. Its broadcasts go to the BBMD as
 Distribute-Broadcast-To-Network. A registered Network Port

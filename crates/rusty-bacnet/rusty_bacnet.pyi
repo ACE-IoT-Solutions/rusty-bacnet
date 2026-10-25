@@ -2493,15 +2493,17 @@ class ForeignDevice:
     ``BACnetClient`` and ``BACnetServer`` with ``transport="ipv6"`` (#1941).
 
     ``bbmd`` names a B/IP BBMD as ``"ip"`` or ``"ip:port"``, or a B/IPv6 one
-    as ``"ip"`` or ``"[ip]:port"`` (port 47808 by default); the owner's
-    transport must match, else its constructor raises ValueError. A B/IPv6
+    as ``"ip"``, ``"[ip]"`` or ``"[ip]:port"`` (port 47808 by default; an
+    IPv6 port needs the brackets, since ``"2001:db8::10:4780"`` is read as a
+    bare address); the owner's transport must match, else its constructor
+    raises ValueError. A B/IPv6
     BBMD must be a unicast host: an unspecified, multicast, link-local,
     IPv4-mapped or IPv4-compatible address, a zone index or port 0 raises
     ValueError saying which. ``ttl`` is how many seconds the BBMD keeps the
     entry, 1 to 65535. ``renewal`` (B/IP only) is the seconds between
     registrations, at least 0.1 and less than ``ttl``; ``None`` renews at
-    half the TTL, which a B/IPv6 foreign device always does (at least every
-    30 s), so a B/IPv6 BBMD with ``renewal`` raises ValueError. Behind NAT,
+    half the TTL, which a B/IPv6 foreign device always does (but never more
+    often than every 30 s), so a B/IPv6 BBMD with ``renewal`` raises ValueError. Behind NAT,
     renew often so the mapping the BBMD's replies come back on stays open,
     while the TTL stays long. Invalid values raise ValueError, or
     OverflowError for an integer out of range.
