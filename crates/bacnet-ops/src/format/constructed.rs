@@ -1,9 +1,9 @@
 //! Constructed elements as text: the productions the element table names,
 //! split with their codecs and written out in the TUI's style.
 //!
-//! Only the elements a technician meets on everyday objects have a renderer
-//! here; any other element, or a value that doesn't decode as its elements
-//! to the last octet, is left to the generic view.
+//! Every element of the table has a renderer, here or in `recipients` and
+//! `commands`; a value that doesn't decode as its elements to the last
+//! octet is left to the generic view.
 
 use bacnet_encoding::constructed::{
     ConstructedElement, decode_calendar_entry, decode_daily_schedule, decode_date_range,
@@ -19,8 +19,8 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
-use super::ValueFormat;
 use super::primitive::{date_range, date_text, date_time, month_text, time_text, weekday};
+use super::{ValueFormat, commands, recipients};
 use crate::label::{kebab, object_label};
 
 /// The object instance an unset reference names: the standard keeps
@@ -28,11 +28,14 @@ use crate::label::{kebab, object_label};
 const UNSET_INSTANCE: u32 = 4_194_303;
 
 /// The text of each element of `data`, or `None` when the element has no
-/// renderer, `data` is empty, or an element doesn't decode.
+/// renderer, `data` is empty, or an element doesn't decode. `first` is the
+/// place in the array (from 0) of the first element: 0 for a whole read,
+/// the index less one for an indexed read.
 pub(super) fn elements(
     format: &ValueFormat<'_>,
     element: ConstructedElement,
     data: &[u8],
+    first: usize,
 ) -> Option<Vec<String>> {
     if data.is_empty() {
         return None;
@@ -40,7 +43,7 @@ pub(super) fn elements(
     let render = renderer(element)?;
     let mut texts = Vec::new();
     let ends = split_elements(data, |octets, offset| {
-        render(format, texts.len(), octets, offset).map(|(text, end)| {
+        render(format, first.saturating_add(texts.len()), octets, offset).map(|(text, end)| {
             texts.push(text);
             end
         })
@@ -53,7 +56,10 @@ pub(super) fn elements(
 /// and writes it out.
 type Render = fn(&ValueFormat<'_>, usize, &[u8], usize) -> Result<(String, usize), Error>;
 
-fn renderer(element: ConstructedElement) -> Option<Render> {
+/// The renderer of an element; `None` only for an element added to the
+/// table after this match (the enum is non-exhaustive), which a test
+/// catches.
+pub(super) fn renderer(element: ConstructedElement) -> Option<Render> {
     use ConstructedElement as E;
     Some(match element {
         E::TimeStamp => timestamp,
@@ -93,15 +99,7 @@ fn renderer(element: ConstructedElement) -> Option<Render> {
                 let text = match source {
                     BACnetValueSource::None => "none".to_string(),
                     BACnetValueSource::Object(r) => object_reference(&r),
-                    BACnetValueSource::Address(address) => format!(
-                        "network {} address 0x{}",
-                        address.network_number,
-                        address
-                            .mac_address
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<String>()
-                    ),
+                    BACnetValueSource::Address(address) => recipients::address_text(&address),
                 };
                 (text, end)
             })
@@ -119,8 +117,84 @@ fn renderer(element: ConstructedElement) -> Option<Render> {
                 (text, end)
             })
         },
+        E::Destination => recipients::destination,
+        E::Recipient => recipients::recipient,
+        E::CovSubscription => recipients::cov_subscription,
+        E::AddressBinding => recipients::address_binding,
+        E::EventParameter => recipients::event_parameter,
+        E::ActionList => commands::action_list,
+        E::ReadAccessSpecification => commands::read_access_specification,
+        E::ReadAccessResult => commands::read_access_result,
+        E::PropertyAccessResult => commands::property_access_result,
+        E::StageLimitValue => commands::stage_limit_value,
+        E::Scale => commands::scale,
+        E::Prescale => commands::prescale,
+        E::ShedLevel => commands::shed_level,
+        E::PortPermission => commands::port_permission,
+        E::AuthenticationFactor => commands::authentication_factor,
+        E::AuthenticationFactorFormat => commands::authentication_factor_format,
+        E::AuthenticationPolicy => commands::authentication_policy,
+        E::AccessRule => commands::access_rule,
         _ => return None,
     })
+}
+
+/// An element's kind, as the CLI's JSON names it (`docs/CLI.md`, "Value
+/// output"). Written out, so renaming an encoding variant can't change the
+/// JSON; `element` only for one added to the table after this match, which
+/// a test catches.
+pub(super) fn element_name(element: ConstructedElement) -> &'static str {
+    use ConstructedElement as E;
+    match element {
+        E::NameValue => "name-value",
+        E::Destination => "destination",
+        E::PortPermission => "port-permission",
+        E::ReadAccessSpecification => "read-access-specification",
+        E::ReadAccessResult => "read-access-result",
+        E::ActionList => "action-list",
+        E::DeviceObjectReference => "device-object-reference",
+        E::AuthenticationFactorFormat => "authentication-factor-format",
+        E::AuthenticationPolicy => "authentication-policy",
+        E::StageLimitValue => "stage-limit-value",
+        E::AccessRule => "access-rule",
+        E::DeviceObjectPropertyReference => "device-object-property-reference",
+        E::ObjectPropertyReference => "object-property-reference",
+        E::PropertyAccessResult => "property-access-result",
+        E::Recipient => "recipient",
+        E::DailySchedule => "daily-schedule",
+        E::SpecialEvent => "special-event",
+        E::CalendarEntry => "calendar-entry",
+        E::DateRange => "date-range",
+        E::TimeStamp => "time-stamp",
+        E::CovSubscription => "cov-subscription",
+        E::ValueSource => "value-source",
+        E::Scale => "scale",
+        E::Prescale => "prescale",
+        E::AddressBinding => "address-binding",
+        E::ShedLevel => "shed-level",
+        E::AuthenticationFactor => "authentication-factor",
+        E::EventParameter => "event-parameter",
+        _ => "element",
+    }
+}
+
+/// What parts the elements of a collection: `; ` for the elements whose
+/// own text holds commas, `, ` for the rest.
+pub(super) fn separator(element: ConstructedElement) -> &'static str {
+    use ConstructedElement as E;
+    match element {
+        E::DailySchedule
+        | E::Destination
+        | E::CovSubscription
+        | E::ActionList
+        | E::ReadAccessSpecification
+        | E::ReadAccessResult
+        | E::PropertyAccessResult
+        | E::StageLimitValue
+        | E::AuthenticationPolicy
+        | E::AccessRule => "; ",
+        _ => ", ",
+    }
 }
 
 fn timestamp(
@@ -239,7 +313,7 @@ fn special_event(
 
 /// `analog-input 2 present-value`, with `[3]` for an array index; `none`
 /// for the unset reference.
-fn reference(object: ObjectIdentifier, property: u32, index: Option<u32>) -> String {
+pub(super) fn reference(object: ObjectIdentifier, property: u32, index: Option<u32>) -> String {
     if object.instance_number() == UNSET_INSTANCE {
         return "none".into();
     }
@@ -254,14 +328,14 @@ fn reference(object: ObjectIdentifier, property: u32, index: Option<u32>) -> Str
     text
 }
 
-fn on_device(text: String, device: Option<ObjectIdentifier>) -> String {
+pub(super) fn on_device(text: String, device: Option<ObjectIdentifier>) -> String {
     match device {
         Some(device) if text != "none" => format!("{text} on device {}", device.instance_number()),
         _ => text,
     }
 }
 
-fn object_reference(reference: &BACnetDeviceObjectReference) -> String {
+pub(super) fn object_reference(reference: &BACnetDeviceObjectReference) -> String {
     let object = if reference.object_identifier.instance_number() == UNSET_INSTANCE {
         "none".to_string()
     } else {

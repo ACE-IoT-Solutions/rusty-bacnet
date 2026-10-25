@@ -58,7 +58,7 @@ A Schedule shows Present_Value, Schedule_Default, Weekly_Schedule, Exception_Sch
 
 ![A Schedule object's properties in the browser.](../../../assets/tui/browser-schedule.webp)
 
-The browser shows these as properties; it has no log-buffer table or weekly calendar view. Some constructed values, such as a Weekly_Schedule or a property reference, are shown as their raw encoded form. To read a trend log's records, use the one-shot `bacnet read-range` command.
+The browser shows these as properties; it has no log-buffer table or weekly calendar view. Constructed values, such as a Weekly_Schedule, a Recipient_List or a property reference, are decoded; a value that doesn't decode is shown as its raw encoded form. To read a trend log's records, use the one-shot `bacnet read-range` command.
 
 ## Filter the objects
 

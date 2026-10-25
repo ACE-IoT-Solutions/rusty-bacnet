@@ -8,7 +8,17 @@ use bacnet_types::primitives::PropertyValue;
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
+use bacnet_ops::format::{Datum, StateTexts};
 use bacnet_ops::target::{AddressStyle, routed_station};
+
+/// No state texts: the one-shot commands read one property, so a binary
+/// object's state shows as `active` or `inactive` and a multi-state one as
+/// its number.
+pub static NO_STATE_TEXTS: StateTexts = StateTexts {
+    active: None,
+    inactive: None,
+    states: Vec::new(),
+};
 
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +135,9 @@ pub fn print_devices(devices: &[DeviceInfo], format: OutputFormat) {
     }
 }
 
-/// Format a `PropertyValue` as a human-readable string.
+/// Format a `PropertyValue` as a human-readable string, with no property
+/// context. The capture decode and Tags values use it; read values go
+/// through the shared formatter (`bacnet_ops::format`).
 pub fn format_property_value(value: &PropertyValue) -> String {
     match value {
         PropertyValue::Null => "null".to_string(),
@@ -209,12 +221,14 @@ pub fn format_property_value(value: &PropertyValue) -> String {
     }
 }
 
-/// Print a single read result.
+/// Print a single read result: the value as text, and in JSON its typed
+/// form under `decoded` as well.
 pub fn print_read_result(
     object: &str,
     property: &str,
     array_index: Option<u32>,
     value: &str,
+    decoded: &Datum,
     format: OutputFormat,
 ) {
     let prop_display = match array_index {
@@ -233,6 +247,7 @@ pub fn print_read_result(
                 "object": object,
                 "property": prop_display,
                 "value": value,
+                "decoded": decoded,
             });
             println!(
                 "{}",
@@ -242,41 +257,55 @@ pub fn print_read_result(
     }
 }
 
-/// Print RPM results as a table.
-///
-/// Each entry is (object_str, property_str, array_index, value_str).
-pub fn print_rpm_table(entries: &[(String, String, Option<u32>, String)], format: OutputFormat) {
+/// One property of a ReadPropertyMultiple result.
+#[derive(Debug, Clone)]
+pub struct RpmEntry {
+    /// The object, `ANALOG_INPUT:1`.
+    pub object: String,
+    /// The property, `PRESENT_VALUE`.
+    pub property: String,
+    /// The array index read, if any.
+    pub index: Option<u32>,
+    /// The value as text, or `ERROR: CLASS:CODE`.
+    pub value: String,
+    /// The value as typed data; `None` for an error.
+    pub data: Option<Datum>,
+}
+
+/// Print RPM results: a table, or in JSON one object per property with
+/// its text `value` and, for a value, its typed form under `decoded`.
+pub fn print_rpm_table(entries: &[RpmEntry], format: OutputFormat) {
+    let property = |entry: &RpmEntry| match entry.index {
+        Some(i) => format!("{}[{i}]", entry.property),
+        None => entry.property.clone(),
+    };
     match format {
         OutputFormat::Table => {
             let mut table = comfy_table::Table::new();
             table.set_header(vec!["Object", "Property", "Value"]);
-            for (obj, prop, idx, val) in entries {
-                let prop_display = match idx {
-                    Some(i) => format!("{prop}[{i}]"),
-                    None => prop.clone(),
-                };
-                let colored_val = if val.starts_with("ERROR") {
-                    format!("{}", val.red())
+            for entry in entries {
+                let colored_val = if entry.data.is_none() {
+                    format!("{}", entry.value.red())
                 } else {
-                    format!("{}", val.green())
+                    format!("{}", entry.value.green())
                 };
-                table.add_row(vec![obj.as_str(), &prop_display, &colored_val]);
+                table.add_row(vec![entry.object.as_str(), &property(entry), &colored_val]);
             }
             println!("{table}");
         }
         OutputFormat::Json => {
             let json_results: Vec<serde_json::Value> = entries
                 .iter()
-                .map(|(obj, prop, idx, val)| {
-                    let prop_display = match idx {
-                        Some(i) => format!("{prop}[{i}]"),
-                        None => prop.clone(),
-                    };
-                    serde_json::json!({
-                        "object": obj,
-                        "property": prop_display,
-                        "value": val,
-                    })
+                .map(|entry| {
+                    let mut json = serde_json::json!({
+                        "object": entry.object,
+                        "property": property(entry),
+                        "value": entry.value,
+                    });
+                    if let Some(data) = &entry.data {
+                        json["decoded"] = serde_json::to_value(data).unwrap_or_default();
+                    }
+                    json
                 })
                 .collect();
             println!(

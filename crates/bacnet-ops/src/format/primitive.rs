@@ -15,7 +15,7 @@ pub(super) fn raw(data: &[u8]) -> String {
     format!("[raw {}]", hex(data, " "))
 }
 
-fn hex(data: &[u8], separator: &str) -> String {
+pub(super) fn hex(data: &[u8], separator: &str) -> String {
     data.iter()
         .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
@@ -112,7 +112,7 @@ fn any_bit_set(value: &PropertyValue) -> bool {
 }
 
 /// A bit string as its bits, first bit first: `bits(0101)`.
-fn plain_bits(value: &PropertyValue) -> String {
+pub(super) fn plain_bits(value: &PropertyValue) -> String {
     let PropertyValue::BitString { unused_bits, data } = value else {
         return String::new();
     };
