@@ -1,6 +1,6 @@
 # Engineering documentation
 
-These documents follow the `dev` branch. The latest release is **0.14.0**, and the [v0.14.0 documentation tree](https://github.com/jscott3201/rusty-bacnet/tree/v0.14.0/docs) is the copy that matches it. A `dev` checkout may hold later changes while its version still reads 0.14.0, so record the source revision when using these APIs. The [website](https://jscott3201.github.io/rusty-bacnet/) gives a shorter task-oriented path for the release: its `start/` pages install and make a first read, and its `development/` guides lead to these contracts.
+These documents follow the `dev` branch. The latest release is **0.14.0**, and the [v0.14.0 documentation tree](https://github.com/jscott3201/rusty-bacnet/tree/v0.14.0/docs) is the copy that matches it. A `dev` checkout may hold later changes while its version still reads 0.14.0, so record the source revision when using these APIs. The [website](https://jscott3201.github.io/rusty-bacnet/) gives a shorter task-oriented path for the release: its `start/` pages install and make a first read, and its `integrate/` guides lead to these contracts.
 
 ## Start with your question
 
@@ -28,7 +28,6 @@ These documents follow the `dev` branch. The latest release is **0.14.0**, and t
 ## Design
 
 - [Terminal UI](design/tui.md): the `bacnet` TUI's architecture, screens, safety model and test strategy.
-
 ## Website and engineering docs
 
 The website explains tasks and summarizes what is supported; these references define the engineering contracts. Keep related updates together without duplicating full API tables. Examples and source inspection establish their stated scope, not hardware interoperability or certification.
