@@ -94,6 +94,8 @@ struct Ports {
     outstanding: HashMap<MacAddr, (usize, usize)>,
     /// Every confirmed request: its destination, service and when it went.
     requests: Vec<(MacAddr, u8, tokio::time::Instant)>,
+    /// Every confirmed request's destination, service and service data.
+    bodies: Vec<(MacAddr, u8, Vec<u8>)>,
     /// Frames each port has sent, broadcasts and replies included.
     sent: HashMap<MacAddr, usize>,
 }
@@ -146,6 +148,18 @@ impl Hub {
             .iter()
             .filter(|(to, ..)| to.as_slice() == mac)
             .map(|(_, service, _)| *service)
+            .collect()
+    }
+
+    /// The service data of each `service` request sent to `mac`, in order,
+    /// retries included.
+    pub(super) fn bodies_to(&self, mac: &[u8], service: ConfirmedServiceChoice) -> Vec<Vec<u8>> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .bodies
+            .iter()
+            .filter(|(to, choice, _)| to.as_slice() == mac && *choice == service.to_raw())
+            .map(|(.., body)| body.clone())
             .collect()
     }
 
@@ -211,6 +225,12 @@ impl HubPort {
                     inner
                         .requests
                         .push((to.clone(), service, tokio::time::Instant::now()));
+                    // An unsegmented request's service data follows its
+                    // four-octet header.
+                    if let Ok(decoded) = decode_npdu(Bytes::copy_from_slice(npdu)) {
+                        let body = decoded.payload.get(4..).unwrap_or_default().to_vec();
+                        inner.bodies.push((to.clone(), service, body));
+                    }
                     let rpm = service == ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE.to_raw();
                     let cov = [
                         ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw(),
@@ -400,6 +420,9 @@ pub(super) struct Server {
     pub(super) deny_writes: bool,
     /// Its Max_APDU_Length_Accepted, when not the default.
     pub(super) max_apdu: Option<u16>,
+    /// Accept DeviceCommunicationControl and ReinitializeDevice with this
+    /// password, and refuse them without it; refuse both when `None`.
+    pub(super) password: Option<&'static str>,
 }
 
 impl Server {
@@ -412,6 +435,7 @@ impl Server {
             quirks: Quirks::default(),
             deny_writes: false,
             max_apdu: None,
+            password: None,
         }
     }
 
@@ -498,6 +522,14 @@ impl Site {
                 .transport(HubPort::join(&hub, [10, 0, 0, server.octet], server.quirks))
                 .database(database)
                 .mutation_policy(policy);
+            let builder = match server.password {
+                Some(password) => builder
+                    .dcc_password(password)
+                    .dcc_policy(bacnet_server::server::DccPolicy::RequirePassword)
+                    .reinit_password(password)
+                    .on_reinitialize(|_, _| Ok(())),
+                None => builder,
+            };
             started.push(bounded(Box::pin(builder.build())).await.unwrap());
         }
         let client = BACnetClient::generic_builder()

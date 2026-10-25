@@ -337,8 +337,9 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
    set `writes = "never"`. Arming needs a profile workspace for the ledger and
    the audit log, so a flags-only session stays read-only.
 4. **Dangerous operations** (#964): off unless the profile sets
-   `dangerous = true` and a write session is armed. Today the only one is
-   commanding priority 6; DCC, reinitialize and BDT writes will join it.
+   `dangerous = true` and a write session is armed: commanding priority 6,
+   and DCC and reinitialize (`:dcc`, `:reinit`, #1799). BDT writes will join
+   them.
 
 **Confirmation tiers**
 
@@ -358,9 +359,12 @@ tier; one blocked member blocks it. The "expert flag" is the profile's
 slot this session's ledger holds is T1 at priorities 9 to 16. A write without a
 priority goes to 16 for a commandable property (Clause 19.2.1); a priority on a
 non-commandable property is not sent. The app enforces the tiers, and the write
-worker checks the level, the policy and priority 6 again before sending. The T3
-flow (the device instance typed out) and `audit::Secret` for passwords are
-there for DCC and reinitialize to reuse.
+worker checks the level, the policy and priority 6 again before sending. DCC and
+reinitialize (#1799) reuse the T3 flow (the device instance typed out) through
+one confirmation dialog for writes and device management, and carry their
+passwords in `audit::Secret`. A DCC without a duration lasts until enabled
+again, as the one-shot `control` does, and its confirmation says so; a plain
+`disable` is allowed under `dangerous = true` with a deprecation warning.
 
 Before any commandable write, the TUI reads the priority array, Present_Value,
 Relinquish_Default and Out_Of_Service. It says when a stronger slot is active

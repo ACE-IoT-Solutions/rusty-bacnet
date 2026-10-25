@@ -99,6 +99,31 @@ Single and double quotes both work, and a backslash makes the quote, whitespace 
 
 ![A WritePropertyMultiple batch preview of two writes, confirmed at T2.](../../../assets/tui/writes-writem-preview.webp)
 
+## Development: DCC and reinitialize
+
+The commands in this section are on the development branch and are **not part of v{release}**.
+
+Two command bar commands reach a whole device rather than one property:
+
+- `:dcc enable|disable|disable-initiation [MINUTES]` sends DeviceCommunicationControl. `:control` is the same command. Without a duration the change lasts until a `:dcc enable` or a restart.
+- `:reinit STATE` sends ReinitializeDevice. The states are the one-shot `reinit` command's: `coldstart`, `warmstart`, `start-backup`, `end-backup`, `start-restore`, `end-restore`, `abort-restore` and `activate-changes`.
+
+For example, to stop a device starting conversations for half an hour:
+
+```text
+:dcc disable-initiation 30
+```
+
+Both go to the device in front of you: the device open on the Browse screen, or the selected row on the Devices screen. Elsewhere, or with no device selected, they are refused and say so.
+
+Both need an armed write session on a profile that sets `dangerous = true`. Without that opt-in they are refused with the reason. A passive or monitor-only session refuses them too, because it transmits nothing.
+
+Next comes a password prompt. What you type shows as `*`, Backspace erases, and a blank password sends none. A password can be up to 20 characters (Clauses 16.1.1.1.3 and 16.4.1.1.2). Esc cancels and clears what you typed.
+
+The confirmation is always T3: type the device instance, then Enter. It names the service, the state, any duration, and whether a password goes with it, never the password itself. A `disable` gets a warning, because that option is deprecated (Clause 16.1) and current devices refuse it.
+
+The result shows the device's answer, an acknowledgement or its error, such as a wrong password. Neither request is kept in the ledger, since revert can't undo it. The audit log records the service, the device, the state, the duration and the outcome. When a password was sent, its field is written as `[redacted]`. The password goes in the request on the wire, as the protocol requires, and nowhere else: not the audit log, the ledger, the profile, the logs or the screen.
+
 ## The ledger: undo what you changed
 
 Every change still in effect is kept in the profile's `ledger.json` with its pre-image, the value it replaced. The ledger is saved before each request goes out and after each answer, so it outlives a crash. A slot counts as yours only while it still holds what you wrote; if someone has written over it since, it is treated as theirs.
@@ -123,7 +148,7 @@ Entries an earlier run kept, or left behind in a crash, are listed when the next
 
 ## Sources and release scope
 
-These pages describe **v{release}**. Source review is not a claim of hardware qualification. Command priorities are described in ASHRAE 135 Clause 19.2.
+Except for the explicitly marked development section on DCC and reinitialize, these pages describe **v{release}**. Source review is not a claim of hardware qualification. Command priorities are described in ASHRAE 135 Clause 19.2, and the device management services in Clause 16.
 
 <a href={`${repository}/blob/v${release}/docs/CLI.md#write-sessions`}>Write sessions reference</a> · <a href={`${repository}/blob/v${release}/crates/bacnet-cli/src/tui/safety/plan.rs`}>Write plan and tiers</a> · <a href={`${repository}/blob/v${release}/crates/bacnet-cli/src/tui/safety/ledger.rs`}>Ledger</a>.
 
