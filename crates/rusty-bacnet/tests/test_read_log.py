@@ -314,6 +314,22 @@ class ReadLogContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             BACnetClient(interface="127.0.0.1", port=0, min_request_interval_ms=3_600_001)
 
+    def test_a_failure_datum_holds_int_enum_members(self) -> None:
+        # #2025: PROPERTY (2) and an unnamed code 600, a pseudo-member.
+        failure = bytes.fromhex("0e a4 7e 0a 05 01 b4 09 00 00 00 0f 1e 8e 91 02 92 02 58 8f 1f")
+        [record] = rusty_bacnet.decode_log_records({
+            "object_id": TREND_LOG,
+            "property_id": PropertyIdentifier.LOG_BUFFER,
+            "item_count": 1,
+            "item_data": failure,
+        })
+        self.assertEqual(record["datum"]["kind"], "failure")
+        error_class, error_code = record["datum"]["failure"]
+        self.assertIs(error_class, rusty_bacnet.ErrorClass.PROPERTY)
+        self.assertIsInstance(error_code, rusty_bacnet.ErrorCode)
+        self.assertIsNone(error_code.name)
+        self.assertEqual((error_class, error_code), (2, 600))
+
     def test_decode_log_records_refuses_other_results_and_names_the_record(self) -> None:
         result = {
             "object_id": TREND_LOG,

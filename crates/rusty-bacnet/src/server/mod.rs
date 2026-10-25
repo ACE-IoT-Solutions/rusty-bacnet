@@ -121,6 +121,8 @@ pub struct BACnetServer {
     // Passwords
     dcc_password: Option<String>,
     mutation_policy: bacnet_server::mutation::MutationPolicy,
+    /// The `mutation_policy` callable, when one was given (#1966).
+    mutation_callback: Option<Arc<crate::mutation_policy::PyMutationPolicy>>,
     dcc_policy: server::DccPolicy,
     dcc_source_restriction: Option<server::DccSourceRestriction>,
     dcc_disable_rate_limit: Option<server::DccDisableRateLimit>,

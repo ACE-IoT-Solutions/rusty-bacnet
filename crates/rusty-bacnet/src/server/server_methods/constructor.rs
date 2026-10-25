@@ -21,7 +21,7 @@ impl BACnetServer {
         dcc_password=None,
         reinit_password=None,
         *,
-        mutation_policy="permissive",
+        mutation_policy=crate::mutation_policy::MutationSetting::default(),
         dcc_policy="deny_all",
         dcc_source_restriction=None,
         dcc_disable_rate_limit=None,
@@ -70,6 +70,7 @@ impl BACnetServer {
         foreign_device=None,
         multicast=None,
         sc_npdu_per_origin_limit=None,
+        sc_control_rate_limit=None,
         on_reinitialize=None,
         after_reinitialize=None
     ))]
@@ -90,7 +91,8 @@ impl BACnetServer {
         ipv6_interface: Option<String>,
         dcc_password: Option<String>,
         reinit_password: Option<String>,
-        mutation_policy: &str,
+        #[pyo3(from_py_with = crate::mutation_policy::parse)]
+        mutation_policy: crate::mutation_policy::MutationSetting,
         dcc_policy: &str,
         dcc_source_restriction: Option<Vec<(Option<u16>, Vec<u8>)>>,
         dcc_disable_rate_limit: Option<(u32, u64)>,
@@ -139,11 +141,13 @@ impl BACnetServer {
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
         multicast: Option<PyRef<'_, crate::bip_options::PyMulticast>>,
         sc_npdu_per_origin_limit: Option<usize>,
+        sc_control_rate_limit: Option<(u32, u32)>,
         on_reinitialize: Option<&Bound<'_, PyAny>>,
         after_reinitialize: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let reinitialize = crate::reinitialize::parse(on_reinitialize, after_reinitialize)?;
-        let sc_npdu_admission_policy = crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit)?;
+        let sc_npdu_admission_policy =
+            crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit, sc_control_rate_limit)?;
         let segmentation_supported = super::constructor_budgets::segmentation(
             segmentation_supported,
             apdu_segment_timeout_ms,
@@ -159,7 +163,10 @@ impl BACnetServer {
             multicast,
         )?;
         super::constructor_budgets::registered_network_port(registered_network_port, transport)?;
-        let mutation_policy = super::constructor_budgets::mutation_policy(mutation_policy)?;
+        let crate::mutation_policy::MutationSetting {
+            mode: mutation_policy,
+            callback: mutation_callback,
+        } = mutation_policy;
         let super::constructor_budgets::DccConfiguration {
             policy: dcc_policy,
             source_restriction: dcc_source_restriction,
@@ -256,6 +263,7 @@ impl BACnetServer {
             },
             dcc_password,
             mutation_policy,
+            mutation_callback,
             dcc_policy,
             dcc_source_restriction,
             dcc_disable_rate_limit,
