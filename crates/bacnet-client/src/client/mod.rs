@@ -35,6 +35,7 @@ use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordi
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
 use bacnet_services::cov::COVNotificationRequest;
+use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
@@ -236,8 +237,9 @@ impl ClientOptions {
     }
 }
 
-/// Generic builder for BACnetClient with a pre-built transport.
-pub struct ClientBuilder<T: TransportPort> {
+/// Generic builder for BACnetClient with a pre-built transport. The
+/// transport type defaults to [`AnyTransport`], as [`BACnetClient`]'s does.
+pub struct ClientBuilder<T: TransportPort = AnyTransport> {
     config: ClientConfig,
     options: ClientOptions,
     transport: Option<T>,
@@ -541,7 +543,13 @@ struct SegmentAckRoute {
 }
 
 /// BACnet client with low-level and high-level request APIs.
-pub struct BACnetClient<T: TransportPort> {
+///
+/// `T` is the transport the client runs over. It defaults to
+/// [`AnyTransport`], the type the builders' `build_any()` methods return,
+/// so `BACnetClient` alone names a client over any built-in transport;
+/// `BACnetClient<BipTransport>` and the like name one over a concrete
+/// transport.
+pub struct BACnetClient<T: TransportPort = AnyTransport> {
     config: ClientConfig,
     network: Arc<NetworkLayer<T>>,
     tsm: Arc<Mutex<Tsm>>,

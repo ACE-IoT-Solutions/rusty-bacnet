@@ -54,7 +54,7 @@ async fn observed_site(
         let Ok(StartedRouter { router, .. }) = BACnetRouter::start(
             vec![
                 RouterPort {
-                    transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
+                    transport: AnyTransport::Bip(Box::new(bip)),
                     network_number: 1,
                 },
                 RouterPort {

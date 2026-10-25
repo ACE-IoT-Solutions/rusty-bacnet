@@ -17,7 +17,6 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bbmd::ForeignDevicePolicy;
 use bacnet_transport::bip::{BbmdOptions, BipMode, BipTransport};
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::NoSerial;
 use serde_json::{Value, json};
 use support::lab::{lab_database, lab_identity};
 use support::{Process, command, failure, run};
@@ -67,7 +66,7 @@ async fn site_with_config(
         let (router_end, station) = LoopbackTransport::pair(vec![0x01], vec![0x05]);
         let ports = vec![
             RouterPort {
-                transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
+                transport: AnyTransport::Bip(Box::new(bip)),
                 network_number: 1,
             },
             RouterPort {

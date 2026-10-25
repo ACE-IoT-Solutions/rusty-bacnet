@@ -2491,10 +2491,18 @@ By default the transport drops the data attributes given to `send_unicast_with_d
 
 ```rust
 use bacnet_transport::any::AnyTransport;
-use bacnet_transport::mstp::NoSerial; // placeholder when serial feature is off
 
-let transport: AnyTransport<NoSerial> = AnyTransport::Bip(Box::new(bip_transport));
+let transport: AnyTransport = AnyTransport::Bip(Box::new(bip_transport));
+// Any MS/TP transport converts, whatever its serial port.
+let transport: AnyTransport = MstpTransport::new(serial, mstp_config).into();
 ```
+
+`AnyTransport` has no type parameter (#2039). Its `Mstp` variant holds an
+`MstpTransport<BoxedSerial>`: `BoxedSerial` boxes any `SerialPort`, and the
+`From<MstpTransport<S>>` conversion (`MstpTransport::into_boxed`) does it for
+you. Each serial read, write or drain then costs one dynamic call and one
+boxed future, next to the port's own I/O. A transport used on its own, such
+as `BACnetClient<MstpTransport<TokioSerialPort>>`, keeps the concrete port.
 
 `Bip` (boxed), `Mstp` and `Loopback` are always available. `Bip6` requires
 `ipv6`, `Sc` (boxed) requires `sc-tls`, and `Ethernet` requires `ethernet` on
@@ -2505,9 +2513,9 @@ include a fallback even when they list every currently enabled variant. Handle
 only the transports the caller supports and choose an appropriate fallback:
 
 ```rust
-use bacnet_transport::{any::AnyTransport, mstp::NoSerial};
+use bacnet_transport::any::AnyTransport;
 
-fn is_bip(transport: &AnyTransport<NoSerial>) -> bool {
+fn is_bip(transport: &AnyTransport) -> bool {
     match transport {
         AnyTransport::Bip(_) => true,
         _ => false,
@@ -6311,35 +6319,33 @@ Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 
 ### Choosing the client transport at runtime
 
-The B/IP, B/IPv6 and SC builders also offer `build_any::<S>()`, returning
-`BACnetClient<AnyTransport<S>>`. They apply the same configuration as `build()`:
+The B/IP, B/IPv6 and SC builders also offer `build_any()`, returning
+`BACnetClient<AnyTransport>`, which is what `BACnetClient` alone names: the
+client's transport type defaults to `AnyTransport` (#2039), as the server's
+does. They apply the same configuration as `build()`:
 the B/IP mode and address sharing, the IPv6 interface and device instance,
 and SC identity, TLS, heartbeat and optional reconnect settings. Client tuning,
 notification capacities and custom COV response policies are preserved too.
 The existing `build()` methods still return concrete transport types.
 
-Choose `NoSerial` when the application does not use MS/TP. It supplies the type
-parameter without requiring a serial port, `Clone`, or `Default`. For example,
-with the client's `ipv6` feature enabled:
+For example, with the client's `ipv6` feature enabled:
 
 ```rust,no_run
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::{any::AnyTransport, mstp::NoSerial};
 
-async fn connect(ipv6: bool) -> Result<BACnetClient<AnyTransport<NoSerial>>,
-    bacnet_types::error::Error> {
+async fn connect(ipv6: bool) -> Result<BACnetClient, bacnet_types::error::Error> {
     if ipv6 {
         BACnetClient::bip6_builder().port(0).device_instance(123)
-            .build_any::<NoSerial>().await
+            .build_any().await
     } else {
         BACnetClient::bip_builder().port(0)
-            .build_any::<NoSerial>().await
+            .build_any().await
     }
 }
 ```
 
 With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
-`build_any::<NoSerial>().await` call. SC validates identity, reconnect and
+`build_any().await` call. SC validates identity, reconnect and
 client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;
 each retry uses the builder's TLS policy. `.failover_hub_url(...)` adds a
 failover hub with the same TLS policy. It requires `.reconnect(...)`, and both
@@ -6394,8 +6400,8 @@ The first `ScEvent::Connected` goes out while `build()` starts the
 transport, before any caller of `transport().connection_events()` can
 subscribe. To see it, build with `build_with_events()` instead: it returns
 the client and a receiver subscribed before the start, so the first event
-on it is that connect. `build_any_with_events::<S>()` does the same for a
-transport-erased `BACnetClient<AnyTransport<S>>` (#1909).
+on it is that connect. `build_any_with_events()` does the same for a
+transport-erased `BACnetClient<AnyTransport>` (#1909).
 
 ```rust
 let (sc_client, mut events) = BACnetClient::sc_builder()
@@ -6593,7 +6599,7 @@ use bacnet_transport::bip::{AsBip, BvlcExchangeError};
 async fn tables(ip: Ipv4Addr, broadcast: Ipv4Addr, bbmd_mac: &[u8])
     -> Result<(), Box<dyn std::error::Error>> {
     let client = BACnetClient::generic_builder()
-        .transport(AnyTransport::<NoSerial>::from(BipTransport::new(ip, 0, broadcast)))
+        .transport(AnyTransport::from(BipTransport::new(ip, 0, broadcast)))
         .build()
         .await?;
     match client.read_bdt(bbmd_mac).await {

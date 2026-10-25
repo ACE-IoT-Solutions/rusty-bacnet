@@ -8,8 +8,8 @@ use super::adapter::Task;
 use super::diagnostics::increment;
 use super::queues::{EnqueueError, SharedQueues};
 use super::{
-    DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode, MstpExecutionStatus,
-    SerialPort,
+    BoxedSerial, DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode,
+    MstpExecutionStatus, SerialPort,
 };
 use crate::port::{ReceivedNpdu, TransportPort};
 use crate::runtime_clock::tokio_clock;
@@ -138,6 +138,26 @@ impl<S: SerialPort> MstpTransport<S> {
     /// ([`MstpConfig::max_npdu_length`]).
     pub fn max_npdu_length(&self) -> usize {
         self.config.max_npdu_length()
+    }
+
+    /// This transport with its serial port boxed, the form
+    /// [`AnyTransport`](crate::any::AnyTransport)'s MS/TP variant holds;
+    /// `From<MstpTransport<S>> for AnyTransport` calls it. Its
+    /// configuration, execution mode, diagnostics and frame tap carry over,
+    /// and so does a running task: the port it owns stays unboxed.
+    pub fn into_boxed(mut self) -> MstpTransport<BoxedSerial> {
+        MstpTransport {
+            serial: self.serial.take().map(BoxedSerial::new),
+            config: self.config.clone(),
+            local_mac: self.local_mac,
+            link: self.link.take(),
+            task: self.task.take(),
+            execution_mode: std::mem::take(&mut self.execution_mode),
+            dedicated_runtime: self.dedicated_runtime.take(),
+            diagnostics: std::mem::replace(&mut self.diagnostics, MstpDiagnostics::new()),
+            frame_tap: std::mem::replace(&mut self.frame_tap, crate::tap::FrameTap::new()),
+        }
+        // `self` now holds nothing its `Drop` would release.
     }
 
     fn abort_task_and_release_state(&mut self) {
@@ -437,26 +457,6 @@ impl SerialPort for LoopbackSerial {
 
     fn echo(&self) -> Echo {
         self.echo
-    }
-}
-
-// ---------------------------------------------------------------------------
-// NoSerial: zero-sized SerialPort for non-MS/TP contexts
-// ---------------------------------------------------------------------------
-
-/// A serial port implementation that always errors.
-///
-/// Used to satisfy the `AnyTransport<S>` generic when MS/TP is not needed
-/// (e.g., in Python bindings where serial access isn't exposed).
-pub struct NoSerial;
-
-impl SerialPort for NoSerial {
-    async fn write(&self, _data: &[u8]) -> Result<(), Error> {
-        Err(Error::Encoding("NoSerial: MS/TP not available".into()))
-    }
-
-    async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
-        Err(Error::Encoding("NoSerial: MS/TP not available".into()))
     }
 }
 

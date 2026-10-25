@@ -5,7 +5,6 @@
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::NoSerial;
 
 use super::*;
 
@@ -39,7 +38,7 @@ pub(in crate::tui::tests) async fn routed_parts(
     let (router_far, station) = LoopbackTransport::pair(vec![0x01], vec![0x05]);
     let ports = vec![
         RouterPort {
-            transport: AnyTransport::<NoSerial>::Loopback(router_near),
+            transport: AnyTransport::Loopback(router_near),
             network_number: 1,
         },
         RouterPort {
