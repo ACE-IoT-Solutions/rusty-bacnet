@@ -182,8 +182,10 @@ impl NodeHandle {
     /// time-to-live and grace period run out (J.5.2.3, #1852). Best effort,
     /// on a task of its own: it never holds up or fails the move, and what
     /// came of it is only counted and logged, a NAK or silence included.
-    /// The entry named is this node's own address, which is what a BBMD on
-    /// its side of any NAT router saw it register from.
+    /// The entry named is this node's own local address (`link().address`,
+    /// on a wildcard bind the default-route address); see
+    /// [`BipTransport::set_release_previous_bbmd`] for when that isn't the
+    /// address the old BBMD knows it by.
     pub(super) fn release_previous_bbmd(self: &Arc<Self>, bbmd: SocketAddrV4) {
         self.record().release_started();
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -202,7 +204,11 @@ impl NodeHandle {
                 Ok(msg) => acknowledged(&msg),
                 Err(error) => Err(error),
             };
-            node.record().release_ended(bbmd, &result);
+            // A stopped node counts nothing more (`NodeHandle::stop`): the
+            // request it failed is left as started.
+            if !node.is_stopped() {
+                node.record().release_ended(bbmd, &result);
+            }
         });
     }
 }

@@ -70,7 +70,8 @@
 //! link moves, and a failure at any step undoes the ones before it.
 //!
 //! Lock order: the object database (held by the caller), then the
-//! control's lock, then the node's. No lock here is held across an await.
+//! control's lock, then the BBMD state's lock (a group BBMD's tables, taken
+//! and released inside an activation), then the node's. No lock here is held across an await.
 
 use std::fmt;
 use std::io;
@@ -375,6 +376,10 @@ pub(crate) struct MulticastControl {
     /// Windows, which opens no listener.
     #[cfg(all(test, not(windows)))]
     pub(super) fail_next_listener: std::sync::atomic::AtomicBool,
+    /// Makes the next link move a BBMD's group change makes fail, after
+    /// its tables went in, for tests of the undo.
+    #[cfg(test)]
+    pub(super) fail_next_subnet: std::sync::atomic::AtomicBool,
 }
 
 impl MulticastControl {
@@ -392,6 +397,8 @@ impl MulticastControl {
             bbmd: Default::default(),
             #[cfg(all(test, not(windows)))]
             fail_next_listener: Default::default(),
+            #[cfg(test)]
+            fail_next_subnet: Default::default(),
         }
     }
 
@@ -448,7 +455,11 @@ impl MulticastControl {
     }
 
     /// Keep the group in effect in the persisted-group file, if there is
-    /// one, on a thread of its own (#1954).
+    /// one, on a thread of its own (#1954). A group BBMD's persisted BDT is
+    /// saved apart from it, so a crash between the two saves can leave a
+    /// saved group beside a saved BDT that doesn't fit it; the next start
+    /// then falls back to the configured BDT (docs/rust-api.md, B/IP
+    /// multicast).
     fn persist(state: &ControlState) {
         if let Some(file) = &state.file {
             let group = PersistedGroup {
@@ -727,7 +738,18 @@ impl GroupChange for MulticastControl {
             self.roll_back(&node, prepared, old);
             return Err(error);
         }
-        if let Err(error) = node.set_subnet(subnet) {
+        #[cfg(test)]
+        let moved = if self
+            .fail_next_subnet
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            Err(Error::Encoding("injected link failure".into()))
+        } else {
+            node.set_subnet(subnet)
+        };
+        #[cfg(not(test))]
+        let moved = node.set_subnet(subnet);
+        if let Err(error) = moved {
             undo();
             self.roll_back(&node, prepared, old);
             return Err(error);

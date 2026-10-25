@@ -166,6 +166,9 @@ impl GroupFile {
 
     fn save(&self, generation: u64, group: PersistedGroup) {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        // A failed save doesn't count as written, so an older save still
+        // pending may land after it: the file then holds an older group
+        // than the one in use, and the failure was warned and counted.
         if generation > *written {
             match write_atomically(&self.path, &group.encode()) {
                 Ok(()) => {

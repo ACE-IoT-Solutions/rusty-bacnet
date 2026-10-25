@@ -212,3 +212,85 @@ async fn a_group_bbmd_moves_its_group_with_its_bdt_or_not_at_all() {
     assert_eq!(bbmd.multicast_persist_failures(), 0);
     bbmd.stop().await.unwrap();
 }
+
+/// A BBMD on 127.0.0.1 at `own_port` with a two-hop own row, in `multicast`
+/// when given; not started.
+fn group_bbmd(own_port: u16, multicast: Option<BipMulticast>) -> BipTransport {
+    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::LOCALHOST);
+    bbmd.set_multicast(multicast).unwrap();
+    bbmd.enable_bbmd(vec![crate::bbmd::BdtEntry {
+        ip: [127, 0, 0, 1],
+        port: own_port,
+        broadcast_mask: [0xFF; 4],
+    }]);
+    bbmd
+}
+
+fn serves_group(bbmd: &BipTransport) -> bool {
+    crate::bbmd::lock(bbmd.bbmd_state().unwrap()).serves_group()
+}
+
+/// A restart puts the BBMD's own-row rule where the group it starts with
+/// says, even when a run-time activation moved the group since the last
+/// start (#1963): left at run time and set again before the restart, the
+/// BBMD serves it again; joined at run time and cleared before the
+/// restart, it serves none.
+#[tokio::test]
+async fn a_restart_follows_the_group_whatever_moved_it_at_run_time() {
+    let (own_port, group_port) = (free_port(), free_port());
+    let multicast = group(GROUP, group_port);
+
+    // Started in the group, left at run time, set again: serves it.
+    let mut bbmd = group_bbmd(own_port, Some(multicast));
+    let _rx = bbmd.start().await.unwrap();
+    let mut leave = BbmdChanges::default();
+    leave.multicast_group = Some([0; 4]);
+    tables(&bbmd).activate(&leave).unwrap();
+    assert!(!serves_group(&bbmd));
+    bbmd.stop().await.unwrap();
+    bbmd.set_multicast(Some(multicast)).unwrap();
+    let _rx = bbmd.start().await.unwrap();
+    assert!(serves_group(&bbmd));
+    bbmd.stop().await.unwrap();
+
+    // Started without one, joined at run time, cleared: serves none.
+    let mut bbmd = group_bbmd(own_port, None);
+    let _rx = bbmd.start().await.unwrap();
+    assert!(!serves_group(&bbmd));
+    tables(&bbmd)
+        .activate(&changes(GROUP, vec![row(own_port, [0xFF; 4])]))
+        .unwrap();
+    assert!(serves_group(&bbmd));
+    bbmd.stop().await.unwrap();
+    bbmd.set_multicast(None).unwrap();
+    let _rx = bbmd.start().await.unwrap();
+    assert!(!serves_group(&bbmd));
+    bbmd.stop().await.unwrap();
+}
+
+/// When the link refuses to move after the tables went in, the tables are
+/// taken back out: the BDT and the group rule as they were, the old group
+/// in use and still heard.
+#[tokio::test]
+async fn a_link_that_wont_move_undoes_the_tables() {
+    let (own_port, group_port) = (free_port(), free_port());
+    let mut bbmd = group_bbmd(own_port, Some(group(GROUP, group_port)));
+    let mut rx = bbmd.start().await.unwrap();
+    let before = bdt(&bbmd);
+    // Leaving the group lifts the rule, so a one-hop own row goes in first.
+    let leave = changes(Ipv4Addr::UNSPECIFIED, vec![row(own_port, [255, 0, 0, 0])]);
+    tables(&bbmd).check(&leave).unwrap();
+    bbmd.multicast
+        .fail_next_subnet
+        .store(true, Ordering::Relaxed);
+    assert!(tables(&bbmd).activate(&leave).is_err());
+    assert_eq!(bdt(&bbmd), before);
+    assert!(serves_group(&bbmd));
+    assert_eq!(bbmd.multicast(), Some(group(GROUP, group_port)));
+    assert_eq!(
+        bbmd.bip_broadcast_endpoint(),
+        Some(SocketAddrV4::new(GROUP, group_port))
+    );
+    hears_the_group(&mut rx, group(GROUP, group_port)).await;
+    bbmd.stop().await.unwrap();
+}

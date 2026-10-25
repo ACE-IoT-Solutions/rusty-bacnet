@@ -223,8 +223,18 @@ impl BipTransport {
     /// until its time-to-live and grace period run out (J.5.2.3, #1852).
     /// Best effort: the request goes on the side, never holds up or fails
     /// the move, and its outcome is counted in the snapshot's
-    /// `previous_release*` fields. Off by default: a BBMD may refuse the
-    /// deletion, and the entry lapses on its own anyway.
+    /// `previous_release*` fields.
+    ///
+    /// The request names this device's own local address (on a wildcard
+    /// bind, the default-route address). Behind a NAT router, or on a
+    /// multi-homed host whose registration left from another address, the
+    /// old BBMD knows the device by another address and will usually refuse
+    /// (counted as refused); in a rare case it could delete another
+    /// device's entry registered from the same private address and port on
+    /// the BBMD's side. That, a BBMD refusing deletions it doesn't trust
+    /// (this stack's does unless its management access list names the
+    /// sender), and the entry lapsing on its own anyway are why it is off
+    /// by default.
     ///
     /// Call after [`register_as_foreign_device`](Self::register_as_foreign_device),
     /// which keeps the setting when called again ([`set_mode`](Self::set_mode)
