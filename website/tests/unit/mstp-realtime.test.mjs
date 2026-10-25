@@ -56,3 +56,32 @@ test('every CLI option and subcommand in an MS/TP real-time sample is defined by
     assert.ok(body.includes(`\`--${flag}\``) && cli.options.has(flag), flag);
   }
 });
+
+// The host timing figures on the page come from constants in the source; a
+// changed constant fails here until the page says the new value.
+test('the page states the host timing constants the source defines', async () => {
+  const read = path => readFile(new URL(`../../../crates/${path}`, import.meta.url), 'utf8');
+  const transport = await read('bacnet-transport/src/mstp/mod.rs');
+  const monitor = await read('bacnet-transport/src/mstp/monitor.rs');
+  const core = await read('bacnet-mstp-core/src/config.rs');
+  // `pub const NAME: ... from_millis(N)` in `source`, or the core constant it names.
+  const millis = (source, name) => {
+    const match = source.match(new RegExp(String.raw`pub const ${name}:[^;]*?(?:from_millis\((\d+)\)|bacnet_mstp_core::(\w+))`));
+    assert.ok(match, `${name} is defined`);
+    return match[1] !== undefined ? Number(match[1]) : millis(core, match[2]);
+  };
+  const usage = millis(transport, 'HOST_USAGE_TIMEOUT');
+  const reply = millis(transport, 'HOST_REPLY_TIMEOUT');
+  const late = millis(transport, 'HOST_LATE_DEADLINE');
+  const pad = millis(transport, 'USB_TRANSMIT_LATENCY_PAD');
+  const stamps = millis(monitor, 'DEFAULT_TIMESTAMP_RESOLUTION');
+  const abort = millis(core, 'MAX_FRAME_ABORT');
+  const { body } = await page();
+  for (const text of [
+    `the longest values the standard allows, ${usage} ms and ${reply} ms`,
+    `It counts a wake ${late} ms or more late as a late deadline.`,
+    `by default the station adds ${pad} ms to each frame's time`,
+    `only as fine as the adapter's latency (${stamps} ms by default)`,
+    `waits up to its ${abort} ms maximum before it drops a partial frame`,
+  ]) assert.ok(body.includes(text), text);
+});

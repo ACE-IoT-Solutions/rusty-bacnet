@@ -142,7 +142,7 @@ Joining adds a master to the token ring, which every station notices, so the TUI
 bacnet --mstp /dev/ttyUSB0 --mstp-mac 3 --mstp-rt-priority 40 --mstp-cpus 3 tui
 ```
 
-`--mstp-rt-priority N` runs the station's token handling under `SCHED_FIFO` at priority N (1 to 99; it needs `CAP_SYS_NICE` or `ulimit -r` of at least N), and `--mstp-cpus` pins it to those CPUs. They apply to every station the session joins, from flags, a profile or the monitor, and never to the passive monitor. A setting the kernel won't apply fails the join with the reason. The MS/TP screen's `Thread` row shows what was applied, such as `FIFO 40, CPU 3`. Compare the timer lateness with and without them: they lower scheduling delay but don't guarantee timing. On macOS and Windows both flags are refused.
+`--mstp-rt-priority N` runs the station's token handling under `SCHED_FIFO` at priority N (1 to 99; it needs `CAP_SYS_NICE` or `ulimit -r` of at least N), and `--mstp-cpus` pins it to those CPUs. They apply to every station the session joins, from flags, a profile or the monitor, and never to the passive monitor. A setting the kernel won't apply fails the join with the reason. The MS/TP screen's `Thread` row shows what was applied, such as `FIFO 40, CPU 3`. Compare the timer lateness with and without them: they lower scheduling delay but don't guarantee timing. [Keep an MS/TP trunk reliable on Linux](/rusty-bacnet/connect/mstp-realtime/) shows how to compare runs. On macOS and Windows both flags are refused.
 
 ![The confirmation shown before joining a trunk with --mstp.](../../../assets/tui/mstp-participant-join.webp)
 
