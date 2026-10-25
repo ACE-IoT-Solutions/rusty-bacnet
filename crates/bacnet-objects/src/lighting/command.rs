@@ -22,7 +22,7 @@
 //!   the one a Channel makes of the lighting commands it takes, so a command
 //!   a Channel passes on and the same command written directly fare alike.
 
-use std::ops::RangeInclusive;
+use core::ops::RangeInclusive;
 
 use bacnet_encoding::constructed::{decode_lighting_command_value, encode_lighting_command};
 use bacnet_types::constructed::BACnetLightingCommand;

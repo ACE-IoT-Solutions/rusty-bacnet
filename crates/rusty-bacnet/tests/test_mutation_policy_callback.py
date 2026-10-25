@@ -9,6 +9,7 @@ import asyncio
 import copy
 import pickle
 import sys
+import threading
 import unittest
 import warnings
 
@@ -181,6 +182,42 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((context.service, context.priority), ("write_group", 8))
             self.assertIsNone(context.invoke_id)
             self.assertEqual(repr(context), "MutationContext(service='write_group')")
+
+    async def test_a_blocked_callable_stalls_only_its_own_request(self):
+        # The callable waits on another thread, as one calling
+        # run_coroutine_threadsafe(...).result() would. The server asks it
+        # with no database lock held and off the request task (#2032), so a
+        # second client's read and stop() both go ahead meanwhile.
+        entered, release = threading.Event(), threading.Event()
+
+        def policy(context):
+            if context.service == "write_property_multiple":
+                entered.set()
+                release.wait(10)
+            return True
+
+        server, client, address = await self.serve(policy)
+        self.addCleanup(release.set)
+        other = BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000)
+        await other.__aenter__()
+
+        async def stop_other():
+            await other.stop()
+        self.addAsyncCleanup(stop_other)
+        writing = asyncio.ensure_future(client.write_property_multiple(
+            address, [(AV1, [(PV, PropertyValue.real(5.0), None, None)])]))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+            async with asyncio.timeout(5):
+                self.assertEqual((await other.read_property(address, AV2, PV)).value, 0.0)
+                self.assertFalse(writing.done())
+                await server.stop()
+                # Stopped while the callable was still blocked.
+                self.assertFalse(release.is_set())
+        finally:
+            release.set()
+            writing.cancel()
+            await asyncio.gather(writing, return_exceptions=True)
 
     async def test_failures_deny_without_side_effects(self):
         async def coroutine_policy(context):

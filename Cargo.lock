@@ -485,7 +485,10 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-types",
  "bytes",
+ "hashbrown 0.17.1",
  "libc",
+ "libm",
+ "spinning_top",
  "tracing",
 ]
 

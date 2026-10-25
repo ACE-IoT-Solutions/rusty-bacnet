@@ -30,6 +30,7 @@
 //! The server's notification payload is told separately which property an
 //! object type watches and which BACnetPropertyStates choice carries it.
 
+use crate::prelude::*;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
@@ -288,7 +289,7 @@ pub(crate) fn enumerated_list(
     }
     let items = match value {
         PropertyValue::List(items) => items.as_slice(),
-        single => std::slice::from_ref(single),
+        single => core::slice::from_ref(single),
     };
     let cap = crate::multistate::MAX_ALARM_VALUES;
     if items.len() > cap {

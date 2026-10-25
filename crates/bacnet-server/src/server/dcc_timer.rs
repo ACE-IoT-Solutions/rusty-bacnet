@@ -112,14 +112,17 @@ pub(super) async fn replace<T: TransportPort + 'static>(
     // panic in it denies), before touching the shared disable budget, so a
     // refused requester never spends it. ENABLE never checks the budget. A
     // successful charge precedes every cancellable await.
-    if config
+    // The policy is asked on Tokio's blocking pool (#2032), so a policy that
+    // blocks can't hold up stop(); nothing has changed before that await.
+    let source_refused = config
         .dcc_source_restriction
         .as_ref()
         .is_some_and(|restriction| {
             config.dcc_policy != DccPolicy::RequirePassword
                 || !restriction.allows(source_mac, source, local_network)
-        })
-        || config.policy.as_ref().is_some_and(|policy| {
+        });
+    let policy_refused = match (&config.policy, source_refused) {
+        (Some(policy), false) => {
             let context = DeviceCommunicationControlAuthorizationContext {
                 source_mac: MacAddr::from_slice(source_mac),
                 source_network: source.cloned(),
@@ -128,10 +131,15 @@ pub(super) async fn replace<T: TransportPort + 'static>(
                 requested_state: proposed,
                 duration_minutes: duration,
             };
-            !super::requests::fail_closed_authorize(|| {
-                policy.authorize_device_communication_control(&context)
+            !super::requests::ask_policy(policy, context, |policy, context| {
+                policy.authorize_device_communication_control(context)
             })
-        })
+            .await
+        }
+        _ => false,
+    };
+    if source_refused
+        || policy_refused
         || (proposed == DccState::DisableInitiation && !request_tasks.admit_dcc_disable())
     {
         return Err(handlers::device_mgmt::DccFailure {

@@ -23,8 +23,8 @@
 //! outcome kept for the batch's request, and a staged change is dropped, its
 //! request then committing in place.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use super::buffer::{Timestamp, apply_change, written_buffer_size};
 use super::*;
@@ -130,7 +130,7 @@ pub(super) fn writer(
         move |snapshot: &Arc<AuditLogSnapshot>| persistence.commit(snapshot),
         move |snapshot, result| {
             if let Err(error) = result {
-                tracing::warn!(
+                log_warn!(
                     audit_log = %oid,
                     generation = snapshot.generation,
                     %error,
@@ -423,7 +423,7 @@ impl AuditLogObject {
     }
 
     /// Block until every queued commit has run.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "std"))]
     pub(super) fn wait_for_commits(&self) {
         self.writer.wait_idle();
     }

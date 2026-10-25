@@ -1,7 +1,7 @@
 //! Device-owned recipient state and the synchronous runtime mutation capability.
 use super::*;
+use alloc::sync::Weak;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
-use std::sync::Weak;
 
 /// Actual remote requester context, supplied only after service authorization.
 #[doc(hidden)]

@@ -36,8 +36,9 @@
 //! for it too: the object only stores the flag, and the server reads it to
 //! decide whether a WriteGroup asking for no delays gets them.
 
-use std::borrow::Cow;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
 
 use bacnet_encoding::constructed::constructed_channel_value;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;

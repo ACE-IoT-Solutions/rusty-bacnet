@@ -21,12 +21,14 @@
 //! A port that can use B/IP multicast lends its group as [`IpMulticast`],
 //! in any mode.
 //!
-//! The module exists only with the `std` feature. Both crates it joins are
-//! hosted, and the shared `Arc` needs atomic compare-and-swap, which
-//! bare-metal targets such as ARMv6-M lack (#1604).
+//! The module needs the `alloc` feature, and a target with atomic
+//! compare-and-swap for the shared `Arc`, which bare-metal targets such as
+//! ARMv6-M lack (#1604). So a no_std device on such a target can lend its
+//! B/IP state to the Network Port object too (#1615).
 
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
-use std::sync::Arc;
 
 use crate::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};
 use crate::enums::{ErrorClass, ErrorCode, IPMode};
