@@ -14,7 +14,7 @@ description: "Choose an application owner and find release API contracts and evi
 | Request and respond as one device through one transport | [Shared endpoints](/rusty-bacnet/integrate/shared-endpoints/) for B/IP, SC or MS/TP |
 | Associate a B/IP socket with a Network Port object | [Network Port registration](/rusty-bacnet/integrate/network-ports/#register-a-bip-receiving-port) |
 | Learn and answer local network-number queries | [Passive Number controls](/rusty-bacnet/integrate/network-ports/); no discovery command or startup announcement required |
-| Connect through an SC hub | [BACnet/SC setup](/rusty-bacnet/guides/bacnet-sc/), with explicit trust, credentials and durable device identity |
+| Connect through an SC hub | [BACnet/SC setup](/rusty-bacnet/connect/bacnet-sc/), with explicit trust, credentials and durable device identity |
 
 Shared endpoints deliberately have a narrower responder than the full server. Transport implementation, language binding and actual runtime evidence are separate choices; compare the [transport matrix](/rusty-bacnet/reference/transports/) before selecting a path.
 
@@ -31,5 +31,6 @@ Before 1.0, APIs may be removed or changed directly. Keep the source revision, f
 ## Next steps
 
 - [Compose a shared endpoint](/rusty-bacnet/integrate/shared-endpoints/).
+- [Choose a data link and its owner](/rusty-bacnet/connect/overview/).
 - [Choose a transport and its evidence scope](/rusty-bacnet/reference/transports/).
 - [Understand support and conformance](/rusty-bacnet/project/support/).

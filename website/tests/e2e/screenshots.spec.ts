@@ -31,7 +31,7 @@ test('capture actual production reading and installation states', async ({ page 
     await expect(slider).toHaveValue('300');
     await capture('diagram-expanded', false);
     await page.keyboard.press('Escape');
-    await page.goto(base + 'guides/configuration/');
+    await page.goto(base + 'connect/bacnet-ip/');
     await capture('article');
     for (const route of ['overview', 'shared-endpoints', 'network-ports']) {
       await page.goto(base + 'integrate/' + route + '/');
@@ -44,7 +44,7 @@ test('capture actual production reading and installation states', async ({ page 
     const menu = page.getByRole('button', { name: 'Menu', exact: true });
     if (await menu.isVisible()) await menu.click();
     const sidebar = page.locator('#starlight__sidebar');
-    for (const label of ['Start with v0.14', 'Operate', 'Terminal UI']) {
+    for (const label of ['Start with v0.14', 'Connect to a network', 'Discover, read and write', 'Terminal UI']) {
       const group = sidebar.locator('details').filter({ has: page.locator('summary').filter({ hasText: new RegExp('^' + label + '$') }) }).first();
       if (await group.getAttribute('open') !== null) await group.locator('summary').first().click();
     }

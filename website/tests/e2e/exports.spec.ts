@@ -76,6 +76,18 @@ test('download, MDX source view, Markdown exports and llms are source-derived', 
   await expect(page.locator('details code')).toHaveText(source.trim(), { useInnerText: true });
 });
 
+test('the search index holds each canonical page once and no compatibility page', async ({ request }) => {
+  const entry = await (await request.get(base + 'pagefind/pagefind-entry.json')).json();
+  expect(Object.values(entry.languages).reduce((sum: number, language: any) => sum + language.page_count, 0)).toBe(routes.length);
+  for (const route of routes) {
+    const html = await (await request.get(base + route)).text();
+    expect(html.match(/data-pagefind-body/g) ?? [], route).toHaveLength(1);
+  }
+  for (const legacy of legacyRoutes) {
+    expect(await (await request.get(base + legacy.from + '/')).text(), legacy.from).not.toContain('data-pagefind-body');
+  }
+});
+
 test('unknown route returns a useful custom 404 with working local recovery', async ({ page }) => {
   const response = await page.goto(base + 'missing-guide-for-404-test/');
   expect(response?.status()).toBe(404);

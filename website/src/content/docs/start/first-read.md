@@ -77,7 +77,7 @@ A standalone `bacnet discover` process does not establish a documented persisten
 
 ## Continue
 
-[Configure the network deliberately](/rusty-bacnet/guides/configuration/), [automate the read in Python](/rusty-bacnet/start/python/), or [learn about subscriptions](/rusty-bacnet/guides/observe-changes/). Keep writes separate until you have a reviewed operational procedure.
+[Configure the network deliberately](/rusty-bacnet/connect/bacnet-ip/), [automate the read in Python](/rusty-bacnet/start/python/), or [learn about subscriptions](/rusty-bacnet/guides/observe-changes/). Keep writes separate until you have a reviewed operational procedure.
 
 ## Sources and release scope
 

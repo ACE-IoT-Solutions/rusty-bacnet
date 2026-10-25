@@ -172,7 +172,7 @@ echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
 
 An FTDI adapter holds received octets for up to its latency timer, 16 ms by default, and that delay counts against the time a station has to answer a token or a poll. The setting lasts until the adapter is unplugged; a udev rule makes it permanent.
 
-The monitor and the participant have hardware evidence only on Linux. On macOS and Windows the `serial` feature builds and passes CI with pseudo-terminal tests, but no USB RS-485 adapter has been tested there yet: treat them as experimental. On-wire timing is not qualified on any adapter yet. See [MS/TP and RS-485](/rusty-bacnet/guides/mstp/) for the wider qualification picture.
+The monitor and the participant have hardware evidence only on Linux. On macOS and Windows the `serial` feature builds and passes CI with pseudo-terminal tests, but no USB RS-485 adapter has been tested there yet: treat them as experimental. On-wire timing is not qualified on any adapter yet. See [MS/TP and RS-485](/rusty-bacnet/connect/mstp/) for the wider qualification picture.
 
 ## Sources and release scope
 

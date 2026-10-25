@@ -33,7 +33,45 @@
     ]
   },
   {
-    "label": "Build and integrate",
+    "label": "Connect to a network",
+    "items": [
+      {
+        "label": "Choose a data link",
+        "slug": "connect/overview"
+      },
+      {
+        "label": "BACnet/IP settings",
+        "slug": "connect/bacnet-ip"
+      },
+      {
+        "label": "BACnet/SC & certificates",
+        "slug": "connect/bacnet-sc"
+      },
+      {
+        "label": "MS/TP & RS-485",
+        "slug": "connect/mstp"
+      }
+    ]
+  },
+  {
+    "label": "Discover, read and write",
+    "items": [
+      {
+        "label": "Discovery & addressing",
+        "slug": "guides/discovery"
+      },
+      {
+        "label": "Observe changes with COV",
+        "slug": "guides/observe-changes"
+      },
+      {
+        "label": "Write & relinquish",
+        "slug": "guides/safe-writes"
+      }
+    ]
+  },
+  {
+    "label": "Build applications",
     "items": [
       {
         "label": "Integration overview",
@@ -46,35 +84,6 @@
       {
         "label": "Network Port & Number controls",
         "slug": "integrate/network-ports"
-      }
-    ]
-  },
-  {
-    "label": "Operate",
-    "items": [
-      {
-        "label": "Connection settings",
-        "slug": "guides/configuration"
-      },
-      {
-        "label": "Discovery & addressing",
-        "slug": "guides/discovery"
-      },
-      {
-        "label": "BACnet/SC & certificates",
-        "slug": "guides/bacnet-sc"
-      },
-      {
-        "label": "MS/TP & RS-485",
-        "slug": "guides/mstp"
-      },
-      {
-        "label": "Observe changes with COV",
-        "slug": "guides/observe-changes"
-      },
-      {
-        "label": "Write & relinquish",
-        "slug": "guides/safe-writes"
       }
     ]
   },
@@ -145,20 +154,7 @@
     ]
   },
   {
-    "label": "Contribute",
-    "items": [
-      {
-        "label": "Build from source",
-        "slug": "development/build-from-source"
-      },
-      {
-        "label": "Improve the documentation",
-        "slug": "development/documentation"
-      }
-    ]
-  },
-  {
-    "label": "Help & project",
+    "label": "Evaluate and get help",
     "items": [
       {
         "label": "Troubleshooting",
@@ -171,6 +167,23 @@
       {
         "label": "Upgrade notes",
         "slug": "project/upgrading"
+      },
+      {
+        "label": "Upgrade to v0.14.0",
+        "slug": "project/upgrading/v0-14"
+      }
+    ]
+  },
+  {
+    "label": "Contribute",
+    "items": [
+      {
+        "label": "Build from source",
+        "slug": "development/build-from-source"
+      },
+      {
+        "label": "Improve the documentation",
+        "slug": "development/documentation"
       }
     ]
   }
