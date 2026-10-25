@@ -141,7 +141,7 @@ fn a_double_ctrl_c_goes_through_the_exit_guard() {
 
 #[test]
 fn ctrl_c_on_a_preview_declines_it() {
-    use crate::tui::safety::{Gate, Preview, Tier};
+    use crate::tui::safety::{Change, Gate, Preview, Tier};
     let mut app = connected_app();
     ready(&mut app, true, Vec::new());
     let preview = Box::new(Preview {
@@ -152,7 +152,7 @@ fn ctrl_c_on_a_preview_declines_it() {
     });
     app.overlay = Overlay::Safety(Box::new(Modal::Confirm {
         req: 1,
-        preview: preview.clone(),
+        change: Change::Write(preview.clone()),
         typed: String::new(),
         error: None,
         opened: app.now,
@@ -160,14 +160,16 @@ fn ctrl_c_on_a_preview_declines_it() {
     let commands = press_with(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(
         commands,
-        [Command::Safety(SafetyCommand::Declined { preview })]
+        [Command::Safety(SafetyCommand::Declined {
+            change: Change::Write(preview)
+        })]
     );
     assert_eq!(app.overlay, Overlay::None);
 }
 
 /// An armed app showing a T1 preview opened now.
 fn confirming() -> App {
-    use crate::tui::safety::{Gate, Preview, Tier};
+    use crate::tui::safety::{Change, Gate, Preview, Tier};
     let mut app = connected_app();
     ready(&mut app, true, Vec::new());
     worker(
@@ -176,12 +178,12 @@ fn confirming() -> App {
     );
     app.overlay = Overlay::Safety(Box::new(Modal::Confirm {
         req: 1,
-        preview: Box::new(Preview {
+        change: Change::Write(Box::new(Preview {
             device: 100,
             items: Vec::new(),
             batch: false,
             gate: Gate::Allowed(Tier::T1),
-        }),
+        })),
         typed: String::new(),
         error: None,
         opened: app.now,

@@ -67,34 +67,63 @@ pub async fn time_sync_cmd<T: TransportPort + 'static>(
     Ok(())
 }
 
-/// Parse an action string into an `EnableDisable` value.
-fn parse_enable_disable(action: &str) -> Result<EnableDisable, String> {
-    match action.to_ascii_lowercase().as_str() {
-        "enable" => Ok(EnableDisable::ENABLE),
-        "disable" => Ok(EnableDisable::DISABLE),
-        "disable-initiation" | "disable_initiation" => Ok(EnableDisable::DISABLE_INITIATION),
-        _ => Err(format!(
-            "unknown action '{action}': expected 'enable', 'disable', or 'disable-initiation'"
-        )),
+/// The DeviceCommunicationControl actions by name, as `control` (`dcc`)
+/// and the TUI's `:dcc` take them.
+pub(crate) const DCC_ACTIONS: [(&str, EnableDisable); 3] = [
+    ("enable", EnableDisable::ENABLE),
+    ("disable", EnableDisable::DISABLE),
+    ("disable-initiation", EnableDisable::DISABLE_INITIATION),
+];
+
+/// The ReinitializeDevice states by name, as `reinit` and the TUI's
+/// `:reinit` take them.
+pub(crate) const REINIT_STATES: [(&str, ReinitializedState); 8] = [
+    ("coldstart", ReinitializedState::COLDSTART),
+    ("warmstart", ReinitializedState::WARMSTART),
+    ("start-backup", ReinitializedState::START_BACKUP),
+    ("end-backup", ReinitializedState::END_BACKUP),
+    ("start-restore", ReinitializedState::START_RESTORE),
+    ("end-restore", ReinitializedState::END_RESTORE),
+    ("abort-restore", ReinitializedState::ABORT_RESTORE),
+    ("activate-changes", ReinitializedState::ACTIVATE_CHANGES),
+];
+
+/// The value named `word` in `table`, in any case, with `_` for `-`.
+fn named<T: Copy>(table: &[(&str, T)], word: &str) -> Option<T> {
+    let word = word.to_ascii_lowercase().replace('_', "-");
+    table
+        .iter()
+        .find(|(name, _)| *name == word)
+        .map(|(_, value)| *value)
+}
+
+/// `'a', 'b', or 'c'`.
+fn choices<T>(table: &[(&str, T)]) -> String {
+    let names: Vec<String> = table.iter().map(|(name, _)| format!("'{name}'")).collect();
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{}, or {last}", rest.join(", ")),
+        _ => names.join(""),
     }
 }
 
+/// Parse an action string into an `EnableDisable` value.
+pub(crate) fn parse_enable_disable(action: &str) -> Result<EnableDisable, String> {
+    named(&DCC_ACTIONS, action).ok_or_else(|| {
+        format!(
+            "unknown action '{action}': expected {}",
+            choices(&DCC_ACTIONS)
+        )
+    })
+}
+
 /// Parse a state string into a `ReinitializedState` value.
-fn parse_reinit_state(state: &str) -> Result<ReinitializedState, String> {
-    match state.to_ascii_lowercase().as_str() {
-        "coldstart" => Ok(ReinitializedState::COLDSTART),
-        "warmstart" => Ok(ReinitializedState::WARMSTART),
-        "start-backup" | "start_backup" => Ok(ReinitializedState::START_BACKUP),
-        "end-backup" | "end_backup" => Ok(ReinitializedState::END_BACKUP),
-        "start-restore" | "start_restore" => Ok(ReinitializedState::START_RESTORE),
-        "end-restore" | "end_restore" => Ok(ReinitializedState::END_RESTORE),
-        "abort-restore" | "abort_restore" => Ok(ReinitializedState::ABORT_RESTORE),
-        "activate-changes" | "activate_changes" => Ok(ReinitializedState::ACTIVATE_CHANGES),
-        _ => Err(format!(
-            "unknown state '{state}': expected 'coldstart', 'warmstart', 'start-backup', \
-             'end-backup', 'start-restore', 'end-restore', 'abort-restore', or 'activate-changes'"
-        )),
-    }
+pub(crate) fn parse_reinit_state(state: &str) -> Result<ReinitializedState, String> {
+    named(&REINIT_STATES, state).ok_or_else(|| {
+        format!(
+            "unknown state '{state}': expected {}",
+            choices(&REINIT_STATES)
+        )
+    })
 }
 
 /// Send a DeviceCommunicationControl request.

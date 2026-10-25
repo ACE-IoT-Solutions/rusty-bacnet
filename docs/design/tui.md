@@ -337,8 +337,9 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
    set `writes = "never"`. Arming needs a profile workspace for the ledger and
    the audit log, so a flags-only session stays read-only.
 4. **Dangerous operations** (#964): off unless the profile sets
-   `dangerous = true` and a write session is armed. Today the only one is
-   commanding priority 6; DCC, reinitialize and BDT writes will join it.
+   `dangerous = true` and a write session is armed: commanding priority 6,
+   and DCC and reinitialize (`:dcc`, `:reinit`, #1799). BDT writes will join
+   them.
 
 **Confirmation tiers**
 
@@ -347,8 +348,8 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 | T0 | Reads, discovery, capture | None, except that a global or full-range Who-Is gets a one-line warning with the expected response volume and needs a second Enter (M0) |
 | T1 | Writes at priorities 9 to 16, non-commandable property writes | Preview (old to new, slot occupancy, whether the effective value changes), then Enter |
 | T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image, so it has no ledger entry; on a profile session each confirmed join is written to the audit log (`mstp-join`: profile, port, station, baud, Max_Master, Max_Info_Frames, time) before the port opens. Unlike a write, whose audit record failing is only logged, a join that can't be recorded is not made (#1862) |
-| T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. DCC defaults to a finite duration |
-| Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3); the deprecated plain-disable DCC option, which current-revision servers ignore (Clause 16.1) | Expert flag only |
+| T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. A DCC disable lasts 15 minutes unless a duration or `forever` is typed (#1799); plain disable is T3 here too, behind `dangerous = true` |
+| Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3) | Expert flag only (`dangerous = true`); then T3. The deprecated plain-disable DCC option, which current-revision servers refuse (Clause 16.1), needs the same flag, which every DCC needs, and is confirmed at T3 with a deprecation warning |
 
 As built in #964 (`tui/safety/plan.rs`): priorities 3, 4 and 7, which Table 19-1
 leaves to the site but which outrank the operator's 8, are T2 like 8. A
@@ -358,9 +359,16 @@ tier; one blocked member blocks it. The "expert flag" is the profile's
 slot this session's ledger holds is T1 at priorities 9 to 16. A write without a
 priority goes to 16 for a commandable property (Clause 19.2.1); a priority on a
 non-commandable property is not sent. The app enforces the tiers, and the write
-worker checks the level, the policy and priority 6 again before sending. The T3
-flow (the device instance typed out) and `audit::Secret` for passwords are
-there for DCC and reinitialize to reuse.
+worker checks the level, the policy and priority 6 again before sending. DCC and
+reinitialize (#1799) reuse the T3 flow (the device instance typed out) through
+one confirmation dialog for writes and device management, and carry their
+passwords in `audit::Secret`. A DCC disable without a duration lasts 15
+minutes; `forever` sends no duration, so it lasts until enabled again. The
+one-shot `control` is unchanged: without `--duration` it sends none. The
+confirmation names the duration. A plain `disable` is allowed under
+`dangerous = true` with a deprecation warning. The capture masks either
+request's password before the frame enters its ring, so neither the screen
+nor a pcap export holds it.
 
 Before any commandable write, the TUI reads the priority array, Present_Value,
 Relinquish_Default and Out_Of_Service. It says when a stronger slot is active

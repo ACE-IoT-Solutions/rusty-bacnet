@@ -11,6 +11,7 @@ pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
 mod filter;
+mod manage;
 pub(crate) mod monitor;
 mod monitor_scan;
 pub(crate) mod mstp;

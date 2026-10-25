@@ -55,6 +55,7 @@ pub(super) fn raw_bip(ms: u64, out: bool, bytes: Vec<u8>) -> CaptureFrame {
         destination,
         via,
         summary,
+        redacted: false,
         bytes: Bytes::from(bytes),
     }
 }

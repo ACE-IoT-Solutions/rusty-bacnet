@@ -21,6 +21,12 @@
 //!   list.
 //! - `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`: the MS/TP
 //!   monitor's thresholds, and how long its join wizard listens.
+//! - `dcc ACTION [MINUTES]` (or `control`) and `reinit STATE`:
+//!   DeviceCommunicationControl and ReinitializeDevice to the selected
+//!   device, the action and state named as the one-shot `control` and
+//!   `reinit` name them. A masked password prompt and the T3 confirmation
+//!   follow; both need an armed write session on a profile with
+//!   `dangerous = true`.
 //!
 //! Every command but `find` is split into words by [`words::split`]: quotes
 //! group words and a backslash escapes a quote, a whitespace character or a
@@ -30,17 +36,19 @@ mod words;
 
 use std::time::Duration;
 
-use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::enums::{EnableDisable, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use self::words::Word;
 use super::devices::DeviceTable;
 use super::monitor::Setting;
 use super::{App, FLASH_FOR, FilterKey, Overlay};
+use crate::commands::device::{parse_enable_disable, parse_reinit_state};
 use crate::core::target::{Target, parse_target};
 use crate::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
 use crate::tui::message::Command;
 use crate::tui::safety::WriteSpec;
+use crate::tui::safety::manage::{Action, DccTime};
 use crate::tui::watched::{Point, WatchCommand};
 
 /// One command: its name, a short alias, its forms and what it does. The
@@ -112,6 +120,22 @@ pub(crate) const COMMANDS: &[Syntax] = &[
         ],
         what: "Monitor thresholds, safe-join window, or receive-only baud scan",
     },
+    Syntax {
+        name: "dcc",
+        alias: Some("control"),
+        usage: &[
+            "dcc enable",
+            "dcc disable-initiation|disable [MINUTES]",
+            "dcc disable-initiation|disable forever",
+        ],
+        what: "DeviceCommunicationControl, selected device (T3)",
+    },
+    Syntax {
+        name: "reinit",
+        alias: None,
+        usage: &["reinit coldstart|warmstart|STATE"],
+        what: "ReinitializeDevice, selected device (T3)",
+    },
 ];
 
 /// The command whose name or alias is `word`.
@@ -165,6 +189,34 @@ pub(crate) enum Line {
     Mstp(Setting),
     /// Start a baud scan, or cancel when no window is supplied.
     Scan(Option<Duration>),
+    /// DeviceCommunicationControl or ReinitializeDevice to the selected
+    /// device.
+    Manage(Action),
+}
+
+/// `dcc ACTION [MINUTES|forever]`. A disable without a duration lasts
+/// [`DEFAULT_DCC_MINUTES`](crate::tui::safety::manage::DEFAULT_DCC_MINUTES);
+/// `forever` sends none. `enable` takes none,
+/// since the device ignores one.
+fn dcc(action: &str, duration: Option<&str>) -> Result<Action, String> {
+    let state = parse_enable_disable(action)?;
+    let time = match duration {
+        _ if state == EnableDisable::ENABLE => match duration {
+            None => DccTime::Forever,
+            Some(_) => return Err("usage: dcc enable (it takes no duration)".into()),
+        },
+        None => DccTime::Default,
+        Some("forever") => DccTime::Forever,
+        Some(word) => DccTime::Minutes(
+            word.parse::<u16>()
+                .ok()
+                .filter(|minutes| *minutes > 0)
+                .ok_or_else(|| {
+                    format!("'{word}': dcc takes 1 to 65535 whole minutes, or forever")
+                })?,
+        ),
+    };
+    Ok(Action::Dcc { state, time })
 }
 
 /// `mstp rotation|hold MS` or `mstp listen SECS`, each at least 1.
@@ -353,6 +405,12 @@ pub(crate) fn parse(text: &str, devices: &DeviceTable) -> Result<Line, String> {
             Ok(Line::Scan(Some(Duration::from_secs(seconds))))
         }
         ("mstp", [which, value]) => Ok(Line::Mstp(mstp_setting(which, value)?)),
+        ("dcc", [action, rest @ ..]) if rest.len() <= 1 => {
+            Ok(Line::Manage(dcc(action, rest.first().copied())?))
+        }
+        ("reinit", [state]) => Ok(Line::Manage(Action::Reinit {
+            state: parse_reinit_state(state)?,
+        })),
         // A quoted first word, `"find"`, is still find.
         ("find", _) => Ok(Line::Find(find_name(rest.trim()))),
         _ => Err(wrong()),
@@ -387,6 +445,7 @@ impl App {
                     Ok(Line::Find(name)) => self.find(name, out),
                     Ok(Line::Mstp(setting)) => self.mstp_setting(setting),
                     Ok(Line::Scan(window)) => self.mstp_scan(window, out),
+                    Ok(Line::Manage(action)) => self.open_manage(action),
                     Err(error) => self.flash(error, FLASH_FOR),
                 }
             }
@@ -683,6 +742,8 @@ mod tests {
             Line::Bbmd(_) => "bbmd",
             Line::Find(_) => "find",
             Line::Mstp(_) | Line::Scan(_) => "mstp",
+            Line::Manage(Action::Dcc { .. }) => "dcc",
+            Line::Manage(Action::Reinit { .. }) => "reinit",
         }
     }
 
@@ -700,6 +761,9 @@ mod tests {
             "find Supply Temp",
             "mstp hold 250",
             "mstp listen 30",
+            "dcc disable-initiation 30",
+            "control enable",
+            "reinit warmstart",
         ];
         let mut rows = std::collections::BTreeSet::new();
         for sample in samples {

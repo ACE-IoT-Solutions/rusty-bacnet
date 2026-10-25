@@ -36,6 +36,10 @@
 //!   the per-device gate and the rate cap, against the lab device.
 //! - `watch_rows`: watch rows' names, routed devices and column fit at
 //!   80, 120 and 200 columns, and the name read against refusing devices.
+//! - `device_mgmt`: `:dcc` and `:reinit` against the lab device: the
+//!   requests on the wire, the audit records, and the password kept out
+//!   of every file, frame and log; `device_mgmt_app`: their refusals and
+//!   the masked prompt in `update` alone.
 //!
 //! Snapshot workflow: CI runs plain `cargo nextest run -p bacnet-cli`, where a
 //! changed frame fails the test. After an intended UI change, run
@@ -54,6 +58,10 @@ mod capture_views;
 mod connections;
 #[cfg(unix)]
 mod crash;
+mod device_mgmt;
+mod device_mgmt_app;
+mod device_mgmt_capture;
+mod device_mgmt_worker;
 mod devices_layout;
 mod discovery;
 mod event_loop;

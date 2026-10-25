@@ -358,16 +358,16 @@ fn failures_keep_what_identifies_them() {
 #[test]
 fn a_declined_preview_says_so_in_the_footer() {
     use crate::tui::app::safety::Modal;
-    use crate::tui::safety::{Gate, Preview, Tier};
+    use crate::tui::safety::{Change, Gate, Preview, Tier};
     let mut app = connected_app();
     app.overlay = Overlay::Safety(Box::new(Modal::Confirm {
         req: 1,
-        preview: Box::new(Preview {
+        change: Change::Write(Box::new(Preview {
             device: 100,
             items: Vec::new(),
             batch: false,
             gate: Gate::Allowed(Tier::T1),
-        }),
+        })),
         typed: String::new(),
         error: None,
         opened: app.now,

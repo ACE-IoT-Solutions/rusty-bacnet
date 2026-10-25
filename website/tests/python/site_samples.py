@@ -309,4 +309,6 @@ SAMPLES: dict[str, object] = {
         Skip("E", "TUI command-bar input, checked against command_bar.rs"),
     'tui/writes.mdx:::writem 1001 av:1 description "Zone 2 supply"@12':
         Skip("E", "TUI command-bar input, checked against command_bar.rs"),
+    "tui/writes.mdx:::dcc disable-initiation 30":
+        Skip("E", "TUI command-bar input, checked against command_bar.rs"),
 }
