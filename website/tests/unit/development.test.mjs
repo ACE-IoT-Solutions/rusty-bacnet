@@ -22,15 +22,17 @@ async function guidePath(slug) {
   return matches[0];
 }
 test('integration navigation resolves task guides with release-pinned source links', async () => {
-  const group = navigation.find(group => group.label === 'Build and integrate');
+  const group = navigation.find(group => group.label === 'Build applications');
   assert.ok(group);
   const slugs = group.items.map(item => item.slug);
   assert.deepEqual(slugs, ['integrate/overview', 'integrate/shared-endpoints', 'integrate/network-ports']);
+  assert.deepEqual(navigation.find(group => group.label === 'Connect to a network').items.map(item => item.slug),
+    ['connect/overview', 'connect/bacnet-ip', 'connect/bacnet-sc', 'connect/mstp']);
   assert.deepEqual(navigation.find(group => group.label === 'Contribute').items.map(item => item.slug),
     ['development/build-from-source', 'development/documentation']);
   assert.equal(new Set(navigation.flatMap(group => group.items.map(item => item.slug))).size,
     navigation.reduce((sum, group) => sum + group.items.length, 0));
-  for (const slug of [...slugs, 'guides/bacnet-sc', 'reference/transports']) {
+  for (const slug of [...slugs, 'connect/overview', 'connect/bacnet-sc', 'reference/transports']) {
     const path = await guidePath(slug);
     const source = await readFile(path, 'utf8');
     const page = frontmatter(source);

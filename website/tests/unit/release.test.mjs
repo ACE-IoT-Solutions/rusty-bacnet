@@ -14,10 +14,12 @@ const docs = new URL('src/content/docs/', root);
 const read = path => readFile(new URL(path, root), 'utf8');
 const readRepo = path => readFile(new URL(path, repo), 'utf8');
 const series = release.split('.').slice(0, 2).join('.');
-// The release project/upgrading.md moves from. The upgrade guide and the lab's
-// recorded evidence may name it; nothing else may.
+// The release project/upgrading/v0-14.md moves from. That upgrade guide and the
+// lab's recorded evidence may name it; nothing else may. The upgrade hub,
+// project/upgrading.md, names only the release.
 const previous = '0.13.0';
-const history = new Set(['project/upgrading.md', 'start/local-lab.mdx']);
+const upgradeGuide = 'project/upgrading/v0-14.md';
+const history = new Set([upgradeGuide, 'start/local-lab.mdx']);
 // Other versions the upgrade guide names: bacnet-time's, which moves on its own
 // (#1768), and the minimum Rustls for BACnet/SC (#1737).
 const upgradeOnly = ['0.13.1', '0.23.46'];
@@ -34,7 +36,7 @@ test('every copy of the release version matches site.mjs', async () => {
   assert.ok(pages.length > 20);
   for (const name of pages) {
     const text = await read(`src/content/docs/${name}`);
-    const allowed = name === 'project/upgrading.md' ? [release, previous, ...upgradeOnly]
+    const allowed = name === upgradeGuide ? [release, previous, ...upgradeOnly]
       : history.has(name) ? [release, previous] : [release];
     // MDX takes the release from site.mjs ({release}), so it names none itself.
     const found = versions(text).filter(version => name.endsWith('.mdx') ? version !== previous || !history.has(name) : !allowed.includes(version));
@@ -55,8 +57,8 @@ test('every copy of the release version matches site.mjs', async () => {
   expect(`project/support.md: describe **v${release}**`, support.includes(`and the operating guides describe **v${release}**`));
   expect(`project/support.md: describes v${release}, with its release notes`,
     support.includes(`This summary describes v${release}; its [release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v${release})`));
-  const upgrading = await read('src/content/docs/project/upgrading.md');
-  expect(`project/upgrading.md: from v${previous} to v${release}`, upgrading.includes(`title: "Upgrade from v${previous} to v${release}"`));
+  const upgrading = await read(`src/content/docs/${upgradeGuide}`);
+  expect(`${upgradeGuide}: from v${previous} to v${release}`, upgrading.includes(`title: "Upgrade from v${previous} to v${release}"`));
   assert.deepEqual(stale, [], `release is ${release}; update these`);
 });
 
