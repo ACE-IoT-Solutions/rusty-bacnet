@@ -262,7 +262,12 @@ struct SessionShared {
 /// # Ok(())
 /// # }
 /// ```
-pub struct EndpointSession<T: TransportPort + 'static> {
+///
+/// `T` defaults to [`AnyTransport`](bacnet_transport::any::AnyTransport), so
+/// `EndpointSession` alone names a session over any built-in transport;
+/// `EndpointSession<BipTransport>` and the like name one over a concrete
+/// transport, as the builders return.
+pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::AnyTransport> {
     shared: Arc<SessionShared>,
     coordinator: Arc<OutboundTransactionCoordinator>,
     ingress: Option<EndpointIngress<T>>,

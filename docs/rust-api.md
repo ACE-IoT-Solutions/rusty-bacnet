@@ -3119,6 +3119,11 @@ described below (`network_control_receiver_with_admission()` for a tracked
 one). The start returns a `StartedRouter` holding the router, the
 local APDU receiver and, when asked for, the network-control receiver.
 
+Every port of one router has the same transport type. `RouterPort`'s
+defaults to `AnyTransport` (#2043), so a router that mixes link types takes
+a `Vec<RouterPort>` of `AnyTransport` ports; one whose ports share a
+concrete transport names it, as in `RouterPort<BipTransport>`.
+
 ```rust
 use bacnet_network::router::{BACnetRouter, RouterOptions, StartedRouter};
 
@@ -9156,6 +9161,10 @@ shared outbound coordinator. Use its builders when both roles need that shared
 lifecycle. Standalone `BACnetClient` and `BACnetServer` remain public APIs with
 their own service and data-link capabilities; they are not deprecated. The
 endpoint responder's narrower service scope is described below.
+
+`EndpointSession`'s transport type defaults to `AnyTransport` (#2043), so
+`EndpointSession` alone names a session over any built-in transport. The
+builders return the concrete form, such as `EndpointSession<BipTransport>`.
 
 ### Builders
 
