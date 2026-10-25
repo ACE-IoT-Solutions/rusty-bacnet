@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bacnet_encoding::npdu::decode_npdu;
+use bacnet_encoding::npdu::Npdu;
 use bacnet_transport::port::ReceivedNpdu;
 
 use super::BACnetRouter;
@@ -37,20 +37,25 @@ impl LocalControl {
         }
     }
 
-    /// Offer the control `received` carries to the consumer. Like the
-    /// router's local APDU queue, a full or closed consumer drops the
-    /// arriving control and never holds up routing.
-    pub(super) fn deliver(&self, received: &ReceivedNpdu) {
+    /// Whether a consumer asked for these controls, so the dispatch reads
+    /// the control's header only for one.
+    pub(super) fn wanted(&self) -> bool {
+        self.tx.is_some()
+    }
+
+    /// Offer the control `received` carries to the consumer: `header` is
+    /// its control information, which the dispatch read from the engine's
+    /// view with [`Npdu::header_from`], and its data starts at `offset` in
+    /// the frame. The frame isn't decoded again, and the data shares its
+    /// buffer. Like the router's local APDU queue, a full or closed
+    /// consumer drops the arriving control and never holds up routing.
+    pub(super) fn deliver(&self, mut header: Npdu, offset: usize, received: &ReceivedNpdu) {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        // The engine parsed it already, and bacnet-encoding's decoder
-        // accepts exactly what the engine's view does.
-        let Ok(npdu) = decode_npdu(received.npdu.clone()) else {
-            return;
-        };
+        header.payload = received.npdu.slice(offset..);
         let _ = tx.try_send(ReceivedNetworkControl {
-            npdu,
+            npdu: header,
             source_mac: received.source_mac.clone(),
             link_layer_group: received.link_layer_group,
             data_attributes: received.data_attributes.clone(),

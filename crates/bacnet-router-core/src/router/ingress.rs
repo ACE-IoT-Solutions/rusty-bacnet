@@ -6,8 +6,8 @@ use super::config::Options;
 use super::counters::bump;
 use super::host::Host;
 use super::tasks::Task;
-use crate::node::admit;
 pub(super) use crate::node::is_unconfirmed;
+use crate::node::{admit_npdu, admit_source};
 use crate::npdu::RejectMessageReason;
 use crate::npdu::{Address, AddressField, GLOBAL_NETWORK, Malformed, NetworkPriority, Npdu};
 use crate::table::{Reachability, Route};
@@ -188,48 +188,57 @@ impl<
             bump(&mut self.counters.unknown_port);
             return Received::Discarded(Discard::UnknownPort);
         };
-        // The checks a node makes too, in one place (crate::node).
-        let admitted = match admit(frame.source, frame.npdu) {
-            Ok(admitted) => admitted,
-            Err(refused) => {
-                bump(self.counters.slot(refused.count));
-                // A global broadcast draws no reject, and an NPDU without a
-                // DNET has no network to name.
-                if let Some((source_mac, Some(dnet), source)) = refused.reject_to
-                    && dnet != GLOBAL_NETWORK
-                {
-                    let at = Arrival {
-                        port: frame.port,
-                        network: config.network,
-                        source: frame.source,
-                        source_mac,
-                        link_group: frame.link_group,
-                        now,
-                    };
-                    self.reject(
-                        &at,
-                        source,
-                        dnet,
-                        RejectMessageReason::ADDRESSING_ERROR,
-                        host,
-                    );
+        // The checks a node makes too, in one place (crate::node). The
+        // refusal carries no copy of the link source: the one arrival
+        // built here serves the reject path and the accepted frame alike.
+        let refused = match admit_source(frame.source) {
+            Err(refused) => refused,
+            Ok(source_mac) => {
+                let at = Arrival {
+                    port: frame.port,
+                    network: config.network,
+                    source: frame.source,
+                    source_mac,
+                    link_group: frame.link_group,
+                    now,
+                };
+                match admit_npdu(frame.npdu) {
+                    Ok(npdu) => return self.dispatch(&at, &npdu, options, host),
+                    Err(refused) => {
+                        // A global broadcast draws no reject, and an NPDU
+                        // without a DNET has no network to name.
+                        if let Some((Some(dnet), source)) = refused.reject_to
+                            && dnet != GLOBAL_NETWORK
+                        {
+                            self.reject(
+                                &at,
+                                source,
+                                dnet,
+                                RejectMessageReason::ADDRESSING_ERROR,
+                                host,
+                            );
+                        }
+                        refused
+                    }
                 }
-                return Received::Discarded(refused.discard);
             }
         };
-        let npdu = admitted.npdu;
-        let at = Arrival {
-            port: frame.port,
-            network: config.network,
-            source: frame.source,
-            source_mac: admitted.source,
-            link_group: frame.link_group,
-            now,
-        };
+        bump(self.counters.slot(refused.count));
+        Received::Discarded(refused.discard)
+    }
+
+    /// Hand an admitted frame to the network-message or the APDU path.
+    fn dispatch<'f>(
+        &mut self,
+        at: &Arrival<'f>,
+        npdu: &Npdu<'f>,
+        options: &Options,
+        host: &mut impl Host,
+    ) -> Received<'f> {
         if let Some(kind) = npdu.message_type {
-            return self.network_message(&at, &npdu, kind, options, host);
+            return self.network_message(at, npdu, kind, options, host);
         }
-        self.route_apdu(&at, &npdu, options, host)
+        self.route_apdu(at, npdu, options, host)
     }
 
     /// Deliver or route an APDU by its DNET.

@@ -360,6 +360,20 @@ impl Harness {
         });
     }
 
+    /// Hand the raw `npdu` from `source_mac` to `port`, as its transport
+    /// would, with no encode in between.
+    pub(super) fn handle_frame(&mut self, port: usize, source_mac: &[u8], npdu: Bytes) {
+        self.ports[port].dispatch(ReceivedNpdu {
+            npdu,
+            source_mac: MacAddr::from_slice(source_mac),
+            link_layer_group: false,
+            data_attributes: Vec::new(),
+            provenance: TransportProvenance::unverified(),
+            direct_response: None,
+            reply_tx: None,
+        });
+    }
+
     /// The same: the routing-first rule is the engine's either way.
     pub(super) async fn dispatch(&mut self, ctx: IngressContext) {
         self.handle(ctx).await;
