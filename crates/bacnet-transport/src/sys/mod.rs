@@ -28,6 +28,10 @@
 //! - `serial`: Linux's `TIOCSRS485` and `TIOCGRS485`.
 //! - `sched`: Linux's `pthread_setschedparam` and its read-back, for the MS/TP
 //!   transport's dedicated thread.
+//! - `packet_socket`: the Ethernet transport's packet socket, registered
+//!   with Tokio's reactor (Linux).
+//! - `serial_receive_unix`: the receive-only serial descriptor and its
+//!   registration with Tokio's reactor.
 
 #![allow(unsafe_code)]
 
@@ -43,6 +47,9 @@ pub(crate) mod serial;
 
 #[cfg(target_os = "linux")]
 pub(crate) mod sched;
+
+#[cfg(all(feature = "ethernet", target_os = "linux"))]
+pub(crate) mod packet_socket;
 
 #[cfg(windows)]
 pub(crate) mod win_adapters;

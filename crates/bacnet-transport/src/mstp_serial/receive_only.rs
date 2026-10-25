@@ -13,9 +13,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 #[cfg(any(windows, test))]
 mod threaded;
 #[cfg(unix)]
-use crate::sys::serial_receive_unix::Input;
-#[cfg(unix)]
-use tokio::io::unix::AsyncFd;
+use crate::sys::serial_receive_unix::{AsyncInput, Input};
 
 /// A serial input opened with native read-only access and exclusive ownership.
 ///
@@ -29,7 +27,7 @@ use tokio::io::unix::AsyncFd;
 #[derive(Debug)]
 pub struct ReceiveOnlyPort {
     #[cfg(unix)]
-    input: Option<AsyncFd<Input>>,
+    input: Option<AsyncInput>,
     #[cfg(unix)]
     closed: Option<Result<(), Failure>>,
     #[cfg(windows)]
@@ -63,10 +61,9 @@ impl ReceiveOnlyPort {
         rts: Option<bool>,
     ) -> Result<Self, MonitorAdmissionError> {
         let input = Input::open(&config.port_name, config.baud_rate, rts)?;
-        let input = match AsyncFd::try_with_interest(input, tokio::io::Interest::READABLE) {
+        let input = match AsyncInput::register(input) {
             Ok(input) => input,
-            Err(error) => {
-                let (mut input, error) = error.into_parts();
+            Err((mut input, error)) => {
                 return Err(MonitorAdmissionError::after_close(
                     Error::Transport(error),
                     input.close(),
@@ -113,25 +110,13 @@ impl AsyncRead for ReceiveOnlyPort {
         }
         #[cfg(unix)]
         {
-            use std::io::Read;
             if buf.remaining() == 0 {
                 return Poll::Ready(Ok(()));
             }
             let Some(input) = self.input.as_mut() else {
                 return Poll::Ready(Ok(()));
             };
-            loop {
-                let mut ready = std::task::ready!(input.poll_read_ready_mut(cx))?;
-                match ready.try_io(|input| input.get_mut().read(buf.initialize_unfilled())) {
-                    Ok(Ok(count)) => {
-                        buf.advance(count);
-                        return Poll::Ready(Ok(()));
-                    }
-                    Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Ok(Err(error)) => return Poll::Ready(Err(error)),
-                    Err(_) => continue,
-                }
-            }
+            input.poll_read(cx, buf)
         }
     }
 }
@@ -144,10 +129,7 @@ impl MonitorRead for ReceiveOnlyPort {
         #[cfg(unix)]
         {
             if self.closed.is_none() {
-                let result = self
-                    .input
-                    .take()
-                    .map_or(Ok(()), |input| input.into_inner().close());
+                let result = self.input.take().map_or(Ok(()), AsyncInput::close);
                 self.closed = Some(result.map_err(Failure::new));
             }
             Poll::Ready(
