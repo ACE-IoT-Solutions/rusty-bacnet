@@ -247,15 +247,24 @@ impl<A, C> RouterOptions<A, C> {
     /// message is still applied, and accepting one forgets its opposite
     /// from the same sender, so Busy, Available, Busy within one time to
     /// live applies all three; at most four such resets per sender within
-    /// one time to live, so a pair looping round a ring still ends.
+    /// one time to live, so a pair looping round a ring still ends. A
+    /// Who-Is-Router the router passes on for a network it doesn't know
+    /// (#2020) is kept, like a global broadcast, by the origin its SNET and
+    /// SADR name, and its data.
+    ///
+    /// Without this option too, a global broadcast or Who-Is-Router whose
+    /// SNET and SADR name the router itself is dropped, as its own come
+    /// back round a loop, and counted in
+    /// [`Counters::own_source_drops`](super::Counters::own_source_drops)
+    /// (#2021).
     ///
     /// Sizing: the record must hold every global broadcast the router sees
     /// within one time to live, or the oldest is forgotten before its
     /// looped copy returns. 512 covers 512 broadcasts a second at the
     /// default; a longer time to live needs proportionally fewer a second.
-    /// The relayed I-Am-Router, Router-Busy and Router-Available entries
-    /// share those 512 slots with the global broadcasts, the flow-control
-    /// ones one per sender and message.
+    /// The relayed Who-Is-Router, I-Am-Router, Router-Busy and
+    /// Router-Available entries share those 512 slots with the global
+    /// broadcasts, the flow-control ones one per sender and message.
     pub fn duplicates(mut self, policy: Duplicates) -> Self {
         self.engine.duplicates = Some(policy);
         self

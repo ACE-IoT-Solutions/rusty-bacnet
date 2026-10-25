@@ -198,9 +198,12 @@
 //! (`flow_control_from_another_router_is_counted_and_changes_nothing`); and
 //! with `duplicates`, a global broadcast seen again within its time to live
 //! is dropped (`a_looped_copy_within_the_ttl_is_dropped`), and so is a
-//! relayed I-Am-Router, Router-Busy or Router-Available, which no hop count
-//! bounds: around a loop of routers one circulates for good without it, and
-//! with it each router takes the first copy only (`tests/loops.rs`, #1810).
+//! relayed I-Am-Router, Router-Busy, Router-Available or Who-Is-Router,
+//! which no hop count bounds: around a loop of routers one circulates for
+//! good without it, and with it each router takes the first copy only
+//! (`tests/loops.rs`, #1810, #2020). Without any option, a global broadcast
+//! or Who-Is-Router whose SNET and SADR name the router itself is its own
+//! come back round a loop, and is dropped (`tests/loops.rs`, #2021).
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF

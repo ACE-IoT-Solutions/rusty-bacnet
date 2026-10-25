@@ -238,6 +238,7 @@ totals!(
     busy_announced,
     available_announced,
     duplicate_drops,
+    own_source_drops,
     not_next_hop,
     originated,
     }
