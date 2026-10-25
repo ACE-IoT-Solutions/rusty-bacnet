@@ -42,6 +42,8 @@ export async function plainBody(body, file, downloads) {
     raws.set(match[1], await readFile(resolve(dirname(file), match[2].slice(0, -4)), 'utf8'));
   }
   let text = body.replace(/^import .*?;?\r?\n/gm, '');
+  // Comments, such as a generated reference page's markers, stay out of the export.
+  text = outsideFences(text, part => part.replace(mdx ? /\{\/\*[\s\S]*?\*\/\}\r?\n?/g : /<!--[\s\S]*?-->\r?\n?/g, ''));
   if (mdx) {
     text = text.replace(/<Code\b[^`>]*code=\{(String\.raw)?`([^`]*)`\}[^`>]*\/>/g, (tag, raw, code) =>
       `\n\n\`\`\`${attr(tag, 'lang')}\n${expandTemplate(code, raw, file).trim()}\n\`\`\`\n\n`);
@@ -67,8 +69,9 @@ export async function plainBody(body, file, downloads) {
       .replace(/\{(\w+)\}/g, (_, name) => constant(name, file))
       .replace(/<code>([^<`]*)<\/code>/g, '`$1`')));
   }
-  // Test remaining component tags and expressions only outside code fences.
-  const outsideCode = text.replace(fence, '');
+  // Test remaining component tags and expressions only outside code.
+  // A code span is literal text too, such as the CLI reference's `<TARGET>`.
+  const outsideCode = text.replace(fence, '').replace(/`[^`\n]*`/g, '');
   if (/<\/?[A-Z][A-Za-z]*\b/.test(outsideCode)) throw new Error(`Unknown component in ${file}; update the plain-text projection.`);
   if (mdx && /=\{|<\/?(?:a|code)\b/.test(outsideCode)) throw new Error(`Unprojected expression or element in ${file}; update the plain-text projection.`);
   return text.replace(/\]\(\/rusty-bacnet\//g, '](https://jscott3201.github.io/rusty-bacnet/').trim();

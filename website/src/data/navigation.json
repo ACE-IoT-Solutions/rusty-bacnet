@@ -172,16 +172,24 @@
     "label": "Reference",
     "items": [
       {
+        "label": "APIs & examples",
+        "slug": "reference/api"
+      },
+      {
+        "label": "Rust crates",
+        "slug": "reference/rust"
+      },
+      {
+        "label": "Python API",
+        "slug": "reference/python"
+      },
+      {
         "label": "CLI commands",
         "slug": "reference/cli"
       },
       {
         "label": "Transport boundaries",
         "slug": "reference/transports"
-      },
-      {
-        "label": "APIs & examples",
-        "slug": "reference/api"
       }
     ]
   },

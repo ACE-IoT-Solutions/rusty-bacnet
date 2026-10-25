@@ -1744,6 +1744,23 @@ To release:
    brought its fragment into dev, found along the first-parent history, so run
    it on a branch cut from dev's tip with full history (#1188); `preview` shows
    the same links. A tag fails if any fragment is still waiting.
+
+   In the same PR, regenerate the website's generated references (#1989) so
+   the site published from the release describes it. Each script rewrites
+   the generated part of its page and leaves the authored text around it;
+   `--check` changes nothing and fails when the page is stale:
+
+   ```bash
+   node website/scripts/reference-cli.mjs       # reference/cli.md, from the clap definitions (all features; needs libpcap)
+   python3 website/scripts/reference-python.py  # reference/python.md, from rusty_bacnet.pyi
+   node website/scripts/reference-rust.mjs      # reference/rust.mdx, from cargo metadata
+   ```
+
+   PR CI doesn't run the `--check` modes: concurrent PRs that add an option
+   or a method would each fail on, and conflict over, the same pages. Docs
+   validation only checks that the pages parse and link correctly, list
+   every `bacnet` subcommand and list exactly the published crates; the CLI
+   generator also renders the page in every CI test run, so it can't rot.
 2. Optionally, dispatch a dry run on the release branch first: it runs
    everything the release does short of publishing.
 3. Tag a commit on `main`'s or `dev`'s first-parent history (a merge commit,
