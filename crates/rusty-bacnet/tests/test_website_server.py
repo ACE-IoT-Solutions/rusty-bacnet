@@ -38,7 +38,8 @@ class WebsiteServerDeviceTests(unittest.IsolatedAsyncioTestCase):
 
     async def line(self, process):
         raw = await asyncio.wait_for(process.stdout.readline(), timeout=30)
-        return raw.decode().rstrip("\n")
+        # Windows ends the child's lines with CRLF.
+        return raw.decode().rstrip("\r\n")
 
     async def ready(self, process):
         first = await self.line(process)
@@ -48,7 +49,8 @@ class WebsiteServerDeviceTests(unittest.IsolatedAsyncioTestCase):
 
     async def finish(self, process, data=b""):
         stdout, stderr = await asyncio.wait_for(process.communicate(data), timeout=30)
-        return process.returncode, stdout.decode(), stderr.decode()
+        return (process.returncode, stdout.decode().replace("\r\n", "\n"),
+                stderr.decode().replace("\r\n", "\n"))
 
     async def test_a_peer_reads_the_input_and_commands_the_output(self):
         from rusty_bacnet import (BACnetClient, ObjectIdentifier, ObjectType,
