@@ -285,7 +285,7 @@ pub fn parse_value(s: &str) -> Result<PropertyValue, String> {
         let val = s
             .parse::<f32>()
             .map_err(|_| format!("invalid float value: '{s}'"))?;
-        return Ok(PropertyValue::Real(val));
+        return numeric::finite(PropertyValue::Real(val)).map_err(|e| format!("'{s}': {e}"));
     }
 
     // Scientific notation (e.g., 1e10, -2.5e3).
@@ -294,7 +294,7 @@ pub fn parse_value(s: &str) -> Result<PropertyValue, String> {
         && !s.starts_with("enumerated:")
         && let Ok(val) = s.parse::<f32>()
     {
-        return Ok(PropertyValue::Real(val));
+        return numeric::finite(PropertyValue::Real(val)).map_err(|e| format!("'{s}': {e}"));
     }
 
     // Try integer — negative is Signed, positive is Unsigned.

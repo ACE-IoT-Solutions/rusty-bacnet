@@ -50,6 +50,11 @@ fn a_number_takes_the_datatype_of_an_analog_or_integer_value() {
         parse(O::ANALOG_OUTPUT, P::PRIORITY_ARRAY, Some(8), "-3"),
         Ok(PropertyValue::Real(-3.0))
     );
+    // A Double holds what a REAL can't.
+    assert_eq!(
+        parse(O::LARGE_ANALOG_VALUE, P::PRESENT_VALUE, None, "1e39"),
+        Ok(PropertyValue::Double(1e39))
+    );
     // A Double is read as a Double, so no digit goes through a REAL.
     assert_eq!(
         parse(O::LARGE_ANALOG_VALUE, P::PRESENT_VALUE, None, "72.1"),
@@ -70,6 +75,8 @@ fn a_number_takes_the_datatype_of_an_analog_or_integer_value() {
         Ok(PropertyValue::Unsigned(9))
     );
     for (object_type, text, error) in [
+        (O::ANALOG_VALUE, "1e39", "out of a REAL's range"),
+        (O::LARGE_ANALOG_VALUE, "1e999", "out of a Double's range"),
         (O::INTEGER_VALUE, "72.5", "whole number"),
         (O::INTEGER_VALUE, "3000000000", "out of an INTEGER's range"),
         (O::POSITIVE_INTEGER_VALUE, "-1", "negative"),

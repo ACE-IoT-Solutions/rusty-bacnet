@@ -14,7 +14,7 @@ use bacnet_types::primitives::{PropertyValue, Time};
 use bytes::BytesMut;
 
 use super::datetime::{parse_date_time, parse_time, parse_timestamp};
-use super::numeric::{Number, coerce, numeric};
+use super::numeric::{Number, coerce, finite, numeric};
 use super::{json, parse_value, split_priority};
 use crate::format::{holds_state, is_binary, is_multistate};
 use crate::label::kebab;
@@ -493,7 +493,7 @@ pub fn parse_value_for(
         }
         Kind::Number(Number::Double) => match text.parse::<f64>() {
             // Read straight as a Double, so no digit is lost through a REAL.
-            Ok(double) if text.contains(['.', 'e', 'E']) => Ok(PropertyValue::Double(double)),
+            Ok(double) if text.contains(['.', 'e', 'E']) => finite(PropertyValue::Double(double)),
             _ => coerce(Number::Double, parse_value(text)?),
         },
         Kind::Number(number) => coerce(number, parse_value(text)?),

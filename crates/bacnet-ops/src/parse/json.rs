@@ -38,6 +38,7 @@ use bytes::BytesMut;
 use serde_json::{Map, Value};
 
 use super::datetime::{parse_date, parse_time};
+use super::numeric::finite;
 use super::{parse_object_specifier, parse_value};
 
 type Fields = Map<String, Value>;
@@ -193,23 +194,11 @@ fn primitive(path: &str, value: &Value) -> Result<PropertyValue, String> {
     }
 }
 
-/// Whole numbers past 2^63 reach serde_json as floats; refused, so one
-/// isn't sent as a REAL that lost its digits.
-const LARGEST_WHOLE: f64 = 9_223_372_036_854_775_808.0;
-
-/// A JSON number with a fraction or an exponent, as a REAL: finite, and
-/// within a REAL's range.
+/// A JSON number with a fraction or an exponent (`72.5`, `1e20`), or a
+/// whole number past an Unsigned's or a Signed's range, as a REAL, refused
+/// past a REAL's range.
 fn real(path: &str, value: f64) -> Result<PropertyValue, String> {
-    let single = value as f32;
-    if !single.is_finite() {
-        return Err(format!("{path}: {value:e} is out of a REAL's range"));
-    }
-    if value.fract() == 0.0 && value.abs() >= LARGEST_WHOLE {
-        return Err(format!(
-            "{path}: {value:e} is out of a whole number's range; give a REAL as a string, \"1e20\""
-        ));
-    }
-    Ok(PropertyValue::Real(single))
+    finite(PropertyValue::Real(value as f32)).map_err(|e| format!("{path}: {value:e}: {e}"))
 }
 
 /// A day's entries.

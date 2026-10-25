@@ -331,24 +331,25 @@ fn unknown_and_missing_fields_are_refused_with_their_place() {
 fn numbers_and_priorities_out_of_range_are_refused() {
     for (value, error) in [
         ("1e300", "out of a REAL's range"),
-        ("18446744073709551616", "out of a whole number's range"),
-        ("-9223372036854775809", "out of a whole number's range"),
         ("-3000000000", "out of a Signed's range"),
     ] {
         let json = format!(r#"[["07:00", {value}]]"#);
         let refused = refused(O::SCHEDULE, P::WEEKLY_SCHEDULE, Some(1), &json);
         assert!(refused.contains(error), "{value}: {refused}");
     }
-    // A REAL that large goes as a string.
-    assert!(
-        !typed(
-            O::SCHEDULE,
-            P::WEEKLY_SCHEDULE,
-            Some(1),
-            r#"[["07:00", "1e20"]]"#
-        )
-        .is_empty()
-    );
+    // An exponent is a REAL, whole or not, and so is a whole number past
+    // an Unsigned's or a Signed's range.
+    for value in ["1e20", "1.5e3", "18446744073709551616"] {
+        let json = format!(r#"[["07:00", {value}]]"#);
+        let day = vec![entry(hm(7, 0), PropertyValue::Real(value.parse().unwrap()))];
+        let mut expected = BytesMut::new();
+        encode_daily_schedule(&mut expected, &day).unwrap();
+        assert_eq!(
+            typed(O::SCHEDULE, P::WEEKLY_SCHEDULE, Some(1), &json),
+            expected.to_vec(),
+            "{value}"
+        );
+    }
     for priority in ["0", "17", "-1", "1.5"] {
         let json =
             format!(r#"{{"period": "calendar:1", "time_values": [], "priority": {priority}}}"#);

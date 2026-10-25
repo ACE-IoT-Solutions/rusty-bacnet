@@ -1209,8 +1209,10 @@ read pastes back as a write:
   Relinquish_Default, a Priority_Array slot, COV_Increment, High_Limit,
   Low_Limit, Deadband) is sent as the property's datatype: `72` for an
   Analog Value is REAL 72.0, Double for a Large Analog Value, INTEGER or
-  Unsigned for the integer objects. A number for an enumerated property is
-  sent as ENUMERATED;
+  Unsigned for the integer objects. A number past the datatype's range is
+  refused. A REAL holds whole numbers exactly only up to 16,777,216 (2^24);
+  past that it keeps about seven significant digits. A number for an
+  enumerated property is sent as ENUMERATED;
 
 - an enumeration by name, in kebab case, UPPER_SNAKE or any case
   (`open-loop`, `OPEN_LOOP`), or by number; a binary object's state as
@@ -1260,7 +1262,8 @@ written as above:
 | Destination | `{"recipient": "device:99", "process_identifier": 7}`, optionally with `valid_days` (`["mon", "tue"]` or Python's bit number), `from_time`, `to_time`, `issue_confirmed_notifications` and `transitions` (`["to-offnormal"]` or a number); left out, a destination covers every day, all day, every transition, unconfirmed. A recipient may also be `{"kind": "device", "object_identifier": "device:99"}` or `{"kind": "address", "network_number": 5, "mac_address": "0a:00:00:64:ba:c0"}` |
 
 An entry's value is a JSON null, boolean or number (a whole number is
-Unsigned, or Signed when negative; one with a decimal point is a REAL) or a
+Unsigned, or Signed when negative; one with a decimal point or an
+exponent, or too large for either, is a REAL, refused past a REAL's range) or a
 string in the value grammar above (`"active"`, `"enumerated:3"`; a
 CharacterString keeps its inner quotes, `"\"Occupied\""`). A field the
 shape doesn't know is refused, and every error names where it is:

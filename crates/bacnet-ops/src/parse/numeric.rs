@@ -51,13 +51,27 @@ pub(super) fn numeric(
     }
 }
 
+/// A REAL or Double that is finite; one past its datatype's range (`1e39`
+/// as a REAL, `1e999` as a Double) is refused rather than sent as infinity.
+pub(super) fn finite(value: PropertyValue) -> Result<PropertyValue, String> {
+    match value {
+        PropertyValue::Real(v) if !v.is_finite() => {
+            Err("the number is out of a REAL's range".into())
+        }
+        PropertyValue::Double(v) if !v.is_finite() => {
+            Err("the number is out of a Double's range".into())
+        }
+        value => Ok(value),
+    }
+}
+
 /// A number parsed by the untyped grammar, as `number`; anything else is
 /// left as it is. A fraction for an integer, or a negative number for an
 /// Unsigned, is refused.
 pub(super) fn coerce(number: Number, value: PropertyValue) -> Result<PropertyValue, String> {
     use PropertyValue as V;
     let whole = |what: &str| format!("{what} takes a whole number");
-    Ok(match (number, value) {
+    finite(match (number, value) {
         (Number::Real, V::Unsigned(n)) => V::Real(n as f32),
         (Number::Real, V::Signed(n)) => V::Real(n as f32),
         (Number::Double, V::Unsigned(n)) => V::Double(n as f64),
