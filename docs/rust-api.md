@@ -3534,6 +3534,49 @@ router judges, is not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a
 group SADR is dropped only where the final router is a `BACnetRouter`.
 
+### A client on the router itself
+
+`BACnetRouter::application_port(apdus)` turns the router's application entity
+into a `RouterApplicationPort`, a `TransportPort` with no wire behind it
+(#1808). Hand it the local APDU receiver `BACnetRouter::start` returned, raw
+or tracked, and build a client on it with
+`BACnetClient::generic_builder().transport(port)`. The client keeps its own
+transaction state machine: invoke IDs, timeouts, retries and segmentation work
+as on any link.
+
+```rust,ignore
+let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
+let port = started.router.application_port(started.apdus);
+let client = BACnetClient::generic_builder().transport(port).build().await?;
+// Station 5 on network 2: the router MAC argument is ignored.
+let ack = client
+    .read_property_routed(&[0], 2, &[5], object, PropertyIdentifier::PRESENT_VALUE, None)
+    .await?;
+```
+
+- Every send goes through `BACnetRouter::originate`: the table picks the route
+  and the next hop, so address each device by its network and MAC, as a routed
+  device, whether its network is directly attached or not. The MAC passed as
+  the router's is ignored. The router's address on the egress port is the
+  source unless `with_source(SourceSelection::Port(p))` names one port.
+- Every APDU the router delivers to its application reaches the client with
+  its origin as SNET and SADR. One a router relayed keeps its own; one from a
+  device on an attached network gets that network and the device's MAC, so its
+  reply completes the transaction keyed to the routed destination.
+- The port has no network of its own: a send with no DNET, such as a local
+  broadcast, fails with `Error::Encoding`, and so do network messages. Who-Is
+  goes out as a global broadcast, on every port.
+- A refusal from `originate` fails the send. Too long for the egress port is
+  `Error::SendTooLong`. Anything else is an `Error::Transport` carrying the
+  `OriginateFailure`, which `OriginateFailure::from_error` returns. A network
+  the table lacks is `Refused(NoRoute)`, and the router starts a search for
+  it, as `originate` does.
+- The port reports the smallest NPDU limits among the router's ports, and the
+  longest of the router's MACs as its own; `with_max_npdu` overrides the
+  limits.
+- The client takes every APDU for the router's application, so a server can't
+  share the same receiver.
+
 ### Moving a router table from 0.12
 
 `bacnet_network::router_table::RouterTable` is now the core's `Table`, sized

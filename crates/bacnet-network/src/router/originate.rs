@@ -1,11 +1,13 @@
 //! The router's own application requests, sent through its engine (#1699).
 
 use std::fmt;
+use std::sync::Weak;
 
 use bacnet_router_core::router::{OriginateError, Request};
 
 use super::BACnetRouter;
 use super::actions::drain;
+use super::dispatch::{Outputs, Shared};
 
 /// Why [`BACnetRouter::originate`] failed: it queued nothing, but for a
 /// global broadcast's [`QueueFull`](Self::QueueFull).
@@ -89,23 +91,33 @@ impl BACnetRouter {
     /// [`SourceSelection::EgressPort`]: bacnet_router_core::router::SourceSelection::EgressPort
     /// [`SourceSelection::Port`]: bacnet_router_core::router::SourceSelection::Port
     pub fn originate(&self, request: &Request<'_>) -> Result<(), OriginateFailure> {
-        // Only the dispatch tasks own the queues: once `stop` has ended
-        // them, nothing is left to send on.
-        let outputs = self.outputs.upgrade().ok_or(OriginateFailure::Stopped)?;
-        let shared = &*self.shared;
-        let now = shared.engine.now();
-        let mut router = shared.engine.lock();
-        let result = router.originate(request, now);
-        // A search for a missing route is polled too. Only the request's
-        // own refusal fails it: a Router-Busy or search refused in the
-        // same drain doesn't.
-        let drained = drain(&mut router, &[], &outputs.send_txs, now);
-        drop(router);
-        result?;
-        if drained.originate_refused {
-            Err(OriginateFailure::QueueFull)
-        } else {
-            Ok(())
-        }
+        originate(&self.outputs, &self.shared, request)
+    }
+}
+
+/// [`BACnetRouter::originate`] on the router's queues and engine: the
+/// router's own call, and its [application port's](super::RouterApplicationPort),
+/// which holds the same two handles.
+pub(super) fn originate(
+    outputs: &Weak<Outputs>,
+    shared: &Shared,
+    request: &Request<'_>,
+) -> Result<(), OriginateFailure> {
+    // Only the dispatch tasks own the queues: once `stop` has ended them,
+    // nothing is left to send on.
+    let outputs = outputs.upgrade().ok_or(OriginateFailure::Stopped)?;
+    let now = shared.engine.now();
+    let mut router = shared.engine.lock();
+    let result = router.originate(request, now);
+    // A search for a missing route is polled too. Only the request's own
+    // refusal fails it: a Router-Busy or search refused in the same drain
+    // doesn't.
+    let drained = drain(&mut router, &[], &outputs.send_txs, now);
+    drop(router);
+    result?;
+    if drained.originate_refused {
+        Err(OriginateFailure::QueueFull)
+    } else {
+        Ok(())
     }
 }
