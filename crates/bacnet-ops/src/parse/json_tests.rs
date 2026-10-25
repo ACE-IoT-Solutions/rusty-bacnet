@@ -326,3 +326,36 @@ fn unknown_and_missing_fields_are_refused_with_their_place() {
         Ok(PropertyValue::Unsigned(7))
     );
 }
+
+#[test]
+fn numbers_and_priorities_out_of_range_are_refused() {
+    for (value, error) in [
+        ("1e300", "out of a REAL's range"),
+        ("18446744073709551616", "out of a whole number's range"),
+        ("-9223372036854775809", "out of a whole number's range"),
+        ("-3000000000", "out of a Signed's range"),
+    ] {
+        let json = format!(r#"[["07:00", {value}]]"#);
+        let refused = refused(O::SCHEDULE, P::WEEKLY_SCHEDULE, Some(1), &json);
+        assert!(refused.contains(error), "{value}: {refused}");
+    }
+    // A REAL that large goes as a string.
+    assert!(
+        !typed(
+            O::SCHEDULE,
+            P::WEEKLY_SCHEDULE,
+            Some(1),
+            r#"[["07:00", "1e20"]]"#
+        )
+        .is_empty()
+    );
+    for priority in ["0", "17", "-1", "1.5"] {
+        let json =
+            format!(r#"{{"period": "calendar:1", "time_values": [], "priority": {priority}}}"#);
+        let refused = refused(O::SCHEDULE, P::EXCEPTION_SCHEDULE, Some(1), &json);
+        assert!(
+            refused.contains("priority from 1 to 16"),
+            "{priority}: {refused}"
+        );
+    }
+}

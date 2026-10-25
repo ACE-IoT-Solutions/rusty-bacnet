@@ -69,9 +69,15 @@ fn every_named_value_of_every_enumerated_property_round_trips() {
         let Some((_, names)) = ResolvedEnum::from_property(property, 0).enumeration() else {
             continue;
         };
+        // Tracking_Value is enumerated only on the life safety objects.
+        let object_type = if property == P::TRACKING_VALUE {
+            O::LIFE_SAFETY_POINT
+        } else {
+            O::ANALOG_VALUE
+        };
         for (_, value) in names {
             round_trips(
-                O::ANALOG_VALUE,
+                object_type,
                 property,
                 None,
                 PropertyValue::Enumerated(value),
@@ -79,12 +85,7 @@ fn every_named_value_of_every_enumerated_property_round_trips() {
             checked += 1;
         }
         // A number the enumeration doesn't name prints, and parses, as itself.
-        round_trips(
-            O::ANALOG_VALUE,
-            property,
-            None,
-            PropertyValue::Enumerated(250),
-        );
+        round_trips(object_type, property, None, PropertyValue::Enumerated(250));
     }
     assert!(checked > 500, "only {checked} names checked");
 }
@@ -211,9 +212,14 @@ fn bit_strings_take_names_digits_or_none() {
     ] {
         assert_eq!(parse(text), Ok(in_alarm_fault.clone()), "{text}");
     }
-    for text in ["", "none", "0000"] {
+    for text in ["none", "NONE", "0000"] {
         assert_eq!(parse(text), Ok(bit_string(&[false; 4])), "{text:?}");
     }
+    // An empty value is refused, so a blank field never clears every bit.
+    for text in ["", "  ", "()"] {
+        assert!(parse(text).is_err(), "{text:?}");
+    }
+    assert!(parse("").unwrap_err().contains("or none"));
     // Digits give exactly the bits typed.
     assert_eq!(parse("10"), Ok(bit_string(&[true, false])));
 }

@@ -183,7 +183,7 @@ fn primitive(path: &str, value: &Value) -> Result<PropertyValue, String> {
                     .map(PropertyValue::Signed)
                     .map_err(|_| format!("{path}: {n} is out of a Signed's range"))
             } else {
-                Ok(PropertyValue::Real(n.as_f64().unwrap_or_default() as f32))
+                real(path, n.as_f64().unwrap_or(f64::NAN))
             }
         }
         Value::String(text) => parse_value(text).map_err(|e| format!("{path}: {e}")),
@@ -191,6 +191,25 @@ fn primitive(path: &str, value: &Value) -> Result<PropertyValue, String> {
             "{path}: expected null, a boolean, a number or a string"
         )),
     }
+}
+
+/// Whole numbers past 2^63 reach serde_json as floats; refused, so one
+/// isn't sent as a REAL that lost its digits.
+const LARGEST_WHOLE: f64 = 9_223_372_036_854_775_808.0;
+
+/// A JSON number with a fraction or an exponent, as a REAL: finite, and
+/// within a REAL's range.
+fn real(path: &str, value: f64) -> Result<PropertyValue, String> {
+    let single = value as f32;
+    if !single.is_finite() {
+        return Err(format!("{path}: {value:e} is out of a REAL's range"));
+    }
+    if value.fract() == 0.0 && value.abs() >= LARGEST_WHOLE {
+        return Err(format!(
+            "{path}: {value:e} is out of a whole number's range; give a REAL as a string, \"1e20\""
+        ));
+    }
+    Ok(PropertyValue::Real(single))
 }
 
 /// A day's entries.
@@ -285,8 +304,18 @@ fn special_event(path: &str, value: &Value) -> Result<BACnetSpecialEvent, String
     Ok(BACnetSpecialEvent {
         period,
         list_of_time_values: time_values(&format!("{path}.time_values"), &fields["time_values"])?,
-        event_priority: integer(&format!("{path}.priority"), &fields["priority"])?,
+        event_priority: priority(&format!("{path}.priority"), &fields["priority"])?,
     })
+}
+
+/// A special event's priority, 1 (highest) to 16.
+fn priority(path: &str, value: &Value) -> Result<u64, String> {
+    match integer::<u64>(path, value) {
+        Ok(priority @ 1..=16) => Ok(priority),
+        _ => Err(format!(
+            "{path}: expected a priority from 1 to 16, got {value}"
+        )),
+    }
 }
 
 fn recipient(path: &str, value: &Value) -> Result<BACnetRecipient, String> {

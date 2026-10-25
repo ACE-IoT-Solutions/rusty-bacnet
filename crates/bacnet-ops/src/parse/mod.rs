@@ -9,6 +9,7 @@
 
 mod datetime;
 mod json;
+mod numeric;
 mod typed;
 
 pub use datetime::{parse_date, parse_date_time, parse_time, parse_timestamp};
@@ -21,6 +22,8 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 mod datetime_tests;
 #[cfg(test)]
 mod json_tests;
+#[cfg(test)]
+mod typed_more_tests;
 #[cfg(test)]
 mod typed_tests;
 

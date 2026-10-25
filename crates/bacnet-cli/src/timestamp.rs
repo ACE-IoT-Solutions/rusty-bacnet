@@ -122,6 +122,11 @@ pub(crate) fn parse_bacnet_timestamp(spec: &str) -> Result<BACnetTimeStamp, Stri
             })?;
             Ok(BACnetTimeStamp::SequenceNumber(sequence))
         }
+        // `time:` takes the write grammar's `HH:MM[:SS[.hh]]` too, so the
+        // prefix reads the same everywhere.
+        "time" if value.contains(':') => bacnet_ops::parse::parse_time(value)
+            .map(BACnetTimeStamp::Time)
+            .map_err(|e| format!("invalid BACnetTimeStamp time: {e}")),
         "time" => Ok(BACnetTimeStamp::Time(parse_time(value)?)),
         _ => {
             let (date, time) = value.split_once(';').ok_or_else(|| {
@@ -303,6 +308,11 @@ mod tests {
             parse_bacnet_timestamp("\"2026-10-25 Sun 14:30:05\"").unwrap(),
             parse_bacnet_timestamp("datetime:2026,10,25,7;14,30,5,0").unwrap()
         );
+        assert_eq!(
+            parse_bacnet_timestamp("time:14:30").unwrap(),
+            parse_bacnet_timestamp("time:14,30,0,0").unwrap()
+        );
+        assert!(parse_bacnet_timestamp("time:25:00").is_err());
         let refused = parse_bacnet_timestamp("unknown:1").unwrap_err();
         assert!(refused.contains("sequence:<0..65535>"), "{refused}");
     }

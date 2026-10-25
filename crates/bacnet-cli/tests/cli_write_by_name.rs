@@ -78,6 +78,10 @@ async fn read(target: &str, object: &str, property: &str) -> String {
 async fn writes_take_names_bits_and_date_times_as_read_prints_them() {
     let (mut server, target) = server().await;
     for (object, property, typed, printed) in [
+        // A plain number for an analog value is sent as a REAL, which
+        // the device takes; an Unsigned it refuses.
+        ("av:1", "present-value", "72", "72"),
+        ("av:1", "cov-increment", "2", "2"),
         // An enumeration by name, in any spelling.
         ("bv:1", "present-value", "ACTIVE", "active"),
         ("bv:1", "present-value", "inactive", "inactive"),

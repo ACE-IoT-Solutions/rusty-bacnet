@@ -3,7 +3,8 @@
 //! formatter prints, so a value read can be pasted back as a write.
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
-use bacnet_encoding::primitives::encode_timestamp_choice;
+use bacnet_encoding::primitives::{encode_property_value, encode_timestamp_choice};
+use bacnet_encoding::tags::{encode_closing_tag, encode_opening_tag};
 use bacnet_types::bitstring::{EventTransitionBits, LimitEnable, StatusFlags};
 use bacnet_types::enums::{
     BinaryPV, LifeSafetyState, ObjectType, PropertyIdentifier, ResolvedBits, ResolvedEnum,
@@ -13,6 +14,7 @@ use bacnet_types::primitives::{PropertyValue, Time};
 use bytes::BytesMut;
 
 use super::datetime::{parse_date_time, parse_time, parse_timestamp};
+use super::numeric::{Number, coerce, numeric};
 use super::{json, parse_value, split_priority};
 use crate::format::{holds_state, is_binary, is_multistate};
 use crate::label::kebab;
@@ -50,6 +52,11 @@ enum Kind {
     Bits(NamedBits),
     /// A BACnetDateTime: a date then a time.
     DateTime,
+    /// A DateTime Value's Priority_Array slot: the BACnetPriorityValue
+    /// choice of a date-time, under context tag 1.
+    PriorityDateTime,
+    /// A number sent as the property's numeric datatype.
+    Number(Number),
     /// One BACnetTimeStamp.
     TimeStamp,
     /// A constructed element typed as JSON, or a list of them when
@@ -137,16 +144,29 @@ fn holds_date_time(object_type: ObjectType, property: PropertyIdentifier) -> boo
         P::COUNT_CHANGE_TIME => object_type == O::PULSE_CONVERTER,
         P::EXPIRATION_TIME => [O::TIMER, O::ACCESS_CREDENTIAL].contains(&object_type),
         P::ACTIVATION_TIME => object_type == O::ACCESS_CREDENTIAL,
-        P::PRESENT_VALUE | P::RELINQUISH_DEFAULT => {
-            [O::DATETIME_VALUE, O::DATETIMEPATTERN_VALUE].contains(&object_type)
-        }
+        P::VALUE_CHANGE_TIME => object_type == O::ACCUMULATOR,
+        P::PRESENT_VALUE | P::RELINQUISH_DEFAULT => is_date_time_value(object_type),
         _ => false,
     }
 }
 
+/// The DateTime Value object types.
+fn is_date_time_value(object_type: ObjectType) -> bool {
+    [
+        ObjectType::DATETIME_VALUE,
+        ObjectType::DATETIMEPATTERN_VALUE,
+    ]
+    .contains(&object_type)
+}
+
+/// Whether an object type is a life safety point or zone.
+fn is_life_safety(object_type: ObjectType) -> bool {
+    [ObjectType::LIFE_SAFETY_POINT, ObjectType::LIFE_SAFETY_ZONE].contains(&object_type)
+}
+
 /// The life safety properties whose values are a BACnetLifeSafetyState.
 fn holds_life_safety_state(object_type: ObjectType, property: PropertyIdentifier) -> bool {
-    [ObjectType::LIFE_SAFETY_POINT, ObjectType::LIFE_SAFETY_ZONE].contains(&object_type)
+    is_life_safety(object_type)
         && [
             PropertyIdentifier::PRESENT_VALUE,
             PropertyIdentifier::ALARM_VALUES,
@@ -160,6 +180,15 @@ fn kind(object_type: ObjectType, property: PropertyIdentifier, index: Option<u32
     // Index 0 is an array's size, a count.
     if index == Some(0) {
         return Kind::Untyped;
+    }
+    if let Some(number) = numeric(object_type, property, index) {
+        return Kind::Number(number);
+    }
+    if property == PropertyIdentifier::PRIORITY_ARRAY
+        && index.is_some()
+        && is_date_time_value(object_type)
+    {
+        return Kind::PriorityDateTime;
     }
     if holds_state(property) && is_binary(object_type) {
         let enumeration = enumeration(ResolvedEnum::BinaryPV(BinaryPV::INACTIVE));
@@ -180,7 +209,12 @@ fn kind(object_type: ObjectType, property: PropertyIdentifier, index: Option<u32
             };
         }
     }
-    if let Some(enumeration) = enumeration(ResolvedEnum::from_property(property, 0)) {
+    // Tracking_Value is a BACnetLifeSafetyState only on the life safety
+    // objects; a Lighting Output's is a REAL.
+    let tracking = property == PropertyIdentifier::TRACKING_VALUE;
+    if (!tracking || is_life_safety(object_type))
+        && let Some(enumeration) = enumeration(ResolvedEnum::from_property(property, 0))
+    {
         return Kind::Enum {
             enumeration,
             states: false,
@@ -286,8 +320,10 @@ fn unknown_name<'a>(
 
 /// An enumeration value by name in any common spelling, or its number.
 fn enum_value(enumeration: &Enumeration, text: &str) -> Result<u32, String> {
-    if let Ok(number) = text.parse::<u32>() {
-        return Ok(number);
+    if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        return text
+            .parse::<u32>()
+            .map_err(|_| format!("{text} is out of an enumeration's range (0-4294967295)"));
     }
     let typed = folded(text);
     enumeration
@@ -342,13 +378,21 @@ fn parse_enum(
 
 /// A bit string from its set bits' names (`in-alarm,fault` or
 /// `in-alarm | fault`), its bits as 0/1 digits first bit first, or
-/// `none` or nothing for no bit set.
+/// `none` for no bit set.
 fn parse_bits(bits: &NamedBits, text: &str) -> Result<PropertyValue, String> {
     let mut set = vec![false; bits.length];
-    let digits = !text.is_empty() && text.bytes().all(|b| b == b'0' || b == b'1');
+    // An empty value is refused rather than read as no bit set: a blank
+    // field would otherwise clear every bit.
+    if text.is_empty() {
+        return Err(format!(
+            "a {} value is needed: its bits' names, the bits as 0/1 digits, or none",
+            bits.type_name
+        ));
+    }
+    let digits = text.bytes().all(|b| b == b'0' || b == b'1');
     if digits {
         set = text.bytes().map(|b| b == b'1').collect();
-    } else if !(text.is_empty() || text.eq_ignore_ascii_case("none") || text == "()") {
+    } else if !text.eq_ignore_ascii_case("none") {
         for name in text.split([',', '|']).map(str::trim) {
             if name.is_empty() {
                 continue;
@@ -406,8 +450,13 @@ fn parse_date_time_value(text: &str) -> Result<PropertyValue, String> {
 ///   `active`/`inactive`, with or without the object's text after it
 ///   (`active (On)`);
 /// - a named bit string by its set bits (`in-alarm,fault`,
-///   `in-alarm | fault`), as 0/1 digits first bit first, or `none` (or
-///   nothing) for no bit set;
+///   `in-alarm | fault`), as 0/1 digits first bit first, or `none` for
+///   no bit set;
+/// - a plain number for the value of an analog or integer object (its
+///   Present_Value, Relinquish_Default, a Priority_Array slot, COV_Increment,
+///   High_Limit, Low_Limit and Deadband) as that property's datatype: REAL
+///   for the analog objects, Double for a Large Analog Value, INTEGER or
+///   Unsigned for the integer objects;
 /// - a BACnetDateTime as `2026-10-19 07:00` (a date alone leaves the time
 ///   unspecified), and a timestamp as `seq 42`, a time, or a date and time;
 /// - a Weekly_Schedule day, an Exception_Schedule special event, a
@@ -436,7 +485,26 @@ pub fn parse_value_for(
             enumeration,
             states,
         } => parse_enum(&enumeration, states, text),
-        Kind::State => parse_value(without_state_text(text)),
+        Kind::State => {
+            let state = without_state_text(text);
+            state.parse::<u64>().map(PropertyValue::Unsigned).map_err(|_| {
+                format!("'{state}' is not a state number; a multi-state state is its number, from 1, its text allowed after it: `2 (Heat)`")
+            })
+        }
+        Kind::Number(Number::Double) => match text.parse::<f64>() {
+            // Read straight as a Double, so no digit is lost through a REAL.
+            Ok(double) if text.contains(['.', 'e', 'E']) => Ok(PropertyValue::Double(double)),
+            _ => coerce(Number::Double, parse_value(text)?),
+        },
+        Kind::Number(number) => coerce(number, parse_value(text)?),
+        Kind::PriorityDateTime => {
+            let mut buf = BytesMut::new();
+            encode_opening_tag(&mut buf, 1);
+            encode_property_value(&mut buf, &parse_date_time_value(text)?)
+                .map_err(|e| format!("cannot encode the date-time: {e}"))?;
+            encode_closing_tag(&mut buf, 1);
+            Ok(PropertyValue::ApplicationData(buf.to_vec()))
+        }
         Kind::Bits(bits) => parse_bits(&bits, text),
         Kind::DateTime => parse_date_time_value(text),
         Kind::TimeStamp => {

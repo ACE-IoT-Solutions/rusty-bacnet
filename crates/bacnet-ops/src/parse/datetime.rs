@@ -135,6 +135,15 @@ pub fn parse_time(text: &str) -> Result<Time, String> {
             "invalid time '{text}': hundredths need seconds, HH:MM:SS.hh"
         ));
     }
+    // Two digits, as the formatter prints them: `.5` could mean 5 or 50.
+    if let Some(h) = hundredths
+        && h != "*"
+        && h.len() != 2
+    {
+        return Err(format!(
+            "invalid hundredths '{h}' in '{text}': two digits, .05 or .50, or * for any"
+        ));
+    }
     Ok(Time {
         hour: field("hour", hour, 0..=23)?,
         minute: field("minute", minute, 0..=59)?,

@@ -74,6 +74,8 @@ fn times_leave_off_zero_seconds_and_hundredths() {
         ("24:00", "invalid hour '24'"),
         ("07:60", "invalid minute '60'"),
         ("07:00.5", "hundredths need seconds"),
+        ("14:30:05.5", "two digits"),
+        ("14:30:05.500", "two digits"),
         ("07", "expected HH:MM"),
     ] {
         let refused = parse_time(text).unwrap_err();

@@ -1205,6 +1205,13 @@ Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
 a value can be typed as [Value output](#value-output) prints it, and a value
 read pastes back as a write:
 
+- a plain number for an analog or integer object's value (Present_Value,
+  Relinquish_Default, a Priority_Array slot, COV_Increment, High_Limit,
+  Low_Limit, Deadband) is sent as the property's datatype: `72` for an
+  Analog Value is REAL 72.0, Double for a Large Analog Value, INTEGER or
+  Unsigned for the integer objects. A number for an enumerated property is
+  sent as ENUMERATED;
+
 - an enumeration by name, in kebab case, UPPER_SNAKE or any case
   (`open-loop`, `OPEN_LOOP`), or by number; a binary object's state as
   `active` or `inactive`, with or without the object's text after it
@@ -1213,13 +1220,13 @@ read pastes back as a write:
 - a named bit string by its set bits, `in-alarm,fault` or `in-alarm |
   fault` (quote a `|` for the shell; `writem` needs the `|` form, since a
   comma separates its writes), as 0/1 digits first bit first (`1100`), or
-  `none` (or an empty value) for no bit set; a bit string without names as
-  `bits(0101)`;
+  `none` for no bit set (an empty value is refused, so a blank field never
+  clears every bit); a bit string without names as `bits(0101)`;
 - a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`), `*` for any
   field, the special months and days by name (`*-even-months-last-day`),
   or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
-  field, or `any time`. The `date:` and `time:` prefixes take the same
-  forms;
+  field, or `any time`; hundredths are two digits (`.05`, `.50`). The
+  `date:` and `time:` prefixes take the same forms;
 - a date-time as a date then a time, `2026-10-19 Mon 07:00`, or
   `unspecified`; for a property that holds one (Start_Time, Stop_Time,
   Modification_Date, a DateTime Value's Present_Value and similar), a date
@@ -1319,7 +1326,8 @@ the date and time forms of [Writing Properties](#writing-properties). They
 also take the strict grammar:
 
 - `sequence:<0..65535>`
-- `time:<hour>,<minute>,<second>,<hundredths>`
+- `time:<hour>,<minute>,<second>,<hundredths>`, or `time:HH:MM[:SS[.hh]]`
+  as `write` takes it
 - `datetime:<full-year>,<month>,<day>,<day-of-week>;<hour>,<minute>,<second>,<hundredths>`
 
 Date years are `1900..2154`; months are `1..14`, days are `1..34`,
