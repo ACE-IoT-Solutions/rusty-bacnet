@@ -24,6 +24,7 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use super::ValueFormat;
 use super::constructed::reference;
 use super::primitive::{hex, plain_bits, time_text, weekday};
+use super::tagged::fields_text;
 use crate::label::kebab;
 
 /// The choice tag `decode_event_parameter` gives the forms that aren't the
@@ -34,13 +35,19 @@ const NOT_A_CHOICE: u8 = u8::MAX;
 /// The Event_Parameters alternative for no algorithm, `none`.
 const NONE_ALGORITHM: u8 = 20;
 
-/// `network 5 address 0x0a000001bac0`.
+/// `network 5 address 0x0a000001bac0`; an empty MAC, a broadcast on
+/// that network, as `network 5 broadcast`.
 pub(super) fn address_text(address: &BACnetAddress) -> String {
-    format!(
-        "network {} address 0x{}",
-        address.network_number,
-        hex(&address.mac_address, "")
-    )
+    network_mac(address.network_number, &address.mac_address)
+}
+
+/// A network number and MAC, as [`address_text`] writes them.
+fn network_mac(network: u16, mac: &[u8]) -> String {
+    if mac.is_empty() {
+        format!("network {network} broadcast")
+    } else {
+        format!("network {network} address 0x{}", hex(mac, ""))
+    }
 }
 
 /// A recipient: `device 1234`, or its address.
@@ -177,9 +184,9 @@ pub(super) fn address_binding(
 ) -> Result<(String, usize), Error> {
     let (device, network, mac, end) = decode_address_binding(octets, offset)?;
     let text = format!(
-        "device {} at network {network} address 0x{}",
+        "device {} at {}",
         device.instance_number(),
-        hex(&mac, "")
+        network_mac(network, &mac)
     );
     Ok((text, end))
 }
@@ -363,17 +370,18 @@ fn event_parameter_text(format: &ValueFormat<'_>, parameter: &BACnetEventParamet
             extended_event_type,
             parameters,
         } => format!(
-            "vendor {vendor_id} type {extended_event_type}, parameters 0x{}",
-            hex(parameters, "")
+            "vendor {vendor_id} type {extended_event_type}, parameters ({})",
+            fields_text(parameters, format.floats)
         ),
         BACnetEventParameter::Opaque { tag, data } if *tag == NONE_ALGORITHM => {
             return if data.is_empty() {
                 "none".into()
             } else {
-                format!("none 0x{}", hex(data, ""))
+                format!("none {}", fields_text(data, format.floats))
             };
         }
-        BACnetEventParameter::Opaque { data, .. } => format!("0x{}", hex(data, "")),
+        // An algorithm with no model here: its fields by context tag.
+        BACnetEventParameter::Opaque { data, .. } => fields_text(data, format.floats),
     };
     format!("{name}: {details}")
 }

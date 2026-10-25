@@ -6,7 +6,7 @@ use bacnet_client::client::BACnetClient;
 use bacnet_client::tags::{TagsRead, decode_tags_read};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_ops::destination::Destination;
-use bacnet_ops::format::{Floats, ValueFormat};
+use bacnet_ops::format::{Floats, ValueFormat, raw_text};
 use bacnet_ops::parse;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::BACnetNameValue;
@@ -23,8 +23,8 @@ pub(super) fn formatter(object_type: ObjectType) -> ValueFormat<'static> {
     ValueFormat::new(object_type, &output::NO_STATE_TEXTS, Floats::Exact).whole_lists()
 }
 
-/// The items of a list or array value as text, one an element, with the
-/// hex of whatever follows the last item that decoded: constructed
+/// The items of a list or array value as text, one an element, with
+/// whatever follows the last item that decoded as `[raw …]`: constructed
 /// elements when the element table names the property's element, and
 /// otherwise application values.
 pub(super) fn format_items(
@@ -43,7 +43,7 @@ pub(super) fn format_items(
                 values.push(format.element(property, &value));
                 offset = next;
             }
-            Err(_) => return (values, Some(hex(&data[offset..]))),
+            Err(_) => return (values, Some(raw_text(&data[offset..]))),
         }
     }
     (values, None)
@@ -236,7 +236,7 @@ fn format_read_value(
         ),
         Ok(TagsRead::Element(tag)) => format_tag(&tag),
         Ok(TagsRead::Size(size)) => size.to_string(),
-        Err(_) => format!("[invalid Tags; raw: {}]", hex(data)),
+        Err(_) => format!("[invalid Tags] {}", raw_text(data)),
     }
 }
 

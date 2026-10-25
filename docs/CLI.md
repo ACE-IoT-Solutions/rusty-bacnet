@@ -1046,7 +1046,7 @@ object and property they belong to, the same way the terminal UI does; see
 `["exhaust", "floor"=3]`, an indexed element like `"floor"=3`, and index zero
 prints the count. An empty array prints `[]`. Names and text values are quoted
 and escaped; a semantic tag has no equals sign, while a valued NULL prints
-`"name"=null`. Invalid Tags bytes produce one `[invalid Tags; raw: ...]`
+`"name"=null`. Invalid Tags bytes produce one `[invalid Tags] [raw ...]`
 marker for the complete payload. JSON keeps the `object`, `property` and
 string `value` fields, with an array index included in the property name, and
 adds the typed `decoded` form.
@@ -1068,33 +1068,46 @@ Text output names what the device sent:
   confirmed, to-offnormal | to-fault | to-normal`), Event_Parameters,
   Active_COV_Subscriptions, Device_Address_Binding, a Command's actions,
   Group and Global Group members, shed levels, Scale and Prescale, and the
-  access control lists;
+  access control lists. An Event_Parameters algorithm the CLI has no model
+  for lists its fields by context tag, `unsigned-range: [0] 30, [1] 10`;
 - a list or array whole, every element, in brackets; an indexed read of an
-  array as its one element;
-- anything that doesn't decode as hex, `[raw 0e 0f]`.
+  array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
+  as the array's size;
+- anything that doesn't decode as hex, `[raw 0e 0f]`, the one spelling every
+  command uses for undecoded octets.
 
 Names follow one rule: identifiers the command echoes back, the `object` and
 `property` columns and fields, keep their canonical UPPER_SNAKE form
 (`ANALOG_INPUT:1`, `PRESENT_VALUE`), the form the arguments and the Python
 bindings use; values are written in kebab case, as the terminal UI writes
-them.
+them. A property that `readm` couldn't read is such an echoed outcome and
+prints in the canonical form, `ERROR: PROPERTY:UNKNOWN_PROPERTY`; an error
+inside a value, such as a Group member's, is part of the value and prints in
+kebab case, `error property:unknown-property`.
 
-JSON keeps each value's text in `value` (`subscribe`: `values`) and adds its
-typed form under `decoded`, so scripts don't depend on the spelling:
+JSON keeps each value's text in `value` and adds its typed form under
+`decoded`; `subscribe` puts the texts in a `values` map and the typed forms
+in a `decoded` map, both keyed by property. Enumerations, bit strings,
+objects and numbers carry their numbers, so scripts needn't depend on the
+names' spelling:
 
 | Value | `decoded` |
 |-------|-----------|
 | NULL, BOOLEAN | `null`, `true`, `false` |
-| Unsigned, Signed, REAL, Double | a number (`{"float": "NaN"}` for a non-finite one) |
+| Unsigned, Signed, REAL, Double | a number (`{"float": "NaN"}` for a non-finite one); JSON doesn't say which of the four it was |
 | CharacterString | a string |
 | OCTET STRING | `{"octets": "0a0b"}` |
 | ENUMERATED | `{"value": 2, "name": "offnormal"}`; no `name` when the enumeration isn't known |
 | BIT STRING | `{"bits": "0100", "names": ["fault"]}`, first bit first; no `names` when the bits have none |
 | Date, Time | `{"date": "2026-10-19"}`, `{"time": "07:00"}` |
 | Object identifier | `{"type": "analog-input", "type_number": 0, "instance": 1}` |
-| Constructed element | `{"text": "Mon 07:00 = 72.5"}`, the text form |
+| Constructed element | `{"element": "daily-schedule", "text": "Mon 07:00 = 72.5"}`: its kind and the text form |
 | Several values, a list or array | an array of the above |
 | Octets that don't decode | `{"raw": "0e0f"}` |
+
+A constructed element's `text` is for display, like the table: its wording
+may change, so don't parse it. Branch on `element`; structured fields may
+join it later without removing `text`.
 
 An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
 `items` for a list that isn't a log; log records keep their text form.
@@ -1120,9 +1133,9 @@ and, for a Trend Log, status flags (blank when none is set). JSON output
 lists them under `records`, with `result_flags` and `first_sequence_number`,
 and the hex of anything from the first record that doesn't decode under
 `undecoded`. A logged value prints as a value does; the log doesn't say which
-property it came from, so an enumeration prints as its number. Other
+property it came from, so an enumeration prints as `enum 3`. Other
 properties list their elements under `items`, each decoded as above, where
-anything that doesn't decode ends the list as `[raw: ..]` hex.
+anything that doesn't decode ends the list as `[raw ..]`.
 
 **Aliases:** `rp` = read, `rpm` = readm, `rr` = read-range
 

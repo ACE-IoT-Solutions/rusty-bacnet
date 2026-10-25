@@ -253,7 +253,7 @@ pub(super) fn prescale(_: &ValueFormat<'_>, _: usize, octets: &[u8], offset: usi
     })
 }
 
-/// A Load Control shed level: `80 %`, `level 2` or `1.5 kW`.
+/// A Load Control shed level: `80 %`, `level 2` or `reduce 1.5 kW`.
 pub(super) fn shed_level(
     format: &ValueFormat<'_>,
     _: usize,
@@ -264,7 +264,7 @@ pub(super) fn shed_level(
         let text = match level {
             BACnetShedLevel::Percent(percent) => format!("{percent} %"),
             BACnetShedLevel::Level(level) => format!("level {level}"),
-            BACnetShedLevel::Amount(kilowatts) => format!("{} kW", format.real(kilowatts)),
+            BACnetShedLevel::Amount(kilowatts) => format!("reduce {} kW", format.real(kilowatts)),
         };
         (text, end)
     })

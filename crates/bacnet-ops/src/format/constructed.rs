@@ -28,11 +28,14 @@ use crate::label::{kebab, object_label};
 const UNSET_INSTANCE: u32 = 4_194_303;
 
 /// The text of each element of `data`, or `None` when the element has no
-/// renderer, `data` is empty, or an element doesn't decode.
+/// renderer, `data` is empty, or an element doesn't decode. `first` is the
+/// place in the array (from 0) of the first element: 0 for a whole read,
+/// the index less one for an indexed read.
 pub(super) fn elements(
     format: &ValueFormat<'_>,
     element: ConstructedElement,
     data: &[u8],
+    first: usize,
 ) -> Option<Vec<String>> {
     if data.is_empty() {
         return None;
@@ -40,7 +43,7 @@ pub(super) fn elements(
     let render = renderer(element)?;
     let mut texts = Vec::new();
     let ends = split_elements(data, |octets, offset| {
-        render(format, texts.len(), octets, offset).map(|(text, end)| {
+        render(format, first + texts.len(), octets, offset).map(|(text, end)| {
             texts.push(text);
             end
         })
@@ -134,6 +137,20 @@ pub(super) fn renderer(element: ConstructedElement) -> Option<Render> {
         E::AccessRule => commands::access_rule,
         _ => return None,
     })
+}
+
+/// An element's kind in kebab case, as the typed data names it:
+/// `destination`, `daily-schedule`, `time-stamp`.
+pub(super) fn element_name(element: ConstructedElement) -> String {
+    let debug = format!("{element:?}");
+    let mut name = String::new();
+    for (i, ch) in debug.chars().enumerate() {
+        if ch.is_ascii_uppercase() && i > 0 {
+            name.push('-');
+        }
+        name.push(ch.to_ascii_lowercase());
+    }
+    name
 }
 
 /// What parts the elements of a collection: `; ` for the elements whose

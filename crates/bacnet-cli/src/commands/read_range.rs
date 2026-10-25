@@ -397,7 +397,7 @@ fn object(oid: ObjectIdentifier) -> String {
 }
 
 /// A logged value, through the shared formatter. The log doesn't say which
-/// property it logged, so an enumeration shows as its number and a bit
+/// property it logged, so an enumeration shows as `enum 3` and a bit
 /// string as its bits.
 fn log_datum(datum: &LogDatum) -> String {
     // A property with no enumeration, named bits or constructed element.
@@ -412,10 +412,7 @@ fn log_datum(datum: &LogDatum) -> String {
         LogDatum::AnyValue(bytes) => return formatter(ObjectType::TREND_LOG).value(ANY, bytes),
         LogDatum::BooleanValue(value) => PropertyValue::Boolean(*value),
         LogDatum::RealValue(value) => PropertyValue::Real(*value),
-        LogDatum::EnumValue(value) => match u32::try_from(*value) {
-            Ok(value) => PropertyValue::Enumerated(value),
-            Err(_) => return value.to_string(),
-        },
+        LogDatum::EnumValue(value) => return format!("enum {value}"),
         LogDatum::UnsignedValue(value) => PropertyValue::Unsigned(*value),
         LogDatum::SignedValue(value) => match i32::try_from(*value) {
             Ok(value) => PropertyValue::Signed(value),
@@ -503,7 +500,7 @@ fn print_records(heading: &Heading, records: &LogRows, format: OutputFormat) {
             }
             println!("{table}");
             if let Some(hex) = &records.undecoded {
-                println!("  [raw] {hex}");
+                println!("  [raw {hex}]");
             }
             for note in heading.notes() {
                 println!("{note}");
@@ -540,13 +537,13 @@ fn print_items(
             for (number, item) in (1..).zip(&items) {
                 println!("  [{number}] {item}");
             }
-            if let Some(hex) = undecoded {
-                println!("  [raw] {hex}");
+            if let Some(raw) = undecoded {
+                println!("  {raw}");
             }
         }
         OutputFormat::Json => {
-            if let Some(hex) = undecoded {
-                items.push(format!("[raw: {hex}]"));
+            if let Some(raw) = undecoded {
+                items.push(raw);
             }
             let mut json = heading.json();
             json["items"] = items.into();

@@ -22,6 +22,7 @@ mod constructed;
 mod data;
 mod primitive;
 mod recipients;
+mod tagged;
 mod units;
 
 pub use data::Datum;
@@ -264,7 +265,7 @@ impl<'a> ValueFormat<'a> {
         data: &[u8],
     ) -> Option<Vec<String>> {
         let (element, _) = property_element(self.object_type, property)?;
-        constructed::elements(self, element, data)
+        constructed::elements(self, element, data, 0)
     }
 
     /// A property's value as display text: decoded as the element the table
@@ -274,20 +275,38 @@ impl<'a> ValueFormat<'a> {
         self.value_at(property, None, data)
     }
 
-    /// The element and shape of a read of `property` at `index`: an indexed
-    /// read of a collection is one element, and index 0 (an array's size)
+    /// The element and shape of a read of `property` at `index`, and the
+    /// place (from 0) of its first element: an indexed read of a collection
+    /// is the one element at index less one, and index 0 (an array's size)
     /// none.
     fn element_at(
         &self,
         property: PropertyIdentifier,
         index: Option<u32>,
-    ) -> Option<(ConstructedElement, ElementShape)> {
+    ) -> Option<(ConstructedElement, ElementShape, usize)> {
         let (element, shape) = property_element(self.object_type, property)?;
         match index {
-            None => Some((element, shape)),
+            None => Some((element, shape, 0)),
             Some(0) => None,
-            Some(_) => Some((element, ElementShape::Single)),
+            Some(index) => Some((
+                element,
+                ElementShape::Single,
+                usize::try_from(index - 1).ok()?,
+            )),
         }
+    }
+
+    /// The elements of a read at `index`, when the table names the
+    /// property's element and the octets decode as it.
+    fn elements_at(
+        &self,
+        property: PropertyIdentifier,
+        index: Option<u32>,
+        data: &[u8],
+    ) -> Option<(ConstructedElement, ElementShape, Vec<String>)> {
+        let (element, shape, first) = self.element_at(property, index)?;
+        let texts = constructed::elements(self, element, data, first)?;
+        Some((element, shape, texts))
     }
 
     /// [`Self::value`] of a read at an array index: one element of a
@@ -298,9 +317,7 @@ impl<'a> ValueFormat<'a> {
         index: Option<u32>,
         data: &[u8],
     ) -> String {
-        if let Some((element, shape)) = self.element_at(property, index)
-            && let Some(texts) = constructed::elements(self, element, data)
-        {
+        if let Some((element, shape, texts)) = self.elements_at(property, index, data) {
             return match (shape, texts.as_slice()) {
                 (ElementShape::Single, [one]) => one.clone(),
                 _ => self.list(texts, constructed::separator(element)),
@@ -311,6 +328,8 @@ impl<'a> ValueFormat<'a> {
         };
         match values.as_slice() {
             [] => "(empty)".into(),
+            // An array's size is a count, never a state.
+            [one] if index == Some(0) => primitive::text(property, one, self.floats),
             [one] => self.element(property, one),
             [PropertyValue::Date(date), PropertyValue::Time(time)] => {
                 primitive::date_time(date, time)
@@ -409,6 +428,11 @@ impl ValueFormat<'_> {
             ),
         }
     }
+}
+
+/// Octets that don't decode, as every front end writes them: `[raw 0e 0f]`.
+pub fn raw_text(data: &[u8]) -> String {
+    primitive::raw(data)
 }
 
 /// Longest name kept, in characters; a device's longer name is cut.

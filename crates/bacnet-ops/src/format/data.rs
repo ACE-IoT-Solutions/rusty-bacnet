@@ -91,8 +91,12 @@ pub enum Datum {
     /// Several values, or the elements of a list or array, as an array.
     List(Vec<Datum>),
     /// One constructed element (a timestamp, a schedule day, a recipient):
-    /// `{"text": "Mon 07:00 = active"}`.
+    /// `{"element": "daily-schedule", "text": "Mon 07:00 = active"}`. The
+    /// element names its kind, so structured fields can join it later; the
+    /// text is for display, not for parsing.
     Constructed {
+        /// The element's kind in kebab case, `destination`.
+        element: String,
         /// The element as the text writes it.
         text: String,
     },
@@ -114,12 +118,14 @@ impl ValueFormat<'_> {
     /// [`Self::data`] of a read at an array index, as
     /// [`Self::value_at`] reads it.
     pub fn data_at(&self, property: PropertyIdentifier, index: Option<u32>, data: &[u8]) -> Datum {
-        if let Some((element, shape)) = self.element_at(property, index)
-            && let Some(texts) = constructed::elements(self, element, data)
-        {
+        if let Some((element, shape, texts)) = self.elements_at(property, index, data) {
+            let kind = constructed::element_name(element);
             let mut items: Vec<Datum> = texts
                 .into_iter()
-                .map(|text| Datum::Constructed { text })
+                .map(|text| Datum::Constructed {
+                    element: kind.clone(),
+                    text,
+                })
                 .collect();
             return match shape {
                 ElementShape::Single if items.len() == 1 => items.remove(0),
@@ -130,6 +136,7 @@ impl ValueFormat<'_> {
             return Datum::Raw { raw: hex(data, "") };
         };
         match values.as_slice() {
+            [PropertyValue::Unsigned(count)] if index == Some(0) => Datum::Unsigned(*count),
             [one] => self.element_data(property, one),
             many => Datum::List(
                 many.iter()
@@ -218,15 +225,15 @@ fn bit_digits(value: &PropertyValue) -> String {
 
 /// The names of the set bits, when `property` names its bits.
 fn bit_names(property: PropertyIdentifier, value: &PropertyValue) -> Option<Vec<String>> {
-    match resolve_bits(property, value)? {
-        ResolvedBits::Unknown { .. } => None,
-        named => {
-            let text = named.to_string();
-            Some(if text == "()" {
-                Vec::new()
-            } else {
-                text.split(" | ").map(kebab).collect()
-            })
-        }
+    fn names<'a>(flags: impl Iterator<Item = (&'a str, impl Sized)>) -> Vec<String> {
+        flags.map(|(name, _)| kebab(name)).collect()
     }
+    Some(match resolve_bits(property, value)? {
+        ResolvedBits::StatusFlags(flags) => names(flags.iter_names()),
+        ResolvedBits::EventTransitionBits(bits) => names(bits.iter_names()),
+        ResolvedBits::LimitEnable(bits) => names(bits.iter_names()),
+        ResolvedBits::ServicesSupported(services) => services.iter().map(kebab).collect(),
+        ResolvedBits::ObjectTypesSupported(types) => types.iter().map(kebab).collect(),
+        ResolvedBits::Unknown { .. } => return None,
+    })
 }

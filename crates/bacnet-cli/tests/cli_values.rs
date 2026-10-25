@@ -165,33 +165,46 @@ async fn reads_name_enumerations_bits_and_constructed_values() {
             "[Mon 07:00 = 72.5, 18:00 = null; Tue none; Wed none; Thu none; Fri none; \
              Sat none; Sun none]",
             json!([
-                {"text": "Mon 07:00 = 72.5, 18:00 = null"},
-                {"text": "Tue none"},
-                {"text": "Wed none"},
-                {"text": "Thu none"},
-                {"text": "Fri none"},
-                {"text": "Sat none"},
-                {"text": "Sun none"}
+                {"element": "daily-schedule", "text": "Mon 07:00 = 72.5, 18:00 = null"},
+                {"element": "daily-schedule", "text": "Tue none"},
+                {"element": "daily-schedule", "text": "Wed none"},
+                {"element": "daily-schedule", "text": "Thu none"},
+                {"element": "daily-schedule", "text": "Fri none"},
+                {"element": "daily-schedule", "text": "Sat none"},
+                {"element": "daily-schedule", "text": "Sun none"}
             ]),
         ),
         (
             "schedule:1",
             "weekly-schedule[1]",
             "Mon 07:00 = 72.5, 18:00 = null",
-            json!({"text": "Mon 07:00 = 72.5, 18:00 = null"}),
+            json!({"element": "daily-schedule", "text": "Mon 07:00 = 72.5, 18:00 = null"}),
+        ),
+        // An indexed day is named for its place in the week.
+        (
+            "schedule:1",
+            "weekly-schedule[3]",
+            "Wed none",
+            json!({"element": "daily-schedule", "text": "Wed none"}),
+        ),
+        (
+            "schedule:1",
+            "weekly-schedule[7]",
+            "Sun none",
+            json!({"element": "daily-schedule", "text": "Sun none"}),
         ),
         (
             "calendar:1",
             "date-list",
             "[2026-12-25, Mon, any week, any month]",
-            json!([{"text": "2026-12-25"}, {"text": "Mon, any week, any month"}]),
+            json!([{"element": "calendar-entry", "text": "2026-12-25"}, {"element": "calendar-entry", "text": "Mon, any week, any month"}]),
         ),
         (
             "nc:2",
             "recipient-list",
             "[device 99 process 7: Mon-Fri 08:00-17:00, confirmed, \
              to-offnormal | to-fault | to-normal]",
-            json!([{"text": "device 99 process 7: Mon-Fri 08:00-17:00, confirmed, \
+            json!([{"element": "destination", "text": "device 99 process 7: Mon-Fri 08:00-17:00, confirmed, \
                     to-offnormal | to-fault | to-normal"}]),
         ),
     ];

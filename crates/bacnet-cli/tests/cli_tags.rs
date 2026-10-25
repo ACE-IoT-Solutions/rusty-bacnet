@@ -88,7 +88,9 @@ async fn cli_tags_whole_read_has_named_values_in_existing_json_schema() {
     // The typed form sits beside the text (#2078).
     assert_eq!(
         value.as_object_mut().unwrap().remove("decoded"),
-        Some(json!([{"text": "exhaust"}, {"text": "floor = 3"}]))
+        Some(
+            json!([{"element": "name-value", "text": "exhaust"}, {"element": "name-value", "text": "floor = 3"}])
+        )
     );
     assert_eq!(
         value,
@@ -171,9 +173,9 @@ async fn cli_tags_rp_and_rpm_table_json_preserve_shapes_and_property_errors() {
         mixed,
         json!([
             {"object":"COLOR:1","property":"TAGS","value":"[\"exhaust\", \"floor\"=3]",
-             "decoded":[{"text":"exhaust"},{"text":"floor = 3"}]},
+             "decoded":[{"element":"name-value","text":"exhaust"},{"element":"name-value","text":"floor = 3"}]},
             {"object":"COLOR:1","property":"TAGS[1]","value":"\"exhaust\"",
-             "decoded":{"text":"exhaust"}},
+             "decoded":{"element":"name-value","text":"exhaust"}},
             {"object":"COLOR:1","property":"TAGS[0]","value":"2","decoded":2},
             {"object":"COLOR:1","property":"OBJECT_NAME","value":"\"color\"","decoded":"color"},
             {"object":"COLOR:1","property":"PROFILE_NAME","value":"ERROR: PROPERTY:UNKNOWN_PROPERTY"}

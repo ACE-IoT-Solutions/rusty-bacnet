@@ -69,7 +69,7 @@ fn tags_formatter_reports_whole_failure_and_preserves_other_formatters() {
     ] {
         assert_eq!(
             format_read_value(AI, PropertyIdentifier::TAGS, index, &bytes),
-            format!("[invalid Tags; raw: {}]", hex(&bytes))
+            format!("[invalid Tags] [raw {}]", hex(&bytes))
         );
     }
     // Any other property goes through the shared formatter.
@@ -137,7 +137,7 @@ fn list_items_split_by_element_or_value() {
             PropertyIdentifier::DESCRIPTION,
             &[0x21, 0x05, 0xFF]
         ),
-        (vec!["5".to_string()], Some("ff".to_string()))
+        (vec!["5".to_string()], Some("[raw ff]".to_string()))
     );
 }
 
