@@ -69,7 +69,7 @@ pub enum Error {
     /// A peer's Error, Reject or Abort PDU that turned a confirmed request
     /// down (Clauses 20.1.5 to 20.1.7). An Error PDU whose Clause 21
     /// production carries more than the class and code is
-    /// [`Error::Structured`] instead.
+    /// `Error::Structured` (with `alloc`) instead.
     #[error("{0}")]
     Remote(RemoteError),
 
@@ -436,7 +436,7 @@ impl Error {
 
     /// The peer's answer this error reports, without a structured error's
     /// detail: the [`RemoteError`] of [`Error::Remote`], and an Error with
-    /// the class and code of [`Error::Structured`]. `None` for any other
+    /// the class and code of `Error::Structured`. `None` for any other
     /// error, which no peer sent.
     pub fn remote(&self) -> Option<RemoteError> {
         match self {

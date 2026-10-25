@@ -11,7 +11,7 @@ use crate::enums::{AbortReason, ErrorClass, ErrorCode, RejectReason};
 /// TSM completes a transaction with it, [`Error::Remote`](super::Error::Remote)
 /// reports it, and a server keeps it as the answer to a request it sent. An
 /// Error PDU whose Clause 21 production adds fields beyond the class and code
-/// is [`Error::Structured`](super::Error::Structured) instead.
+/// is `Error::Structured` (with `alloc`) instead.
 ///
 /// It displays as the [`Error`](super::Error) that holds it does: an error's
 /// class and code by name in lower case with hyphens (the number for a value
