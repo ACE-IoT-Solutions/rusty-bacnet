@@ -186,6 +186,12 @@ SAMPLES: dict[str, object] = {
         Skip("F", INSTALL),
     "development/build-from-source.md::cargo install --path crates/bacnet-cli --locked": Skip("F", INSTALL),
     "development/build-from-source.md::python3 -m venv .venv": Skip("F", INSTALL),
+    "guides/ai-agents.md::cargo install --path crates/bacnet-cli --locked --features mcp": Skip("F", INSTALL),
+    "guides/ai-agents.md::[mcp]":
+        Skip("E", "checked against the McpSection serde type, which denies unknown fields"),
+    "guides/ai-agents.md::bacnet mcp authorize --profile plant-a": Parse(),
+    "guides/ai-agents.md::{": Skip("E", "agent host configuration; crates/bacnet-cli/tests/mcp_stdio.rs runs the server as a host would"),
+    "guides/ai-agents.md::bacnet mcp serve --stdio --profile plant-a --passive": Parse(),
     "guides/discovery.mdx::bacnet discover --target 192.168.1.100 --wait 3": Run(DEVICE, (CLI_DISCOVER,)),
     "guides/discovery.mdx::bacnet discover 1000-2000 --wait 3": Parse(),
     "guides/discovery.mdx::bacnet --foreign-bbmd 192.168.1.1 --ttl 300 discover --wait 3": Parse(),

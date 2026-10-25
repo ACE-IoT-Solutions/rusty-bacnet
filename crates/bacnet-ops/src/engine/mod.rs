@@ -16,6 +16,8 @@
 //! dropping its future: a turn's wait is cancel-safe, and a request
 //! already sent is abandoned to the client's transaction state machine.
 
+mod discover;
+mod log;
 mod read;
 
 use std::collections::HashSet;
@@ -23,18 +25,20 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bacnet_client::client::BACnetClient;
-use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_client::log_reader::{LogCursor, LogPage, read_log_page};
 use bacnet_services::alarm_event::GetEventInformationAck;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
+pub use self::discover::WhoIsScope;
 pub use self::read::{
-    Halt, ListRead, MAX_OBJECTS, ReadVia, Reader, RpmFailure, Wanted, rpm_failure, unreachable,
+    Halt, ListRead, MAX_OBJECTS, ReadVia, Reader, RpmFailure, Wanted, network_of, rpm_failure,
+    unreachable,
 };
 use crate::format::{RawRow, object_name};
-use crate::limits::RequestLimits;
+use crate::limits::{RequestLimits, Turn};
 
 /// The Device properties a device summary reads (Clause 12.11): who made
 /// it, what it runs, and what it can do. The TUI's device card shows them.
@@ -204,7 +208,7 @@ impl<T: TransportPort + 'static> Engine<T> {
     ///
     /// A page can take more than one request (the log's record counts,
     /// then the ReadRange). It holds the device's gate throughout, so they
-    /// still go one at a time, but it takes one rate slot for them all.
+    /// still go one at a time, and each takes a rate slot of its own.
     pub async fn read_trend(
         &self,
         device: u32,
@@ -212,10 +216,23 @@ impl<T: TransportPort + 'static> Engine<T> {
         cursor: LogCursor,
         page_size: u16,
     ) -> Result<LogPage, Error> {
-        let _turn = self.limits.turn(device).await;
-        self.client
-            .read_log_page_from_device(device, log, cursor, page_size)
-            .await
+        let network = network_of(&self.client, &self.limits, device).await;
+        let _turn = self.limits.turn_on(device, network).await;
+        let requester = log::PagedLog {
+            client: &self.client,
+            limits: &self.limits,
+            device,
+            network,
+            first: AtomicBool::new(true),
+        };
+        // The requester's calls route by device, so the link MAC is unused.
+        read_log_page(&requester, &[], log, cursor, page_size).await
+    }
+
+    /// `device`'s turn under the limits, on its network.
+    async fn turn(&self, device: u32) -> Turn {
+        let network = network_of(&self.client, &self.limits, device).await;
+        self.limits.turn_on(device, network).await
     }
 
     /// One GetEventInformation answer from `device`: the objects with an
@@ -227,7 +244,7 @@ impl<T: TransportPort + 'static> Engine<T> {
         device: u32,
         after: Option<ObjectIdentifier>,
     ) -> Result<GetEventInformationAck, Error> {
-        let _turn = self.limits.turn(device).await;
+        let _turn = self.turn(device).await;
         self.client
             .get_event_information_from_device(device, after)
             .await

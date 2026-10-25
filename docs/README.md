@@ -10,6 +10,7 @@ These documents follow the `dev` branch. The latest release is **0.14.0**, and t
 | What is the exact Rust API or feature boundary? | [Rust API](rust-api.md); [encoding into caller-owned storage](encoding-sinks.md) |
 | How do I configure and close a Python owner? | [Python API](python-api.md) |
 | Which CLI arguments does the current checkout accept? | [CLI reference](CLI.md) |
+| How does an AI agent host use the stack, and what may it do? | [MCP server](mcp.md); [design](design/mcp.md) |
 | Should I use a shared endpoint or a standalone owner? | [Endpoint roles and scope](rust-api.md#bacnet-endpoint) |
 | Is a Network Port registered, or is its number passively learned? | [Registration and local Number controls](rust-api.md#registered-bip-network-port) |
 | What does the stack support? | [What's supported](https://jscott3201.github.io/rusty-bacnet/project/support/#whats-supported), on the website's support page |
@@ -28,6 +29,7 @@ These documents follow the `dev` branch. The latest release is **0.14.0**, and t
 ## Design
 
 - [Terminal UI](design/tui.md): the `bacnet` TUI's architecture, screens, safety model and test strategy.
+- [MCP server](design/mcp.md): the `bacnet-ops` core, the `bacnet-mcp` tool surface, its safety model and phases (#2064).
 - [Website audit for 0.15.0](design/website-audit-0.15.md): page inventory, sample verification, and the task sitemap and PR plan the maintainer approved for the 0.15 site.
 - [Conformance and support reporting](design/conformance-reporting.md): how the website will show support (decided: generated capability tables and a sample PICS, #1496).
 

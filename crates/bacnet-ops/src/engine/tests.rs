@@ -406,3 +406,98 @@ async fn every_call_waits_for_the_device_gate() {
         .unwrap();
     stop(engine, server).await;
 }
+
+/// A trend page is charged for every request it sends, not once per page:
+/// the oldest page reads the log's counts before its ReadRange, and the
+/// next page, by sequence number, sends the ReadRange alone.
+#[tokio::test(start_paused = true)]
+async fn a_trend_page_is_charged_per_request() {
+    use crate::limits::{Account, charged};
+    let (engine, server) = lab().await;
+    let log = oid(ObjectType::TREND_LOG, 1);
+    let first = Arc::new(Account::new(None));
+    let page = charged(
+        Arc::clone(&first),
+        engine.read_trend(LAB, log, LogCursor::Oldest, 2),
+    )
+    .await
+    .unwrap();
+    assert!(
+        first.requests() >= 3,
+        "counts then range: {}",
+        first.requests()
+    );
+    let second = Arc::new(Account::new(None));
+    charged(
+        Arc::clone(&second),
+        engine.read_trend(LAB, log, page.next, 2),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.requests(), 1);
+    stop(engine, server).await;
+}
+
+/// A local Who-Is puts the lab device in the table; a device instance is
+/// no station address for a directed one.
+#[tokio::test(start_paused = true)]
+async fn a_who_is_fills_the_table() {
+    let (engine, server) = lab().await;
+    engine.client.clear_devices().await;
+    assert!(engine.device(LAB).await.is_none());
+    engine.who_is(WhoIsScope::Local, None).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let found = engine.device(LAB).await.expect("the lab device");
+    assert_eq!(found.vendor_id, 42);
+    assert!(
+        engine
+            .devices()
+            .await
+            .iter()
+            .any(|d| d.object_identifier.instance_number() == LAB)
+    );
+    let refused = engine
+        .who_is(WhoIsScope::Directed("1234"), None)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("station address"), "{refused}");
+    stop(engine, server).await;
+}
+
+/// The client's side of the lab link, refusing every broadcast, as a
+/// transport refuses a send it can't make.
+struct RefusesBroadcasts(LoopbackTransport);
+
+impl TransportPort for RefusesBroadcasts {
+    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+        self.0.start().await
+    }
+    async fn stop(&mut self) -> Result<(), Error> {
+        self.0.stop().await
+    }
+    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
+        self.0.send_unicast(npdu, mac).await
+    }
+    async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
+        Err(Error::Encoding("broadcast refused".into()))
+    }
+    fn local_mac(&self) -> &[u8] {
+        self.0.local_mac()
+    }
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        self.0.local_receive_apdu_capacity()
+    }
+}
+
+/// A Who-Is the transport refuses never left, so the caller isn't charged
+/// for it.
+#[tokio::test(start_paused = true)]
+async fn a_refused_who_is_is_not_charged() {
+    use crate::limits::{Account, charged};
+    let (engine, server) = lab_on(RefusesBroadcasts).await;
+    let account = Arc::new(Account::new(None));
+    let sent = charged(Arc::clone(&account), engine.who_is(WhoIsScope::Local, None)).await;
+    assert!(sent.is_err());
+    assert_eq!(account.requests(), 0);
+    stop(engine, server).await;
+}
