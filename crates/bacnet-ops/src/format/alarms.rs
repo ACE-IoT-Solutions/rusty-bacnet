@@ -10,6 +10,7 @@
 //! "high-limit"}`, `{"bits": "011", "names": [...]}`), and its table cells
 //! are written from the same data.
 
+use std::collections::HashSet;
 use std::future::Future;
 
 use bacnet_services::alarm_event::{EventSummary, GetEventInformationAck};
@@ -305,7 +306,9 @@ impl EnrollmentSummaryData {
 
 /// A summary field as a table cell: an object as `analog-input 1`, an
 /// enumeration by name (its number when it has none), bits by their set
-/// names or `none`, a timestamp as its text, and an absent value as `-`.
+/// names, comma separated to read apart from the table's bars, or `none`,
+/// a timestamp as its text, and an absent value as `-`: the formatter's
+/// text for each (a test pins them together).
 fn cell(datum: &Datum) -> String {
     match datum {
         Datum::Null => "-".into(),
@@ -321,7 +324,7 @@ fn cell(datum: &Datum) -> String {
         } if names.is_empty() => "none".into(),
         Datum::Bits {
             names: Some(names), ..
-        } => names.join(" | "),
+        } => names.join(", "),
         Datum::Bits { bits, .. } => format!("bits({bits})"),
         Datum::Constructed { text, .. } => text.clone(),
         Datum::Boolean(b) => b.to_string(),
@@ -344,8 +347,8 @@ fn cell(datum: &Datum) -> String {
 /// remain, up to `max` summaries. It returns the summaries and whether
 /// the device holds more than them.
 ///
-/// A device that says more remain but sends no object past the last one
-/// would page forever, so that is an error.
+/// A device that names an object twice, or says more remain but sends
+/// nothing, would show duplicates or page forever, so either is an error.
 pub async fn read_event_information<F, Fut>(
     max: usize,
     mut fetch: F,
@@ -355,10 +358,19 @@ where
     Fut: Future<Output = Result<GetEventInformationAck, Error>>,
 {
     let mut summaries: Vec<EventSummary> = Vec::new();
+    let mut seen = HashSet::new();
     let mut after = None;
     loop {
         let ack = fetch(after).await?;
-        summaries.extend(ack.list_of_event_summaries);
+        for summary in ack.list_of_event_summaries {
+            if !seen.insert(summary.object_identifier.encode()) {
+                return Err(Error::decoding(
+                    0,
+                    "GetEventInformation named an object it had already sent",
+                ));
+            }
+            summaries.push(summary);
+        }
         if summaries.len() >= max {
             let more = ack.more_events || summaries.len() > max;
             summaries.truncate(max);
@@ -367,8 +379,8 @@ where
         if !ack.more_events {
             return Ok((summaries, false));
         }
-        // An empty page, or one ending where the last did, would never
-        // finish.
+        // Every object is new, so the cursor moves unless the page was
+        // empty.
         match summaries.last().map(|summary| summary.object_identifier) {
             Some(last) if after != Some(last) => after = Some(last),
             _ => {

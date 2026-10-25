@@ -4,122 +4,16 @@
 #[allow(dead_code)]
 mod support;
 
-use std::borrow::Cow;
 use std::net::Ipv4Addr;
 
 use bacnet_objects::notification_class::NotificationClass;
-use bacnet_objects::traits::BACnetObject;
 use bacnet_server::server::{BACnetServer, GetEventInformationBudget};
 use bacnet_transport::bip::BipTransport;
-use bacnet_types::enums::{
-    ErrorClass, ErrorCode, EventState, NotifyType, ObjectType, PropertyIdentifier, Reliability,
-};
-use bacnet_types::error::Error;
+use bacnet_types::enums::{EventState, NotifyType, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use serde_json::{Value, json};
+use support::alarm::FixedAlarm;
 use support::lab::{lab_database, lab_identity};
-
-/// An event-initiating object with a fixed event state, acknowledged
-/// transitions and timestamps, so the output doesn't depend on the clock.
-struct FixedAlarm {
-    oid: ObjectIdentifier,
-    name: String,
-    state: EventState,
-    /// Acked_Transitions, first bit first.
-    acked: u8,
-    notify: NotifyType,
-}
-
-impl FixedAlarm {
-    fn new(instance: u32, state: EventState, acked: u8, notify: NotifyType) -> Self {
-        Self {
-            oid: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, instance).unwrap(),
-            name: format!("Alarm {instance}"),
-            state,
-            acked,
-            notify,
-        }
-    }
-}
-
-/// `[0] Time 14:30:05` and the like, context tagged as Event_Time_Stamps
-/// holds them: a date and time, a sequence number, and a time.
-fn timestamps() -> PropertyValue {
-    PropertyValue::List(vec![
-        PropertyValue::ApplicationData(vec![0x2E, 0xA4, 126, 10, 25, 7, 0xB4, 14, 30, 5, 0, 0x2F]),
-        PropertyValue::ApplicationData(vec![0x19, 42]),
-        PropertyValue::ApplicationData(vec![0x0C, 7, 0, 0, 0]),
-    ])
-}
-
-impl BACnetObject for FixedAlarm {
-    fn object_identifier(&self) -> ObjectIdentifier {
-        self.oid
-    }
-
-    fn object_name(&self) -> &str {
-        &self.name
-    }
-
-    fn read_property(
-        &self,
-        property: PropertyIdentifier,
-        _index: Option<u32>,
-    ) -> Result<PropertyValue, Error> {
-        Ok(match property {
-            PropertyIdentifier::OBJECT_IDENTIFIER => PropertyValue::ObjectIdentifier(self.oid),
-            PropertyIdentifier::OBJECT_NAME => PropertyValue::CharacterString(self.name.clone()),
-            PropertyIdentifier::OBJECT_TYPE => {
-                PropertyValue::Enumerated(ObjectType::ANALOG_VALUE.to_raw())
-            }
-            PropertyIdentifier::EVENT_STATE => PropertyValue::Enumerated(self.state.to_raw()),
-            PropertyIdentifier::ACKED_TRANSITIONS => PropertyValue::BitString {
-                unused_bits: 5,
-                data: vec![self.acked << 5],
-            },
-            PropertyIdentifier::EVENT_TIME_STAMPS => timestamps(),
-            PropertyIdentifier::NOTIFY_TYPE => PropertyValue::Enumerated(self.notify.to_raw()),
-            PropertyIdentifier::EVENT_ENABLE => PropertyValue::BitString {
-                unused_bits: 5,
-                data: vec![0xE0],
-            },
-            PropertyIdentifier::NOTIFICATION_CLASS => PropertyValue::Unsigned(5),
-            _ => {
-                return Err(Error::protocol(
-                    ErrorClass::PROPERTY,
-                    ErrorCode::UNKNOWN_PROPERTY,
-                ));
-            }
-        })
-    }
-
-    fn write_property(
-        &mut self,
-        _property: PropertyIdentifier,
-        _index: Option<u32>,
-        _value: PropertyValue,
-        _priority: Option<u8>,
-    ) -> Result<(), Error> {
-        Err(Error::protocol(
-            ErrorClass::PROPERTY,
-            ErrorCode::WRITE_ACCESS_DENIED,
-        ))
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
-            PropertyIdentifier::EVENT_STATE,
-            PropertyIdentifier::ACKED_TRANSITIONS,
-            PropertyIdentifier::EVENT_TIME_STAMPS,
-            PropertyIdentifier::NOTIFY_TYPE,
-            PropertyIdentifier::EVENT_ENABLE,
-            PropertyIdentifier::NOTIFICATION_CLASS,
-        ])
-    }
-}
 
 /// The lab device with three fixed alarms (one an event, not an alarm)
 /// and AI:1's fault cleared, answering GetEventInformation `page` objects
@@ -135,7 +29,17 @@ async fn server(page: usize) -> (BACnetServer<BipTransport>, String) {
             None,
         )
         .unwrap();
-    // The lab's intrinsic reporting objects name class 0.
+    // AI:2 reports to class 5, so the enrollment filters tell it apart.
+    db.get_mut(&ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 2).unwrap())
+        .unwrap()
+        .write_property(
+            PropertyIdentifier::NOTIFICATION_CLASS,
+            None,
+            PropertyValue::Unsigned(5),
+            None,
+        )
+        .unwrap();
+    // The other intrinsic reporting objects name class 0.
     db.add(Box::new(NotificationClass::new(0, "Default").unwrap()))
         .unwrap();
     let mut class = NotificationClass::new(5, "Plant").unwrap();
@@ -276,34 +180,34 @@ async fn alarms_are_decoded_in_json_and_the_table() {
         ],
         "{table}"
     );
-    // The bit names share the column border's bar, so data rows are
-    // checked by their start and their cells.
-    for (start, notify) in [
-        (
-            "| analog-value 1 | high-limit | to-fault | to-normal ",
-            "| alarm ",
-        ),
-        (
-            "| analog-value 2 | fault      | to-offnormal | to-fault | to-normal ",
-            "| alarm ",
-        ),
-        (
-            "| analog-value 3 | normal     | to-offnormal | to-fault ",
-            "| event ",
-        ),
-    ] {
-        let line = table.lines().find(|line| line.starts_with(start));
-        let line = line.unwrap_or_else(|| panic!("no row {start:?}: {table}"));
-        for cell in [
-            notify,
-            "2026-10-25 Sun 14:30:05",
-            "seq 42",
-            "07:00",
-            "3/5/200",
-        ] {
-            assert!(line.contains(cell), "{cell}: {line}");
-        }
-    }
+    let rows: Vec<Vec<&str>> = table
+        .lines()
+        .filter(|line| line.starts_with("| analog-value"))
+        .map(|line| line.trim_matches('|').split(" | ").map(str::trim).collect())
+        .collect();
+    let times = ["2026-10-25 Sun 14:30:05", "seq 42", "07:00", "3/5/200"];
+    let all = "to-offnormal, to-fault, to-normal";
+    let expected: Vec<Vec<&str>> = [
+        [
+            "analog-value 1",
+            "high-limit",
+            "to-fault, to-normal",
+            all,
+            "alarm",
+        ],
+        ["analog-value 2", "fault", all, all, "alarm"],
+        [
+            "analog-value 3",
+            "normal",
+            "to-offnormal, to-fault",
+            all,
+            "event",
+        ],
+    ]
+    .into_iter()
+    .map(|start| start.into_iter().chain(times).collect())
+    .collect();
+    assert_eq!(rows, expected, "{table}");
     assert!(
         table
             .lines()
@@ -370,8 +274,8 @@ async fn alarm_summary_lists_the_alarms_named() {
     let mut lines: Vec<&str> = table.lines().collect();
     // The two rows in the device's order.
     let rows = [
-        "| analog-value 1 | high-limit | to-fault | to-normal                |",
-        "| analog-value 2 | fault      | to-offnormal | to-fault | to-normal |",
+        "| analog-value 1 | high-limit | to-fault, to-normal               |",
+        "| analog-value 2 | fault      | to-offnormal, to-fault, to-normal |",
     ];
     if lines.get(3) == Some(&rows[1]) {
         lines.swap(3, 5);
@@ -379,13 +283,13 @@ async fn alarm_summary_lists_the_alarms_named() {
     assert_eq!(
         lines,
         [
-            "+----------------+------------+-------------------------------------+",
-            "| Object         | State      | Acked                               |",
-            "+===================================================================+",
+            "+----------------+------------+-----------------------------------+",
+            "| Object         | State      | Acked                             |",
+            "+=================================================================+",
             rows[0],
-            "|----------------+------------+-------------------------------------|",
+            "|----------------+------------+-----------------------------------|",
             rows[1],
-            "+----------------+------------+-------------------------------------+",
+            "+----------------+------------+-----------------------------------+",
             "2 object(s) in alarm",
         ],
         "{table}"
@@ -427,39 +331,58 @@ async fn enrollment_summary_names_entries_and_sends_the_filters() {
             ("analog-output".to_string(), 1)
         ]
     );
+    let entry = |instance: u64| {
+        answer
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| {
+                entry["object"]["type"] == "analog-input" && entry["object"]["instance"] == instance
+            })
+            .cloned()
+            .unwrap()
+    };
     assert_eq!(
-        answer[0]["event_type"],
-        json!({"value": 5, "name": "out-of-range"})
+        entry(1),
+        json!({
+            "object": {"type": "analog-input", "type_number": 0, "instance": 1},
+            "event_type": {"value": 5, "name": "out-of-range"},
+            "event_state": {"value": 0, "name": "normal"},
+            "priority": 255,
+            "notification_class": 0
+        })
     );
-    assert_eq!(
-        answer[0]["event_state"],
-        json!({"value": 0, "name": "normal"})
-    );
-    assert_eq!(answer[0]["priority"], json!(255));
-    assert_eq!(answer[0]["notification_class"], json!(0));
+    // AI:2 reports to class 5, whose to-normal priority is 200.
+    assert_eq!(entry(2)["priority"], json!(200));
+    assert_eq!(entry(2)["notification_class"], json!(5));
 
-    // Every lab enrollment is normal, fully acknowledged, in class 0 and at
-    // priority 255, so each filter below matches all of them or none.
+    // Every lab enrollment is normal and fully acknowledged; all but AI:2
+    // are in class 0 at priority 255.
     let all = enrolled(&json(&target, &["enrollment-summary"]).await);
     assert_eq!(all.len(), 7, "{all:?}");
-    for (flags, matches) in [
-        (&["--acked", "acked"][..], true),
-        (&["--acked", "not-acked"], false),
-        (&["--state", "normal"], true),
-        (&["--state", "active"], false),
-        (&["--priority", "255"], true),
-        (&["--priority", "0-254"], false),
-        (&["--class", "0"], true),
-        (&["--class", "5"], false),
+    let ai2 = vec![("analog-input".to_string(), 2)];
+    let others: Vec<_> = all.iter().filter(|o| **o != ai2[0]).cloned().collect();
+    let none = Vec::new();
+    for (flags, expected) in [
+        (&["--acked", "acked"][..], &all),
+        (&["--acked", "not-acked"], &none),
+        (&["--state", "normal"], &all),
+        (&["--state", "active"], &none),
+        (&["--priority", "255"], &others),
+        (&["--priority", "200"], &ai2),
+        (&["--priority", "100-210"], &ai2),
+        (&["--priority", "0-199"], &none),
+        (&["--class", "0"], &others),
+        (&["--class", "5"], &ai2),
+        (&["--class", "5", "--priority", "255"], &none),
     ] {
         let mut args = vec!["enrollment-summary"];
         args.extend(flags);
-        let found = enrolled(&json(&target, &args).await);
-        if matches {
-            assert_eq!(found, all, "{flags:?}");
-        } else {
-            assert!(found.is_empty(), "{flags:?}: {found:?}");
-        }
+        assert_eq!(
+            &enrolled(&json(&target, &args).await),
+            expected,
+            "{flags:?}"
+        );
     }
     // Names in either spelling.
     let states = json(
@@ -469,8 +392,14 @@ async fn enrollment_summary_names_entries_and_sends_the_filters() {
     .await;
     assert_eq!(enrolled(&states).len(), 3, "{states}");
 
-    let table = cli(&target, "table", &["enrollment-summary", "--class", "5"]).await;
+    let table = cli(&target, "table", &["enrollment-summary", "--class", "7"]).await;
     assert_eq!(table.trim_end(), "No event enrollments match.");
+    let table = cli(&target, "table", &["enrollment-summary", "--class", "5"]).await;
+    assert!(
+        table
+            .contains("| analog-input 2 | out-of-range | normal | 200      | 5                  |"),
+        "{table}"
+    );
     let table = cli(
         &target,
         "table",

@@ -317,11 +317,10 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
-            let raw = c
+            let ack = c
                 .get_event_information(&mac, last_oid)
                 .await
                 .map_err(to_py_err)?;
-            let ack = GetEventInformationAck::decode(&raw).map_err(to_py_err)?;
             crate::py_async::attach(|py| event_information_dict(py, &ack))
         })
     }

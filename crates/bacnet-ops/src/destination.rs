@@ -17,6 +17,7 @@ use std::time::Duration;
 use bacnet_client::client::{BACnetClient, DeviceEventKind};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_services::alarm_event::GetEventInformationAck;
 use bacnet_services::alarm_summary::GetAlarmSummaryAck;
 use bacnet_services::enrollment_summary::{GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest};
 use bacnet_services::file::{AtomicReadFileAck, FileAccessMethod, FileWriteAccessMethod};
@@ -323,12 +324,12 @@ impl Destination {
         }
     }
 
-    /// GetEventInformation, retaining its raw service acknowledgement.
+    /// GetEventInformation from after `last`, decoded.
     pub async fn get_event_information<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         last: Option<ObjectIdentifier>,
-    ) -> Result<bytes::Bytes, Error> {
+    ) -> Result<GetEventInformationAck, Error> {
         match self {
             Self::Mac(mac) => client.get_event_information(mac, last).await,
             Self::Device(instance) => {

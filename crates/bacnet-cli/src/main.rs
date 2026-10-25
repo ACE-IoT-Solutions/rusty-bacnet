@@ -275,23 +275,9 @@ async fn execute_command<T: TransportPort + 'static>(
             let to = resolve_destination(client, target).await?;
             commands::alarms::alarm_summary_cmd(client, &to, format).await?;
         }
-        Command::EnrollmentSummary {
-            target,
-            acked,
-            state,
-            event_type,
-            priority,
-            class,
-        } => {
+        Command::EnrollmentSummary { target, filters } => {
             let to = resolve_destination(client, target).await?;
-            let filters = commands::alarms::EnrollmentFilters {
-                acknowledgment: *acked,
-                event_state: *state,
-                event_type: *event_type,
-                priority: *priority,
-                notification_class: *class,
-            };
-            commands::alarms::enrollment_summary_cmd(client, &to, &filters, format).await?;
+            commands::alarms::enrollment_summary_cmd(client, &to, filters, format).await?;
         }
         Command::FileRead {
             target,

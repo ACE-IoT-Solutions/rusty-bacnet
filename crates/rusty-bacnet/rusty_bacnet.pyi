@@ -1406,7 +1406,7 @@ class EventType:
 
 
 class NotifyType:
-    """BACnet notify type (Clause 12.21): whether a transition is reported as an alarm or an event."""
+    """BACnetNotifyType (Clause 21): whether a transition is reported as an alarm or an event."""
 
     ALARM: NotifyType
     EVENT: NotifyType

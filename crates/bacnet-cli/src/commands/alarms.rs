@@ -9,7 +9,6 @@ use bacnet_ops::format::alarms::{
     AlarmSummaryData, EnrollmentSummaryData, EventInformationData, EventSummaryData,
     read_event_information,
 };
-use bacnet_services::alarm_event::GetEventInformationAck;
 use bacnet_services::enrollment_summary::{GetEnrollmentSummaryRequest, PriorityFilter};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{AcknowledgmentFilter, EnrollmentSummaryEventStateFilter, EventType};
@@ -86,18 +85,23 @@ pub fn parse_priority_range(text: &str) -> Result<PriorityFilter, String> {
     })
 }
 
-/// The `enrollment-summary` filters, as the flags give them.
-#[derive(Debug, Clone)]
+/// The `enrollment-summary` filters, the ones the service defines.
+#[derive(Debug, Clone, clap::Args)]
 pub struct EnrollmentFilters {
-    /// `--acked`.
+    /// Acknowledgment: all, acked or not-acked.
+    #[arg(long = "acked", default_value = "all", value_parser = parse_ack_filter)]
     pub acknowledgment: AcknowledgmentFilter,
-    /// `--state`.
+    /// Event state: offnormal, fault, normal, all or active.
+    #[arg(long = "state", value_parser = parse_state_filter)]
     pub event_state: Option<EnrollmentSummaryEventStateFilter>,
-    /// `--event-type`.
+    /// Event algorithm, such as out-of-range or change-of-state.
+    #[arg(long, value_parser = parse_event_type)]
     pub event_type: Option<EventType>,
-    /// `--priority`.
+    /// Notification priority, MIN-MAX (0 to 255) or one value.
+    #[arg(long, value_parser = parse_priority_range)]
     pub priority: Option<PriorityFilter>,
-    /// `--class`.
+    /// Notification class number.
+    #[arg(long = "class")]
     pub notification_class: Option<u32>,
 }
 
@@ -161,11 +165,8 @@ pub async fn alarms_cmd<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cap = usize::try_from(max).unwrap_or(usize::MAX);
-    let (summaries, more_events) = read_event_information(cap, |after| async move {
-        let ack = to.get_event_information(client, after).await?;
-        GetEventInformationAck::decode(&ack)
-    })
-    .await?;
+    let (summaries, more_events) =
+        read_event_information(cap, |after| to.get_event_information(client, after)).await?;
     let data = EventInformationData::from_summaries(&summaries, more_events);
     match format {
         OutputFormat::Table => println!("{}", event_information_text(&data, max)),

@@ -6,6 +6,66 @@ use serde_json::json;
 
 use super::*;
 
+/// The table cells name values as the shared formatter does (bits only
+/// with commas for its bars), so the alarm table and `read` agree.
+#[test]
+fn cells_agree_with_the_formatter() {
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(ObjectType::DEVICE, &texts, Floats::Exact);
+    let bits = |bits: EventTransitionBits| PropertyValue::BitString {
+        unused_bits: 5,
+        data: vec![bits.to_bacnet()],
+    };
+    let cases = [
+        (
+            PropertyIdentifier::OBJECT_IDENTIFIER,
+            PropertyValue::ObjectIdentifier(ai(7)),
+        ),
+        (
+            PropertyIdentifier::EVENT_STATE,
+            PropertyValue::Enumerated(EventState::LOW_LIMIT.to_raw()),
+        ),
+        (
+            PropertyIdentifier::EVENT_STATE,
+            PropertyValue::Enumerated(600),
+        ),
+        (
+            PropertyIdentifier::EVENT_TYPE,
+            PropertyValue::Enumerated(EventType::CHANGE_OF_STATE.to_raw()),
+        ),
+        (
+            PropertyIdentifier::NOTIFY_TYPE,
+            PropertyValue::Enumerated(NotifyType::ACK_NOTIFICATION.to_raw()),
+        ),
+        (PropertyIdentifier::PRIORITY, PropertyValue::Unsigned(200)),
+        (
+            PropertyIdentifier::ACKED_TRANSITIONS,
+            bits(EventTransitionBits::all()),
+        ),
+        (
+            PropertyIdentifier::ACKED_TRANSITIONS,
+            bits(EventTransitionBits::TO_FAULT),
+        ),
+        (
+            PropertyIdentifier::EVENT_ENABLE,
+            bits(EventTransitionBits::empty()),
+        ),
+    ];
+    for (property, value) in cases {
+        assert_eq!(
+            cell(&format.element_data(property, &value)),
+            format.element(property, &value).replace(" | ", ", "),
+            "{property} {value:?}"
+        );
+    }
+    let stamp = BACnetTimeStamp::SequenceNumber(9);
+    assert_eq!(
+        cell(&timestamp(&stamp)),
+        constructed::timestamp_text(&stamp)
+    );
+    assert_eq!(cell(&Datum::Null), "-");
+}
+
 fn ai(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
 }
@@ -71,8 +131,8 @@ fn an_event_summary_is_named_in_json_and_cells() {
         [
             "analog-input 1",
             "high-limit",
-            "to-fault | to-normal",
-            "to-offnormal | to-fault | to-normal",
+            "to-fault, to-normal",
+            "to-offnormal, to-fault, to-normal",
             "alarm",
             "2026-10-25 Sun 14:30:05",
             "seq 42",
@@ -234,17 +294,34 @@ async fn paging_stops_at_the_cap_and_says_more_remain() {
 
 #[tokio::test]
 async fn a_device_that_never_advances_is_an_error() {
-    for pages in [
-        vec![(vec![], true)],
-        vec![(vec![1], true), (vec![], true)],
-        vec![(vec![1], true), (vec![1], true)],
-    ] {
+    for pages in [vec![(vec![], true)], vec![(vec![1], true), (vec![], true)]] {
         let device = Pages::new(pages.clone());
         let error = read_event_information(100, |after| device.answer(after))
             .await
             .unwrap_err();
         assert!(
             error.to_string().contains("no new object"),
+            "{pages:?}: {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_repeats_an_object_is_an_error() {
+    for pages in [
+        // The last object again.
+        vec![(vec![1], true), (vec![1], true)],
+        // A loop back to the start: A,B then C,D then A,B.
+        vec![(vec![1, 2], true), (vec![3, 4], true), (vec![1, 2], true)],
+        // A repeat inside one answer.
+        vec![(vec![5, 5], false)],
+    ] {
+        let device = Pages::new(pages.clone());
+        let error = read_event_information(100, |after| device.answer(after))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("already sent"),
             "{pages:?}: {error}"
         );
     }

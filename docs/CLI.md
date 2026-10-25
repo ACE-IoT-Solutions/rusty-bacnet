@@ -1251,11 +1251,13 @@ notification priorities (`3/5/200`, in the same order). When `--max` stops
 the reading early, a last line says the device holds more.
 
 `alarm-summary` lists the objects in alarm with their state and
-acknowledged transitions (GetAlarmSummary, which the standard keeps only
-for older devices). `enrollment-summary` lists event-initiating objects
-with their event type, state, notification priority and notification class
-(GetEnrollmentSummary); a device returns only the objects that match all
-the filters given:
+acknowledged transitions (GetAlarmSummary). `enrollment-summary` lists
+event-initiating objects with their event type, state, notification
+priority and notification class (GetEnrollmentSummary); a device returns
+only the objects that match all the filters given. The standard keeps both
+services only so clients can reach older devices, and advises newer ones
+not to serve them (Clauses 13.10 and 13.11), so a current device may reject
+them; `alarms` works everywhere. The `enrollment-summary` filters:
 
 | Flag | Default | Description |
 |------|---------|-------------|
