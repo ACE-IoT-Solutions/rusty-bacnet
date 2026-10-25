@@ -116,16 +116,27 @@ pub(super) async fn object_lifecycle<T: TransportPort + 'static>(
     let created = oid(ObjectType::BINARY_INPUT, 100);
     let before = server.database().read().await.len();
     assert!(server.database().read().await.get(&created).is_none());
-    success(
-        &invoke_at(
-            port,
-            target,
-            "create-object",
-            &["bi:100", "--allow-write"],
-            source_port,
-        )
-        .await,
-        "Created object (response: c4 00 c0 00 64)",
+    let output = invoke_at(
+        port,
+        target,
+        "create-object",
+        &["bi:100", "--allow-write"],
+        source_port,
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!({
+            "status": "ok",
+            "message": "Created BINARY_INPUT:100",
+            "object_type": "BINARY_INPUT",
+            "instance": 100,
+        })
     );
     let expected = vec![
         PropertyValue::ObjectIdentifier(created),

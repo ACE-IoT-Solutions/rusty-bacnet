@@ -151,7 +151,7 @@ an awaited close or context exit when resource release must be established.
 
 ## Enums
 
-All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` for raw access. They support `==`, `hash()`, and `repr()`, and `copy.copy`, `copy.deepcopy` and `pickle`, which rebuild a value with `from_raw(value.to_raw())` (#1456). Five of them, `EngineeringUnits`, `ErrorClass`, `ErrorCode`, `RejectReason` and `AbortReason`, are `enum.IntEnum` classes whose members are ints ([below](#intenum-classes)).
+All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` for raw access, and a `name` property: the constant's name (`EventState.HIGH_LIMIT.name == "HIGH_LIMIT"`), or `None` for a number without one (#2080). They support `==`, `hash()`, and `repr()`, and `copy.copy`, `copy.deepcopy` and `pickle`, which rebuild a value with `from_raw(value.to_raw())` (#1456). Five of them, `EngineeringUnits`, `ErrorClass`, `ErrorCode`, `RejectReason` and `AbortReason`, are `enum.IntEnum` classes whose members are ints ([below](#intenum-classes)).
 
 ### ObjectType
 
@@ -324,14 +324,59 @@ v.value   # 72.5 (native Python float)
 | `"double"` | `float` |
 | `"character_string"` | `str` |
 | `"octet_string"` | `bytes` |
-| `"enumerated"` | `int` |
+| `"enumerated"` | `int` (see `.name` below) |
 | `"object_identifier"` | `ObjectIdentifier` |
-| `"bit_string"` | `dict` with `"unused_bits"` and `"data"` |
+| `"bit_string"` | [`BitString`](#bit-strings-and-enum-names) |
 | `"date"` | `tuple(year, month, day, day_of_week)`, the full year as [Dates](#dates) gives it |
 | `"time"` | `tuple(hour, minute, second, hundredths)` |
 | `"list"` | `list` of native Python values |
 | `"application_data"` | `bytes`: the encoded value, octet for octet |
 | `"destination"`, `"port_permission"` and the other element tags of [typed constructed values](#typed-constructed-values) | the element in its typed form |
+
+### Bit strings and enum names
+
+A bit string reads as a `BitString` (#2080). It keeps the wire form,
+`unused_bits` and `data`, and adds `bits`, one bool per bit with bit 0 first,
+and `names`, the set bits by their constant names when the bit string's type
+is known from where it was read, or `None` when it isn't. Names use the same
+UPPER_SNAKE spellings as the enum constants. A set bit without a name (a
+vendor or reserved position) is left out of `names`; `bits` still shows it.
+Two bit strings are equal when their wire forms are, whatever their names.
+`flags[i]` is bit `i` (negative counts from the last bit), `len(flags)` the
+bit count, and `repr()` gives the constructor call, `BitString(4, b'@')`,
+which `eval` rebuilds; it doesn't show `names`.
+
+```python
+flags = (await client.read_property(addr, oid, PropertyIdentifier.STATUS_FLAGS)).value
+flags.bits    # [False, True, False, False]
+flags.names   # ["FAULT"]
+flags.data    # b"\x40"
+
+BitString(5, b"\xa0", PropertyIdentifier.EVENT_ENABLE).names  # ["TO_OFFNORMAL", "TO_NORMAL"]
+```
+
+A read names the bit strings of Status_Flags, Member_Status_Flags,
+Event_Enable, Acked_Transitions, Ack_Required, Limit_Enable,
+Protocol_Services_Supported and Protocol_Object_Types_Supported. The same
+type is used for the alarm summary's `acknowledged_transitions`, a log
+record's `status_flags` and `log_status`, an Audit Log's `log_status`, and
+the bit strings of an Event_Parameters value, and a ReadRange result's
+`result_flags`, which names `FIRST_ITEM`, `LAST_ITEM` and `MORE_ITEMS`.
+
+An enumerated value read from a property whose enumeration is known has a
+`name`: `(await client.read_property(addr, oid, PropertyIdentifier.EVENT_STATE)).name`
+is `"HIGH_LIMIT"` for 3. `value` stays the number. `name` is `None` for a
+property whose enumeration depends on the object type (Present_Value, for
+example), a vendor property, a number with no name, and any value built with
+a constructor, which carries no property; a copy or pickle of a read value
+keeps its property and so its names. For a
+number from elsewhere, `enum_name(property, value)` gives the same answer:
+
+```python
+from rusty_bacnet import enum_name
+enum_name(PropertyIdentifier.RELIABILITY, 0)   # "NO_FAULT_DETECTED"
+enum_name(PropertyIdentifier.PRESENT_VALUE, 1) # None
+```
 
 ### Dates
 
@@ -526,7 +571,7 @@ so its array reads as `application_data`.
 
 An Event_Parameters mapping carries `kind` and the algorithm's members:
 `change_of_bitstring` (`time_delay`, `bitmask`, `list_of_values`, each bit
-string a `{"unused_bits", "data"}` mapping as a `bit_string` value reads),
+string a `BitString` as a `bit_string` value reads),
 `change_of_state` (`time_delay`, `list_of_values` of `(choice_tag, value)`
 pairs: a bool for tag 0, an int for the enumerated and numeric tags, the
 contents as `bytes` for a vendor tag), `change_of_value` (`time_delay`, then
@@ -1785,13 +1830,13 @@ Same arguments and checks as `time_synchronization`.
 
 ### Object Management
 
-#### `create_object(address, object_specifier, initial_values=None) -> bytes`
+#### `create_object(address, object_specifier, initial_values=None) -> ObjectIdentifier`
 
-Create an object on a remote device. `object_specifier` is either an `ObjectType` (server assigns instance) or an `ObjectIdentifier` (specific instance).
+Create an object on a remote device. `object_specifier` is either an `ObjectType` (server assigns instance) or an `ObjectIdentifier` (specific instance). It returns the created object's identifier, decoded from the CreateObject-ACK, so a create by type tells you the instance the server picked. An acknowledgment that doesn't decode raises `BacnetError`; the device may still have created the object.
 
 ```python
 # Create by type — server picks instance
-raw = await client.create_object(
+created = await client.create_object(
     "192.168.1.100:47808",
     ObjectType.ANALOG_INPUT,
     initial_values=[
@@ -1801,7 +1846,7 @@ raw = await client.create_object(
 )
 
 # Create with specific instance
-raw = await client.create_object(
+created = await client.create_object(
     "192.168.1.100:47808",
     ObjectIdentifier(ObjectType.ANALOG_INPUT, 100),
 )
@@ -1947,7 +1992,7 @@ result = await client.read_range(
     count=10,
 )
 print(result["item_count"])     # number of items returned
-print(result["result_flags"])   # (first_item, last_item, more_items)
+print(result["result_flags"].names)   # e.g. ["FIRST_ITEM", "LAST_ITEM"]
 print(result["item_data"])      # raw bytes
 print(rusty_bacnet.decode_log_records(result))  # typed records
 
@@ -1981,7 +2026,7 @@ result = await client.read_range(
 )
 ```
 
-Return dict keys: `"object_id"`, `"property_id"`, `"array_index"`, `"result_flags"` (tuple of 3 bools), `"item_count"` (int), `"item_data"` (bytes), `"first_sequence_number"` (int or `None`), and `"violations"` (list of rule names; empty unless lenient).
+Return dict keys: `"object_id"`, `"property_id"`, `"array_index"`, `"result_flags"` (a [`BitString`](#bit-strings-and-enum-names) naming `FIRST_ITEM`, `LAST_ITEM` and `MORE_ITEMS`; `result_flags[0]` is first-item), `"item_count"` (int), `"item_data"` (bytes), `"first_sequence_number"` (int or `None`), and `"violations"` (list of rule names; empty unless lenient).
 
 #### `decode_log_records(result) -> list[dict]`
 
@@ -1990,6 +2035,8 @@ Log Multiple or Audit Log's Log_Buffer (#1534). Each record is a dict with
 `"timestamp"` (a `(date, time)` pair) and `"datum"`, whose `"kind"` names the
 choice and whose key of the same name holds the value, for example
 `{"kind": "real", "real": 72.5}`; a Trend Log record adds `"status_flags"`.
+A `log_status` or `status_flags` value, and a `bitstring` datum, is a
+[`BitString`](#bit-strings-and-enum-names); the first two are named.
 It raises `ValueError` for any other result, or when the item data doesn't
 decode as `item_count` records, naming the first record that fails by index
 and offset.
@@ -2037,29 +2084,43 @@ the log drops the one it asked for. A non-log object or a `page_size` outside
 
 ### File Services
 
-#### `atomic_read_file(address, file_identifier, access_method, start_position=0, requested_octet_count=0, start_record=0, requested_record_count=0) -> bytes`
+#### `atomic_read_file(address, file_identifier, access_method, start_position=0, requested_octet_count=0, start_record=0, requested_record_count=0) -> dict`
+
+Returns the decoded acknowledgment (#2080): `access_method` (`"stream"` or
+`"record"`) and `end_of_file`, then `start_position` and `data` (bytes) for
+stream access, or `start_record`, `record_count` and `records` (a list of
+bytes) for record access. An acknowledgment in the other access method, or
+with more octets or records than requested, raises `BacnetError`.
 
 ```python
 # Stream access
-data = await client.atomic_read_file(
+chunk = await client.atomic_read_file(
     "192.168.1.100:47808",
     ObjectIdentifier(ObjectType.FILE, 1),
     access_method="stream",
     start_position=0,
     requested_octet_count=1024,
 )
+chunk["data"], chunk["end_of_file"]
 
 # Record access
-data = await client.atomic_read_file(
+chunk = await client.atomic_read_file(
     "192.168.1.100:47808",
     ObjectIdentifier(ObjectType.FILE, 1),
     access_method="record",
     start_record=0,
     requested_record_count=10,
 )
+chunk["start_record"], chunk["records"]
 ```
 
-#### `atomic_write_file(address, file_identifier, access_method, ...) -> bytes`
+#### `atomic_write_file(address, file_identifier, access_method, ...) -> dict`
+
+Returns the decoded acknowledgment (#2080): `access_method`, then
+`start_position` for stream access or `start_record` for record access,
+where the device says the write took place (a device may append at the end
+of the file). An acknowledgment in the other access method raises
+`BacnetError`.
 
 ```python
 # Stream write
@@ -2080,6 +2141,7 @@ result = await client.atomic_write_file(
     record_count=2,
     file_record_data=[b"record1", b"record2"],
 )
+result["start_record"]
 ```
 
 ---
@@ -2216,12 +2278,16 @@ await client.life_safety_operation(
 
 ### Alarm Summaries
 
-#### `get_alarm_summary(address) -> bytes`
+#### `get_alarm_summary(address) -> list[dict]`
 
-Get a summary of all active alarms on a device.
+Get a summary of all active alarms on a device. Each dict has `object_id`,
+`alarm_state` (an `EventState`) and `acknowledged_transitions`, a
+[`BitString`](#bit-strings-and-enum-names) naming `TO_OFFNORMAL`, `TO_FAULT`
+and `TO_NORMAL`.
 
 ```python
-raw = await client.get_alarm_summary("192.168.1.100:47808")
+for alarm in await client.get_alarm_summary("192.168.1.100:47808"):
+    print(alarm["object_id"], alarm["alarm_state"], alarm["acknowledged_transitions"].names)
 ```
 
 #### `get_enrollment_summary(address, acknowledgment_filter=AcknowledgmentFilter.ALL, event_state_filter=None, event_type_filter=None, min_priority=None, max_priority=None, notification_class_filter=None) -> list[dict]`
@@ -2500,9 +2566,10 @@ and `datum`. `timestamp` is `(date, time)`, where date is
 `(hour, minute, second, hundredths)`, matching the established
 `BACnetTimeStamp.date_time(...).value` convention. Datum mappings use `kind`
 values `"log_status"`, `"audit_notification"`, or `"time_change"`, with a
-same-named payload key. `log_status` is an int of BACnetLogStatus flags: 1
-log-disabled, 2 buffer-purged, 4 log-interrupted, decoded from the wire's
-bit order (log-disabled in the top bit of the octet). Nested notifications use the canonical field names
+same-named payload key. `log_status` is a
+[`BitString`](#bit-strings-and-enum-names) naming `LOG_DISABLED`,
+`BUFFER_PURGED` and `LOG_INTERRUPTED`, in the wire's bit order
+(log-disabled in the top bit of the octet). Nested notifications use the canonical field names
 listed above and include every optional key with either its decoded value or
 `None`. ACK projection is all-or-error and never returns a partial mapping.
 

@@ -532,15 +532,26 @@ fn ack_projection_covers_every_datum_and_nested_optional_field() {
                     .unwrap(),
             );
             match index {
-                0 => assert_eq!(
-                    datum
-                        .get_item("log_status")
-                        .unwrap()
-                        .unwrap()
-                        .extract::<u8>()
-                        .unwrap(),
-                    0b101
-                ),
+                0 => {
+                    // LOG_DISABLED and LOG_INTERRUPTED: wire bits 0 and 2.
+                    let status = datum.get_item("log_status").unwrap().unwrap();
+                    assert_eq!(
+                        status
+                            .getattr("data")
+                            .unwrap()
+                            .extract::<Vec<u8>>()
+                            .unwrap(),
+                        vec![0xa0]
+                    );
+                    assert_eq!(
+                        status
+                            .getattr("names")
+                            .unwrap()
+                            .extract::<Vec<String>>()
+                            .unwrap(),
+                        ["LOG_DISABLED", "LOG_INTERRUPTED"]
+                    );
+                }
                 3 => assert_eq!(
                     datum
                         .get_item("time_change")

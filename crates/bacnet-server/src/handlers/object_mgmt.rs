@@ -121,7 +121,10 @@ pub(crate) fn handle_create_object_observed(
         }
     }
 
-    bacnet_encoding::primitives::encode_app_object_id(buf, &created_oid);
+    bacnet_services::object_mgmt::CreateObjectAck {
+        object_identifier: created_oid,
+    }
+    .encode(buf);
     Ok(())
 }
 
