@@ -29,7 +29,7 @@ use bacnet_types::enums::{NotifyType, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use serde::Serialize;
 
-use super::read::{decode_and_format, format_application_values, hex};
+use super::read::{format_items, formatter, hex};
 pub use super::read_range_options::RangeOptions;
 use crate::output::{self, OutputFormat};
 
@@ -81,7 +81,7 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
     heading.note_violations(&reply.violations);
     match log_rows(&ack) {
         Some(rows) => print_records(&heading, &rows, format),
-        None => print_items(&heading, &ack.item_data, format),
+        None => print_items(&heading, object_type, property, &ack.item_data, format),
     }
     Ok(())
 }
@@ -396,28 +396,35 @@ fn object(oid: ObjectIdentifier) -> String {
     format!("{}:{}", oid.object_type(), oid.instance_number())
 }
 
+/// A logged value, through the shared formatter. The log doesn't say which
+/// property it logged, so an enumeration shows as `enum 3` and a bit
+/// string as its bits.
 fn log_datum(datum: &LogDatum) -> String {
-    match datum {
-        LogDatum::LogStatus(status) => log_status(*status),
-        LogDatum::BooleanValue(value) => value.to_string(),
-        LogDatum::RealValue(value) => value.to_string(),
-        LogDatum::EnumValue(value) => format!("enumerated({value})"),
-        LogDatum::UnsignedValue(value) => value.to_string(),
-        LogDatum::SignedValue(value) => value.to_string(),
-        LogDatum::BitstringValue { unused_bits, data } => {
-            output::format_property_value(&PropertyValue::BitString {
-                unused_bits: *unused_bits,
-                data: data.clone(),
-            })
-        }
-        LogDatum::NullValue => "null".to_string(),
+    // A property with no enumeration, named bits or constructed element.
+    const ANY: PropertyIdentifier = PropertyIdentifier::LOG_BUFFER;
+    let value = match datum {
+        LogDatum::LogStatus(status) => return log_status(*status),
         LogDatum::Failure {
             error_class,
             error_code,
-        } => format!("failure {error_class}/{error_code}"),
-        LogDatum::TimeChange(seconds) => time_change(*seconds),
-        LogDatum::AnyValue(bytes) => decode_and_format(bytes),
-    }
+        } => return format!("failure {error_class}/{error_code}"),
+        LogDatum::TimeChange(seconds) => return time_change(*seconds),
+        LogDatum::AnyValue(bytes) => return formatter(ObjectType::TREND_LOG).value(ANY, bytes),
+        LogDatum::BooleanValue(value) => PropertyValue::Boolean(*value),
+        LogDatum::RealValue(value) => PropertyValue::Real(*value),
+        LogDatum::EnumValue(value) => return format!("enum {value}"),
+        LogDatum::UnsignedValue(value) => PropertyValue::Unsigned(*value),
+        LogDatum::SignedValue(value) => match i32::try_from(*value) {
+            Ok(value) => PropertyValue::Signed(value),
+            Err(_) => return value.to_string(),
+        },
+        LogDatum::BitstringValue { unused_bits, data } => PropertyValue::BitString {
+            unused_bits: *unused_bits,
+            data: data.clone(),
+        },
+        LogDatum::NullValue => PropertyValue::Null,
+    };
+    formatter(ObjectType::TREND_LOG).element(ANY, &value)
 }
 
 /// Notify type, event type, event object and transition, then the message.
@@ -493,7 +500,7 @@ fn print_records(heading: &Heading, records: &LogRows, format: OutputFormat) {
             }
             println!("{table}");
             if let Some(hex) = &records.undecoded {
-                println!("  [raw] {hex}");
+                println!("  [raw {hex}]");
             }
             for note in heading.notes() {
                 println!("{note}");
@@ -513,24 +520,34 @@ fn print_records(heading: &Heading, records: &LogRows, format: OutputFormat) {
     }
 }
 
-fn print_items(heading: &Heading, data: &[u8], format: OutputFormat) {
-    let (mut items, undecoded) = format_application_values(data);
+/// The items of a read of any other list or array: each as text, and in
+/// JSON as typed data beside the text (`decoded`).
+fn print_items(
+    heading: &Heading,
+    object_type: ObjectType,
+    property: PropertyIdentifier,
+    data: &[u8],
+    format: OutputFormat,
+) {
+    let values = formatter(object_type);
+    let (mut items, undecoded) = format_items(&values, property, data);
     match format {
         OutputFormat::Table => {
             println!("{}", heading.line());
             for (number, item) in (1..).zip(&items) {
                 println!("  [{number}] {item}");
             }
-            if let Some(hex) = undecoded {
-                println!("  [raw] {hex}");
+            if let Some(raw) = undecoded {
+                println!("  {raw}");
             }
         }
         OutputFormat::Json => {
-            if let Some(hex) = undecoded {
-                items.push(format!("[raw: {hex}]"));
+            if let Some(raw) = undecoded {
+                items.push(raw);
             }
             let mut json = heading.json();
             json["items"] = items.into();
+            json["decoded"] = serde_json::to_value(values.data(property, data)).unwrap_or_default();
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json).unwrap_or_default()

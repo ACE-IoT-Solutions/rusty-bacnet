@@ -200,7 +200,7 @@ fn trend_log_multiple_records_show_every_value() {
     assert_eq!(
         rows(ObjectType::TREND_LOG_MULTIPLE, 2, &data).rows,
         [
-            row(8, "[21.5, true, null, enumerated(3)]", None),
+            row(8, "[21.5, true, null, enum 3]", None),
             row(9, "log-status LOG_INTERRUPTED", None),
         ]
     );

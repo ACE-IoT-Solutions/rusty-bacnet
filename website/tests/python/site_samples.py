@@ -200,8 +200,8 @@ SAMPLES: dict[str, object] = {
         Expect(0, ("Subscribed to ANALOG_INPUT:1", r'"type":"cov"', r'"PRESENT_VALUE":"72\.5"'), stop=True),
     )),
     "guides/safe-writes.md::bacnet readm 192.168.1.100 av:1 object-name,units,pv": Run(DEVICE, (
-        ok("Zone Setpoint", r"enumerated\(64\)", "PRESENT_VALUE"),
-        ok("PRIORITY_ARRAY", r'"value": "null(, null){15}"'),
+        ok("Zone Setpoint", r"degrees-fahrenheit", r'"value": 64', "PRESENT_VALUE"),
+        ok("PRIORITY_ARRAY", r'"value": "\[null(, null){15}\]"'),
         ok("RELINQUISH_DEFAULT"),
     )),
     # Without --allow-write the CLI refuses and sends nothing, so the value stays.
@@ -256,7 +256,7 @@ SAMPLES: dict[str, object] = {
         Run(DEVICE, (ok("OBJECT_NAME", "Local documentation lab"),)),
     "start/first-read.md::bacnet read 192.168.1.100 ai:1 pv": Run(DEVICE, (
         ok(r'"value": "72\.5"'),
-        ok(r'"value": "72\.5"', r'"value": "enumerated\(64\)"', "Zone Temperature"),
+        ok(r'"value": "72\.5"', r'"value": "degrees-fahrenheit"', "Zone Temperature"),
     )),
     "start/first-read.md::bacnet --json read 192.168.1.100 ai:1 pv":
         Run(DEVICE, (ok(r'"property": "PRESENT_VALUE"', r'"value": "72\.5"'),)),
