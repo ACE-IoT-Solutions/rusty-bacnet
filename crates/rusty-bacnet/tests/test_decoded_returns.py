@@ -121,6 +121,55 @@ class RawPeerTests(unittest.IsolatedAsyncioTestCase):
              "record_count": 2, "records": [b"one", b"two"]},
         )
 
+    async def test_atomic_write_file_acks_are_decoded(self):
+        file = ObjectIdentifier(ObjectType.FILE, 1)
+        # [0] start position 12.
+        result = await self.answered(
+            self.peer,
+            self.client.atomic_write_file(self.address, file, "stream", file_data=b"x"),
+            bytes.fromhex("090c"),
+        )
+        self.assertEqual(result, {"access_method": "stream", "start_position": 12})
+        # [1] start record 3.
+        result = await self.answered(
+            self.peer,
+            self.client.atomic_write_file(
+                self.address, file, "record", record_count=1, file_record_data=[b"r"]
+            ),
+            bytes.fromhex("1903"),
+        )
+        self.assertEqual(result, {"access_method": "record", "start_record": 3})
+        # A record ACK to a stream write raises.
+        with self.assertRaises(BacnetError):
+            await self.answered(
+                self.peer,
+                self.client.atomic_write_file(self.address, file, "stream", file_data=b"x"),
+                bytes.fromhex("1903"),
+            )
+        # And a stream ACK to a record write.
+        with self.assertRaises(BacnetError):
+            await self.answered(
+                self.peer,
+                self.client.atomic_write_file(
+                    self.address, file, "record", record_count=1, file_record_data=[b"r"]
+                ),
+                bytes.fromhex("090c"),
+            )
+
+    async def test_read_range_result_flags_are_named(self):
+        trend = ObjectIdentifier(ObjectType.TREND_LOG, 1)
+        # (TREND_LOG, 1), LOG_BUFFER, flags 110, count 0, empty item data.
+        result = await self.answered(
+            self.peer,
+            self.client.read_range(self.address, trend, PropertyIdentifier.LOG_BUFFER),
+            bytes.fromhex("0c05000001" "19 83" "3a05c0" "4900" "5e5f".replace(" ", "")),
+        )
+        flags = result["result_flags"]
+        self.assertIsInstance(flags, BitString)
+        self.assertEqual(flags.bits, [True, True, False])
+        self.assertEqual(flags.names, ["FIRST_ITEM", "LAST_ITEM"])
+        self.assertTrue(flags[0])
+
     async def test_atomic_read_file_ack_in_the_other_access_method_raises(self):
         file = ObjectIdentifier(ObjectType.FILE, 1)
         with self.assertRaises(BacnetError):
@@ -197,6 +246,15 @@ class ServerRoundTripTests(unittest.IsolatedAsyncioTestCase):
         object_name = await self.server.read_property(ai, PropertyIdentifier.OBJECT_NAME)
         self.assertIsNone(object_name.name)
 
+        # Copies and pickles keep the read's property, so the names too.
+        for clone in (copy.copy(state), copy.deepcopy(state), pickle.loads(pickle.dumps(state))):
+            self.assertEqual(clone, state)
+            self.assertEqual(clone.name, "NORMAL")
+        read_flags = await self.server.read_property(ai, PropertyIdentifier.STATUS_FLAGS)
+        clone = pickle.loads(pickle.dumps(read_flags))
+        self.assertEqual(clone.value.names, ["OUT_OF_SERVICE"])
+        self.assertEqual(hash(clone), hash(PropertyValue.bit_string(4, b"\x10")))
+
         device = ObjectIdentifier(ObjectType.DEVICE, 9873)
         services = (await self.server.read_property(
             device, PropertyIdentifier.PROTOCOL_SERVICES_SUPPORTED
@@ -216,8 +274,13 @@ class BitStringTests(unittest.TestCase):
         self.assertEqual(plain.bits, [True, False, True])
         self.assertEqual(len(plain), 3)
         self.assertNotEqual(plain, BitString(4, b"\xa0"))
-        self.assertEqual(repr(named), "BitString('101', names=['TO_OFFNORMAL', 'TO_NORMAL'])")
-        self.assertEqual(repr(plain), "BitString('101')")
+        self.assertEqual(repr(named), "BitString(5, b'\\xa0')")
+        self.assertEqual(repr(BitString(4, b"@")), "BitString(4, b'@')")
+        self.assertEqual(eval(repr(named), {"BitString": BitString}), named)
+        self.assertEqual((plain[0], plain[1], plain[-1]), (True, False, True))
+        for index in (3, -4):
+            with self.assertRaises(IndexError):
+                plain[index]
         self.assertEqual(BitString(0, b"").bits, [])
         # Status flags carry four bits; the AI's In_Alarm is the top one.
         self.assertEqual(

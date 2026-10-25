@@ -283,8 +283,9 @@ pub async fn create_object_cmd<T: TransportPort + 'static>(
     use bacnet_services::object_mgmt::ObjectSpecifier;
     let oid = ObjectIdentifier::new(object_type, instance)?;
     let specifier = ObjectSpecifier::Identifier(oid);
-    let response = to.create_object(client, specifier, vec![]).await?;
-    let (message, json) = created_object_report(&response);
+    // The client decodes the ACK; one that doesn't decode is an error.
+    let created = to.create_object(client, specifier, vec![]).await?;
+    let (message, json) = created_object_report(created);
     match format {
         OutputFormat::Table => output::print_success(&message, format),
         OutputFormat::Json => println!(
@@ -295,40 +296,22 @@ pub async fn create_object_cmd<T: TransportPort + 'static>(
     Ok(())
 }
 
-/// Render a CreateObject acknowledgment as a text message and a JSON object.
-///
-/// The acknowledgment carries the new object's identifier, which is what a user
-/// needs (the server may have picked the instance). Octets that don't decode as
-/// one fall back to hex, so the reply is never lost.
-fn created_object_report(response: &[u8]) -> (String, serde_json::Value) {
-    use bacnet_services::object_mgmt::CreateObjectAck;
-    match CreateObjectAck::decode(response) {
-        Ok(ack) => {
-            let oid = ack.object_identifier;
-            let message = format!("Created {}:{}", oid.object_type(), oid.instance_number());
-            let json = serde_json::json!({
-                "status": "ok",
-                "message": message,
-                "object_type": oid.object_type().to_string(),
-                "instance": oid.instance_number(),
-            });
-            (message, json)
-        }
-        Err(error) => {
-            let hex: String = response
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let message = format!("Created object (undecoded response: {hex}; {error})");
-            let json = serde_json::json!({
-                "status": "ok",
-                "message": message,
-                "response_hex": hex,
-            });
-            (message, json)
-        }
-    }
+/// Render the object a CreateObject acknowledgment names as a text message
+/// and a JSON object: the identifier is what a user needs, since the server
+/// may have picked the instance.
+fn created_object_report(created: ObjectIdentifier) -> (String, serde_json::Value) {
+    let message = format!(
+        "Created {}:{}",
+        created.object_type(),
+        created.instance_number()
+    );
+    let json = serde_json::json!({
+        "status": "ok",
+        "message": message,
+        "object_type": created.object_type().to_string(),
+        "instance": created.instance_number(),
+    });
+    (message, json)
 }
 
 #[cfg(test)]
@@ -336,8 +319,9 @@ mod create_object_report_tests {
     use super::*;
 
     #[test]
-    fn decoded_ack_names_the_new_object() {
-        let (message, json) = created_object_report(&[0xC4, 0x00, 0xC0, 0x00, 0x64]);
+    fn report_names_the_new_object() {
+        let created = ObjectIdentifier::new(ObjectType::BINARY_INPUT, 100).unwrap();
+        let (message, json) = created_object_report(created);
         assert_eq!(message, "Created BINARY_INPUT:100");
         assert_eq!(
             json,
@@ -348,18 +332,6 @@ mod create_object_report_tests {
                 "instance": 100,
             })
         );
-    }
-
-    #[test]
-    fn undecodable_ack_falls_back_to_hex() {
-        let (message, json) = created_object_report(&[0x21, 0x07]);
-        assert!(
-            message.starts_with("Created object (undecoded response: 21 07;"),
-            "{message}"
-        );
-        assert_eq!(json["response_hex"], "21 07");
-        assert_eq!(json["status"], "ok");
-        assert!(json.get("instance").is_none());
     }
 }
 

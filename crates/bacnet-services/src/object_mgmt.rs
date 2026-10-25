@@ -136,8 +136,9 @@ impl CreateObjectRequest {
 // CreateObjectAck
 // ---------------------------------------------------------------------------
 
-/// CreateObject-ACK service parameters (Clause 15.3.1.3.1): the identifier of the
-/// object the server created, application-tagged.
+/// CreateObject-ACK service parameters, the Result(+) of Clause 15.3.1.2 as
+/// Clause 21 encodes it: the identifier of the object the server created,
+/// application-tagged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreateObjectAck {
     /// Identifier of the newly created object.

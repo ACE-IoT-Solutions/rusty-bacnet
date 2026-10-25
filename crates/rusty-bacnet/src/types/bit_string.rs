@@ -85,6 +85,25 @@ impl PyBitString {
         }
     }
 
+    /// A ReadRange `BACnetResultFlags` value from its `(first_item,
+    /// last_item, more_items)` form, in its three-bit wire form.
+    pub(crate) fn result_flags((first, last, more): (bool, bool, bool)) -> Self {
+        let names = [
+            (first, "FIRST_ITEM"),
+            (last, "LAST_ITEM"),
+            (more, "MORE_ITEMS"),
+        ]
+        .into_iter()
+        .filter(|(set, _)| *set)
+        .map(|(_, name)| name.to_owned())
+        .collect();
+        Self {
+            unused_bits: 5,
+            data: vec![u8::from(first) << 7 | u8::from(last) << 6 | u8::from(more) << 5],
+            names: Some(names),
+        }
+    }
+
     fn bit_count(&self) -> usize {
         (self.data.len() * 8).saturating_sub(usize::from(self.unused_bits))
     }
@@ -172,18 +191,24 @@ impl PyBitString {
         self.bit_count()
     }
 
-    fn __repr__(&self) -> String {
-        let bits: String = (0..self.bit_count())
-            .map(|n| if self.bit(n) { '1' } else { '0' })
-            .collect();
-        match &self.names {
-            Some(names) => {
-                // Names are UPPER_SNAKE identifiers, so Python's quoting is plain.
-                let names: Vec<String> = names.iter().map(|name| format!("'{name}'")).collect();
-                format!("BitString('{bits}', names=[{}])", names.join(", "))
-            }
-            None => format!("BitString('{bits}')"),
+    /// The wire form as the constructor takes it, `BitString(5, b'\xa0')`,
+    /// so `eval` rebuilds an equal value. `names` isn't shown: read it.
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let data = PyBytes::new(py, &self.data).repr()?;
+        Ok(format!("BitString({}, {data})", self.unused_bits))
+    }
+
+    /// Bit `index` as a bool, counting from bit 0; a negative index counts
+    /// from the last bit.
+    fn __getitem__(&self, index: isize) -> PyResult<bool> {
+        let count = self.bit_count() as isize;
+        let at = if index < 0 { index + count } else { index };
+        if !(0..count).contains(&at) {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "bit index out of range",
+            ));
         }
+        Ok(self.bit(at as usize))
     }
 
     /// Equal when the wire forms are equal; `names` follows from where a

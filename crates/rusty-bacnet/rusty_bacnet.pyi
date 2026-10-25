@@ -104,7 +104,7 @@ class ObjectType:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"ANALOG_INPUT"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -617,7 +617,7 @@ class PropertyIdentifier:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"ACKED_TRANSITIONS"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1213,7 +1213,7 @@ class AuditOperation:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"READ"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1235,7 +1235,7 @@ class EnableDisable:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"ENABLE"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1262,7 +1262,7 @@ class ReinitializedState:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"COLDSTART"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1285,7 +1285,7 @@ class Segmentation:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"BOTH"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1310,7 +1310,7 @@ class EventState:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"NORMAL"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1332,7 +1332,7 @@ class AcknowledgmentFilter:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"ALL"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1356,7 +1356,7 @@ class EnrollmentSummaryEventStateFilter:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"OFFNORMAL"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1395,7 +1395,7 @@ class EventType:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"CHANGE_OF_BITSTRING"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1416,7 +1416,7 @@ class MessagePriority:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"NORMAL"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1442,7 +1442,7 @@ class VTClass:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"DEFAULT_TERMINAL"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1471,7 +1471,7 @@ class LifeSafetyOperation:
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"HIGH_LIMIT"``), or None for a value without one."""
+        """The constant's name (``"NONE"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1895,18 +1895,43 @@ class AuditNotification(TypedDict):
     result: tuple[ErrorClass, ErrorCode] | None
 
 
-class AtomicReadFileResult(TypedDict, total=False):
-    """What ``atomic_read_file`` returns. Stream access fills
-    ``start_position`` and ``data``; record access fills ``start_record``,
-    ``record_count`` and ``records``."""
+class AtomicReadFileStreamResult(TypedDict):
+    """What ``atomic_read_file`` returns for stream access."""
 
-    access_method: Literal["stream", "record"]
+    access_method: Literal["stream"]
     end_of_file: bool
     start_position: int
     data: bytes
+
+
+class AtomicReadFileRecordResult(TypedDict):
+    """What ``atomic_read_file`` returns for record access."""
+
+    access_method: Literal["record"]
+    end_of_file: bool
     start_record: int
     record_count: int
     records: list[bytes]
+
+
+AtomicReadFileResult = Union[AtomicReadFileStreamResult, AtomicReadFileRecordResult]
+
+
+class AtomicWriteFileStreamResult(TypedDict):
+    """What ``atomic_write_file`` returns for stream access."""
+
+    access_method: Literal["stream"]
+    start_position: int
+
+
+class AtomicWriteFileRecordResult(TypedDict):
+    """What ``atomic_write_file`` returns for record access."""
+
+    access_method: Literal["record"]
+    start_record: int
+
+
+AtomicWriteFileResult = Union[AtomicWriteFileStreamResult, AtomicWriteFileRecordResult]
 
 
 class AuditLogStatusDatum(TypedDict):
@@ -1985,7 +2010,14 @@ class BitString:
         without a name (a vendor or reserved position) is left out."""
         ...
     def __len__(self) -> int: ...
-    def __repr__(self) -> str: ...
+    def __getitem__(self, index: int) -> bool:
+        """Bit ``index`` (negative counts from the last bit); IndexError
+        past the end."""
+        ...
+    def __repr__(self) -> str:
+        """``BitString(5, b'\\xa0')``: ``eval`` rebuilds an equal value.
+        ``names`` isn't shown."""
+        ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
     def __reduce__(self) -> tuple[Any, tuple[int, bytes, list[str] | None]]: ...
@@ -2177,8 +2209,9 @@ class PropertyValue:
     def name(self) -> str | None:
         """The name of an enumerated value read from a property whose
         enumeration is known (``"HIGH_LIMIT"`` for an Event_State of 3), else
-        None. ``value`` stays the number. Values built with the constructors,
-        copies and pickles carry no property, so their name is None."""
+        None. ``value`` stays the number. Values built with the constructors
+        carry no property, so their name is None; copies and pickles of a
+        read value keep it."""
         ...
 
     @property
@@ -3972,9 +4005,12 @@ class BACnetClient:
         start_record: int = 0,
         record_count: int = 0,
         file_record_data: Optional[list[bytes]] = None,
-    ) -> Awaitable[bytes]:
+    ) -> Awaitable[AtomicWriteFileResult]:
         """Write to a file object. ``access_method`` is ``"stream"`` or ``"record"``.
-        Returns raw response bytes."""
+        Returns the decoded acknowledgment: ``access_method``, then
+        ``start_position`` for stream access or ``start_record`` for record
+        access, where the device says the write took place. An
+        acknowledgment in the other access method raises BacnetError."""
         ...
 
     # --- List manipulation ---
@@ -6464,7 +6500,7 @@ class ReadRangeResult(TypedDict):
     object_id: ObjectIdentifier
     property_id: PropertyIdentifier
     array_index: int | None
-    result_flags: tuple[bool, bool, bool]
+    result_flags: BitString
     item_count: int
     item_data: bytes
     first_sequence_number: int | None
@@ -6501,7 +6537,7 @@ class LogPage(TypedDict):
     """
     records: list[dict[str, Any]]
     first_sequence_number: int | None
-    result_flags: tuple[bool, bool, bool]
+    result_flags: BitString
     gap: LogGap | None
     violations: list[str]
     next: LogCursor

@@ -342,6 +342,9 @@ is known from where it was read, or `None` when it isn't. Names use the same
 UPPER_SNAKE spellings as the enum constants. A set bit without a name (a
 vendor or reserved position) is left out of `names`; `bits` still shows it.
 Two bit strings are equal when their wire forms are, whatever their names.
+`flags[i]` is bit `i` (negative counts from the last bit), `len(flags)` the
+bit count, and `repr()` gives the constructor call, `BitString(4, b'@')`,
+which `eval` rebuilds; it doesn't show `names`.
 
 ```python
 flags = (await client.read_property(addr, oid, PropertyIdentifier.STATUS_FLAGS)).value
@@ -357,14 +360,16 @@ Event_Enable, Acked_Transitions, Ack_Required, Limit_Enable,
 Protocol_Services_Supported and Protocol_Object_Types_Supported. The same
 type is used for the alarm summary's `acknowledged_transitions`, a log
 record's `status_flags` and `log_status`, an Audit Log's `log_status`, and
-the bit strings of an Event_Parameters value.
+the bit strings of an Event_Parameters value, and a ReadRange result's
+`result_flags`, which names `FIRST_ITEM`, `LAST_ITEM` and `MORE_ITEMS`.
 
 An enumerated value read from a property whose enumeration is known has a
 `name`: `(await client.read_property(addr, oid, PropertyIdentifier.EVENT_STATE)).name`
 is `"HIGH_LIMIT"` for 3. `value` stays the number. `name` is `None` for a
 property whose enumeration depends on the object type (Present_Value, for
 example), a vendor property, a number with no name, and any value built with
-a constructor, copied or unpickled, since those carry no property. For a
+a constructor, which carries no property; a copy or pickle of a read value
+keeps its property and so its names. For a
 number from elsewhere, `enum_name(property, value)` gives the same answer:
 
 ```python
@@ -1987,7 +1992,7 @@ result = await client.read_range(
     count=10,
 )
 print(result["item_count"])     # number of items returned
-print(result["result_flags"])   # (first_item, last_item, more_items)
+print(result["result_flags"].names)   # e.g. ["FIRST_ITEM", "LAST_ITEM"]
 print(result["item_data"])      # raw bytes
 print(rusty_bacnet.decode_log_records(result))  # typed records
 
@@ -2021,7 +2026,7 @@ result = await client.read_range(
 )
 ```
 
-Return dict keys: `"object_id"`, `"property_id"`, `"array_index"`, `"result_flags"` (tuple of 3 bools), `"item_count"` (int), `"item_data"` (bytes), `"first_sequence_number"` (int or `None`), and `"violations"` (list of rule names; empty unless lenient).
+Return dict keys: `"object_id"`, `"property_id"`, `"array_index"`, `"result_flags"` (a [`BitString`](#bit-strings-and-enum-names) naming `FIRST_ITEM`, `LAST_ITEM` and `MORE_ITEMS`; `result_flags[0]` is first-item), `"item_count"` (int), `"item_data"` (bytes), `"first_sequence_number"` (int or `None`), and `"violations"` (list of rule names; empty unless lenient).
 
 #### `decode_log_records(result) -> list[dict]`
 
@@ -2109,7 +2114,13 @@ chunk = await client.atomic_read_file(
 chunk["start_record"], chunk["records"]
 ```
 
-#### `atomic_write_file(address, file_identifier, access_method, ...) -> bytes`
+#### `atomic_write_file(address, file_identifier, access_method, ...) -> dict`
+
+Returns the decoded acknowledgment (#2080): `access_method`, then
+`start_position` for stream access or `start_record` for record access,
+where the device says the write took place (a device may append at the end
+of the file). An acknowledgment in the other access method raises
+`BacnetError`.
 
 ```python
 # Stream write
@@ -2130,6 +2141,7 @@ result = await client.atomic_write_file(
     record_count=2,
     file_record_data=[b"record1", b"record2"],
 )
+result["start_record"]
 ```
 
 ---

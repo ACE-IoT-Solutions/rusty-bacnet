@@ -93,16 +93,14 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
-            let raw = c
+            // The client decodes the ACK; a reply that doesn't decode raises,
+            // though the server may already have created the object.
+            let created = c
                 .create_object(&mac, specifier, init_vals)
                 .await
                 .map_err(to_py_err)?;
-            // The ACK names the created object; a reply that doesn't decode
-            // raises, though the server may already have created the object.
-            let ack =
-                bacnet_services::object_mgmt::CreateObjectAck::decode(&raw).map_err(to_py_err)?;
             crate::py_async::attach(|py| {
-                Ok(Py::new(py, PyObjectIdentifier::from_rust(ack.object_identifier))?.into_any())
+                Ok(Py::new(py, PyObjectIdentifier::from_rust(created))?.into_any())
             })
         })
     }

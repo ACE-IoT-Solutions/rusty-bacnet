@@ -370,13 +370,21 @@ impl PyPropertyValue {
     /// tag, where `.value` would give `real` and `double` alike as a float.
     /// A typed constructed element (#1310) rebuilds from its octets as read
     /// through `_typed_element`: `.value` is decoded from those octets and
-    /// needn't encode back to them.
+    /// needn't encode back to them. A value read from a property (#2080)
+    /// rebuilds through `_read_from` with the value and that property, so the
+    /// copy keeps its names.
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
     ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         use primitives::PropertyValue as V;
         let py = slf.py();
         let this = slf.get();
+        if let Some(property) = this.property {
+            let mut value = this.clone();
+            value.property = None;
+            let arguments = (value, PyPropertyIdentifier { inner: property }).into_pyobject(py)?;
+            return Ok((slf.get_type().getattr("_read_from")?, arguments));
+        }
         let constructor = match (&this.inner, this.element) {
             (V::ApplicationData(_), Some(_)) => "_typed_element",
             (inner, _) => tag(inner),
@@ -419,6 +427,14 @@ impl PyPropertyValue {
             }
         };
         Ok((slf.get_type().getattr(constructor)?, arguments))
+    }
+
+    /// `value` as read from `property`, so its enumerated value and bit
+    /// string come out named: what `__reduce__` makes `copy` and `pickle`
+    /// call for a value a read gave.
+    #[staticmethod]
+    fn _read_from(value: Self, property: PyPropertyIdentifier) -> Self {
+        value.read_from(property.to_rust())
     }
 
     /// One typed constructed element, tagged `tag`, from the octets a read

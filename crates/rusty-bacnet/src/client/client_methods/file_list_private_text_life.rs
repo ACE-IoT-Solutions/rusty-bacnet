@@ -36,6 +36,37 @@ fn atomic_read_file_ack_to_py<'py>(
     Ok(dict)
 }
 
+/// An AtomicWriteFile acknowledgment as the dict `atomic_write_file` returns,
+/// refused when its access method isn't the one the request used.
+fn atomic_write_file_ack_to_py<'py>(
+    py: Python<'py>,
+    stream_requested: bool,
+    raw: &[u8],
+) -> PyResult<Bound<'py, PyDict>> {
+    use bacnet_services::file::{AtomicWriteFileAck, FileWriteAckMethod};
+    let ack = AtomicWriteFileAck::decode(raw).map_err(to_py_err)?;
+    let dict = PyDict::new(py);
+    match ack.access {
+        FileWriteAckMethod::Stream {
+            file_start_position,
+        } if stream_requested => {
+            dict.set_item("access_method", "stream")?;
+            dict.set_item("start_position", file_start_position)?;
+        }
+        FileWriteAckMethod::Record { file_start_record } if !stream_requested => {
+            dict.set_item("access_method", "record")?;
+            dict.set_item("start_record", file_start_record)?;
+        }
+        _ => {
+            return Err(to_py_err(bacnet_types::error::Error::decoding(
+                0,
+                "AtomicWriteFile ACK access method differs from the request's",
+            )));
+        }
+    }
+    Ok(dict)
+}
+
 #[pymethods]
 impl BACnetClient {
     // -----------------------------------------------------------------------
@@ -97,7 +128,11 @@ impl BACnetClient {
 
     /// Write to a file object (stream or record access).
     ///
-    /// `access_method` is `"stream"` or `"record"`.
+    /// `access_method` is `"stream"` or `"record"`. Returns the decoded
+    /// acknowledgment as a dict: `access_method`, then `start_position` for
+    /// stream access or `start_record` for record access, where the device
+    /// says the write took place. An acknowledgment in the other access
+    /// method raises.
     #[pyo3(signature = (address, file_identifier, access_method, start_position=0, file_data=vec![], start_record=0, record_count=0, file_record_data=None))]
     fn atomic_write_file<'py>(
         &self,
@@ -132,6 +167,7 @@ impl BACnetClient {
             }
         };
 
+        let stream_requested = matches!(access, FileWriteAccessMethod::Stream { .. });
         crate::py_async::future_into_py(py, async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
@@ -139,7 +175,11 @@ impl BACnetClient {
                 .atomic_write_file(&mac, fid, access)
                 .await
                 .map_err(to_py_err)?;
-            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            crate::py_async::attach(|py| {
+                Ok(atomic_write_file_ack_to_py(py, stream_requested, &raw)?
+                    .into_any()
+                    .unbind())
+            })
         })
     }
 

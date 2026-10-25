@@ -204,7 +204,7 @@ fn alarm_request(
 }
 
 #[tokio::test(start_paused = true)]
-async fn object_mgmt_create_preserves_specifiers_initial_values_and_raw_reply() {
+async fn object_mgmt_create_preserves_specifiers_initial_values_and_decodes_reply() {
     for routed in [true, false] {
         let (mut client, mut peer) = site(routed).await;
         for (specifier, values, reply) in [
@@ -234,11 +234,15 @@ async fn object_mgmt_create_preserves_specifiers_initial_values_and_raw_reply() 
                     peer.complex_ack(&request, reply).await;
                 }
             );
-            assert_eq!(
-                result.unwrap().as_ref(),
-                reply,
-                "the raw API must not interpret CreateObject ACK bytes"
-            );
+            // Only the first reply is a CreateObject-ACK: (MULTI_STATE_VALUE, 77).
+            if reply.is_empty() || reply[0] != 0xc4 {
+                assert!(result.is_err(), "{reply:02x?} must not decode");
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    ObjectIdentifier::new(ObjectType::MULTI_STATE_VALUE, 77).unwrap()
+                );
+            }
         }
         client.stop().await.unwrap();
         peer.transport.stop().await.unwrap();

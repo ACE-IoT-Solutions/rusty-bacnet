@@ -380,7 +380,7 @@ pub(crate) fn page_to_py(py: Python<'_>, page: LogPage) -> PyResult<Py<PyAny>> {
     let result = PyDict::new(py);
     result.set_item("records", records_to_py(py, &page.records)?)?;
     result.set_item("first_sequence_number", page.first_sequence_number)?;
-    result.set_item("result_flags", page.result_flags)?;
+    result.set_item("result_flags", PyBitString::result_flags(page.result_flags))?;
     result.set_item("gap", gap_to_py(py, page.gap)?)?;
     result.set_item("violations", violation_names(&page.violations))?;
     result.set_item("next", cursor_to_py(py, page.next)?)?;
