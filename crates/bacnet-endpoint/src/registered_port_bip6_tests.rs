@@ -6,8 +6,10 @@
 use super::port_retry::{bind_eventually, rerun_on_lost_port};
 use super::*;
 use bacnet_client::client::BACnetClient;
+use bacnet_encoding::constructed::decode_host_n_port;
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_transport::bip6::{Bip6ForeignDeviceConfig, Bip6Transport};
+use bacnet_types::constructed::BACnetHostNPort;
 use bacnet_types::enums::PropertyIdentifier as P;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV6};
 use std::time::Duration;
@@ -188,6 +190,22 @@ async fn a_normal_or_foreign_b_ipv6_endpoint_serves_its_network_port() {
                 read(&client, P::FD_SUBSCRIPTION_LIFETIME).await,
                 PropertyValue::Unsigned(300)
             );
+            // FD_BBMD_Address names the BBMD the transport registers with.
+            let ack = timeout(
+                Duration::from_secs(5),
+                client.read_property(&VMAC, port(), P::FD_BBMD_ADDRESS, None),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let address = ack.property_value;
+            let expected = BACnetHostNPort::from_socket_addr(
+                SocketAddrV6::new(Ipv6Addr::LOCALHOST, bbmd_port, 0, 0).into(),
+            );
+            assert_eq!(
+                decode_host_n_port(&address, 0).unwrap(),
+                (expected, address.len())
+            );
         }
         client.stop().await.unwrap();
         endpoint.stop().await.unwrap();
@@ -196,7 +214,8 @@ async fn a_normal_or_foreign_b_ipv6_endpoint_serves_its_network_port() {
 
 /// An identity entry that differs from the database's port is refused
 /// before anything is reserved, and the session stays ready: corrected, it
-/// starts.
+/// starts. A different placeholder VMAC is no mismatch: publication
+/// replaces it with the transport's.
 #[tokio::test]
 async fn a_mismatched_b_ipv6_identity_entry_reserves_nothing() {
     let id = |entry| {
@@ -230,7 +249,6 @@ async fn a_mismatched_b_ipv6_identity_entry_reserves_nothing() {
                 0,
             )),
         ),
-        ("VMAC", id(vmac.clone())),
         (
             "IPV4 entry",
             id(crate::NetworkPortEntry::bip(1, 6, Ipv4Addr::LOCALHOST, 0)),
@@ -266,6 +284,11 @@ async fn a_mismatched_b_ipv6_identity_entry_reserves_nothing() {
         );
         endpoint.stop().await.unwrap();
     }
+    let mut endpoint = endpoint(transport(), id(vmac));
+    endpoint.start().await.unwrap();
+    let entry = &endpoint.identity.as_ref().unwrap().network_ports()[0];
+    assert_eq!(entry.mac.as_slice(), &VMAC[..]);
+    endpoint.stop().await.unwrap();
 }
 
 /// Stop releases the registration and the UDP port.

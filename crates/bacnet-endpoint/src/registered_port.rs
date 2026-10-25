@@ -4,6 +4,7 @@
 //! [`TransportPort::bip6_port`] and publishes its VMAC and multicast group
 //! too, as the full server's does (#1579, #1940).
 use super::*;
+use bacnet_server::network_port_registration as registration;
 use bacnet_transport::port::{Bip6Port, BipPort};
 
 /// What the started link reports for its registered port, with the port
@@ -58,7 +59,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .as_mut()
             .ok_or_else(|| invalid("missing ingress"))?;
         let address = match ingress.bip_port() {
-            Some(port) => port.endpoint,
+            Some(port) => registration::bip_address(&port, ingress.bip_broadcast_endpoint())?,
             None if ingress.bip6_port().is_some() => return self.prepare_bip6(oid).await,
             // A B/IP link that reports no mode is configured both ways.
             None if ingress.bip_broadcast_endpoint().is_some() => {
@@ -69,18 +70,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             }
             None => return Err(invalid("registration requires B/IP or B/IPv6")),
         };
-        let ip = *address.ip();
-        if ip.is_unspecified()
-            || ip.is_multicast()
-            || ip.is_broadcast()
-            || ingress
-                .bip_broadcast_endpoint()
-                .is_some_and(|broadcast| *broadcast.ip() == ip)
-        {
-            return Err(invalid(
-                "registered B/IP requires a concrete unicast interface",
-            ));
-        }
         let db = self
             .database
             .as_ref()
@@ -93,7 +82,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         if let Some(identity) = &self.identity {
             identity.validate_registered_bip_internal(oid, &configured)?;
         }
-        let (_, lease) = db.reserve_bip_port_internal(oid, ip.octets(), address.port())?;
+        let (_, lease) =
+            db.reserve_bip_port_internal(oid, address.ip().octets(), address.port())?;
         self.registered_port_lease = Arc::downgrade(&lease);
         ingress.retain_network_port_lease_internal(lease)
     }
@@ -106,27 +96,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .ingress
             .as_mut()
             .ok_or_else(|| invalid("missing ingress"))?;
-        let address = ingress
+        let port = ingress
             .bip6_port()
-            .ok_or_else(|| invalid("registration requires B/IP or B/IPv6"))?
-            .endpoint;
-        let ip = *address.ip();
-        if ip.is_unspecified() || ip.is_multicast() {
-            return Err(invalid(
-                "registered B/IPv6 requires a concrete unicast interface",
-            ));
-        }
-        if ip.to_ipv4_mapped().is_some() {
-            return Err(invalid(
-                "registered B/IPv6 refuses an IPv4-mapped address: register IPv4 as B/IP",
-            ));
-        }
-        if ip.is_unicast_link_local() {
-            // A link-local address needs IPv6_Zone_Index, which isn't modeled.
-            return Err(invalid(
-                "registered B/IPv6 refuses a link-local address: no IPv6_Zone_Index is modeled",
-            ));
-        }
+            .ok_or_else(|| invalid("registration requires B/IP or B/IPv6"))?;
+        let address = registration::bip6_address(&port)?;
         let db = self
             .database
             .as_ref()
@@ -139,7 +112,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         if let Some(identity) = &self.identity {
             identity.validate_registered_bip6_internal(oid, &configured)?;
         }
-        let (_, lease) = db.reserve_bip6_port_internal(oid, ip.octets(), address.port())?;
+        let (_, lease) =
+            db.reserve_bip6_port_internal(oid, address.ip().octets(), address.port())?;
         self.registered_port_lease = Arc::downgrade(&lease);
         ingress.retain_network_port_lease_internal(lease)
     }
@@ -160,33 +134,15 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .await;
         // The identity entry follows only once the database took the bind.
         let bound = match actual {
-            (Some((port, capacity)), _) => {
-                let address = port.endpoint;
-                db.publish_bip_port_internal(
-                    oid,
-                    address.ip().octets(),
-                    address.port(),
-                    capacity as u32,
-                    port.mode,
-                )?;
-                // A port that can use B/IP multicast serves its group (#941).
-                db.set_network_port_multicast_internal(oid, port.multicast)?;
-                Bound::V4(address)
-            }
+            (Some((port, capacity)), _) => Bound::V4(registration::publish_bip(
+                &mut db,
+                oid,
+                port,
+                capacity.into(),
+            )?),
             (None, Some((port, capacity))) => {
-                let vmac = port
-                    .vmac
-                    .ok_or_else(|| invalid("started B/IPv6 port reports no VMAC"))?;
-                let address = port.endpoint;
-                db.publish_bip6_port_internal(
-                    oid,
-                    address.ip().octets(),
-                    address.port(),
-                    vmac,
-                    port.multicast_group.octets(),
-                    capacity as u32,
-                    port.mode,
-                )?;
+                let (address, vmac) =
+                    registration::publish_bip6(&mut db, oid, port, capacity.into())?;
                 Bound::V6(address, vmac)
             }
             (None, None) => return Err(invalid("registered B/IP mode changed during bind")),

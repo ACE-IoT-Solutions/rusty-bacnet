@@ -9076,8 +9076,9 @@ builder, as the full server has none: compose `EndpointSession::new` over a
 `Bip6Transport`, then `device(identity)` and `with_registered_network_port(oid)`.
 `DeviceIdentity::with_bip6_port` (or `NetworkPortEntry::bip6`) declares the IPV6
 port, with a zero VMAC as a placeholder. Before reserving the port, startup checks
-the identity entry's address, UDP port, VMAC and network number against the
-database's port, so a mismatch reserves nothing; after bind it publishes the bound
+the identity entry's address, UDP port and network number against the database's
+port, so a mismatch reserves nothing (the VMAC is not compared, since publication
+replaces it); after bind it publishes the bound
 port and the VMAC the transport uses into both. Stop releases the port.
 
 ```rust

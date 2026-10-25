@@ -228,7 +228,9 @@ impl DeviceIdentity {
     }
 
     /// Check the selected B/IPv6 entry against the database's configured
-    /// port: address, UDP port, VMAC and network number.
+    /// port: address, UDP port and network number. The VMAC is not compared:
+    /// both are placeholders that publication replaces with the VMAC the
+    /// transport uses, as a B/IP check leaves the derived MAC out.
     #[doc(hidden)]
     pub fn validate_registered_bip6_internal(
         &self,
@@ -239,7 +241,6 @@ impl DeviceIdentity {
         if entry.network_type != NetworkType::IPV6.to_raw()
             || entry.ipv6 != config.ip_address
             || entry.udp_port != config.udp_port
-            || entry.mac.as_slice() != config.vmac
             || entry.network_number != u32::from(config.network_number)
         {
             return Err(Error::Encoding(
