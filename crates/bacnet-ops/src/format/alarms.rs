@@ -22,6 +22,8 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue};
 use serde::Serialize;
 
+use crate::label::object_label;
+
 use super::{Datum, Floats, StateTexts, ValueFormat, constructed};
 
 /// One value for each of the three event transitions, in their wire
@@ -364,10 +366,10 @@ where
         let ack = fetch(after).await?;
         for summary in ack.list_of_event_summaries {
             if !seen.insert(summary.object_identifier.encode()) {
-                return Err(Error::decoding(
-                    0,
-                    "GetEventInformation named an object it had already sent",
-                ));
+                return Err(Error::Encoding(format!(
+                    "GetEventInformation named {} again",
+                    object_label(summary.object_identifier)
+                )));
             }
             summaries.push(summary);
         }

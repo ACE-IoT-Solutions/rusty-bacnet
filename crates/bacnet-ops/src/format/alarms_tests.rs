@@ -308,20 +308,25 @@ async fn a_device_that_never_advances_is_an_error() {
 
 #[tokio::test]
 async fn a_device_that_repeats_an_object_is_an_error() {
-    for pages in [
+    for (pages, repeated) in [
         // The last object again.
-        vec![(vec![1], true), (vec![1], true)],
+        (vec![(vec![1], true), (vec![1], true)], 1),
         // A loop back to the start: A,B then C,D then A,B.
-        vec![(vec![1, 2], true), (vec![3, 4], true), (vec![1, 2], true)],
+        (
+            vec![(vec![1, 2], true), (vec![3, 4], true), (vec![1, 2], true)],
+            1,
+        ),
         // A repeat inside one answer.
-        vec![(vec![5, 5], false)],
+        (vec![(vec![5, 5], false)], 5),
     ] {
         let device = Pages::new(pages.clone());
         let error = read_event_information(100, |after| device.answer(after))
             .await
             .unwrap_err();
         assert!(
-            error.to_string().contains("already sent"),
+            error.to_string().contains(&format!(
+                "GetEventInformation named analog-input {repeated} again"
+            )),
             "{pages:?}: {error}"
         );
     }

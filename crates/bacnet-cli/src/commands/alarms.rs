@@ -89,10 +89,10 @@ pub fn parse_priority_range(text: &str) -> Result<PriorityFilter, String> {
 #[derive(Debug, Clone, clap::Args)]
 pub struct EnrollmentFilters {
     /// Acknowledgment: all, acked or not-acked.
-    #[arg(long = "acked", default_value = "all", value_parser = parse_ack_filter)]
+    #[arg(long = "acked", value_name = "ACKED", default_value = "all", value_parser = parse_ack_filter)]
     pub acknowledgment: AcknowledgmentFilter,
     /// Event state: offnormal, fault, normal, all or active.
-    #[arg(long = "state", value_parser = parse_state_filter)]
+    #[arg(long = "state", value_name = "STATE", value_parser = parse_state_filter)]
     pub event_state: Option<EnrollmentSummaryEventStateFilter>,
     /// Event algorithm, such as out-of-range or change-of-state.
     #[arg(long, value_parser = parse_event_type)]
@@ -101,7 +101,7 @@ pub struct EnrollmentFilters {
     #[arg(long, value_parser = parse_priority_range)]
     pub priority: Option<PriorityFilter>,
     /// Notification class number.
-    #[arg(long = "class")]
+    #[arg(long = "class", value_name = "CLASS")]
     pub notification_class: Option<u32>,
 }
 
