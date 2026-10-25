@@ -1,6 +1,7 @@
-//! The one value formatter the TUI and the MCP server share: property
-//! values as read, turned into the text the browser, the watch list and the
-//! write previews show.
+//! The one value formatter the TUI, the one-shot CLI and the MCP server
+//! share: property values as read, turned into the text the browser, the
+//! watch list, the write previews and the CLI's tables show, and into the
+//! typed [`Datum`] the CLI's JSON carries.
 //!
 //! It knows the object type, so a constructed value (timestamps, schedule
 //! days, references) is split with the element table from
@@ -12,14 +13,18 @@
 //! bit names and units in kebab case, objects as `analog-input 1`. Floats
 //! come in two forms (decision D2): [`Floats::Display`] for the browser and
 //! the watch list, at most six significant digits, and [`Floats::Exact`] for
-//! the write previews, the ledger and the CSV log, which keep every digit.
-//!
-//! The one-shot CLI's `output::format_property_value` is a separate
-//! contract and isn't used here.
+//! the write previews, the ledger, the CSV log and the one-shot CLI, which
+//! keep every digit. The compact places cut a long list short; the CLI
+//! shows it whole ([`ValueFormat::whole_lists`]).
 
+mod commands;
 mod constructed;
+mod data;
 mod primitive;
+mod recipients;
 mod units;
+
+pub use data::Datum;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::decode_application_value;
@@ -202,6 +207,8 @@ pub struct ValueFormat<'a> {
     object_type: ObjectType,
     texts: &'a StateTexts,
     floats: Floats,
+    /// Elements of a list shown before the rest is summarised.
+    max_shown: usize,
 }
 
 impl<'a> ValueFormat<'a> {
@@ -211,25 +218,92 @@ impl<'a> ValueFormat<'a> {
             object_type,
             texts,
             floats,
+            max_shown: MAX_LIST_SHOWN,
         }
+    }
+
+    /// The same formatter, showing every element of a list instead of the
+    /// first few and a count.
+    pub fn whole_lists(self) -> Self {
+        Self {
+            max_shown: usize::MAX,
+            ..self
+        }
+    }
+
+    /// The same settings for another object, as a value that names one
+    /// (an action's target, a group member) needs.
+    pub fn for_object<'b>(
+        &self,
+        object_type: ObjectType,
+        texts: &'b StateTexts,
+    ) -> ValueFormat<'b> {
+        ValueFormat {
+            object_type,
+            texts,
+            floats: self.floats,
+            max_shown: self.max_shown,
+        }
+    }
+
+    /// A REAL in this formatter's float style.
+    pub fn real(&self, value: f32) -> String {
+        primitive::text(
+            PropertyIdentifier::PRESENT_VALUE,
+            &PropertyValue::Real(value),
+            self.floats,
+        )
+    }
+
+    /// The text of each element of a constructed value, when the element
+    /// table names the property's element and the octets decode as those
+    /// elements to the end; `None` otherwise.
+    pub fn constructed_items(
+        &self,
+        property: PropertyIdentifier,
+        data: &[u8],
+    ) -> Option<Vec<String>> {
+        let (element, _) = property_element(self.object_type, property)?;
+        constructed::elements(self, element, data)
     }
 
     /// A property's value as display text: decoded as the element the table
     /// names for it when it has a renderer and the octets decode as those
     /// elements to the end, and otherwise as application values.
     pub fn value(&self, property: PropertyIdentifier, data: &[u8]) -> String {
-        if let Some((element, shape)) = property_element(self.object_type, property)
+        self.value_at(property, None, data)
+    }
+
+    /// The element and shape of a read of `property` at `index`: an indexed
+    /// read of a collection is one element, and index 0 (an array's size)
+    /// none.
+    fn element_at(
+        &self,
+        property: PropertyIdentifier,
+        index: Option<u32>,
+    ) -> Option<(ConstructedElement, ElementShape)> {
+        let (element, shape) = property_element(self.object_type, property)?;
+        match index {
+            None => Some((element, shape)),
+            Some(0) => None,
+            Some(_) => Some((element, ElementShape::Single)),
+        }
+    }
+
+    /// [`Self::value`] of a read at an array index: one element of a
+    /// collection for an index above 0, the array's size for index 0.
+    pub fn value_at(
+        &self,
+        property: PropertyIdentifier,
+        index: Option<u32>,
+        data: &[u8],
+    ) -> String {
+        if let Some((element, shape)) = self.element_at(property, index)
             && let Some(texts) = constructed::elements(self, element, data)
         {
-            // Schedule days hold lists of their own, so `; ` parts them.
-            let separator = if element == ConstructedElement::DailySchedule {
-                "; "
-            } else {
-                ", "
-            };
             return match (shape, texts.as_slice()) {
                 (ElementShape::Single, [one]) => one.clone(),
-                _ => list(texts, separator),
+                _ => self.list(texts, constructed::separator(element)),
             };
         }
         let Some(values) = decode_all(data) else {
@@ -244,7 +318,7 @@ impl<'a> ValueFormat<'a> {
             [PropertyValue::Date(start), PropertyValue::Date(end)] => {
                 primitive::date_range(start, end)
             }
-            many => list(
+            many => self.list(
                 many.iter()
                     .map(|value| self.element(property, value))
                     .collect(),
@@ -322,16 +396,18 @@ impl<'a> ValueFormat<'a> {
     }
 }
 
-/// Element texts as a list, the first [`MAX_LIST_SHOWN`] in full.
-fn list(texts: Vec<String>, separator: &str) -> String {
-    let count = texts.len();
-    let shown: Vec<String> = texts.into_iter().take(MAX_LIST_SHOWN).collect();
-    match count.saturating_sub(MAX_LIST_SHOWN) {
-        0 => format!("[{}]", shown.join(separator)),
-        more => format!(
-            "[{}{separator}+{more} more] ({count} items)",
-            shown.join(separator)
-        ),
+impl ValueFormat<'_> {
+    /// Element texts as a list, the first `max_shown` in full.
+    fn list(&self, texts: Vec<String>, separator: &str) -> String {
+        let count = texts.len();
+        let shown: Vec<String> = texts.into_iter().take(self.max_shown).collect();
+        match count.saturating_sub(self.max_shown) {
+            0 => format!("[{}]", shown.join(separator)),
+            more => format!(
+                "[{}{separator}+{more} more] ({count} items)",
+                shown.join(separator)
+            ),
+        }
     }
 }
 
@@ -376,3 +452,6 @@ pub fn units(rows: &[RawRow]) -> Option<EngineeringUnits> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod render_tests;
