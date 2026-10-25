@@ -1,11 +1,14 @@
 //! The watch list's requests to one device: starting a row (a first read,
 //! then a managed COV subscription), cancelling one, and polling a batch.
 //!
-//! Each runs as one job, and a device runs one job at a time, so the watch
-//! list never has more than one confirmed request outstanding to a device.
-//! Every request first takes a slot from the shared [`RateCap`]. The
-//! managed subscription's own renewals are sent by its task, outside both
-//! limits, once per lifetime.
+//! Each runs as one job, and a device runs one job at a time. Every request
+//! also takes its turn at the device's gate in the shared
+//! [`RequestLimits`], with a slot under the rate cap, so the watch list, the
+//! browser and the writes never have more than one confirmed request
+//! outstanding to a device between them (#1791). The managed
+//! subscription's renewals, sent by its task once per lifetime, take the
+//! same gate, though no rate slot. A routed device is subscribed to like a
+//! local one, through its router (#1790).
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -13,10 +16,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use bacnet_client::client::{
-    BACnetClient, CovPropertySubscription, ManagedCOVSubscription, ManagedCOVSubscriptionOptions,
+    BACnetClient, CovPropertySubscription, CovTarget, ManagedCOVSubscription,
+    ManagedCOVSubscriptionOptions,
 };
 use bacnet_transport::port::TransportPort;
-use bacnet_types::MacAddr;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{ErrorClass, PropertyIdentifier};
 use bacnet_types::error::{Error, RemoteError};
@@ -24,7 +27,7 @@ use bacnet_types::error::{Error, RemoteError};
 use super::sample::{self, Reading, RowFormat};
 use crate::tui::format::{RawRow, StateTexts};
 use crate::tui::watched::{Point, RowId};
-use crate::tui::worker::browse::limits::RateCap;
+use crate::tui::worker::browse::limits::RequestLimits;
 use crate::tui::worker::browse::read::{
     Halt, Reader, RpmFailure, Wanted, rpm_failure, unreachable,
 };
@@ -43,15 +46,21 @@ pub(crate) struct Lifetime {
 
 impl Lifetime {
     /// A lifetime of `secs`, renewed a tenth of it early (1 to 30 s), but
-    /// never later than `request_budget` before the end, the time a renewal
-    /// takes with every retry, so one lost packet can't let it lapse. The
-    /// margin stays at most half the lifetime.
+    /// never later than two `request_budget`s before the end. A budget is
+    /// the time one request takes with every retry: the renewal waits at
+    /// most one for the request holding the device's gate (#1791), which
+    /// may be a whole budget on a device that stops answering, then needs
+    /// one of its own, so neither a busy device nor one lost packet lets
+    /// it lapse. Each worker queues at most one request per device behind
+    /// that holder, and they rarely all coincide with a renewal, so two
+    /// budgets cover the case that matters without renewing far earlier
+    /// than needed. The margin stays at most half the lifetime.
     pub(crate) fn new(secs: u32, request_budget: Duration) -> Self {
         let tenth = Duration::from_secs(u64::from(secs / 10).clamp(1, 30));
         let half = Duration::from_secs(u64::from(secs)) / 2;
         Self {
             secs,
-            margin: tenth.max(request_budget).min(half),
+            margin: tenth.max(request_budget * 2).min(half),
         }
     }
 }
@@ -77,8 +86,9 @@ pub(crate) struct Started {
     pub(crate) first: Option<(Reading, RowFormat)>,
     /// The object's Object_Name, when the first read returned it.
     pub(crate) name: Option<String>,
-    /// The device's MAC, for a device on this network.
-    pub(crate) mac: Option<MacAddr>,
+    /// Where the device is, to subscribe and cancel; `None` when it isn't
+    /// in the device table.
+    pub(crate) target: Option<CovTarget>,
     /// The subscription, or why there is none.
     pub(crate) outcome: Result<ManagedCOVSubscription, Refusal>,
     /// The device refused RPM.
@@ -88,7 +98,7 @@ pub(crate) struct Started {
 /// Read the point once, then subscribe for `lifetime`.
 pub(crate) async fn start<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     row: RowId,
     point: Point,
     lifetime: Lifetime,
@@ -98,7 +108,7 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         return Started {
             first: None,
             name: None,
-            mac: None,
+            target: None,
             outcome: Err(Refusal {
                 reason: format!("device {} is not in the device table", point.device),
                 maybe_subscribed: false,
@@ -158,40 +168,21 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         Err(_) => None,
     };
     let refused_rpm = rpm && !reader.rpm;
+    let target = CovTarget::of_device(&device);
     let outcome = match read {
         // Subscribing would only time out too.
         Err(Halt::Device(error)) if unreachable(&error) => Err(Refusal {
             reason: format!("no answer: {error}"),
             maybe_subscribed: false,
-            retryable: device.source_network.is_none(),
+            retryable: true,
             fatal: false,
         }),
-        _ if device.source_network.is_some() => Err(Refusal {
-            reason: "routed device".into(),
-            maybe_subscribed: false,
-            retryable: false,
-            fatal: false,
-        }),
-        _ => {
-            subscribe(
-                client,
-                rate,
-                device.mac_address.as_slice(),
-                row,
-                point,
-                lifetime,
-            )
-            .await
-        }
+        _ => subscribe(client, rate, &target, row, point, lifetime).await,
     };
-    let mac = device
-        .source_network
-        .is_none()
-        .then_some(device.mac_address);
     Started {
         first,
         name,
-        mac,
+        target: Some(target),
         outcome,
         refused_rpm,
     }
@@ -242,17 +233,28 @@ async fn state_texts<T: TransportPort + 'static>(
 /// both with unconfirmed notifications and a finite lifetime.
 async fn subscribe<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
-    rate: &RateCap,
-    mac: &[u8],
+    rate: &RequestLimits,
+    target: &CovTarget,
     row: RowId,
     point: Point,
     lifetime: Lifetime,
 ) -> Result<ManagedCOVSubscription, Refusal> {
-    let options = ManagedCOVSubscriptionOptions::default().with_renewal_margin(lifetime.margin);
-    rate.acquire().await;
+    let options = ManagedCOVSubscriptionOptions::default()
+        .with_renewal_margin(lifetime.margin)
+        .with_renewal_gate(rate.gate(point.device));
+    // The first request goes under this turn; the renewals take the gate
+    // themselves.
+    let _turn = rate.turn(point.device).await;
     let managed = if point.whole_object() {
         Arc::clone(client)
-            .manage_cov_subscription(mac, row, point.object, false, lifetime.secs, options)
+            .manage_cov_subscription(
+                target.clone(),
+                row,
+                point.object,
+                false,
+                lifetime.secs,
+                options,
+            )
             .await
     } else {
         let subscription = CovPropertySubscription {
@@ -265,7 +267,7 @@ async fn subscribe<T: TransportPort + 'static>(
             cov_increment: None,
         };
         Arc::clone(client)
-            .manage_cov_property_subscription(mac, subscription, options)
+            .manage_cov_property_subscription(target.clone(), subscription, options)
             .await
     };
     managed.map_err(|error| Refusal {
@@ -278,24 +280,34 @@ async fn subscribe<T: TransportPort + 'static>(
 
 /// Cancel row `row`'s subscription: stop renewing it, then send a
 /// subscription with neither a lifetime nor the confirmed flag, which the
-/// device takes as a cancellation (Clauses 13.14.2 and 13.15.2).
+/// device takes as a cancellation (Clauses 13.14.2 and 13.15.2). It goes
+/// to `target`, the way the subscription went, so a device the table has
+/// since dropped or moved is still the one cancelled.
 pub(crate) async fn cancel<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     row: RowId,
     point: Point,
-    mac: MacAddr,
+    target: CovTarget,
     managed: Option<ManagedCOVSubscription>,
 ) -> Result<(), Error> {
+    // The turn first, then the stop. A renewal in flight holds the gate, so
+    // by the time the turn comes none is: the stop only ends a wait (for
+    // the renewal's time or for the gate), never a request. Aborting a
+    // routed renewal mid-request would quarantine the path through its
+    // router for a whole request budget, longer than the session's cancel
+    // wait, and every cancel through that router would give up.
+    let _turn = rate.turn(point.device).await;
     if let Some(managed) = managed {
         managed.stop().await;
     }
-    rate.acquire().await;
     if point.whole_object() {
-        client.unsubscribe_cov(&mac, row, point.object).await
+        client
+            .unsubscribe_cov_target(&target, row, point.object)
+            .await
     } else {
         client
-            .unsubscribe_cov_property(&mac, row, point.object, point.property, None)
+            .unsubscribe_cov_property_target(&target, row, point.object, point.property, None)
             .await
     }
 }
@@ -318,7 +330,7 @@ pub(crate) struct Polled {
 /// answering ends the poll: the rows left get the error at once.
 pub(crate) async fn poll<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     device: u32,
     rows: Vec<(RowId, Point)>,
     mut rpm: bool,
@@ -360,11 +372,12 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
                 samples.push((*row, failed(error)));
                 continue;
             }
-            rate.acquire().await;
-            let value = match client
+            let turn = rate.turn(device).await;
+            let read = client
                 .read_property_from_device(device, point.object, point.property, None)
-                .await
-            {
+                .await;
+            drop(turn);
+            let value = match read {
                 Ok(ack) => Ok(ack.property_value),
                 Err(error) if unreachable(&error) => {
                     samples.push((*row, failed(&error)));
@@ -397,7 +410,7 @@ fn failed_with(error: String) -> Reading {
 /// One ReadPropertyMultiple for `batch`, one access specification per row.
 async fn rpm_batch<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     device: u32,
     batch: &[(RowId, Point)],
 ) -> Result<Vec<(RowId, Reading)>, Error> {
@@ -414,10 +427,12 @@ async fn rpm_batch<T: TransportPort + 'static>(
                 .collect(),
         })
         .collect();
-    rate.acquire().await;
+    let turn = rate.turn(device).await;
     let ack = client
         .read_property_multiple_from_device(device, specs)
-        .await?;
+        .await;
+    drop(turn);
+    let ack = ack?;
     // The answer lists the objects in the order they were asked for; a row
     // it leaves out, or answers without the property, gets an error.
     let mut results = ack.list_of_read_access_results.into_iter();
@@ -470,10 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn the_margin_covers_a_renewal_with_its_retries_within_half_the_lifetime() {
+    fn the_margin_covers_a_gate_wait_and_a_renewal_within_half_the_lifetime() {
         let budget = Duration::from_secs(24);
-        assert_eq!(Lifetime::new(300, budget).margin, Duration::from_secs(30));
-        assert_eq!(Lifetime::new(120, budget).margin, budget);
+        assert_eq!(Lifetime::new(300, budget).margin, budget * 2);
+        assert_eq!(
+            Lifetime::new(600, Duration::from_secs(10)).margin,
+            Duration::from_secs(30)
+        );
+        assert_eq!(Lifetime::new(120, budget).margin, budget * 2);
+        assert_eq!(Lifetime::new(80, budget).margin, Duration::from_secs(40));
         assert_eq!(Lifetime::new(30, budget).margin, Duration::from_secs(15));
         assert_eq!(
             Lifetime::new(60, Duration::ZERO).margin,
@@ -485,3 +505,7 @@ mod tests {
 #[cfg(test)]
 #[path = "job_retry_tests.rs"]
 mod retry_tests;
+
+#[cfg(test)]
+#[path = "margin_tests.rs"]
+mod margin_tests;

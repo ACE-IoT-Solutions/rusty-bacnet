@@ -1,4 +1,3 @@
-use bacnet_types::error::RemoteError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -482,12 +481,8 @@ impl EndpointRequester {
                         service_data: ack.service_ack.clone(),
                     },
                     Apdu::Error(error) => TsmResponse::from_error_pdu(error),
-                    Apdu::Reject(reject) => TsmResponse::remote(RemoteError::Reject {
-                        reason: reject.reject_reason,
-                    }),
-                    Apdu::Abort(abort) => TsmResponse::remote(RemoteError::Abort {
-                        reason: abort.abort_reason,
-                    }),
+                    Apdu::Reject(reject) => TsmResponse::remote(reject.remote_error()),
+                    Apdu::Abort(abort) => TsmResponse::remote(abort.remote_error()),
                     Apdu::SegmentAck(_)
                     | Apdu::ConfirmedRequest(_)
                     | Apdu::UnconfirmedRequest(_)

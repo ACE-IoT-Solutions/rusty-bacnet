@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::browse::limits::RateCap;
+use super::browse::limits::RequestLimits;
 use super::watch::WatchOptions;
 use super::write::SafetyOptions;
 use super::{COMMAND_CHANNEL_CAPACITY, DeviceFeed, EventSink, passive};
@@ -385,7 +385,7 @@ async fn serve_with<T: TransportPort + 'static>(
     sc_events: Option<broadcast::Receiver<ScEvent>>,
 ) {
     let client = Arc::new(client);
-    let rate = RateCap::new(options.max_rate);
+    let rate = RequestLimits::new(options.max_rate);
     let mut local = style.format(client.local_mac());
     // A B/IPv6 VMAC alone doesn't say where the client is bound.
     if let Some(bound) =
