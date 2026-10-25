@@ -3,17 +3,18 @@
 //! request from `:dcc` or `:reinit` would reach the ring, the detail and
 //! hex views and a pcap export with its password in clear text.
 //!
-//! Before a frame this node did not receive itself enters the ring (one it
-//! sent, or one libpcap or the monitor heard on the wire, which includes
-//! this node's own sends), a confirmed request for either service has its
-//! password's content octets overwritten with `*`, whatever the character
-//! set. The masking fails closed (#2062):
+//! Before any frame enters the ring, whichever way it went (sent, received
+//! here, or heard on the wire by libpcap or the monitor), a confirmed
+//! request for either service has its password's content octets
+//! overwritten with `*`, whatever the character set. The masking fails
+//! closed (#2062):
 //!
 //! - The request's tags are walked over their raw length octets, not
 //!   decoded, so a password too long, cut short, non-canonically encoded or
 //!   in an encoding the decoder refuses is masked too. Only the fields that
-//!   come before the password, at their expected sizes, are walked past:
-//!   anything else ends the walk and is masked to the end of the APDU.
+//!   come before the password, in order, once each and at their expected
+//!   sizes, are walked past: anything else ends the walk and is masked to
+//!   the end of the APDU.
 //! - A segmented request is masked too (#2084). The password is each
 //!   service's last field, so it starts in the first segment and anything
 //!   of it that a later segment carries is that segment's whole service
@@ -21,8 +22,16 @@
 //!   one entirely. No transaction is tracked.
 //! - A frame whose link header doesn't decode (a B/IP length that disagrees
 //!   with the datagram, an MS/TP frame with a bad CRC) is searched for
-//!   anything shaped like either request, at every offset, and each one
-//!   found is masked.
+//!   either request at every offset. Since such a match is only a guess,
+//!   it needs more to count: a plausible APDU header (reserved bits clear,
+//!   a defined maximum APDU, on a segment a window of 1 to 127 and one of
+//!   the first three sequence numbers), and on a
+//!   first segment a walk that reaches the password tag through the
+//!   expected fields, the mandatory one included. The search stops at the
+//!   first match masked, so it is linear in the frame. Damage to the APDU
+//!   header itself (its PDU type, its service octet, or a COBS code octet
+//!   before it) leaves nothing to find, and such a frame keeps its
+//!   password.
 //!
 //! B/IP, B/IPv6 and BACnet/SC frames keep their length, so the export still
 //! parses. A valid MS/TP frame is encoded again so its data CRC matches; an
@@ -33,7 +42,6 @@
 //! the checks and writing each masked octet back where it came from. A zero
 //! that a COBS code octet stands for has no octet of its own and stays.
 //! The frame is marked, and the detail view says the password was redacted.
-//! Frames this node received are other nodes' traffic and kept as heard.
 
 use std::ops::Range;
 
@@ -42,14 +50,12 @@ use bacnet_transport::mstp::codec::{Frame, FrameType, PREAMBLE, decode_frame_in_
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bytes::Bytes;
 
-use super::{CaptureFrame, Direction};
+use super::CaptureFrame;
 use crate::decode::frame::{Framing, Npdu, link};
 
-/// Redact `frame`'s password, if it carries one and wasn't received here.
+/// Redact `frame`'s password, if it carries one, whichever way it went.
 pub(crate) fn scrub(mut frame: CaptureFrame) -> CaptureFrame {
-    if frame.direction != Direction::In
-        && let Some(bytes) = redacted(frame.framing, &frame.bytes)
-    {
+    if let Some(bytes) = redacted(frame.framing, &frame.bytes) {
         frame.bytes = bytes;
         frame.redacted = true;
     }
@@ -85,9 +91,11 @@ fn might_carry(octets: &[u8]) -> bool {
 struct Request {
     /// The password's context tag.
     password: u8,
-    /// The context tags that may come before it, each with its largest
-    /// content length.
+    /// The context tags that may come before it, in order, each with its
+    /// largest content length.
     before: &'static [(u8, usize)],
+    /// The one of them the service requires.
+    required: u8,
     /// Where the service parameters start.
     body: usize,
     /// A segment after the first.
@@ -104,20 +112,21 @@ fn request(apdu: &[u8]) -> Option<Request> {
     let segmented = first & 0x08 != 0;
     let (service, body) = if segmented { (5, 6) } else { (3, 4) };
     let service = ConfirmedServiceChoice::from_raw(*apdu.get(service)?);
-    let (password, before): (u8, &[(u8, usize)]) =
+    let (password, before, required): (u8, &[(u8, usize)], u8) =
         if service == ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL {
             // Time duration (an Unsigned16, leniently up to 4), then
-            // enable/disable.
-            (2, &[(0, 4), (1, 1)])
+            // enable/disable, which is required.
+            (2, &[(0, 4), (1, 1)], 1)
         } else if service == ConfirmedServiceChoice::REINITIALIZE_DEVICE {
-            // The state to reinitialize to.
-            (1, &[(0, 1)])
+            // The state to reinitialize to, required.
+            (1, &[(0, 1)], 0)
         } else {
             return None;
         };
     Some(Request {
         password,
         before,
+        required,
         body,
         later_segment: segmented && apdu[3] != 0,
     })
@@ -130,60 +139,90 @@ fn mask_npdu(npdu: &mut [u8]) -> bool {
         Ok(view) if view.message_type.is_some() => false,
         Ok(view) => {
             let offset = view.payload_offset;
-            npdu.get_mut(offset..).is_some_and(mask_apdu)
+            npdu.get_mut(offset..)
+                .is_some_and(|apdu| mask_apdu(apdu, Found::Located))
         }
         Err(_) => scan(npdu),
     }
 }
 
-/// Mask every request for either service found at any offset of `octets`;
-/// true when anything was. A `*` never starts a request or names either
-/// service, so masking one can't make another appear.
+/// How a request was come by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Found {
+    /// Where a frame that decoded puts its APDU: anything unexpected in
+    /// it is masked.
+    Located,
+    /// A match at some offset of a frame that didn't decode: only a
+    /// plausible request with its password where it belongs is masked.
+    Searched,
+}
+
+/// Mask the first request for either service found at any offset of
+/// `octets`; true when one was. A frame holds one APDU, and stopping there
+/// keeps the search linear: each attempt walks at most four tags.
 fn scan(octets: &mut [u8]) -> bool {
-    let mut masked = false;
-    for at in 0..octets.len() {
-        masked |= mask_apdu(&mut octets[at..]);
-    }
-    masked
+    (0..octets.len()).any(|at| mask_apdu(&mut octets[at..], Found::Searched))
+}
+
+/// Whether a searched match's header is one a sender would write: no
+/// reserved bit set, a defined maximum APDU, and on a segment a window of
+/// 1 to 127 and a sequence number of at most 2. Either request is at most
+/// about 95 octets and a segment carries at least 44 octets of it (the
+/// smallest maximum APDU is 50), so a third segment is the last that can
+/// hold any password.
+fn plausible(apdu: &[u8]) -> bool {
+    let segment = apdu[0] & 0x08 == 0 || (apdu[3] <= 2 && matches!(apdu[4], 1..=127));
+    apdu[0] & 0x01 == 0 && apdu[1] & 0x80 == 0 && apdu[1] & 0x0F <= 5 && segment
 }
 
 /// Mask the password of a confirmed request for either service: every
 /// content octet of its tag after the character set, as far as the APDU
-/// holds them; from the first tag that isn't an expected field to the end;
-/// and all of a later segment. True when anything was masked. The walk
-/// always moves forward (a tag takes at least its first octet), and every
-/// end is clamped.
-fn mask_apdu(apdu: &mut [u8]) -> bool {
+/// holds them, and all of a later segment. A located request is also
+/// masked from the first tag that isn't an expected field to the end; a
+/// searched one is then left alone. True when anything was masked. The
+/// walk always moves forward (a tag takes at least its first octet), takes
+/// each expected field once, and every end is clamped.
+fn mask_apdu(apdu: &mut [u8], found: Found) -> bool {
     let Some(request) = request(apdu) else {
         return false;
     };
+    let searched = found == Found::Searched;
+    if searched && !plausible(apdu) {
+        return false;
+    }
     let body = &mut apdu[request.body..];
     if request.later_segment {
         return fill(body, 0);
     }
+    let mut next = 0;
+    let mut required = false;
     let mut at = 0;
     while at < body.len() {
         let Some(tag) = raw_tag(body, at) else {
-            return fill(body, at);
+            return !searched && fill(body, at);
         };
         let end = tag.content.saturating_add(tag.length).min(body.len());
         if tag.context && !tag.bracket {
             if tag.number == request.password {
+                if searched && !required {
+                    return false;
+                }
                 // The first content octet is the character set.
                 let text = (tag.content + 1).min(end)..end;
                 body[text.clone()].fill(b'*');
                 return !text.is_empty();
             }
-            let expected = request
-                .before
+            let field = request.before[next..]
                 .iter()
-                .any(|&(number, most)| number == tag.number && tag.length <= most);
-            if expected {
+                .position(|&(number, most)| number == tag.number && tag.length <= most);
+            if let Some(skipped) = field {
+                next += skipped + 1;
+                required |= tag.number == request.required;
                 at = end;
                 continue;
             }
         }
-        return fill(body, tag.content);
+        return !searched && fill(body, tag.content);
     }
     false
 }

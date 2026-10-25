@@ -40,6 +40,11 @@ fn reinit_body(password: &[u8]) -> Vec<u8> {
 /// octets: each segment's APDU.
 fn segments(service: ConfirmedServiceChoice, body: &[u8], max_apdu: u16) -> Vec<Vec<u8>> {
     let size = max_segment_payload(max_apdu, SegmentedPduType::ConfirmedRequest);
+    segments_of(service, body, size)
+}
+
+/// `body` split into segments of `size` octets of service data.
+fn segments_of(service: ConfirmedServiceChoice, body: &[u8], size: usize) -> Vec<Vec<u8>> {
     let parts = split_payload(body, size).unwrap();
     let count = parts.len();
     parts
@@ -267,4 +272,98 @@ fn frames_whose_link_header_doesnt_decode_are_searched() {
     let mut damaged = testing::bip(&super::tests::npdu(&read), false);
     damaged[3] ^= 0x40;
     assert_eq!(redacted(Framing::Bip, &damaged), None);
+}
+
+/// A segment boundary inside the password tag's header: the first
+/// segment ends on its first octet, the length octet starts the next.
+#[test]
+fn a_password_tag_header_split_across_segments_is_masked() {
+    let password = long_password();
+    let body = dcc_body(password.as_bytes());
+    assert_eq!(body[4], 0x2D);
+    let apdus = segments_of(DCC, &body, 5);
+    let joined = masked_segments(&apdus, password.as_bytes());
+    assert_eq!(joined[..4], body[..4]);
+    assert!(joined[4..].iter().all(|&octet| octet == b'*'));
+}
+
+/// A time duration of four octets is still a field to walk past; one of
+/// five isn't, and is masked to the end.
+#[test]
+fn the_time_duration_boundary() {
+    let secret = b"Zq7-hunter2";
+    let four = [
+        &[0x0C, 0, 0, 0x0E, 0x10, 0x19, 0x01][..],
+        &ctx_string(2, 0, secret),
+    ]
+    .concat();
+    let frame = testing::bip(&npdu(&request(DCC, &four)), false);
+    let masked = masked_in_place(Framing::Bip, &frame, secret);
+    let start = frame.len() - four.len();
+    assert_eq!(
+        masked[..start + 9],
+        frame[..start + 9],
+        "all before the text kept"
+    );
+    let five = [
+        &[0x0D, 5, 0, 0, 0, 0x0E, 0x10, 0x19, 0x01][..],
+        &ctx_string(2, 0, secret),
+    ]
+    .concat();
+    let frame = testing::bip(&npdu(&request(DCC, &five)), false);
+    let masked = masked_in_place(Framing::Bip, &frame, secret);
+    let start = frame.len() - five.len();
+    assert!(masked[start + 2..].iter().all(|&octet| octet == b'*'));
+}
+
+/// Damaged frames of random octets, and damaged frames of other traffic,
+/// are left alone: a search match needs a plausible request with its
+/// password where it belongs.
+#[test]
+fn damaged_frames_without_a_request_are_left_alone() {
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut masked = 0;
+    for _ in 0..300 {
+        let length = 200 + (next() % 1200) as usize;
+        let octets: Vec<u8> = (0..length).map(|_| next() as u8).collect();
+        for framing in [Framing::Bip, Framing::Bip6, Framing::Sc, Framing::Mstp] {
+            masked += usize::from(redacted(framing, &octets).is_some());
+        }
+    }
+    assert_eq!(masked, 0);
+    // A later segment of a segmented WriteProperty, in a frame whose
+    // Length is wrong.
+    let write = segments_of(ConfirmedServiceChoice::WRITE_PROPERTY, &[0x2D; 90], 44);
+    let mut frame = testing::bip(&npdu(&write[1]), false);
+    frame[3] ^= 0x10;
+    assert_eq!(redacted(Framing::Bip, &frame), None);
+}
+
+/// A located request without its required field still has its password
+/// masked; a searched one isn't taken for a request. A field repeated
+/// ends the walk, so the rest is masked.
+#[test]
+fn required_and_repeated_fields() {
+    let secret = b"Zq7-hunter2";
+    let no_enable = [&[0x09, 0x1E][..], &ctx_string(2, 0, secret)].concat();
+    let sound = testing::bip(&npdu(&request(DCC, &no_enable)), false);
+    masked_in_place(Framing::Bip, &sound, secret);
+    let mut damaged = sound.clone();
+    damaged[3] ^= 0x10;
+    assert_eq!(redacted(Framing::Bip, &damaged), None);
+    let twice = [
+        &[0x09, 0x1E, 0x09, 0x1E, 0x19, 0x01][..],
+        &ctx_string(2, 0, secret),
+    ]
+    .concat();
+    let frame = testing::bip(&npdu(&request(DCC, &twice)), false);
+    let masked = masked_in_place(Framing::Bip, &frame, secret);
+    let start = frame.len() - twice.len();
+    assert!(masked[start + 3..].iter().all(|&octet| octet == b'*'));
 }

@@ -9,6 +9,7 @@ use bytes::BytesMut;
 
 use super::*;
 use crate::decode::testing;
+use crate::tui::capture::Direction;
 
 const DCC: ConfirmedServiceChoice = ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL;
 const REINIT: ConfirmedServiceChoice = ConfirmedServiceChoice::REINITIALIZE_DEVICE;
@@ -277,9 +278,10 @@ fn arbitrary_octets_never_panic() {
     }
 }
 
-/// Frames this node received are kept as heard; its own are scrubbed.
+/// Every frame is scrubbed, whichever way it went: a request addressed to
+/// this node keeps no password in the ring either.
 #[test]
-fn only_frames_not_received_here_are_scrubbed() {
+fn frames_are_scrubbed_whichever_way_they_went() {
     let frame = |direction| CaptureFrame {
         time: std::time::UNIX_EPOCH,
         framing: Framing::Bip,
@@ -292,8 +294,7 @@ fn only_frames_not_received_here_are_scrubbed() {
         summary: Default::default(),
         redacted: false,
     };
-    assert!(!scrub(frame(Direction::In)).redacted);
-    for direction in [Direction::Out, Direction::Wire] {
+    for direction in [Direction::In, Direction::Out, Direction::Wire] {
         let scrubbed = scrub(frame(direction));
         assert!(scrubbed.redacted);
         assert!(!holds(&scrubbed.bytes, b"hunter2"));
