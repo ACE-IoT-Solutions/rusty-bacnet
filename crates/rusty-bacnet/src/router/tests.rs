@@ -7,8 +7,8 @@ use super::{
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, RouterStopError};
 use bacnet_network::router_table::{Duration, PortId, Reachability};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::Error;
+use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode, RejectReason};
+use bacnet_types::error::{Error, RemoteError};
 use pyo3::prelude::*;
 use tokio::sync::mpsc;
 
@@ -156,6 +156,64 @@ async fn native_cleanup_causes_survive_repeated_python_conversion_and_context_bo
     assert!(matches!(error, StartError::Cleanup(CloseError::Stop(_))));
     let error = errors::start_error(error, &[1, 5, 9]);
     Python::attach(|py| assert!(error.is_instance_of::<errors::BacnetRouterCloseError>(py)));
+}
+
+/// The error fields are IntEnum members of the right class, pseudo-members
+/// for unnamed values, that still equal their numbers (#2025).
+#[tokio::test]
+async fn cleanup_failure_errors_are_int_enum_members() {
+    Python::initialize();
+    let router = native(vec![
+        Some(Error::protocol(
+            ErrorClass::SERVICES,
+            ErrorCode::from_raw(600),
+        )),
+        Some(Error::Remote(RemoteError::Reject {
+            reason: RejectReason::from_raw(200),
+        })),
+        Some(Error::Remote(RemoteError::Abort {
+            reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
+        })),
+    ])
+    .await;
+    let owner = Lifecycle::new();
+    owner
+        .start(false, move || Running(router))
+        .await
+        .unwrap()
+        .publish(|_| {});
+    let error = errors::context_outcome(owner.close().await, false, &[1, 5, 9]).unwrap_err();
+    Python::attach(|py| {
+        let failures = error.value(py).getattr("failures").unwrap();
+        let class_of = |value: &Bound<'_, PyAny>| {
+            value
+                .get_type()
+                .name()
+                .unwrap()
+                .extract::<String>()
+                .unwrap()
+        };
+        let protocol = failures.get_item(0).unwrap();
+        let class = protocol.getattr("error_class").unwrap();
+        let code = protocol.getattr("error_code").unwrap();
+        assert_eq!(class_of(&class), "ErrorClass");
+        assert_eq!(class.extract::<u16>().unwrap(), 5);
+        assert_eq!(class_of(&code), "ErrorCode");
+        assert_eq!(code.extract::<u16>().unwrap(), 600);
+        assert!(code.getattr("name").unwrap().is_none());
+        assert!(protocol.getattr("reason").unwrap().is_none());
+        let reject = failures.get_item(1).unwrap().getattr("reason").unwrap();
+        assert_eq!(class_of(&reject), "RejectReason");
+        assert_eq!(reject.extract::<u8>().unwrap(), 200);
+        let abort = failures.get_item(2).unwrap();
+        assert!(abort.getattr("error_class").unwrap().is_none());
+        let reason = abort.getattr("reason").unwrap();
+        assert_eq!(class_of(&reason), "AbortReason");
+        assert_eq!(
+            reason.extract::<u8>().unwrap(),
+            AbortReason::SEGMENTATION_NOT_SUPPORTED.to_raw()
+        );
+    });
 }
 
 #[tokio::test]

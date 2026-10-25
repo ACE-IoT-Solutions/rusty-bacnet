@@ -778,6 +778,16 @@ impl ScClientBuilder {
         self
     }
 
+    /// Set the per-source limit on inbound network-layer messages (default
+    /// [`ScControlRateLimit::default`](bacnet_transport::sc::ScControlRateLimit::default),
+    /// #518, #1969); see
+    /// [`ScTransport::with_control_rate_limit`](bacnet_transport::sc::ScTransport::with_control_rate_limit).
+    /// Checked with the NPDU quota before TLS lookup or dialing.
+    pub fn control_rate_limit(mut self, limit: bacnet_transport::sc::ScControlRateLimit) -> Self {
+        self.npdu_admission_policy.control_rate = limit;
+        self
+    }
+
     /// Set the failover hub WebSocket URL, dialled with the same TLS policy
     /// when the primary hub cannot be reached (Annex AB.5.2).
     ///
@@ -830,6 +840,7 @@ impl ScClientBuilder {
         bacnet_transport::sc::ScTransport::new(ws, self.vmac)
             .with_device_uuid(self.device_uuid)
             .with_npdu_per_origin_limit(self.npdu_admission_policy.per_origin_limit)
+            .with_control_rate_limit(self.npdu_admission_policy.control_rate)
             .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
             .with_heartbeat_timeout_ms(self.heartbeat_timeout_ms)
             .with_connect_timeout_ms(self.connect_timeout_ms)
