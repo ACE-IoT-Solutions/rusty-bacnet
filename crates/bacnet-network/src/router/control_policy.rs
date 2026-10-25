@@ -121,7 +121,7 @@ pub enum ControlTrust {
 impl ControlTrust {
     /// Map transport provenance to a trust scope: direct-peer or hub channels are
     /// `VerifiedChannel`, relayed origins are `VerifiedRelay`, everything else is `Unverified`.
-    pub fn from_provenance(p: TransportProvenance) -> Self {
+    pub fn from_provenance(p: &TransportProvenance) -> Self {
         if p.is_direct_peer() || p.is_hub_channel() {
             Self::VerifiedChannel
         } else if p.is_relayed_origin() {

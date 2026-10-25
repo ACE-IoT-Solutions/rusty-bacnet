@@ -10,6 +10,7 @@ it decides:
 |---|---|---|
 | `authorize_mutation` | the ten covered confirmed services, and each Channel write of an inbound WriteGroup | allow |
 | `authorize_life_safety_operation` | LifeSafetyOperation | deny |
+| `authorize_device_communication_control` | DeviceCommunicationControl, once the static DCC checks pass | allow |
 | `authorize_audit_notification` | storing a ConfirmedAuditNotification in the configured sink | deny |
 | `authorize_unconfirmed_audit_notification` | storing an UnconfirmedAuditNotification there | deny |
 
@@ -37,8 +38,16 @@ Outside the policy, and why:
 
 - `MutationPolicy::DenyAll` is a static hardening switch. It denies every covered
   mutation without asking the policy, and its denials are counted apart.
-- DeviceCommunicationControl's password, source restriction and rate limit are
-  static settings ([DCC policy](dcc-policy.md)).
+- DeviceCommunicationControl's password, static `DccPolicy`, source restriction
+  and disable rate limit are settings ([DCC policy](dcc-policy.md)). The policy's
+  `authorize_device_communication_control` is asked after the password,
+  `DccPolicy` and source checks pass (#1964), with the requested state and
+  duration in its context, and before the shared DISABLE_INITIATION rate limit
+  is charged, so a requester the policy denies can't spend that budget. A denial
+  or panic answers `SERVICES / SERVICE_REQUEST_DENIED`, as other policy denials
+  do, leaves the state and any running timer alone, and counts as
+  `policy_denied_total` (which also counts the static source and rate-limit
+  refusals).
 - `on_reinitialize` carries out a ReinitializeDevice after the server's own checks;
   it acts rather than decides, and stays its own handler.
 - `on_time_sync` observes a clock change it can't refuse.
@@ -117,6 +126,41 @@ principal as far as everything its holder may relay.
 handed the request over, a router included. A policy that trusts a router with
 everything it forwards can allow on it; that trusts every claimed origin behind
 that router.
+
+With `sc-tls`, `certificate()` and `forwarding_peer_certificate()` return the
+verified leaf certificates behind those two principals, under the same rules
+(#1965): `None` exactly when the matching principal is. Each is a
+`bacnet_server::policy::ScPeerCertificate` with the DER and `metadata()`: the
+subject, issuer and the DNS, URI, email and IP Subject Alternative Names
+(`ScSubjectAltName`). A rule by name keeps working when a certificate is renewed,
+where a fingerprint pin needs both fingerprints:
+
+```rust
+use bacnet_server::FnPolicy;
+use bacnet_server::policy::ScSubjectAltName;
+
+let policy = FnPolicy::new().mutation(|context| {
+    context
+        .certificate()
+        .and_then(|leaf| leaf.metadata())
+        .is_some_and(|metadata| {
+            metadata
+                .subject_alt_names()
+                .contains(&ScSubjectAltName::Dns("operator.example".into()))
+        })
+});
+```
+
+Allow on a name found rather than deny on one missing: other name forms, and a
+missing, repeated or malformed extension, give no names, and the subject and
+issuer are escaped and bounded (`text_truncated()`). Compare names for exact
+equality. Matching is byte for byte: DNS case isn't folded, a wildcard such as
+`*.example.com` comes back as written and is not expanded, names may hold UTF-8
+outside the IA5 range, and IP names compare as `IpAddr`, so an IPv4-mapped IPv6
+name doesn't equal the IPv4 one. Don't match by suffix: `evil-operator.example`
+ends with `operator.example`. Certificate contents are the peer's:
+neither the contexts' nor the certificate's `Debug` shows them, and a policy
+shouldn't log them.
 
 A source VMAC, UUID, routed SNET/SADR, Requesting Source or process ID is a
 claim, never a principal. A policy that should admit only known operators can

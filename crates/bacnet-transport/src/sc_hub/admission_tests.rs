@@ -128,7 +128,7 @@ async fn allow_policy_registers_with_claimed_values_and_reports_input() {
         Some(Arc::new({
             let seen = seen.clone();
             move |input: &ScHubAdmissionInput| {
-                seen.lock().unwrap().push(*input);
+                seen.lock().unwrap().push(input.clone());
                 ScHubAdmissionDecision::Allow
             }
         })),

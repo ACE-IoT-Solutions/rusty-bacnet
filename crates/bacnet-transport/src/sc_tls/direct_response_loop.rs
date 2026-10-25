@@ -16,7 +16,7 @@ pub(super) async fn serve_npdu_loop<W>(
     let AdmittedDirectPeer {
         address: peer_addr,
         member,
-        identity,
+        provenance,
         response,
         warnings,
     } = peer;
@@ -137,7 +137,7 @@ pub(super) async fn serve_npdu_loop<W>(
                             DirectPeer {
                                 vmac: member.vmac,
                                 addr: peer_addr,
-                                identity,
+                                provenance: provenance.clone(),
                                 response: Some(response.clone()),
                             },
                         )

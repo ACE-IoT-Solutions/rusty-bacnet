@@ -6,6 +6,7 @@ pub mod audit_notification;
 mod command_lists;
 mod committed_cov;
 pub mod cov;
+pub mod device_communication_control;
 mod device_view;
 pub mod event_enrollment;
 pub mod fault_detection;

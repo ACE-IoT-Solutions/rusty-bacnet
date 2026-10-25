@@ -8,6 +8,8 @@ pub mod inspection;
 mod peer_info;
 pub mod pem;
 pub use peer_info::{ScCertificateMetadata, ScHandshakeKind, ScPeerCertificate, ScTlsPeerInfo};
+mod subject_alt_name;
+pub use subject_alt_name::ScSubjectAltName;
 mod attempt_capture;
 mod tls_failure;
 mod untrusted_peer;

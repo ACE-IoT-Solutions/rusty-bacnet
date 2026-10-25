@@ -48,7 +48,7 @@ pub enum MutationTrust {
 
 impl MutationTrust {
     /// Derive the channel/relay scope from one reassembled ingress snapshot.
-    pub fn from_provenance(provenance: TransportProvenance) -> Self {
+    pub fn from_provenance(provenance: &TransportProvenance) -> Self {
         if provenance.is_direct_peer() || provenance.is_hub_channel() {
             Self::VerifiedChannel
         } else if provenance.is_relayed_origin() {
@@ -207,7 +207,7 @@ impl MutationAuthorizationContext {
     /// carries no routed source. `None` for other ingress, hub-relayed and
     /// routed requests included (see [`crate::policy`]).
     pub fn principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
-        crate::policy::originating_principal(self.provenance, self.source_network.as_ref())
+        crate::policy::originating_principal(&self.provenance, self.source_network.as_ref())
     }
 
     /// The principal of the direct BACnet/SC peer that handed this request
@@ -217,6 +217,8 @@ impl MutationAuthorizationContext {
     pub fn forwarding_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
         self.provenance.principal()
     }
+
+    crate::policy::certificate_accessors!();
 
     /// The immediate direct-SC hop's verified leaf and connection incarnation:
     /// for a routed request, the router that forwarded it. Absent off a

@@ -170,7 +170,7 @@ async fn wpm_elements_share_one_reassembled_snapshot() {
             ConfirmedServiceChoice::WRITE_PROPERTY_MULTIPLE,
             bytes.freeze(),
             12,
-            provenance,
+            provenance.clone(),
         )
         .await
         .unwrap();
@@ -188,7 +188,7 @@ async fn wpm_elements_share_one_reassembled_snapshot() {
         assert!(
             contexts
                 .iter()
-                .all(|context| context.trust == MutationTrust::from_provenance(provenance))
+                .all(|context| context.trust == MutationTrust::from_provenance(&provenance))
         );
     }
 }
@@ -201,7 +201,7 @@ async fn verified_relay_snapshot_reaches_gate_with_relay_trust() {
     let fixture = Fixture::new(authorizer);
     let decisions = Arc::new(crate::mutation::MutationDecisions::default());
     let (service, bytes, _) = cases().remove(0);
-    let response = dispatch_admitted(&fixture, &decisions, service, bytes, 13, provenance)
+    let response = dispatch_admitted(&fixture, &decisions, service, bytes, 13, provenance.clone())
         .await
         .unwrap();
     assert!(matches!(apdu(response), Apdu::SimpleAck(_)));

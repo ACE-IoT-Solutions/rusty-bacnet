@@ -489,7 +489,7 @@ async fn provenance_threads_by_value_to_every_consumer() {
         payload: Bytes::from_static(&[0x10, 0x08]),
         ..Npdu::default()
     };
-    h.handle(h.ctx_with_provenance(0, &[0x0A], apdu, provenance))
+    h.handle(h.ctx_with_provenance(0, &[0x0A], apdu, provenance.clone()))
         .await;
     let delivered = h.apdus.try_recv().unwrap();
     assert_eq!(delivered.provenance, provenance);
@@ -499,12 +499,12 @@ async fn provenance_threads_by_value_to_every_consumer() {
         NetworkMessageType::REJECT_MESSAGE_TO_NETWORK,
         &reject_payload(RejectMessageReason::NOT_DIRECTLY_CONNECTED, 3000),
     );
-    h.handle(h.ctx_with_provenance(1, &[0x0B], reject, provenance))
+    h.handle(h.ctx_with_provenance(1, &[0x0B], reject, provenance.clone()))
         .await;
     assert_eq!(controls.try_recv().unwrap().provenance, provenance);
 
     let i_am = control_npdu(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &[0x0b, 0xb8]);
-    h.handle(h.ctx_with_provenance(1, &[0x0B], i_am, provenance))
+    h.handle(h.ctx_with_provenance(1, &[0x0B], i_am, provenance.clone()))
         .await;
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2);

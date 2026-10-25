@@ -186,7 +186,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             decisions: mutation_decisions,
             source_mac,
             source_network: source_network.as_ref(),
-            provenance,
+            provenance: provenance.clone(),
             req: &req,
             command_origin: command_origin.as_ref(),
         };
@@ -271,9 +271,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 dcc::response(
                     services,
                     &req,
-                    source_mac,
-                    source_network.as_ref(),
-                    local_network,
+                    super::dcc_timer::DccRequest {
+                        service_data: &req.service_request,
+                        source_mac,
+                        source: source_network.as_ref(),
+                        local_network,
+                        provenance,
+                        invoke_id,
+                    },
                     request_tasks,
                     &mut audit,
                 )
