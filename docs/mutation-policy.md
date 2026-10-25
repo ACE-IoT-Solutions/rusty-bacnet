@@ -266,7 +266,8 @@ SERVICES / SERVICE_REQUEST_DENIED.
   same documented bypass contract as the RB-09 precedent. No raw
   server-receive path skips `mutations::Request`.
 - The shared endpoint has a separate narrow [Device-write authorizer](rust-api.md#authorized-endpoint-device-writes);
-  the server policy does not configure it.
+  the server policy does not configure it. Python endpoints set it with their
+  `device_write_policy` callable (#2033).
 - DeviceCommunicationControl and ReinitializeDevice keep their separate
   configuration paths.
 

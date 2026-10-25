@@ -1,6 +1,8 @@
 //! A Python mutation policy (#1966): `BACnetServer(mutation_policy=...)`
 //! takes `"permissive"`, `"deny_all"` or a callable that receives a frozen,
-//! redacted `MutationContext` and returns a bool.
+//! redacted `MutationContext` and returns a bool. The endpoints'
+//! `device_write_policy` keyword (#2033) takes a callable under the same
+//! rules, deciding writes to the endpoint's local Device.
 //!
 //! The callable stands in for the Rust `ServerPolicy::authorize_mutation`,
 //! so it is asked wherever that is: each covered confirmed service, each
@@ -25,7 +27,9 @@
 
 use std::sync::Arc;
 
-use bacnet_server::mutation::{MutationAuthorizationContext, MutationPolicy, MutationTarget};
+use bacnet_server::mutation::{
+    DeviceWriteAuthorizer, MutationAuthorizationContext, MutationPolicy, MutationTarget,
+};
 use bacnet_services::object_mgmt::ObjectSpecifier;
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::MacAddr;
@@ -69,6 +73,7 @@ pub(crate) fn parse(value: &Bound<'_, PyAny>) -> PyResult<MutationSetting> {
             mode: MutationPolicy::Permissive,
             callback: Some(Arc::new(PyMutationPolicy {
                 callable: value.clone().unbind(),
+                keyword: "mutation_policy",
             })),
         });
     }
@@ -77,9 +82,11 @@ pub(crate) fn parse(value: &Bound<'_, PyAny>) -> PyResult<MutationSetting> {
     ))
 }
 
-/// A server's Python mutation callable.
+/// A server's Python mutation callable, or an endpoint's Device-write one.
 pub(crate) struct PyMutationPolicy {
     callable: Py<PyAny>,
+    /// The keyword it came from, which its errors name.
+    keyword: &'static str,
 }
 
 impl PyMutationPolicy {
@@ -91,7 +98,7 @@ impl PyMutationPolicy {
             let callable = self.callable.bind(py);
             let returned =
                 crate::py_async::under_native_lock(|| callable.call1((context,)));
-            Ok(match returned.and_then(|value| verdict(&value)) {
+            Ok(match returned.and_then(|value| verdict(&value, self.keyword)) {
                 Ok(allow) => allow,
                 Err(error) => {
                     // Shown through sys.unraisablehook, as asyncio shows a
@@ -108,7 +115,7 @@ impl PyMutationPolicy {
 
 /// The callable's answer: exactly `True` or `False`. Anything else, a
 /// truthy object or a coroutine included, is a TypeError and denies.
-fn verdict(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+fn verdict(value: &Bound<'_, PyAny>, keyword: &str) -> PyResult<bool> {
     if let Ok(answer) = value.cast::<PyBool>() {
         return Ok(answer.is_true());
     }
@@ -122,13 +129,60 @@ fn verdict(value: &Bound<'_, PyAny>) -> PyResult<bool> {
         if value.hasattr(intern!(py, "close"))? {
             value.call_method0(intern!(py, "close"))?;
         }
-        return Err(PyTypeError::new_err(
-            "the mutation_policy callable must be a plain function returning a bool",
-        ));
+        return Err(PyTypeError::new_err(format!(
+            "the {keyword} callable must be a plain function returning a bool"
+        )));
     }
-    Err(PyTypeError::new_err(
-        "the mutation_policy callable must return a bool",
-    ))
+    Err(PyTypeError::new_err(format!(
+        "the {keyword} callable must return a bool"
+    )))
+}
+
+/// An endpoint's `device_write_policy` keyword (#2033): a callable that
+/// decides each WriteProperty to the endpoint's local Device (its
+/// Description or installed Audit recipient), as the native session's
+/// [`DeviceWriteAuthorizer`] does. It gets the same `MutationContext` and
+/// follows the same fail-closed rules as a server's `mutation_policy`
+/// callable. Without it, the endpoint executes no WriteProperty.
+#[derive(Clone, Default)]
+pub(crate) struct DeviceWritePolicy(Option<Arc<PyMutationPolicy>>);
+
+impl DeviceWritePolicy {
+    /// Parse the keyword: None, or a callable.
+    pub(crate) fn parse(value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let Some(value) = value.filter(|value| !value.is_none()) else {
+            return Ok(Self::default());
+        };
+        if !value.is_callable() {
+            return Err(PyTypeError::new_err(
+                "device_write_policy must be a callable or None",
+            ));
+        }
+        Ok(Self(Some(Arc::new(PyMutationPolicy {
+            callable: value.clone().unbind(),
+            keyword: "device_write_policy",
+        }))))
+    }
+
+    /// Whether the server role executes WriteProperty to the local Device.
+    pub(crate) fn enabled(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Install the callable as the session's Device-write authorizer.
+    pub(crate) fn install<T>(
+        &self,
+        session: bacnet_endpoint::session::EndpointSession<T>,
+    ) -> bacnet_endpoint::session::EndpointSession<T>
+    where
+        T: bacnet_transport::port::TransportPort + 'static,
+    {
+        let Some(policy) = self.0.clone() else {
+            return session;
+        };
+        let authorizer: DeviceWriteAuthorizer = Arc::new(move |context| policy.decide(context));
+        session.with_device_writes(authorizer)
+    }
 }
 
 /// What a mutation decision is about, as `MutationContext` shows it: the

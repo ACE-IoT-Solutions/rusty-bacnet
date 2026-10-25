@@ -4606,7 +4606,9 @@ denied.
 Invalid mode strings raise `ValueError`; other non-callables raise `TypeError`
 during construction, before startup drains registrations or performs I/O. DCC,
 ReinitializeDevice, LifeSafety and Audit keep separate policies; this option
-doesn't configure endpoint Device-write authorization. See [Server authorization policy](mutation-policy.md) for exact
+doesn't configure endpoint Device-write authorization, which the endpoints'
+own `device_write_policy` callable decides (see
+[Endpoint](#endpoint-one-transport-both-roles)). See [Server authorization policy](mutation-policy.md) for exact
 service coverage, validation precedence and exclusions.
 
 #### `purge_audit_log(object_id)`
@@ -5097,8 +5099,9 @@ async with endpoint:
 (BIP), VMAC hex (SC), or station string (MS/TP). Roles expose no callbacks;
 the client initiates `read_property`, `read_range` and `read_property_multiple`; concurrent use is
 `asyncio.gather` over these reads plus
-`is_session_alive()` polling. The one Rust-calls-Python path is the owner's
-optional `on_reinitialize` / `after_reinitialize` pair. Interpreter
+`is_session_alive()` polling. The Rust-calls-Python paths are the owner's
+optional `on_reinitialize` / `after_reinitialize` pair and its optional
+`device_write_policy` callable. Interpreter
 finalization only seals forcefully; always await `close()` or context exit.
 BIPv6/Ethernet have no endpoint owner; use the standalone path there.
 
@@ -5106,9 +5109,30 @@ Python endpoint server roles execute and advertise ReadProperty, plus
 ReinitializeDevice when built with `on_reinitialize` (the keywords and rules of
 [ReinitializeDevice](#reinitializedevice), with `reinit_password` needing a
 handler; `EndpointServer.service_scope()` then lists `reinitialize_device`).
+
+The keyword-only `device_write_policy` (#2033) turns on WriteProperty to the
+endpoint's local Device, its `Description` and installed Audit recipient, as
+the Rust session's Device-write authorizer does; `service_scope()` then lists
+`write_property`. The callable gets the same frozen `MutationContext` a
+`BACnetServer` `mutation_policy` callable gets (service `"write_property"`)
+and follows its fail-closed rules: `True` allows, while `False`, an exception
+(reported through `sys.unraisablehook`), a non-bool answer, a coroutine or
+interpreter shutdown denies with SERVICES / SERVICE_REQUEST_DENIED before
+anything changes. Writes to other objects or properties are refused as
+before, and a value that isn't a callable or `None` raises `TypeError` in the
+constructor:
+
+```python
+def device_writes(context: MutationContext) -> bool:
+    return context.source_network is None  # local network only
+
+endpoint = BipEndpoint(1001, device_write_policy=device_writes)
+```
+
 The endpoint answers requests on one dispatch task, so a slow callable stalls
-every request. The Rust Device-write opt-in has no Python binding, and the
-roles expose neither Device COV list property. A supplied `services` list must include RP and
+every request. The callables run with no lock held (`on_reinitialize` aside),
+but starting a binding operation from one is refused. The roles expose
+neither Device COV list property. A supplied `services` list must include RP and
 cannot claim unsupported execution; incompatible server-role profiles fail
 startup before ingress.
 ClientOnly has no responder and keeps its service list as a local declaration.
