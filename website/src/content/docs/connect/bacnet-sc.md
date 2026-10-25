@@ -83,9 +83,9 @@ Zero-limit rejection is a bounded local policy, not a claim that all positive li
 
 ## Keep transport identity separate from operation authority
 
-Accepted direct TLS connections can carry a verified leaf identity and original-socket response authority in the native Rust path. A Hub-relayed NPDU does not become an authenticated originating leaf. Outgoing client transactions retain their documented correlation/routing rules, not a universal same-leaf continuity guarantee. Python does not expose a direct-listener entry point or a principal authorizer.
+A successful TLS connection authenticates a peer; it doesn't authorize a write or a control request. Decide that in the server's policy: [Restrict who can change a device](/rusty-bacnet/integrate/security/) covers which requests carry a verified certificate principal (direct connections only, not hub-relayed or routed ones), the hub admission and rate limits, and what Python exposes. Outgoing client transactions retain their documented correlation/routing rules, not a universal same-leaf continuity guarantee.
 
-Passive Number replies, including replies to direct queries, use the Hub broadcast path. These controls do not add configured SC Network Port authority or control-origin authorization. Keep application mutation authorization distinct from TLS trust.
+Passive Number replies, including replies to direct queries, use the Hub broadcast path. These controls do not add configured SC Network Port authority or control-origin authorization.
 
 ## Validate the whole path
 

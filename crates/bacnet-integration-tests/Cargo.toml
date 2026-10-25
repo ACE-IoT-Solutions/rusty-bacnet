@@ -9,6 +9,8 @@ publish = false
 [features]
 ipv6 = ["bacnet-transport/ipv6"]
 ethernet = ["bacnet-transport/ethernet"]
+# Builds the website's BACnet/SC policy program (guide-sc-operator-policy).
+sc-tls = ["dep:bacnet-server", "dep:bacnet-transport", "bacnet-server/sc-tls", "bacnet-transport/sc-tls"]
 
 [dependencies]
 bacnet-endpoint.workspace = true
@@ -16,6 +18,9 @@ bacnet-client.workspace = true
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+# The sc-tls feature's guide program; the tests use the dev-dependencies below.
+bacnet-server = { workspace = true, optional = true }
+bacnet-transport = { workspace = true, optional = true }
 
 [dev-dependencies]
 bacnet-bip-codec.workspace = true
@@ -57,6 +62,12 @@ path = "../../examples/rust/multi_object_server.rs"
 [[bin]]
 name = "guide-shared-endpoint"
 path = "../../website/examples/rust/shared-endpoint/src/main.rs"
+
+# The security guide's policy program; it needs the certificate accessors.
+[[bin]]
+name = "guide-sc-operator-policy"
+path = "../../website/examples/rust/sc-operator-policy/src/main.rs"
+required-features = ["sc-tls"]
 
 [lints]
 workspace = true
