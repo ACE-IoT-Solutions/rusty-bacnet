@@ -39,6 +39,14 @@ pub enum SourceSelection {
     /// MAC there, as it does for any node on that network (Clause 6.5.4).
     /// A global broadcast leaves by every port, so each copy is from that
     /// port's address. The default.
+    ///
+    /// In a site with a loop of routers, each port's bare copy is a
+    /// different origin to the routers that relay it, so another router
+    /// may deliver this router's global broadcast to its own application
+    /// once per port, duplicate suppression or not
+    /// ([`Options::duplicates`](super::Options::duplicates) keys by
+    /// origin). Use [`SourceSelection::Port`] there: every copy then names
+    /// one origin.
     #[default]
     EgressPort,
     /// The router's address on this port's network: SNET and SADR naming

@@ -3,14 +3,15 @@ title: "Build and integrate"
 description: "Choose an application owner and find release API contracts and evidence boundaries."
 ---
 
-**Integration guides for v0.14.0.** These pages cover the parts of the release that go beyond a first read: shared endpoints, Network Port and Number controls, transports and BACnet/SC. Install the release from [v0.14 installation](/rusty-bacnet/start/installation/), or try the [local lab](/rusty-bacnet/start/local-lab/) first.
+**Integration guides for v0.14.0.** These pages cover the parts of the release that go beyond a first read: serving objects, routing, shared endpoints, Network Port and Number controls, transports and BACnet/SC. Install the release from [v0.14 installation](/rusty-bacnet/start/installation/), or try the [local lab](/rusty-bacnet/start/local-lab/) first.
 
 ## Choose the owner for your application
 
 | Your task | Start here |
 |---|---|
 | Send requests to other devices | Standalone `BACnetClient`; choose a transport and use the API reference |
-| Model a device with the full server's service set | Standalone `BACnetServer` and its object database |
+| Model a device with the full server's service set | [Serve objects from your application](/rusty-bacnet/integrate/server/) with a standalone `BACnetServer` |
+| Join BACnet networks and reach devices behind a router | [Route between networks](/rusty-bacnet/integrate/router/) with `BACnetRouter` |
 | Request and respond as one device through one transport | [Shared endpoints](/rusty-bacnet/integrate/shared-endpoints/) for B/IP, SC or MS/TP |
 | Associate a B/IP socket with a Network Port object | [Network Port registration](/rusty-bacnet/integrate/network-ports/#register-a-bip-receiving-port) |
 | Learn and answer local network-number queries | [Passive Number controls](/rusty-bacnet/integrate/network-ports/); no discovery command or startup announcement required |
@@ -31,6 +32,8 @@ Before 1.0, APIs may be removed or changed directly. Keep the source revision, f
 
 ## Next steps
 
+- [Serve objects from your application](/rusty-bacnet/integrate/server/).
+- [Route between networks](/rusty-bacnet/integrate/router/).
 - [Compose a shared endpoint](/rusty-bacnet/integrate/shared-endpoints/).
 - [Restrict who can change a device](/rusty-bacnet/integrate/security/).
 - [Choose a data link and its owner](/rusty-bacnet/connect/overview/).
