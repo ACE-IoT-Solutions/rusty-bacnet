@@ -8,7 +8,7 @@ import unittest
 from typing import Any
 
 import rusty_bacnet
-from rusty_bacnet import BACnetServer, EnableDisable
+from rusty_bacnet import BACnetClient, BACnetServer, EnableDisable, ReinitializedState
 
 
 class DccConstructorTests(unittest.TestCase):
@@ -319,3 +319,29 @@ class DccNativeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await server.stop()
             sock.close()
+
+    async def test_client_refuses_an_over_long_password_before_sending(self):
+        # #2085: 21 characters raise ValueError at the call and nothing reaches
+        # the server; 20 two-octet characters go out and match.
+        server = BACnetServer(123, interface="127.0.0.1", port=0,
+                              broadcast_address="127.0.0.1", dcc_policy="require_password",
+                              dcc_password="é" * 20)
+        await server.start()
+        try:
+            address = await server.local_address()
+            async with BACnetClient(interface="127.0.0.1", port=0) as client:
+                with self.assertRaisesRegex(ValueError, "password exceeds the 20-character limit"):
+                    client.device_communication_control(address, EnableDisable.DISABLE,
+                                                        password="é" * 21)
+                with self.assertRaisesRegex(ValueError, "password exceeds the 20-character limit"):
+                    client.reinitialize_device(address, ReinitializedState.COLDSTART,
+                                               password="é" * 21)
+                await client.device_communication_control(
+                    address, EnableDisable.DISABLE_INITIATION, time_duration=1,
+                    password="é" * 20)
+            self.assertEqual(await server.comm_state(), EnableDisable.DISABLE_INITIATION)
+            self.assertEqual(await server.dcc_outcome_counters(), dict(
+                accepted_total=1, policy_denied_total=0, password_failure_total=0,
+                deprecated_denied_total=0, malformed_total=0))
+        finally:
+            await server.stop()

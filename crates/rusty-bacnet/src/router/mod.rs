@@ -1,4 +1,5 @@
 //! B/IP-only forwarding owner with retained native lifecycle and copied state.
+pub(crate) mod application;
 mod config;
 mod errors;
 mod lifecycle;
@@ -8,6 +9,7 @@ mod session;
 #[cfg(test)]
 mod tests;
 
+use application::Application;
 use config::{PortConfig, PyBipRouterPort};
 use lifecycle::Lifecycle;
 use publication::Publication;
@@ -16,7 +18,8 @@ use pyo3::prelude::*;
 use session::NativeSession;
 use std::sync::Mutex;
 
-/// A standalone B/IP router; this first binding exposes no local application role.
+/// A B/IP router. With `application=`, a client and optionally a server run
+/// on its own application entity (#2071).
 ///
 /// Use start/close or an async context. Successful awaited close joins all
 /// workers and transport cleanup. Failed close retains errors and prevents
@@ -24,6 +27,8 @@ use std::sync::Mutex;
 #[pyclass(name = "BACnetRouter", module = "rusty_bacnet")]
 pub(crate) struct PyBACnetRouter {
     configs: Vec<PortConfig>,
+    /// How the router shares its application entity (#2071).
+    application: Application,
     lifecycle: Lifecycle<NativeSession>,
     event_loop: Mutex<Option<Py<PyAny>>>,
 }
@@ -54,8 +59,16 @@ impl PyBACnetRouter {
 #[pymethods]
 impl PyBACnetRouter {
     /// Validate one to 255 immutable B/IP ports before any traffic.
+    ///
+    /// `application` shares the router's own application entity (#2071):
+    /// `None` (forwarding only), `"client"` for one `BACnetClient`, or
+    /// `"client_and_server"` for a `BACnetClient` and a `BACnetServer`. Each
+    /// stack is built with `transport="router", router=router` and takes its
+    /// share when it starts, once per router start.
     #[new]
-    fn new(ports: Vec<PyRef<'_, PyBipRouterPort>>) -> PyResult<Self> {
+    #[pyo3(signature = (ports, *, application=None))]
+    fn new(ports: Vec<PyRef<'_, PyBipRouterPort>>, application: Option<&str>) -> PyResult<Self> {
+        let application = Application::parse(application)?;
         if ports.is_empty() || ports.len() > 255 {
             return Err(PyValueError::new_err(
                 "router requires between 1 and 255 ports",
@@ -74,9 +87,17 @@ impl PyBACnetRouter {
         }
         Ok(Self {
             configs,
+            application,
             lifecycle: Lifecycle::new(),
             event_loop: Mutex::new(None),
         })
+    }
+
+    /// How the router shares its application entity: `None`, `"client"` or
+    /// `"client_and_server"`.
+    #[getter]
+    fn application(&self) -> Option<&'static str> {
+        self.application.name()
     }
 
     /// Start this configuration; duplicate explicit start raises RuntimeError.
@@ -86,6 +107,7 @@ impl PyBACnetRouter {
         crate::logging_bridge::refresh_at_start(py);
         let owner = self.lifecycle.clone();
         let config = self.configs.clone();
+        let application = self.application;
         let networks = self.networks();
         let publication = Publication::new(owner.clone());
         let hook = publication.clone();
@@ -93,7 +115,7 @@ impl PyBACnetRouter {
             py,
             async move {
                 publication
-                    .start(false, config)
+                    .start(false, config, application)
                     .await
                     .map_err(|e| errors::start_error(e, &networks))?;
                 crate::py_async::attach(|py| Ok(py.None()))
@@ -119,12 +141,13 @@ impl PyBACnetRouter {
     /// Enter the owner, reusing its running generation if already started.
     fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let self_ref = slf.clone().unbind();
-        let (owner, config, networks) = {
+        let (owner, config, application, networks) = {
             let this = slf.borrow();
             this.bind_loop(py)?;
             (
                 this.lifecycle.clone(),
                 this.configs.clone(),
+                this.application,
                 this.networks(),
             )
         };
@@ -135,7 +158,7 @@ impl PyBACnetRouter {
             py,
             async move {
                 publication
-                    .start(true, config)
+                    .start(true, config, application)
                     .await
                     .map_err(|e| errors::start_error(e, &networks))?;
                 Ok(self_ref)
