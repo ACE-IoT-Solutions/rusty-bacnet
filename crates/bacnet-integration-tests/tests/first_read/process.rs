@@ -3,8 +3,10 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 #[path = "../support/guide_process.rs"]
-mod owner;
-pub use owner::{Process, WAIT, retired};
+mod guide;
+#[path = "../support/guide_retirement.rs"]
+mod retirement;
+pub use guide::{Process, WAIT, retired};
 
 pub fn select_binary(external: Option<&OsStr>) -> Result<PathBuf, String> {
     let requested = external.unwrap_or_else(|| OsStr::new(env!("CARGO_BIN_EXE_guide-first-read")));

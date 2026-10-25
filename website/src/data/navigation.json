@@ -106,6 +106,14 @@
         "slug": "integrate/network-ports"
       },
       {
+        "label": "Serve objects",
+        "slug": "integrate/server"
+      },
+      {
+        "label": "Route between networks",
+        "slug": "integrate/router"
+      },
+      {
         "label": "Restrict who can change it",
         "slug": "integrate/security"
       }
