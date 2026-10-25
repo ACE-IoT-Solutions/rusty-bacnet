@@ -13,9 +13,8 @@ Rusty BACnet is a BACnet protocol stack (ASHRAE 135-2020) in Rust, with Python (
 2. **Refresh live state before acting on any snapshot:** `git fetch`, `gh run list --branch dev`, `gh issue list --milestone 0.15.0`.
 3. **Confirm this session's permissions with the maintainer** (jscott3201). Merge permission is per session. It never authorizes tagging or publishing a release.
 
-The older `_spec/rusty-bacnet-compliance-execution-plan/` documents and `codex-overnight-status.md` are historical evidence, not current instructions.
+The older `_spec/rusty-bacnet-compliance-execution-plan/` documents are historical evidence, not current instructions.
 
-Use local Codebase Memory as the first structural code-intelligence layer. The canonical project is `Users-justin-Development-rusty-bacnet`, rooted at `/Users/justin/Development/rusty-bacnet`. When entering a fresh repository source context, verify it once with `list_projects` and `index_status`. Then use focused graph tools, and check coverage for the scopes you cite. Codebase Memory is not a durable work ledger, and no external memory service, agent identity, namespace or team assertion is a prerequisite.
 
 ## Repository hosting and CI
 
@@ -89,36 +88,9 @@ Use local Codebase Memory as the first structural code-intelligence layer. The c
 - **Measurements.** Run performance measurements with no competing workload, one benchmark suite at a time.
 - **Linux-only code** (MS/TP real-time, AF_PACKET Ethernet, kernel RS-485) is checked in local Docker. See `_spec/roadmap-0.15/06-gates-ci-and-commands.md`.
 
-## Codex agents and models
-
-- **Implementation:** reserve code implementation and repairs for GPT-6 Astra agents, including root implementation only when the root is Astra. Use GPT-6 Sol subagents as needed for bounded read-only exploration, specification research and review.
-  - Select the advertised runtime model explicitly when needed. A named role pinned to another model is not an Astra implementation route.
-  - Don't silently substitute a different model.
-- **Settings:** keep durable model and effort settings in the active harness configuration or named-agent definitions, when present.
-  - For this session, use the supported runtime controls. Don't invent `.codex` files or change another active session.
-  - Choose effort for the task, rather than raising every task to maximum effort.
-- **Tool use:** batch independent tool reads; keep dependent operations and Git/GitHub mutations sequential. Use the collaboration tools and context controls the running CLI actually exposes. Supply a compact task packet instead of full history when supported.
-- **Task packets:** each packet names the objective, exact revision, paths and symbols, ownership, constraints, acceptance evidence, and expected result. Children don't delegate or rediscover the Codebase Memory project. The root resolves conflicting evidence and keeps delivery authority.
-- **Team size:** keep the active team small, usually two or three independent readers; the configured limit is a ceiling, not a target. Reuse compatible agents, and release finished ones with the available lifecycle tool. Coordinate builds and tests to avoid duplicate Cargo work, shared fixtures and port conflicts.
-- **Product writers:**
-  - Ordinary product delivery uses one Astra implementation owner. Use an appropriate configurable agent when the named `implementer` role is pinned to a different model.
-  - Up to two product writers are permitted only after an explicit `$parallel-portfolio` invocation passes that skill's admission gate: disjoint ownership and contracts, isolated worktrees from one base, and root-owned integration.
-  - General requests for speed or parallel research do not admit a portfolio. If the skill is unavailable, continue serially.
-- **Delivery review:** use the existing `pr-gate-loop`. Specialist reviews supply bounded evidence, not an extra approval cycle. Keep its repair limits and stopped-gate history intact. Standing merge authority applies only after the current delivery gate passes.
-- **Configuration changes:** validate them against the installed CLI, and start a fresh CLI session to load changed settings and agent definitions. Don't restart another session, or assume this running thread has reloaded them.
-
 ## Skills
 
-Repository skills are in `.agents/skills/`:
-- `$codebase-research-pass`
-- `$external-source-research`
-- `$spec-contract-compliance-review`
-- `$architecture-design-review`
-- `$multi-agent-pr-review`
-- `$performance-ab-benchmark-review`
-- `$release-readiness-review`
-
-`.claude/skills/` holds two more that read fine as plain docs:
+Repository skills live in `.claude/skills/` (gitignored, local-only) and read fine as plain docs:
 - `group-pr-workflow` has templates for implementer, reviewer and fix briefs and PR bodies;
 - `bacnet-spec-check` has the spec_overlap checker.
 
