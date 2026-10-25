@@ -114,6 +114,15 @@ mod tests {
         )
     }
 
+    /// Blocking on a wait nothing on this thread can end panics in a debug
+    /// build instead of spinning forever.
+    #[test]
+    #[should_panic(expected = "await it instead")]
+    fn blocking_on_a_wait_that_isnt_over_panics() {
+        let wait = super::SaveWait::new(Arc::new(super::Event::default()));
+        wait.block();
+    }
+
     #[test]
     fn each_save_runs_before_the_call_that_queued_it_returns() {
         let log = Arc::new(Mutex::new(Vec::new()));

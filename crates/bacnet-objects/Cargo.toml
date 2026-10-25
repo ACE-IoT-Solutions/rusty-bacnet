@@ -12,14 +12,15 @@ categories = ["network-programming", "no-std"]
 
 # Without `std` the crate builds for bare-metal targets with a global
 # allocator and atomic compare-and-swap (#1615): every object type, the
-# database and the persistence traits. `alloc` is required; the crate boxes
-# every object.
+# database and the persistence traits. One of `std` and `alloc` is required;
+# the crate boxes every object.
 [features]
 default = ["std"]
 # Hosted builds: the file persistence backends, the save writer's own thread,
-# tracing, std's hash maps and std's mutex.
+# tracing, std's hash maps and std's mutex. It doesn't turn on `alloc`, so a
+# hosted build compiles none of the no_std stand-ins below; with both on,
+# `std` wins and they go unused.
 std = [
-    "alloc",
     "bacnet-types/std",
     "bacnet-encoding/std",
     "bytes/std",
@@ -28,7 +29,8 @@ std = [
 ]
 # no_std with a global allocator. Saves run on the caller's thread, and the
 # hash maps, locks and float rounding come from hashbrown, spinning_top and
-# libm.
+# libm. A hosted application wants `std`: this one drops the file backends,
+# the writer thread, the wall-clock expiry of staged writes and tracing.
 alloc = [
     "bacnet-types/alloc",
     "bacnet-encoding/alloc",

@@ -265,11 +265,22 @@ impl SaveWait {
     }
 
     /// Block this thread until the wait is over, for a caller that waits
-    /// off its async runtime, such as on Tokio's blocking pool. Without std
-    /// this spins: a save's wait is over by then, since the save ran on the
-    /// caller's thread, but a wait for another request's staged write spins
-    /// until that request releases it.
+    /// off its async runtime, such as on Tokio's blocking pool.
+    ///
+    /// Without std, await the wait instead; never block on one that isn't
+    /// over. A save's wait is over by the time anyone holds it, since the
+    /// save ran on the caller's thread, but [`StageStep::Busy`] hands out a
+    /// wait for another request's staged write, which only that request can
+    /// end. Nothing can park the thread, so `block` would spin, and on a
+    /// single-threaded executor it would spin forever. A debug build panics
+    /// instead; a release build spins, for firmware that releases the write
+    /// from another core or an interrupt.
     pub fn block(&self) {
+        #[cfg(not(feature = "std"))]
+        debug_assert!(
+            self.is_ready(),
+            "SaveWait::block without std on a wait that isn't over: await it instead"
+        );
         self.event.wait_blocking();
         if let Some(then) = &self.then {
             then.block();

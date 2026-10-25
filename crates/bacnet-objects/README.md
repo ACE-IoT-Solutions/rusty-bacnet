@@ -13,10 +13,10 @@ transport, a server executor or event/COV delivery.
 
 | Profile | Features | What it has |
 | --- | --- | --- |
-| Hosted | `std` (default) | Everything, including the file persistence backends (`FileAuditLogPersistence`, `FileLogPersistence` and the others), a writer thread per saving object, and tracing. Enables `alloc`. |
-| `no_std` with a heap | `alloc` | Every object type, the database and the persistence traits, for a target with a global allocator and atomic compare-and-swap (#1615). A save runs on the caller's thread, and the application supplies the storage. |
+| Hosted | `std` (default) | Everything, including the file persistence backends (`FileAuditLogPersistence`, `FileLogPersistence` and the others), a writer thread per saving object, and tracing. |
+| `no_std` with a heap | `alloc` (without `std`) | Every object type, the database and the persistence traits, for a target with a global allocator and atomic compare-and-swap (#1615). A save runs on the caller's thread, and the application supplies the storage. |
 
-There is no build without `alloc`: the database boxes every object, so a
+There is no build with neither feature: the database boxes every object, so a
 heap-free device answers from a static table instead. ARMv6-M
 (`thumbv6m-none-eabi`) lacks compare-and-swap, which `alloc::sync::Arc`
 needs, so the crate doesn't build there.

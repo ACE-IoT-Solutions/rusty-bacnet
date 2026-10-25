@@ -8,9 +8,9 @@
 #[macro_use]
 extern crate alloc;
 
-#[cfg(not(feature = "alloc"))]
+#[cfg(not(any(feature = "std", feature = "alloc")))]
 compile_error!(
-    "bacnet-objects needs the `alloc` feature (or `std`): the database boxes every object"
+    "bacnet-objects needs the `std` or the `alloc` feature: the database boxes every object"
 );
 #[cfg(not(target_has_atomic = "ptr"))]
 compile_error!(

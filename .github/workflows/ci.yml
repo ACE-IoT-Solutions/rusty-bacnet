@@ -471,7 +471,7 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       # Publishable crates with consumer-visible features, the no_std builds
-      # of bacnet-types, bacnet-encoding and bacnet-services (alloc, no std),
+      # of bacnet-types, bacnet-encoding, bacnet-services and bacnet-objects (alloc, no std),
       # then the ethernet, serial and serial-gpio transport checks and a
       # linked bacnet-cli pcap build.
       - run: bash scripts/ci/check-msrv.sh --linux-native
