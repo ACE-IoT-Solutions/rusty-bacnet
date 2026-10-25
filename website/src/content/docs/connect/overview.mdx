@@ -16,7 +16,7 @@ Pick the data link your devices use, then the program that owns it: the CLI, a P
 | BACnet/IP | CLI, Python client, or Rust client | Direct reads, discovery, and routed traffic are distinct tests; [settings](/rusty-bacnet/connect/bacnet-ip/), [other subnets](/rusty-bacnet/connect/across-subnets/), [NAT](/rusty-bacnet/connect/nat/), [multicast](/rusty-bacnet/connect/multicast/) |
 | BACnet/IPv6 | CLI `--ipv6`, Python, or Rust feature path | Requires appropriate IPv6 addressing/interface and network validation; targets are VMACs (`bip6:<instance>`), which the CLI resolves from `[ip]:port` and Python from `resolve_vmac`; [setup](/rusty-bacnet/connect/ipv6/) |
 | BACnet/SC | SC-enabled CLI, Python, or Rust | Certificate trust, local identities, and hub behavior must be configured; [setup](/rusty-bacnet/connect/bacnet-sc/) |
-| MS/TP | Rust serial path, or Python `transport="mstp"` and `MstpEndpoint` | The CLI joins with `--mstp` in the Linux release executables, or a source build with the `serial` feature. Qualify the actual serial hardware; [setup](/rusty-bacnet/connect/mstp/) |
+| MS/TP | Rust serial path, or Python `transport="mstp"` and `MstpEndpoint` | The CLI joins with `--mstp` in the Linux release executables, or a source build with the `serial` feature. Qualify the actual serial hardware; [setup](/rusty-bacnet/connect/mstp/), [real-time on Linux](/rusty-bacnet/connect/mstp-realtime/) |
 | Ethernet/802.3 | Advanced Rust transport path | Platform/privilege evidence is incomplete; not a general CLI tutorial |
 
 This is a guide to entry points, not a formal supported-platform or conformance matrix.
