@@ -32,9 +32,27 @@ pub struct AdapterSpec {
     /// Further lateness drawn per deadline, uniformly from zero to this, from
     /// the run's seeded generator, in whole microseconds: the granularity of
     /// a tick-driven timer. Below the core's `late_deadline` (1 ms by
-    /// default) it is not counted late. Without
-    /// any, two masters that start in step can stay in step for ever.
+    /// default) it is not counted late. Without any, or a
+    /// [`Self::timer_tick`], two masters that start in step can stay in
+    /// step for ever.
     pub deadline_jitter: Duration,
+    /// The period of the timer process that services the core's deadlines,
+    /// or zero (the default) for exact timers. A node's SilenceTimer counts
+    /// in coarse ticks (a nominal 5 ms, Clause 9.5.2) from a free-running
+    /// timer that is not in step with line events, so a timeout expires on
+    /// the first tick at or after it: never early, and late by anything
+    /// under one tick, depending on where the tick grid falls. The grid
+    /// runs on the node's own clock from a phase drawn from the run's seed
+    /// and the station at each boot, so the lateness varies from one
+    /// deadline to the next and differs between nodes, while the run still
+    /// replays from its seed. A tick of `late_deadline` or more makes the
+    /// core count late deadlines.
+    ///
+    /// Two masters that restart a timeout on the same line event otherwise
+    /// expire it at instants a fixed offset apart, and adjacent masters at
+    /// opposite clock edges can then collide on every Poll For Master
+    /// (#1804). [`Self::NOMINAL_TIMER_TICK`] is the nominal resolution.
+    pub timer_tick: Duration,
 }
 
 /// A buffered serial adapter. This is a deterministic model, not hardware
@@ -97,6 +115,10 @@ impl HostSpec {
 }
 
 impl AdapterSpec {
+    /// SilenceTimer's nominal resolution (Clause 9.5.2), for
+    /// [`Self::timer_tick`].
+    pub const NOMINAL_TIMER_TICK: Duration = Duration::from_millis(5);
+
     /// Whether this adapter is slow: it starts frames late, or services
     /// deadlines late by more than timer jitter.
     #[must_use]
@@ -109,7 +131,7 @@ impl AdapterSpec {
     /// deadline service late.
     #[must_use]
     pub fn may_miss_deadlines(&self, late_deadline: Duration) -> bool {
-        self.deadline_lateness + self.deadline_jitter >= late_deadline
+        self.deadline_lateness + self.deadline_jitter + self.timer_tick >= late_deadline
     }
 }
 

@@ -105,8 +105,9 @@ impl MasterNode {
     /// A fresh core, as after INITIALIZE. It uses as much receive storage as
     /// the longest frame it takes: a standard one, or an extended one with
     /// the flag on, so a master without it treats extended frames as a node
-    /// without COBS support does.
-    pub(super) fn boot(&mut self, now: Instant) {
+    /// without COBS support does. Its timer process ticks from
+    /// `timer_phase`.
+    pub(super) fn boot(&mut self, now: Instant, timer_phase: u64) {
         self.incarnation += 1;
         self.host = self.spec.adapter.host.map(|spec| {
             spec.validate();
@@ -115,7 +116,7 @@ impl MasterNode {
         let queues = AllocQueues::new(self.spec.unicast_capacity, self.spec.broadcast_capacity);
         // The clock reads `now` at boot, so the core starts at the line's
         // time and drifts from it.
-        self.clock = Clock::starting(now, self.spec.skew.clock_ppm);
+        self.clock = Clock::starting(now, self.spec.skew.clock_ppm).ticking_from(timer_phase);
         let core: SimCore = MasterCore::new(self.spec.config, leak_core_storage(queues), now)
             .expect("a valid master spec");
         self.deadline = core.next_deadline();
@@ -355,8 +356,8 @@ impl Sim {
     }
 
     /// Work out when the adapter services the core's current deadline: on
-    /// time, plus the adapter's lateness, plus a jitter drawn once per
-    /// deadline.
+    /// the first tick of its timer at or after it, plus the adapter's
+    /// lateness, plus a jitter drawn once per deadline.
     pub(super) fn arm_deadline(&mut self, node: usize) {
         let now = self.now;
         let Some(master) = self.master_mut(node) else {
@@ -375,9 +376,10 @@ impl Sim {
         };
         let master = self.master_mut(node).expect("a master");
         // The deadline is on the node's clock: service it once that clock
-        // reaches it.
+        // reaches the timer's next tick.
+        let tick = master.clock.next_tick(deadline, adapter.timer_tick);
         master.fire_at = Some(
-            (master.clock.line_time(deadline)
+            (master.clock.line_time(tick)
                 + adapter.deadline_lateness
                 + bacnet_mstp_core::Duration::from_micros(drawn))
             .max(now),
