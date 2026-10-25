@@ -27,6 +27,15 @@
 //! there with its usual error. An attempt the handler reaches with no decision
 //! made here (an object created in between, say) is denied: the policy was
 //! never asked about it, and asking now would mean asking under the lock.
+//! The decision counters count that denial as a policy Deny.
+//!
+//! The first pass checks each attempt against the database as it was before
+//! the request. An indexed write whose validity depends on an earlier attempt
+//! of the same request (an index that an earlier attempt brings into range,
+//! as with a Staging object's Stage_Names and other state-dependent
+//! metadata) fails that check, so the policy isn't asked about it or what
+//! follows; if the handler, after the earlier writes, finds it valid, it is
+//! denied rather than asked about.
 //!
 //! With no policy that decides mutations, nothing is asked ahead and no read
 //! guard is taken: the mode alone answers each attempt in the handler.
@@ -79,14 +88,16 @@ impl DecidedAhead {
         // The guard lives for this statement only: it is gone before the
         // policy is asked.
         let checked = checked_attempts(&*db.read().await, service_data);
-        let targets = checked
-            .iter()
-            .cloned()
-            .map(MutationTarget::WritePropertyMultiple)
-            .collect();
-        // One trip to the blocking pool for the whole request.
-        let decisions = request.decide(targets).await;
-        self.decided = checked.into_iter().zip(decisions).collect();
+        if !checked.is_empty() {
+            let targets = checked
+                .iter()
+                .cloned()
+                .map(MutationTarget::WritePropertyMultiple)
+                .collect();
+            // One trip to the blocking pool for the whole request.
+            let decisions = request.decide(targets).await;
+            self.decided = checked.into_iter().zip(decisions).collect();
+        }
         let attempts = DurableTarget::write_property_multiple(service_data);
         if attempts.is_empty() {
             return Vec::new();

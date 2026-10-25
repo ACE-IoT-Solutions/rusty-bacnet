@@ -225,8 +225,12 @@ in wire order before taking the database write lock (#2032). Each call runs on
 Tokio's blocking pool while the request waits, so a policy that blocks delays
 only its own request: other clients carry on, and `stop()`, which joins every
 admitted request, aborts that one without waiting for the call, whose answer
-is then ignored. Policies should still stay fast (each request costs a trip to
-the pool), reentry-free and side-effect-free, and may be called concurrently. A panicking policy denies
+is then ignored. A call that never returns still holds its blocking thread,
+and a Tokio runtime waits for blocking tasks when it shuts down, so such a
+policy keeps the process from exiting. DeviceCommunicationControl,
+LifeSafetyOperation and AuditNotification decisions run the same way. Policies
+should still stay fast (each request costs a trip to the pool), reentry-free
+and side-effect-free, and may be called concurrently. A panicking policy denies
 fail-closed. Neither the allow nor the deny path generates an audit record for
 the decision itself; audit records arrive only as explicitly authorized
 AuditNotification service receptions.
@@ -289,8 +293,10 @@ bool. An exception, a non-bool answer or interpreter shutdown denies; the
 denied mutation changes nothing, though earlier elements of the same
 WritePropertyMultiple stay written. It runs with no database guard held and
 off the request task, so one that blocks delays only its own request, not
-other clients or `stop()` (#2032). It should still decide from the context
-alone, synchronously and quickly. Python has no direct BACnet/SC listener, so the context's
+other clients or `stop()` (#2032), but one that never returns keeps the
+process from exiting, since interpreter exit waits for every thread inside the
+bindings. It should still decide from the context alone, synchronously and
+quickly. Python has no direct BACnet/SC listener, so the context's
 `principal` is always `None` there, and its `certificate` and
 `forwarding_peer_certificate` are `None` too. See
 [the Python API](python-api.md#runtime-object-access) for the calling rules.

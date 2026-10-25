@@ -4415,9 +4415,10 @@ skipped silently).
 It runs with no database lock held, on a worker thread of its own while the
 request waits, and is asked about all of a WritePropertyMultiple's elements
 before any is written. A callable that blocks delays only its own request,
-not other clients or ``stop()``, which drops that request. Still decide from
-the context alone, synchronously and quickly; binding operations started from
-it are refused.
+not other clients or ``stop()``, which drops that request. But a callable
+that never returns keeps the process from exiting: interpreter exit waits for
+every thread inside the bindings. Still decide from the context alone,
+synchronously and quickly; binding operations started from it are refused.
 
 An exception, a value other than a bool, or interpreter shutdown denies. The
 denied mutation changes nothing, but earlier elements of the same
@@ -6575,7 +6576,8 @@ class BipEndpoint:
         an exception, a non-bool or interpreter shutdown denies with SERVICES
         / SERVICE_REQUEST_DENIED. Without it the endpoint executes no
         WriteProperty. It runs with no lock held, but on the session's one
-        dispatch task, so it too should decide quickly.
+        dispatch task, so it too should decide quickly: while it runs, other
+        requests and ``close()`` wait for it.
         ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
         the endpoint as a BBMD, or register it as a foreign device (#938).
         ``read_work_limit``: result rows one ReadProperty served by the

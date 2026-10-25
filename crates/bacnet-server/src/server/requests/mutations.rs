@@ -58,7 +58,7 @@ pub(super) struct Request<'a> {
 /// request task can still be aborted: `stop()`, which joins every admitted
 /// request, ends without waiting for the call. An abandoned call finishes on
 /// its own thread and its answer is dropped. A panic denies, as in
-/// [`fail_closed_authorize`], and
+/// [`fail_closed_authorize`](audit_notification::fail_closed_authorize), and
 /// so does a call that never reports back.
 pub(in crate::server) async fn ask_mutation_policy(
     policy: &Arc<dyn crate::ServerPolicy>,

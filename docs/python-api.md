@@ -4589,9 +4589,11 @@ lock (#2032), and it runs on a worker thread of its own while the request
 waits. A callable that blocks, such as one calling
 `asyncio.run_coroutine_threadsafe(...).result()`, delays only its own request:
 other clients' requests carry on, and `stop()` ends without waiting for it
-(the request is dropped and the callable's eventual answer ignored). Still
-decide from the context alone, synchronously and quickly, and make no calls
-back into the server (binding operations started from it are refused).
+(the request is dropped and the callable's eventual answer ignored). **A
+callable that never returns keeps the process from exiting**: interpreter exit
+waits for every thread inside the bindings, that one included. Still decide
+from the context alone, synchronously and quickly, and make no calls back into
+the server (binding operations started from it are refused).
 
 It fails closed: an exception (reported through `sys.unraisablehook`), a return
 value that isn't a `bool` (a truthy `1` included), a coroutine or interpreter
@@ -5130,7 +5132,8 @@ endpoint = BipEndpoint(1001, device_write_policy=device_writes)
 ```
 
 The endpoint answers requests on one dispatch task, so a slow callable stalls
-every request. The callables run with no lock held (`on_reinitialize` aside),
+every request, and `close()` waits for a `device_write_policy` call that is
+still running. The callables run with no lock held (`on_reinitialize` aside),
 but starting a binding operation from one is refused. The roles expose
 neither Device COV list property. A supplied `services` list must include RP and
 cannot claim unsupported execution; incompatible server-role profiles fail
