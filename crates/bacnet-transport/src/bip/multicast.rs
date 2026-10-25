@@ -814,8 +814,9 @@ impl super::BipTransport {
         Arc::clone(&self.multicast) as Arc<dyn GroupChange>
     }
 
-    /// The persisted-group file, for tests waiting on a save.
-    #[cfg(test)]
+    /// The persisted-group file, for tests waiting on a save; its callers
+    /// run where loopback multicast does (multicast/persist_tests.rs).
+    #[cfg(all(test, any(target_os = "linux", target_vendor = "apple")))]
     pub(super) fn multicast_file(&self) -> Option<Arc<GroupFile>> {
         self.multicast.lock().file.clone()
     }

@@ -126,8 +126,10 @@ impl GroupFile {
         self.failures.load(Ordering::Relaxed)
     }
 
-    /// How many saves have finished, whatever came of them.
-    #[cfg(test)]
+    /// How many saves have finished, whatever came of them; for the tests
+    /// in multicast/persist_tests.rs, which run where loopback multicast
+    /// does.
+    #[cfg(all(test, any(target_os = "linux", target_vendor = "apple")))]
     pub(crate) fn finished(&self) -> u64 {
         self.finished.load(Ordering::Acquire)
     }
