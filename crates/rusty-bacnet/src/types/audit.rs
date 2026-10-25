@@ -18,7 +18,7 @@ use super::mapping::{
     bytes, discriminator, fixed_integer, mapping, object_identifier, optional_item, ranged_integer,
     required_item, string, validate_keys,
 };
-use super::{PyAuditOperation, PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyPropertyIdentifier};
+use super::{PyAuditOperation, PyBACnetTimeStamp, PyPropertyIdentifier, int_enums};
 
 const NOTIFICATION_REQUIRED: &[&str] = &["source_device", "operation", "target_device"];
 const NOTIFICATION_OPTIONAL: &[&str] = &[
@@ -145,15 +145,13 @@ fn result(
         )));
     }
     let error_class = value
-        .get_item(0)?
-        .extract::<PyErrorClass>()
-        .map(|value| value.to_rust())
-        .map_err(|_| PyTypeError::new_err(format!("{name}[0] must be an ErrorClass")))?;
+        .get_item(0)
+        .and_then(|value| int_enums::from_py(&value))
+        .map_err(|_| PyTypeError::new_err(format!("{name}[0] must be an ErrorClass or int")))?;
     let error_code = value
-        .get_item(1)?
-        .extract::<PyErrorCode>()
-        .map(|value| value.to_rust())
-        .map_err(|_| PyTypeError::new_err(format!("{name}[1] must be an ErrorCode")))?;
+        .get_item(1)
+        .and_then(|value| int_enums::from_py(&value))
+        .map_err(|_| PyTypeError::new_err(format!("{name}[1] must be an ErrorCode or int")))?;
     Ok((error_class, error_code))
 }
 

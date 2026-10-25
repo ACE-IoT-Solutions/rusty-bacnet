@@ -37,6 +37,7 @@ mod destination;
 mod device;
 mod enums;
 mod event_parameter_py;
+pub(crate) mod int_enums;
 mod mapping;
 mod object_identifier;
 mod object_profile;
@@ -63,6 +64,7 @@ pub(crate) use date::{date_from_value, date_value, specific_date_time};
 pub(crate) use destination::destinations;
 pub use device::PyDiscoveredDevice;
 pub use enums::*;
+pub(crate) use int_enums::IntEnumValue;
 pub(crate) use mapping::scale as scale_from_py;
 pub use object_identifier::PyObjectIdentifier;
 pub(crate) use object_profile::object_profile_from_py;
@@ -105,11 +107,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPropertyIdentifier>()?;
     PyPropertyIdentifier::register_constants(&m.getattr("PropertyIdentifier")?)?;
 
-    m.add_class::<PyErrorClass>()?;
-    PyErrorClass::register_constants(&m.getattr("ErrorClass")?)?;
-
-    m.add_class::<PyErrorCode>()?;
-    PyErrorCode::register_constants(&m.getattr("ErrorCode")?)?;
+    // EngineeringUnits, ErrorClass, ErrorCode, RejectReason and AbortReason
+    // are IntEnum classes (#1816).
+    int_enums::register(m)?;
 
     m.add_class::<PyAuditOperation>()?;
     PyAuditOperation::register_constants(&m.getattr("AuditOperation")?)?;

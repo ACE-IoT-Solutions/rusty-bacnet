@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple, PyType};
 
+use crate::types::int_enums::{self, PyIntEnum};
 use crate::types::{PyObjectIdentifier, PyPropertyIdentifier};
 
 // Exception hierarchy: BacnetError (base) with subtypes
@@ -64,9 +65,11 @@ const DETAIL_ATTRIBUTES: [&str; 7] = [
 
 /// Convert a Rust `Error` into a Python exception.
 ///
-/// Protocol errors, rejects, and aborts carry structured integer attributes
+/// Protocol errors, rejects, and aborts carry structured attributes
 /// (`error_class`/`error_code` or `reason`) so Python callers can inspect them
-/// programmatically without parsing the message string. A protocol error also
+/// programmatically without parsing the message string. Each is a member of
+/// its IntEnum class (`ErrorClass`, `ErrorCode`, `RejectReason`,
+/// `AbortReason`), which compares equal to the wire integer (#1816). A protocol error also
 /// carries what a structured error body adds, `None` when absent:
 /// `first_failed_element_number` (ChangeList-Error, CreateObject-Error),
 /// `first_failed_write_attempt` (WritePropertyMultiple-Error) and
@@ -106,8 +109,7 @@ pub fn to_py_err(err: Error) -> PyErr {
             let py_err =
                 BacnetRejectError::new_err(format!("BACnet reject: reason={}", reason.to_raw()));
             let _ = crate::py_async::attach(|py| {
-                let val = py_err.value(py);
-                let _ = val.setattr("reason", reason.to_raw());
+                set_enum_attr(py_err.value(py).as_any(), "reason", reason);
                 Ok(())
             });
             py_err
@@ -116,8 +118,7 @@ pub fn to_py_err(err: Error) -> PyErr {
             let py_err =
                 BacnetAbortError::new_err(format!("BACnet abort: reason={}", reason.to_raw()));
             let _ = crate::py_async::attach(|py| {
-                let val = py_err.value(py);
-                let _ = val.setattr("reason", reason.to_raw());
+                set_enum_attr(py_err.value(py).as_any(), "reason", reason);
                 Ok(())
             });
             py_err
@@ -250,8 +251,18 @@ fn transport_error_type(py: Python<'_>) -> PyResult<&Py<PyType>> {
     })
 }
 
-/// `BacnetProtocolError` with `error_class` and `error_code` as the wire
-/// integers, so Python callers keep comparing them to plain numbers (#915).
+/// Set `name` on `error` to `value`'s IntEnum member, which compares equal
+/// to the wire integer (#915, #1816); the plain integer if the member can't
+/// be made.
+fn set_enum_attr<T: PyIntEnum>(error: &Bound<'_, PyAny>, name: &str, value: T) {
+    let _ = match int_enums::to_py(error.py(), value) {
+        Ok(member) => error.setattr(name, member),
+        Err(_) => error.setattr(name, value.raw()),
+    };
+}
+
+/// `BacnetProtocolError` with `error_class` and `error_code` as `ErrorClass`
+/// and `ErrorCode` members, which compare equal to the wire integers.
 fn protocol_error(
     message: String,
     class: ErrorClass,
@@ -261,8 +272,8 @@ fn protocol_error(
     let py_err = BacnetProtocolError::new_err(message);
     let _ = crate::py_async::attach(|py| {
         let val = py_err.value(py);
-        let _ = val.setattr("error_class", u32::from(class.to_raw()));
-        let _ = val.setattr("error_code", u32::from(code.to_raw()));
+        set_enum_attr(val.as_any(), "error_class", class);
+        set_enum_attr(val.as_any(), "error_code", code);
         for name in DETAIL_ATTRIBUTES {
             let _ = val.setattr(name, py.None());
         }
@@ -559,6 +570,50 @@ mod tests {
             let other = to_py_err(Error::Transport(std::io::Error::other("closed")));
             assert!(other.is_instance(py, transport_error_type(py).unwrap().bind(py)));
             assert_eq!(errno(&other), None);
+        });
+    }
+
+    /// A raised error's class, code and reason are members of their IntEnum
+    /// classes, equal to the wire numbers; a value without a name is a
+    /// pseudo-member (#1816).
+    #[test]
+    fn raised_errors_carry_int_enum_members() {
+        use bacnet_types::enums::{AbortReason, RejectReason};
+        Python::initialize();
+        Python::attach(|py| {
+            let attr = |error: &PyErr, name: &str| error.value(py).getattr(name).unwrap();
+            let check = |value: Bound<'_, PyAny>, class: &Bound<'_, PyType>, raw: u32| {
+                assert!(value.is_instance(class).unwrap(), "{value:?}");
+                assert_eq!(value.extract::<u32>().unwrap(), raw);
+            };
+            let classes = (
+                int_enums::class::<ErrorClass>(py).unwrap().clone(),
+                int_enums::class::<ErrorCode>(py).unwrap().clone(),
+            );
+            let plain = to_py_err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::from_raw(300),
+            ));
+            check(attr(&plain, "error_class"), &classes.0, 2);
+            check(attr(&plain, "error_code"), &classes.1, 300);
+            assert!(
+                attr(&plain, "error_code")
+                    .getattr("name")
+                    .unwrap()
+                    .is_none()
+            );
+
+            let reject = to_py_err(Error::reject(RejectReason::UNRECOGNIZED_SERVICE));
+            assert!(reject.is_instance_of::<BacnetRejectError>(py));
+            let class = int_enums::class::<RejectReason>(py).unwrap();
+            check(attr(&reject, "reason"), class, 9);
+
+            let abort = to_py_err(Error::abort(AbortReason::from_raw(200)));
+            assert!(abort.is_instance_of::<BacnetAbortError>(py));
+            let class = int_enums::class::<AbortReason>(py).unwrap();
+            check(attr(&abort, "reason"), class, 200);
+            // The message keeps its numbers.
+            assert_eq!(abort.value(py).to_string(), "BACnet abort: reason=200");
         });
     }
 }
