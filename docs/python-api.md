@@ -182,8 +182,10 @@ constructors take a member or an int, and a raised error's `error_class`,
 A value without a name, such as a proprietary error code or unit, is a
 pseudo-member: `ErrorCode(300)` and `ErrorCode.from_raw(300)` give an
 `ErrorCode` equal to 300 whose `name` is `None` and whose repr is
-`ErrorCode(300)`. So every value the bindings hand out is an instance of its
-class. A number outside the field's range (0 to 255 for the reasons, 0 to
+`ErrorCode(300)`. So a raised error's attributes, and the error pairs in read
+and audit results, are instances of their classes whatever the value. Other
+fields that carry these numbers, such as a trend log record's failure datum,
+stay plain ints. A number outside the field's range (0 to 255 for the reasons, 0 to
 65535 for the error class and code) raises `ValueError`. `str()` of a member
 is its number, as for any `IntEnum`; `repr()` names it (`ErrorClass.PROPERTY`).
 
