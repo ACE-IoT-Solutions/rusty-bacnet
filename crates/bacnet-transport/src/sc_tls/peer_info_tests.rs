@@ -54,3 +54,41 @@ fn parser_failure_and_trailing_bytes_preserve_exact_der() {
     assert_eq!(info.der(), der);
     assert!(info.metadata().is_none());
 }
+
+#[test]
+fn subject_alt_names_are_read_in_order_and_hidden_from_debug() {
+    use rcgen::{OtherNameValue, SanType};
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.subject_alt_names = vec![
+        SanType::DnsName("operator.example".try_into().unwrap()),
+        SanType::OtherName((vec![1, 2, 3], OtherNameValue::Utf8String("skipped".into()))),
+        SanType::IpAddress("10.0.0.7".parse().unwrap()),
+        SanType::IpAddress("fd00::7".parse().unwrap()),
+        SanType::URI("urn:site:operator".try_into().unwrap()),
+        SanType::Rfc822Name("ops@example.com".try_into().unwrap()),
+    ];
+    let cert = params.self_signed(&key).unwrap();
+    let info = ScPeerCertificate::new(cert.der());
+    let meta = info.metadata().unwrap();
+    assert_eq!(
+        meta.subject_alt_names(),
+        [
+            ScSubjectAltName::Dns("operator.example".into()),
+            ScSubjectAltName::Ip("10.0.0.7".parse().unwrap()),
+            ScSubjectAltName::Ip("fd00::7".parse().unwrap()),
+            ScSubjectAltName::Uri("urn:site:operator".into()),
+            ScSubjectAltName::Email("ops@example.com".into()),
+        ]
+    );
+    let debug = format!("{info:?} {meta:?} {:?}", meta.subject_alt_names());
+    for secret in ["operator", "10.0.0.7", "fd00", "ops@"] {
+        assert!(!debug.contains(secret), "{debug}");
+    }
+
+    // No extension, no names.
+    params.subject_alt_names.clear();
+    let cert = params.self_signed(&key).unwrap();
+    let info = ScPeerCertificate::new(cert.der());
+    assert!(info.metadata().unwrap().subject_alt_names().is_empty());
+}

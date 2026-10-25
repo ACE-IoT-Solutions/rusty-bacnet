@@ -120,7 +120,7 @@ impl PortDispatch {
             link_group: received.link_layer_group,
             npdu: &received.npdu,
         };
-        let mut host = HostedHost::new(&shared.gate, &shared.warnings, received.provenance);
+        let mut host = HostedHost::new(&shared.gate, &shared.warnings, received.provenance.clone());
         let outcome = {
             let mut router = shared.engine.lock();
             let failures = router.counters().write_failures;

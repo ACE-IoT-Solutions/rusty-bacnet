@@ -1561,8 +1561,12 @@ sealed, immutable `DirectScIdentity` with read-only `leaf_sha256()` and
 DER; it does not hash PEM text, a public key, or claimed UUID/VMAC/SNET/SADR.
 Same-leaf reconnects have different incarnations, and certificate rotation
 changes the fingerprint. Incarnations are process-lifetime identifiers, not
-persisted identity or an ordering API. Both values are `Copy + Eq + Hash`;
-their `Debug` output omits fingerprint and incarnation.
+persisted identity or an ordering API. `DirectScIdentity` is
+`Copy + Eq + Hash` and `TransportProvenance` is `Clone + Eq + Hash`; their
+`Debug` output omits fingerprint and incarnation. With `sc-tls`,
+`TransportProvenance::leaf_certificate()` returns the verified leaf
+`ScPeerCertificate` the fingerprint hashes (#1965); it is shared, so a clone
+of the provenance is a reference count, and it takes no part in equality.
 
 Both built-in direct TLS roles capture the verified leaf before WebSocket upgrade and admit
 NPDUs under the committed membership generation's fence. A missing verified
@@ -1583,6 +1587,10 @@ Mutation and LifeSafetyOperation authorization contexts expose
 also exposes `principal()`, the same leaf digest as a stable `ScPrincipal`
 without the incarnation, `None` for a routed request; and
 `forwarding_peer_principal()`, the immediate direct peer's, routed or not (#524).
+With `sc-tls`, `certificate()` and `forwarding_peer_certificate()` return the
+verified leaf certificates behind those two principals under the same rules
+(#1965): the DER, and metadata with the subject, issuer and DNS, URI, email and
+IP Subject Alternative Names, for rules that survive certificate renewal.
 Every WPM element retains the request's one snapshot, with existing
 per-element ordering and authorized-prefix behavior. Application
 policy still decides permission. `MutationTrust` and `ControlTrust` remain
@@ -1612,7 +1620,8 @@ outside this confinement guarantee.
 **Pre-1.0 API change:** `ReceivedNpdu` and `ReceivedApdu` add
 `direct_response: Option<DirectResponse>`; custom constructors use `None` for
 unverified ingress and forwarding consumers preserve the original value.
-`TransportProvenance` and `DirectScIdentity` remain `Copy + Eq + Hash`.
+`DirectScIdentity` remains `Copy + Eq + Hash`; `TransportProvenance` is
+`Clone + Eq + Hash` since it holds the verified leaf certificate (#1965).
 The separately sealed, cloneable `DirectResponse` exposes its read-only identity
 and has redacted `Debug`; clones retain neither socket nor membership.
 `ReceivedApdu::response_route()` saves a `ResponseRoute`. Server response helpers
@@ -8046,7 +8055,11 @@ ahead of earlier elements no object saves first, and possibly for an element the
 request never reaches because an earlier one fails. Counters and audit records
 cover only the elements the handler reaches.
 Policies must be fast, nonblocking, and side-effect-free. Context addresses and
-process IDs are claimed, not authenticated identities. DCC/Reinit, reads,
+process IDs are claimed, not authenticated identities. DeviceCommunicationControl
+has its own method, `authorize_device_communication_control` (allow by default),
+asked only after the DCC password, static `DccPolicy`, source restriction and
+disable rate limit all pass (#1964); a denial or panic answers
+`SERVICES / SERVICE_REQUEST_DENIED` and counts as `policy_denied_total`. Reinit, reads,
 discovery, trusted local writes and unconfirmed services other than WriteGroup
 are outside it. An inbound WriteGroup is decided once per Channel write it would make
 (#1319): the context's `target` is `MutationTarget::WriteGroup`, its `invoke_id` is

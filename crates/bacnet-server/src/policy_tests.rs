@@ -101,6 +101,16 @@ fn defaults_allow_mutations_and_dcc_and_deny_the_rest() {
     );
     assert_eq!(mutation().principal(), None);
     assert_eq!(dcc().principal(), None);
+    #[cfg(feature = "sc-tls")]
+    {
+        // Unverified provenance has no certificate either (#1965).
+        assert!(mutation().certificate().is_none());
+        assert!(mutation().forwarding_peer_certificate().is_none());
+        assert!(life_safety().certificate().is_none());
+        assert!(dcc().certificate().is_none());
+        assert!(audit().certificate().is_none());
+        assert!(unconfirmed_audit().forwarding_peer_certificate().is_none());
+    }
     assert_eq!(life_safety().principal(), None);
     assert_eq!(audit().principal(), None);
     assert_eq!(unconfirmed_audit().principal(), None);

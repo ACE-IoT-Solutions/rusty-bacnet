@@ -39,6 +39,14 @@
 //! everything it forwards. A source VMAC, UUID or routed SNET/SADR is a
 //! claim, never a principal.
 //!
+//! With `sc-tls`, every context's `certificate()` returns the verified leaf
+//! certificate that `principal()` fingerprints, under the same rule, and
+//! `forwarding_peer_certificate()` the forwarding peer's. Its metadata gives
+//! the subject, issuer and Subject Alternative Names, so a rule can follow a
+//! name across certificate renewal instead of listing old and new
+//! fingerprints. Allow on a name found rather than deny on one missing, and
+//! never log a certificate's contents.
+//!
 //! So `principal()` means the direct SC peer that sent the NPDU without an
 //! SNET. A router that doesn't follow the standard, or an application
 //! gateway that re-originates requests, shows its own principal for what it
@@ -98,12 +106,14 @@ use crate::mutation::MutationAuthorizationContext;
 use bacnet_encoding::npdu::NpduAddress;
 pub use bacnet_transport::port::ScPrincipal;
 use bacnet_transport::port::TransportProvenance;
+#[cfg(feature = "sc-tls")]
+pub use bacnet_transport::sc_tls::{ScCertificateMetadata, ScPeerCertificate, ScSubjectAltName};
 use std::sync::Arc;
 
 /// The originating peer's principal: the direct-SC leaf, unless the request
 /// was routed, when the connection only authenticates the forwarding router.
 pub(crate) fn originating_principal(
-    provenance: TransportProvenance,
+    provenance: &TransportProvenance,
     source_network: Option<&NpduAddress>,
 ) -> Option<ScPrincipal> {
     source_network
@@ -111,6 +121,49 @@ pub(crate) fn originating_principal(
         .then(|| provenance.principal())
         .flatten()
 }
+
+/// The originating peer's verified leaf certificate, under the rule
+/// [`originating_principal`] applies (#1965).
+#[cfg(feature = "sc-tls")]
+pub(crate) fn originating_certificate<'a>(
+    provenance: &'a TransportProvenance,
+    source_network: Option<&NpduAddress>,
+) -> Option<&'a ScPeerCertificate> {
+    source_network
+        .is_none()
+        .then(|| provenance.leaf_certificate())
+        .flatten()
+}
+
+/// The `certificate()` and `forwarding_peer_certificate()` accessors every
+/// policy context has, for a context with `provenance` and
+/// `source_network` fields. With `sc-tls` only: no other build has direct
+/// SC peers.
+macro_rules! certificate_accessors {
+    () => {
+        /// The verified leaf certificate of the peer that originated the
+        /// request: the one [`principal`](Self::principal) fingerprints, for
+        /// rules by subject, Subject Alternative Name or issuer, which
+        /// survive certificate renewal. `None` exactly when `principal()`
+        /// is: other ingress, hub-relayed and routed requests (see
+        /// [`crate::policy`]). Its contents are the peer's: don't log them.
+        #[cfg(feature = "sc-tls")]
+        pub fn certificate(&self) -> Option<&$crate::policy::ScPeerCertificate> {
+            $crate::policy::originating_certificate(&self.provenance, self.source_network.as_ref())
+        }
+
+        /// The verified leaf certificate of the direct BACnet/SC peer that
+        /// handed this request over, a router included when the request
+        /// was routed: the one
+        /// [`forwarding_peer_principal`](Self::forwarding_peer_principal)
+        /// fingerprints. `None` off a verified direct SC connection.
+        #[cfg(feature = "sc-tls")]
+        pub fn forwarding_peer_certificate(&self) -> Option<&$crate::policy::ScPeerCertificate> {
+            self.provenance.leaf_certificate()
+        }
+    };
+}
+pub(crate) use certificate_accessors;
 
 /// The server's authorization decisions, each with a documented default.
 ///

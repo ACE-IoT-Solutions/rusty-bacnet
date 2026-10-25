@@ -484,6 +484,20 @@ pub(super) fn verified_leaf_sha256(
     )
 }
 
+/// The verified leaf certificate, parsed once per connection for the
+/// provenance of everything the peer sends (#1965).
+fn verified_leaf_certificate(
+    chain: Option<&[rustls::pki_types::CertificateDer<'_>]>,
+) -> crate::port::LeafCertificate {
+    chain
+        .and_then(<[_]>::first)
+        .map_or_else(Default::default, |leaf| {
+            crate::port::LeafCertificate::verified(Arc::new(super::ScPeerCertificate::new(
+                leaf.as_ref(),
+            )))
+        })
+}
+
 // Each stage's future is boxed, once per connection, as in the hub's
 // serve_connection: unboxed, the TLS accept, the tokio-tungstenite upgrade and
 // the peer loop all put their whole futures in this debug-build frame (#953).
@@ -525,6 +539,7 @@ async fn serve_connection(
         warn!("direct TLS peer has no verified leaf certificate");
         return;
     };
+    let certificate = verified_leaf_certificate(tls_stream.get_ref().1.peer_certificates());
     let ws_stream = match super::boxed(|| {
         tokio::time::timeout(
             config.connect_timeout,
@@ -575,6 +590,7 @@ async fn serve_connection(
     // another strong reference. Capabilities themselves keep only a Weak.
     let _retire = RetireMember(&member);
     let response = crate::port::DirectResponse::new(&member, identity);
+    let provenance = crate::port::TransportProvenance::verified_direct_peer(identity, certificate);
     let mut responses = member.take_writes();
     super::boxed(|| {
         serve_npdu_loop(
@@ -584,7 +600,7 @@ async fn serve_connection(
             AdmittedDirectPeer {
                 address: peer_addr,
                 member: &member,
-                identity,
+                provenance,
                 response,
                 warnings: &warnings,
             },
@@ -744,7 +760,8 @@ fn admission_nak(message_id: u16, refusal: Refusal) -> ScMessage {
 struct AdmittedDirectPeer<'a> {
     address: SocketAddr,
     member: &'a Membership,
-    identity: crate::port::DirectScIdentity,
+    /// Verified identity and leaf certificate, built once for the connection.
+    provenance: crate::port::TransportProvenance,
     response: crate::port::DirectResponse,
     warnings: &'a DirectWarnings,
 }

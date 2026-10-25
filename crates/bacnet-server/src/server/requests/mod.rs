@@ -186,7 +186,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             decisions: mutation_decisions,
             source_mac,
             source_network: source_network.as_ref(),
-            provenance,
+            provenance: provenance.clone(),
             req: &req,
             command_origin: command_origin.as_ref(),
         };

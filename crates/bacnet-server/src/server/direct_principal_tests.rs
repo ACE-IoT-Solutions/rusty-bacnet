@@ -19,6 +19,8 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicUsize;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
+#[path = "direct_principal_certificate_tests.rs"]
+mod certificates;
 #[path = "direct_principal_complete_tests.rs"]
 mod complete;
 #[path = "direct_principal_context_tests.rs"]

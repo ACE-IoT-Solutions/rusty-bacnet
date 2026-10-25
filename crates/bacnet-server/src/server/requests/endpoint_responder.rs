@@ -225,8 +225,8 @@ impl EndpointResponder {
         let context = MutationAuthorizationContext {
             source_mac: received.source_mac.clone(),
             source_network: received.source_network.clone(),
-            provenance: received.provenance,
-            trust: MutationTrust::from_provenance(received.provenance),
+            provenance: received.provenance.clone(),
+            trust: MutationTrust::from_provenance(received.provenance.clone()),
             invoke_id: Some(request.invoke_id),
             service_choice: request.service_choice.into(),
             target: MutationTarget::WriteProperty(write),
@@ -290,7 +290,7 @@ impl EndpointResponder {
         // ingress identity and provenance so a future drop is compile-visible.
         let _link_layer_group = received.link_layer_group;
         let _ingress_network = received.ingress_network;
-        let _provenance = received.provenance;
+        let _provenance = &received.provenance;
         let preserved_attributes = received.data_attributes.clone();
         if received.is_group {
             return Ok(false);
