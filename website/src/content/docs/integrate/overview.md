@@ -39,3 +39,4 @@ Before 1.0, APIs may be removed or changed directly. Keep the source revision, f
 - [Choose a data link and its owner](/rusty-bacnet/connect/overview/).
 - [Choose a transport and its evidence scope](/rusty-bacnet/reference/transports/).
 - [Understand support and conformance](/rusty-bacnet/project/support/).
+- [See what performance to expect](/rusty-bacnet/project/performance/).
