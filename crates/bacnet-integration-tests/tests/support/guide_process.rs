@@ -1,4 +1,8 @@
-//! Shared child ownership for the exact Rust guide programs.
+//! Shared child ownership for the exact Rust guide programs: spawn, finish,
+//! drop and retirement. Include it as a module named `guide`;
+//! `guide_interactive.rs` (stdin and live stdout) and `guide_retirement.rs`
+//! (observing retirement) are siblings a test includes only when it uses
+//! them.
 
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -19,22 +23,22 @@ pub type Retirement = watch::Receiver<Option<Result<Completion, String>>>;
 pub struct Process {
     owner: Option<std::thread::JoinHandle<()>>,
     cancel: Option<oneshot::Sender<()>>,
-    input: Option<oneshot::Sender<Vec<u8>>>,
-    stdout: watch::Receiver<Vec<u8>>,
-    retired: Retirement,
+    pub(super) input: Option<oneshot::Sender<Vec<u8>>>,
+    pub(super) retired: Retirement,
 }
 
 impl Process {
     pub fn spawn(path: &Path, args: &[&str]) -> Result<Self, String> {
-        Self::start(path, args, false)
+        Self::start(path, args, false).map(|(process, _stdout)| process)
     }
 
-    #[allow(dead_code)] // The first-read caller needs no stdin/readiness protocol.
-    pub fn interactive(path: &Path, args: &[&str]) -> Result<Self, String> {
-        Self::start(path, args, true)
-    }
-
-    fn start(path: &Path, args: &[&str], interactive: bool) -> Result<Self, String> {
+    /// Start the child; with `interactive`, its stdin is a pipe fed by one
+    /// later input. The receiver follows its stdout as it arrives.
+    pub(super) fn start(
+        path: &Path,
+        args: &[&str],
+        interactive: bool,
+    ) -> Result<(Self, watch::Receiver<Vec<u8>>), String> {
         let path = path.to_owned();
         let args: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
         let (cancel, cancelled) = oneshot::channel();
@@ -76,31 +80,13 @@ impl Process {
             let _ = owner.join();
             return Err(error);
         }
-        Ok(Self {
+        let process = Self {
             owner: Some(owner),
             cancel: Some(cancel),
             input: interactive.then_some(input),
-            stdout,
             retired,
-        })
-    }
-
-    pub fn retirement(&self) -> Retirement {
-        self.retired.clone()
-    }
-
-    #[allow(dead_code)] // Only the interactive guide observes stdout before exit.
-    pub fn stdout(&self) -> watch::Receiver<Vec<u8>> {
-        self.stdout.clone()
-    }
-
-    #[allow(dead_code)] // Only the interactive guide supplies input.
-    pub fn send_input(&mut self, bytes: &[u8]) {
-        self.input
-            .take()
-            .expect("interactive input is supplied once")
-            .send(bytes.to_vec())
-            .expect("child input owner remains available");
+        };
+        Ok((process, stdout))
     }
 
     pub async fn finish(mut self) -> Output {

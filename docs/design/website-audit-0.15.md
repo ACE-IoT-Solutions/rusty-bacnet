@@ -32,7 +32,7 @@ Nothing here is a support claim. Spec references are clause numbers only.
 - **The 0.15 changes on `dev` touch about a dozen pages.** The MSRV moves from
   1.93 to 1.95, server policy gains a DCC decision and certificate accessors,
   routed targets reach ten more one-shot commands (#1786), `--passive` discovery listens
-  for announcements, the baud scan ships, and Python gains `BipRouter`.
+  for announcements, the baud scan ships, and Python gains a B/IP `BACnetRouter`.
   Section 4 lists each page's change.
 - **The biggest gaps are tasks, not facts.** There is no page for serving
   objects, routing, authorizing requests, deploying across subnets, NAT,
@@ -120,7 +120,7 @@ contributor. The "0.15 Δ" (delta) column names what the page needs when the sit
 
 | Path | Title | Audience | Purpose | `docs/` overlap | 0.15 Δ |
 |---|---|---|---|---|---|
-| `integrate/overview.md` | Build and integrate | R, Py | Choose client, server, endpoint | `rust-api.md`, `python-api.md` | Add router owner (Rust `BACnetRouter`, Python `BipRouter`, #1858) |
+| `integrate/overview.md` | Build and integrate | R, Py | Choose client, server, endpoint | `rust-api.md`, `python-api.md` | Add router owner (Rust `BACnetRouter`, Python `BACnetRouter`, #1858) |
 | `integrate/shared-endpoints.mdx` | Compose a shared endpoint | R, Py | One transport, two roles | `rust-api.md#bacnet-endpoint`, `request-admission.md`, audit docs | MSRV in "minimum Rust version is 1.93" |
 | `integrate/network-ports.md` | Network Port and Number controls | R, Py | Register a port; passive Number learning | `rust-api.md` | none known |
 
@@ -159,7 +159,7 @@ contributor. The "0.15 Δ" (delta) column names what the page needs when the sit
 | `reference/transports.mdx` | Transport paths and boundaries | all | Choose a link; evidence scope | `rust-api.md`, `mstp-qualification.md` | Split: selection moves to a connect page, evidence stays |
 | `reference/api.md` | API and example library | R, Py, Em | Find exact signatures | `rust-api.md`, `python-api.md`, `architecture.md` | Versioned docs.rs links; list all nine Python examples |
 | `help/troubleshooting.md` | Troubleshoot by symptom | all | Isolate the failing layer | — | Routed-target sentence at line 28 (#1786); link policy denials |
-| `project/support.md` | Support status and evidence | Ev | What is supported, what evidence means | — | DCC policy, SAN accessors, `BipRouter`, routed CLI reads, access authorization (#1569–#1572); generated conformance tables per #1496 (decided: option C) |
+| `project/support.md` | Support status and evidence | Ev | What is supported, what evidence means | — | DCC policy, SAN accessors, Python `BACnetRouter`, routed CLI reads, access authorization (#1569–#1572); generated conformance tables per #1496 (decided: option C) |
 | `project/upgrading.md` | Upgrade from v0.13.0 to v0.14.0 | all | Breaking changes by area | changelog | Becomes history; a 0.14 → 0.15 guide is needed |
 | `development/build-from-source.md` | Build from source | C | Checkout, CLI and Python builds | `ci.md` | none |
 | `development/documentation.md` | Improve the documentation | C | Writing and validation rules | `website/README.md` | none |
@@ -176,9 +176,9 @@ error today. They are the work list for the release PR that moves `site.mjs` to
 | Edition 2024 and MSRV 1.95 (#1011) | start/choose-your-path, start/installation, start/rust, integrate/shared-endpoints |
 | `ServerPolicy` decides DCC by verified principal (#1964); policy contexts expose the verified leaf certificate, its subject and SANs (#1965) | guides/bacnet-sc, project/support, integrate/security (fold its "On `dev` after the release" section into the page, and pin `website/examples/rust/sc-operator-policy/Cargo.toml` and its test `sc_operator_policy_source` to the release instead of the `dev` branch) |
 | `TransportProvenance` no longer `Copy` (#1965); `router.stop()` returns `Result` (#2002); `OriginateError` changes (#1809); `MstpMonitor::start` is async (#1854) | 0.14 → 0.15 upgrade guide |
-| CLI `alarms`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` take routed targets (#1786) | guides/discovery.mdx:42, reference/cli.md:44, help/troubleshooting.md:28 (each lists only `read`, `readm`, `write`, `writem`, `subscribe`) |
+| CLI `alarms`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` take routed targets (#1786) | guides/discovery.mdx:42, reference/cli.md:44, help/troubleshooting.md:28 (each lists only `read`, `readm`, `write`, `writem`, `subscribe`); integrate/router (fold its dev-section bullet into the routed-target paragraph) |
 | TUI passive discovery and local `:find` (#1850); baud scan (#1873) | tui/profiles, tui/discovery, tui/keys, tui/mstp |
-| Python `BipRouter` (#1858); access rights and local authorization (#1569–#1572) | integrate/overview, project/support, new router page |
+| Python `BACnetRouter` with `BipRouterPort` (#1858); `router.ports()` and the `Result` from `router.stop()` (#2002); access rights and local authorization (#1569–#1572) | integrate/overview, project/support, integrate/router (fold its "On `dev` after the release" section into the page, and pin `website/examples/rust/bip-router/Cargo.toml` and its test `bip_router_source` to the release instead of the `dev` branch) |
 | In flight: the error-type PR (#1815, Rust and Python error types) and the B/IP follow-ups PR | start/python, start/rust, guides/discovery, NAT and multicast pages |
 
 The Rust and shared-endpoint samples compile against `dev` in CI today, so a
@@ -196,7 +196,7 @@ too. That is the intended behaviour of #1996 and #2010.
 | **MS/TP real-time** | A paragraph in guides/mstp; a CLI section in tui/mstp | One page: `MstpThreadConfig`, `SCHED_FIFO` priority and CPU pinning, privileges, the latency timer, the lateness histogram, how to compare runs, and what remains unqualified | tui/mstp, `MstpExecutionMode`, `docs/mstp-qualification.md`, #502 |
 | **Performance** | Nothing, apart from one figure in project/upgrading | An evaluator page: what is measured, units, environments, how to reproduce, what a budget is versus a measurement | `Benchmarks.md` (sections 1, 2, 10, 11) |
 | **Serving objects** | A table row in integrate/overview | A full-server task in Rust and Python: database, objects, Device identity, start and stop, resource limits | `rust-api.md`, `python-api.md`, `examples/python/bip_client_server.py` |
-| **Routing** | Nothing beyond the embedded router example | Rust `BACnetRouter` and Python `BipRouter` tasks with lifecycle (#2002) | `bacnet-network`, `rust-api.md`, #1858 |
+| **Routing** | Nothing beyond the embedded router example | Rust `BACnetRouter` and Python `BACnetRouter` tasks with lifecycle (#2002) | `bacnet-network`, `rust-api.md`, #1858 |
 | **Upgrade 0.14 → 0.15** | None yet | A guide in the shape of the 0.13 → 0.14 page, written once the error-type PR (#1815) and the B/IP follow-ups PR land | `changelog.d/*-migration.md` |
 | **PICS and conformance** | One paragraph in project/support | Generated capability tables and a sample PICS, decided in `docs/design/conformance-reporting.md` (#1496) | `bacnet_server::pics` |
 
