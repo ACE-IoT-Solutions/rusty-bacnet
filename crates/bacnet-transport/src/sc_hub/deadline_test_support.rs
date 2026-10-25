@@ -144,6 +144,15 @@ pub(super) struct TestTls {
     pub hub_config: ScHubTlsConfig,
     pub client: Arc<rustls::ClientConfig>,
     pub node: crate::sc_tls::ScNodeTlsConfig,
+    /// The loopback listener every [`TestTls::pair`] accepts on, bound by the
+    /// first one. One listener rather than one per pair, so a test's
+    /// connections share its port, and a hub end that closes first leaves
+    /// its TIME_WAIT on that one port instead of on a port per connection.
+    /// Windows keeps a TIME_WAIT port out of use for two minutes by default,
+    /// and the matrix tests open hundreds of pairs each; a fresh listener per
+    /// pair ran the Windows job out of ephemeral ports (WSAENOBUFS, #2055).
+    /// The mutex also keeps two pairs from taking each other's connection.
+    listener: Mutex<Option<TcpListener>>,
 }
 
 impl TestTls {
@@ -155,7 +164,11 @@ impl TestTls {
         SocketAddr,
         tokio::time::Instant,
     ) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut listener = self.listener.lock().await;
+        if listener.is_none() {
+            *listener = Some(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        }
+        let listener = listener.as_ref().unwrap();
         let address = listener.local_addr().unwrap();
         // The handshakes are boxed here and in `websocket`: tests poll on a
         // 2 MiB test thread, and unboxed, these futures put about 100 KB more
@@ -261,6 +274,7 @@ impl TestTls {
                 PrivatePkcs8KeyDer::from(client_key.serialize_der()).into(),
             )
             .unwrap(),
+            listener: Mutex::new(None),
         }
     }
 }
