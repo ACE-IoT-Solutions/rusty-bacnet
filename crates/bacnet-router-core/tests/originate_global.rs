@@ -8,7 +8,7 @@ mod fixture;
 use bacnet_router_core::PortId;
 use bacnet_router_core::npdu::{Address, GLOBAL_NETWORK, Mac, NetworkPriority, Npdu, NpduLimits};
 use bacnet_router_core::router::{
-    Cause, Groups, Kind, Options, OriginateError, PortConfig, Request, SourceSelection,
+    Action, Cause, Groups, Kind, Options, OriginateError, PortConfig, Request, SourceSelection,
 };
 use fixture::{
     CONFIRMED, OWN_0, OWN_1, Sent, TestRouter, UNCONFIRMED, addr, at, bytes, drain, port_on,
@@ -198,4 +198,55 @@ fn what_a_global_request_may_not_be() {
         assert!(drain(&mut router).is_empty(), "{error:?}");
         assert_eq!(router.counters().originated, 0);
     }
+}
+
+/// The bare copy's control octet comes from the encoder: it keeps the
+/// request's priority and expecting-reply flag, and drops only the SNET
+/// flag.
+#[test]
+fn the_bare_copy_keeps_the_requests_control_bits() {
+    let mut router = router_on(&three_ports());
+    let mut request = who_is(SourceSelection::Port(PortId(0)));
+    request.priority = NetworkPriority::CriticalEquipment;
+    request.expecting_reply = true;
+    assert_eq!(router.originate(&request, at(1)), Ok(()));
+    let sent = drain(&mut router);
+    let bare = Npdu {
+        priority: NetworkPriority::CriticalEquipment,
+        expecting_reply: true,
+        destination: Some(addr(GLOBAL_NETWORK, &[])),
+        ..Npdu::apdu(UNCONFIRMED)
+    };
+    assert_eq!(sent[2].port, 0);
+    assert_eq!(sent[2].npdu, bytes(&bare));
+    // Version, then the control octet: DNET present, expecting a reply,
+    // critical-equipment priority.
+    assert_eq!(sent[2].npdu[1], 0x20 | 0x04 | 0x02);
+    for send in &sent[..2] {
+        let npdu = send.parsed();
+        assert!(npdu.expecting_reply, "port {}", send.port);
+        assert_eq!(npdu.priority, NetworkPriority::CriticalEquipment);
+    }
+}
+
+/// A port limit lowered between the call and the tail's poll leaves the
+/// tail out, counted, as any fan-out send that no longer fits.
+#[test]
+fn a_limit_lowered_before_the_tail_is_polled_leaves_it_out() {
+    let mut long = vec![0; 100];
+    long[0] = UNCONFIRMED[0];
+    let mut router = router_on(&[port_on(1, OWN_0), port_on(2, OWN_1)]);
+    let request = global(&long, SourceSelection::Port(PortId(1)));
+    assert_eq!(router.originate(&request, at(1)), Ok(()));
+    let Action::Send(first) = router.poll_action() else {
+        panic!("port 0's copy");
+    };
+    assert_eq!(first.port, PortId(0));
+    let narrow = NpduLimits {
+        unicast: 1497,
+        broadcast: 64,
+    };
+    router.set_port_max_npdu(PortId(1), narrow).unwrap();
+    assert_eq!(router.poll_action(), Action::Idle);
+    assert_eq!(router.counters().egress_too_long, 1);
 }

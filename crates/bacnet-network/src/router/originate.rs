@@ -7,7 +7,8 @@ use bacnet_router_core::router::{OriginateError, Request};
 use super::BACnetRouter;
 use super::actions::drain;
 
-/// Why [`BACnetRouter::originate`] queued nothing.
+/// Why [`BACnetRouter::originate`] failed: it queued nothing, but for a
+/// global broadcast's [`QueueFull`](Self::QueueFull).
 ///
 /// It is `#[non_exhaustive]`, so a new reason isn't a breaking change: a
 /// `match` needs a wildcard arm.
@@ -18,6 +19,11 @@ pub enum OriginateFailure {
     Refused(OriginateError),
     /// The egress port's queue was full, or closing; the refusal is
     /// counted in [`Counters::refused`](super::Counters::refused).
+    ///
+    /// For a global broadcast, which goes on every port's queue, this
+    /// means at least one port refused its copy: the other ports' copies
+    /// were queued and are sent. Retrying the whole request sends those
+    /// ports a second copy, so don't retry a global broadcast blindly.
     QueueFull,
     /// The router has stopped.
     Stopped,
@@ -76,8 +82,9 @@ impl BACnetRouter {
     /// from its own port's address; with [`SourceSelection::Port`] the
     /// other ports' copies name that port's address as SNET and SADR. A
     /// queue that refuses its copy fails the call with
-    /// [`OriginateFailure::QueueFull`], though the other ports' copies
-    /// stay queued.
+    /// [`OriginateFailure::QueueFull`], but the copies the other ports'
+    /// queues took are still sent: the call is not all or nothing, and a
+    /// retry repeats the broadcast on those ports.
     ///
     /// [`SourceSelection::EgressPort`]: bacnet_router_core::router::SourceSelection::EgressPort
     /// [`SourceSelection::Port`]: bacnet_router_core::router::SourceSelection::Port

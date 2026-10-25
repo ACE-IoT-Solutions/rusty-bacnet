@@ -227,26 +227,50 @@ impl<
     /// (Clause 6.2.3), and the router passes it on whether or not it
     /// changed the table (Clauses 6.6.3.3, 6.6.3.6, 6.6.3.7). Around a
     /// loop, which Clause 4.2's single path rules out but a misconfigured
-    /// site can have, it would circulate for good. With no origin to key
-    /// it by, the record keys it by its type and data alone, under network
-    /// 0xFFFF, which no origin's network can be.
+    /// site can have, it would circulate for good.
+    ///
+    /// An I-Am-Router is keyed by its data alone, under network 0xFFFF,
+    /// which no origin's network can be. A Router-Busy or Router-Available
+    /// is keyed by its sender too, `at`'s network and link source, as its
+    /// effect is scoped to the routes through that sender; accepting one
+    /// forgets its opposite from the same sender (the module docs of
+    /// `duplicates` say more).
     fn repeated_relay(
         &mut self,
+        at: &Arrival<'_>,
         kind: NetworkMessageType,
         data: &[u8],
-        now: crate::Instant,
         options: &Options,
     ) -> bool {
         let Some(duplicates) = options.duplicates else {
             return false;
         };
-        let repeat =
-            self.recent
-                .repeat(GLOBAL_NETWORK, &[kind.to_raw()], data, now, duplicates.ttl);
-        if repeat {
+        let opposite = match kind {
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK => {
+                Some(NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK)
+            }
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK => {
+                Some(NetworkMessageType::ROUTER_BUSY_TO_NETWORK)
+            }
+            _ => None,
+        };
+        let (network, source) = match opposite {
+            Some(_) => (at.network, at.source),
+            None => (GLOBAL_NETWORK, &[][..]),
+        };
+        let tag = kind.to_raw();
+        let ttl = duplicates.ttl;
+        if self
+            .recent
+            .repeat_tagged(network, source, tag, data, at.now, ttl)
+        {
             bump(&mut self.counters.duplicate_drops);
+            return true;
         }
-        repeat
+        if let Some(opposite) = opposite {
+            self.recent.forget(network, source, opposite.to_raw());
+        }
+        false
     }
 
     /// Pass a network message's data on, verbatim, as a fresh message of
@@ -286,7 +310,7 @@ impl<
             return Received::Discarded(Discard::Denied);
         }
         let kind = NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
-        if self.repeated_relay(kind, npdu.payload, at.now, options) {
+        if self.repeated_relay(at, kind, npdu.payload, options) {
             return Received::Discarded(Discard::Duplicate);
         }
         let mut claimed = Claimed::new();
@@ -476,7 +500,7 @@ impl<
         } else {
             NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK
         };
-        if self.repeated_relay(kind, npdu.payload, at.now, options) {
+        if self.repeated_relay(at, kind, npdu.payload, options) {
             return Received::Discarded(Discard::Duplicate);
         }
         let deadline = at.now + options.timing.busy_for;

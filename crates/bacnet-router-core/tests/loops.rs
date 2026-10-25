@@ -94,19 +94,25 @@ fn circulate(routers: &mut [TestRouter], frame: Vec<u8>) -> Run {
 /// The messages that are passed on with no origin.
 fn relayed() -> [(&'static str, Vec<u8>); 3] {
     [
-        (
-            "I-Am-Router",
-            message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &networks(&[9])),
-        ),
-        (
-            "Router-Busy",
-            message(NetworkMessageType::ROUTER_BUSY_TO_NETWORK, &networks(&[9])),
-        ),
-        (
-            "Router-Available",
-            message(NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK, &[]),
-        ),
+        ("I-Am-Router", i_am(&[9])),
+        ("Router-Busy", busy(&[9])),
+        ("Router-Available", available(&[])),
     ]
+}
+
+fn i_am(list: &[u16]) -> Vec<u8> {
+    message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &networks(list))
+}
+
+fn busy(list: &[u16]) -> Vec<u8> {
+    message(NetworkMessageType::ROUTER_BUSY_TO_NETWORK, &networks(list))
+}
+
+fn available(list: &[u16]) -> Vec<u8> {
+    message(
+        NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK,
+        &networks(list),
+    )
 }
 
 #[test]
@@ -121,12 +127,16 @@ fn without_suppression_a_relayed_message_circulates_for_good() {
 #[test]
 fn with_suppression_each_router_takes_the_first_copy_only() {
     let options = fixture::options(|options| options.duplicates = Some(Duplicates::DEFAULT));
-    for (name, frame) in relayed() {
+    // An I-Am-Router, kept by its data alone: X's frame reaches the two
+    // routers on network 1, each relays it once, and the two copies that
+    // come back round are dropped. A Router-Busy or Router-Available,
+    // kept by its sender too: each router takes it once from each of its
+    // two neighbours, so it goes round once each way before the third
+    // copy from one neighbour is dropped.
+    for ((name, frame), deliveries) in relayed().into_iter().zip([5, 10, 10]) {
         let mut routers = ring(options);
         let run = circulate(&mut routers, frame);
-        // X's frame reaches the two routers on network 1; each relays it
-        // once, and the copies that come back round are dropped.
-        assert_eq!(run.deliveries, 5, "{name}: {run:?}");
+        assert_eq!(run.deliveries, deliveries, "{name}: {run:?}");
         assert_eq!(run.duplicates, 2, "{name}: {run:?}");
         let dropped: u32 = routers
             .iter()

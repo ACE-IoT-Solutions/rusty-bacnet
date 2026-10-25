@@ -507,6 +507,13 @@ impl<
             // The global broadcast's version, control, DNET 0xFFFF and
             // DLEN 0, just before its hop count (Current::with_tail).
             let header = [crate::npdu::VERSION, current.tail_control, 0xFF, 0xFF, 0];
+            // The offset is the SNET, SLEN and SADR's length, so the header
+            // ends at the hop count, inside the NPDU and the scratch: the
+            // lookup below can't fail.
+            debug_assert!(
+                tail + header.len() < len,
+                "a tail's header ends before its hop count"
+            );
             if let Some(slot) = self.scratch.get_mut(tail..tail + header.len()) {
                 slot.copy_from_slice(&header);
                 current.start = tail as u16;

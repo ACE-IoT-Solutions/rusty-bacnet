@@ -238,10 +238,15 @@ impl<A, C> RouterOptions<A, C> {
     /// The same record covers the network messages the router passes on
     /// with no origin, I-Am-Router, Router-Busy and Router-Available
     /// (#1810), which carry no hop count, so around a loop nothing else
-    /// stops them: each is kept by its type and data, and a repeat within
-    /// the time to live is neither applied to the table nor passed on. Two
-    /// routers announcing the same networks within one time to live look
-    /// like one, and the second is dropped until it announces again.
+    /// stops them. A repeat within the time to live is neither applied to
+    /// the table nor passed on. An I-Am-Router is kept by its data alone,
+    /// so two routers announcing the same networks within one time to live
+    /// look like one, and the second is dropped until it announces again.
+    /// A Router-Busy or Router-Available is kept by its sender (arrival
+    /// network and link source) and data, so another router's identical
+    /// message is still applied, and accepting one forgets its opposite
+    /// from the same sender, so Busy, Available, Busy within one time to
+    /// live applies all three.
     ///
     /// Sizing: the record must hold every global broadcast the router sees
     /// within one time to live, or the oldest is forgotten before its
