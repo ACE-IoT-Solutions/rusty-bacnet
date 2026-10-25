@@ -2632,11 +2632,11 @@ server = BACnetServer(
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
     mutation_policy="permissive", # keyword-only; "deny_all", or a callable deciding each mutation
-    dcc_password=None,           # password alone does not enable DCC
+    dcc_password=None,           # at most 20 characters; password alone does not enable DCC
     dcc_policy="deny_all",       # keyword-only; explicit require_password or INSECURE legacy_permissive
     dcc_source_restriction=None, # optional list[(network_or_None, bytes)]; [] denies all; requires require_password
     dcc_disable_rate_limit=None, # optional (capacity, refill_interval_ms); (3, 20000) enables default rate
-    reinit_password=None,        # password for ReinitializeDevice
+    reinit_password=None,        # password for ReinitializeDevice, at most 20 characters
     sc_control_rate_limit=None,  # keyword-only; SC only, see "SC ingress quotas and drop counters"
     on_reinitialize=None,        # keyword-only; see "ReinitializeDevice"
     after_reinitialize=None,     # keyword-only; runs after the SimpleACK

@@ -340,6 +340,19 @@ impl RunAfterReinitialize {
     }
 }
 
+/// Refuse a configured DCC or ReinitializeDevice password (`name` is its
+/// keyword) over the 20-character limit with ValueError, at construction as
+/// the native server and endpoint refuse it at start (#2060).
+pub(crate) fn password_limit(name: &str, password: &Option<String>) -> PyResult<()> {
+    use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_fits};
+    if password.as_deref().is_some_and(|p| !password_fits(p)) {
+        return Err(PyValueError::new_err(format!(
+            "{name} exceeds the {MAX_PASSWORD_CHARS}-character limit"
+        )));
+    }
+    Ok(())
+}
+
 /// An endpoint's ReinitializeDevice settings: the callables and the
 /// password a request must carry.
 #[derive(Clone, Default)]
@@ -362,6 +375,7 @@ impl EndpointReinitialize {
                 "reinit_password needs on_reinitialize",
             ));
         }
+        password_limit("reinit_password", &password)?;
         Ok(Self {
             callables,
             password,

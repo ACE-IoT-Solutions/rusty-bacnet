@@ -291,6 +291,45 @@ async fn a_mismatched_b_ipv6_identity_entry_reserves_nothing() {
     endpoint.stop().await.unwrap();
 }
 
+/// A transport whose VMAC isn't the served Device's (#2057), built for
+/// another instance or for none (a random VMAC), is refused before anything
+/// is reserved. Without an identity the database's Device is the served one.
+#[tokio::test]
+async fn a_b_ipv6_vmac_from_another_device_reserves_nothing() {
+    let other = || Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(10));
+    let random = || Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, None);
+    let no_identity = |transport| {
+        EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())
+            .unwrap()
+            .with_database(identity().build_database().unwrap())
+            .with_registered_network_port(port())
+    };
+    let mismatch = "registered B/IPv6 refused: the transport's VMAC 0x00000A is not Device 1234's \
+                    VMAC 0x0004D2; build the transport with the served Device instance";
+    let none = "registered B/IPv6 refused: the transport has no Device instance in \
+                0..=4194303, so its VMAC would be random; build it with Device instance 1234";
+    for (case, mut endpoint, expected) in [
+        ("other", endpoint(other(), identity()), mismatch),
+        ("random", endpoint(random(), identity()), none),
+        ("other, no identity", no_identity(other()), mismatch),
+    ] {
+        let error = endpoint.start().await.unwrap_err().to_string();
+        assert!(error.contains(expected), "{case}: {error}");
+        assert!(!endpoint.is_running(), "{case}");
+        assert!(endpoint.registered_port_lease.upgrade().is_none(), "{case}");
+        let mut db = endpoint.database.as_ref().unwrap().write().await;
+        assert_eq!(db.registered_port_internal(), None, "{case}");
+        drop(
+            db.reserve_bip6_port_internal(port(), Ipv6Addr::LOCALHOST.octets(), 0)
+                .unwrap_or_else(|error| panic!("{case}: {error}")),
+        );
+    }
+    // The database's Device 1234 matches a transport built for it.
+    let mut endpoint = no_identity(transport());
+    endpoint.start().await.unwrap();
+    endpoint.stop().await.unwrap();
+}
+
 /// Stop releases the registration and the UDP port.
 #[tokio::test]
 async fn stop_releases_the_b_ipv6_port() {

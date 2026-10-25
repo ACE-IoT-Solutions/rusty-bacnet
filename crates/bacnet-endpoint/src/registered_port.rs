@@ -16,8 +16,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// B/IPv6 link, in whichever mode the transport runs: an IPV4 port for
     /// B/IP, an IPV6 one for B/IPv6.
     /// Startup requires a matching concrete interface, identity entry and database
-    /// snapshot. It publishes the actual address, UDP port and MAC (a B/IPv6
-    /// link's VMAC) before exposing responder roles.
+    /// snapshot, and a B/IPv6 transport built with the served Device's
+    /// instance (the identity's, else the database's Device), which is its
+    /// VMAC (#2057). It publishes the actual address, UDP port and MAC (a
+    /// B/IPv6 link's VMAC) before exposing responder roles.
     ///
     /// There is no B/IPv6 endpoint builder, as there is no B/IPv6 server
     /// builder: compose the session over a `Bip6Transport` (the
@@ -89,8 +91,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     }
 
     /// [`prepare_registered_port`](Self::prepare_registered_port) for a
-    /// B/IPv6 link: one concrete unicast address, the identity entry checked
-    /// before the port is reserved.
+    /// B/IPv6 link: one concrete unicast address, a VMAC from the served
+    /// Device's instance (#2057) and the identity entry, all checked before
+    /// the port is reserved.
     async fn prepare_bip6(&mut self, oid: ObjectIdentifier) -> Result<(), Error> {
         let ingress = self
             .ingress
@@ -99,12 +102,22 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         let port = ingress
             .bip6_port()
             .ok_or_else(|| invalid("registration requires B/IP or B/IPv6"))?;
-        let address = registration::bip6_address(&port)?;
         let db = self
             .database
             .as_ref()
             .ok_or_else(|| invalid("registered port requires database"))?;
         let mut db = db.write().await;
+        // The served Device: the identity's, else the database's own.
+        let served = self
+            .identity
+            .as_ref()
+            .map(|identity| identity.instance())
+            .or_else(|| {
+                db.local_device()
+                    .identifier()
+                    .map(|device| device.instance_number())
+            });
+        let address = registration::bip6_address(&port, served)?;
         // Validate identity before reservation so a rejected configuration has no effects.
         let configured = db
             .configured_bip6_port_internal(&oid)

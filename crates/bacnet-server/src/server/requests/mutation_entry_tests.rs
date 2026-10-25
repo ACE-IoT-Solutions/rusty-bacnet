@@ -11,6 +11,7 @@ use super::endpoint_responder::EndpointResponder;
 use super::mutation_tests::MutationAuthorizer;
 use super::mutation_tests::{Fixture, SOURCE, apdu, assert_denied, cases, oid, route};
 use super::*;
+#[cfg(feature = "sc-tls")]
 use crate::mutation::{MutationAuthorizationContext, MutationTrust};
 use crate::mutation::{MutationDecisionCounters, MutationPolicy};
 use crate::server::request_admission::{Class, RequestAdmissionPolicy};
