@@ -96,9 +96,14 @@ impl Fixture {
         response(
             &services,
             &req,
-            &[peer],
-            source.as_ref(),
-            None,
+            crate::server::dcc_timer::DccRequest {
+                service_data: &req.service_request,
+                source_mac: &[peer],
+                source: source.as_ref(),
+                local_network: None,
+                provenance: Default::default(),
+                invoke_id: peer,
+            },
             &self.tasks.spawner(),
             &mut audit,
         )
@@ -403,4 +408,45 @@ async fn dcc_disable_rate_authorized_timer_parity_and_repeated_charge() {
         denied(fixture.disable(2).await);
         fixture.cleanup().await;
     }
+}
+
+/// The server policy is asked after the disable rate limit (#1964): a
+/// disable the limit refuses never reaches it, and one the policy denies has
+/// already used its slot.
+#[tokio::test(start_paused = true)]
+async fn dcc_server_policy_is_asked_after_the_disable_rate_limit() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    let mut fixture = Fixture::new(Some(DccDisableRateLimit {
+        capacity: 1,
+        ..Default::default()
+    }));
+    let (allow, asked) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (allows, counts) = (allow.clone(), asked.clone());
+    fixture.config.policy = Some(Arc::new(
+        crate::FnPolicy::new().device_communication_control(move |_| {
+            counts.fetch_add(1, Ordering::AcqRel);
+            allows.load(Ordering::Acquire)
+        }),
+    ));
+    denied(fixture.disable(1).await);
+    assert_eq!(asked.load(Ordering::Acquire), 1);
+    allow.store(true, Ordering::Release);
+    denied(fixture.disable(2).await);
+    assert_eq!(
+        asked.load(Ordering::Acquire),
+        1,
+        "the limit refused it first"
+    );
+    // ENABLE is exempt from the limit, so the policy decides it.
+    accepted(
+        fixture
+            .send(EnableDisable::ENABLE, None, None, 3, false)
+            .await,
+    );
+    assert_eq!(asked.load(Ordering::Acquire), 2);
+    assert_eq!(fixture.outcomes.snapshot().policy_denied_total, 2);
+    assert_eq!(fixture.state.get(), DccState::Enable);
 }

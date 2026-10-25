@@ -23,6 +23,8 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 mod complete;
 #[path = "direct_principal_context_tests.rs"]
 mod contexts;
+#[path = "direct_principal_dcc_tests.rs"]
+mod dcc;
 #[path = "direct_principal_policy_tests.rs"]
 mod policy;
 #[path = "direct_response_tests.rs"]

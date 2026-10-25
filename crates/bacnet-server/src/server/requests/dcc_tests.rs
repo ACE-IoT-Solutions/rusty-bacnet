@@ -7,6 +7,8 @@ use tokio::time::{Duration, advance};
 
 #[path = "dcc_local_network_tests.rs"]
 mod local_network;
+#[path = "dcc_server_policy_tests.rs"]
+mod server_policy;
 
 #[tokio::test(start_paused = true)]
 async fn dcc_source_exact_full_bytes_and_fail_closed_wire() {

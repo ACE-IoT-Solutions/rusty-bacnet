@@ -1,17 +1,20 @@
 //! One place for the server's authorization decisions (#524).
 //!
 //! [`ServerPolicy`] answers every "may this peer do this?" question the
-//! server asks of an application: the covered mutations, LifeSafetyOperation
-//! and both AuditNotification services. Each method has a documented
-//! default, so a policy overrides only what it decides.
+//! server asks of an application: the covered mutations, LifeSafetyOperation,
+//! DeviceCommunicationControl and both AuditNotification services. Each
+//! method has a documented default, so a policy overrides only what it
+//! decides.
 //!
 //! What stays outside it, and why:
 //! - [`MutationPolicy::DenyAll`](crate::mutation::MutationPolicy::DenyAll)
 //!   is a static hardening switch on [`ServerConfig`](crate::server::ServerConfig).
 //!   It wins over any policy, which isn't asked, and its denials are counted
 //!   apart.
-//! - DeviceCommunicationControl's password, source restriction and rate
-//!   limit are static settings, not callbacks.
+//! - DeviceCommunicationControl's password, static
+//!   [`DccPolicy`](crate::server::DccPolicy), source restriction and rate
+//!   limit are settings, not callbacks. They are checked first; the policy
+//!   is asked only about a request that passes all of them.
 //! - `on_reinitialize` carries out a restart rather than deciding on one,
 //!   and runs after the server's own checks.
 //! - `on_time_sync` observes a change it can't refuse.
@@ -89,6 +92,7 @@
 use crate::audit_notification::{
     AuditNotificationAuthorizationContext, UnconfirmedAuditNotificationAuthorizationContext,
 };
+use crate::device_communication_control::DeviceCommunicationControlAuthorizationContext;
 use crate::life_safety::LifeSafetyOperationAuthorizationContext;
 use crate::mutation::MutationAuthorizationContext;
 use bacnet_encoding::npdu::NpduAddress;
@@ -183,6 +187,27 @@ pub trait ServerPolicy: Send + Sync + 'static {
         false
     }
 
+    /// Whether to carry out a DeviceCommunicationControl request (default:
+    /// allow).
+    ///
+    /// Asked after the server's own checks, in this order: decoding, the
+    /// password, the deprecated DISABLE refusal, the static
+    /// [`DccPolicy`](crate::server::DccPolicy), the source restriction and,
+    /// for DISABLE_INITIATION, the disable rate limit. A request any of them
+    /// refuses never reaches the policy; one it reaches has already used a
+    /// slot of the rate limit. Asked with no lock held, before the timer is
+    /// replaced or the state changes. A denial is answered SERVICES /
+    /// SERVICE_REQUEST_DENIED, changes neither the state nor a running
+    /// timer, writes no Audit record and is counted in
+    /// `BACnetServer::dcc_outcome_counters` as `policy_denied_total`.
+    fn authorize_device_communication_control(
+        &self,
+        context: &DeviceCommunicationControlAuthorizationContext,
+    ) -> bool {
+        let _ = context;
+        true
+    }
+
     /// Whether to store a ConfirmedAuditNotification in the configured
     /// Audit Log sink (default: deny).
     ///
@@ -222,6 +247,7 @@ type Decide<C> = Arc<dyn Fn(&C) -> bool + Send + Sync>;
 pub struct FnPolicy {
     mutation: Option<Decide<MutationAuthorizationContext>>,
     life_safety_operation: Option<Decide<LifeSafetyOperationAuthorizationContext>>,
+    device_communication_control: Option<Decide<DeviceCommunicationControlAuthorizationContext>>,
     audit_notification: Option<Decide<AuditNotificationAuthorizationContext>>,
     unconfirmed_audit_notification:
         Option<Decide<UnconfirmedAuditNotificationAuthorizationContext>>,
@@ -249,6 +275,16 @@ impl FnPolicy {
         decide: impl Fn(&LifeSafetyOperationAuthorizationContext) -> bool + Send + Sync + 'static,
     ) -> Self {
         self.life_safety_operation = Some(Arc::new(decide));
+        self
+    }
+
+    /// Decide DeviceCommunicationControl with `decide`; see
+    /// [`ServerPolicy::authorize_device_communication_control`].
+    pub fn device_communication_control(
+        mut self,
+        decide: impl Fn(&DeviceCommunicationControlAuthorizationContext) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.device_communication_control = Some(Arc::new(decide));
         self
     }
 
@@ -289,6 +325,12 @@ impl<P: ServerPolicy + ?Sized> ServerPolicy for Arc<P> {
     ) -> bool {
         (**self).authorize_life_safety_operation(context)
     }
+    fn authorize_device_communication_control(
+        &self,
+        context: &DeviceCommunicationControlAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_device_communication_control(context)
+    }
     fn authorize_audit_notification(
         &self,
         context: &AuditNotificationAuthorizationContext,
@@ -316,6 +358,12 @@ impl<P: ServerPolicy + ?Sized> ServerPolicy for Box<P> {
     ) -> bool {
         (**self).authorize_life_safety_operation(context)
     }
+    fn authorize_device_communication_control(
+        &self,
+        context: &DeviceCommunicationControlAuthorizationContext,
+    ) -> bool {
+        (**self).authorize_device_communication_control(context)
+    }
     fn authorize_audit_notification(
         &self,
         context: &AuditNotificationAuthorizationContext,
@@ -337,6 +385,10 @@ impl std::fmt::Debug for FnPolicy {
             .field(
                 "life_safety_operation",
                 &self.life_safety_operation.is_some(),
+            )
+            .field(
+                "device_communication_control",
+                &self.device_communication_control.is_some(),
             )
             .field("audit_notification", &self.audit_notification.is_some())
             .field(
@@ -364,6 +416,15 @@ impl ServerPolicy for FnPolicy {
         self.life_safety_operation
             .as_ref()
             .is_some_and(|decide| decide(context))
+    }
+
+    fn authorize_device_communication_control(
+        &self,
+        context: &DeviceCommunicationControlAuthorizationContext,
+    ) -> bool {
+        self.device_communication_control
+            .as_ref()
+            .is_none_or(|decide| decide(context))
     }
 
     fn authorize_audit_notification(
