@@ -27,6 +27,7 @@
 //! declares, and keeping the old class would serve a pair no write could set.
 //! The value octets aren't checked against the Annex P layout of the format.
 
+use crate::prelude::*;
 use bacnet_types::constructed::{BACnetAuthenticationFactor, BACnetAuthenticationFactorFormat};
 use bacnet_types::enums::AuthenticationFactorType;
 

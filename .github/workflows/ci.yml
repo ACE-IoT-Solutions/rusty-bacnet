@@ -289,12 +289,12 @@ jobs:
           rustup target add $NO_STD_TARGETS
           # shellcheck disable=SC2086
           bash scripts/ci/check-no-std.sh $NO_STD_TARGETS
-      # bacnet-types, bacnet-encoding and bacnet-services with alloc and
-      # without std, tests included: Test runs those tests, and no run above
-      # lints them (#1613).
+      # bacnet-types, bacnet-encoding, bacnet-services and bacnet-objects
+      # with alloc and without std, tests included: Test runs those tests,
+      # and no run above lints them (#1613, #1615).
       - name: Clippy (no_std crates with alloc, all targets)
         if: ${{ !cancelled() }}
-        run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
+        run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects --no-default-features --features alloc --all-targets --locked -- -D warnings
       # And without alloc either, the allocation-free profile (#1614).
       - name: Clippy (no_std crates without alloc, all targets)
         if: ${{ !cancelled() }}
@@ -381,14 +381,16 @@ jobs:
         run: cargo nextest run -p bacnet-cli --no-default-features --locked --profile ci
       # The no_std crates with alloc and their std feature off: the code a
       # bare-metal build compiles, which every run above leaves out (#1613).
+      # For bacnet-objects that is the inline save writer, the spin lock and
+      # hashbrown's maps (#1615).
       # The tests themselves still link std; check-no-std.sh shows the code
       # needs none.
       - name: no_std crates' tests (alloc, without std)
         if: ${{ !cancelled() }}
-        run: cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked --profile ci
+        run: cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects --no-default-features --features alloc --locked --profile ci
       - name: no_std crates' doctests (alloc, without std)
         if: ${{ !cancelled() }}
-        run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
+        run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects --no-default-features --features alloc --locked
       # Without alloc either (#1614): the allocation-free profile's code, and
       # tests/no_alloc_subset.rs, which counts the subset's allocations: none.
       - name: no_std crates' tests (without alloc)
@@ -489,7 +491,7 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       # Publishable crates with consumer-visible features, the no_std builds
-      # of bacnet-types, bacnet-encoding and bacnet-services (alloc, no std),
+      # of bacnet-types, bacnet-encoding, bacnet-services and bacnet-objects (alloc, no std),
       # then the ethernet, serial and serial-gpio transport checks and a
       # linked bacnet-cli pcap build.
       - run: bash scripts/ci/check-msrv.sh --linux-native

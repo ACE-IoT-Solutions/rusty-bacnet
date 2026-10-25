@@ -140,6 +140,7 @@ macro_rules! read_identity_properties {
         }
     };
 }
+use crate::prelude::*;
 pub(crate) use read_identity_properties;
 
 /// Common read_property match arms shared by most object types.

@@ -83,7 +83,7 @@ Without `alloc`, the application crates have the enums, the object identifier, t
 - owned property values (`PropertyValue`) and the constructed types;
 - every encoder that writes into a growable `BytesMut` buffer.
 
-`bacnet-objects`, with its object database, and the Tokio client, server and transports need the standard library. Firmware that wants them today builds the application crates with `alloc` and supplies a global allocator; the `apdu` firmware image does that with a one-kilobyte heap.
+`bacnet-objects`, with its object database, builds without the standard library too, given an allocator and a target with atomic compare-and-swap (so not ARMv6-M): depend on it with `default-features = false, features = ["alloc"]`. Each save then runs on the caller's thread, and the application supplies the storage; the file backends need the standard library. The Tokio client, server and transports need the standard library. Firmware that wants the application crates builds them with `alloc` and supplies a global allocator; the `apdu` firmware image does that with a one-kilobyte heap.
 
 ## Sources
 

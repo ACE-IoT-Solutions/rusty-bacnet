@@ -1,5 +1,7 @@
 //! Schedule (type 17) and Calendar (type 6) objects per ASHRAE 135-2020.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_encoding::constructed::{
     encode_daily_schedule, encode_date_range, encode_special_event,
 };
@@ -13,7 +15,6 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use bytes::BytesMut;
-use std::borrow::Cow;
 
 use crate::common::{self, read_property_list_property};
 use crate::traits::BACnetObject;
@@ -570,7 +571,7 @@ impl BACnetObject for ScheduleObject {
             self.held = None;
             return None;
         };
-        let entered = !std::mem::replace(&mut self.in_effective_period, true);
+        let entered = !core::mem::replace(&mut self.in_effective_period, true);
         if !entered && !self.rewrite_owed && value == self.present_value {
             // Nothing new for the list; offer the value again only to the
             // references that refused it (`reliability.rs`, #1436).

@@ -8140,9 +8140,10 @@ COV/event fan-out, and no audit-log write (counters and bounded diagnostics
 only). This policy governs standalone-server mutations; direct handler calls
 and trusted local writes stay outside it. The shared endpoint's narrow
 [Device-write authorizer](#authorized-endpoint-device-writes) is configured
-separately. Python exposes the same native static policy through
-`BACnetServer(..., mutation_policy="permissive" | "deny_all")`, without a Python
-policy callback. See
+separately. Python exposes the same native policy through
+`BACnetServer(..., mutation_policy="permissive" | "deny_all" | callable)`, and
+the endpoints' Device-write authorizer through their `device_write_policy`
+callable (#2033). See
 [Server authorization policy](mutation-policy.md).
 
 ### Life Safety execution and COV

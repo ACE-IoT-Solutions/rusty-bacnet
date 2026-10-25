@@ -206,17 +206,27 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// denies without asking.
     ///
     /// WritePropertyMultiple asks once per decoded, validated element, in
-    /// wire order, just before that element's write, with the database
-    /// write-locked. A denial, or a malformed later element, leaves the
-    /// elements before it written. An element that an object saves before
-    /// serving it (a Notification Forwarder's or Notification Class's list,
-    /// an Access Rights object's rules, Enable or Accompaniment, an Audit
-    /// Log's Log_Enable or Buffer_Size) is asked about earlier, under a
-    /// database read guard, before the save is staged off the write lock
-    /// (#1321). It is still asked once and in wire order among such
-    /// elements, so the policy can be asked about an element the request
-    /// never reaches. The other confirmed services ask once, for the whole
-    /// decoded request.
+    /// wire order, up to the first it denies, all before the database is
+    /// write-locked and with no database guard held (#2032); the writes
+    /// follow under the lock. A denial, or a malformed later element, leaves
+    /// the elements before it written. Since every element is asked about
+    /// first, the policy can be asked about an element the request never
+    /// reaches, when an earlier one fails as it is written. An element whose
+    /// object appears between the decisions and the writes, so it was never
+    /// asked about, is denied. The other confirmed services ask once, for
+    /// the whole decoded request, also with no database guard held.
+    ///
+    /// Every call for a received request runs on Tokio's blocking pool while
+    /// the request waits (#2032), so a policy that blocks delays only that
+    /// request: it holds no runtime worker, and `BACnetServer::stop` ends
+    /// without waiting for it (the abandoned call finishes on its own and is
+    /// ignored). That costs one trip to the pool per request (a
+    /// WritePropertyMultiple's elements share one; WriteGroup makes one per
+    /// Channel), so keep the policy quick all the same. A call that never
+    /// returns keeps its blocking thread after `stop()`, and a Tokio runtime
+    /// waits for blocking tasks when it shuts down, so such a policy keeps
+    /// the process from exiting. The other `authorize_*` methods for a
+    /// received request run the same way.
     ///
     /// An inbound WriteGroup asks once per Channel it would write, with no
     /// database guard held, no invoke ID and the unconfirmed service in the
@@ -231,8 +241,10 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// Whether to carry out a LifeSafetyOperation (default: deny).
     ///
     /// Asked after the request is validated and its object found, with no
-    /// database guard held. A denial is answered SERVICES /
-    /// SERVICE_REQUEST_DENIED before the object changes.
+    /// database guard held, on Tokio's blocking pool as
+    /// [`authorize_mutation`](Self::authorize_mutation) is (#2032). A denial
+    /// is answered SERVICES / SERVICE_REQUEST_DENIED before the object
+    /// changes.
     fn authorize_life_safety_operation(
         &self,
         context: &LifeSafetyOperationAuthorizationContext,
@@ -249,8 +261,9 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// restriction; a request any of them refuses never reaches the policy.
     /// For DISABLE_INITIATION the disable rate limit is charged only after
     /// the policy allows, so a denied requester spends none of that shared
-    /// budget. Asked with no lock held, before the timer is replaced or the
-    /// state changes. A denial is answered SERVICES /
+    /// budget. Asked with no lock held, on Tokio's blocking pool as
+    /// [`authorize_mutation`](Self::authorize_mutation) is (#2032), before
+    /// the timer is replaced or the state changes. A denial is answered SERVICES /
     /// SERVICE_REQUEST_DENIED, changes neither the state nor a running
     /// timer, writes no Audit record and is counted in
     /// `BACnetServer::dcc_outcome_counters` as `policy_denied_total`, which
@@ -267,8 +280,9 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// Audit Log sink (default: deny).
     ///
     /// Asked after the request is decoded and checked against completed
-    /// receipts, with no database guard held. A denial is answered
-    /// SERVICES / SERVICE_REQUEST_DENIED and stores nothing.
+    /// receipts, with no database guard held, on Tokio's blocking pool as
+    /// [`authorize_mutation`](Self::authorize_mutation) is (#2032). A denial
+    /// is answered SERVICES / SERVICE_REQUEST_DENIED and stores nothing.
     fn authorize_audit_notification(
         &self,
         context: &AuditNotificationAuthorizationContext,
@@ -280,8 +294,10 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// Whether to store an UnconfirmedAuditNotification in the configured
     /// Audit Log sink (default: deny).
     ///
-    /// Asked after the request is decoded, with no database guard held. A
-    /// denial drops the request silently and stores nothing.
+    /// Asked after the request is decoded, with no database guard held, on
+    /// Tokio's blocking pool as
+    /// [`authorize_mutation`](Self::authorize_mutation) is (#2032). A denial
+    /// drops the request silently and stores nothing.
     fn authorize_unconfirmed_audit_notification(
         &self,
         context: &UnconfirmedAuditNotificationAuthorizationContext,

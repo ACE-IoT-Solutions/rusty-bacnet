@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -56,7 +56,7 @@ pub(super) fn for_object(object: &AuditLogObject) -> Cow<'_, [PropertyMetadata]>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use crate::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
     use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};

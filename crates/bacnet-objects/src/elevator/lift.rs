@@ -1,5 +1,7 @@
 //! The Lift object (type 59, Clause 12.59).
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::constructed::{
     BACnetAssignedLandingCalls, BACnetDeviceObjectReference, BACnetLandingDoorStatus,
     BACnetLiftCarCallList,
@@ -10,7 +12,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
-use std::borrow::Cow;
 
 use super::car_state::{self, CarState};
 use super::doors::CarDoors;

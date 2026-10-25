@@ -4,9 +4,10 @@
 //! device-level properties such as vendor info, protocol support,
 //! and configuration parameters.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::collections::HashMap;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
 
 use bacnet_encoding::primitives::encode_timestamp_choice;
 use bacnet_types::enums::{
@@ -788,7 +789,7 @@ impl BACnetObject for DeviceObject {
         self.profile.capability()
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
         self.profile.expire(now);
         false
     }

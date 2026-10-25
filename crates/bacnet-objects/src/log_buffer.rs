@@ -1,6 +1,7 @@
 //! Shared resident storage and identity projection for BACnet log objects.
 
-use std::collections::VecDeque;
+use crate::prelude::*;
+use alloc::collections::VecDeque;
 
 use bacnet_encoding::constructed::{
     encode_event_log_record, encode_log_multiple_record, encode_log_record,

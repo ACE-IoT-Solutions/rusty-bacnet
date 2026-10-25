@@ -4412,18 +4412,19 @@ MutationHandler = Callable[[MutationContext], bool]
 with SERVICES / SERVICE_REQUEST_DENIED (a denied WriteGroup Channel is
 skipped silently).
 
-It runs on the server's dispatch path, for WritePropertyMultiple with the
-device's objects write-locked, so decide from the context alone,
-synchronously and quickly: no awaiting, no I/O, no waiting on the event loop
-or another thread, no calls back into the server. A callable that waits (a
-``run_coroutine_threadsafe(...).result()``, say) holds that lock and hangs
-every client and ``stop()``, not just its own request.
+It runs with no database lock held, on a worker thread of its own while the
+request waits, and is asked about all of a WritePropertyMultiple's elements
+before any is written. A callable that blocks delays only its own request,
+not other clients or ``stop()``, which drops that request. But a callable
+that never returns keeps the process from exiting: interpreter exit waits for
+every thread inside the bindings. Still decide from the context alone,
+synchronously and quickly; binding operations started from it are refused.
 
 An exception, a value other than a bool, or interpreter shutdown denies. The
 denied mutation changes nothing, but earlier elements of the same
-WritePropertyMultiple stay written; and an element that saves before it is
-served can be asked about (under a read lock) even when the request never
-reaches it."""
+WritePropertyMultiple stay written, and the callable can be asked about an
+element the request never reaches, when an earlier one fails as it is
+written."""
 
 
 class BACnetServer:
@@ -6489,7 +6490,8 @@ class EndpointClient:
 class EndpointServer:
     """Server role cloned from a running endpoint (no lifecycle).
 
-    The responder executes ``read_property`` automatically, and
+    The responder executes ``read_property`` automatically, WriteProperty to
+    the local Device through the owner's ``device_write_policy``, and
     ReinitializeDevice through the owner's ``on_reinitialize``, the one
     Python callback that runs under a native lock; this handle exposes
     liveness plus the MS/TP deferred-reply seam.
@@ -6504,8 +6506,9 @@ class EndpointServer:
         ...
 
     def service_scope(self) -> dict[str, Any]:
-        """Narrow scope: executes ``read_property``, plus
-        ``reinitialize_device`` when the owner has ``on_reinitialize``."""
+        """Narrow scope: executes ``read_property``, plus ``write_property``
+        when the owner has ``device_write_policy`` and
+        ``reinitialize_device`` when it has ``on_reinitialize``."""
         ...
 
 class BipEndpoint:
@@ -6559,12 +6562,22 @@ class BipEndpoint:
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
+        device_write_policy: Optional[MutationHandler] = None,
     ) -> None:
         """``on_reinitialize`` / ``after_reinitialize``: execute
         ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
         ``reinit_password`` (needs ``on_reinitialize``, else ValueError) is
         the password a request must carry. The callable runs on the session's
         one dispatch task, so a slow one stalls every request.
+        ``device_write_policy``: a callable that decides each WriteProperty
+        to the local Device's Description or installed Audit recipient
+        (#2033). It gets a ``MutationContext`` and returns a bool, with the
+        fail-closed rules of ``BACnetServer``'s ``mutation_policy`` callable:
+        an exception, a non-bool or interpreter shutdown denies with SERVICES
+        / SERVICE_REQUEST_DENIED. Without it the endpoint executes no
+        WriteProperty. It runs with no lock held, but on the session's one
+        dispatch task, so it too should decide quickly: while it runs, other
+        requests and ``close()`` wait for it.
         ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
         the endpoint as a BBMD, or register it as a foreign device (#938).
         ``read_work_limit``: result rows one ReadProperty served by the
@@ -6685,10 +6698,11 @@ class ScEndpoint:
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
+        device_write_policy: Optional[MutationHandler] = None,
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
-        ``on_reinitialize``, ``after_reinitialize`` and ``reinit_password``
-        are as for ``BipEndpoint``."""
+        ``on_reinitialize``, ``after_reinitialize``, ``reinit_password`` and
+        ``device_write_policy`` are as for ``BipEndpoint``."""
         ...
 
     def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
@@ -6794,12 +6808,14 @@ class MstpEndpoint:
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
+        device_write_policy: Optional[MutationHandler] = None,
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
-        ``on_reinitialize``, ``after_reinitialize`` and ``reinit_password``
-        are as for ``BipEndpoint``. Here ``after_reinitialize`` runs once the
-        SimpleACK is queued, before the token sends it: stopping the endpoint
-        at once can drop the reply, so wait a short while first.
+        ``on_reinitialize``, ``after_reinitialize``, ``reinit_password`` and
+        ``device_write_policy`` are as for ``BipEndpoint``. Here
+        ``after_reinitialize`` runs once the SimpleACK is queued, before the
+        token sends it: stopping the endpoint at once can drop the reply, so
+        wait a short while first.
 
         ``max_apdu`` must fit the link: 480 by default, or 1476 with
         ``mstp_extended_frames=True``, which turns on extended frames (Types

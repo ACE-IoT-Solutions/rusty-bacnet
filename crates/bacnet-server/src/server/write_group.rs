@@ -97,8 +97,9 @@ struct Requester<'a> {
 
 impl Requester<'_> {
     /// Whether local policy lets `write`, one Channel write of `request`, go
-    /// ahead; the decision is counted.
-    fn admits(&self, request: &WriteGroupRequest, write: &GroupWrite<'_>) -> bool {
+    /// ahead; the decision is counted. An installed policy is asked off the
+    /// request task, as for the confirmed services (#2032).
+    async fn admits(&self, request: &WriteGroupRequest, write: &GroupWrite<'_>) -> bool {
         let decision = if self.config.mutation_policy == MutationPolicy::DenyAll {
             MutationDecision::PolicyDeny
         } else if let Some(policy) = self.config.mutation_decider() {
@@ -119,7 +120,7 @@ impl Requester<'_> {
                 }),
             };
             // A callback that panics denies, as for the confirmed services.
-            if super::requests::fail_closed_authorize(|| policy.authorize_mutation(&context)) {
+            if super::requests::ask_mutation_policy(policy, vec![context]).await == [true] {
                 MutationDecision::Allow
             } else {
                 MutationDecision::Deny
@@ -287,7 +288,7 @@ async fn apply<T: TransportPort + 'static>(
 ) {
     let writer = runner.writer();
     for write in writes {
-        if !requester.admits(request, write) {
+        if !requester.admits(request, write).await {
             debug!(
                 channel = %write.channel,
                 priority = write.priority,

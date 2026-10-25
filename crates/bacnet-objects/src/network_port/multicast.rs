@@ -19,7 +19,7 @@
 //! with them, and takes effect in the same activation, both or neither
 //! (#1963).
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use bacnet_types::bip_port::{BbmdChanges, BbmdTables, IpMulticast};
 use bacnet_types::enums::PropertyIdentifier as P;

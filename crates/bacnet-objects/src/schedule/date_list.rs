@@ -22,6 +22,7 @@
 //! [`MAX_DATE_LIST_ENTRIES`] entries is NO_SPACE_TO_WRITE_PROPERTY. Entries
 //! are checked in order, so the first offending entry decides the error.
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::{decode_calendar_entry, encode_calendar_entry};
 use bacnet_encoding::tags::{self, TagClass};
 use bacnet_types::constructed::BACnetCalendarEntry;
