@@ -180,6 +180,7 @@ impl BACnetServer {
             dcc_source_restriction,
             dcc_disable_rate_limit,
         )?;
+        crate::reinitialize::password_limit("reinit_password", &reinit_password)?;
         let super::constructor_budgets::Budgets {
             request_admission_policy,
             read_property_multiple_budget,

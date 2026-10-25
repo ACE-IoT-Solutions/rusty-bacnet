@@ -4543,7 +4543,10 @@ class BACnetServer:
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
     ) -> None:
-        """``on_reinitialize`` (default None): carry out ReinitializeDevice
+        """``dcc_password`` and ``reinit_password`` hold at most 20
+        characters; a longer one raises ValueError here (#2060).
+
+        ``on_reinitialize`` (default None): carry out ReinitializeDevice
         (#1566). It is called with a ``ReinitializeRequest`` once a request
         has passed its password and state checks, while the server holds its
         object database, so it must return at once: no awaiting, no blocking,
@@ -6586,8 +6589,9 @@ class BipEndpoint:
     ) -> None:
         """``on_reinitialize`` / ``after_reinitialize``: execute
         ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
-        ``reinit_password`` (needs ``on_reinitialize``, else ValueError) is
-        the password a request must carry. The callable runs on the session's
+        ``reinit_password`` (needs ``on_reinitialize``, else ValueError; at
+        most 20 characters, else ValueError) is the password a request must
+        carry. The callable runs on the session's
         one dispatch task, so a slow one stalls every request.
         ``device_write_policy``: a callable that decides each WriteProperty
         to the local Device's Description or installed Audit recipient

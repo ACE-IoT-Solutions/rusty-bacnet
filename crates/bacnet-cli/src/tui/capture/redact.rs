@@ -19,9 +19,12 @@
 //! in place. The frame is marked, and
 //! the detail view says the password was redacted.
 //!
-//! A segmented request is left alone: neither request can be segmented,
-//! since the largest (a DCC with a 20-character password) is about 35
-//! octets of APDU, under the 50 every device accepts (Clause 20.1.2.5).
+//! A segmented request is left alone. With an ASCII password neither
+//! request needs segmenting: the largest (a DCC with a 20-character
+//! password) is about 35 octets of APDU, under the 50 every device accepts
+//! (Clause 20.1.2.5). The limit counts characters (#2060), though, so a
+//! multi-octet UTF-8 password can take a DCC to about 95 octets, which a
+//! peer accepting only 50 receives segmented, and unmasked.
 //! Frames this node received are other nodes' traffic and kept as heard.
 
 use bacnet_encoding::tags::{TagClass, decode_tag};
