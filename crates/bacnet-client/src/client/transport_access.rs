@@ -99,8 +99,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 /// BBMD management helpers (Annex J), for a client whose transport is B/IP.
 ///
 /// They work on a client over [`BipTransport`], and on one over
-/// [`AnyTransport`] when its variant is `Bip`. Each request fails with a [`BvlcExchangeError`]: a NAK, no reply,
-/// or a local failure. On any other variant each returns
+/// [`AnyTransport`] when its variant is `Bip`. Each request fails with a
+/// [`BvlcExchangeError`]: a NAK, no reply, or a local failure. On any other
+/// variant each returns
 /// [`Error::UnsupportedTransport`], as [`BvlcExchangeError::Transport`],
 /// before sending anything.
 ///

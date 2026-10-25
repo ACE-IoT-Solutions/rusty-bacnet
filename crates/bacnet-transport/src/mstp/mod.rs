@@ -159,6 +159,11 @@ pub trait SerialPort: Send + Sync + 'static {
     /// as it does at the first read error: it counts the end in
     /// [`MstpDiagnosticsSnapshot::serial_read_errors`] and logs it, and the
     /// application finds the NPDU channel closed and its sends refused.
+    ///
+    /// The future must be cancel-safe: the transport races it against its
+    /// timers and drops it, unfinished, whenever a deadline comes first, so
+    /// octets it has taken from the line must not be lost when it is
+    /// dropped before returning them.
     fn read(
         &self,
         buf: &mut [u8],

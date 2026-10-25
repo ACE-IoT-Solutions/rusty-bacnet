@@ -74,6 +74,8 @@ impl BoxedSerial {
     /// Box `port`. A port that is already a `BoxedSerial` is returned as
     /// it is, not boxed a second time.
     pub fn new<S: SerialPort>(port: S) -> Self {
+        // Nothing can be moved out through `&mut dyn Any`, so the port sits
+        // in an `Option` the downcast can take it from.
         let mut slot = Some(port);
         if let Some(boxed) = (&mut slot as &mut dyn Any).downcast_mut::<Option<Self>>()
             && let Some(boxed) = boxed.take()
