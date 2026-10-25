@@ -632,7 +632,7 @@ async fn direct_channel_allows_where_unknown_leaf_denies() {
     use bacnet_transport::sc::WebSocketPort;
     let (direct, response, mut listener, peer) = direct_peer().await;
     assert_eq!(
-        MutationTrust::from_provenance(direct.clone()),
+        MutationTrust::from_provenance(&direct),
         MutationTrust::VerifiedChannel
     );
     let (authorizer, seen) = capturing(|context| context.trust != MutationTrust::Unverified);

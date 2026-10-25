@@ -188,7 +188,7 @@ async fn wpm_elements_share_one_reassembled_snapshot() {
         assert!(
             contexts
                 .iter()
-                .all(|context| context.trust == MutationTrust::from_provenance(provenance.clone()))
+                .all(|context| context.trust == MutationTrust::from_provenance(&provenance))
         );
     }
 }

@@ -12,9 +12,10 @@
 //!   It wins over any policy, which isn't asked, and its denials are counted
 //!   apart.
 //! - DeviceCommunicationControl's password, static
-//!   [`DccPolicy`](crate::server::DccPolicy), source restriction and rate
-//!   limit are settings, not callbacks. They are checked first; the policy
-//!   is asked only about a request that passes all of them.
+//!   [`DccPolicy`](crate::server::DccPolicy), source restriction and
+//!   disable rate limit are settings, not callbacks. The policy is asked
+//!   after the password, `DccPolicy` and source checks, and before the rate
+//!   limit is charged.
 //! - `on_reinitialize` carries out a restart rather than deciding on one,
 //!   and runs after the server's own checks.
 //! - `on_time_sync` observes a change it can't refuse.
@@ -243,16 +244,17 @@ pub trait ServerPolicy: Send + Sync + 'static {
     /// Whether to carry out a DeviceCommunicationControl request (default:
     /// allow).
     ///
-    /// Asked after the server's own checks, in this order: decoding, the
-    /// password, the deprecated DISABLE refusal, the static
-    /// [`DccPolicy`](crate::server::DccPolicy), the source restriction and,
-    /// for DISABLE_INITIATION, the disable rate limit. A request any of them
-    /// refuses never reaches the policy; one it reaches has already used a
-    /// slot of the rate limit. Asked with no lock held, before the timer is
-    /// replaced or the state changes. A denial is answered SERVICES /
+    /// Asked after decoding, the password, the deprecated DISABLE refusal,
+    /// the static [`DccPolicy`](crate::server::DccPolicy) and the source
+    /// restriction; a request any of them refuses never reaches the policy.
+    /// For DISABLE_INITIATION the disable rate limit is charged only after
+    /// the policy allows, so a denied requester spends none of that shared
+    /// budget. Asked with no lock held, before the timer is replaced or the
+    /// state changes. A denial is answered SERVICES /
     /// SERVICE_REQUEST_DENIED, changes neither the state nor a running
     /// timer, writes no Audit record and is counted in
-    /// `BACnetServer::dcc_outcome_counters` as `policy_denied_total`.
+    /// `BACnetServer::dcc_outcome_counters` as `policy_denied_total`, which
+    /// also counts the static source and rate-limit refusals.
     fn authorize_device_communication_control(
         &self,
         context: &DeviceCommunicationControlAuthorizationContext,

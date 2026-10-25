@@ -55,7 +55,8 @@ impl ScCertificateMetadata {
     /// The DNS, URI, email and IP Subject Alternative Names, unescaped and
     /// in certificate order (#1965). Other name forms are left out, and a
     /// missing, repeated or malformed extension gives none, so a rule should
-    /// allow on a name it finds rather than deny on one it misses.
+    /// allow on a name it finds rather than deny on one it misses. Match by
+    /// exact equality; see [`ScSubjectAltName`] for what that means.
     pub fn subject_alt_names(&self) -> &[ScSubjectAltName] {
         &self.subject_alt_names
     }

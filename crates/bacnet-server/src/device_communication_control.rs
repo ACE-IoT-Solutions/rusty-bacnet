@@ -8,9 +8,9 @@ use bacnet_types::MacAddr;
 /// Network identity and the requested change supplied to
 /// [`ServerPolicy::authorize_device_communication_control`](crate::ServerPolicy::authorize_device_communication_control).
 ///
-/// The policy is asked only once the server's own DCC checks pass: the
-/// password, the static [`DccPolicy`](crate::server::DccPolicy), the source
-/// restriction and the disable rate limit. The password is never part of
+/// The policy is asked only once the password, the static
+/// [`DccPolicy`](crate::server::DccPolicy) and the source restriction pass,
+/// and before the disable rate limit is charged. The password is never part of
 /// the context. `Debug` is redacted: address lengths and whether a principal
 /// is present, never addresses or certificate data.
 #[derive(Clone, PartialEq, Eq)]

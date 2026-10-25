@@ -48,7 +48,7 @@ pub enum MutationTrust {
 
 impl MutationTrust {
     /// Derive the channel/relay scope from one reassembled ingress snapshot.
-    pub fn from_provenance(provenance: TransportProvenance) -> Self {
+    pub fn from_provenance(provenance: &TransportProvenance) -> Self {
         if provenance.is_direct_peer() || provenance.is_hub_channel() {
             Self::VerifiedChannel
         } else if provenance.is_relayed_origin() {

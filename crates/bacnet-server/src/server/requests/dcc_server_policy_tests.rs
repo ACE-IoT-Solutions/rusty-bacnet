@@ -1,6 +1,7 @@
 //! DeviceCommunicationControl through `ServerPolicy` (#1964): the policy is
-//! asked last, after every static DCC check, and a denial or a panic leaves
-//! the state and any running timer as they were.
+//! asked after the password, static policy and source checks (and before the
+//! disable rate charge), and a denial or a panic leaves the state and any
+//! running timer as they were.
 use super::*;
 use crate::ServerPolicy;
 use crate::device_communication_control::DeviceCommunicationControlAuthorizationContext;

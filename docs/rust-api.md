@@ -8057,9 +8057,10 @@ cover only the elements the handler reaches.
 Policies must be fast, nonblocking, and side-effect-free. Context addresses and
 process IDs are claimed, not authenticated identities. DeviceCommunicationControl
 has its own method, `authorize_device_communication_control` (allow by default),
-asked only after the DCC password, static `DccPolicy`, source restriction and
-disable rate limit all pass (#1964); a denial or panic answers
-`SERVICES / SERVICE_REQUEST_DENIED` and counts as `policy_denied_total`. Reinit, reads,
+asked after the DCC password, static `DccPolicy` and source restriction pass and
+before the disable rate limit is charged (#1964); a denial or panic answers
+`SERVICES / SERVICE_REQUEST_DENIED` and counts as `policy_denied_total`, which also
+counts static source and rate-limit refusals. Reinit, reads,
 discovery, trusted local writes and unconfirmed services other than WriteGroup
 are outside it. An inbound WriteGroup is decided once per Channel write it would make
 (#1319): the context's `target` is `MutationTarget::WriteGroup`, its `invoke_id` is

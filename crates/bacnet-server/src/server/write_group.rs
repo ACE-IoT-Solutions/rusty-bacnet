@@ -106,7 +106,7 @@ impl Requester<'_> {
                 source_mac: MacAddr::from_slice(self.source_mac),
                 source_network: self.source_network.cloned(),
                 provenance: self.provenance.clone(),
-                trust: MutationTrust::from_provenance(self.provenance.clone()),
+                trust: MutationTrust::from_provenance(&self.provenance),
                 invoke_id: None,
                 service_choice: WRITE_GROUP,
                 target: MutationTarget::WriteGroup(WriteGroupTarget {

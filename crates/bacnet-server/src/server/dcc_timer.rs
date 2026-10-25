@@ -108,10 +108,10 @@ pub(super) async fn replace<T: TransportPort + 'static>(
     let (proposed, duration) =
         handlers::device_mgmt::validate_dcc(service_data, &config.dcc_password, config.dcc_policy)?;
     let mode = bacnet_types::enums::EnableDisable::from(proposed).to_raw();
-    // Short-circuit source refusal before touching the shared budget. ENABLE
-    // never checks it. A successful charge precedes every cancellable await.
-    // The installed ServerPolicy is asked last, about a request every static
-    // check accepted (#1964); a panic in it denies.
+    // Short-circuit source refusal, then the installed ServerPolicy (#1964; a
+    // panic in it denies), before touching the shared disable budget, so a
+    // refused requester never spends it. ENABLE never checks the budget. A
+    // successful charge precedes every cancellable await.
     if config
         .dcc_source_restriction
         .as_ref()
@@ -119,7 +119,6 @@ pub(super) async fn replace<T: TransportPort + 'static>(
             config.dcc_policy != DccPolicy::RequirePassword
                 || !restriction.allows(source_mac, source, local_network)
         })
-        || (proposed == DccState::DisableInitiation && !request_tasks.admit_dcc_disable())
         || config.policy.as_ref().is_some_and(|policy| {
             let context = DeviceCommunicationControlAuthorizationContext {
                 source_mac: MacAddr::from_slice(source_mac),
@@ -133,6 +132,7 @@ pub(super) async fn replace<T: TransportPort + 'static>(
                 policy.authorize_device_communication_control(&context)
             })
         })
+        || (proposed == DccState::DisableInitiation && !request_tasks.admit_dcc_disable())
     {
         return Err(handlers::device_mgmt::DccFailure {
             error: Error::Protocol {

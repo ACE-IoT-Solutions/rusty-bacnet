@@ -226,7 +226,7 @@ impl EndpointResponder {
             source_mac: received.source_mac.clone(),
             source_network: received.source_network.clone(),
             provenance: received.provenance.clone(),
-            trust: MutationTrust::from_provenance(received.provenance.clone()),
+            trust: MutationTrust::from_provenance(&received.provenance),
             invoke_id: Some(request.invoke_id),
             service_choice: request.service_choice.into(),
             target: MutationTarget::WriteProperty(write),

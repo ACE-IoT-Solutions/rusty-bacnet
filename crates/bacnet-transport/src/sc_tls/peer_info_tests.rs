@@ -92,3 +92,52 @@ fn subject_alt_names_are_read_in_order_and_hidden_from_debug() {
     let info = ScPeerCertificate::new(cert.der());
     assert!(info.metadata().unwrap().subject_alt_names().is_empty());
 }
+
+/// A raw Subject Alternative Name extension (OID 2.5.29.17) with `content`.
+fn raw_san(content: &[u8]) -> rcgen::CustomExtension {
+    rcgen::CustomExtension::from_oid_content(&[2, 5, 29, 17], content.to_vec())
+}
+
+// GeneralNames holding the one dNSName "b".
+const SAN_B: [u8; 5] = [0x30, 0x03, 0x82, 0x01, b'b'];
+
+#[test]
+fn a_repeated_subject_alt_name_extension_gives_no_names() {
+    // The parser accepts the certificate; the names it would give are
+    // ambiguous, so none are returned.
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(vec!["a".into()]).unwrap();
+    params.custom_extensions = vec![raw_san(&SAN_B)];
+    let cert = params.self_signed(&key).unwrap();
+    let info = ScPeerCertificate::new(cert.der());
+    assert!(info.metadata().unwrap().subject_alt_names().is_empty());
+
+    // Either extension alone gives its name.
+    params.custom_extensions.clear();
+    let cert = params.self_signed(&key).unwrap();
+    let names = ScPeerCertificate::new(cert.der());
+    assert_eq!(
+        names.metadata().unwrap().subject_alt_names(),
+        [ScSubjectAltName::Dns("a".into())]
+    );
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.custom_extensions = vec![raw_san(&SAN_B)];
+    let cert = params.self_signed(&key).unwrap();
+    let names = ScPeerCertificate::new(cert.der());
+    assert_eq!(
+        names.metadata().unwrap().subject_alt_names(),
+        [ScSubjectAltName::Dns("b".into())]
+    );
+}
+
+#[test]
+fn trailing_bytes_after_the_subject_alt_names_give_no_names() {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    let mut trailing = SAN_B.to_vec();
+    trailing.push(0);
+    params.custom_extensions = vec![raw_san(&trailing)];
+    let cert = params.self_signed(&key).unwrap();
+    let info = ScPeerCertificate::new(cert.der());
+    assert!(info.metadata().unwrap().subject_alt_names().is_empty());
+}

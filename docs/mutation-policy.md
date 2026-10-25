@@ -39,13 +39,15 @@ Outside the policy, and why:
 - `MutationPolicy::DenyAll` is a static hardening switch. It denies every covered
   mutation without asking the policy, and its denials are counted apart.
 - DeviceCommunicationControl's password, static `DccPolicy`, source restriction
-  and rate limit are settings ([DCC policy](dcc-policy.md)), checked first. The
-  policy's `authorize_device_communication_control` is asked only about a request
-  that passes all of them (#1964), with the requested state and duration in its
-  context; a refused request never reaches it, and a disable it reaches has
-  already used a rate-limit slot. A denial or panic answers
-  `SERVICES / SERVICE_REQUEST_DENIED`, as other policy denials do, leaves the state
-  and any running timer alone, and counts as `policy_denied_total`.
+  and disable rate limit are settings ([DCC policy](dcc-policy.md)). The policy's
+  `authorize_device_communication_control` is asked after the password,
+  `DccPolicy` and source checks pass (#1964), with the requested state and
+  duration in its context, and before the shared DISABLE_INITIATION rate limit
+  is charged, so a requester the policy denies can't spend that budget. A denial
+  or panic answers `SERVICES / SERVICE_REQUEST_DENIED`, as other policy denials
+  do, leaves the state and any running timer alone, and counts as
+  `policy_denied_total` (which also counts the static source and rate-limit
+  refusals).
 - `on_reinitialize` carries out a ReinitializeDevice after the server's own checks;
   it acts rather than decides, and stays its own handler.
 - `on_time_sync` observes a clock change it can't refuse.
@@ -150,8 +152,13 @@ let policy = FnPolicy::new().mutation(|context| {
 ```
 
 Allow on a name found rather than deny on one missing: other name forms, and a
-missing or malformed extension, give no names, and the subject and issuer are
-escaped and bounded (`text_truncated()`). Certificate contents are the peer's:
+missing, repeated or malformed extension, give no names, and the subject and
+issuer are escaped and bounded (`text_truncated()`). Compare names for exact
+equality. Matching is byte for byte: DNS case isn't folded, a wildcard such as
+`*.example.com` comes back as written and is not expanded, names may hold UTF-8
+outside the IA5 range, and IP names compare as `IpAddr`, so an IPv4-mapped IPv6
+name doesn't equal the IPv4 one. Don't match by suffix: `evil-operator.example`
+ends with `operator.example`. Certificate contents are the peer's:
 neither the contexts' nor the certificate's `Debug` shows them, and a policy
 shouldn't log them.
 

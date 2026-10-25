@@ -10,8 +10,12 @@ use x509_parser::prelude::{FromDer, X509Certificate};
 /// One Subject Alternative Name of a certificate, as written in it.
 ///
 /// Names keep the certificate's exact text, unescaped, for comparing
-/// against configured values; nothing here checks their syntax. `Debug`
-/// shows only the kind, never the name.
+/// against configured values; nothing here checks their syntax. Compare for
+/// exact equality, byte for byte: DNS case is not folded, a wildcard such as
+/// `*.example.com` is returned as written and never expanded, names may hold
+/// UTF-8 outside the IA5 range, and an IP name compares as an [`IpAddr`], so
+/// an IPv4-mapped IPv6 name is not equal to the IPv4 one. Don't match by
+/// suffix. `Debug` shows only the kind, never the name.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ScSubjectAltName {
