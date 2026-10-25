@@ -85,6 +85,7 @@ impl Process {
         })
     }
 
+    #[allow(dead_code)] // Only the shared-endpoint guide tests retirement.
     pub fn retirement(&self) -> Retirement {
         self.retired.clone()
     }
