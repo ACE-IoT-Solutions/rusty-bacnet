@@ -15,7 +15,7 @@ use bacnet_encoding::constructed::tagged::{
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::{EnableDisable, ReinitializedState};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodingKind, Error};
 use bacnet_types::primitives::{Date, Time};
 use bytes::BytesMut;
 
@@ -43,6 +43,14 @@ pub fn password_fits(password: &str) -> bool {
 /// `String`, one `char` per character of the sender's set.
 fn password_too_long(password: Option<&String>) -> bool {
     password.is_some_and(|s| !password_fits(s))
+}
+
+/// A decoded password longer than [`MAX_PASSWORD_CHARS`]: its encoding is
+/// valid, only its size is outside the service's range, so a responder
+/// rejects it as PARAMETER_OUT_OF_RANGE (#2085). `offset` is where the
+/// password member starts.
+fn password_out_of_range(offset: usize, label: &'static str) -> Error {
+    Error::decoding_kind(DecodingKind::OutOfRange, offset, label)
 }
 
 /// Refuse to encode a password longer than [`MAX_PASSWORD_CHARS`] (#2085):
@@ -108,7 +116,7 @@ impl DeviceCommunicationControlRequest {
             decode_optional_ctx(data, offset, 2, "DCC password", decode_ctx_character_string)?;
         expect_end(data, end, end, "DCC")?;
         if password_too_long(password.as_ref()) {
-            return Err(Error::decoding(
+            return Err(password_out_of_range(
                 offset,
                 "DCC password exceeds 20 characters",
             ));
@@ -169,7 +177,7 @@ impl ReinitializeDeviceRequest {
         )?;
         expect_end(data, end, end, "ReinitializeDevice")?;
         if password_too_long(password.as_ref()) {
-            return Err(Error::decoding(
+            return Err(password_out_of_range(
                 offset,
                 "ReinitializeDevice password exceeds 20 characters",
             ));

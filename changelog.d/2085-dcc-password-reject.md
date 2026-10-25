@@ -1,5 +1,6 @@
 ---
 section: Fixed
 ---
-- **Wire:** a server answers a DCC request whose password is over 20
-  characters with a Reject, as it already did for ReinitializeDevice (#2085).
+- **Wire:** a server rejects a DCC or ReinitializeDevice password over 20
+  characters with PARAMETER_OUT_OF_RANGE. DCC used to answer with an Error
+  (SERVICES, OTHER) and ReinitializeDevice with INVALID_DATA_ENCODING (#2085).

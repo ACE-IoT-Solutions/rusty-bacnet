@@ -240,7 +240,11 @@ async fn reinitialize_device_accepts_a_twenty_character_multi_octet_password() {
         DccState::Enable,
     )
     .await;
-    assert!(!matches!(apdu, Apdu::SimpleAck(_)), "{apdu:?}");
+    // Valid encoding, size out of the service's range (#2085).
+    let Apdu::Reject(reject) = apdu else {
+        panic!("expected a Reject, got {apdu:?}")
+    };
+    assert_eq!(reject.reject_reason, RejectReason::PARAMETER_OUT_OF_RANGE);
     assert!(states(&received).is_empty());
 }
 
