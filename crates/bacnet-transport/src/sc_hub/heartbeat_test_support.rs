@@ -34,6 +34,21 @@ impl LiveClient {
         vmac: Vmac,
         admission: Arc<super::admission::AdmissionRuntime>,
     ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        boxed(|| Self::open_on(&listener, clients, vmac, admission)).await
+    }
+
+    /// [`Self::open_with`], accepting on `listener`, which a test that opens
+    /// many clients one after another can share. When the hub's end closes
+    /// first, its TIME_WAIT then stays on the shared port rather than taking
+    /// one per client; Windows keeps such a port out of use for two minutes
+    /// by default (#2055).
+    pub async fn open_on(
+        listener: &TcpListener,
+        clients: Clients,
+        vmac: Vmac,
+        admission: Arc<super::admission::AdmissionRuntime>,
+    ) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -47,7 +62,6 @@ impl LiveClient {
         let client = rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let url = format!("wss://localhost:{}", address.port());
         let request = ClientRequestBuilder::new(url.parse().unwrap())

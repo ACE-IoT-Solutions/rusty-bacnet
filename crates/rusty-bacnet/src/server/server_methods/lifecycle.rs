@@ -89,6 +89,7 @@ impl BACnetServer {
         let broadcast_str = self.broadcast_address.clone();
         let share_port_by_address = self.share_port_by_address;
         let bip_mode = self.bip_mode.clone();
+        let bip6_foreign = self.bip6_foreign.clone();
         let multicast = self.multicast;
         let sc_hub = self.sc_hub.clone();
         let sc_vmac = self.sc_vmac.clone();
@@ -161,11 +162,11 @@ impl BACnetServer {
                         // (Clauses U.1.3, H.7.2), so peers can name it by
                         // instance; startup fails if another node on the
                         // link already uses it.
-                        Some(AnyTransport::Bip6(Bip6Transport::new(
-                            interface,
-                            port,
-                            Some(device_instance),
-                        )))
+                        let mut bip6 = Bip6Transport::new(interface, port, Some(device_instance));
+                        if let Some(foreign) = bip6_foreign {
+                            bip6.register_as_foreign_device(foreign);
+                        }
+                        Some(AnyTransport::Bip6(bip6))
                     }
                     // SC can only be constructed after its dial; defer that I/O.
                     "sc" => None,

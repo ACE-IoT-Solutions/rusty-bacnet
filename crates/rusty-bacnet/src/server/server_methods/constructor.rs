@@ -153,7 +153,10 @@ impl BACnetServer {
             apdu_segment_timeout_ms,
         )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
-        let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
+        let crate::bip_options::IpModes {
+            bip: bip_mode,
+            bip6_foreign,
+        } = crate::bip_options::ip_modes(transport, bbmd, foreign_device)?;
         let multicast = crate::bip_options::bip_multicast(
             transport,
             interface,
@@ -234,6 +237,7 @@ impl BACnetServer {
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
             bip_mode,
+            bip6_foreign,
             multicast,
             registered_network_port,
             sc_hub,

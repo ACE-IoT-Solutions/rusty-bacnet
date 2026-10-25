@@ -1244,6 +1244,13 @@ usable for the configured BBMD; an explicit source is retained. The production
 socket is bound to that source, so registration, DBTN and ordinary unicast agree
 with `local_address()`. This branch requires the existing configured Device instance
 and preserves trusted-BBMD handling without normal multicast prerequisites.
+`Bip6ForeignDeviceConfig::check()` says whether a registration can work: the
+BBMD must be an IPv6 unicast host with a nonzero port (not unspecified,
+multicast, link-local, IPv4-mapped or IPv4-compatible) and the TTL nonzero;
+it returns the `Bip6ForeignDeviceRefusal` otherwise. `start()` fails with
+`InvalidInput` for such a registration, and a Network Port activation refuses
+one. The B/IPv6 client builder takes a registration with
+`.foreign_device(config)` alongside `.device_instance(..)` (#1941).
 
 A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
 group destination at any port, is malformed for the same reason as on B/IP:
@@ -3538,6 +3545,56 @@ counted too. A group DADR on a network behind another router, which that
 router judges, is not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a
 group SADR is dropped only where the final router is a `BACnetRouter`.
+
+### A client on the router itself
+
+`StartedRouter::into_application_port()` turns the router's application
+entity into a `RouterApplicationPort`, a `TransportPort` with no wire behind
+it, fed by the router's own local APDU receiver, raw or tracked (#1808). It
+returns the router, the port and the network-control receiver, if one was
+asked for. Build a client on the port with
+`BACnetClient::generic_builder().transport(port)`. The client keeps its own
+transaction state machine: invoke IDs, timeouts, retries and segmentation work
+as on any link.
+
+```rust,ignore
+let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
+let (router, port, _controls) = started.into_application_port();
+let client = BACnetClient::generic_builder().transport(port).build().await?;
+// Station 5 on network 2: the router MAC argument is ignored.
+let ack = client
+    .read_property_routed(&[0], 2, &[5], object, PropertyIdentifier::PRESENT_VALUE, None)
+    .await?;
+```
+
+- Every send goes through `BACnetRouter::originate`: the table picks the route
+  and the next hop, so address each device by its network and MAC, as a routed
+  device, whether its network is directly attached or not. The MAC passed as
+  the router's is ignored. The router's address on the egress port is the
+  source unless `with_source(SourceSelection::Port(p))` names one port.
+- Every APDU the router delivers to its application reaches the client with
+  its origin as SNET and SADR. One a router relayed keeps its own; one from a
+  device on an attached network gets that network and the device's MAC, so its
+  reply completes the transaction keyed to the routed destination.
+- The client's answers to confirmed requests it receives, such as the
+  acknowledgement of a confirmed COV notification, go back through the reply
+  plan the router saved with each request, as a server's replies do: from the
+  endpoint that was asked, along the path the request came by. The port keeps
+  the plans of up to 64 requests for up to 30 seconds; an answer after that is
+  originated like any other send.
+- The port has no network of its own: a send with no DNET, such as a local
+  broadcast, fails with `Error::Encoding`, and so do network messages. Who-Is
+  goes out as a global broadcast, on every port.
+- A refusal from `originate` fails the send. Too long for the egress port is
+  `Error::SendTooLong`. Anything else is an `Error::Transport` carrying the
+  `OriginateFailure`, which `OriginateFailure::from_error` returns. A network
+  the table lacks is `Refused(NoRoute)`, and the router starts a search for
+  it, as `originate` does.
+- The port reports the smallest NPDU limits among the router's ports, and the
+  longest of the router's MACs as its own; `with_max_npdu` overrides the
+  limits.
+- The client takes every APDU for the router's application, so a server can't
+  share the same receiver.
 
 ### Moving a router table from 0.12
 

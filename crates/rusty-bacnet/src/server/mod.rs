@@ -76,7 +76,8 @@ use audit_configuration::AuditNotificationSink;
 /// - `"bip"` (default): BACnet/IP over UDP
 /// - `"ipv6"`: BACnet/IPv6 over UDP multicast. The server's VMAC is its
 ///   `device_instance` (`bip6:0x0004D2` for 1234); startup fails when another
-///   node on the link already uses it.
+///   node on the link already uses it. `foreign_device=` with a B/IPv6 BBMD
+///   registers it as a foreign device (#1941).
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
@@ -101,6 +102,9 @@ pub struct BACnetServer {
     share_port_by_address: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IPv6 foreign-device registration `foreign_device=` asked for
+    /// (#1941).
+    bip6_foreign: Option<bacnet_transport::bip6::Bip6ForeignDeviceConfig>,
     /// The B/IP multicast group `multicast=` asked for (#941).
     multicast: Option<bacnet_transport::bip::BipMulticast>,
     registered_network_port: Option<u32>,
