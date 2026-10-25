@@ -130,8 +130,7 @@ fn datum_to_py<'py>(py: Python<'py>, datum: &BACnetAuditLogDatum) -> PyResult<Bo
     match datum {
         BACnetAuditLogDatum::LogStatus(status) => {
             result.set_item("kind", "log_status")?;
-            // Bit 0 log-disabled, bit 1 buffer-purged, bit 2 log-interrupted.
-            result.set_item("log_status", status.bits())?;
+            result.set_item("log_status", super::PyBitString::log_status(*status))?;
         }
         BACnetAuditLogDatum::AuditNotification(notification) => {
             result.set_item("kind", "audit_notification")?;

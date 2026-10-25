@@ -50,6 +50,7 @@ impl BACnetClient {
     /// `object_specifier` accepts either an `ObjectType` (server picks instance)
     /// or an `ObjectIdentifier` (specific instance).
     /// `initial_values` is an optional list of `(PropertyIdentifier, PropertyValue, priority, array_index)` tuples.
+    /// Returns the `ObjectIdentifier` of the created object from the acknowledgment.
     #[pyo3(signature = (address, object_specifier, initial_values=None))]
     fn create_object<'py>(
         &self,
@@ -96,7 +97,13 @@ impl BACnetClient {
                 .create_object(&mac, specifier, init_vals)
                 .await
                 .map_err(to_py_err)?;
-            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            // The ACK names the created object; a reply that doesn't decode
+            // raises, though the server may already have created the object.
+            let ack =
+                bacnet_services::object_mgmt::CreateObjectAck::decode(&raw).map_err(to_py_err)?;
+            crate::py_async::attach(|py| {
+                Ok(Py::new(py, PyObjectIdentifier::from_rust(ack.object_identifier))?.into_any())
+            })
         })
     }
 

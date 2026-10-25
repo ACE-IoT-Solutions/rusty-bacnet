@@ -100,7 +100,7 @@ class MutationPolicyWireTests(unittest.IsolatedAsyncioTestCase):
                     before_value = await client.read_property(address, av, pv)
                     before_list = await server.read_property(msi, alarms)
                     before_file = await client.atomic_read_file(address, file, "stream", requested_octet_count=64)
-                    self.assertIn(b"sentinel", before_file)
+                    self.assertIn(b"sentinel", before_file["data"])
                     operations = (
                         ("property", lambda: client.write_property(address, av, pv, PropertyValue.real(42.0))),
                         ("object", lambda: client.delete_object(address, av)),

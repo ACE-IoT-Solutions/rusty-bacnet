@@ -58,15 +58,12 @@ pub(crate) fn decode_read_value(
 ) -> Result<PyPropertyValue, Error> {
     let starts = application_elements(octets)?;
     if let Some(value) = constructed_read::decode(object_type, property, array_index, octets) {
-        return Ok(value);
+        return Ok(value.read_from(property));
     }
-    Ok(PyPropertyValue::from_rust(generic(
-        object_type,
-        property,
-        array_index,
-        octets,
-        starts,
-    )))
+    Ok(
+        PyPropertyValue::from_rust(generic(object_type, property, array_index, octets, starts))
+            .read_from(property),
+    )
 }
 
 /// The value of `octets` by the rules after the typed read. `starts` are the

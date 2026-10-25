@@ -49,6 +49,13 @@ macro_rules! py_bacnet_enum {
                 self.inner.to_raw()
             }
 
+            /// The constant's name (`"HIGH_LIMIT"`), or `None` for a value
+            /// without one (a vendor or reserved number).
+            #[getter]
+            fn name(&self) -> Option<&'static str> {
+                self.inner.name()
+            }
+
             fn __repr__(&self) -> String {
                 format!(concat!($py_name, ".{}"), self.inner)
             }

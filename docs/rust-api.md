@@ -7423,8 +7423,11 @@ client.reinitialize_device(&mac, ReinitializedState::WARMSTART, None).await?;
 ### Object Management
 
 ```rust
-client.create_object(&mac, ObjectSpecifier::Type(ObjectType::ANALOG_INPUT), initial_values).await?;
-client.delete_object(&mac, oid).await?;
+use bacnet_services::object_mgmt::CreateObjectAck;
+
+let ack = client.create_object(&mac, ObjectSpecifier::Type(ObjectType::ANALOG_INPUT), initial_values).await?;
+let created = CreateObjectAck::decode(&ack)?.object_identifier; // the instance the server chose
+client.delete_object(&mac, created).await?;
 ```
 
 ### Alarms & Events

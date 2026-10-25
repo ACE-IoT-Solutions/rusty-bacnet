@@ -44,6 +44,9 @@ fn assert_single((object_type, property): (O, P), octets: &[u8], element: Elemen
             inner: P::PRESENT_VALUE,
         };
         locals.set_item("PV", pv).unwrap();
+        locals
+            .set_item("BitString", py.get_type::<super::super::PyBitString>())
+            .unwrap();
         let expected = CString::new(expected).unwrap();
         let expected = py.eval(&expected, None, Some(&locals)).unwrap();
         assert!(read.eq(&expected).unwrap(), "{read} != {expected}");
@@ -185,8 +188,8 @@ fn event_parameters_read_as_a_mapping_per_algorithm() {
                 list_of_values: vec![(5, vec![0x40])],
             },
             "{'kind': 'change_of_bitstring', 'time_delay': 2, \
-             'bitmask': {'unused_bits': 5, 'data': b'\\xa0'}, \
-             'list_of_values': [{'unused_bits': 5, 'data': b'\\x40'}]}",
+             'bitmask': BitString(5, b'\\xa0'), \
+             'list_of_values': [BitString(5, b'\\x40')]}",
         ),
         (
             BACnetEventParameter::ChangeOfState {
@@ -215,7 +218,7 @@ fn event_parameters_read_as_a_mapping_per_algorithm() {
                 },
             },
             "{'kind': 'change_of_value', 'time_delay': 0, \
-             'bitmask': {'unused_bits': 0, 'data': b'\\xff'}, \
+             'bitmask': BitString(0, b'\\xff'), \
              'referenced_property_increment': None}",
         ),
         (

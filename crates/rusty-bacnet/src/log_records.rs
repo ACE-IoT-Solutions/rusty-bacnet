@@ -21,7 +21,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyInt, PyList, PySequence, PyString, PyTuple};
 
 use crate::types::{
-    IntEnumValue, PyBACnetTimeStamp, PyEventState, PyEventType, PyObjectIdentifier,
+    IntEnumValue, PyBACnetTimeStamp, PyBitString, PyEventState, PyEventType, PyObjectIdentifier,
     PyPropertyIdentifier, audit_log_record_to_py, date_value, time_value,
 };
 
@@ -52,15 +52,16 @@ fn datum_with<'py>(
 /// [`LogDatum`] form.
 fn log_datum<'py>(py: Python<'py>, value: &LogDatum) -> PyResult<Bound<'py, PyDict>> {
     match value {
-        // Bit 0 log-disabled, bit 1 buffer-purged, bit 2 log-interrupted.
-        LogDatum::LogStatus(status) => datum_with(py, "log_status", status.bits()),
+        LogDatum::LogStatus(status) => {
+            datum_with(py, "log_status", PyBitString::log_status(*status))
+        }
         LogDatum::BooleanValue(value) => datum_with(py, "boolean", value),
         LogDatum::RealValue(value) => datum_with(py, "real", value),
         LogDatum::EnumValue(value) => datum_with(py, "enumerated", value),
         LogDatum::UnsignedValue(value) => datum_with(py, "unsigned", value),
         LogDatum::SignedValue(value) => datum_with(py, "signed", value),
         LogDatum::BitstringValue { unused_bits, data } => {
-            datum_with(py, "bitstring", (*unused_bits, PyBytes::new(py, data)))
+            datum_with(py, "bitstring", PyBitString::raw(*unused_bits, data))
         }
         LogDatum::NullValue => datum(py, "null"),
         LogDatum::Failure {
@@ -137,10 +138,9 @@ fn trend_log_record<'py>(
     let result = PyDict::new(py);
     result.set_item("timestamp", date_time(&record.date, &record.time))?;
     result.set_item("datum", log_datum(py, &record.log_datum)?)?;
-    // Bit 0 in-alarm, bit 1 fault, bit 2 overridden, bit 3 out-of-service.
     result.set_item(
         "status_flags",
-        record.status_flags.map(|flags| flags.bits()),
+        record.status_flags.map(PyBitString::status_flags),
     )?;
     Ok(result)
 }
@@ -152,7 +152,9 @@ fn event_log_record<'py>(
     let result = PyDict::new(py);
     result.set_item("timestamp", date_time(&record.date, &record.time))?;
     let value = match &record.log_datum {
-        EventLogDatum::LogStatus(status) => datum_with(py, "log_status", status.bits())?,
+        EventLogDatum::LogStatus(status) => {
+            datum_with(py, "log_status", PyBitString::log_status(*status))?
+        }
         EventLogDatum::Notification(request) => {
             datum_with(py, "notification", notification(py, request)?)?
         }
@@ -169,7 +171,9 @@ fn trend_log_multiple_record<'py>(
     let result = PyDict::new(py);
     result.set_item("timestamp", date_time(&record.date, &record.time))?;
     let value = match &record.log_data {
-        LogData::LogStatus(status) => datum_with(py, "log_status", status.bits())?,
+        LogData::LogStatus(status) => {
+            datum_with(py, "log_status", PyBitString::log_status(*status))?
+        }
         LogData::Values(values) => {
             let list = PyList::empty(py);
             for value in values {
