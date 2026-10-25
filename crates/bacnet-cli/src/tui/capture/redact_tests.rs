@@ -82,12 +82,12 @@ fn a_dcc_password_is_masked_in_place() {
     );
 }
 
-/// A password of 11 to 20 characters, over 20 octets in UTF-8: the TUI
-/// sends it, the service decoder refuses it, and it is masked anyway.
+/// A non-ASCII password over the 20-character limit: the service decoder
+/// refuses it (#2060 counts characters, not octets), and it is masked anyway.
 #[test]
 fn a_non_ascii_password_the_decoder_refuses_is_masked() {
-    let password = "pässwörd-ñandú-éé";
-    assert!(password.chars().count() <= 20 && password.len() > 20);
+    let password = "pässwörd-ñandú-éé-ñäö";
+    assert_eq!(password.chars().count(), 21);
     let apdu = dcc(Some(password));
     assert!(DeviceCommunicationControlRequest::decode(&apdu[4..]).is_err());
     let frame = testing::bip(&npdu(&apdu), false);

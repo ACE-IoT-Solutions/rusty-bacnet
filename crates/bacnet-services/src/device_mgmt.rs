@@ -19,6 +19,18 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, Time};
 use bytes::BytesMut;
 
+/// Longest password, in characters, the DCC and ReinitializeDevice requests
+/// carry (Clauses 16.1.1.1.3 and 16.4.1.1.2).
+const MAX_PASSWORD_CHARS: usize = 20;
+
+/// Whether a decoded password is longer than [`MAX_PASSWORD_CHARS`]. The
+/// limit counts characters, not octets: the decoder has already converted
+/// UTF-8, UCS-2 and ISO 8859-1 contents to a `String`, one `char` per
+/// character of the sender's set, so a multi-octet UTF-8 character counts once.
+fn password_too_long(password: Option<&String>) -> bool {
+    password.is_some_and(|s| s.chars().count() > MAX_PASSWORD_CHARS)
+}
+
 // ---------------------------------------------------------------------------
 // DeviceCommunicationControlRequest
 // ---------------------------------------------------------------------------
@@ -66,7 +78,7 @@ impl DeviceCommunicationControlRequest {
         let (password, end) =
             decode_optional_ctx(data, offset, 2, "DCC password", decode_ctx_character_string)?;
         expect_end(data, end, end, "DCC")?;
-        if password.as_ref().is_some_and(|s| s.len() > 20) {
+        if password_too_long(password.as_ref()) {
             return Err(Error::encode("DCC password exceeds 20 characters"));
         }
 
@@ -119,7 +131,7 @@ impl ReinitializeDeviceRequest {
             decode_ctx_character_string,
         )?;
         expect_end(data, end, end, "ReinitializeDevice")?;
-        if password.as_ref().is_some_and(|s| s.len() > 20) {
+        if password_too_long(password.as_ref()) {
             return Err(Error::decoding(
                 offset,
                 "ReinitializeDevice password exceeds 20 characters",
@@ -491,5 +503,95 @@ mod tests {
     #[test]
     fn test_decode_time_sync_invalid_tag() {
         assert!(TimeSynchronizationRequest::decode(&[0xFF, 0xFF, 0xFF]).is_err());
+    }
+
+    /// Encode a DCC (enable) and a ReinitializeDevice (coldstart) request whose
+    /// password member holds `charset` then `payload`, uninterpreted.
+    fn raw_password_requests(charset: u8, payload: &[u8]) -> [BytesMut; 2] {
+        let len = u32::try_from(payload.len()).unwrap() + 1;
+        let mut dcc = encode_dcc(None, 0);
+        tags::encode_tag(&mut dcc, 2, tags::TagClass::Context, len);
+        let mut reinit = encode_reinitialize(0);
+        tags::encode_tag(&mut reinit, 1, tags::TagClass::Context, len);
+        for buf in [&mut dcc, &mut reinit] {
+            buf.extend_from_slice(&[charset]);
+            buf.extend_from_slice(payload);
+        }
+        [dcc, reinit]
+    }
+
+    /// Decode both requests and return their passwords, or `None` for each
+    /// one refused.
+    fn decoded_passwords([dcc, reinit]: [BytesMut; 2]) -> [Option<String>; 2] {
+        [
+            DeviceCommunicationControlRequest::decode(&dcc)
+                .ok()
+                .and_then(|r| r.password),
+            ReinitializeDeviceRequest::decode(&reinit)
+                .ok()
+                .and_then(|r| r.password),
+        ]
+    }
+
+    #[test]
+    fn password_limit_counts_characters_not_octets() {
+        // 20 characters each, 40 to 80 octets in UTF-8 (#2060).
+        for ch in ["é", "パ", "😀", "a"] {
+            let twenty = ch.repeat(20);
+            let dcc = DeviceCommunicationControlRequest {
+                time_duration: None,
+                enable_disable: EnableDisable::ENABLE,
+                password: Some(twenty.clone()),
+            };
+            let reinit = ReinitializeDeviceRequest {
+                reinitialized_state: ReinitializedState::WARMSTART,
+                password: Some(twenty),
+            };
+            let mut buf = BytesMut::new();
+            dcc.encode(&mut buf).unwrap();
+            assert_eq!(DeviceCommunicationControlRequest::decode(&buf).unwrap(), dcc);
+            buf.clear();
+            reinit.encode(&mut buf).unwrap();
+            assert_eq!(ReinitializeDeviceRequest::decode(&buf).unwrap(), reinit);
+
+            let twenty_one = ch.repeat(21);
+            let dcc = DeviceCommunicationControlRequest {
+                password: Some(twenty_one.clone()),
+                ..dcc
+            };
+            let reinit = ReinitializeDeviceRequest {
+                password: Some(twenty_one),
+                ..reinit
+            };
+            buf.clear();
+            dcc.encode(&mut buf).unwrap();
+            assert!(DeviceCommunicationControlRequest::decode(&buf).is_err());
+            buf.clear();
+            reinit.encode(&mut buf).unwrap();
+            assert!(ReinitializeDeviceRequest::decode(&buf).is_err());
+        }
+    }
+
+    #[test]
+    fn password_limit_counts_characters_of_the_sent_character_set() {
+        // ISO 8859-1: one octet a character, even above 0x7F (two UTF-8 octets).
+        let latin1 = [0xe9; 21];
+        let expected = "é".repeat(20);
+        assert_eq!(
+            decoded_passwords(raw_password_requests(5, &latin1[..20])),
+            [Some(expected.clone()), Some(expected)]
+        );
+        assert_eq!(
+            decoded_passwords(raw_password_requests(5, &latin1)),
+            [None, None]
+        );
+        // UCS-2: two octets a character (U+30D1, three UTF-8 octets).
+        let ucs2 = [0x30, 0xd1].repeat(21);
+        let expected = "\u{30d1}".repeat(20);
+        assert_eq!(
+            decoded_passwords(raw_password_requests(4, &ucs2[..40])),
+            [Some(expected.clone()), Some(expected)]
+        );
+        assert_eq!(decoded_passwords(raw_password_requests(4, &ucs2)), [None, None]);
     }
 }
