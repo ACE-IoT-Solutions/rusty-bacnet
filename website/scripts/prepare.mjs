@@ -16,8 +16,10 @@ async function walk(path) {
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await mkdir(join(root, 'public/examples'), { recursive: true });
-await copyFile(join(root, 'examples/python/loopback_lab.py'), join(root, 'public/examples/loopback_lab.py'));
-for (const example of ['shared-endpoint', 'sc-operator-policy']) {
+for (const script of ['loopback_lab.py', 'server_device.py', 'bip_router.py']) {
+  await copyFile(join(root, 'examples/python', script), join(root, 'public/examples', script));
+}
+for (const example of ['shared-endpoint', 'sc-operator-policy', 'server-device', 'bip-router']) {
   for (const file of ['Cargo.toml', 'src/main.rs']) {
     const relative = `examples/rust/${example}/${file}`;
     const target = join(root, 'public', relative);
@@ -25,7 +27,7 @@ for (const example of ['shared-endpoint', 'sc-operator-policy']) {
     await copyFile(join(root, relative), target);
   }
 }
-const links = ['# Rusty BACnet', '', `> Guides for the v${release} release; pre-1.0 APIs and partial conformance.`, '', `Use start/ to install and make a first read, integrate/ for application owners, shared endpoints, Network Port and Number controls and server authorization, development/ for source builds and documentation contributions, connect/ to choose and set up a data link (BACnet/IP with BBMDs, NAT and multicast, BACnet/IPv6, BACnet/SC, MS/TP), guides/ for discovery, subscriptions and writes, reference/transports for transport evidence, tui/ for the terminal UI on the development branch, and project/upgrading for the upgrade guides between releases. A dev checkout may differ from v${release}; record its commit. The local lab is loopback-only.`, '', '## Guides', ''];
+const links = ['# Rusty BACnet', '', `> Guides for the v${release} release; pre-1.0 APIs and partial conformance.`, '', `Use start/ to install and make a first read, integrate/ for application owners: serving objects, routing between networks, shared endpoints, Network Port and Number controls and server authorization; development/ for source builds and documentation contributions, connect/ to choose and set up a data link (BACnet/IP with BBMDs, NAT and multicast, BACnet/IPv6, BACnet/SC, MS/TP), guides/ for discovery, subscriptions and writes, reference/transports for transport evidence, tui/ for the terminal UI on the development branch, and project/upgrading for the upgrade guides between releases. A dev checkout may differ from v${release}; record its commit. The local lab is loopback-only.`, '', '## Guides', ''];
 let count = 0;
 for (const file of await walk(docs)) {
   if (!isGuideFile(file)) continue;

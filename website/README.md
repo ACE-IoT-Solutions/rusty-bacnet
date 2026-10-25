@@ -2,9 +2,9 @@
 
 An Astro/Starlight task guide for the release named in `src/lib/site.mjs`:
 installation, the local lab and first reads (`start/`), integration guides for
-shared endpoints, Network Port/Number controls and server authorization
-(`integrate/`), data-link setup for BACnet/IP, BACnet/SC and MS/TP
-(`connect/`), contributor source builds
+serving objects, routing, shared endpoints, Network Port/Number controls and
+server authorization (`integrate/`), data-link setup for BACnet/IP, BACnet/SC
+and MS/TP (`connect/`), contributor source builds
 and documentation work (`development/`), and discovery, subscription and write
 guides (`guides/`). [Engineering
 docs](../docs/README.md) remain the contract authority.

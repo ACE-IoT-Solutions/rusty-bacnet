@@ -2,8 +2,13 @@
 #![forbid(unsafe_code)]
 
 #[path = "support/guide_process.rs"]
-mod process;
-use process::{Process, WAIT};
+mod guide;
+#[path = "support/guide_interactive.rs"]
+mod interactive;
+#[path = "support/guide_retirement.rs"]
+mod retirement;
+use guide::{Process, WAIT};
+use interactive::Interactive;
 use std::ffi::OsStr;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -33,7 +38,7 @@ fn binary() -> PathBuf {
     selected
 }
 
-async fn ready(child: &Process) -> SocketAddrV4 {
+async fn ready(child: &Interactive) -> SocketAddrV4 {
     let mut stdout = child.stdout();
     let observed = timeout(
         WAIT,
@@ -86,7 +91,7 @@ fn assert_stopped(output: &std::process::Output, address: SocketAddrV4) {
 
 #[tokio::test]
 async fn actual_guide_stops_before_drop_and_rebinds_while_owner_is_live() {
-    let mut child = Process::interactive(&binary(), &[]).unwrap();
+    let mut child = Interactive::start(&binary(), &[]).unwrap();
     let address = ready(&child).await;
     child.send_input(b"\n");
     let output = child.finish().await;
@@ -97,7 +102,7 @@ async fn actual_guide_stops_before_drop_and_rebinds_while_owner_is_live() {
 
 #[tokio::test]
 async fn input_error_still_observably_stops_and_rebinds_before_returning_the_error() {
-    let mut child = Process::interactive(&binary(), &[]).unwrap();
+    let mut child = Interactive::start(&binary(), &[]).unwrap();
     let address = ready(&child).await;
     child.send_input(&[0xff, b'\n']);
     let output = child.finish().await;
@@ -112,9 +117,9 @@ async fn input_error_still_observably_stops_and_rebinds_before_returning_the_err
 
 #[tokio::test]
 async fn simultaneous_owners_get_distinct_ports_and_eof_also_stops_them() {
-    let first = Process::interactive(&binary(), &[]).unwrap();
+    let first = Interactive::start(&binary(), &[]).unwrap();
     let first_address = ready(&first).await;
-    let second = Process::interactive(&binary(), &[]).unwrap();
+    let second = Interactive::start(&binary(), &[]).unwrap();
     let second_address = ready(&second).await;
     assert_ne!(first_address, second_address);
     // No explicit input: finish closes the owned input sender, supplying EOF.
@@ -165,7 +170,7 @@ async fn an_existing_nonexecutable_override_fails_without_running_the_default() 
 #[tokio::test]
 async fn dropped_cancelled_and_panicking_callers_reap_the_started_owner_and_release_its_port() {
     for mode in ["drop", "cancel", "panic"] {
-        let child = Process::interactive(&binary(), &[]).unwrap();
+        let child = Interactive::start(&binary(), &[]).unwrap();
         let address = ready(&child).await;
         let mut retired = child.retirement();
         match mode {
@@ -189,7 +194,7 @@ async fn dropped_cancelled_and_panicking_callers_reap_the_started_owner_and_rele
                 assert!(task.await.unwrap_err().is_panic());
             }
         }
-        let completion = process::retired(&mut retired).await;
+        let completion = guide::retired(&mut retired).await;
         assert!(
             completion.cancelled,
             "owned retirement must request termination"
@@ -207,7 +212,7 @@ fn child_retirement_survives_shutdown_of_the_callers_runtime() {
         .build()
         .unwrap();
     let (mut retired, address) = runtime.block_on(async {
-        let child = Process::interactive(&binary(), &[]).unwrap();
+        let child = Interactive::start(&binary(), &[]).unwrap();
         let address = ready(&child).await;
         let retired = child.retirement();
         let (entered, ready) = tokio::sync::oneshot::channel();
@@ -224,7 +229,7 @@ fn child_retirement_survives_shutdown_of_the_callers_runtime() {
         .enable_all()
         .build()
         .unwrap();
-    let completion = observer.block_on(process::retired(&mut retired));
+    let completion = observer.block_on(guide::retired(&mut retired));
     assert!(completion.cancelled);
     assert!(!completion.output.status.success());
     assert_rebind(address);
@@ -232,7 +237,7 @@ fn child_retirement_survives_shutdown_of_the_callers_runtime() {
 
 #[tokio::test]
 async fn synchronous_test_failure_reaps_before_unwind_returns_control() {
-    let child = Process::interactive(&binary(), &[]).unwrap();
+    let child = Interactive::start(&binary(), &[]).unwrap();
     let address = ready(&child).await;
     let retired = child.retirement();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
