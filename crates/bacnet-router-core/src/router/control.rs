@@ -233,8 +233,9 @@ impl<
     /// which no origin's network can be. A Router-Busy or Router-Available
     /// is keyed by its sender too, `at`'s network and link source, as its
     /// effect is scoped to the routes through that sender; accepting one
-    /// forgets its opposite from the same sender (the module docs of
-    /// `duplicates` say more).
+    /// forgets its opposite from the same sender, at most
+    /// [`Duplicates::RESET_LIMIT`](super::Duplicates::RESET_LIMIT) times
+    /// within one time to live (the module docs of `duplicates` say more).
     fn repeated_relay(
         &mut self,
         at: &Arrival<'_>,
@@ -258,19 +259,21 @@ impl<
             Some(_) => (at.network, at.source),
             None => (GLOBAL_NETWORK, &[][..]),
         };
-        let tag = kind.to_raw();
-        let ttl = duplicates.ttl;
-        if self
-            .recent
-            .repeat_tagged(network, source, tag, data, at.now, ttl)
-        {
+        let (tag, now, ttl) = (kind.to_raw(), at.now, duplicates.ttl);
+        let repeat = match opposite {
+            Some(opposite) => {
+                let opposite = opposite.to_raw();
+                self.recent
+                    .repeat_flow(network, source, tag, opposite, data, now, ttl)
+            }
+            None => self
+                .recent
+                .repeat_tagged(network, source, tag, data, now, ttl),
+        };
+        if repeat {
             bump(&mut self.counters.duplicate_drops);
-            return true;
         }
-        if let Some(opposite) = opposite {
-            self.recent.forget(network, source, opposite.to_raw());
-        }
-        false
+        repeat
     }
 
     /// Pass a network message's data on, verbatim, as a fresh message of

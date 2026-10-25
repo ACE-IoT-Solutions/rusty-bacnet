@@ -117,3 +117,35 @@ fn the_opposite_message_resets_the_record_for_its_sender() {
     assert!(hear(&mut router, R8, &busy(&[9]), 400));
     assert!(!hear(&mut router, R7, &available(&[9]), 500));
 }
+
+/// The resets are capped per sender within one time to live
+/// ([`Duplicates::RESET_LIMIT`]), so a looped pair can't reset itself for
+/// good: past the cap, the opposite's entry is kept and the next repeat is
+/// dropped; once the entries expire, resets are allowed again.
+#[test]
+fn the_resets_are_capped_within_one_time_to_live() {
+    assert_eq!(Duplicates::RESET_LIMIT, 4);
+    let mut router = router();
+    // Busy at 0 resets nothing; the next four reset their opposite; the
+    // sixth finds no live copy of itself but may reset nothing more.
+    let mut at = 0;
+    for frame in [busy(&[9]), available(&[9])].iter().cycle().take(6) {
+        assert!(hear(&mut router, R7, frame, at), "at {at} ms");
+        at += 100;
+    }
+    assert_eq!(state(&router, 9, at), Some(Reachability::Reachable));
+    // The seventh and eighth repeat live entries: dropped, table untouched.
+    assert!(!hear(&mut router, R7, &busy(&[9]), 600));
+    assert!(!hear(&mut router, R7, &available(&[9]), 700));
+    assert_eq!(state(&router, 9, 700), Some(Reachability::Reachable));
+    assert_eq!(router.counters().duplicate_drops, 2);
+    // Every entry from R7 has expired by 1.6 s: resets start over.
+    for (millis, frame) in [
+        (1_600, busy(&[9])),
+        (1_700, available(&[9])),
+        (1_800, busy(&[9])),
+    ] {
+        assert!(hear(&mut router, R7, &frame, millis), "at {millis} ms");
+    }
+    assert_eq!(state(&router, 9, 1_800), Some(Reachability::Busy));
+}

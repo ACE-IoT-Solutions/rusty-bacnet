@@ -246,12 +246,16 @@ impl<A, C> RouterOptions<A, C> {
     /// network and link source) and data, so another router's identical
     /// message is still applied, and accepting one forgets its opposite
     /// from the same sender, so Busy, Available, Busy within one time to
-    /// live applies all three.
+    /// live applies all three; at most four such resets per sender within
+    /// one time to live, so a pair looping round a ring still ends.
     ///
     /// Sizing: the record must hold every global broadcast the router sees
     /// within one time to live, or the oldest is forgotten before its
     /// looped copy returns. 512 covers 512 broadcasts a second at the
     /// default; a longer time to live needs proportionally fewer a second.
+    /// The relayed I-Am-Router, Router-Busy and Router-Available entries
+    /// share those 512 slots with the global broadcasts, the flow-control
+    /// ones one per sender and message.
     pub fn duplicates(mut self, policy: Duplicates) -> Self {
         self.engine.duplicates = Some(policy);
         self

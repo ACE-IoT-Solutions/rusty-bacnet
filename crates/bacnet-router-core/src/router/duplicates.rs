@@ -31,7 +31,13 @@
 //!   is applied. Around a loop each router hands it on once per neighbour
 //!   it hears it from, which still ends. Accepting one forgets its
 //!   opposite from the same sender, so Busy, Available, Busy within one
-//!   time to live applies all three.
+//!   time to live applies all three. Those resets are capped at
+//!   [`Duplicates::RESET_LIMIT`] per sender within one time to live: a
+//!   Busy and Available pair looping round a ring looks exactly like a
+//!   sender that really flaps, and without the cap each copy would reset
+//!   the other and the pair would circulate for good. Past the cap, the opposite's entry
+//!   is kept, so the next repeat of either is dropped until the entries
+//!   expire.
 //!
 //! The record is a ring of `B` entries in the [`Storage`](super::Storage),
 //! all zero bits when empty; a full ring gives up its oldest entry, so `B`
@@ -67,6 +73,13 @@ impl Duplicates {
     pub const DEFAULT: Self = Self {
         ttl: Duration::from_secs(1),
     };
+
+    /// How many times, within one time to live, a Router-Busy or
+    /// Router-Available from one sender may forget its opposite's entry
+    /// (#1810). Four lets a sender flap twice each way within a second,
+    /// more than the congestion policy's hysteresis produces, and bounds a
+    /// pair looping round a ring to a few passes.
+    pub const RESET_LIMIT: u8 = 4;
 }
 
 impl Default for Duplicates {
@@ -86,6 +99,9 @@ struct Seen {
     network: u16,
     /// [`APDU`] for a global broadcast, or the relayed message's type.
     tag: u8,
+    /// For a Router-Busy or Router-Available: how many opposite entries
+    /// from its sender were forgotten in the chain that led to it.
+    resets: u8,
 }
 
 const EMPTY: Seen = Seen {
@@ -94,6 +110,7 @@ const EMPTY: Seen = Seen {
     source: 0,
     network: 0,
     tag: APDU,
+    resets: 0,
 };
 
 /// The tag of a global broadcast's entry. A network message's entry is
@@ -154,6 +171,7 @@ impl<const B: usize> Recent<B> {
             source: fnv1a(source),
             network,
             tag,
+            resets: 0,
         };
         let fresh = |seen: &Seen| now < seen.at + ttl;
         let matches = |seen: &&Seen| {
@@ -165,24 +183,78 @@ impl<const B: usize> Recent<B> {
         if self.seen.iter().filter(matches).any(fresh) {
             return true;
         }
+        self.record(entry);
+        false
+    }
+
+    /// [`repeat_tagged`](Self::repeat_tagged) for a Router-Busy or
+    /// Router-Available tagged `tag` from `source` on `network`, whose
+    /// opposite is tagged `opposite`. One that isn't a repeat forgets the
+    /// sender's live opposite entries, so the opposite may follow it, and
+    /// counts that reset; once the sender's count reaches
+    /// [`Duplicates::RESET_LIMIT`] the opposite's entries are kept, and its
+    /// repeat is dropped, until they expire.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the record key's parts, kept apart as repeat_tagged's are"
+    )]
+    pub(super) fn repeat_flow(
+        &mut self,
+        network: u16,
+        source: &[u8],
+        tag: u8,
+        opposite: u8,
+        payload: &[u8],
+        now: Instant,
+        ttl: Duration,
+    ) -> bool {
+        let source = fnv1a(source);
+        let payload = fnv1a(payload);
+        let live =
+            |seen: &Seen| seen.network == network && seen.source == source && now < seen.at + ttl;
+        if self
+            .seen
+            .iter()
+            .any(|seen| live(seen) && seen.tag == tag && seen.payload == payload)
+        {
+            return true;
+        }
+        let before = self
+            .seen
+            .iter()
+            .filter(|seen| live(seen) && seen.tag == opposite)
+            .map(|seen| seen.resets)
+            .max();
+        let resets = match before {
+            Some(count) if count < Duplicates::RESET_LIMIT => {
+                for seen in &mut self.seen {
+                    if live(seen) && seen.tag == opposite {
+                        *seen = EMPTY;
+                    }
+                }
+                count + 1
+            }
+            Some(count) => count,
+            None => 0,
+        };
+        self.record(Seen {
+            at: now,
+            payload,
+            source,
+            network,
+            tag,
+            resets,
+        });
+        false
+    }
+
+    /// Put `entry` in the next slot, giving up the oldest when full.
+    fn record(&mut self, entry: Seen) {
         if let Some(slot) = self.seen.get_mut(self.next) {
             *slot = entry;
             self.next += 1;
             if self.next == B {
                 self.next = 0;
-            }
-        }
-        false
-    }
-
-    /// Forget every entry tagged `tag` from `source` on `network`, whatever
-    /// its payload: a Router-Available ends what a Router-Busy from the
-    /// same sender said, and the other way round.
-    pub(super) fn forget(&mut self, network: u16, source: &[u8], tag: u8) {
-        let source = fnv1a(source);
-        for seen in &mut self.seen {
-            if seen.network == network && seen.tag == tag && seen.source == source {
-                *seen = EMPTY;
             }
         }
     }

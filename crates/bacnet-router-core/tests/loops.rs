@@ -31,6 +31,9 @@ const RING: [[(u16, u8); 2]; 3] = [
 /// Deliveries after which a run counts as unbounded.
 const LIMIT: usize = 10_000;
 
+/// What the Busy and Available pair takes before every copy is dropped.
+const PAIR_DELIVERIES: usize = 44;
+
 fn ring(options: Options) -> Vec<TestRouter> {
     RING.iter()
         .map(|ports| {
@@ -57,8 +60,13 @@ type OnWire = (u16, Option<(usize, usize)>, Vec<u8>);
 /// reaches the other router ports on that network, until none is left or
 /// [`LIMIT`] deliveries have been made. Each delivery takes a millisecond.
 fn circulate(routers: &mut [TestRouter], frame: Vec<u8>) -> Run {
+    circulate_all(routers, vec![frame])
+}
+
+/// [`circulate`] for several frames X sends one after another.
+fn circulate_all(routers: &mut [TestRouter], frames: Vec<Vec<u8>>) -> Run {
     let mut wire: VecDeque<OnWire> = VecDeque::new();
-    wire.push_back((1, None, frame));
+    wire.extend(frames.into_iter().map(|frame| (1, None, frame)));
     let mut run = Run {
         deliveries: 0,
         duplicates: 0,
@@ -207,4 +215,19 @@ fn relayed_messages_are_keyed_by_type_and_data() {
             "off by default"
         );
     }
+}
+
+/// A Router-Busy then a Router-Available from X: each accepted message
+/// forgets its opposite from the same sender, so without a cap on those
+/// resets the pair would pass round the ring for good, each copy the
+/// opposite of the one before it on every link. The cap,
+/// [`Duplicates::RESET_LIMIT`] resets per sender within one time to live,
+/// stops it.
+#[test]
+fn an_alternating_busy_and_available_pair_is_bounded() {
+    let options = fixture::options(|options| options.duplicates = Some(Duplicates::DEFAULT));
+    let mut routers = ring(options);
+    let run = circulate_all(&mut routers, vec![busy(&[9]), available(&[9])]);
+    assert!(run.deliveries < LIMIT, "{run:?}");
+    assert_eq!(run.deliveries, PAIR_DELIVERIES, "{run:?}");
 }
