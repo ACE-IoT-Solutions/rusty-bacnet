@@ -45,6 +45,16 @@ fn password_too_long(password: Option<&String>) -> bool {
     password.is_some_and(|s| !password_fits(s))
 }
 
+/// Refuse to encode a password longer than [`MAX_PASSWORD_CHARS`] (#2085):
+/// the peer would only refuse it, so the caller hears about it before
+/// anything is sent. `label` names the request and the limit.
+fn check_password_fits(password: Option<&str>, label: &'static str) -> Result<(), Error> {
+    match password {
+        Some(pw) if !password_fits(pw) => Err(Error::encode(label)),
+        _ => Ok(()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DeviceCommunicationControlRequest
 // ---------------------------------------------------------------------------
@@ -61,8 +71,13 @@ pub struct DeviceCommunicationControlRequest {
 }
 
 impl DeviceCommunicationControlRequest {
-    /// Append the ASN.1 encoding of the request to `buf`; fails if the password is unencodable.
+    /// Append the ASN.1 encoding of the request to `buf`. Fails, leaving `buf` unchanged, if the
+    /// password is longer than [`MAX_PASSWORD_CHARS`] characters; fails if it is unencodable.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        check_password_fits(
+            self.password.as_deref(),
+            "DCC password exceeds the 20-character limit",
+        )?;
         // [0] time-duration (optional)
         if let Some(dur) = self.time_duration {
             primitives::encode_ctx_unsigned(buf, 0, dur as u64);
@@ -118,8 +133,13 @@ pub struct ReinitializeDeviceRequest {
 }
 
 impl ReinitializeDeviceRequest {
-    /// Append the ASN.1 encoding of the request to `buf`; fails if the password is unencodable.
+    /// Append the ASN.1 encoding of the request to `buf`. Fails, leaving `buf` unchanged, if the
+    /// password is longer than [`MAX_PASSWORD_CHARS`] characters; fails if it is unencodable.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        check_password_fits(
+            self.password.as_deref(),
+            "ReinitializeDevice password exceeds the 20-character limit",
+        )?;
         // [0] reinitialized-state
         primitives::encode_ctx_enumerated(buf, 0, self.reinitialized_state.to_raw());
         // [1] password (optional)
@@ -568,21 +588,37 @@ mod tests {
             reinit.encode(&mut buf).unwrap();
             assert_eq!(ReinitializeDeviceRequest::decode(&buf).unwrap(), reinit);
 
+            // The encoders refuse 21 characters (#2085), so the decoder
+            // sees them as raw UTF-8 (character set 0).
             let twenty_one = ch.repeat(21);
+            assert_eq!(
+                decoded_passwords(raw_password_requests(0, twenty_one.as_bytes())),
+                [None, None]
+            );
+        }
+    }
+
+    #[test]
+    fn encoders_refuse_a_password_over_the_limit() {
+        for ch in ["é", "パ", "😀", "a"] {
             let dcc = DeviceCommunicationControlRequest {
-                password: Some(twenty_one.clone()),
-                ..dcc
+                time_duration: Some(5),
+                enable_disable: EnableDisable::DISABLE,
+                password: Some(ch.repeat(21)),
             };
             let reinit = ReinitializeDeviceRequest {
-                password: Some(twenty_one),
-                ..reinit
+                reinitialized_state: ReinitializedState::COLDSTART,
+                password: Some(ch.repeat(21)),
             };
-            buf.clear();
-            dcc.encode(&mut buf).unwrap();
-            assert!(DeviceCommunicationControlRequest::decode(&buf).is_err());
-            buf.clear();
-            reinit.encode(&mut buf).unwrap();
-            assert!(ReinitializeDeviceRequest::decode(&buf).is_err());
+            let mut buf = BytesMut::new();
+            let err = dcc.encode(&mut buf).unwrap_err();
+            assert!(matches!(err, Error::Encode(_)), "{err:?}");
+            assert!(err.to_string().contains("20-character limit"), "{err}");
+            assert!(buf.is_empty());
+            let err = reinit.encode(&mut buf).unwrap_err();
+            assert!(matches!(err, Error::Encode(_)), "{err:?}");
+            assert!(err.to_string().contains("20-character limit"), "{err}");
+            assert!(buf.is_empty());
         }
     }
 

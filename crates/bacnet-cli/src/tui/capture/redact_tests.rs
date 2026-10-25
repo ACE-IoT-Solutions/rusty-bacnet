@@ -89,7 +89,14 @@ fn a_dcc_password_is_masked_in_place() {
 fn a_non_ascii_password_the_decoder_refuses_is_masked() {
     let password = "pässwörd-ñandú-éé-ñäö";
     assert_eq!(password.chars().count(), 21);
-    let apdu = dcc(Some(password));
+    // The encoder refuses it (#2085), so build the request by hand: a
+    // 30-minute disable-initiation, then the UTF-8 (set 0) password.
+    let body = [
+        &[0x09, 30, 0x19, 0x02][..],
+        &ctx_string(2, 0, password.as_bytes()),
+    ]
+    .concat();
+    let apdu = request(DCC, &body);
     assert!(DeviceCommunicationControlRequest::decode(&apdu[4..]).is_err());
     let frame = testing::bip(&npdu(&apdu), false);
     masked_in_place(Framing::Bip, &frame, password.as_bytes());

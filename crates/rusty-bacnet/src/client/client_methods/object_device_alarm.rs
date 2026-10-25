@@ -104,7 +104,8 @@ impl BACnetClient {
     // Device management
     // -----------------------------------------------------------------------
 
-    /// Send a DeviceCommunicationControl request.
+    /// Send a DeviceCommunicationControl request. A password over 20
+    /// characters raises ValueError before anything is sent (#2085).
     #[pyo3(signature = (address, enable_disable, time_duration=None, password=None))]
     fn device_communication_control<'py>(
         &self,
@@ -114,6 +115,7 @@ impl BACnetClient {
         time_duration: Option<u16>,
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        crate::reinitialize::password_limit("password", &password)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let ed = enable_disable.to_rust();
@@ -129,7 +131,8 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Send a ReinitializeDevice request.
+    /// Send a ReinitializeDevice request. A password over 20 characters
+    /// raises ValueError before anything is sent (#2085).
     #[pyo3(signature = (address, reinitialized_state, password=None))]
     fn reinitialize_device<'py>(
         &self,
@@ -138,6 +141,7 @@ impl BACnetClient {
         reinitialized_state: PyReinitializedState,
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        crate::reinitialize::password_limit("password", &password)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let state = reinitialized_state.to_rust();

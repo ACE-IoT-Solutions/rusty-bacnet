@@ -29,10 +29,15 @@ fn request_data(state: ReinitializedState, password: Option<&str>) -> Bytes {
     let mut data = BytesMut::new();
     ReinitializeDeviceRequest {
         reinitialized_state: state,
-        password: password.map(str::to_owned),
+        password: None,
     }
     .encode(&mut data)
     .unwrap();
+    // Appended by hand, so a test can send what the encoder refuses: a
+    // password over 20 characters (#2085).
+    if let Some(password) = password {
+        bacnet_encoding::primitives::encode_ctx_character_string(&mut data, 1, password).unwrap();
+    }
     data.freeze()
 }
 
