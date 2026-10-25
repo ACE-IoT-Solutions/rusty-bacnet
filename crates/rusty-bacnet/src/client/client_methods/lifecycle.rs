@@ -321,6 +321,11 @@ impl BACnetClient {
                     let router = router.ok_or_else(|| {
                         PyRuntimeError::new_err("transport='router' needs router=")
                     })?;
+                    // Nothing the build checks before starting the port
+                    // can fail here: the constructor checked the pacing
+                    // interval, the rest are defaults, and every router
+                    // port carries a full APDU. So a taken port is a
+                    // started one.
                     let port = router.take().await?;
                     Box::pin(
                         client::BACnetClient::generic_builder()

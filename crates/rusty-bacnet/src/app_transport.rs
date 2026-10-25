@@ -56,6 +56,9 @@ from_link!(
     bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>
 );
 
+/// A router share has no data link of its own, and `DataLink` has no value
+/// for one, so it refuses with `Error::Encoding` rather than an
+/// `UnsupportedTransport` that would misname it.
 impl AsBip for AppTransport {
     fn as_bip(&self) -> Result<&BipTransport, Error> {
         match self {

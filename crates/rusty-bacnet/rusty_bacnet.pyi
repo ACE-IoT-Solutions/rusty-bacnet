@@ -4750,7 +4750,11 @@ class BACnetServer:
         router, once per router start; before the router starts, or when a
         server already took it, it raises RuntimeError. Confirmed requests
         to the router reach this server, except confirmed COV notifications,
-        which go to the client; unconfirmed requests reach both.
+        which go to the client, and confirmed event notifications, which
+        reach both with only this server's answer sent; confirmed audit
+        notifications reach this server alone. Unconfirmed requests reach
+        both. A start refused before the server runs, such as for a
+        duplicate object name, leaves the share for the next start.
         ``apdu_segment_timeout_ms`` must be under 60000. ``router`` without
         ``transport="router"``, or the reverse, raises ValueError.
 

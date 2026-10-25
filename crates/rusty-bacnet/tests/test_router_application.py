@@ -164,8 +164,8 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(hosted_value.value, 42.25)
         self.assertAlmostEqual(remote_value.value, 25.5)
         # The hosted server answers Who-Is too, at the router's address.
-        [found] = [d for d in await remote.discover(timeout_ms=1000, low_limit=BASE + 100,
-                                                     high_limit=BASE + 100)]
+        [found] = await eventually(lambda: remote.discover(
+            timeout_ms=1000, low_limit=BASE + 100, high_limit=BASE + 100), seconds=10)
         self.assertEqual(found.mac_address, ports[0].mac)
         self.assertIsNone(found.source_network)
 
@@ -188,6 +188,24 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         await router.start()
         await client.__aenter__()
         await client.stop()
+
+    async def test_a_refused_server_start_leaves_the_port_for_the_next(self):
+        router = rb.BACnetRouter([bbmd_port(1)], application="client_and_server")
+        await router.start()
+        self.addAsyncCleanup(cleanup, router.close)
+        broken = rb.BACnetServer(BASE + 200, transport="router", router=router)
+        broken.add_analog_input(0, "Same name", 62, 1.0)
+        broken.add_analog_input(1, "Same name", 62, 2.0)
+        with self.assertRaisesRegex(ValueError, "duplicate object name"):
+            await broken.start()
+        hosted = rb.BACnetServer(BASE + 201, transport="router", router=router)
+        hosted.add_analog_input(0, "Hosted sensor", 62, 3.0)
+        await hosted.start()
+        self.addAsyncCleanup(cleanup, hosted.stop)
+        # The port went to the server that started, and only once.
+        late = rb.BACnetServer(BASE + 202, transport="router", router=router)
+        with self.assertRaisesRegex(RuntimeError, "already taken"):
+            await late.start()
 
     async def test_closing_the_router_fails_the_client_cleanly(self):
         router = rb.BACnetRouter([bbmd_port(1)], application="client")

@@ -13,6 +13,7 @@ use super::session::NativeSession;
 use bacnet_network::router::{
     BACnetRouter, RouterApplicationPort, RouterApplicationPorts, StartedRouter,
 };
+use bacnet_transport::port::TransportPort;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::{Mutex, PoisonError};
@@ -110,10 +111,22 @@ impl Slots {
 
     /// Take `role`'s port, once.
     fn take(&self, role: Role) -> Option<RouterApplicationPort> {
+        self.with(role, Option::take)
+    }
+
+    /// The receive capacity `role`'s port declares, leaving it parked.
+    fn capacity(&self, role: Role) -> Option<u16> {
+        self.with(role, |port| {
+            port.as_ref()
+                .map(TransportPort::local_receive_apdu_capacity)
+        })
+    }
+
+    fn with<R>(&self, role: Role, f: impl FnOnce(&mut Option<RouterApplicationPort>) -> R) -> R {
         let mut ports = self.ports.lock().unwrap_or_else(PoisonError::into_inner);
         match role {
-            Role::Client => ports.0.take(),
-            Role::Server => ports.1.take(),
+            Role::Client => f(&mut ports.0),
+            Role::Server => f(&mut ports.1),
         }
     }
 }
@@ -134,19 +147,33 @@ impl RouterApplication {
     /// and when this router start's port for the role is already taken.
     pub(crate) async fn take(&self) -> PyResult<RouterApplicationPort> {
         let role = self.role;
-        match self.owner.inspect(|session| session.slots.take(role)).await {
+        self.found(self.owner.inspect(|session| session.slots.take(role)).await)
+    }
+
+    /// The receive capacity this stack's port declares, without taking it,
+    /// so a server validates its database before the port is spent. Raises
+    /// as [`Self::take`] does.
+    pub(crate) async fn capacity(&self) -> PyResult<u16> {
+        let role = self.role;
+        self.found(
+            self.owner
+                .inspect(|session| session.slots.capacity(role))
+                .await,
+        )
+    }
+
+    fn found<T>(&self, lookup: Option<Option<T>>) -> PyResult<T> {
+        let role = self.role.name();
+        match lookup {
             None => Err(PyRuntimeError::new_err(format!(
-                "router not started or already closing: start the router before the {} on \
-                 its application entity",
-                role.name()
+                "router not started or already closing: start the router before the {role} on \
+                 its application entity"
             ))),
             Some(None) => Err(PyRuntimeError::new_err(format!(
-                "this router start's application {} port is already taken: one {} runs on \
-                 it per router start, so restart the router to start another",
-                role.name(),
-                role.name()
+                "this router start's application {role} port is already taken: one {role} runs \
+                 on it per router start, so restart the router to start another"
             ))),
-            Some(Some(port)) => Ok(port),
+            Some(Some(found)) => Ok(found),
         }
     }
 }

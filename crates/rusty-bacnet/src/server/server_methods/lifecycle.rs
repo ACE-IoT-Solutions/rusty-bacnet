@@ -176,12 +176,13 @@ impl BACnetServer {
                         .ok_or_else(|| PyRuntimeError::new_err("MS/TP transport was not prepared"))?
                         .into(),
                 ),
-                // The router's server port, taken from its running start.
+                // The router's server port is taken only once the database
+                // is valid, so a refused start leaves it for the next one.
                 "router" => {
-                    let router = router.ok_or_else(|| {
-                        PyRuntimeError::new_err("transport='router' needs router=")
-                    })?;
-                    Some(AppTransport::Router(router.take().await?))
+                    if router.is_none() {
+                        return Err(PyRuntimeError::new_err("transport='router' needs router="));
+                    }
+                    None
                 }
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
@@ -191,15 +192,16 @@ impl BACnetServer {
                 }
             };
 
-            let local_capacity =
-                match &prepared_transport {
-                    Some(transport) => transport.local_receive_apdu_capacity(),
-                    // Only the SC branch defers construction. Its receive declaration
-                    // is owned by ScTransport and available before opening a socket.
-                    None => bacnet_transport::sc::ScTransport::<
-                        bacnet_transport::sc_tls::TlsWebSocket,
-                    >::LOCAL_RECEIVE_APDU_CAPACITY,
-                };
+            let local_capacity = match (&prepared_transport, &router) {
+                (Some(transport), _) => transport.local_receive_apdu_capacity(),
+                // The router's port, read where it is parked.
+                (None, Some(router)) => router.capacity().await?,
+                // SC defers construction too. Its receive declaration
+                // is owned by ScTransport and available before opening a socket.
+                (None, None) => bacnet_transport::sc::ScTransport::<
+                    bacnet_transport::sc_tls::TlsWebSocket,
+                >::LOCAL_RECEIVE_APDU_CAPACITY,
+            };
 
             // Validate the generated Device and entire pending DB before SC I/O.
             let identity = identity.resolve(local_capacity).map_err(to_py_err)?;
@@ -235,9 +237,11 @@ impl BACnetServer {
                 ))
             })?;
 
-            let transport = match prepared_transport {
-                Some(transport) => transport,
-                None => {
+            let transport = match (prepared_transport, router) {
+                (Some(transport), _) => transport,
+                // The database is valid: now spend the router's port.
+                (None, Some(router)) => AppTransport::Router(router.take().await?),
+                (None, None) => {
                     let hub_url = sc_hub.ok_or_else(|| {
                         PyRuntimeError::new_err("sc_hub is required for SC transport")
                     })?;

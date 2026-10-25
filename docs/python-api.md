@@ -160,8 +160,10 @@ application entity with Python stacks (#2071):
   delivers to its application.
 - `application="client_and_server"`: a `BACnetClient` and a `BACnetServer`
   split it. Confirmed requests to the router reach the server, except
-  confirmed COV notifications, which go to the client; unconfirmed requests
-  reach both; each answer goes to the stack that sent the request.
+  confirmed COV notifications, which go to the client, and confirmed event
+  notifications, which reach both with only the server's answer sent;
+  confirmed audit notifications reach the server alone. Unconfirmed requests
+  reach both, and each answer goes to the stack that sent the request.
 
 Build each stack with `transport="router", router=router`. It takes its share
 from the running router when it starts (`async with` for the client,
@@ -202,8 +204,8 @@ network.
 
 A stack whose role the router doesn't share raises `ValueError` at
 construction: a server needs `application="client_and_server"`. `router=`
-without
-`transport="router"` (or the reverse) raises `ValueError` before any I/O. On
+without `transport="router"` (or the reverse) raises `ValueError` before any
+I/O. On
 a split entity, the client's `apdu_timeout_ms` and the server's
 `apdu_segment_timeout_ms` must be under 60000, since the router forgets a
 request 60 seconds after its last segment, retry or answer. Starting a stack
