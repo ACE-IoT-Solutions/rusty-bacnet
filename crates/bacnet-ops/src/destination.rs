@@ -475,8 +475,11 @@ impl Destination {
     /// `object`'s state texts as the device sent them, for naming the
     /// states a one-shot read prints (#2132): one ReadProperty of a
     /// multi-state object's State_Text, or one ReadPropertyMultiple of a
-    /// binary object's Active_Text and Inactive_Text (ReadProperty each
-    /// when the device refuses it), and nothing for another object type.
+    /// binary object's Active_Text and Inactive_Text, and nothing for
+    /// another object type. `no_rpm` is the caller's memory of the device
+    /// refusing ReadPropertyMultiple: once set, by the first refusal, the
+    /// pair goes by ReadProperty each, so reading several objects costs
+    /// one refused RPM in all, not one an object.
     /// Best effort: a refused or failed read gives no texts. The error
     /// comes back only when the device, or the way to it, stopped
     /// answering ([`unreachable()`]), so a caller reading several objects
@@ -486,14 +489,12 @@ impl Destination {
         &self,
         client: &BACnetClient<T>,
         object: ObjectIdentifier,
+        no_rpm: &Cell<bool>,
     ) -> Result<StateTexts, Error> {
         if StateTexts::properties(object.object_type()).is_empty() {
             return Ok(StateTexts::default());
         }
-        match self
-            .state_text_rows(client, object, &Cell::new(false))
-            .await
-        {
+        match self.state_text_rows(client, object, no_rpm).await {
             Ok(rows) => Ok(StateTexts::from_rows(&rows)),
             Err(error) if unreachable(&error) => Err(error),
             Err(_) => Ok(StateTexts::default()),

@@ -1068,14 +1068,19 @@ Text output names what the device sent:
   Present_Value, Relinquish_Default, a Priority_Array slot and the like)
   followed by the object's own text: `active (Running)`, `2 (Low)`. The
   texts are the object's Active_Text and Inactive_Text, or its State_Text,
-  read with one more request an object once the value has been read, unless
-  the read already holds them (`read bv:1 all`). A refused read, an empty
-  text or a state past the end of State_Text keeps the plain form, `active`
-  or `2`, and a device that stops answering then keeps it for the rest of
-  the command without failing it. The texts come from the device: control
-  characters in them print as spaces and invisible format characters are
-  dropped. `decoded` keeps the number, as before. This form writes back
-  unchanged;
+  read once the value has been read with one more request an object (a
+  ReadPropertyMultiple for a binary object's pair), unless the read already
+  holds them (`read bv:1 all`). On a device without ReadPropertyMultiple,
+  after one refused RPM a command, each text goes by its own ReadProperty.
+  A refused read, an empty text or a state past the end of State_Text keeps
+  the plain form, `active` or `2`, and a device that stops answering then
+  keeps it for the rest of the command without failing it. The texts come
+  from the device: control characters in them print as spaces and
+  invisible format characters are dropped. The JSON `value` text changes
+  for every such state (`inactive` becomes `inactive (Inactive)`); scripts
+  should read `decoded`, unchanged: the number for a multi-state state,
+  `{"value": 0, "name": "inactive"}` for a binary one. A single state
+  printed this way writes back unchanged, whatever its text holds;
 - bit strings with names as the set bits, `in-alarm | fault`, or `none`;
   other bit strings as their bits, `bits(0101)`;
 - objects as `analog-input 1`, dates as `2026-10-19`, times as `07:00`

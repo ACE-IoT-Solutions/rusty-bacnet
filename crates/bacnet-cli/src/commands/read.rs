@@ -6,10 +6,13 @@
 //! the object's own text, `2 (Low)` or `active (Running)`, as `read-range`
 //! and the TUI do (#2132). The texts cost one more request an object, sent
 //! only once the read is answered and only for such a value, unless the
-//! read already holds them (`read msv:1 all`). A refused read, an empty
+//! read already holds them (`read msv:1 all`). A binary object's pair goes
+//! by ReadPropertyMultiple; on a device without it, after one refused RPM a
+//! command, by ReadProperty for each text. A refused read, an empty
 //! text or a state past the end keeps the plain form, and a device that
 //! stops answering keeps it for the rest of the command without failing it.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use bacnet_client::client::BACnetClient;
@@ -47,6 +50,10 @@ struct Texts {
     /// Set once a text read found the device not answering: no more are
     /// sent, so a silent device costs one timeout.
     silent: bool,
+    /// Set once the device refuses ReadPropertyMultiple: the rest of the
+    /// command reads each text by ReadProperty, so a device without RPM
+    /// costs one refused RPM a command, not one an object.
+    no_rpm: Cell<bool>,
 }
 
 impl Texts {
@@ -99,7 +106,7 @@ impl Texts {
         {
             return;
         }
-        let texts = match to.state_texts(client, object).await {
+        let texts = match to.state_texts(client, object, &self.no_rpm).await {
             Ok(texts) => texts.cleaned(),
             Err(_) => {
                 self.silent = true;

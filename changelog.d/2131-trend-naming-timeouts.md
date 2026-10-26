@@ -1,6 +1,7 @@
 ---
 section: Fixed
 ---
-- The MCP `bacnet_read_trend` tool counts a timeout while it names a log's
-  values, or while it reads a later page, in its cost, so a device that went
-  silent after the first page no longer reports no timeouts (#2131).
+- The MCP `bacnet_read_trend` tool counts a timeout while naming a log's
+  values or reading a later page, so a device silent after page 1 shows
+  it; `bacnet_read` and `bacnet_find_object` no longer count a transport
+  failure as a timeout (#2131).
