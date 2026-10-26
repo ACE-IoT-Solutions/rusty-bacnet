@@ -13,6 +13,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier, ServiceSupported};
 use bacnet_types::primitives::PropertyValue;
 use bacnet_types::{PROTOCOL_REVISION, PROTOCOL_VERSION};
 
+use crate::local_device::announcement_device;
 use crate::server::ServerConfig;
 
 const PROPERTY_CAPABILITIES_EXPLANATION: &str = "Property rows aggregate configured instances: a row or access flag means at least one instance supports it. Actual availability and access depend on the concrete object. Optional is the metadata conformance classification; a required declaration wins, and absent rows do not vote.";
@@ -374,9 +375,10 @@ impl<'a> PicsGenerator<'a> {
 
     /// Generate the complete PICS document.
     ///
-    /// The protocol version and revision are the selected Device object's
+    /// The protocol version and revision are the Device object's
     /// Protocol_Version and Protocol_Revision, so the PICS states what the
-    /// device reports. Without a Device, or when either property isn't an
+    /// device reports: for the server, the Device at its identity; otherwise,
+    /// or when the database lacks that one, the selected Device. Without a Device, or when either property isn't an
     /// unsigned value that fits in a `u16`, the stack's own
     /// [`bacnet_types::PROTOCOL_VERSION`] and
     /// [`bacnet_types::PROTOCOL_REVISION`] stand in.
@@ -394,16 +396,17 @@ impl<'a> PicsGenerator<'a> {
     }
 
     fn build_vendor_info(&self) -> VendorInfo {
-        // The selected Device's raw object: the server's Device view projects
-        // neither protocol property, so both generators read the same value.
-        let device = self.db.selected_device().and_then(|oid| self.db.get(&oid));
-        let protocol = |property, fallback| {
-            device
-                .and_then(|device| match device.read_property(property, None).ok()? {
-                    PropertyValue::Unsigned(raw) => u16::try_from(raw).ok(),
-                    _ => None,
-                })
-                .unwrap_or(fallback)
+        // The raw Device object: the server's view projects neither protocol
+        // property. The server reads the Device at its identity, as wildcard
+        // reads and announcements do; otherwise the selected (lowest) one.
+        let device = (self.served)
+            .then(|| announcement_device(self.db, &self.server_config.device))
+            .flatten()
+            .or_else(|| self.db.selected_device())
+            .and_then(|oid| self.db.get(&oid));
+        let protocol = |property, fallback| match device.map(|d| d.read_property(property, None)) {
+            Some(Ok(PropertyValue::Unsigned(raw))) => u16::try_from(raw).unwrap_or(fallback),
+            _ => fallback,
         };
         VendorInfo {
             vendor_id: self.server_config.device.vendor_id(),

@@ -19,7 +19,7 @@ The draft describes the configuration you built and nothing more. It is not a te
 
 ## Generate one in Rust
 
-This program builds a server with a Device and two objects on 127.0.0.1, drafts its PICS, stops the server and prints the PICS as Markdown. It uses the crates from the [server guide's Cargo.toml](/rusty-bacnet/examples/rust/server-device/Cargo.toml); put it in `src/main.rs` and run `cargo run`. CI compiles it on every change.
+This program builds a server with a Device and two objects on 127.0.0.1, drafts its PICS, stops the server and prints the PICS as Markdown. It uses the crates from the [server guide's Cargo.toml](/rusty-bacnet/examples/rust/server-device/Cargo.toml); put it in `src/main.rs` and run `cargo run`. CI compiled it against v{release}; the program in [On `dev` after the release](#protocol-version-and-revision-from-the-device) is the one CI compiles now.
 
 ```rust
 use bacnet_objects::DeviceIdentity;
