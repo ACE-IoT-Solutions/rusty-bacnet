@@ -75,7 +75,18 @@ pub(crate) const DIRECT_REDIAL_MAX_ENTRIES: usize = 32;
 pub(crate) const DIRECT_POOL_MAX_ENTRIES: usize = 16;
 
 /// Idle TTL for pooled direct connections (owner-local policy).
+///
+/// Traffic in either direction refreshes it; heartbeats do not, so keep-alive
+/// alone never holds an unused link open (#2127).
 pub(crate) const DIRECT_POOL_IDLE_TTL: Duration = Duration::from_secs(60);
+
+/// The node's timing that a link it dials inherits: the connect wait and
+/// the heartbeat `(interval, timeout)`, all in milliseconds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DirectTiming {
+    pub(crate) connect_timeout_ms: u64,
+    pub(crate) heartbeat_ms: (u64, u64),
+}
 
 /// Backoff delay for `consecutive_failures` (1-indexed) direct failures.
 ///
@@ -581,9 +592,13 @@ impl<W: WebSocketPort> DirectShared<W> {
         npdu: &[u8],
         attributes: &[DataAttribute],
         conn: &Arc<Mutex<ScConnection>>,
-        connect_timeout_ms: u64,
+        timing: DirectTiming,
     ) -> Result<(), super::direct_egress::DirectSendError> {
         use super::direct_egress::DirectSendError as Failure;
+        let DirectTiming {
+            connect_timeout_ms,
+            heartbeat_ms,
+        } = timing;
         if !self.enabled.load(Ordering::Acquire) || dest == BROADCAST_VMAC {
             return Err(Failure::Unavailable);
         }
@@ -679,6 +694,7 @@ impl<W: WebSocketPort> DirectShared<W> {
                     #[cfg(feature = "sc-tls")]
                     self.intake.lock().unwrap().clone(),
                     local_limits,
+                    heartbeat_ms,
                 );
                 let mut workers = self.workers.lock().unwrap();
                 workers.retain(|task| !task.is_finished());

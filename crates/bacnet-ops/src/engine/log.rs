@@ -11,7 +11,12 @@
 //! reads what it samples, so its values can be named (#2091): one more
 //! request, charged the same way, once per read rather than once per page.
 //! Asking only after an answer keeps a silent device to one timeout.
+//! [`Engine::log_state_texts`] then reads the state texts of the binary
+//! and multi-state objects whose states the columns sample (#2122): one
+//! request an object, at most
+//! [`MAX_STATE_TEXT_OBJECTS`](crate::format::MAX_STATE_TEXT_OBJECTS).
 
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bacnet_client::client::BACnetClient;
@@ -22,8 +27,8 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::Engine;
-use crate::format::LogColumns;
+use super::{Engine, Wanted, unreachable};
+use crate::format::{LogColumns, StateTexts};
 use crate::limits::RequestLimits;
 
 /// The requester a page reads through: the device's routed read calls,
@@ -91,5 +96,35 @@ impl<T: TransportPort + 'static> Engine<T> {
         .await
         .map(|data| LogColumns::decode(&data))
         .unwrap_or_default()
+    }
+
+    /// Name the states `columns` sample with their objects' state texts,
+    /// read from `device`: one charged request an object (ReadPropertyMultiple,
+    /// or ReadProperty each once the device has refused it), each object
+    /// once, only objects on `device`, at most
+    /// [`MAX_STATE_TEXT_OBJECTS`](crate::format::MAX_STATE_TEXT_OBJECTS).
+    /// Best effort: a refused read leaves its columns named as before, and
+    /// a device that stops answering, or `out_of_time` turning true, ends
+    /// the reading before the next object.
+    pub async fn log_state_texts(
+        &self,
+        device: u32,
+        columns: &mut LogColumns,
+        out_of_time: impl Fn() -> bool,
+    ) {
+        let out_of_time = &out_of_time;
+        columns
+            .read_state_texts(Some(device), |object| async move {
+                if out_of_time() {
+                    return ControlFlow::Break(());
+                }
+                let wanted = Wanted::List(StateTexts::properties(object.object_type()));
+                match self.read(device, object, wanted).await {
+                    Ok(read) => ControlFlow::Continue(StateTexts::from_rows(&read.rows)),
+                    Err(error) if unreachable(&error) => ControlFlow::Break(()),
+                    Err(_) => ControlFlow::Continue(StateTexts::default()),
+                }
+            })
+            .await;
     }
 }

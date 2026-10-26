@@ -250,6 +250,11 @@ async fn results_fit_their_output_schemas() {
             "bacnet_read_trend",
             json!({ "device": 1201, "object": "trend-log:2", "summary": true }),
         ),
+        // State columns labelled with enveloped state texts (#2122).
+        (
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log-multiple:1", "max_records": 8 }),
+        ),
         (
             "bacnet_read_trend",
             json!({ "device": 1201, "object": "ai:1" }),

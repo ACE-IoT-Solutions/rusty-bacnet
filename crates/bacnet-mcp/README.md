@@ -19,7 +19,8 @@ frames, and follow points as they change.
 - Results are paged with cursors signed by a per-process key.
 - Passive mode builds no client and sends nothing.
 - Resources for devices, points, properties, alarms and the session, with
-  `subscriptions/listen` (2026-07-28) on a shared watch hub: one COV
+  `subscriptions/listen` (2026-07-28), or `resources/subscribe` from hosts
+  on older revisions, on a shared watch hub: one COV
   subscription per point however many listeners, polling when a device
   refuses COV, 32 points per principal and 256 per process. `bacnet_watch`
   gives hosts without subscriptions the same through a tool.

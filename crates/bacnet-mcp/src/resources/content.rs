@@ -341,6 +341,7 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
             "held": ctx.subs.held(),
             "max": caps.watches,
             "streams": *ctx.listening.borrow(),
+            "legacy": ctx.subs.legacy_count(),
         },
     });
     if let Some(engine) = &ctx.engine {

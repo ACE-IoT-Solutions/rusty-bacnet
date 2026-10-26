@@ -36,7 +36,7 @@ input and output schemas and structured content plus a text rendering.
 | `bacnet_find_object` | Objects across the discovery table, within reach and an optional device `range`: by `name` or `description` (a case-insensitive substring of the cleaned device text), `object` or `types`. Lists come from `bacnet_list_objects`' cache (read once, kept five minutes); a text match reads each candidate's name (and description, if asked) once, kept five minutes too. A page holds up to 100 matches (or the policy's object page), and a full page ends before the next device is read; the cursor packs a device and a candidate index. Names are kept cleaned and capped at 4,096 characters, which a search matches against (a result shows the policy's text cap of them), at most 4,096 objects a device and 16,384 in all. A device whose list read stopped is under `incomplete` with why, after searching what was read; one that failed is under `skipped` with its error; a list read cut by the budget resumes on the next page. A device that stops answering while its names are read is under `incomplete` too, and the search moves on without a cursor back to it, so a silent device doesn't cost each later page a timeout; search it alone to retry. |
 | `bacnet_network_map` | Networks in `[mcp] networks`, each with its routers (from the last Who-Is-Router-To-Network and from the routed devices' router addresses), its speed and rate under the policy, and its devices in reach; and the routers with the networks each reaches. `send: true` broadcasts a Who-Is-Router-To-Network: it needs `broad_discovery`, goes at most once a minute (checked and claimed under one lock), takes the local network's slot and is charged. The wait for answers ends with the call's budget, counted after the wait for the rate slot. A query cancelled while it waits (for the slot or for answers) keeps its claim on the minute but records no routers; at most 256 routers are kept, replaced by each finished query (one asking about a single network merges into them, the routers just heard first). `bbmd: true` adds the BBMD tables and a consistency verdict (see [BBMD tables](#bbmd-tables)). No network-layer writes, table writes or registrations. |
 | `bacnet_read_trend` | A Trend Log or Trend Log Multiple through `Engine::read_trend`, each request charged. From the oldest record or after `from`, up to `to`; at most `max_records` (500 by default, 2,000 at most, and about 60 kB of structured content) a call, then a cursor holding the log's next sequence number (a log that has more but gives no sequence number to resume from returns `truncated` without a cursor, and says why under `stopped`). `from` after `to` is a JSON-RPC -32602.
- Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Engine::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
+ Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Engine::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. A column that samples a binary or multi-state object's state (its Present_Value and the like) counts its samples as states, keyed `active`/`inactive` or by state number, never as numbers to average; when the reference read fails, the call doesn't know the column holds states, so a multi-state column falls back to `numeric` and `numeric` versus `states` can also differ between calls. The call then reads that object's Active_Text and Inactive_Text, or State_Text: one more charged request an object, once a call, for at most 8 objects on the log's own device, and skipped once the call's budget is spent (#2122). The texts are device strings, so they never become keys or join a value: the column's `state_texts` maps each state key it counted to its text, as the device sent it, in an untrusted envelope (cleaned and capped there, with `truncated` set when cut) (source `device N multi-state-value:1 state-text`, `active-text` or `inactive-text`), and is null when no key has one (a refused read, an empty text, a state past the end of State_Text). `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
 | `bacnet_alarms` | GetEventInformation through `bacnet_ops::format::alarms` (#2077): objects, states, transitions, notify types, timestamps and priorities named; paged over the device's answers (`more_events`) up to `max` (100) a call, the cursor holding the last object; once the call's budget is spent no further answer is asked for, and what was read comes back with `more_events` and a cursor (`format::alarms::read_event_information_until`).  `summaries: true` adds GetAlarmSummary and GetEnrollmentSummary on the first page; a device refusing one reports it under `summary_errors`. When the events spent the call's budget, neither is sent, and each shows under `summary_errors` as `{"skipped": "budget"}`. Every datum is passed through the envelope check. |
 | `bacnet_watch` | Points on the watch hub, and what changed since the last call (see [the tool-only fallback](#the-tool-only-fallback)). `idempotentHint: false`. Not listed in passive mode. |
 | `bacnet_decode` | Hex (separators and `0x` ignored, at most 6,144 octets, room for the largest BACnet/SC message the stack accepts) as `bip`, `bip6`, `mstp`, `sc`, `npdu`, `apdu` or `auto` (by the first octets; SC must be named). Returns a one-line `text`, the decoder's `summary` and the field `tree` (labels with `[start, end)` octet ranges, at most 600 fields). A label quoting a character string is an envelope with source `decoded frame`; other labels are cleaned, and a long one (an unknown tag's octets) is cut at 512 characters with `truncated: true`. No traffic: listed in passive mode too. |
@@ -78,11 +78,29 @@ all) is a -32603 with the same body.
 
 `rmcp` 3.5.1 implements `subscriptions/listen` (2026-07-28): the server
 sends the acknowledgment, then `notifications/resources/updated` carrying
-only the URI; the client reads the resource. A legacy client (the older
-`initialize` handshake) can't open a listen stream, and
-`resources/subscribe` is not offered, so the server's `initialize` answer
-for a version older than 2026-07-28 doesn't advertise `resources.subscribe`
-(`server/discover` does); such hosts use `bacnet_watch`.
+only the URI; the client reads the resource. A legacy client (one that
+opens with the older `initialize` handshake, such as a 2025-06-18 host)
+can't open a listen stream; it subscribes with `resources/subscribe` and
+`resources/unsubscribe` instead (#2114), and the `initialize` answer
+advertises `resources.subscribe` for every version.
+
+- **Legacy subscriptions.** A `resources/subscribe` is checked as a listen
+  URI is and takes a watch on the same hub, under the same caps: listen
+  streams, legacy subscriptions and `bacnet_watch` share the 32 points of
+  the principal and the 256 of the process. Updates go out as
+  `notifications/resources/updated`, the device list and alarm polls
+  included. A URI that can't be honoured is a JSON-RPC -32602 with the
+  tool error body, as a refused read is: `invalid-argument` (malformed, or
+  a device summary, which has no updates), `unknown-device`, or `refused`
+  with `device-not-allowed`, `network-not-allowed`, `principal-cap`,
+  `process-cap`, `passive` or `shutting-down` (the session is ending);
+  nothing is sent. Subscribing twice to one
+  URI is one subscription, and a session holds at most 64 URIs (twice the
+  point cap). `resources/unsubscribe` drops the subscription and its watch
+  at once; the last watch on a point cancels its BACnet subscription. When
+  the session ends (the host closes stdin, or a signal) every legacy
+  subscription goes with it. The session resource counts them under
+  `watches.legacy`.
 
 - **Acknowledgment.** It lists only the URIs honoured. A point URI is
   honoured when it parses, its device is in the discovery table (so call
@@ -136,8 +154,9 @@ for a version older than 2026-07-28 doesn't advertise `resources.subscribe`
 
 ## The tool-only fallback
 
-`bacnet_watch` (points: device, object, optional property; up to 32 a
-call) puts points on the hub as a subscription would. The first call
+For hosts that subscribe neither way (some show resources but never
+subscribe), `bacnet_watch` (points: device, object, optional property; up
+to 32 a call) puts points on the hub as a subscription would. The first call
 returns every value (waiting up to 10 s for new points' first reads); a
 call with its `next_cursor` and the same points returns `changed: false`
 without values for points unchanged since, and reading them sends nothing.
@@ -212,8 +231,8 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
 
 `--passive` lists only `bacnet://session` and `bacnet://ledger` and no
 templates; reading any other resource is refused (`refused: passive`), and
-a listen stream honours only those two. Nothing that needs traffic is
-offered.
+a listen stream or a legacy `resources/subscribe` honours only those two.
+Nothing that needs traffic is offered.
 
 ## Results
 
@@ -333,6 +352,12 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   device list announced once on arrivals; the resource lists, contents,
   envelope, caches and a cancelled read; `bacnet_watch` across cursors,
   its idle expiry, cap and reach; output schemas include `bacnet_watch`.
+- `crates/bacnet-mcp/src/tests/legacy.rs` (#2114): a 2025-06-18 session
+  offered `resources.subscribe`, subscribing (twice, one subscription),
+  told of a COV change, and unsubscribing, which cancels the subscription
+  in the lab device's table; closing the session, and dropping its future,
+  releasing every watch; the caps shared with listen streams; refusals as
+  -32602 errors with nothing sent; passive mode; the device list announced.
 - `crates/bacnet-ops/src/watch/tests.rs`: the hub against the device's
   subscription table: sharing and cancel, a refusal polled every 10 s, a
   coalesced storm, renewal before expiry, a silent device and recovery, a
