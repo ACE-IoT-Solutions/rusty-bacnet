@@ -125,6 +125,11 @@ class ConstructorTests(unittest.TestCase):
             server(on_reinitialize=handler, reinit_password="é" * 21)
         with self.assertRaisesRegex(ValueError, "reinit_password exceeds the 20-character limit"):
             BipEndpoint(4101, on_reinitialize=handler, reinit_password="é" * 21)
+        # An empty one could never match (#2094).
+        with self.assertRaisesRegex(ValueError, "empty reinit_password"):
+            server(on_reinitialize=handler, reinit_password="")
+        with self.assertRaisesRegex(ValueError, "empty reinit_password"):
+            BipEndpoint(4101, on_reinitialize=handler, reinit_password="")
         server(on_reinitialize=handler, reinit_password="é" * 20)
         BipEndpoint(4101, on_reinitialize=handler, reinit_password="é" * 20)
 

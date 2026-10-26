@@ -3873,7 +3873,7 @@ class BACnetClient:
         """Send DeviceCommunicationControl to a remote device.
 
         Raises ValueError, before anything is sent, for a password over 20
-        characters.
+        characters or an empty one (pass None to send no password).
         """
         ...
 
@@ -3886,7 +3886,7 @@ class BACnetClient:
         """Send ReinitializeDevice to a remote device.
 
         Raises ValueError, before anything is sent, for a password over 20
-        characters.
+        characters or an empty one (pass None to send no password).
         """
         ...
 
@@ -4780,8 +4780,9 @@ class BACnetServer:
         after_reinitialize: Optional[AfterReinitialize] = None,
         router: Optional[BACnetRouter] = None,
     ) -> None:
-        """``dcc_password`` and ``reinit_password`` hold at most 20
-        characters; a longer one raises ValueError here (#2060).
+        """``dcc_password`` and ``reinit_password`` hold 1 to 20
+        characters; a longer one (#2060) or an empty one (#2094) raises
+        ValueError here. None configures no password.
 
         ``transport="router"`` with ``router`` (a ``BACnetRouter`` built
         with ``application="client_and_server"``): host the device on the
@@ -6842,8 +6843,8 @@ class BipEndpoint:
     ) -> None:
         """``on_reinitialize`` / ``after_reinitialize``: execute
         ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
-        ``reinit_password`` (needs ``on_reinitialize``, else ValueError; at
-        most 20 characters, else ValueError) is the password a request must
+        ``reinit_password`` (needs ``on_reinitialize``, else ValueError; 1 to
+        20 characters, else ValueError) is the password a request must
         carry. The callable runs on the session's
         one dispatch task, so a slow one stalls every request.
         ``device_write_policy``: a callable that decides each WriteProperty

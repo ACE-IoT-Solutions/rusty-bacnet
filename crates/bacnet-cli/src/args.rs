@@ -657,7 +657,8 @@ pub(crate) enum Command {
 }
 
 /// The `--password` of `control` and `reinit`: refused at parse time when
-/// longer than the requests carry (#2085), so nothing is resolved or sent.
+/// longer than the requests carry (#2085) or empty (#2094), so nothing is
+/// resolved or sent.
 /// Its error names the limit but never echoes the password, which clap's
 /// mapped parsers would.
 #[derive(Clone, Copy)]
@@ -672,17 +673,18 @@ impl TypedValueParser for DevicePassword {
         arg: Option<&clap::Arg>,
         value: &std::ffi::OsStr,
     ) -> Result<String, clap::Error> {
-        use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_fits};
+        use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_valid};
         let password = clap::builder::StringValueParser::new().parse_ref(cmd, arg, value)?;
-        if password_fits(&password) {
+        if password_valid(&password) {
             return Ok(password);
         }
         let name = arg.map_or_else(|| "--password".to_owned(), ToString::to_string);
-        Err(clap::Error::raw(
-            clap::error::ErrorKind::ValueValidation,
-            format!("{name} exceeds the {MAX_PASSWORD_CHARS}-character limit\n"),
-        )
-        .with_cmd(cmd))
+        let why = if password.is_empty() {
+            format!("{name} is empty; leave it out to send no password\n")
+        } else {
+            format!("{name} exceeds the {MAX_PASSWORD_CHARS}-character limit\n")
+        };
+        Err(clap::Error::raw(clap::error::ErrorKind::ValueValidation, why).with_cmd(cmd))
     }
 }
 

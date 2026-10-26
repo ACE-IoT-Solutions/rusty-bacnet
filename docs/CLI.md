@@ -1435,7 +1435,7 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 | Flag | Description |
 |------|-------------|
 | `--duration <M>` | Duration in minutes |
-| `--password <P>` | Password string |
+| `--password <P>` | Password, 1 to 20 characters; leave the flag out to send none |
 
 **Aliases:** `dcc` = control
 
@@ -1445,7 +1445,7 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 
 | Flag | Description |
 |------|-------------|
-| `--password <P>` | Password string |
+| `--password <P>` | Password, 1 to 20 characters; leave the flag out to send none |
 
 ```bash
 # Time synchronization
