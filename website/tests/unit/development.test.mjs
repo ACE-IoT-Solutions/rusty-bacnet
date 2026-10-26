@@ -27,14 +27,14 @@ test('integration navigation resolves task guides with release-pinned source lin
   assert.ok(group);
   const slugs = group.items.map(item => item.slug);
   assert.deepEqual(slugs, ['integrate/overview', 'integrate/shared-endpoints', 'integrate/network-ports', 'integrate/server',
-    'integrate/router', 'integrate/security']);
+    'integrate/router', 'integrate/security', 'integrate/pics']);
   assert.deepEqual(navigation.find(group => group.label === 'Connect to a network').items.map(item => item.slug),
     ['connect/overview', 'connect/bacnet-ip', 'connect/across-subnets', 'connect/nat', 'connect/multicast',
       'connect/ipv6', 'connect/bacnet-sc', 'connect/mstp', 'connect/mstp-realtime']);
   assert.deepEqual(navigation.find(group => group.label === 'Contribute').items.map(item => item.slug),
     ['development/build-from-source', 'development/documentation']);
   assert.deepEqual(navigation.find(group => group.label === 'Evaluate and get help').items.map(item => item.slug),
-    ['help/troubleshooting', 'project/support', 'project/conformance', 'project/performance', 'project/upgrading', 'project/upgrading/v0-14']);
+    ['help/troubleshooting', 'project/support', 'project/conformance', 'project/sample-pics', 'project/performance', 'project/upgrading', 'project/upgrading/v0-14']);
   const pages = navigation.flatMap(group => group.items.flatMap(item => item.items ?? [item]));
   assert.equal(new Set(pages.map(item => item.slug)).size, pages.length);
   for (const slug of [...slugs, 'connect/overview', 'connect/bacnet-sc', 'reference/transports', 'project/performance']) {

@@ -332,6 +332,11 @@ artifact or fetch a mutable branch in the deployment job.
   an object type, a listed service or a transport feature regenerates it.
   `src/lib/support.mjs` turns it into the page's tables, for the
   `SupportTable` component and the plain-text export alike.
+- `src/content/docs/project/sample-pics.md`: the sample PICS (#1496), a
+  generated page; don't edit it. `crates/bacnet-integration-tests/sample_pics.rs`
+  writes it, banner and all, with the same command, and the same workspace
+  test fails when it is stale. A change to an object's property metadata or
+  to the PICS generator's output regenerates it.
 - `src/data/navigation.json`: sidebar and test route inventory.
 - `src/data/legacy-routes.json`: retained routes and section destinations. Compatibility pages keep old bookmarks and raw URLs usable, stay out of Pagefind, and are omitted from the canonical llms guide list.
 - `scripts/prepare.mjs`: source-derived raw Markdown and version-aware llms index.
