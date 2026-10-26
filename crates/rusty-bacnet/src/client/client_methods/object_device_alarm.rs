@@ -156,7 +156,8 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Send a DeviceCommunicationControl request. A password over 20
-    /// characters raises ValueError before anything is sent (#2085).
+    /// characters (#2085), or an empty one (#2094), raises ValueError before
+    /// anything is sent.
     #[pyo3(signature = (address, enable_disable, time_duration=None, password=None))]
     fn device_communication_control<'py>(
         &self,
@@ -183,7 +184,8 @@ impl BACnetClient {
     }
 
     /// Send a ReinitializeDevice request. A password over 20 characters
-    /// raises ValueError before anything is sent (#2085).
+    /// (#2085), or an empty one (#2094), raises ValueError before anything
+    /// is sent.
     #[pyo3(signature = (address, reinitialized_state, password=None))]
     fn reinitialize_device<'py>(
         &self,

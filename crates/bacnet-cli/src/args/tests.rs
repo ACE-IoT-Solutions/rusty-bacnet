@@ -315,5 +315,10 @@ fn device_passwords_over_the_limit_are_refused_at_parse_time() {
         let text = error.to_string();
         assert!(text.contains("20-character limit"), "{text}");
         assert!(!text.contains("éé"), "the password leaked: {text}");
+
+        // An empty one is refused too: leave it out instead (#2094).
+        let error = parse([a, b, c, d, "--password", ""]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{head:?}");
+        assert!(error.to_string().contains("is empty"), "{error}");
     }
 }

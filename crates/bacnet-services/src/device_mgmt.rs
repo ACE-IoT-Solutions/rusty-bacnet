@@ -53,14 +53,42 @@ fn password_out_of_range(offset: usize, label: &'static str) -> Error {
     Error::decoding_kind(DecodingKind::OutOfRange, offset, label)
 }
 
-/// Refuse to encode a password longer than [`MAX_PASSWORD_CHARS`] (#2085):
-/// the peer would only refuse it, so the caller hears about it before
-/// anything is sent. `label` names the request and the limit.
-fn check_password_fits(password: Option<&str>, label: &'static str) -> Result<(), Error> {
+/// Whether `password` can be configured or sent: at least one character
+/// and at most [`MAX_PASSWORD_CHARS`] (#2094). An empty password is out of
+/// the service's range; a caller omits it (`None`) instead.
+///
+/// ```
+/// use bacnet_services::device_mgmt::password_valid;
+///
+/// assert!(password_valid("secret"));
+/// assert!(!password_valid(""));
+/// assert!(!password_valid(&"a".repeat(21)));
+/// ```
+pub fn password_valid(password: &str) -> bool {
+    !password.is_empty() && password_fits(password)
+}
+
+/// Refuse to encode a password the peer would only refuse, so the caller
+/// hears about it before anything is sent: one longer than
+/// [`MAX_PASSWORD_CHARS`] (#2085), or an empty one, which the caller should
+/// omit instead (#2094). `too_long` and `empty` name the request.
+fn check_password(
+    password: Option<&str>,
+    too_long: &'static str,
+    empty: &'static str,
+) -> Result<(), Error> {
     match password {
-        Some(pw) if !password_fits(pw) => Err(Error::encode(label)),
+        Some("") => Err(Error::encode(empty)),
+        Some(pw) if !password_fits(pw) => Err(Error::encode(too_long)),
         _ => Ok(()),
     }
+}
+
+/// A decoded password, with an empty one taken as absent (#2094): some
+/// devices send an empty string for "no password", and a server then treats
+/// the request as one without a password.
+fn present(password: Option<String>) -> Option<String> {
+    password.filter(|pw| !pw.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -74,17 +102,20 @@ pub struct DeviceCommunicationControlRequest {
     pub time_duration: Option<u16>,
     /// Requested communication state for the device.
     pub enable_disable: EnableDisable,
-    /// Password the device may require before honoring the request; `None` when not supplied.
+    /// Password the device may require before honoring the request, 1 to 20 characters; `None`
+    /// when not supplied.
     pub password: Option<String>,
 }
 
 impl DeviceCommunicationControlRequest {
     /// Append the ASN.1 encoding of the request to `buf`. Fails, leaving `buf` unchanged, if the
-    /// password is longer than [`MAX_PASSWORD_CHARS`] characters; fails if it is unencodable.
+    /// password is empty (omit it instead) or longer than [`MAX_PASSWORD_CHARS`] characters;
+    /// fails if it is unencodable.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
-        check_password_fits(
+        check_password(
             self.password.as_deref(),
             "DCC password exceeds the 20-character limit",
+            "DCC password is empty; omit it (None) to send no password",
         )?;
         // [0] time-duration (optional)
         if let Some(dur) = self.time_duration {
@@ -100,7 +131,8 @@ impl DeviceCommunicationControlRequest {
     }
 
     /// Decode the request from `data`; errors on malformed input, octets after the members, an
-    /// out-of-range duration or a password longer than 20 characters.
+    /// out-of-range duration or a password longer than 20 characters. An empty password decodes
+    /// as none.
     pub fn decode(data: &[u8]) -> Result<Self, Error> {
         // [0] time-duration (optional)
         let (time_duration, offset) =
@@ -125,7 +157,7 @@ impl DeviceCommunicationControlRequest {
         Ok(Self {
             time_duration,
             enable_disable,
-            password,
+            password: present(password),
         })
     }
 }
@@ -139,17 +171,20 @@ impl DeviceCommunicationControlRequest {
 pub struct ReinitializeDeviceRequest {
     /// Restart or backup/restore action the device is asked to perform.
     pub reinitialized_state: ReinitializedState,
-    /// Password the device may require before honoring the request; `None` when not supplied.
+    /// Password the device may require before honoring the request, 1 to 20 characters; `None`
+    /// when not supplied.
     pub password: Option<String>,
 }
 
 impl ReinitializeDeviceRequest {
     /// Append the ASN.1 encoding of the request to `buf`. Fails, leaving `buf` unchanged, if the
-    /// password is longer than [`MAX_PASSWORD_CHARS`] characters; fails if it is unencodable.
+    /// password is empty (omit it instead) or longer than [`MAX_PASSWORD_CHARS`] characters;
+    /// fails if it is unencodable.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
-        check_password_fits(
+        check_password(
             self.password.as_deref(),
             "ReinitializeDevice password exceeds the 20-character limit",
+            "ReinitializeDevice password is empty; omit it (None) to send no password",
         )?;
         // [0] reinitialized-state
         primitives::encode_ctx_enumerated(buf, 0, self.reinitialized_state.to_raw());
@@ -160,8 +195,8 @@ impl ReinitializeDeviceRequest {
         Ok(())
     }
 
-    /// Decode the request from `data`; errors on missing or malformed fields and on octets after
-    /// them.
+    /// Decode the request from `data`; errors on missing or malformed fields, on octets after
+    /// them and on a password longer than 20 characters. An empty password decodes as none.
     pub fn decode(data: &[u8]) -> Result<Self, Error> {
         // [0] reinitialized-state
         let (state, offset) = decode_ctx_unsigned::<u32>(data, 0, 0, "Reinitialize state")?;
@@ -185,7 +220,7 @@ impl ReinitializeDeviceRequest {
 
         Ok(Self {
             reinitialized_state,
-            password,
+            password: present(password),
         })
     }
 }
@@ -654,5 +689,49 @@ mod tests {
             [Some(expected.clone()), Some(expected)]
         );
         assert_eq!(decoded_passwords(raw_password_requests(4, &ucs2)), [None, None]);
+    }
+
+    /// #2094: the encoders refuse an empty password, telling the caller to
+    /// omit it, and leave the buffer untouched.
+    #[test]
+    fn encoders_refuse_an_empty_password() {
+        let dcc = DeviceCommunicationControlRequest {
+            time_duration: None,
+            enable_disable: EnableDisable::ENABLE,
+            password: Some(String::new()),
+        };
+        let reinit = ReinitializeDeviceRequest {
+            reinitialized_state: ReinitializedState::WARMSTART,
+            password: Some(String::new()),
+        };
+        let mut buf = BytesMut::new();
+        for err in [
+            dcc.encode(&mut buf).unwrap_err(),
+            reinit.encode(&mut buf).unwrap_err(),
+        ] {
+            assert!(matches!(err, Error::Encode(_)), "{err:?}");
+            assert!(err.to_string().contains("omit it"), "{err}");
+        }
+        assert!(buf.is_empty());
+    }
+
+    /// #2094: an empty password from a peer decodes as no password, in every
+    /// character set, so a server checks the request as one without it.
+    #[test]
+    fn decoders_take_an_empty_password_as_absent() {
+        for charset in [0, 4, 5] {
+            let [dcc, reinit] = raw_password_requests(charset, &[]);
+            let dcc = DeviceCommunicationControlRequest::decode(&dcc).unwrap();
+            assert_eq!(dcc.password, None);
+            assert_eq!(dcc.enable_disable, EnableDisable::ENABLE);
+            let reinit = ReinitializeDeviceRequest::decode(&reinit).unwrap();
+            assert_eq!(reinit.password, None);
+            assert_eq!(reinit.reinitialized_state, ReinitializedState::COLDSTART);
+        }
+        // One character is still a password.
+        assert_eq!(
+            decoded_passwords(raw_password_requests(0, b"x")),
+            [Some("x".into()), Some("x".into())]
+        );
     }
 }

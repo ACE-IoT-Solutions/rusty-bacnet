@@ -881,8 +881,9 @@ or a slot's holder changed since the preview, nothing is sent and the result
 says to review it again. A priority array that was read but isn't 16 values
 refuses the write. Esc declines; nothing is sent and the audit log records it.
 The result shows
-each write's outcome; a device whose write policy refuses it
-(SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors.
+each write's outcome; one the device's policy refuses
+(SERVICE_REQUEST_DENIED) is shown as `DENIED by the device's policy`, apart
+from other errors.
 
 **Device management.** `:dcc enable`, `:dcc disable-initiation|disable
 [MINUTES|forever]` (also `:control`) send DeviceCommunicationControl, and
@@ -901,7 +902,9 @@ characters (Clauses 16.1.1.1.3 and 16.4.1.1.2), and Esc cancels and clears
 it. The password is held only as `audit::Secret`, which never prints its
 text, and it is dropped once the request is sent or declined. The T3
 confirmation follows: type the device instance, then Enter. The result shows
-the device's acknowledgement or error. Neither request is kept in the
+the device's acknowledgement or error; a refusal by the device's policy
+(SERVICE_REQUEST_DENIED) shows as `DENIED by the device's policy`, as a
+refused write does. Neither request is kept in the
 ledger, because revert can't undo it. The audit record (event `dcc` or
 `reinit`) names the service, the device, the state, the duration, the tier
 and the outcome, with a `password` field written as `[redacted]` when one was
@@ -1435,7 +1438,7 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 | Flag | Description |
 |------|-------------|
 | `--duration <M>` | Duration in minutes |
-| `--password <P>` | Password string |
+| `--password <P>` | Password, 1 to 20 characters; leave the flag out to send none |
 
 **Aliases:** `dcc` = control
 
@@ -1445,7 +1448,7 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 
 | Flag | Description |
 |------|-------------|
-| `--password <P>` | Password string |
+| `--password <P>` | Password, 1 to 20 characters; leave the flag out to send none |
 
 ```bash
 # Time synchronization

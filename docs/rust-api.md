@@ -914,6 +914,14 @@ the current outgoing path, and SC negotiation/reconnect/failover can change it.
 Client budgets continue using egress limits and the client's existing canonical
 configuration policy.
 
+A server resolves its Device's `Max_APDU_Length_Accepted` from that capacity
+once, at start, and keeps it while it runs, even if the capacity later falls
+(an SC hub failover, a router application port whose path shrinks; #2093).
+Peers learn the value once, from I-Am or their address binding, and cache it,
+so a later change would not reach them. Each reply is sized to its own route
+instead (the requester's declared limit and the path's NPDU limit), so a
+smaller path still gets replies that fit.
+
 `bacnet_objects::DeviceIdentity` owns the Device instance, vendor, raw receive
 ceiling, segmentation mode and segment timeout. Full-server builders and
 endpoint builders take `.device(identity)`; `ServerConfig.device` and
@@ -3596,7 +3604,11 @@ let ack = client
   port's `max_npdu` and `egress_apdu_limit` follow it and `max_npdu_changes`
   publishes it, so the client builds its next request for it (#2070).
   `with_max_npdu` caps the limits. `local_receive_apdu_capacity` stays as it
-  was when the port was made.
+  was when the port was made (#2087): the port can't know a later limit, and
+  the trait keeps the declaration stable for the stacks above. After a port's
+  limit falls, the router refuses a message routed onto that path that is too
+  long with reject reason 4, and the port's own send fails with
+  `Error::SendTooLong`.
 - The client takes every APDU for the router's application. To host a server
   as well, split the entity, as below.
 

@@ -406,6 +406,42 @@ async fn configured_password_over_twenty_characters_rejected_before_start() {
     config.validate_dcc_config().unwrap();
 }
 
+/// An empty DCC or ReinitializeDevice password could never match, since a
+/// request's empty password decodes as none, so the server refuses it before
+/// start in every policy (#2094).
+#[tokio::test]
+async fn configured_empty_password_rejected_before_start() {
+    for policy in [DccPolicy::DenyAll, DccPolicy::LegacyPermissive] {
+        for name in ["dcc_password", "reinit_password"] {
+            let mut config = ServerConfig {
+                dcc_policy: policy,
+                ..Default::default()
+            };
+            match name {
+                "dcc_password" => config.dcc_password = Some(String::new()),
+                _ => config.reinit_password = Some(String::new()),
+            }
+            let started = Arc::new(AtomicBool::new(false));
+            let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                matches!(&error, Error::Encoding(m) if m == &format!("{name} is empty; leave it unset for no password")),
+                "{error:?}"
+            );
+            assert!(!started.load(Ordering::Acquire));
+        }
+    }
+    assert!(
+        BACnetServer::bip_builder()
+            .reinit_password("")
+            .build()
+            .await
+            .is_err()
+    );
+}
+
 #[cfg(feature = "sc-tls")]
 #[tokio::test]
 async fn dcc_require_password_rejected_before_sc_dial() {

@@ -96,6 +96,18 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// follows them, so a stack that reads it for each request, as
 /// `BACnetClient` does, builds the next request for the new limit.
 ///
+/// [`TransportPort::local_receive_apdu_capacity`] is different: it is fixed
+/// from the router ports' limits when the port is made, and a later fall
+/// leaves it alone (#2087). The port can't know a future failover's limit,
+/// so there is nothing smaller to declare at creation, and the trait keeps
+/// the declaration stable so the stacks above need not follow a moving one.
+/// A stack may therefore advertise more, such as a server's
+/// Max_APDU_Length_Accepted, than a shrunken path carries back. The router
+/// guards that path instead: a message routed onto it that is too long is
+/// refused with reject reason 4 (message too long) to its source, and the
+/// port's own send that is too long for it fails with
+/// [`Error::SendTooLong`].
+///
 /// [`TransportPort::stop`] closes the port's queue. Stopping the router
 /// closes its local receiver, which closes the port's queue too, and every
 /// later send fails with [`OriginateFailure::Stopped`].
@@ -414,7 +426,9 @@ impl TransportPort for RouterApplicationPort {
     }
 
     /// Fixed when the port is made: a declaration that limit changes leave
-    /// alone.
+    /// alone (#2087). After a router port's limit falls, the router refuses
+    /// what no longer fits that path, with reject reason 4 for a routed
+    /// message and [`Error::SendTooLong`] for this port's own send.
     fn local_receive_apdu_capacity(&self) -> u16 {
         apdu_room(capped(self.cap, self.initial).unicast)
     }

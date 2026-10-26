@@ -638,6 +638,11 @@ pub trait TransportPort: Send + Sync {
     ///
     /// Implementations and wrappers must report their actual local capacity.
     /// Negotiation, reconnects and failover must not change this declaration.
+    /// A stack reads it once, at start (a server fixes its Device's
+    /// Max_APDU_Length_Accepted from it, #2093). A transport whose paths can
+    /// shrink later, such as a router's application port, keeps the value it
+    /// was made with and lets the path refuse what no longer fits (#2087);
+    /// [`Self::egress_apdu_limit`] is the limit that follows such changes.
     fn local_receive_apdu_capacity(&self) -> u16;
 
     /// Current outgoing APDU limit for the transport's ordinary send path.

@@ -129,6 +129,13 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "a ReinitializeDevice password requires a ReinitializeDevice handler".into(),
             ));
         }
+        // An empty password could never match: a request's empty password
+        // decodes as none (#2094).
+        if self.reinit_password.as_deref() == Some("") {
+            return Err(Error::Encoding(
+                "reinit_password is empty; leave it unset for no password".into(),
+            ));
+        }
         // Past the 20-character limit no request could carry it (#2060).
         if self
             .reinit_password

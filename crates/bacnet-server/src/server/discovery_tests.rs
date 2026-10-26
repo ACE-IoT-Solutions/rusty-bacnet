@@ -815,3 +815,6 @@ fn test_negative_who_has_cache_strictly_bounded_to_512() {
 
 #[path = "local_apdu_discovery_tests.rs"]
 mod local_apdu_tests;
+
+#[path = "apdu_capacity_change_tests.rs"]
+mod apdu_capacity_change_tests;

@@ -793,7 +793,7 @@ def device_communication_control(
 Send DeviceCommunicationControl to a remote device.
 
 Raises ValueError, before anything is sent, for a password over 20
-characters.
+characters or an empty one (pass None to send no password).
 
 ### BACnetClient.reinitialize_device
 
@@ -809,7 +809,7 @@ def reinitialize_device(
 Send ReinitializeDevice to a remote device.
 
 Raises ValueError, before anything is sent, for a password over 20
-characters.
+characters or an empty one (pass None to send no password).
 
 ### BACnetClient.acknowledge_alarm_request
 

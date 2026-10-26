@@ -340,11 +340,17 @@ impl RunAfterReinitialize {
     }
 }
 
-/// Refuse a configured DCC or ReinitializeDevice password (`name` is its
-/// keyword) over the 20-character limit with ValueError, at construction as
-/// the native server and endpoint refuse it at start (#2060).
+/// Refuse a DCC or ReinitializeDevice password (`name` is its keyword) that
+/// is empty (#2094) or over the 20-character limit (#2060) with ValueError,
+/// at construction or before a request is sent, as the native server and
+/// endpoint refuse it at start and the encoders refuse it.
 pub(crate) fn password_limit(name: &str, password: &Option<String>) -> PyResult<()> {
     use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_fits};
+    if password.as_deref() == Some("") {
+        return Err(PyValueError::new_err(format!(
+            "an empty {name} is refused: give a nonempty {name}, or None for no password"
+        )));
+    }
     if password.as_deref().is_some_and(|p| !password_fits(p)) {
         return Err(PyValueError::new_err(format!(
             "{name} exceeds the {MAX_PASSWORD_CHARS}-character limit"
