@@ -28,7 +28,7 @@ pub(super) const SPEC: Spec = Spec {
                   default; it can't tell sc). Returns a one-line summary and the decoded \
                   layers as a tree of fields, each with the octets it came from; service \
                   parameters are walked tag by tag. Character strings in the frame come back \
-                  as untrusted envelopes. At most 2048 octets. Works in passive mode. Local; \
+                  as untrusted envelopes. At most 6144 octets. Works in passive mode. Local; \
                   read-only.",
     input,
     output,
@@ -37,11 +37,16 @@ pub(super) const SPEC: Spec = Spec {
     passive: true,
 };
 
-/// The most octets decoded.
-pub(crate) const MAX_OCTETS: usize = 2_048;
+/// The most octets decoded: room for the largest frame the stack accepts,
+/// a BACnet/SC BVLC message of up to `DEFAULT_MAX_BVLC_LENGTH` (5705)
+/// octets in `bacnet-transport`'s `sc_limits`, which isn't public.
+pub(crate) const MAX_OCTETS: usize = 6_144;
 
 /// The longest hex argument, separators included.
 const MAX_HEX: usize = MAX_OCTETS * 3 + 16;
+
+/// The longest label of the decoder's own kept whole.
+const LABEL_CAP: usize = 512;
 
 /// The most fields returned; a deeper or longer tree is cut.
 const MAX_FIELDS: usize = 600;
@@ -80,6 +85,10 @@ fn field_schema() -> Value {
                 "description": "The octets it came from, [start, end)",
             },
             "children": { "type": "array", "items": { "type": "object" } },
+            "truncated": {
+                "type": "boolean",
+                "description": "Set when the label was cut; range still covers every octet",
+            },
         },
         "required": ["label", "range", "children"],
     })
@@ -210,18 +219,26 @@ fn fields_json(fields: &[Field], budget: &mut usize, cap: usize) -> Vec<Value> {
             break;
         }
         *budget -= 1;
-        let label = if field.device_text {
-            envelope(&field.label, "decoded frame", cap)
+        let (label, truncated) = if field.device_text {
+            let label = envelope(&field.label, "decoded frame", cap);
+            let truncated = label["truncated"] == json!(true);
+            (label, truncated)
         } else {
-            // The decoder's own words; cleaned all the same.
-            json!(clean(&field.label, cap.max(512)).0)
+            // The decoder's own words, cleaned all the same; a long one
+            // (an unknown tag's octets as hex) is cut and says so.
+            let (text, truncated) = clean(&field.label, cap.max(LABEL_CAP));
+            (json!(text), truncated)
         };
         let children = fields_json(&field.children, budget, cap);
-        out.push(json!({
+        let mut row = json!({
             "label": label,
             "range": [field.range.start, field.range.end],
             "children": children,
-        }));
+        });
+        if truncated {
+            row["truncated"] = json!(true);
+        }
+        out.push(row);
     }
     out
 }
@@ -333,6 +350,30 @@ mod tests {
         assert!(octets(&"00".repeat(MAX_OCTETS)).is_ok());
         assert!(octets(&"00".repeat(MAX_OCTETS + 1)).is_err());
         assert!(octets(&" ".repeat(MAX_HEX + 1)).is_err());
+    }
+
+    /// A long label of the decoder's own (an unknown tag's octets) is cut
+    /// and says so; a short one carries no flag.
+    #[test]
+    fn a_cut_label_says_so() {
+        let field = |label: String| Field {
+            label,
+            range: 0..1,
+            children: Vec::new(),
+            device_text: false,
+        };
+        let fields = [
+            field(format!("[5] {}", "AB".repeat(400))),
+            field("Length: 7".into()),
+        ];
+        let mut budget = MAX_FIELDS;
+        let json = fields_json(&fields, &mut budget, 256);
+        assert_eq!(json[0]["truncated"], json!(true));
+        assert_eq!(
+            json[0]["label"].as_str().unwrap().chars().count(),
+            LABEL_CAP
+        );
+        assert!(json[1].get("truncated").is_none());
     }
 
     #[test]

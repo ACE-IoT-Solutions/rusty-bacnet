@@ -2,6 +2,7 @@
 //! against an in-process lab device on a loopback link.
 
 mod discovery;
+mod limits;
 mod protocol;
 mod safety;
 mod schema;
@@ -17,7 +18,7 @@ use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject};
 use bacnet_objects::device_identity::{DeviceIdentity, build_database_with_extra};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_ops::engine::Engine;
-use bacnet_server::server::BACnetServer;
+use bacnet_server::server::{BACnetServer, GetEventInformationBudget};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier, Segmentation};
@@ -68,6 +69,9 @@ pub(crate) struct Recording {
     /// Answer a whole Object_List read with an Abort, as a device that
     /// can only send it element by element does.
     indexed_only: bool,
+    /// Once this many requests have gone, the device stops answering:
+    /// later requests are logged but never delivered.
+    mute_after: Arc<Mutex<Option<usize>>>,
     /// Where the client's receive channel is fed from, once started.
     inbox: Mutex<Option<mpsc::Sender<ReceivedNpdu>>>,
 }
@@ -124,6 +128,15 @@ impl TransportPort for Recording {
             .lock()
             .unwrap()
             .push((Instant::now(), mac.to_vec()));
+        let sent = self.sent.lock().unwrap().len();
+        if self
+            .mute_after
+            .lock()
+            .unwrap()
+            .is_some_and(|after| sent > after)
+        {
+            return Ok(());
+        }
         if self.indexed_only
             && let Some(invoke_id) = Self::whole_list_read(npdu)
         {
@@ -195,6 +208,7 @@ pub(crate) struct Lab {
     server: BACnetServer<Delayed>,
     client: Arc<BACnetClient<Recording>>,
     serving: JoinHandle<()>,
+    mute: Arc<Mutex<Option<usize>>>,
 }
 
 impl Lab {
@@ -267,7 +281,15 @@ impl Lab {
         let database = build_database_with_extra(&identity, objects).unwrap();
         let (client_port, server_port) =
             LoopbackTransport::pair(AGENT_MAC.to_vec(), LAB_MAC.to_vec());
-        let server = BACnetServer::generic_builder()
+        let mut builder = BACnetServer::generic_builder();
+        if site {
+            // One event summary an answer, so alarms page across answers.
+            builder = builder.get_event_information_budget(GetEventInformationBudget {
+                max_returned_summaries: 1,
+                ..GetEventInformationBudget::default()
+            });
+        }
+        let server = builder
             .device(identity)
             .database(database)
             .transport(Delayed {
@@ -279,11 +301,13 @@ impl Lab {
             .unwrap();
         let sent = Arc::new(Mutex::new(Vec::new()));
         let received = Arc::new(Mutex::new(Vec::new()));
+        let mute = Arc::new(Mutex::new(None));
         let recording = Recording {
             inner: client_port,
             sent: Arc::clone(&sent),
             received: Arc::clone(&received),
             indexed_only,
+            mute_after: Arc::clone(&mute),
             inbox: Mutex::new(None),
         };
         let config = ClientConfig {
@@ -323,7 +347,15 @@ impl Lab {
             server,
             client,
             serving,
+            mute,
         }
+    }
+
+    /// Let `more` requests through from now, then make the device go
+    /// silent: every later request times out.
+    pub(crate) fn go_silent_after(&self, more: usize) {
+        let sent = self.sent.lock().unwrap().len();
+        *self.mute.lock().unwrap() = Some(sent + more);
     }
 
     /// Add an analog input to the lab device, as a site change would.

@@ -89,7 +89,7 @@ impl<T: TransportPort + 'static> McpServer<T> {
                 list_locks: Mutex::new(HashMap::new()),
                 reads: Mutex::new(BTreeMap::new()),
                 names: Mutex::new(HashMap::new()),
-                routers: Mutex::new(None),
+                routers: Mutex::default(),
             }),
         }
     }

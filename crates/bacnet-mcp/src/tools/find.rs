@@ -16,9 +16,9 @@ use tokio::time::Instant;
 use super::discover::parse_range;
 use super::list::listing;
 use super::{Spec, next, schema, start};
-use crate::context::{CachedNames, Call, Ctx, Device, LIST_CAP, Names};
+use crate::context::{CachedNames, Call, Cleaned, Ctx, Device, LIST_CAP, Names};
 use crate::errors::ToolError;
-use crate::untrusted::{clean, envelope};
+use crate::untrusted::{clean, envelope_cleaned};
 use crate::value::{object_text, row_text};
 
 pub(super) const NAME: &str = "bacnet_find_object";
@@ -218,17 +218,14 @@ impl Query {
         self.name.is_some() || self.description.is_some()
     }
 
-    /// Whether device text `found` holds `wanted`, compared as cleaned
-    /// text, so hidden characters can't keep a match apart.
-    fn holds(found: Option<&String>, wanted: Option<&String>) -> bool {
+    /// Whether device text `found` holds `wanted`. The text is kept
+    /// cleaned, so hidden characters can't keep a match apart.
+    fn holds(found: Option<&Cleaned>, wanted: Option<&String>) -> bool {
         match wanted {
             None => true,
-            Some(wanted) => found.is_some_and(|text| {
-                clean(text, usize::MAX)
-                    .0
-                    .to_lowercase()
-                    .contains(wanted.as_str())
-            }),
+            Some(wanted) => {
+                found.is_some_and(|found| found.text.to_lowercase().contains(wanted.as_str()))
+            }
         }
     }
 
@@ -270,6 +267,10 @@ fn cached<T: TransportPort + 'static>(
     (!description || kept.description.is_some()).then(|| kept.clone())
 }
 
+/// Objects whose names are kept for one device; past it, names are read
+/// again when needed.
+const NAMES_PER_DEVICE: usize = 4_096;
+
 /// Keep what was read of `object`'s names, evicting the oldest device past
 /// [`LIST_CAP`].
 fn remember<T: TransportPort + 'static>(
@@ -289,7 +290,9 @@ fn remember<T: TransportPort + 'static>(
             objects: HashMap::new(),
         };
     }
-    entry.objects.insert(object, read);
+    if entry.objects.len() < NAMES_PER_DEVICE || entry.objects.contains_key(&object) {
+        entry.objects.insert(object, read);
+    }
     while names.len() > LIST_CAP {
         let oldest = names
             .iter()
@@ -342,7 +345,10 @@ pub(super) async fn run<T: TransportPort + 'static>(
         } else {
             0
         };
-        if !page.searched.is_empty() && call.out_of_time() {
+        // A full page, or a spent budget, ends here: the next device is
+        // neither read nor charged until the next page.
+        if page.matches.len() >= page_size(ctx) || (!page.searched.is_empty() && call.out_of_time())
+        {
             page.resume = Some((instance, first));
             break;
         }
@@ -439,16 +445,27 @@ async fn search<T: TransportPort + 'static>(
                 .await
             {
                 Ok(read) => {
+                    let kept = |property| {
+                        row_text(&read.rows, property).map(|text| {
+                            let (text, truncated) = clean(&text, cap);
+                            Cleaned { text, truncated }
+                        })
+                    };
                     let found = Names {
-                        name: row_text(&read.rows, PropertyIdentifier::OBJECT_NAME),
+                        name: kept(PropertyIdentifier::OBJECT_NAME),
                         description: query
                             .description
                             .is_some()
-                            .then(|| row_text(&read.rows, PropertyIdentifier::DESCRIPTION)),
+                            .then(|| kept(PropertyIdentifier::DESCRIPTION)),
                     };
                     remember(ctx, instance, *object, found.clone());
                     names = Some(found);
                 }
+                // The device stopped answering part way through its names:
+                // it is reported incomplete and the search moves on to the
+                // next device, with no cursor back to it, so a silent device
+                // doesn't make every later page wait out its timeout again.
+                // Search it alone (range) to try it again.
                 Err(error) if unreachable(&error) => {
                     call.timed_out();
                     page.incomplete.push(json!({
@@ -471,11 +488,16 @@ async fn search<T: TransportPort + 'static>(
         let source = |property: &str| format!("device {instance} {text} {property}");
         let mut row = json!({ "device": instance, "object": text });
         if let Some(name) = &names.name {
-            row["name"] = envelope(name, source("object-name"), cap);
+            row["name"] = envelope_cleaned(&name.text, name.truncated, source("object-name"));
         }
         if let Some(Some(description)) = &names.description {
-            row["description"] = envelope(description, source("description"), cap);
+            row["description"] = envelope_cleaned(
+                &description.text,
+                description.truncated,
+                source("description"),
+            );
         }
+
         page.matches.push(row);
     }
 }

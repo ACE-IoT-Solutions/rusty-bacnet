@@ -221,6 +221,7 @@ async fn find_pages_resume_across_devices() {
     let args = json!({ "types": ["ai", "trend-log"], "range": "1201-1202" });
     let mut seen = Vec::new();
     let mut skipped = Vec::new();
+    let mut pages = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..10 {
         let mut call = args.clone();
@@ -236,6 +237,10 @@ async fn find_pages_resume_across_devices() {
         for device in body["skipped"].as_array().unwrap() {
             skipped.push(device["device"].clone());
         }
+        pages.push((
+            body["searched"].clone(),
+            body["matches"].as_array().unwrap().len(),
+        ));
         match body["next_cursor"].as_str() {
             Some(next) => cursor = Some(next.to_string()),
             None => break,
@@ -251,7 +256,13 @@ async fn find_pages_resume_across_devices() {
             "1201 \"trend-log:3\"",
         ]
     );
+    // A full page ends before the next device: 1202 is read only on the
+    // last page, which finds nothing there and ends the search.
+    let mut wanted: Vec<(Value, usize)> = vec![(json!([1201]), 1); 5];
+    wanted.push((json!([1202]), 0));
+    assert_eq!(pages, wanted);
     assert_eq!(skipped, [json!(1202)], "skipped once, on the last page");
+
     lab.stop().await;
 }
 
@@ -477,7 +488,7 @@ async fn decode_envelopes_frame_text_and_works_passively() {
     let bad = agent.call("bacnet_decode", json!({ "hex": "81 0x" })).await;
     assert_eq!(failed(&bad)["field"], json!("hex"));
     let huge = agent
-        .call("bacnet_decode", json!({ "hex": "00".repeat(2_049) }))
+        .call("bacnet_decode", json!({ "hex": "00".repeat(6_145) }))
         .await;
     assert_eq!(failed(&huge)["field"], json!("hex"));
     let malformed = agent

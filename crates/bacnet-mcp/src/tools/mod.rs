@@ -129,7 +129,11 @@ fn request(name: &str, args: &Map<String, Value>) -> Result<Request, ErrorData> 
         describe::NAME => Request::Describe(parse(args)?),
         find::NAME => Request::Find(parse(args)?),
         netmap::NAME => Request::NetworkMap(parse(args)?),
-        trend::NAME => Request::Trend(parse(args)?),
+        trend::NAME => {
+            let parsed: trend::Args = parse(args)?;
+            parsed.check()?;
+            Request::Trend(parsed)
+        }
         alarms::NAME => Request::Alarms(parse(args)?),
         decode::NAME => Request::Decode(parse(args)?),
         other => {

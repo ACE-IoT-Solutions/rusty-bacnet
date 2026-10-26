@@ -44,10 +44,24 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     /// Object names and descriptions read by `bacnet_find_object`, by
     /// device, so its later pages don't read them again.
     pub(crate) names: Mutex<HashMap<u32, CachedNames>>,
-    /// The routers the last Who-Is-Router-To-Network found, and when it
+    /// What Who-Is-Router-To-Network queries found, and when the last one
     /// went; at most one goes a minute.
-    pub(crate) routers: Mutex<Option<(Instant, Vec<DiscoveredRouter>)>>,
+    pub(crate) routers: Mutex<Routers>,
 }
+
+/// The routers known from Who-Is-Router-To-Network queries.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Routers {
+    /// When the last query went: a claim taken before it is sent, which
+    /// holds off the next for a minute whether or not it finished.
+    pub(crate) asked: Option<Instant>,
+    /// When the last query that finished went, and the routers it heard
+    /// (at most [`ROUTER_CAP`]).
+    pub(crate) heard: Option<(Instant, Vec<DiscoveredRouter>)>,
+}
+
+/// The most routers kept, the size of a router table.
+pub(crate) const ROUTER_CAP: usize = 256;
 
 /// One device's object names and descriptions as read.
 #[derive(Debug, Clone)]
@@ -57,13 +71,20 @@ pub(crate) struct CachedNames {
     pub(crate) objects: HashMap<ObjectIdentifier, Names>,
 }
 
-/// An object's name and description as its device gave them (raw device
-/// text, enveloped when returned).
+/// An object's name and description, kept already cleaned and capped
+/// ([`crate::untrusted::clean`]): the raw device text is never stored.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Names {
-    pub(crate) name: Option<String>,
+    pub(crate) name: Option<Cleaned>,
     /// `None` until read; then the description, if the device gave one.
-    pub(crate) description: Option<Option<String>>,
+    pub(crate) description: Option<Option<Cleaned>>,
+}
+
+/// Device text after [`crate::untrusted::clean`], and whether the cap cut it.
+#[derive(Debug, Clone)]
+pub(crate) struct Cleaned {
+    pub(crate) text: String,
+    pub(crate) truncated: bool,
 }
 
 /// A device's Object_List as read so far.

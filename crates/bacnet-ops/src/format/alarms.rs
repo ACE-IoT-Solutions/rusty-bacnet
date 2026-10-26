@@ -353,9 +353,26 @@ fn cell(datum: &Datum) -> String {
 /// nothing, would show duplicates or page forever, so either is an error.
 pub async fn read_event_information<F, Fut>(
     max: usize,
+    fetch: F,
+) -> Result<(Vec<EventSummary>, bool), Error>
+where
+    F: FnMut(Option<ObjectIdentifier>) -> Fut,
+    Fut: Future<Output = Result<GetEventInformationAck, Error>>,
+{
+    read_event_information_until(max, || false, fetch).await
+}
+
+/// [`read_event_information`], stopping early when `stop` says so: it is
+/// asked before every answer after the first, and a stop returns the
+/// summaries read so far with "more" set, so the caller can go on after the
+/// last of them later (a call out of time, say).
+pub async fn read_event_information_until<S, F, Fut>(
+    max: usize,
+    mut stop: S,
     mut fetch: F,
 ) -> Result<(Vec<EventSummary>, bool), Error>
 where
+    S: FnMut() -> bool,
     F: FnMut(Option<ObjectIdentifier>) -> Fut,
     Fut: Future<Output = Result<GetEventInformationAck, Error>>,
 {
@@ -363,7 +380,11 @@ where
     let mut seen = HashSet::new();
     let mut after = None;
     loop {
+        if after.is_some() && stop() {
+            return Ok((summaries, true));
+        }
         let ack = fetch(after).await?;
+
         for summary in ack.list_of_event_summaries {
             if !seen.insert(summary.object_identifier.encode()) {
                 return Err(Error::Encoding(format!(

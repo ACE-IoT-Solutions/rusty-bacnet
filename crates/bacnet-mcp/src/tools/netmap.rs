@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use super::{Spec, schema};
-use crate::context::{Call, Ctx};
+use crate::context::{Call, Ctx, ROUTER_CAP};
+
 use crate::errors::ToolError;
 
 pub(super) const NAME: &str = "bacnet_network_map";
@@ -110,7 +111,7 @@ pub(super) struct Args {
 
 pub(super) async fn run<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
-    _call: &Call,
+    call: &Call,
     args: Args,
 ) -> Result<Value, ToolError> {
     let network = args
@@ -127,13 +128,13 @@ pub(super) async fn run<T: TransportPort + 'static>(
     }
     let engine = ctx.engine()?;
     if args.send {
-        ask_routers(ctx, network, args.wait_s).await?;
+        ask_routers(ctx, call, network, args.wait_s).await?;
     }
     let style = engine.address_style();
     let address = |mac: &[u8]| style.locate(mac, None).0;
     let (heard, known) = {
         let routers = ctx.routers.lock().unwrap_or_else(PoisonError::into_inner);
-        match &*routers {
+        match &routers.heard {
             Some((at, found)) => (Some(at.elapsed().as_secs()), found.clone()),
             None => (None, Vec::new()),
         }
@@ -208,9 +209,16 @@ pub(super) async fn run<T: TransportPort + 'static>(
 }
 
 /// Broadcast a Who-Is-Router-To-Network and keep what answers, if the
-/// policy allows a broad request and none went in the last minute.
+/// policy allows a broad request and none went in the last minute. The
+/// wait for answers ends with the call's budget, so a short budget returns
+/// the routers heard by then rather than timing out.
+///
+/// A query cancelled while it waits keeps its claim (the broadcast went),
+/// and the routers known before stay as they were; only a finished query
+/// replaces them.
 async fn ask_routers<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
+    call: &Call,
     network: Option<u16>,
     wait_s: Option<u64>,
 ) -> Result<(), ToolError> {
@@ -224,13 +232,13 @@ async fn ask_routers<T: TransportPort + 'static>(
              the routers and networks already known",
         ));
     }
-    let wait = Duration::from_secs(wait_s.unwrap_or(3).clamp(1, 30));
     let asked = Instant::now();
-    // Checked and taken under one lock, so parallel calls can't both go;
-    // the mark holds off any other query while this one waits for answers.
-    let previous = {
+    let wanted = Duration::from_secs(wait_s.unwrap_or(3).clamp(1, 30));
+    let wait = wanted.min(call.deadline.saturating_duration_since(asked));
+    // Checked and claimed under one lock, so parallel calls can't both go.
+    let previous_claim = {
         let mut routers = ctx.routers.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, _)) = &*routers
+        if let Some(at) = routers.asked
             && at.elapsed() < ROUTER_INTERVAL
         {
             let wait = ROUTER_INTERVAL - at.elapsed();
@@ -240,17 +248,14 @@ async fn ask_routers<T: TransportPort + 'static>(
                 retry_after_s: Some(wait.as_secs().max(1)),
             });
         }
-        let kept = routers.clone();
-        let known = kept.as_ref().map(|(_, found)| found.clone());
-        *routers = Some((asked, known.unwrap_or_default()));
-        kept
+        routers.asked.replace(asked)
     };
     match engine.discover_routers(network, wait).await {
         Ok(found) => {
             let mut routers = ctx.routers.lock().unwrap_or_else(PoisonError::into_inner);
             // Asking about one network hears only its routers: keep the
             // others known before.
-            let mut merged = match (network, previous) {
+            let mut merged = match (network, routers.heard.take()) {
                 (Some(_), Some((_, before))) => before,
                 _ => Vec::new(),
             };
@@ -264,12 +269,16 @@ async fn ask_routers<T: TransportPort + 'static>(
                     None => merged.push(router),
                 }
             }
-            *routers = Some((asked, merged));
+            merged.truncate(ROUTER_CAP);
+            routers.heard = Some((asked, merged));
             Ok(())
         }
         Err(error) => {
-            // It never left: put back what was known, and let the next try go.
-            *ctx.routers.lock().unwrap_or_else(PoisonError::into_inner) = previous;
+            // It never left: drop the claim, and let the next try go.
+            ctx.routers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .asked = previous_claim;
             Err(ToolError::Failed(error.to_string()))
         }
     }

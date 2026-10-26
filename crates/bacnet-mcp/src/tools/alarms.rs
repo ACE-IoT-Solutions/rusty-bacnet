@@ -3,7 +3,7 @@
 //! summaries, decoded by `bacnet_ops::format::alarms`.
 
 use bacnet_ops::format::alarms::{
-    AlarmSummaryData, EnrollmentSummaryData, EventSummaryData, read_event_information,
+    AlarmSummaryData, EnrollmentSummaryData, EventSummaryData, read_event_information_until,
 };
 use bacnet_services::enrollment_summary::GetEnrollmentSummaryRequest;
 use bacnet_transport::port::TransportPort;
@@ -148,10 +148,14 @@ pub(super) async fn run<T: TransportPort + 'static>(
     let resume = after(start(ctx, NAME, args.cursor.as_deref(), raw)?)?;
     let instance = device.instance;
     // The first answer continues from the cursor's object; later ones
-    // from the last object of the answer before.
-    let (summaries, more) = read_event_information(max, |next_after| {
-        engine.alarms(instance, next_after.or(resume))
-    })
+    // from the last object of the answer before. Once the call's budget is
+    // spent no further answer is asked for: what was read comes back with
+    // more_events set and a cursor after its last object.
+    let (summaries, more) = read_event_information_until(
+        max,
+        || call.out_of_time(),
+        |next_after| engine.alarms(instance, next_after.or(resume)),
+    )
     .await
     .map_err(|e| ToolError::device(instance, &e))?;
     let cap = ctx.policy.caps.text;

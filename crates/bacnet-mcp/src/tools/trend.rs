@@ -50,9 +50,6 @@ const MAX_SUMMARY: u32 = 20_000;
 /// The records asked for in one ReadRange.
 const PAGE: u32 = 200;
 
-/// A cursor position resuming by position rather than sequence number.
-const BY_POSITION: u64 = 1 << 62;
-
 fn input() -> Value {
     let time = |what: &str| {
         json!({
@@ -181,6 +178,26 @@ pub(super) struct Args {
     cursor: Option<String>,
 }
 
+impl Args {
+    /// Refuse a window that ends before it starts, as arguments outside
+    /// the schema are refused (JSON-RPC -32602). Times that don't parse
+    /// are left for the call, which names the field.
+    pub(super) fn check(&self) -> Result<(), rmcp::ErrorData> {
+        let at = |text: &Option<String>| {
+            text.as_deref()
+                .and_then(|text| parse_time("time", text).ok())
+                .map(|(date, time)| stamp_text(&date, &time))
+        };
+        match (at(&self.from), at(&self.to)) {
+            (Some(from), Some(to)) if from > to => Err(rmcp::ErrorData::invalid_params(
+                format!("arguments: from ({from}) is after to ({to})"),
+                None,
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// A local date and time argument.
 fn parse_time(field: &'static str, text: &str) -> Result<(Date, Time), ToolError> {
     let bad = || ToolError::invalid(field, format!("'{text}' is not YYYY-MM-DDTHH:MM[:SS[.hh]]"));
@@ -261,21 +278,18 @@ fn weekday(year: u16, month: u16, day: u16) -> u8 {
     u8::try_from(if sunday_zero == 0 { 7 } else { sunday_zero }).unwrap_or(7)
 }
 
-/// A log cursor as a cursor position, and back.
+/// A log cursor as a cursor position: the next sequence number. Every
+/// page this tool reads goes by sequence number (from the oldest record or
+/// a time, then on by number), so nothing else needs resuming.
 fn pack(cursor: LogCursor) -> Option<u64> {
     match cursor {
-        LogCursor::Sequence(seq) if seq < BY_POSITION => Some(seq),
-        LogCursor::Position(at) if at < BY_POSITION => Some(BY_POSITION | at),
+        LogCursor::Sequence(seq) => Some(seq),
         _ => None,
     }
 }
 
 fn unpack(position: u64) -> LogCursor {
-    if position & BY_POSITION != 0 {
-        LogCursor::Position(position & !BY_POSITION)
-    } else {
-        LogCursor::Sequence(position)
-    }
+    LogCursor::Sequence(position)
 }
 
 /// The sequence number `n` records after `first` in a Trend Log's range,
@@ -402,11 +416,10 @@ pub(super) async fn run<T: TransportPort + 'static>(
                 break;
             }
             if read.count >= limit || read.size >= MAX_STRUCTURED {
-                stop = Some(match (seq, cursor) {
-                    (Some(seq), _) => LogCursor::Sequence(seq),
-                    (None, LogCursor::Position(at)) => LogCursor::Position(at + n),
-                    // A page without numbers or positions: go on after it.
-                    (None, _) => page.next,
+                stop = Some(match seq {
+                    Some(seq) => LogCursor::Sequence(seq),
+                    // A page without sequence numbers: go on after it.
+                    None => page.next,
                 });
                 break;
             }
@@ -479,10 +492,13 @@ mod tests {
 
     #[test]
     fn cursors_round_trip_and_sequences_wrap() {
-        for cursor in [LogCursor::Sequence(17), LogCursor::Position(3)] {
-            assert_eq!(unpack(pack(cursor).unwrap()), cursor);
-        }
+        assert_eq!(
+            unpack(pack(LogCursor::Sequence(17)).unwrap()),
+            LogCursor::Sequence(17)
+        );
         assert_eq!(pack(LogCursor::Oldest), None);
+        assert_eq!(pack(LogCursor::Position(3)), None);
+
         assert_eq!(advance(5, 3), 8);
         assert_eq!(advance(u64::from(u32::MAX), 1), 1);
         assert_eq!(advance(0, 2), 2);
