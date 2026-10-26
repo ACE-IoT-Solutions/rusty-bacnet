@@ -9,11 +9,11 @@
 //!   identity below;
 //! - BACnet/IP and BACnet/SC declared as its data links;
 //! - router, BBMD and foreign-device registration off;
-//! - fixed placeholder vendor fields, version fields set to the release the
-//!   site describes (from `website/src/lib/site.mjs`, as for `support.json`),
-//!   so the file changes only when the code or the release does. The
-//!   generator takes the protocol version and revision from the served
-//!   Device.
+//! - fixed placeholder vendor and model names on the Device, its version
+//!   fields set to the release the site describes (from
+//!   `website/src/lib/site.mjs`, as for `support.json`), so the file changes
+//!   only when the code or the release does. The generator takes these and
+//!   the protocol version and revision from the served Device.
 //!
 //! The server runs on BACnet/IP on loopback just long enough to answer. The
 //! generator's Markdown goes in below a banner that names the configuration
@@ -58,14 +58,9 @@ const MODEL_NAME: &str = "Rusty BACnet catalogue reference";
 
 type Result<T> = std::result::Result<T, String>;
 
-/// The PICS settings the reference configuration declares; `version` fills
-/// both version fields.
-fn pics_config(version: &str) -> PicsConfig {
+/// The PICS settings the reference configuration declares.
+fn pics_config() -> PicsConfig {
     PicsConfig {
-        vendor_name: VENDOR_NAME.into(),
-        model_name: MODEL_NAME.into(),
-        firmware_revision: version.into(),
-        application_software_version: version.into(),
         device_profile: DeviceProfile::Custom("None claimed".into()),
         data_link_layers: vec![DataLinkSupport::BipV4, DataLinkSupport::BacnetSc],
         network_layer: NetworkLayerSupport {
@@ -77,7 +72,8 @@ fn pics_config(version: &str) -> PicsConfig {
     }
 }
 
-/// The catalogue, with its Device replaced by one with the reference identity.
+/// The catalogue, with its Device replaced by one with the reference identity;
+/// `version` fills both of its version fields.
 fn database(identity: &DeviceIdentity, version: &str) -> Result<ObjectDatabase> {
     let device = DeviceObject::new(DeviceConfig {
         identity: identity.clone(),
@@ -118,7 +114,7 @@ async fn pics_markdown(version: &str) -> Result<String> {
         .stop()
         .await
         .map_err(|error| format!("stop the reference server: {error}"))?;
-    let pics = server.generate_pics(&pics_config(version)).await;
+    let pics = server.generate_pics(&pics_config()).await;
     Ok(pics.generate_markdown())
 }
 
@@ -171,7 +167,8 @@ The PICS below comes from `BACnetServer::generate_pics` on a full server built f
 - **Objects:** one of each type that `bacnet_objects::catalogue::representatives()` constructs, each instance 1 with the catalogue's placeholder names and units. The catalogue's Device is replaced by Device {DEVICE_INSTANCE} with vendor identifier {VENDOR_ID}, a placeholder.
 - **Data links:** BACnet/IP and BACnet/SC, as declared in its `PicsConfig`. The generator doesn't detect data links; the server that produced this page ran on BACnet/IP on loopback.
 - **Network layer:** router, BBMD and foreign-device registration off.
-- **Declared fields:** vendor name and model name are placeholders, the device profile is left unclaimed, the firmware and application versions name v{release}, the release this site describes, and the protocol version and revision are the ones its Device object reports.
+- **Device fields:** the Device's vendor name and model name are placeholders, and its firmware and application versions name v{release}, the release this site describes. The PICS takes these, and the protocol version and revision, from that Device object.
+- **Declared fields:** the device profile is left unclaimed.
 
 The file is generated on the `dev` branch, like the [capability tables](/rusty-bacnet/project/conformance/), so it can include object types or services merged after v{release}. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) explains each section and what you fill in yourself.
 

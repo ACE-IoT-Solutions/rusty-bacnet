@@ -18,7 +18,8 @@ The PICS below comes from `BACnetServer::generate_pics` on a full server built f
 - **Objects:** one of each type that `bacnet_objects::catalogue::representatives()` constructs, each instance 1 with the catalogue's placeholder names and units. The catalogue's Device is replaced by Device 1 with vendor identifier 0, a placeholder.
 - **Data links:** BACnet/IP and BACnet/SC, as declared in its `PicsConfig`. The generator doesn't detect data links; the server that produced this page ran on BACnet/IP on loopback.
 - **Network layer:** router, BBMD and foreign-device registration off.
-- **Declared fields:** vendor name and model name are placeholders, the device profile is left unclaimed, the firmware and application versions name v0.14.0, the release this site describes, and the protocol version and revision are the ones its Device object reports.
+- **Device fields:** the Device's vendor name and model name are placeholders, and its firmware and application versions name v0.14.0, the release this site describes. The PICS takes these, and the protocol version and revision, from that Device object.
+- **Declared fields:** the device profile is left unclaimed.
 
 The file is generated on the `dev` branch, like the [capability tables](/rusty-bacnet/project/conformance/), so it can include object types or services merged after v0.14.0. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) explains each section and what you fill in yourself.
 

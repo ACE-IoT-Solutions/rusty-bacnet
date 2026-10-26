@@ -15,6 +15,7 @@ use bacnet_types::{PROTOCOL_REVISION, PROTOCOL_VERSION};
 
 use crate::local_device::announcement_device;
 use crate::server::ServerConfig;
+use device_text::{markdown_cell, text_line};
 
 const PROPERTY_CAPABILITIES_EXPLANATION: &str = "Property rows aggregate configured instances: a row or access flag means at least one instance supports it. Actual availability and access depend on the concrete object. Optional is the metadata conformance classification; a required declaration wins, and absent rows do not vote.";
 
@@ -76,13 +77,13 @@ pub struct Pics {
 pub struct VendorInfo {
     /// Vendor identifier assigned by ASHRAE.
     pub vendor_id: u16,
-    /// Vendor name.
+    /// The Device object's Vendor_Name, as read (see [`PicsGenerator::generate`]).
     pub vendor_name: String,
-    /// Product model name.
+    /// The Device object's Model_Name, as read.
     pub model_name: String,
-    /// Firmware revision string.
+    /// The Device object's Firmware_Revision, as read.
     pub firmware_revision: String,
-    /// Application software version string.
+    /// The Device object's Application_Software_Version, as read.
     pub application_software_version: String,
     /// BACnet protocol version implemented: the Device object's
     /// Protocol_Version (see [`PicsGenerator::generate`]).
@@ -301,14 +302,6 @@ impl fmt::Display for CharacterSet {
 /// Configuration for PICS generation that cannot be inferred from the database.
 #[derive(Debug, Clone)]
 pub struct PicsConfig {
-    /// Vendor name.
-    pub vendor_name: String,
-    /// Product model name.
-    pub model_name: String,
-    /// Firmware revision string.
-    pub firmware_revision: String,
-    /// Application software version string.
-    pub application_software_version: String,
     /// Device profile claimed.
     pub device_profile: DeviceProfile,
     /// Data-link layers the device supports.
@@ -324,10 +317,6 @@ pub struct PicsConfig {
 impl Default for PicsConfig {
     fn default() -> Self {
         Self {
-            vendor_name: String::new(),
-            model_name: String::new(),
-            firmware_revision: String::new(),
-            application_software_version: String::new(),
             device_profile: DeviceProfile::BAsc,
             data_link_layers: vec![DataLinkSupport::BipV4],
             network_layer: NetworkLayerSupport {
@@ -375,13 +364,19 @@ impl<'a> PicsGenerator<'a> {
 
     /// Generate the complete PICS document.
     ///
-    /// The protocol version and revision are the Device object's
-    /// Protocol_Version and Protocol_Revision, so the PICS states what the
-    /// device reports: for the server, the Device at its identity; otherwise,
-    /// or when the database lacks that one, the selected Device. Without a Device, or when either property isn't an
+    /// The vendor block comes from the Device object, so the PICS states what
+    /// the device reports: for the server, the Device at its identity;
+    /// otherwise, or when the database lacks that one, the selected Device.
+    /// Vendor_Name, Model_Name, Firmware_Revision and
+    /// Application_Software_Version are its values at the time of the call,
+    /// or empty without a Device or when one isn't a character string. The
+    /// protocol version and revision are its Protocol_Version and
+    /// Protocol_Revision; without a Device, or when either property isn't an
     /// unsigned value that fits in a `u16`, the stack's own
     /// [`bacnet_types::PROTOCOL_VERSION`] and
-    /// [`bacnet_types::PROTOCOL_REVISION`] stand in.
+    /// [`bacnet_types::PROTOCOL_REVISION`] stand in. The vendor ID is the
+    /// [`ServerConfig`]'s identity, which the server also serves as the
+    /// Device's Vendor_Identifier.
     pub fn generate(&self) -> Pics {
         Pics {
             vendor_info: self.build_vendor_info(),
@@ -396,9 +391,10 @@ impl<'a> PicsGenerator<'a> {
     }
 
     fn build_vendor_info(&self) -> VendorInfo {
-        // The raw Device object: the server's view projects neither protocol
-        // property. The server reads the Device at its identity, as wildcard
-        // reads and announcements do; otherwise the selected (lowest) one.
+        // The raw Device object: the server's view projects none of the
+        // properties read here. The server reads the Device at its identity,
+        // as wildcard reads and announcements do; otherwise the selected
+        // (lowest) one.
         let device = (self.served)
             .then(|| announcement_device(self.db, &self.server_config.device))
             .flatten()
@@ -408,12 +404,16 @@ impl<'a> PicsGenerator<'a> {
             Some(Ok(PropertyValue::Unsigned(raw))) => u16::try_from(raw).unwrap_or(fallback),
             _ => fallback,
         };
+        let text = |property| match device.map(|d| d.read_property(property, None)) {
+            Some(Ok(PropertyValue::CharacterString(value))) => value,
+            _ => String::new(),
+        };
         VendorInfo {
             vendor_id: self.server_config.device.vendor_id(),
-            vendor_name: self.pics_config.vendor_name.clone(),
-            model_name: self.pics_config.model_name.clone(),
-            firmware_revision: self.pics_config.firmware_revision.clone(),
-            application_software_version: self.pics_config.application_software_version.clone(),
+            vendor_name: text(PropertyIdentifier::VENDOR_NAME),
+            model_name: text(PropertyIdentifier::MODEL_NAME),
+            firmware_revision: text(PropertyIdentifier::FIRMWARE_REVISION),
+            application_software_version: text(PropertyIdentifier::APPLICATION_SOFTWARE_VERSION),
             protocol_version: protocol(PropertyIdentifier::PROTOCOL_VERSION, PROTOCOL_VERSION),
             protocol_revision: protocol(PropertyIdentifier::PROTOCOL_REVISION, PROTOCOL_REVISION),
         }
@@ -631,19 +631,19 @@ impl Pics {
         ));
         out.push_str(&format!(
             "Vendor Name:                    {}\n",
-            self.vendor_info.vendor_name
+            text_line(&self.vendor_info.vendor_name)
         ));
         out.push_str(&format!(
             "Model Name:                     {}\n",
-            self.vendor_info.model_name
+            text_line(&self.vendor_info.model_name)
         ));
         out.push_str(&format!(
             "Firmware Revision:              {}\n",
-            self.vendor_info.firmware_revision
+            text_line(&self.vendor_info.firmware_revision)
         ));
         out.push_str(&format!(
             "Application Software Version:   {}\n",
-            self.vendor_info.application_software_version
+            text_line(&self.vendor_info.application_software_version)
         ));
         out.push_str(&format!(
             "Protocol Version:               {}\n",
@@ -742,19 +742,19 @@ impl Pics {
         out.push_str(&format!("| Vendor ID | {} |\n", self.vendor_info.vendor_id));
         out.push_str(&format!(
             "| Vendor Name | {} |\n",
-            self.vendor_info.vendor_name
+            markdown_cell(&self.vendor_info.vendor_name)
         ));
         out.push_str(&format!(
             "| Model Name | {} |\n",
-            self.vendor_info.model_name
+            markdown_cell(&self.vendor_info.model_name)
         ));
         out.push_str(&format!(
             "| Firmware Revision | {} |\n",
-            self.vendor_info.firmware_revision
+            markdown_cell(&self.vendor_info.firmware_revision)
         ));
         out.push_str(&format!(
             "| Application Software Version | {} |\n",
-            self.vendor_info.application_software_version
+            markdown_cell(&self.vendor_info.application_software_version)
         ));
         out.push_str(&format!(
             "| Protocol Version | {} |\n",
@@ -904,6 +904,8 @@ pub fn service_display_name(service: ServiceSupported) -> Option<&'static str> {
     })
 }
 
+mod device_text;
+
 // ─────────────────────────────── Tests ─────────────────────────────────────
 
 #[cfg(test)]
@@ -920,6 +922,9 @@ mod truth_source_tests;
 
 #[cfg(test)]
 mod protocol_revision_tests;
+
+#[cfg(test)]
+mod identity_text_tests;
 
 #[cfg(test)]
 mod property_union_tests;

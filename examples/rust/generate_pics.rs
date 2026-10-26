@@ -2,11 +2,11 @@
 //! header is the Rust block in the page's "On `dev` after the release"
 //! section, byte for byte: website/tests/python/test_site_samples.py checks
 //! it, and CI's clippy --all-targets compiles it. The page's release program
-//! still sets the protocol fields v0.14.0 has; at the next release this
-//! program replaces it (#2125).
+//! still sets the protocol and product fields v0.14.0 has; at the next
+//! release this program replaces it (#2125, #2137).
 #![allow(clippy::print_stdout)] // the page's program prints the PICS
 
-// On dev: the PICS takes the protocol version and revision from the Device.
+// On dev: the PICS takes the product and protocol details from the Device.
 use bacnet_objects::DeviceIdentity;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::binary::BinaryOutputObject;
@@ -19,15 +19,15 @@ use std::net::Ipv4Addr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Your product's details; the Device object and the PICS both carry them.
-    let (vendor, model, version) = ("Example Controls", "AHU-100", "2.1.0");
+    // Your product's details, on the Device object; the PICS reads them there.
+    let version = "2.1.0";
     // Vendor 0 is a placeholder: use the identifier ASHRAE assigned you.
     let identity = DeviceIdentity::new(1001, 0)?.with_name("Example air handler");
     let mut database = ObjectDatabase::new();
     database.add(Box::new(DeviceObject::new(DeviceConfig {
         identity: identity.clone(),
-        vendor_name: vendor.into(),
-        model_name: model.into(),
+        vendor_name: "Example Controls".into(),
+        model_name: "AHU-100".into(),
         firmware_revision: version.into(),
         application_software_version: version.into(),
         ..DeviceConfig::default()
@@ -45,13 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    // What the server can't report about itself: the product, the profile
-    // you claim, and the data links and network roles you ship.
+    // What the server can't report about itself: the profile you claim,
+    // and the data links and network roles you ship.
     let pics_config = PicsConfig {
-        vendor_name: vendor.into(),
-        model_name: model.into(),
-        firmware_revision: version.into(),
-        application_software_version: version.into(),
         // Claim an Annex L profile only if the product meets it.
         device_profile: DeviceProfile::Custom("None claimed".into()),
         data_link_layers: vec![DataLinkSupport::BipV4],
