@@ -373,6 +373,12 @@ impl BipTransport {
         self.bbmd.as_ref()
     }
 
+    /// The broadcast address this transport was configured with, which its
+    /// local broadcasts go to.
+    pub fn broadcast_address(&self) -> Ipv4Addr {
+        self.broadcast_address
+    }
+
     /// Return the operational BBMD management counters.
     pub fn management_counters(&self) -> ManagementCounters {
         match self.management_limiter.lock() {

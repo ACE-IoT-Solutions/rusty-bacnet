@@ -11,39 +11,13 @@
 //! State texts are never spliced into the display text, and the display
 //! text is enveloped whole only when the value holds device text.
 
-use bacnet_ops::format::{Datum, Floats, StateTexts, ValueFormat, decode_all};
+use bacnet_ops::format::{Datum, Floats, PLAIN_ELEMENTS, StateTexts, ValueFormat, decode_all};
 use bacnet_ops::label::kebab;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::PropertyValue;
 use serde_json::{Value, json};
 
 use crate::untrusted::envelope;
-
-/// Constructed elements whose text holds no device string: references,
-/// times and dates, addresses, scales and the like. Any other kind (a name
-/// and value, a schedule's values, an action, an access result, or one the
-/// formatter doesn't name) may carry a character string, so its text is
-/// enveloped.
-const PLAIN_ELEMENTS: [&str; 18] = [
-    "destination",
-    "port-permission",
-    "read-access-specification",
-    "device-object-reference",
-    "authentication-factor-format",
-    "stage-limit-value",
-    "device-object-property-reference",
-    "object-property-reference",
-    "recipient",
-    "calendar-entry",
-    "date-range",
-    "time-stamp",
-    "cov-subscription",
-    "value-source",
-    "scale",
-    "prescale",
-    "address-binding",
-    "shed-level",
-];
 
 /// A property's value as `{display, typed}`, read at `index` (an array
 /// element) or whole: `source` names it for an envelope, `cap` caps any
@@ -292,6 +266,11 @@ mod tests {
         let mut stamp = json!([{ "element": "time-stamp", "text": "2026-10-25 07:00" }]);
         assert!(!envelope_leaves(&mut stamp, "s", 256));
         assert_eq!(stamp[0]["text"], json!("2026-10-25 07:00"));
+        // The shared list (#2111) has the notification formatter's
+        // date-time, which holds no device string either.
+        let mut when = json!({ "element": "date-time", "text": "2026-10-25 07:00:00.00" });
+        assert!(!envelope_leaves(&mut when, "s", 256));
+        assert_eq!(when["text"], json!("2026-10-25 07:00:00.00"));
         let mut named = json!([{ "element": "name-value", "text": "mode = \"Fan\u{202E}\"" }, 7]);
         assert!(envelope_leaves(&mut named, "s", 256));
         assert_eq!(named[0]["text"]["untrusted"], json!("mode = \"Fan\""));

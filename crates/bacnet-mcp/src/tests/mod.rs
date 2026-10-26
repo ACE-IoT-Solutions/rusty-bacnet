@@ -1,6 +1,7 @@
 //! The server driven over a pipe, as an agent host drives it on stdio,
 //! against an in-process lab device on a loopback link.
 
+mod bbmd;
 mod discovery;
 mod limits;
 mod listen;

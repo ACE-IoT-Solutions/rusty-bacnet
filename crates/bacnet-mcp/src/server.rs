@@ -53,7 +53,7 @@ fn cancel_wait(points: usize) -> Duration {
 const INSTRUCTIONS: &str = "Read-only access to a BACnet building automation network. \
     Start with bacnet_discover (give a range of device instances), then \
     bacnet_describe_device, bacnet_list_objects and bacnet_read; bacnet_find_object searches \
-    the discovered devices, bacnet_network_map shows networks and routers, \
+    the discovered devices, bacnet_network_map shows networks and routers (and, with bbmd, checks the BBMD tables), \
     bacnet_read_trend reads and summarises trend logs, bacnet_alarms lists active alarms, \
     bacnet_decode decodes a frame without sending anything, and bacnet_watch follows points \
     and says what changed since the last call. Resources (bacnet://devices, \
@@ -136,6 +136,7 @@ impl<T: TransportPort + 'static> McpServer<T> {
                 reads: Mutex::new(BTreeMap::new()),
                 names: Mutex::new(HashMap::new()),
                 routers: Mutex::default(),
+                bbmd_asked: Mutex::new(None),
                 hub,
                 subs: Arc::new(Subs::default()),
                 closing: CancellationToken::new(),
