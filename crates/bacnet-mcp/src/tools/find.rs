@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::PoisonError;
 
-use bacnet_ops::engine::{Wanted, unreachable};
+use bacnet_ops::engine::{Wanted, timed_out, unreachable};
 use bacnet_ops::parse::{parse_object_specifier, parse_object_type};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
@@ -506,7 +506,9 @@ async fn search<T: TransportPort + 'static>(
                 // doesn't make every later page wait out its timeout again.
                 // Search it alone (range) to try it again.
                 Err(error) if unreachable(&error) => {
-                    call.timed_out();
+                    if timed_out(&error) {
+                        call.timed_out();
+                    }
                     page.incomplete.push(json!({
                         "device": instance,
                         "read": at,
