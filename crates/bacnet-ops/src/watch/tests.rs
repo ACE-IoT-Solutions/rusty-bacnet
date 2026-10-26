@@ -3,177 +3,19 @@
 //! (Active_COV_Subscriptions), not only the hub's counters.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
-use bacnet_client::client::{BACnetClient, ClientConfig};
-use bacnet_encoding::constructed::decode_cov_subscription;
-use bacnet_objects::analog::AnalogInputObject;
-use bacnet_objects::device_identity::{DeviceIdentity, build_database_with_extra};
-use bacnet_objects::notification_class::NotificationClass;
-use bacnet_objects::traits::BACnetObject;
-use bacnet_server::server::BACnetServer;
-use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::port::ReceivedNpdu;
-use bacnet_types::constructed::BACnetCOVSubscription;
-use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_client::client::{CovTarget, ReceivedCOVNotification};
+use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use tokio::sync::mpsc;
 
+use super::shared::Registry;
+use super::test_lab::{LAB, Lab, ai, object, oid, settle};
 use super::*;
 use crate::format::decode_all;
-use crate::limits::RequestLimits;
-
-const LAB: u32 = 1001;
-
-/// The client's link, which can go silent: then nothing it sends arrives.
-struct Mutable {
-    inner: LoopbackTransport,
-    muted: Arc<AtomicBool>,
-}
-
-impl TransportPort for Mutable {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.inner.start().await
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.inner.stop().await
-    }
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        if self.muted.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        self.inner.send_unicast(npdu, mac).await
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.inner.send_broadcast(npdu).await
-    }
-    fn local_mac(&self) -> &[u8] {
-        self.inner.local_mac()
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.inner.local_receive_apdu_capacity()
-    }
-}
-
-struct Lab {
-    hub: Hub<Mutable>,
-    engine: Arc<Engine<Mutable>>,
-    server: BACnetServer<LoopbackTransport>,
-    muted: Arc<AtomicBool>,
-}
-
-fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
-    ObjectIdentifier::new(object_type, instance).unwrap()
-}
-
-fn ai(instance: u32) -> ObjectIdentifier {
-    oid(ObjectType::ANALOG_INPUT, instance)
-}
-
-fn object(object: ObjectIdentifier) -> Point {
-    Point {
-        device: LAB,
-        object,
-        watched: Watched::Object,
-    }
-}
-
-impl Lab {
-    async fn start(options: WatchOptions) -> Self {
-        let identity = DeviceIdentity::new(LAB, 42).unwrap();
-        let mut objects: Vec<Box<dyn BACnetObject>> = Vec::new();
-        for instance in 1..=3 {
-            let mut point = AnalogInputObject::new(
-                instance,
-                format!("AI {instance}"),
-                EngineeringUnits::PERCENT,
-            )
-            .unwrap();
-            point.set_present_value(10.0);
-            objects.push(Box::new(point));
-        }
-        objects.push(Box::new(NotificationClass::new(0, "Alarms").unwrap()));
-        let database = build_database_with_extra(&identity, objects).unwrap();
-        let (client_port, server_port) = LoopbackTransport::pair(vec![1], vec![2]);
-        let server = BACnetServer::generic_builder()
-            .device(identity)
-            .database(database)
-            .transport(server_port)
-            .build()
-            .await
-            .unwrap();
-        let muted = Arc::new(AtomicBool::new(false));
-        let config = ClientConfig {
-            apdu_timeout_ms: 1_000,
-            apdu_retries: 0,
-            ..ClientConfig::default()
-        };
-        let link = Mutable {
-            inner: client_port,
-            muted: Arc::clone(&muted),
-        };
-        let client = BACnetClient::start(config, link).await.unwrap();
-        client.add_device(LAB, &[2]).await.unwrap();
-        let engine = Arc::new(Engine::new(
-            Arc::new(client),
-            Arc::new(RequestLimits::new(0)),
-        ));
-        let hub = Hub::new(Arc::clone(&engine), options).unwrap();
-        Self {
-            hub,
-            engine,
-            server,
-            muted,
-        }
-    }
-
-    /// The device's subscription table.
-    async fn table(&self) -> Vec<BACnetCOVSubscription> {
-        let value = self
-            .server
-            .read_local(
-                &oid(ObjectType::DEVICE, LAB),
-                PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS,
-                None,
-            )
-            .await
-            .unwrap();
-        let PropertyValue::ApplicationData(data) = value else {
-            panic!("an encoded list: {value:?}");
-        };
-        let mut entries = Vec::new();
-        let mut at = 0;
-        while at < data.len() {
-            let (entry, next) = decode_cov_subscription(&data, at).unwrap();
-            entries.push(entry);
-            at = next;
-        }
-        entries
-    }
-
-    async fn stop(self) {
-        assert!(self.hub.shutdown(Duration::from_secs(30)).await);
-        drop(self.hub);
-        let Ok(engine) = Arc::try_unwrap(self.engine) else {
-            panic!("the hub let go of the engine");
-        };
-        let Ok(mut client) = Arc::try_unwrap(engine.client) else {
-            panic!("the engine holds the only client");
-        };
-        client.stop().await.unwrap();
-        let mut server = self.server;
-        server.stop().await.unwrap();
-    }
-}
-
-/// Let the lab's tasks run: paused time moves on only when all are idle.
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(50)).await;
-}
 
 /// The Present_Value among a snapshot's rows.
-fn present_value(snapshot: &Snapshot) -> Option<f32> {
+pub(super) fn present_value(snapshot: &Snapshot) -> Option<f32> {
     let (_, value) = snapshot
         .rows
         .iter()
@@ -308,12 +150,12 @@ async fn a_silent_device_is_reported() {
     let lab = Lab::start(WatchOptions::default()).await;
     let lease = lab.hub.watch(object(ai(1))).unwrap();
     settle().await;
-    lab.muted.store(true, Ordering::Relaxed);
+    lab.quirks.muted.store(true, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(245)).await;
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.state, State::Unreachable, "{snapshot:?}");
     assert_eq!(snapshot.source, Some(Source::Poll));
-    lab.muted.store(false, Ordering::Relaxed);
+    lab.quirks.muted.store(false, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(320)).await;
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.source, Some(Source::Cov), "{snapshot:?}");
@@ -465,13 +307,23 @@ fn notifications_cannot_grow_the_rows() {
         .map(|n| (PropertyIdentifier::from_raw(600 + n), None))
         .chain([(PropertyIdentifier::PRESENT_VALUE, None)])
         .collect();
-    dispatch::merge(&mut rows, &point, &notification(ai(1), &flood));
+    dispatch::merge(
+        &mut rows,
+        &point,
+        &POINT_PROPERTIES,
+        &notification(ai(1), &flood),
+    );
     assert_eq!(rows.len(), 1, "only the point property joins");
     for _ in 0..3 {
-        dispatch::merge(&mut rows, &point, &notification(ai(1), &flood));
+        dispatch::merge(
+            &mut rows,
+            &point,
+            &POINT_PROPERTIES,
+            &notification(ai(1), &flood),
+        );
     }
     assert_eq!(rows.len(), 1);
-    assert!(rows.len() <= dispatch::MAX_ROWS);
+    assert!(rows.len() <= MAX_ROWS);
 
     let element = Point {
         device: LAB,
@@ -493,9 +345,9 @@ fn notifications_cannot_grow_the_rows() {
     );
     assert!(dispatch::belongs(&element, Some(&target), &mine));
     let mut rows = Vec::new();
-    dispatch::merge(&mut rows, &element, &other);
+    dispatch::merge(&mut rows, &element, &[], &other);
     assert!(rows.is_empty());
-    dispatch::merge(&mut rows, &element, &mine);
+    dispatch::merge(&mut rows, &element, &[], &mine);
     assert_eq!(rows.len(), 1);
     // A whole array sent without an index isn't the element; one value
     // without an index is.
@@ -506,7 +358,7 @@ fn notifications_cannot_grow_the_rows() {
     array.notification.list_of_values[0].value = [0x00; 16].to_vec();
     assert!(!dispatch::belongs(&element, Some(&target), &array));
     let mut kept = rows.clone();
-    dispatch::merge(&mut kept, &element, &array);
+    dispatch::merge(&mut kept, &element, &[], &array);
     assert_eq!(kept, rows, "the previous value stays");
     let single = notification(
         element.object,
@@ -526,18 +378,11 @@ fn notifications_cannot_grow_the_rows() {
 /// Notifications the hub's receiver falls behind on are counted.
 #[tokio::test(start_paused = true)]
 async fn lagged_notifications_are_counted() {
-    let registry = Arc::new(Registry {
-        table: Mutex::new(Table {
-            entries: HashMap::new(),
-            by_process: HashMap::new(),
-            next_process: PROCESS_BASE,
-            shut: false,
-        }),
-        seq: AtomicU64::new(0),
-        lagged: AtomicU64::new(0),
-        coalesce: Duration::from_secs(1),
-        tasks: watch::Sender::new(0),
-    });
+    let registry = Arc::new(Registry::new(
+        PROCESS_BASE,
+        Duration::from_secs(1),
+        POINT_PROPERTIES.to_vec(),
+    ));
     let (sender, receiver) = tokio::sync::broadcast::channel(1);
     for _ in 0..4 {
         sender.send(notification(ai(1), &[])).unwrap();

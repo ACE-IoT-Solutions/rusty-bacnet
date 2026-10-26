@@ -163,7 +163,9 @@ pub(crate) fn state_name(state: State) -> &'static str {
     match state {
         State::Starting => "starting",
         State::Live => "live",
-        State::Failed => "failed",
+        // The hub gives a point up only under `MissingDevice::Fail`, which
+        // the server doesn't use; it would be a failed watch.
+        State::Failed | State::Gone => "failed",
         State::Unreachable => "unreachable",
         State::Stopped => "stopped",
     }

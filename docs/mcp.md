@@ -120,15 +120,26 @@ advertises `resources.subscribe` for every version.
   SubscribeCOVProperty for a property, unconfirmed, with a 300 s lifetime
   renewed 60 s before it ends; a lifetime of zero can't be built. A device
   that refuses COV is polled every 10 s (`source: poll`, with the refusal
-  in `note`). A device that doesn't answer is polled with a backoff up to a
-  minute, and subscribed again after five minutes. The last listener
+  in `note`); a device's polled points are read together, in
+  ReadPropertyMultiple requests of up to 16 points and 32 properties (three
+  objects' point properties), one point at a time when the answer would be
+  too large (#2115). A device that doesn't answer is polled with a backoff
+  up to a minute, per device rather than per point (a point whose first
+  read went unanswered is polled at once), and read and subscribed again
+  after five minutes. Each
+  device has one scheduler, which sends one request at a time. The last listener
   leaving cancels the subscription; a listener joining as the last leaves
   gets a fresh entry with its own subscriber process identifier. A point
   whose device isn't in the discovery table yet says so and is looked up
-  again at each poll, then read and subscribed once it appears. An object
+  again after the poll backoff (10 s, doubling up to a minute), then read
+  and subscribed once it appears. An object
   watch keeps the point properties: a notification can refresh a row but
-  adds one only for a point property, and never past 16 rows, so a device
+  adds one only for a point property, and never past 32 rows, so a device
   can't grow it; a property watch keeps its property, at its element.
+  `WatchOptions` also sets what a point reads, the poll floor (1 s at the
+  least), the backoffs, whether a point whose device is missing is given
+  up, the coalescing window (zero for none) and the sample stream every
+  lease can read (`Lease::samples`); the server keeps the defaults.
 - **Bursts.** Changes to one point within a second make one notification;
   the folded ones are counted (`updates.coalesced`), and a read always has
   the latest values. Notifications the hub's receiver fell behind on are
@@ -363,6 +374,15 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   coalesced storm, renewal before expiry, a silent device and recovery, a
   property watch, the cap with entries still cancelling, a listener
   joining as the last leaves, shutdown, and no lifetime of zero.
+  `scheduler_tests.rs` (#2115): a device's polls batched, a batch too
+  large asked a row at a time, RPM refused and remembered, a failed batch
+  read property by property, the silent-device backoff, subscription
+  retries and their cancels, a missing device given up, what a point
+  reads, the sample stream, a zero coalescing window, and the routed
+  notification match.
+  `lifecycle_tests.rs`: the first notification after subscribing kept,
+  shutdown within its wait with a poll in flight, an arrival as a
+  scheduler ends, and a one-row batch too large to answer.
 - `crates/bacnet-ops`: network rates, accounts and buckets, a trend page
   charged per request, Who-Is through the engine, and the decoder's tests
   (moved from the CLI).
