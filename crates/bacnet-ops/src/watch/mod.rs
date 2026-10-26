@@ -38,6 +38,8 @@
 
 mod dispatch;
 mod entry;
+pub mod first;
+pub mod poll;
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -104,6 +106,22 @@ impl Lifetime {
     fn duration(self) -> Duration {
         Duration::from_secs(u64::from(self.secs()))
     }
+}
+
+/// How long before a lifetime of `secs` ends its renewal should go: a
+/// tenth of it (1 to 30 s), but never later than two `request_budget`s
+/// before the end. A budget is the time one request takes with every
+/// retry: the renewal waits at most one for the request holding the
+/// device's gate (#1791), which may be a whole budget on a device that
+/// stops answering, then needs one of its own, so neither a busy device nor
+/// one lost packet lets it lapse. Each worker queues at most one request
+/// per device behind that holder, and they rarely all coincide with a
+/// renewal, so two budgets cover the case that matters without renewing
+/// far earlier than needed. The margin stays at most half the lifetime.
+pub fn renewal_margin(secs: u32, request_budget: Duration) -> Duration {
+    let tenth = Duration::from_secs(u64::from(secs / 10).clamp(1, 30));
+    let half = Duration::from_secs(u64::from(secs)) / 2;
+    tenth.max(request_budget * 2).min(half)
 }
 
 /// The hub's settings.
