@@ -81,6 +81,11 @@ pub struct Caps {
     /// How long a call may wait for the limits and the network before it
     /// returns what it has.
     pub budget: Duration,
+    /// Points one principal may watch at once, through subscriptions and
+    /// `bacnet_watch` together (design §7.6).
+    pub watches: usize,
+    /// Points the whole process may watch at once: the watch hub's cap.
+    pub process_watches: usize,
 }
 
 impl Default for Caps {
@@ -91,6 +96,8 @@ impl Default for Caps {
             objects: 200,
             text: 256,
             budget: Duration::from_secs(30),
+            watches: 32,
+            process_watches: 256,
         }
     }
 }
@@ -100,6 +107,8 @@ const MAX_VALUES: usize = 1_000;
 const MAX_PAGE: usize = 2_000;
 const MAX_TEXT: usize = 4_096;
 const MAX_BUDGET: Duration = Duration::from_secs(600);
+/// A device's COV table is small; no process watches more than this.
+const MAX_WATCHES: usize = 1_024;
 
 impl Policy {
     /// Check the policy before anything starts: a bad configuration
@@ -149,6 +158,13 @@ impl Policy {
         }
         if caps.budget.is_zero() || caps.budget > MAX_BUDGET {
             return Err("call_budget_s must be 1 to 600".into());
+        }
+        if !(1..=MAX_WATCHES).contains(&caps.process_watches)
+            || !(1..=caps.process_watches).contains(&caps.watches)
+        {
+            return Err(format!(
+                "watches must be 1 to the process cap, and the process cap 1 to {MAX_WATCHES}"
+            ));
         }
         Ok(())
     }

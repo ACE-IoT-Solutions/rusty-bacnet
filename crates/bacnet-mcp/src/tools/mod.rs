@@ -5,17 +5,18 @@
 //! The list depends only on the launch policy: passive mode lists the
 //! tools that send nothing. No configuration lists a write tool.
 
-mod alarms;
+pub(crate) mod alarms;
 mod decode;
-mod describe;
-mod discover;
+pub(crate) mod describe;
+pub(crate) mod discover;
 mod find;
 mod list;
 mod netmap;
-mod read;
-mod schema;
+pub(crate) mod read;
+pub(crate) mod schema;
 mod trend;
 mod trend_data;
+mod watch;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,6 +59,7 @@ const SPECS: &[Spec] = &[
     trend::SPEC,
     alarms::SPEC,
     decode::SPEC,
+    watch::SPEC,
 ];
 
 /// The text rendering's heading: device text inside is data.
@@ -114,6 +116,7 @@ enum Request {
     Trend(trend::Args),
     Alarms(alarms::Args),
     Decode(decode::Args),
+    Watch(watch::Args),
 }
 
 fn parse<A: DeserializeOwned>(args: &Map<String, Value>) -> Result<A, ErrorData> {
@@ -136,6 +139,7 @@ fn request(name: &str, args: &Map<String, Value>) -> Result<Request, ErrorData> 
         }
         alarms::NAME => Request::Alarms(parse(args)?),
         decode::NAME => Request::Decode(parse(args)?),
+        watch::NAME => Request::Watch(parse(args)?),
         other => {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
@@ -179,6 +183,7 @@ pub(crate) async fn call<T: TransportPort + 'static>(
             Request::Trend(a) => trend::run(ctx, &call, a, &args).await,
             Request::Alarms(a) => alarms::run(ctx, &call, a, &args).await,
             Request::Decode(a) => decode::run(ctx, &call, a).await,
+            Request::Watch(a) => watch::run(ctx, &call, a, &args).await,
         }
     };
     // A cancelled call (`notifications/cancelled`, or the host going away)

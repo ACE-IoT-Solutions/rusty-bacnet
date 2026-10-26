@@ -3,7 +3,7 @@ title: "Use rusty-bacnet with AI agents"
 description: "Let an AI agent host such as Claude Code discover and read a BACnet site through a read-only MCP server."
 ---
 
-`bacnet mcp serve` is a [Model Context Protocol](https://modelcontextprotocol.io) server: an agent host such as Claude Code or Codex starts it as a child process and calls its tools to discover devices, describe them, find and read their objects, read trend logs and alarms, map the networks, and decode frames. It is experimental in 0.15, built only with the CLI's `mcp` feature, and **read-only**: no configuration offers a tool that writes.
+`bacnet mcp serve` is a [Model Context Protocol](https://modelcontextprotocol.io) server: an agent host such as Claude Code or Codex starts it as a child process and calls its tools to discover devices, describe them, find and read their objects, read trend logs and alarms, map the networks, decode frames, and follow points as they change. It is experimental in 0.15, built only with the CLI's `mcp` feature, and **read-only**: no configuration offers a tool that writes.
 
 ## Build it
 
@@ -69,8 +69,15 @@ bacnet mcp serve --stdio --profile plant-a --passive
 | `bacnet_read_trend` | Reads a trend log's records, by count or time window, and summarises them: count, first and last time, minimum, maximum and mean, and counts of states |
 | `bacnet_alarms` | Lists a device's objects in alarm or fault or waiting for acknowledgment, with states, times and priorities named, and optionally its alarm and enrollment summaries |
 | `bacnet_decode` | Decodes a frame, NPDU or APDU given as hex into its layers and fields, without sending anything (also in passive mode) |
+| `bacnet_watch` | Follows up to 32 points and, called again with its cursor, says which changed since the last call, for hosts without resource subscriptions |
 
 Two prompts start common jobs: `survey_site` surveys a range of devices, their networks and their alarms, and `investigate_point` explains one point's value, status, priority array, alarms and trend. Every value comes as display text and a typed form with enumeration and bit names. A property a device can't give is an error row with the device's error class and code.
+
+## Resources and subscriptions
+
+The server also offers resources: `bacnet://devices`, `bacnet://device/{instance}`, a point as `bacnet://device/{instance}/object/{type}:{n}` (one property with `/property/{prop}`), alarms as `bacnet://alarms` and `bacnet://device/{instance}/alarms`, and `bacnet://session`. A host on the 2026-07-28 revision of MCP can subscribe to them: the server watches each point with one COV subscription however many listeners share it, or polls it every 10 seconds when the device refuses COV, and tells the host when it changes. Reading a watched point sends nothing. Bursts of changes are folded into one update a second.
+
+An agent can watch up to 32 points at once, and the server 256 in all. The subscription acknowledgment lists only the resources the server took on: a device not yet discovered, one the profile doesn't reach, or a point past the limit is left out. Subscriptions are always finite (five minutes, renewed) and are cancelled when the last listener leaves or the server stops; one the device can't be told about ends on its own. Hosts without subscriptions use `bacnet_watch` instead. In passive mode only the session resource and an empty ledger are offered.
 
 ## Safety
 

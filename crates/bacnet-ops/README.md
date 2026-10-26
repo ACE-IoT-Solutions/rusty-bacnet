@@ -26,6 +26,11 @@ targets, values and devices the same way and obey the same request limits.
   device summary, trend log pages, alarms and the alarm and enrollment
   summaries, and Who-Is and Who-Is-Router-To-Network with the discovery
   table.
+- `watch`: the watch hub. One managed COV subscription per point (finite
+  lifetime, renewed, cancelled when the last listener leaves) or a poll
+  every 10 s or slower when the device refuses COV, however many listeners
+  share it; it keeps the latest values, so reading a watched point sends
+  nothing, and folds bursts of notifications, counting what it folds.
 
 It is a hosted crate: it needs `std` and Tokio, and has no terminal or MCP
 dependency. Its `sc-tls` feature lets the address formatter recognise a

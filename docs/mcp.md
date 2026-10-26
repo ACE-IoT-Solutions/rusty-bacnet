@@ -1,7 +1,8 @@
 # MCP server (`bacnet-mcp`, `bacnet mcp serve`)
 
 A read-only [Model Context Protocol](https://modelcontextprotocol.io) server
-for BACnet sites (#2066), phase 1 of the MCP epic (#2064). The design, with
+for BACnet sites: phase 1 (#2066, the tools) and phase 2 (#2067, resources
+and subscriptions) of the MCP epic (#2064). The design, with
 the later phases, is [design/mcp.md](design/mcp.md); the user guide is the
 website's [AI agents](https://jscott3201.github.io/rusty-bacnet/guides/ai-agents/)
 page. Experimental in 0.15.
@@ -13,6 +14,7 @@ page. Experimental in 0.15.
 | `bacnet-mcp` | `crates/bacnet-mcp` | `McpServer<T>`: the tool surface, prompts, policy, untrusted-text envelope, signed cursors. Out of `default-members`; publishable, because the CLI depends on it. Default feature `stdio`. |
 | Engine extensions | `bacnet-ops` | `RequestLimits::with_network_rates`, `turn_on` and `slot`; per-caller `Account` and `TokenBucket` through `limits::charged`; `Engine::who_is`, `discover_routers`, `devices`, `device`, `address_style`; `read_trend` charged per request; `alarm_summary` and `enrollment_summary` |
 | Decoder | `bacnet-ops::decode` | The capture screen's frame summary and field tree, moved from the CLI for `bacnet_decode`: any tapped link (B/IP, B/IPv6, BACnet/SC, MS/TP), or a bare NPDU or APDU; a field quoting a character string is marked as device text |
+| Watch hub | `bacnet-ops::watch` | `Hub`: one managed COV subscription or poller per point, shared by every listener, holding the latest values (phase 2); `Engine::device_events` |
 | `bacnet mcp` | `crates/bacnet-cli/src/mcp.rs` | `serve --stdio [--profile NAME] [--passive]` and `authorize --profile NAME`, behind the CLI feature `mcp` (which brings `tui`, for the profiles). Classified `Read` in `bacnet_ops::class`. |
 | `[mcp]` profile table | `crates/bacnet-cli/src/tui/profile/mcp.rs` | networks, devices, slow and fast networks, broad discovery, rates and caps |
 
@@ -36,12 +38,121 @@ input and output schemas and structured content plus a text rendering.
 | `bacnet_read_trend` | A Trend Log or Trend Log Multiple through `Engine::read_trend`, each request charged. From the oldest record or after `from`, up to `to`; at most `max_records` (500 by default, 2,000 at most, and about 60 kB of structured content) a call, then a cursor holding the log's next sequence number (a log that has more but gives no sequence number to resume from returns `truncated` without a cursor, and says why under `stopped`). `from` after `to` is a JSON-RPC -32602.
  Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Engine::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
 | `bacnet_alarms` | GetEventInformation through `bacnet_ops::format::alarms` (#2077): objects, states, transitions, notify types, timestamps and priorities named; paged over the device's answers (`more_events`) up to `max` (100) a call, the cursor holding the last object; once the call's budget is spent no further answer is asked for, and what was read comes back with `more_events` and a cursor (`format::alarms::read_event_information_until`).  `summaries: true` adds GetAlarmSummary and GetEnrollmentSummary on the first page; a device refusing one reports it under `summary_errors`. When the events spent the call's budget, neither is sent, and each shows under `summary_errors` as `{"skipped": "budget"}`. Every datum is passed through the envelope check. |
+| `bacnet_watch` | Points on the watch hub, and what changed since the last call (see [the tool-only fallback](#the-tool-only-fallback)). `idempotentHint: false`. Not listed in passive mode. |
 | `bacnet_decode` | Hex (separators and `0x` ignored, at most 6,144 octets, room for the largest BACnet/SC message the stack accepts) as `bip`, `bip6`, `mstp`, `sc`, `npdu`, `apdu` or `auto` (by the first octets; SC must be named). Returns a one-line `text`, the decoder's `summary` and the field `tree` (labels with `[start, end)` octet ranges, at most 600 fields). A label quoting a character string is an envelope with source `decoded frame`; other labels are cleaned, and a long one (an unknown tag's octets) is cut at 512 characters with `truncated: true`. No traffic: listed in passive mode too. |
 
 Prompts: `survey_site` (range, network) and `investigate_point` (device,
 object). Their arguments are checked against the target grammar. The survey
 also maps the networks and lists each device's alarms; the point
 investigation also checks its alarms and summarises a trend log of it.
+
+## Resources
+
+Phase 2 (#2067). Names and titles are built from identifiers only. Content
+is JSON (`application/json`): values as `{display, typed}` like the tools,
+device text in envelopes, and a `cost` block. A read runs like a tool call,
+under its own account and budget, and a cancelled read sends nothing more.
+
+| URI | Content | A subscription means |
+|---|---|---|
+| `bacnet://devices` | the discovery table in reach (up to the device page size), no device text; nothing sent | an update when a device arrives or is lost, at most once a second |
+| `bacnet://device/{instance}` | `bacnet_describe_device`'s summary, cached five minutes (`cached`) | not honoured: a summary has no updates |
+| `bacnet://device/{instance}/object/{type}:{n}` | the point facts (`bacnet_read`'s `preset: "point"` properties); `source` `read` when read just now, `cov` or `poll` when watched, with `state` (`starting`, `live`, `failed`, `unreachable`, `stopped`), `note` (why it is polled or not live), `seq`, `age_ms` and `updates` (notifications, coalesced, polls, renewals) | a watch on the hub |
+| `.../property/{prop}` | one property (`name` or `name[index]`; `[`, `]` and `:` may be percent-encoded) | a property watch (SubscribeCOVProperty) |
+| `bacnet://alarms` | each device in reach: its first page of GetEventInformation, as far as the read's budget goes (`unread` past it, `errors` per device) | a poll every 60 s; an update when the events change |
+| `bacnet://device/{instance}/alarms` | one device's first page of events | the same, for one device |
+| `bacnet://session` | level, limits, the request meter, the principal's watches and the hub's footprint (points, subscribed, polled, requests, lagged notifications, lifetime) | honoured; no updates until writes arrive (phase 3) |
+| `bacnet://ledger` | this principal's ledger entries in effect: none | honoured; no updates until phase 3 |
+
+A watched point is read from the hub, which sends nothing. An unwatched one
+is read once. Each device's alarms are read at most once a minute, whoever
+asks: later reads within the minute come from a cache.
+
+A read refused before anything was sent (a bad URI, a device not discovered
+or out of reach, a passive server) is a JSON-RPC -32602 whose `data` is
+the tool error body (`invalid-argument`, `unknown-device`, `refused`); one
+that failed after sending (the device answered with an error, or not at
+all) is a -32603 with the same body.
+
+## Subscriptions
+
+`rmcp` 3.5.1 implements `subscriptions/listen` (2026-07-28): the server
+sends the acknowledgment, then `notifications/resources/updated` carrying
+only the URI; the client reads the resource. A legacy client (the older
+`initialize` handshake) can't open a listen stream, and
+`resources/subscribe` is not offered, so the server's `initialize` answer
+for a version older than 2026-07-28 doesn't advertise `resources.subscribe`
+(`server/discover` does); such hosts use `bacnet_watch`.
+
+- **Acknowledgment.** It lists only the URIs honoured. A point URI is
+  honoured when it parses, its device is in the discovery table (so call
+  `bacnet_discover` first) and in reach, and both caps leave room; an
+  over-cap, unknown or malformed URI is visibly left out. The SDK keeps a
+  URI asked for twice twice in the acknowledgment; it is watched once.
+  The watches are taken when the acknowledgment is built and held for the
+  stream; one the stream never claims (the acknowledgment couldn't be
+  sent, or the client cancelled first) is released by a sweep within
+  about 90 s, and at most 16 such reservations wait at once.
+- **Caps.** 32 points per principal (`Caps::watches`; the same point on
+  two streams, or a stream and `bacnet_watch`, counts once) and 256 per
+  process (`Caps::process_watches`, the hub's cap, which counts points
+  still cancelling).
+- **The watch hub** (`bacnet_ops::watch`). One BACnet subscription or poller
+  per point however many listeners. SubscribeCOV for an object,
+  SubscribeCOVProperty for a property, unconfirmed, with a 300 s lifetime
+  renewed 60 s before it ends; a lifetime of zero can't be built. A device
+  that refuses COV is polled every 10 s (`source: poll`, with the refusal
+  in `note`). A device that doesn't answer is polled with a backoff up to a
+  minute, and subscribed again after five minutes. The last listener
+  leaving cancels the subscription; a listener joining as the last leaves
+  gets a fresh entry with its own subscriber process identifier. A point
+  whose device isn't in the discovery table yet says so and is looked up
+  again at each poll, then read and subscribed once it appears. An object
+  watch keeps the point properties: a notification can refresh a row but
+  adds one only for a point property, and never past 16 rows, so a device
+  can't grow it; a property watch keeps its property, at its element.
+- **Bursts.** Changes to one point within a second make one notification;
+  the folded ones are counted (`updates.coalesced`), and a read always has
+  the latest values. Notifications the hub's receiver fell behind on are
+  counted as `lagged` in the session.
+- **Charging.** The hub's requests (first reads, subscriptions, polls) run
+  under its own account and token bucket (the principal rate, 5 a second,
+  burst 20), besides the engine's gates and rates, so they never take the
+  agent's tokens. A shared point costs the same however many listeners,
+  and notifications cost nothing. Renewals take the device's gate but no
+  rate slot; cancels skip the hub's bucket. A resource read is charged to
+  the principal like a tool call; the alarm polls of a stream are too.
+  The bound: at most 256 points (32 per principal) are watched, each
+  polled at most every 10 s or renewed once a lifetime, and every hub
+  request still waits for its device's gate and the network and global
+  rates, so the hub sends at most 5 requests a second beyond renewals and
+  cancels however many agents listen.
+- **Shutdown.** On a signal (SIGINT or SIGTERM; Ctrl-C on Windows) each
+  listen stream completes with its final result, the session closes, and
+  every BACnet subscription is cancelled, waiting 10 s plus 60 ms a point,
+  at most 30 s (enough for 256 cancels at the global rate); what doesn't
+  answer by then lapses with its lifetime, within five minutes. The host closing stdin does the same,
+  with nowhere to send the final results.
+
+## The tool-only fallback
+
+`bacnet_watch` (points: device, object, optional property; up to 32 a
+call) puts points on the hub as a subscription would. The first call
+returns every value (waiting up to 10 s for new points' first reads); a
+call with its `next_cursor` and the same points returns `changed: false`
+without values for points unchanged since, and reading them sends nothing.
+The cursor holds the hub's sequence number. A point stays watched while
+calls ask for it and goes 10 minutes after the last (the cursor's
+lifetime), cancelling its subscription. It counts against the same
+per-principal cap; a point past it, or a device out of reach, is an error
+row while the others are returned.
+
+## Passive mode and resources
+
+`--passive` lists only `bacnet://session` and `bacnet://ledger` and no
+templates; reading any other resource is refused (`refused: passive`), and
+a listen stream honours only those two. Nothing that needs traffic is
+offered.
 
 ## Results
 
@@ -115,7 +226,10 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   whatever `-v` or `RUST_LOG` say; they set the rest. They are not written
   to the TUI's `audit.jsonl`.
 - `--passive` builds no client; only `bacnet_discover` (which refuses to
-  send) and `bacnet_decode` are listed.
+  send) and `bacnet_decode` are listed, and only the session and ledger
+  resources.
+- SIGINT or SIGTERM (Ctrl-C on Windows) shuts the server down gracefully:
+  listen streams complete and COV subscriptions are cancelled.
 
 ## Tests
 
@@ -138,6 +252,23 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   `limits.rs`: a device silent mid-list or while naming, a list cut by the
   budget, alarms stopped by the budget, the router wait ending with the
   budget, a cancelled router query, and a backwards trend window.
+- `crates/bacnet-mcp/src/tests/listen.rs` and `resources.rs` (phase 2):
+  two streams on one point make one subscription in the lab device's own
+  table (Active_COV_Subscriptions) and the last one cancelled removes it; a
+  watched point read without sending; the acknowledgment leaving out
+  over-cap, unknown, out-of-reach and malformed URIs; a point the device
+  won't subscribe polled with `source: poll`; a storm of 30 changes making
+  at most 3 notifications with the latest value read after; a graceful
+  shutdown completing two streams at once and cancelling every
+  subscription; a silent device reported unreachable; passive mode; the
+  device list announced once on arrivals; the resource lists, contents,
+  envelope, caches and a cancelled read; `bacnet_watch` across cursors,
+  its idle expiry, cap and reach; output schemas include `bacnet_watch`.
+- `crates/bacnet-ops/src/watch/tests.rs`: the hub against the device's
+  subscription table: sharing and cancel, a refusal polled every 10 s, a
+  coalesced storm, renewal before expiry, a silent device and recovery, a
+  property watch, the cap with entries still cancelling, a listener
+  joining as the last leaves, shutdown, and no lifetime of zero.
 - `crates/bacnet-ops`: network rates, accounts and buckets, a trend page
   charged per request, Who-Is through the engine, and the decoder's tests
   (moved from the CLI).

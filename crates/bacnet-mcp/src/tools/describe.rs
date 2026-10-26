@@ -79,10 +79,20 @@ fn output() -> Value {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Args {
+pub(crate) struct Args {
     device: DeviceArg,
     #[serde(default)]
     count_objects: bool,
+}
+
+impl Args {
+    /// The summary of `device` alone, for its resource.
+    pub(crate) fn of(device: u32) -> Self {
+        Self {
+            device: DeviceArg::Number(device),
+            count_objects: false,
+        }
+    }
 }
 
 /// The value of `property` among `rows`, decoded.
@@ -106,7 +116,7 @@ fn set_bits(rows: &[RawRow], property: PropertyIdentifier) -> Vec<String> {
     }
 }
 
-pub(super) async fn run<T: TransportPort + 'static>(
+pub(crate) async fn run<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
     args: Args,

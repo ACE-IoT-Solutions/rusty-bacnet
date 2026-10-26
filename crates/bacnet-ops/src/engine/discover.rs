@@ -1,7 +1,7 @@
 //! Discovery through the engine: Who-Is under the rate cap, and the
 //! client's discovery table.
 
-use bacnet_client::client::DiscoveredRouter;
+use bacnet_client::client::{DeviceEvent, DiscoveredRouter};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_services::who_is::{DeviceInstanceRange, WhoIsRequest};
 use bacnet_transport::port::TransportPort;
@@ -122,6 +122,13 @@ impl<T: TransportPort + 'static> Engine<T> {
     /// One device from the discovery table.
     pub async fn device(&self, instance: u32) -> Option<DiscoveredDevice> {
         self.client.get_device(instance).await
+    }
+
+    /// A receiver of the discovery table's changes: devices found,
+    /// refreshed and lost. Lossy under load, like every client channel; the
+    /// table ([`devices`](Self::devices)) stays the truth.
+    pub fn device_events(&self) -> tokio::sync::broadcast::Receiver<DeviceEvent> {
+        self.client.device_events()
     }
 
     /// How this client's link writes addresses.

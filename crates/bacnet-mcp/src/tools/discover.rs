@@ -3,6 +3,7 @@
 use std::sync::PoisonError;
 use std::time::Duration;
 
+use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_ops::engine::{Wanted, WhoIsScope};
 use bacnet_ops::label::kebab;
 use bacnet_services::who_is::DeviceInstanceRange;
@@ -235,21 +236,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
             break;
         }
         let instance = found.object_identifier.instance_number();
-        let routed = found.source_network.zip(found.source_address.as_deref());
-        let (address, router) = match &ctx.engine {
-            Some(engine) => engine.address_style().locate(&found.mac_address, routed),
-            None => (String::new(), None),
-        };
-        let mut row = json!({
-            "instance": instance,
-            "address": address,
-            "router": router,
-            "network": found.source_network.unwrap_or(0),
-            "vendor_id": found.vendor_id,
-            "max_apdu": found.max_apdu_length,
-            "segmentation": kebab(found.segmentation_supported),
-            "last_seen_s": found.last_seen.elapsed().as_secs(),
-        });
+        let mut row = device_row(ctx, found);
         if args.names
             && let Some(engine) = &ctx.engine
         {
@@ -281,6 +268,29 @@ pub(super) async fn run<T: TransportPort + 'static>(
         body["note"] = json!("passive: nothing is sent, and only devices already heard are listed");
     }
     Ok(body)
+}
+
+/// One device of the discovery table as a result row: identifiers and
+/// what its I-Am said, no device text.
+pub(crate) fn device_row<T: TransportPort + 'static>(
+    ctx: &Ctx<T>,
+    found: &DiscoveredDevice,
+) -> Value {
+    let routed = found.source_network.zip(found.source_address.as_deref());
+    let (address, router) = match &ctx.engine {
+        Some(engine) => engine.address_style().locate(&found.mac_address, routed),
+        None => (String::new(), None),
+    };
+    json!({
+        "instance": found.object_identifier.instance_number(),
+        "address": address,
+        "router": router,
+        "network": found.source_network.unwrap_or(0),
+        "vendor_id": found.vendor_id,
+        "max_apdu": found.max_apdu_length,
+        "segmentation": kebab(found.segmentation_supported),
+        "last_seen_s": found.last_seen.elapsed().as_secs(),
+    })
 }
 
 /// Send the Who-Is the arguments ask for, if the policy allows it.

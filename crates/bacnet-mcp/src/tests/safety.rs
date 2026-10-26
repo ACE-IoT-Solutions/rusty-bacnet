@@ -52,7 +52,7 @@ async fn no_configuration_lists_a_write_tool() {
     ];
     for policy in configurations {
         let passive = policy.passive;
-        let mcp = McpServer::<BipTransport>::new(None, policy.clone(), "tester");
+        let mcp = McpServer::<BipTransport>::new(None, policy.clone(), "tester").unwrap();
         let names = mcp.tool_names();
         assert!(!names.is_empty());
         assert!(names.iter().all(|name| !WRITES.contains(name)), "{names:?}");
@@ -81,7 +81,7 @@ async fn passive_mode_sends_nothing() {
         ..Policy::default()
     };
     let (mut agent, serving) =
-        Agent::connect(McpServer::<BipTransport>::new(None, policy, "tester"));
+        Agent::connect(McpServer::<BipTransport>::new(None, policy, "tester").unwrap());
     agent.initialize().await;
     let table = agent
         .call("bacnet_discover", json!({ "range": "1-2" }))

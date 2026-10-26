@@ -3,7 +3,9 @@
 Status: accepted (2026-10-25). Epic #2064. Phase 0 (#2065) is implemented:
 the `bacnet-ops` crate and this document. Phase 1 (#2066) is complete: the
 `bacnet-mcp` crate, `bacnet mcp serve`, the safety layer and the nine read
-tools; [`../mcp.md`](../mcp.md) describes what exists. Anything marked
+tools. Phase 2 (#2067) is complete: the watch hub, the resources,
+`subscriptions/listen` and the `bacnet_watch` fallback, with the deviations
+noted in §6; [`../mcp.md`](../mcp.md) describes what exists. Anything marked
 **planned** does not exist yet. BACnet references are clause numbers in ANSI/ASHRAE 135-2020,
 paraphrased. MCP references are to the 2026-07-28 revision of the
 specification, linked in §14.
@@ -97,7 +99,7 @@ Layer 6.5: bacnet-ops    the operations core: no UI, no MCP dependency
              limits       RequestLimits: global rate cap, one request per device
              engine       Reader, and the Engine facade over BACnetClient
              safety       plan, ledger, audit, lock                  (planned, phase 3)
-             watch        ref-counted COV and poll hub               (planned, phase 2)
+             watch        ref-counted COV and poll hub               (phase 2)
            bacnet-mcp    the MCP surface over bacnet-ops::engine     (phase 1)
              tools/, resources/, prompts/, untrusted text, approvers,
              policy, integrity-protected request state, signed cursors
@@ -195,7 +197,8 @@ the rate cap (`who_is`) and reads the discovery table (`devices`,
 `device`).
 
 Phase 3 adds `plan_write`, `execute` and `revert`, which own the ledger and
-audit, and phase 2 adds the watch hub (§6).
+audit. Phase 2 added the watch hub (§6) beside the engine, and
+`device_events`.
 
 ### 4.4 One client, many sessions (planned)
 
@@ -222,8 +225,8 @@ audit, and phase 2 adds the watch hub (§6).
 Rules:
 
 1. **Few, composable tools**, named `bacnet_*` so they can't collide when a
-   host aggregates servers. Nine read tools (phases 1 and 2), two write tools
-   (phase 3).
+   host aggregates servers. Ten read tools (nine in phase 1, `bacnet_watch`
+   in phase 2), two write tools (phase 3).
 2. **`tools/list` depends on the launch configuration and the caller's
    authorization, never on runtime state.** The 2026-07-28 revision forbids a
    list that varies per connection. Write tools appear only when the profile
@@ -260,6 +263,7 @@ openWorldHint: false`.
 | `bacnet_describe_device` | 1 | RO, idempotent | `device`, `count_objects` | vendor, model, firmware and software versions, protocol revision, services and object types by name, segmentation, APDU size, database revision, route |
 | `bacnet_read_trend` | 1 | RO | `device`, `object`, `from`, `to`, `max_records` (up to 2,000), `summary`, `cursor` | records and a summary of them (count, flagged, first and last time; per column min, max, mean and state counts), or the summary alone; pages, cut-short answers and gaps; a cursor holding the log's next sequence number |
 | `bacnet_alarms` | 1 | RO | `device`, `max`, `summaries`, `cursor` | event summaries: object, event state, acknowledgment, timestamps, notify type, priorities; the alarm and enrollment summaries on request |
+| `bacnet_watch` | 2 | RO, not idempotent | `points` (1 to 32: device, object, property), `cursor` | each point's values and watch state, or `changed: false` without values when unchanged since the cursor's call; a cursor holding the hub's sequence number |
 | `bacnet_decode` | 1 | local, pure | `hex`, `link` (bip, bip6, mstp, sc, npdu, apdu, auto) | decoded layers as a field tree and a one-line summary; no traffic, so it works in passive mode |
 | `bacnet_write` | 3 | `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false` | `device`, `writes` (1 to 20: object, property, index, typed value or null to relinquish, priority), `batch` (WPM), `reason` | outcome per write (ack, error, timeout, not sent), ledger ids, a revert hint |
 | `bacnet_revert` | 3 | destructive | ledger ids, or all of this principal's | outcome per entry |
@@ -319,7 +323,7 @@ an unknown tool or arguments that fail the input schema are JSON-RPC errors
 "Refused, nothing was sent" and "sent, then failed" are always distinct,
 because an agent's retry logic depends on the difference.
 
-## 6. Resources and subscriptions (phase 2, planned)
+## 6. Resources and subscriptions (phase 2)
 
 Resource names and titles are built from identifiers only, never from
 device-supplied names, because hosts show resource lists to the model and
@@ -352,7 +356,41 @@ Mechanics:
   never created.
 - Every resource has a tool fallback (`bacnet_read`, `bacnet_alarms`),
   because some hosts (Claude Desktop's remote connectors among them) don't
-  support subscriptions.
+  support subscriptions. `bacnet_watch` covers the subscription itself:
+  points on the hub, and what changed since the last call.
+
+As built (#2067), and where it differs from the plan above:
+
+- **`rmcp` 3.5.1 already implements `subscriptions/listen`**
+  (`accepted_subscription_filter` and `listen`), so no custom request and
+  no SDK bump were needed. The older `resources/subscribe` is not offered:
+  legacy clients use `bacnet_watch`, and the `initialize` answer for a
+  version before 2026-07-28 doesn't advertise subscriptions.
+- The SDK asks for the accepted filter synchronously, before the
+  acknowledgment. The watches are taken there and held for the stream,
+  matched by its URI list; a point URI needs its device in the discovery
+  table, which a synchronous copy tracks. The SDK repeats a URI asked for
+  twice in the acknowledgment; it is watched once. A reservation no stream
+  claims is released by a sweep (about 90 s); at most 16 wait at once.
+- `bacnet://device/{instance}` has no subscription meaning and is not
+  honoured. The session and ledger resources are honoured but don't change
+  before phase 3.
+- The per-process cap is the hub's, and counts points still cancelling, so
+  the device-side footprint stays bounded.
+- Charging: the hub's requests run under its own account and token bucket
+  at the principal rate, so a shared point costs once whatever the number
+  of listeners and never takes the agent's tokens; renewals take the
+  device's gate but no rate slot, and cancels skip the hub's bucket. The
+  bound: 256 points at most (32 per principal), each polled at most every
+  10 s or renewed once a lifetime, through the device gates and the
+  network and global rates, so the hub adds at most 5 requests a second
+  (plus renewals and cancels) whatever the number of listeners.
+- `--passive` lists only the session and ledger resources and refuses the
+  others, rather than listing resources it can't serve.
+- Graceful shutdown is a signal (or the host closing stdin): streams
+  complete, then every subscription is cancelled, waiting 10 s plus 60 ms
+  a point up to 30 s; one whose device doesn't answer lapses with its
+  lifetime.
 
 Prompts (low risk, user-selected): `survey_site` and `investigate_point` in
 phase 1; `alarm_triage` and `commissioning_check` later. Each prompt tells the
@@ -625,7 +663,7 @@ image, and a `.mcpb` bundle for Claude Desktop.
 |---|---|---|---|
 | 0 | #2065 | `bacnet-ops` read side; this document | CLI and TUI suites pass unchanged (insta snapshots, the in-process lab, the class-table pin test, which moved with the table); `bacnet-ops` passes `check-default-features.sh` and the file-size cap; no snapshot churn |
 | 1 | #2066 | `bacnet-mcp` with `stdio`; `bacnet mcp serve` behind `mcp`; the nine read tools; untrusted envelope; error mapping; signed cursors; per-call caps; per-principal and per-network limits; the `[mcp]` profile table; `survey_site` and `investigate_point`; `mcp` classified `Read` | a stdio integration test drives a site survey against the in-process lab; `tools/list` has no write tool in any configuration; `--passive` builds no client and sends nothing; 500 reads stay within the caps and a slow network is held to 2 a second; an injection fixture comes back sanitised, enveloped and capped; stdout carries only JSON-RPC; trend paging survives three pages and `summary` matches a brute-force computation; a docs page and changelog |
-| 2 | #2067 | the watch hub; resources and templates; `subscriptions/listen` with caps; the alarm, session and ledger resources | two listeners on one point make one BACnet subscription and the last one leaving cancels it; a device refusing COV falls back to polling with `source: poll`; no lifetime-0 subscription; a notification storm is coalesced and drops counted; shutdown completes each listen stream and cancels every subscription |
+| 2 (done) | #2067 | the watch hub; resources and templates; `subscriptions/listen` with caps; the alarm, session and ledger resources; `bacnet_watch` | two listeners on one point make one BACnet subscription and the last one leaving cancels it; a device refusing COV falls back to polling with `source: poll`; no lifetime-0 subscription; a notification storm is coalesced and drops counted; shutdown completes each listen stream and cancels every subscription |
 | 3 | #2068 | `tui/safety/*` and the engine half of the write worker move to `bacnet-ops::safety` (the TUI keeps an adapter); `bacnet_write`, `bacnet_revert`; the `Approver` trait with `ClientElicitation`, `PlanGrant` and `Deny`; integrity-protected state; `mcp_writes = "never" \| "elicit"` (default `never`); the new audit fields | with `never` the write tools are absent; with `elicit` a T1 write is previewed, confirmed, sent and ledgered while T2, T3 and priority 6 are refused; tampered, expired, replayed or cross-principal state is refused and nothing sent; a stale pre-image gives `refused: stale`, audited; a timeout leaves an `unknown` entry; revert restores the pre-image; the TUI lists MCP entries marked `front_end: mcp`; plan-grant writes run without prompts and are audited; the TUI's write tests still pass |
 | 4 | after 0.15 | TUI-attached mode | an agent's T2 or T3 write executes only after the TUI confirmation; another uid is refused and audited; agent reads share the rate meter; frame tests cover the banner and queue |
 | 4b | after 0.15, optional | background daemon | survives TUI exit and reattaches with the same ledger; a crash mid-write leaves `sending`, which becomes `unknown` on restart; a protocol mismatch is handled as specified |

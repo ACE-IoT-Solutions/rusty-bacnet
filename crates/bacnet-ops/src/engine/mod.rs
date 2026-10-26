@@ -102,7 +102,7 @@ impl DeviceSummary {
 /// time, and every request takes a slot under the global rate cap, so many
 /// callers can share an engine without overrunning a device.
 pub struct Engine<T: TransportPort + 'static> {
-    client: Arc<BACnetClient<T>>,
+    pub(crate) client: Arc<BACnetClient<T>>,
     limits: Arc<RequestLimits>,
     /// Devices that refused ReadPropertyMultiple, read by ReadProperty
     /// from then on. The lock is held only to look up or record a device,
@@ -124,6 +124,11 @@ impl<T: TransportPort + 'static> Engine<T> {
     /// The limits every request waits for.
     pub fn limits(&self) -> &RequestLimits {
         &self.limits
+    }
+
+    /// The client, for the watch hub's subscriptions.
+    pub(crate) fn client(&self) -> &Arc<BACnetClient<T>> {
+        &self.client
     }
 
     /// True once `device` has refused ReadPropertyMultiple.
