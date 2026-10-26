@@ -17,8 +17,10 @@
 //! The server runs on BACnet/IP on loopback just long enough to answer. The
 //! generator's Markdown goes in below a banner that names the configuration
 //! and says the file describes it alone; its headings move down one level
-//! under the page title. The banner is part of the file, so the page's
-//! plain-text export carries it too.
+//! under the page title, between `generated:start` and `generated:end`
+//! markers, which give the page the low search weight of the generated
+//! reference pages (`DocsMarkdownContent.astro`). The banner is part of the
+//! file, so the page's plain-text export carries it too.
 //!
 //! `cargo run -p bacnet-integration-tests --example support-tables` writes
 //! this file beside `support.json`, and `tests/support_tables.rs` fails when
@@ -201,7 +203,11 @@ The PICS below comes from `BACnetServer::generate_pics` on a full server built f
 
 The file is generated on the `dev` branch, like the [capability tables](/rusty-bacnet/project/conformance/), so it can include object types or services merged after v{release}. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) explains each section and what you fill in yourself.
 
+<!-- generated:start by crates/bacnet-integration-tests/sample_pics.rs: the PICS generator's output -->
+
 {pics}
+
+<!-- generated:end -->
 "#
     );
     let lower = text.to_lowercase();

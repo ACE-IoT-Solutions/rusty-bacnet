@@ -49,6 +49,12 @@ test('the sample is the generator output for the documented configuration', () =
   // The generator's headings sit one level below the page title.
   assert.doesNotMatch(sample.source, /^# /m);
   assert.equal(sample.source.split(`\n${pics}\n`).length, 2);
+  // One generated region around the generator's output, which gives the page
+  // the generated pages' low search weight; the banner stays outside it.
+  const start = sample.source.indexOf('\n<!-- generated:start ');
+  const end = sample.source.indexOf('\n<!-- generated:end -->\n');
+  assert.equal(sample.source.split('generated:start').length, 2);
+  assert.ok(sample.source.indexOf(banner) < start && start < sample.source.indexOf(pics) && sample.source.indexOf(pics) < end);
   // No code fences: the sample harness has nothing to run here.
   assert.doesNotMatch(sample.source, /^```/m);
 });
@@ -68,6 +74,15 @@ test('the task page covers each surface and links the sample and the tables', ()
     assert.equal(task.body.split(`\n${heading}\n`).length, 2, heading);
   }
   assert.ok(task.body.includes('server.generate_pics(&PicsConfig)'));
+  // The release-scoped text keeps dev-only details in the dev section, and
+  // the program claims no profile and takes the protocol fields from its Device.
+  const devStart = task.body.indexOf('\n## On `dev` after the release\n');
+  assert.ok(devStart > 0);
+  assert.ok(!task.body.slice(0, devStart).includes('INITIATED_SERVICES'));
+  assert.ok(task.body.includes('DeviceProfile::Custom("None claimed".into())'));
+  assert.ok(!task.body.includes('DeviceProfile::BAsc'));
+  assert.ok(task.body.includes('PropertyIdentifier::PROTOCOL_REVISION'));
+  assert.doesNotMatch(task.source, /building block/i);
   assert.ok(task.body.includes(`the bindings have no PICS generator in v${release}`));
   assert.ok(task.body.includes('no `bacnet` command generates a PICS'));
   assert.ok(task.body.includes(`(${site}project/sample-pics/)`));

@@ -29,7 +29,8 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::pics::{DataLinkSupport, DeviceProfile, PicsConfig};
 use bacnet_server::server::BACnetServer;
-use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
+use bacnet_types::primitives::PropertyValue;
 use std::net::Ipv4Addr;
 
 #[tokio::main]
@@ -51,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     database.add(Box::new(AnalogInputObject::new(1, "Supply air", celsius)?))?;
     database.add(Box::new(BinaryOutputObject::new(1, "Supply fan")?))?;
 
+    let device = identity.device_oid();
     let mut server = BACnetServer::bip_builder()
         .device(identity)
         .interface(Ipv4Addr::LOCALHOST)
@@ -60,6 +62,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
+    // The PICS states the protocol version and revision the Device reports.
+    let mut protocol = [0u16; 2];
+    let properties = [
+        PropertyIdentifier::PROTOCOL_VERSION,
+        PropertyIdentifier::PROTOCOL_REVISION,
+    ];
+    for (value, property) in protocol.iter_mut().zip(properties) {
+        let PropertyValue::Unsigned(raw) = server.read_local(&device, property, None).await? else {
+            return Err(format!("the Device's {property} is not an unsigned value").into());
+        };
+        *value = u16::try_from(raw)?;
+    }
+
     // What the server can't report about itself: the product, the profile
     // you claim, and the data links and network roles you ship.
     let pics_config = PicsConfig {
@@ -67,7 +82,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_name: model.into(),
         firmware_revision: version.into(),
         application_software_version: version.into(),
-        device_profile: DeviceProfile::BAsc,
+        protocol_version: protocol[0],
+        protocol_revision: protocol[1],
+        // Claim an Annex L profile only if the product meets it.
+        device_profile: DeviceProfile::Custom("None claimed".into()),
         data_link_layers: vec![DataLinkSupport::BipV4],
         ..PicsConfig::default()
     };
@@ -90,7 +108,7 @@ Generate the PICS from the configuration you ship: the same objects, the same id
 | Whole value set only by CreateObject | Properties a CreateObject initial value may set that WriteProperty can't change later |
 | Property rows | Each instance's property metadata, combined across the instances of the type; the Device's rows come from the server's view of it |
 | Supported services, Executor | The services the full server runs; TimeSynchronization and UTCTimeSynchronization only when the server keeps a clock |
-| Supported services, Initiator | The requests the server can send in some configuration (`PicsGenerator::INITIATED_SERVICES`) |
+| Supported services, Initiator | A fixed list of the requests the server can send in some configuration |
 
 The generator reads the database at the moment you call it. Objects your application adds later, or creates through CreateObject, appear only in a PICS generated after them.
 
@@ -102,8 +120,8 @@ Everything in `PicsConfig` is your declaration; the generator prints it as given
 |---|---|---|
 | `vendor_name`, `model_name` | Empty | Your company and product, as your Device object reports them |
 | `firmware_revision`, `application_software_version` | Empty | Your product's versions, matching the Device object |
-| `protocol_version`, `protocol_revision` | 1 and 24 | The values your Device object's Protocol_Version and Protocol_Revision report |
-| `device_profile` | B-ASC | The Annex L profile you claim, or `DeviceProfile::Custom` for none; the generator doesn't check it against your services |
+| `protocol_version`, `protocol_revision` | Fixed values that may differ from your Device | Read them from the served Device's Protocol_Version and Protocol_Revision, as the program does, so the PICS states what the device reports |
+| `device_profile` | B-ASC | The Annex L profile the product meets, or `DeviceProfile::Custom` to claim none, as the program does; the generator doesn't check it against your services |
 | `data_link_layers` | BACnet/IP | Each data link the shipped product runs; the generator doesn't detect them |
 | `network_layer` | Router, BBMD and foreign device all off | The roles the product fills |
 | `character_sets` | UTF-8 | The character sets the product handles |
@@ -112,7 +130,7 @@ Everything in `PicsConfig` is your declaration; the generator prints it as given
 Annex A asks for more than the generator prints. Add these from your product's design:
 
 - the date, product name and product description;
-- the interoperability building blocks of Annex K, if you list any; the generator doesn't derive them from the service list, since each is a judgement about behaviour that needs its own testing;
+- anything else your product claims beyond what the generator lists, backed by your own testing;
 - segmentation support and window sizes;
 - the details of each data link, such as MS/TP options or BACnet/SC connection limits;
 - device address binding, the routing configurations behind a router claim, and gateway options;
@@ -123,11 +141,15 @@ Annex A asks for more than the generator prints. Add these from your product's d
 The Markdown starts with the vendor information and the device profile, then has one section per object type, then the services, data links, network layer options and character sets.
 
 - **Access flags.** `R` is readable, `W` writable and `O` optional. A row combines every instance of its type: a flag means at least one instance has that access, and `O` appears only when every instance that has the property marks it optional. A row such as State_Text with a "resized through" note can't be written directly, but writes of the property it names change it.
-- **Initiator column.** A Yes means the server can build that request, not that your configuration sends it. COV and event notifications need a subscription or a recipient, audit notifications need audit reporting, and WriteProperty, ReadProperty and Who-Is need a Command action or a Channel member that targets another device.
+- **Initiator column.** A Yes means the server can build that request, not that your configuration sends it: COV and event notifications need a subscription or a recipient.
 - **Executor column.** A Yes means the full server runs the service when a request arrives, subject to your server policy; see [restrict who can change a device](/rusty-bacnet/integrate/security/).
 - **Client requests aren't listed.** A `BACnetClient` in the same application initiates its own services, which this PICS doesn't record; the [capability tables](/rusty-bacnet/project/conformance/) list them.
 
 The [sample PICS](/rusty-bacnet/project/sample-pics/) shows every section for a database that holds one object of each constructible type.
+
+## On `dev` after the release
+
+On the `dev` branch the initiator list is public, as `PicsGenerator::INITIATED_SERVICES`, and adds the confirmed and unconfirmed audit notifications, ReadProperty, WriteProperty and Who-Is. Those go out only when configured: audit notifications need audit reporting, and the other three need a Command action or a Channel member that targets another device. The [sample PICS](/rusty-bacnet/project/sample-pics/) is generated on `dev` and shows them.
 
 ## Next steps
 

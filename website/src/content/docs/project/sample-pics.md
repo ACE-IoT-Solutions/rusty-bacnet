@@ -22,6 +22,8 @@ The PICS below comes from `BACnetServer::generate_pics` on a full server built f
 
 The file is generated on the `dev` branch, like the [capability tables](/rusty-bacnet/project/conformance/), so it can include object types or services merged after v0.14.0. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) explains each section and what you fill in yourself.
 
+<!-- generated:start by crates/bacnet-integration-tests/sample_pics.rs: the PICS generator's output -->
+
 ## BACnet Protocol Implementation Conformance Statement (PICS)
 
 *Per ASHRAE 135-2020 Annex A*
@@ -1818,3 +1820,5 @@ Property rows aggregate configured instances: a row or access flag means at leas
 ### Character Sets Supported
 
 - ISO 10646 (UTF-8)
+
+<!-- generated:end -->
