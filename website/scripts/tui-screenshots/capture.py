@@ -82,7 +82,7 @@ SHOTS = {
     "profiles-new-bip": (MAIN, "The new B/IP profile form with its fields and their defaults."),
     "profiles-new-mstp": (MAIN, "The new MS/TP profile form: serial port, MAC, baud, Max_Master and Max_Info_Frames."),
     "profiles-preview-attest": (MAIN, "A B/IP profile preview in Foreign Device mode, asking for first-use authorization."),
-    "profiles-passive": (MAIN, "A passive session: the status bar reads PASSIVE and the device list says nothing is transmitted."),
+    "profiles-passive": (MAIN, "A passive B/IP session: the status bar reads listening and PASSIVE, and the footer says foreign-device settings are ignored."),
     "discovery-whois-form": (MAIN, "The Who-Is form with its Scope, Target, Range and Listen fields."),
     "discovery-whois-warning": (MAIN, "The Who-Is form warning that a global Who-Is with no range reaches every device."),
     "discovery-devices": (MAIN, "The device table after a global Who-Is: two local devices and one routed device on network 2."),
@@ -441,10 +441,18 @@ class Window:
         if got and got[0] >= cols and got[1] >= rows:
             log("Terminal keeps its window at %dx%d (full screen?): cropping each shot to %dx%d"
                 % (got[0], got[1], cols, rows))
-            self.crop = True
+            self.start_cropping()
             return
         raise Failure("the Terminal window did not take %dx%d (it is %s); is the screen big enough?"
                       % (cols, rows, got))
+
+    def start_cropping(self):
+        """Crop each shot from now on. tmux draws the block fill around the
+        pane only when the window is resized after the client grew, so
+        resize it to its own size once."""
+        self.crop = True
+        tmux("resize-window", "-t", "docs", "-x", str(self.size[0]), "-y", str(self.size[1]))
+        time.sleep(0.5)
 
     def cells(self):
         got = osascript('tell application "Terminal" to get {number of columns, number of rows} of %s'
@@ -468,10 +476,17 @@ class Window:
         run(["sips", "-s", "format", "bmp", path, "--out", bmp])
         width, height, px = read_bmp(bmp)
         os.unlink(bmp)
-        box = find_pane(width, height, px, cols, rows, self.cells())
+        window_cells = self.cells()
+        box = find_pane(width, height, px, cols, rows, window_cells)
         if not box:
             raise Failure("could not find the %dx%d pane in %s" % (cols, rows, path))
         top, left, bottom, right = box
+        # The pane takes cols of the window's columns; a box much wider means
+        # the fill wasn't found (not drawn yet, or another colour).
+        cell_w = width / window_cells[0]
+        if abs((right - left) - cols * cell_w) > 2 * cell_w:
+            raise Failure("found a %d px wide box for the %dx%d pane in %s, expected about %d px"
+                          % (right - left, cols, rows, path, cols * cell_w))
         run(["sips", "-c", str(bottom - top), str(right - left), "--cropOffset", str(top), str(left), path])
 
     def shoot(self, path):
@@ -479,6 +494,14 @@ class Window:
         window is full screen, scale, then encode WebP (sharp text at about
         a twentieth of the PNG's size)."""
         png = path[:-len(".webp")] + ".capture.png"
+        if not getattr(self, "crop", False):
+            # Terminal can enter full screen after resize() checked the
+            # size; then the window is bigger than the pane.
+            got = self.cells()
+            if got and got != self.size and got[0] >= self.size[0] and got[1] >= self.size[1]:
+                log("Terminal window is now %dx%d (full screen?): cropping each shot to the pane"
+                    % got)
+                self.start_cropping()
         run(["screencapture", "-x", "-o", "-l", str(self.id), "-t", "png", png])
         try:
             if getattr(self, "crop", False):
@@ -514,6 +537,9 @@ class Pane:
         self.shooter = shooter
         self.keys = []
         self.command = ""
+        # The last shot taken in this scenario, for timeout messages
+        # (Shooter.step prefixes the scenario's name).
+        self.last_shot = ""
 
     def text(self):
         return tmux("capture-pane", "-p", "-J", "-t", "docs")
@@ -558,8 +584,10 @@ class Pane:
             if bool(rx.search(text)) != absent:
                 return text
             if time.time() > deadline or not self.alive():
-                raise Failure("timed out waiting for %r%s\n--- pane ---\n%s"
-                              % (pattern, " to go" if absent else "", text))
+                where = "after %s" % self.last_shot if self.last_shot else "before the first shot"
+                raise Failure("%s %r%s (%s)\n--- pane ---\n%s"
+                              % ("waited %.0f s for" % timeout if self.alive() else "the TUI exited waiting for",
+                                 pattern, " to go" if absent else "", where, text))
             time.sleep(0.1)
 
     def settle(self, quiet=0.4, limit=2.5):
@@ -581,6 +609,7 @@ class Pane:
         self.settle()
         self.shooter.save(name, self, source)
         self.keys = []
+        self.last_shot = name
 
 
 class Shooter:
@@ -621,9 +650,10 @@ class Shooter:
                                 source=source, command=pane.command, keys=" ".join(pane.keys))
         log("shot %s (%s)" % (name, source))
 
-    def step(self, label, fn, *args):
+    def step(self, label, fn, pane, *args):
+        pane.last_shot = ""
         try:
-            fn(*args)
+            fn(self, pane, *args)
         except Failure as e:
             log("FAILED %s: %s" % (label, e))
             self.problems.append("%s: %s" % (label, str(e).splitlines()[0]))
@@ -662,6 +692,28 @@ def open_object(p, label, expect):
 def preview_delay():
     # Enter and y are ignored for 300 ms after a write preview opens.
     time.sleep(0.5)
+
+
+def attest(p, profile):
+    """Open `profile`'s preview and start it, authorizing it if this is its
+    first use. When an earlier scenario stopped before its exit guard
+    reverted, the session opens on that run's ledger: close it, so the
+    following keys reach the screen."""
+    text = p.wait(r"%s — resolved" % re.escape(profile))
+    p.send("a" if "a attest" in text else "Enter")
+    p.wait(r"\| (up|listening) \|")
+    time.sleep(0.5)
+    if "earlier session are still recorded" in p.text():
+        p.send("Escape")
+        p.wait(r"┌ Session ledger", absent=True)
+
+
+def whois_global(p):
+    """d, then a global Who-Is with no range, which asks for a second Enter."""
+    p.send("d")
+    p.wait(r"┌ Who-Is ")
+    p.send("Right", "Enter")
+    p.wait(r"Press Enter again")
 
 
 def bip(s, p, lab):
@@ -768,15 +820,20 @@ def bip(s, p, lab):
     p.send("Escape")
 
     p.send("a")  # watch the open object, AO:1
+    # Every lab object here takes COV but the Schedule, which has no COV
+    # criteria: its subscription is refused, so that row is polled.
     for cmd in ["watch 1001 ai:2", "watch 1001 ai:3", "watch 1001 ai:1", "watch 2:2001 ai:1",
-                "watch 1002 av:7", "watch 1001 bo:1"]:
+                "watch 1002 av:7", "watch 1001 bo:1", "watch 1001 schedule:1"]:
         p.send(":")
         p.type(cmd)
         p.send("Enter")
     p.send("3")
-    p.wait(r"Watch \(7\)")
-    time.sleep(8)  # let the sparklines and the polled routed row fill in
-    p.shot("watch-list", wait=r"polled")
+    p.wait(r"Watch \(8\)")
+    time.sleep(8)  # let the sparklines fill in
+    # The Source column: a polled row, and no row still starting.
+    p.wait(r"schedule 1 .* polled ")
+    p.wait(r"^│.* start ", absent=True)
+    p.shot("watch-list")
     p.send("2", "L")
     p.shot("overview-log-pane", wait=r"Log \(L to hide\)")
     p.send("L")
@@ -803,8 +860,7 @@ def bip(s, p, lab):
 
 def bip_states(s, p, lab):
     p.start(["tui", "--profile", "lab", "--passive"])
-    text = p.wait(r"lab — resolved")
-    p.send("a" if "a attest" in text else "Enter")
+    attest(p, "lab")
     p.shot("profiles-passive", wait=r"PASSIVE")
 
     # 127.0.0.1:9 is the discard port: a BBMD that never answers.
@@ -819,11 +875,9 @@ def bip_states(s, p, lab):
     p.shot("troubleshoot-too-small", wait=r"Terminal too small")
 
     p.start(["tui", "--profile", "lab"], size=(80, 24))
-    text = p.wait(r"lab — resolved")
-    p.send("a" if "a attest" in text else "Enter")
+    attest(p, "lab")
     p.wait(r"No devices yet")
-    p.send("d", "Right", "Enter")
-    p.wait(r"Press Enter again")
+    whois_global(p)
     p.send("Enter")
     p.wait(r"done, 3 replies", timeout=20)
     p.send("g", "Enter")
@@ -865,7 +919,10 @@ def sc(s, p, lab):
     p.send("Tab")
     p.shot("sc-credentials", wait=r"\[My credentials\]")
     for attempt in range(2):
-        p.send("1", "d", "Enter")
+        # A local Who-Is with no range: the form asks for a second Enter.
+        p.send("1", "d")
+        p.wait(r"┌ Who-Is ")
+        p.send("Enter")
         p.wait(r"Press Enter again")
         p.send("Enter")
         try:
@@ -1042,14 +1099,17 @@ def main():
             s.window = Window(opts)
             s.window.resize(*MAIN)
             time.sleep(1.0)
-        s.step("bip", bip, s, p, lab)
-        s.step("bip states", bip_states, s, p, lab)
-        s.step("sc", sc, s, p, lab)
+        # SC first: the lab's SC device drops its hub connection after about
+        # five idle minutes and does not redial, so its Who-Is reply in the
+        # sc scenario depends on running soon after the lab starts.
+        s.step("sc", sc, p, lab)
+        s.step("bip", bip, p, lab)
+        s.step("bip states", bip_states, p, lab)
         live = []
         if opts.mstp_port:
-            s.step("mstp monitor", mstp_live, s, p, opts.mstp_port, opts.mstp_baud)
+            s.step("mstp monitor", mstp_live, p, opts.mstp_port, opts.mstp_baud)
             live = [n for n in LIVE_MSTP if n in s.taken]
-        s.step("mstp snapshots", mstp_snapshots, s, p, real, live)
+        s.step("mstp snapshots", mstp_snapshots, p, real, live)
     finally:
         tmux("kill-server", check=False)
         if s.window:
