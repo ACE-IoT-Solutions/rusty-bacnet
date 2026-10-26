@@ -25,7 +25,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, the `named_codes!` copies, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
 | Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP, B/IP and MS/TP device images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std`, and their tests without either | ✓ | ✓ | ✓ | ✓ |
-| Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
+| Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests`, the website's sample tests (`python -m unittest discover -s website/tests/python`: the loopback lab, and the CLI samples on the pages run against it with a debug `bacnet-cli` build; the root README's samples too (#2105): its quickstart server runs, its Python programs and CLI lines run against it, its MCP host configuration is parsed, its Rust blocks must match the `readme_*` Cargo examples that clippy compiles, and its dependency table must name published crates at the release; the step sets `BACNET_LAB_EXPECTED_VERSION` to the workspace version, since the lab otherwise expects the site's release and the wheel under test can be ahead of it) and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`), the `no_std` builds included |  | ✓ |  | ✓ |
 | Cargo Audit + Cargo Deny |  | ✓ |  | ✓ |
 | **CI OK**: fails if any job above failed | ✓ | ✓ | ✓ | ✓ |
@@ -1744,6 +1744,69 @@ To release:
    brought its fragment into dev, found along the first-parent history, so run
    it on a branch cut from dev's tip with full history (#1188); `preview` shows
    the same links. A tag fails if any fragment is still waiting.
+
+   In the same PR, regenerate the website's generated references (#1989) so
+   the site published from the release describes it. Run them after
+   `website/src/lib/site.mjs` names the new release: the Python pages' note
+   names it, and the crate map marks a crate whose Cargo.toml sets
+   `[package.metadata.website] first-release` to a later release as
+   unreleased, linking its source instead of docs.rs. Set that key on a
+   crate that is new since the last release. Each script rewrites the
+   generated part of its pages and leaves the authored text around it;
+   `--check` changes nothing and fails when a page is stale:
+
+   ```bash
+   node website/scripts/reference-cli.mjs       # reference/cli.md, from the clap definitions (all features; needs libpcap)
+   python3 website/scripts/reference-python.py  # reference/python.md and reference/python/*.md, from rusty_bacnet.pyi
+   node website/scripts/reference-rust.mjs      # reference/rust.mdx, from cargo metadata
+   ```
+
+   PR CI doesn't run the `--check` modes: concurrent PRs that add an option
+   or a method would each fail on, and conflict over, the same pages. What
+   it checks instead: Docs validation checks that the pages parse and link
+   correctly, list every `bacnet` subcommand and list exactly the published
+   crates; and bacnet-cli's tests run the CLI generator, so the generator
+   can't rot, and check that the committed page has a section for every
+   command. They don't compare the rendered page with the committed one.
+
+   Regenerate the capability tables too (#1496), after `site.mjs` names the
+   new release, since `website/src/data/support.json` records the release
+   the site describes:
+
+   ```bash
+   cargo run -p bacnet-integration-tests --example support-tables  # website/src/data/support.json
+   ```
+
+   Unlike the references, the tables are checked on every PR: the workspace
+   test `bacnet-integration-tests::support_tables` regenerates the file and
+   fails when the committed copy differs. A PR that adds an object type, a
+   service to one of the lists the tables read, a Python client method named
+   after a service, or a `bacnet-transport` feature runs the command above
+   and commits the result. The file changes rarely, so concurrent PRs seldom
+   conflict over it.
+
+   **README site links and versions (#2105).** GitHub shows the `dev`
+   README, but the website is published from the release, so the README
+   links only pages the live site has. In the same PR:
+   - Bump the README's `[dependencies]` versions to the new release. The
+     website sample tests' `Deps` check compares them with
+     `website/src/lib/site.mjs`, so it fails until they match. The README's
+     Rust blocks are compiled against `dev`; this is the point where the
+     release catches up with them.
+   - At 0.15.0, after the Pages deploy, point these README links at the new
+     pages: the MCP row and section (now `docs/mcp.md`) at `guides/ai-agents/`,
+     the shared-endpoints row (now `development/shared-endpoints/`) at
+     `integrate/shared-endpoints/`, the routing row (now
+     `docs/rust-api.md#bacnet-network`) at `integrate/router/`, the Rust
+     server's link (now `docs/rust-api.md#bacnet-server`) at
+     `integrate/server/`, the crate map (now `reference/api/`) at
+     `reference/rust/`, building from source (now
+     `development/overview/#build-a-source-checkout`) at
+     `development/build-from-source/`, and the transports link (now
+     `reference/transports/`) at `connect/overview/` if wanted; the same
+     build-from-source link sits in `docs/rust-api.md` and
+     `docs/python-api.md`. Then `curl -sI` every
+     `jscott3201.github.io/rusty-bacnet/` link in the README for a 200.
 2. Optionally, dispatch a dry run on the release branch first: it runs
    everything the release does short of publishing.
 3. Tag a commit on `main`'s or `dev`'s first-parent history (a merge commit,
@@ -1893,7 +1956,7 @@ one failing doesn't cancel the others.
   at priority 8 and reads it back.
 - **CLI.** [`cli_smoke.sh`](../scripts/release/cli_smoke.sh): `--version` must
   print `bacnet <version>`, `--help` runs, and the README quickstart `read` and
-  `--json readm` run against the README server on the cp312 wheel. On Linux,
+  `--json readm` run against the README server on the cp312 wheel (the website sample tests check that its copy of that server matches the README). On Linux,
   `capture --read` also decodes a one-packet pcap file, through the static
   libpcap and its filter compiler, without needing capture privileges. The
   macOS and Windows builds have no packet capture.
@@ -2260,7 +2323,8 @@ permissions it declares (the workflow's default is none):
   `bacnet-mstp-codec`, `bacnet-bip-codec`, `bacnet-mstp-core`,
   `bacnet-bip-core` and `bacnet-router-core`, which a token scoped to
   existing crates couldn't publish, as 0.12.0 was for `bacnet-endpoint` and
-  `bacnet-cli`.
+  `bacnet-cli`. 0.15.0 is the first release of `bacnet-ops` and
+  `bacnet-mcp`, so its token must be able to publish new crates too.
   crates.io trusted publishing may replace it later.
 - **PyPI trusted publishing.** PyPI accepts the PyPI job's OIDC token for
   `rusty-bacnet` when the project's trusted publisher names owner

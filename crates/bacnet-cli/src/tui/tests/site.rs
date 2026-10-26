@@ -74,6 +74,9 @@ pub(super) struct Quirks {
     /// Swallow this many confirmed requests, retries included, then
     /// answer: a device that was away for a while.
     pub(super) swallow_first: u8,
+    /// How long frames take to reach this port: a slow device, whose
+    /// requests stay outstanding that long.
+    pub(super) latency: Duration,
 }
 
 struct Port {
@@ -91,6 +94,8 @@ struct Ports {
     outstanding: HashMap<MacAddr, (usize, usize)>,
     /// Every confirmed request: its destination, service and when it went.
     requests: Vec<(MacAddr, u8, tokio::time::Instant)>,
+    /// Every confirmed request's destination, service and service data.
+    bodies: Vec<(MacAddr, u8, Vec<u8>)>,
     /// Frames each port has sent, broadcasts and replies included.
     sent: HashMap<MacAddr, usize>,
 }
@@ -143,6 +148,18 @@ impl Hub {
             .iter()
             .filter(|(to, ..)| to.as_slice() == mac)
             .map(|(_, service, _)| *service)
+            .collect()
+    }
+
+    /// The service data of each `service` request sent to `mac`, in order,
+    /// retries included.
+    pub(super) fn bodies_to(&self, mac: &[u8], service: ConfirmedServiceChoice) -> Vec<Vec<u8>> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .bodies
+            .iter()
+            .filter(|(to, choice, _)| to.as_slice() == mac && *choice == service.to_raw())
+            .map(|(.., body)| body.clone())
             .collect()
     }
 
@@ -208,6 +225,12 @@ impl HubPort {
                     inner
                         .requests
                         .push((to.clone(), service, tokio::time::Instant::now()));
+                    // An unsegmented request's service data follows its
+                    // four-octet header.
+                    if let Ok(decoded) = decode_npdu(Bytes::copy_from_slice(npdu)) {
+                        let body = decoded.payload.get(4..).unwrap_or_default().to_vec();
+                        inner.bodies.push((to.clone(), service, body));
+                    }
                     let rpm = service == ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE.to_raw();
                     let cov = [
                         ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw(),
@@ -307,10 +330,10 @@ impl HubPort {
             .ports
             .iter()
             .filter(|port| port.mac != self.mac && to.is_none_or(|to| port.mac.as_slice() == to))
-            .map(|port| port.inbox.clone())
+            .map(|port| (port.inbox.clone(), port.quirks.latency))
             .collect();
         drop(inner);
-        for tx in targets {
+        for (tx, latency) in targets {
             let npdu = ReceivedNpdu::unverified(
                 Bytes::copy_from_slice(npdu),
                 self.mac.clone(),
@@ -318,7 +341,14 @@ impl HubPort {
                 Vec::new(),
                 None,
             );
-            let _ = tx.try_send(npdu);
+            if latency.is_zero() {
+                let _ = tx.try_send(npdu);
+            } else {
+                tokio::spawn(async move {
+                    tokio::time::sleep(latency).await;
+                    let _ = tx.send(npdu).await;
+                });
+            }
         }
     }
 }
@@ -390,6 +420,9 @@ pub(super) struct Server {
     pub(super) deny_writes: bool,
     /// Its Max_APDU_Length_Accepted, when not the default.
     pub(super) max_apdu: Option<u16>,
+    /// Accept DeviceCommunicationControl and ReinitializeDevice with this
+    /// password, and refuse them without it; refuse both when `None`.
+    pub(super) password: Option<&'static str>,
 }
 
 impl Server {
@@ -402,6 +435,7 @@ impl Server {
             quirks: Quirks::default(),
             deny_writes: false,
             max_apdu: None,
+            password: None,
         }
     }
 
@@ -439,6 +473,8 @@ pub(super) struct Site {
     events: mpsc::Receiver<WorkerEvent>,
     commands: Option<mpsc::Sender<Command>>,
     worker: Option<JoinHandle<()>>,
+    /// A router and the device behind it, for a routed site.
+    routed: Option<routed::Routed>,
 }
 
 impl Site {
@@ -486,6 +522,14 @@ impl Site {
                 .transport(HubPort::join(&hub, [10, 0, 0, server.octet], server.quirks))
                 .database(database)
                 .mutation_policy(policy);
+            let builder = match server.password {
+                Some(password) => builder
+                    .dcc_password(password)
+                    .dcc_policy(bacnet_server::server::DccPolicy::RequirePassword)
+                    .reinit_password(password)
+                    .on_reinitialize(|_, _| Ok(())),
+                None => builder,
+            };
             started.push(bounded(Box::pin(builder.build())).await.unwrap());
         }
         let client = BACnetClient::generic_builder()
@@ -494,7 +538,17 @@ impl Site {
             .max_apdu_length(limits.max_apdu)
             .segmented_response_accepted(limits.segmented);
         let client = bounded(Box::pin(client.build())).await.unwrap();
+        Self::launch(hub, started, client, options).await
+    }
 
+    /// Serve `client`'s session with `options`, beside `servers` on `hub`,
+    /// and wait until it is connected.
+    async fn launch<T: TransportPort + 'static>(
+        hub: Arc<Hub>,
+        servers: Vec<BACnetServer<HubPort>>,
+        client: BACnetClient<T>,
+        options: SessionOptions,
+    ) -> Self {
         let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
         let (commands, command_rx) = mpsc::channel(16);
         let worker = tokio::spawn(Box::pin(session::serve(
@@ -506,11 +560,12 @@ impl Site {
         )));
         let mut site = Self {
             hub,
-            servers: started,
+            servers,
             app: new_app(None),
             events,
             commands: Some(commands),
             worker: Some(worker),
+            routed: None,
         };
         site.pump_until(|app| matches!(app.link, Link::Up { .. }))
             .await;
@@ -562,7 +617,19 @@ impl Site {
     /// send it (confirming the warning if one appears), wait out the window,
     /// and then until the table holds at least `rows` devices.
     pub(super) async fn who_is(&mut self, range: &str, rows: usize) {
+        self.who_is_in(false, range, rows).await;
+    }
+
+    /// [`Self::who_is`] as a global broadcast, which routers pass on.
+    pub(super) async fn global_who_is(&mut self, range: &str, rows: usize) {
+        self.who_is_in(true, range, rows).await;
+    }
+
+    async fn who_is_in(&mut self, global: bool, range: &str, rows: usize) {
         press(&mut self.app, KeyCode::Char('d'));
+        if global {
+            press(&mut self.app, KeyCode::Right);
+        }
         press(&mut self.app, KeyCode::Tab);
         type_text(&mut self.app, range);
         press(&mut self.app, KeyCode::Tab);
@@ -618,5 +685,12 @@ impl Site {
         for server in &mut self.servers {
             bounded(server.stop()).await.unwrap();
         }
+        if let Some(routed) = self.routed.take() {
+            routed.stop().await;
+        }
     }
 }
+
+#[path = "site_routed.rs"]
+mod routed;
+pub(super) use routed::{ROUTED_NETWORK, routed_parts};

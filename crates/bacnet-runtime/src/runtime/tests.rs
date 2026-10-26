@@ -318,7 +318,8 @@ async fn direct_read_batch_round_trips_through_bip() {
     use bacnet_network::layer::NetworkLayer;
     use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
     use bacnet_transport::bip::BipTransport;
-    use bacnet_types::enums::{ConfirmedServiceChoice, NetworkPriority};
+    use bacnet_npdu::NetworkPriority;
+    use bacnet_types::enums::ConfirmedServiceChoice;
     use bytes::{Bytes, BytesMut};
     use std::net::Ipv4Addr;
 
@@ -364,7 +365,7 @@ async fn direct_read_batch_round_trips_through_bip() {
             &encoded,
             &received.source_mac,
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
         )
         .await
         .unwrap();

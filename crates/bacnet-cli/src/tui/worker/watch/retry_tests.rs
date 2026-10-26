@@ -2,11 +2,16 @@
 
 use super::*;
 
+/// The lab device, on this network.
+fn lab() -> CovTarget {
+    CovTarget::local(&[10, 0, 0, 100, 0xBA, 0xC0])
+}
+
 fn failed(maybe_subscribed: bool, fatal: bool) -> Started {
     Started {
         first: None,
         name: None,
-        mac: None,
+        target: None,
         outcome: Err(Refusal {
             reason: "no answer".into(),
             maybe_subscribed,
@@ -21,7 +26,7 @@ fn retrying<'a>(sink: &'a EventSink, options: &'a WatchOptions, ambiguous: bool)
     let mut state = state_with_row(sink, options);
     state.devices.get_mut(&DEVICE).unwrap().ops.clear();
     let row = state.rows.get_mut(&1).unwrap();
-    row.mac = Some(MacAddr::from_slice(&[10, 0, 0, 100, 0xBA, 0xC0]));
+    row.target = Some(lab());
     row.maybe_subscribed = ambiguous;
     state
 }
@@ -35,7 +40,7 @@ fn assert_cancel(state: &State<'_>, expected: bool) {
         let Op::Cancel {
             row,
             point,
-            mac,
+            target,
             managed,
         } = &ops[0]
         else {
@@ -43,7 +48,7 @@ fn assert_cancel(state: &State<'_>, expected: bool) {
         };
         assert_eq!(*row, 1);
         assert_eq!(point.device, DEVICE);
-        assert_eq!(mac.as_slice(), [10, 0, 0, 100, 0xBA, 0xC0]);
+        assert_eq!(*target, lab());
         assert!(managed.is_none());
     }
 }
@@ -54,7 +59,7 @@ async fn initial_timeout_schedules_one_start_after_thirty_seconds() {
     let options = WatchOptions::default();
     let mut state = retrying(&sink, &options, false);
     state.started(1, failed(false, false));
-    let rate = RateCap::new(0);
+    let rate = RequestLimits::new(0);
     tokio::time::advance(Duration::from_secs(29)).await;
     state.tick(&rate);
     assert!(state.devices[&DEVICE].ops.is_empty());
@@ -76,14 +81,14 @@ async fn queued_retry_remove_and_shutdown_keep_prior_cancellation() {
             row.mode = Mode::Polled;
             row.resubscribe = Some((Instant::now(), Duration::from_secs(30)));
             state.devices.get_mut(&DEVICE).unwrap().busy = true;
-            state.tick(&RateCap::new(0));
+            state.tick(&RequestLimits::new(0));
             assert!(matches!(state.devices[&DEVICE].ops[0], Op::Start(1)));
             if shutdown {
                 state.shutdown();
             } else {
                 state.remove(1);
             }
-            state.tick(&RateCap::new(0));
+            state.tick(&RequestLimits::new(0));
             assert_cancel(&state, ambiguous);
         }
     }
@@ -106,7 +111,7 @@ async fn inflight_retry_remove_and_shutdown_keep_old_mac_and_cancellation() {
                 let mut outcome = failed(false, fatal);
                 outcome.outcome.as_mut().err().unwrap().retryable = retryable;
                 state.started(1, outcome);
-                state.tick(&RateCap::new(0));
+                state.tick(&RequestLimits::new(0));
                 assert_cancel(&state, ambiguous);
             }
         }
@@ -127,7 +132,7 @@ async fn repeated_failures_back_off_to_cap_and_permanent_refusal_stops_retry_onl
     let (sink, _events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let options = WatchOptions::default();
     let mut state = retrying(&sink, &options, true);
-    let rate = RateCap::new(0);
+    let rate = RequestLimits::new(0);
     for seconds in [30, 60, 120, 240, 300, 300] {
         state.started(1, failed(false, false));
         assert!(
@@ -168,7 +173,7 @@ async fn successful_retry(shutdown: bool) {
     let (client, requests) = retry_support::client(Reply::Ack).await;
     let managed = Arc::clone(&client)
         .manage_cov_subscription(
-            &[10, 0, 0, 100, 0xBA, 0xC0],
+            lab(),
             1,
             ai(1),
             false,
@@ -186,7 +191,7 @@ async fn successful_retry(shutdown: bool) {
         Started {
             first: None,
             name: None,
-            mac: Some(MacAddr::from_slice(&[10, 0, 0, 100, 0xBA, 0xC0])),
+            target: Some(lab()),
             outcome: Ok(managed),
             refused_rpm: false,
         },
@@ -204,7 +209,7 @@ async fn successful_retry(shutdown: bool) {
         let Op::Cancel {
             row,
             point,
-            mac,
+            target,
             managed,
         } = state
             .devices
@@ -217,7 +222,7 @@ async fn successful_retry(shutdown: bool) {
             panic!("late success was not cancelled")
         };
         assert!(managed.is_some(), "cleanup owns and stops the renewal task");
-        jobs::cancel(&client, &RateCap::new(0), row, point, mac, managed)
+        jobs::cancel(&client, &RequestLimits::new(0), row, point, target, managed)
             .await
             .unwrap();
         assert_eq!(requests.load(Ordering::Relaxed), 2);
@@ -236,7 +241,7 @@ async fn successful_retry(shutdown: bool) {
         managed.stop().await;
         state.started(1, failed(false, false));
         tokio::time::advance(Duration::from_secs(30)).await;
-        state.tick(&RateCap::new(0));
+        state.tick(&RequestLimits::new(0));
         assert!(
             matches!(state.devices[&DEVICE].ops.front(), Some(Op::Start(1))),
             "successful start reset the backoff"

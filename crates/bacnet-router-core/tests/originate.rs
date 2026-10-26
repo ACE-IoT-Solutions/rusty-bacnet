@@ -120,8 +120,8 @@ fn what_it_refuses_sends_nothing() {
         ),
         (
             &mut with_9(),
-            request(0xFFFF, &[], UNCONFIRMED),
-            OriginateError::ReservedNetwork,
+            request(0xFFFF, &[5], UNCONFIRMED),
+            OriginateError::GlobalWithDadr,
         ),
         (
             &mut with_9(),

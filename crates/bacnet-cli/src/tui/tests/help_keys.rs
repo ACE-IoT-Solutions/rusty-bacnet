@@ -315,9 +315,10 @@ fn help_scrolls_at_80x24() {
     assert!(top.contains(" Global"), "{top}");
     assert!(top.contains("1-20 of"), "{top}");
     assert!(!top.contains("Commands (:)"), "{top}");
-    assert!(end.contains("Commands (:)"), "{end}");
+    // The last page ends with the command list's last rows.
     assert!(end.contains("bbmd [ADDRESS]"), "{end}");
     assert!(end.contains("mstp listen SECS"), "{end}");
+    assert!(end.contains("reinit coldstart|warmstart|STATE"), "{end}");
     assert_snapshot!("help_devices_80x24_top", top);
     assert_snapshot!("help_devices_80x24_end", end);
     // End leaves the view on the last page; Up moves from there.

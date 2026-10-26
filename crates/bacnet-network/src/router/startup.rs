@@ -101,12 +101,7 @@ impl BACnetRouter {
         let ports = std::mem::take(&mut startup.ports);
 
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
-        let shared = Arc::new(Shared {
-            engine,
-            gate: control,
-            networks,
-            warnings: Default::default(),
-        });
+        let shared = Arc::new(Shared::new(engine, control, networks));
 
         let (send_txs, send_rxs): (Vec<_>, Vec<_>) = (0..ports.len())
             .map(|_| send_queue::channel(send_queue::CAPACITY))

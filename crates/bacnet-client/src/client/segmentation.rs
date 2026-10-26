@@ -71,12 +71,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             &coordinator_apdu,
         )
         .await;
-        let key = (tsm_mac.clone(), ack.invoke_id, provenance);
+        let key = (tsm_mac.clone(), ack.invoke_id, provenance.clone());
         if let Some(conflict) = super::response_admission::find_provenance_conflict(
             seg_state,
             &tsm_mac,
             ack.invoke_id,
-            provenance,
+            &provenance,
         ) {
             if let Some(state) = seg_state.remove(&conflict) {
                 warn_throttled!(
@@ -205,7 +205,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .or_insert_with(|| SegmentedReceiveState {
                 receiver: SegmentReceiver::new(),
                 owner: owner.clone(),
-                provenance,
+                provenance: provenance.clone(),
                 reply_mac: MacAddr::from_slice(source_mac),
                 reply_network: source_network.clone(),
                 expected_next_seq: 0,
@@ -682,9 +682,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             _ = &mut segment_timer => {
                                 ack_retries += 1;
                                 if ack_retries > max_ack_retries {
-                                    return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
-                                    });
+                                    return Err(Error::abort(bacnet_types::enums::AbortReason::TSM_TIMEOUT));
                                 }
                                 warn!(
                                     attempt = ack_retries,

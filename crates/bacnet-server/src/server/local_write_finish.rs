@@ -25,7 +25,7 @@ use tracing::error;
 /// The runtime a local change's post-commit task is spawned onto, checked
 /// before anything changes: outside one, the change fails with
 /// [`Error::Encoding`] and makes none.
-pub(super) fn local_runtime() -> Result<tokio::runtime::Handle, Error> {
+pub(in crate::server) fn local_runtime() -> Result<tokio::runtime::Handle, Error> {
     tokio::runtime::Handle::try_current()
         .map_err(|_| Error::Encoding("Local writes require a Tokio runtime".into()))
 }
@@ -40,7 +40,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// was made, so the future is `Ok(())` then too. A panic in `work` is
     /// raised again in the caller, as it would be were the work done in
     /// place; with the caller gone, it is logged and goes no further.
-    pub(super) fn finish_in_task<F: Future<Output = ()> + Send + 'static>(
+    pub(in crate::server) fn finish_in_task<F: Future<Output = ()> + Send + 'static>(
         &self,
         runtime: &tokio::runtime::Handle,
         work: F,

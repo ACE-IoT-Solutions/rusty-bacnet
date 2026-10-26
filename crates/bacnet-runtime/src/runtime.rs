@@ -428,10 +428,10 @@ impl BacnetRuntime {
         let mut first_error = None;
         for attachment in attachments.into_values() {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if let Err(error) = attachment.stop(remaining).await {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+            if let Err(error) = attachment.stop(remaining).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
         }
         first_error.map_or(Ok(()), Err)

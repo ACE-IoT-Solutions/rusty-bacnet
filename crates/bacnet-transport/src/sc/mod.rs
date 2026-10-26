@@ -358,16 +358,31 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 // future cancels dial/handshake without a detached task.
                 let mut primary_attempt: Option<failover::PrimaryAttempt<TappedSocket<W>>> = None;
                 let mut connection_states = state_tx.subscribe();
-                // Idle time is on tokio's clock, like `hb_interval`, so the two
-                // agree under a paused test clock too.
-                let mut hb_interval =
-                    tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
-                hb_interval.tick().await; // consume the first immediate tick
+                // Heartbeats run off one deadline measured from the last
+                // accepted inbound BVLC (#2124). With no heartbeat outstanding
+                // it is when the next one is due; with one outstanding it is
+                // when the link counts as dead. A fixed tick that checked both
+                // in one pass could skip a beat and then send and give up
+                // together, leaving the ACK almost no time. The deadline is on
+                // tokio's clock so it follows a paused test clock too.
                 let mut last_bvlc_received = tokio::time::Instant::now();
                 let mut pending_heartbeat_id = None;
+                let heartbeat_ms = (heartbeat_interval_ms, heartbeat_timeout_ms);
+                // Armed for real at the top of the loop.
+                let heartbeat_sleep = tokio::time::sleep_until(last_bvlc_received);
+                tokio::pin!(heartbeat_sleep);
 
                 loop {
                     let recv_ws = ws_clone.clone();
+                    // Every path back here may have moved the deadline: an
+                    // accepted frame, a matching ACK, a sent heartbeat or a
+                    // restored primary. Re-arm only when it changed.
+                    let outstanding = pending_heartbeat_id.is_some();
+                    let heartbeat_deadline =
+                        heartbeat::deadline(last_bvlc_received, outstanding, heartbeat_ms);
+                    if heartbeat_sleep.deadline() != heartbeat_deadline {
+                        heartbeat_sleep.as_mut().reset(heartbeat_deadline);
+                    }
                     tokio::select! {
                         Some(npdu) = direct_intake.recv() => {
                             // Direct merge shares the hub queue: re-admit under
@@ -637,31 +652,22 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                             // long its dial/handshake took (#1555).
                             primary_restore_interval.reset();
                         }
-                        _ = hb_interval.tick() => {
-                            let idle_for = last_bvlc_received.elapsed();
-                            if idle_for >= Duration::from_millis(heartbeat_interval_ms)
-                                && pending_heartbeat_id.is_none()
-                            {
-                                let mut c = conn.lock().await;
-                                let hb_msg = c.build_heartbeat();
-                                let mut buf = BytesMut::new();
-                                encode_sc_message(&mut buf, &hb_msg);
-                                let heartbeat_message_id = hb_msg.message_id;
-                                drop(c);
-                                if let Err(e) = ws_clone.send(&buf).await {
-                                    warn!("BACnet/SC heartbeat send error: {}", e);
-                                    observer.lose(&conn, &state_tx, Cause::from_error(&e)).await;
-                                    break;
-                                }
-                                pending_heartbeat_id = Some(heartbeat_message_id);
-                                observer.heartbeat_sent();
-                            }
-
-                            if idle_for > Duration::from_millis(heartbeat_timeout_ms) {
+                        _ = &mut heartbeat_sleep => {
+                            if pending_heartbeat_id.is_some() {
                                 warn!("BACnet/SC heartbeat timeout — disconnecting");
                                 observer.lose(&conn, &state_tx, Cause::HeartbeatTimeout).await;
                                 break;
                             }
+                            let heartbeat_message_id = match heartbeat::send_request(&conn, &*ws_clone).await {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    warn!("BACnet/SC heartbeat send error: {}", e);
+                                    observer.lose(&conn, &state_tx, Cause::from_error(&e)).await;
+                                    break;
+                                }
+                            };
+                            pending_heartbeat_id = Some(heartbeat_message_id);
+                            observer.heartbeat_sent();
                         }
                     }
                 }
@@ -792,6 +798,9 @@ mod data_attribute_tests;
 
 #[cfg(test)]
 mod heartbeat_validation_tests;
+
+#[cfg(test)]
+mod heartbeat_deadline_tests;
 
 #[cfg(test)]
 mod disconnect_validation_tests;

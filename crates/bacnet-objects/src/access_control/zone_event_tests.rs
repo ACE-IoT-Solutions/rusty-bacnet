@@ -8,6 +8,7 @@ use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::enums::{
     AccessZoneOccupancyState as S, ErrorClass, ErrorCode, EventType, Reliability,
 };
+use bacnet_types::error::RemoteError;
 
 use super::*;
 use crate::event::{
@@ -78,7 +79,7 @@ fn change(from: EventState, to: EventState) -> EventStateChange {
 
 fn assert_protocol_error(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
             if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );

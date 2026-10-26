@@ -26,7 +26,7 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PySet, PyTuple};
 
-use crate::types::{PyErrorClass, PyErrorCode, PyReinitializedState};
+use crate::types::{PyReinitializedState, int_enums};
 
 /// A ReinitializeDevice request a Python `on_reinitialize` callable is asked
 /// to accept, and that `after_reinitialize` then carries out.
@@ -223,7 +223,7 @@ impl PyReinitialize {
                 }
                 Ok(())
             }
-            Answer::Refuse(class, code) => Err(Error::Protocol { class, code }),
+            Answer::Refuse(class, code) => Err(Error::protocol(class, code)),
             // Answered SERVICES / OTHER, as a Rust handler's panic is.
             Answer::Failed => Err(Error::Encoding(
                 "Python on_reinitialize raised or answered with an unexpected value".into(),
@@ -247,9 +247,13 @@ fn answer(value: &Bound<'_, PyAny>) -> PyResult<Answer> {
         });
     }
     if let Ok(tuple) = value.cast::<PyTuple>()
-        && let Ok((class, code)) = tuple.extract::<(PyErrorClass, PyErrorCode)>()
+        && tuple.len() == 2
+        && let (Ok(class), Ok(code)) = (
+            int_enums::from_py::<ErrorClass>(&tuple.get_item(0)?),
+            int_enums::from_py::<ErrorCode>(&tuple.get_item(1)?),
+        )
     {
-        return Ok(Answer::Refuse(class.to_rust(), code.to_rust()));
+        return Ok(Answer::Refuse(class, code));
     }
     let py = value.py();
     if py
@@ -336,6 +340,25 @@ impl RunAfterReinitialize {
     }
 }
 
+/// Refuse a DCC or ReinitializeDevice password (`name` is its keyword) that
+/// is empty (#2094) or over the 20-character limit (#2060) with ValueError,
+/// at construction or before a request is sent, as the native server and
+/// endpoint refuse it at start and the encoders refuse it.
+pub(crate) fn password_limit(name: &str, password: &Option<String>) -> PyResult<()> {
+    use bacnet_services::device_mgmt::{MAX_PASSWORD_CHARS, password_fits};
+    if password.as_deref() == Some("") {
+        return Err(PyValueError::new_err(format!(
+            "an empty {name} is refused: give a nonempty {name}, or None for no password"
+        )));
+    }
+    if password.as_deref().is_some_and(|p| !password_fits(p)) {
+        return Err(PyValueError::new_err(format!(
+            "{name} exceeds the {MAX_PASSWORD_CHARS}-character limit"
+        )));
+    }
+    Ok(())
+}
+
 /// An endpoint's ReinitializeDevice settings: the callables and the
 /// password a request must carry.
 #[derive(Clone, Default)]
@@ -358,6 +381,7 @@ impl EndpointReinitialize {
                 "reinit_password needs on_reinitialize",
             ));
         }
+        password_limit("reinit_password", &password)?;
         Ok(Self {
             callables,
             password,

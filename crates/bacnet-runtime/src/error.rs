@@ -103,10 +103,14 @@ impl RuntimeError {
     }
 
     pub(crate) fn operation(id: AttachmentId, error: bacnet_types::error::Error) -> Self {
+        use bacnet_types::error::RemoteError;
+
         let (code, retryable) = match &error {
-            bacnet_types::error::Error::Protocol { .. } => (ErrorCode::BacnetError, false),
-            bacnet_types::error::Error::Reject { .. } => (ErrorCode::BacnetError, false),
-            bacnet_types::error::Error::Abort { .. } => (ErrorCode::BacnetError, true),
+            bacnet_types::error::Error::Remote(RemoteError::Abort { .. }) => {
+                (ErrorCode::BacnetError, true)
+            }
+            bacnet_types::error::Error::Remote(_)
+            | bacnet_types::error::Error::Structured { .. } => (ErrorCode::BacnetError, false),
             bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
             bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
             _ => (ErrorCode::Internal, false),
@@ -154,7 +158,44 @@ fn is_bind_conflict(error: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_bind_conflict;
+    use super::{ErrorCode, RuntimeError, is_bind_conflict};
+
+    #[test]
+    fn remote_responses_keep_runtime_categories_and_retry_policy() {
+        use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode as BacnetCode, RejectReason};
+        use bacnet_types::error::{Error, RemoteError};
+
+        let id = crate::AttachmentId::from(1);
+        for (remote, retryable) in [
+            (
+                RemoteError::Error {
+                    class: ErrorClass::PROPERTY,
+                    code: BacnetCode::UNKNOWN_PROPERTY,
+                },
+                false,
+            ),
+            (
+                RemoteError::Reject {
+                    reason: RejectReason::OTHER,
+                },
+                false,
+            ),
+            (
+                RemoteError::Abort {
+                    reason: AbortReason::OTHER,
+                },
+                true,
+            ),
+        ] {
+            let error = Error::Remote(remote);
+            let message = error.to_string();
+            let mapped = RuntimeError::operation(id, error);
+            assert_eq!(mapped.code, ErrorCode::BacnetError);
+            assert_eq!(mapped.retryable, retryable);
+            assert_eq!(mapped.attachment_id, Some(id));
+            assert_eq!(mapped.message, message);
+        }
+    }
 
     #[test]
     fn address_in_use_is_a_bind_conflict() {

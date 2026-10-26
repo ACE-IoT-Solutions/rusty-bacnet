@@ -510,6 +510,7 @@ async fn forward_safety(
     let req = match request {
         SafetyCommand::Prepare { req, .. }
         | SafetyCommand::Execute { req, .. }
+        | SafetyCommand::Manage { req, .. }
         | SafetyCommand::Revert { req } => Some(req),
         _ => None,
     };

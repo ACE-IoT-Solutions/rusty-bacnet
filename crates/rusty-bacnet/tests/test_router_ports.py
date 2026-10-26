@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
 import unittest
 import uuid
 
 from rusty_bacnet import (
-    BACnetRouter,
+    AceMixedRouter,
     RouterBipPort,
     RouterPortHealth,
     RouterRouteEntry,
@@ -68,15 +69,15 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
             "client.pem",
             "client.key",
         )
-        self.assertIsInstance(BACnetRouter.from_ports([bip, sc]), BACnetRouter)
+        self.assertIsInstance(AceMixedRouter.from_ports([bip, sc]), AceMixedRouter)
         with self.assertRaises(ValueError):
-            BACnetRouter.from_ports([bip])
+            AceMixedRouter.from_ports([bip])
         for interval in (0, 0.5, -1, float("inf"), float("nan")):
             with self.subTest(interval=interval), self.assertRaises(ValueError):
-                BACnetRouter.from_ports([bip, sc], announce_interval_s=interval)
+                AceMixedRouter.from_ports([bip, sc], announce_interval_s=interval)
 
     async def test_bip_router_lifecycle_and_snapshots(self) -> None:
-        router = BACnetRouter.from_ports(
+        router = AceMixedRouter.from_ports(
             [
                 RouterBipPort(100, interface="127.0.0.1", port=0),
                 RouterBipPort(200, interface="127.0.0.1", port=0),
@@ -101,7 +102,7 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await router.stop())
 
     async def test_concurrent_lifecycle_is_single_owner(self) -> None:
-        router = BACnetRouter.from_ports(
+        router = AceMixedRouter.from_ports(
             [
                 RouterBipPort(100, interface="127.0.0.1", port=0),
                 RouterBipPort(200, interface="127.0.0.1", port=0),
@@ -117,10 +118,27 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
         starting = asyncio.ensure_future(router.start())
         await asyncio.sleep(0)
         stopping = asyncio.ensure_future(router.stop())
-        self.assertIsNone(await starting)
-        self.assertIsNone(await stopping)
+        started, stopped = await asyncio.gather(
+            starting, stopping, return_exceptions=True
+        )
+        # A close admitted before startup publishes wins. Either an already
+        # published success or explicit cancellation is valid; stop is the
+        # cleanup barrier in both cases.
+        if isinstance(started, RuntimeError):
+            self.assertIn("startup was cancelled", str(started))
+        else:
+            self.assertIsNone(started)
+        self.assertIsNone(stopped)
         with self.assertRaises(RuntimeError):
             await router.local_address()
+        # The retained stop is a resource-release barrier even when it wins
+        # the race with startup publication.
+        for health in await router.port_health():
+            bound_port = int(health.identity.rsplit(":", 1)[1])
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.bind(("0.0.0.0", bound_port))
+        self.assertIsNone(await router.start())
+        self.assertIsNone(await router.stop())
 
     def test_snapshot_types_are_exported(self) -> None:
         self.assertTrue(inspect.isclass(RouterPortHealth))

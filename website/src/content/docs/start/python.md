@@ -86,7 +86,7 @@ The async context manager starts the client and stops it when the block exits. T
 
 ## Next steps
 
-Use [the API entry points](/rusty-bacnet/reference/api/) for complete signatures and type stubs. The repository also includes a client/server example, but review its binds and writes before running it: a demonstration server is not automatically an isolated or production-ready deployment.
+Use the [Python reference](/rusty-bacnet/reference/python/) for complete signatures and keyword defaults. Python and Rust expose different configuration surfaces, and the bindings don't wrap every Rust API, so check the Python reference before assuming that a Rust option exists in Python. The repository also includes a client/server example, but review its binds and writes before running it: a demonstration server is not automatically an isolated or production-ready deployment.
 
 ## Sources and release scope
 

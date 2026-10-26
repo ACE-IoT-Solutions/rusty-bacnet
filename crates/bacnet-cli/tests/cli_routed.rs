@@ -17,7 +17,6 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bbmd::ForeignDevicePolicy;
 use bacnet_transport::bip::{BbmdOptions, BipMode, BipTransport};
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::mstp::NoSerial;
 use serde_json::{Value, json};
 use support::lab::{lab_database, lab_identity};
 use support::{Process, command, failure, run};
@@ -52,6 +51,7 @@ async fn site_with_config(
     database: bacnet_objects::database::ObjectDatabase,
     config: bacnet_server::server::ServerConfig,
 ) -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
+    let config = service_config(config);
     for _ in 0..8 {
         let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .unwrap()
@@ -66,7 +66,7 @@ async fn site_with_config(
         let (router_end, station) = LoopbackTransport::pair(vec![0x01], vec![0x05]);
         let ports = vec![
             RouterPort {
-                transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
+                transport: AnyTransport::Bip(Box::new(bip)),
                 network_number: 1,
             },
             RouterPort {
@@ -84,6 +84,17 @@ async fn site_with_config(
         }
     }
     panic!("no loopback UDP port the router could bind");
+}
+
+fn service_config(
+    mut config: bacnet_server::server::ServerConfig,
+) -> bacnet_server::server::ServerConfig {
+    // Each service command starts with an empty discovery cache, even if the
+    // OS reuses the preceding child's UDP source. Keep service assertions
+    // independent of duplicate suppression; discovery.rs tests that policy.
+    // Preserve admission limits, rate limits and directed replies.
+    config.discovery_policy.coalesce_window = std::time::Duration::ZERO;
+    config
 }
 
 /// `bacnet read` through the router's BBMD, waiting `wait_ms` for a routed
@@ -120,7 +131,12 @@ async fn a_routed_read_reaches_the_device_behind_the_router() {
         // The same shape a local read prints.
         assert_eq!(
             value,
-            json!({ "object": "ANALOG_INPUT:2", "property": "PRESENT_VALUE", "value": "51" }),
+            json!({
+                "object": "ANALOG_INPUT:2",
+                "property": "PRESENT_VALUE",
+                "value": "51",
+                "decoded": 51.0
+            }),
             "{target}"
         );
     }
@@ -199,3 +215,6 @@ mod device_admin;
 
 #[path = "cli_routed/object_alarm.rs"]
 mod object_alarm;
+
+#[path = "cli_routed/discovery.rs"]
+mod discovery;

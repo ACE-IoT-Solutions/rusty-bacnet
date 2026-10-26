@@ -1,4 +1,5 @@
 use super::super::*;
+use bacnet_services::alarm_event::GetEventInformationAck;
 
 fn build_acknowledge_alarm_request(
     acknowledging_process_identifier: u32,
@@ -16,6 +17,51 @@ fn build_acknowledge_alarm_request(
         acknowledgment_source,
         time_of_acknowledgment,
     }
+}
+
+/// A GetEventInformation answer as the dict `get_event_information`
+/// returns.
+fn event_information_dict(py: Python<'_>, ack: &GetEventInformationAck) -> PyResult<Py<PyAny>> {
+    let summaries = pyo3::types::PyList::empty(py);
+    for summary in &ack.list_of_event_summaries {
+        let dict = PyDict::new(py);
+        dict.set_item(
+            "object_id",
+            PyObjectIdentifier::from_rust(summary.object_identifier),
+        )?;
+        dict.set_item(
+            "event_state",
+            PyEventState {
+                inner: summary.event_state,
+            },
+        )?;
+        dict.set_item(
+            "acknowledged_transitions",
+            crate::types::PyBitString::event_transitions(summary.acknowledged_transitions),
+        )?;
+        let timestamps = summary
+            .event_timestamps
+            .iter()
+            .map(|stamp| Py::new(py, PyBACnetTimeStamp::from_rust(stamp.clone())))
+            .collect::<PyResult<Vec<_>>>()?;
+        dict.set_item("event_timestamps", timestamps)?;
+        dict.set_item(
+            "notify_type",
+            crate::types::PyNotifyType {
+                inner: summary.notify_type,
+            },
+        )?;
+        dict.set_item(
+            "event_enable",
+            crate::types::PyBitString::event_transitions(summary.event_enable),
+        )?;
+        dict.set_item("event_priorities", summary.event_priorities.to_vec())?;
+        summaries.append(dict)?;
+    }
+    let result = PyDict::new(py);
+    result.set_item("summaries", summaries)?;
+    result.set_item("more_events", ack.more_events)?;
+    Ok(result.into_any().unbind())
 }
 
 #[pymethods]
@@ -50,6 +96,7 @@ impl BACnetClient {
     /// `object_specifier` accepts either an `ObjectType` (server picks instance)
     /// or an `ObjectIdentifier` (specific instance).
     /// `initial_values` is an optional list of `(PropertyIdentifier, PropertyValue, priority, array_index)` tuples.
+    /// Returns the `ObjectIdentifier` of the created object from the acknowledgment.
     #[pyo3(signature = (address, object_specifier, initial_values=None))]
     fn create_object<'py>(
         &self,
@@ -92,11 +139,15 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
-            let raw = c
+            // The client decodes the ACK; a reply that doesn't decode raises,
+            // though the server may already have created the object.
+            let created = c
                 .create_object(&mac, specifier, init_vals)
                 .await
                 .map_err(to_py_err)?;
-            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            crate::py_async::attach(|py| {
+                Ok(Py::new(py, PyObjectIdentifier::from_rust(created))?.into_any())
+            })
         })
     }
 
@@ -104,7 +155,9 @@ impl BACnetClient {
     // Device management
     // -----------------------------------------------------------------------
 
-    /// Send a DeviceCommunicationControl request.
+    /// Send a DeviceCommunicationControl request. A password over 20
+    /// characters (#2085), or an empty one (#2094), raises ValueError before
+    /// anything is sent.
     #[pyo3(signature = (address, enable_disable, time_duration=None, password=None))]
     fn device_communication_control<'py>(
         &self,
@@ -114,6 +167,7 @@ impl BACnetClient {
         time_duration: Option<u16>,
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        crate::reinitialize::password_limit("password", &password)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let ed = enable_disable.to_rust();
@@ -129,7 +183,9 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Send a ReinitializeDevice request.
+    /// Send a ReinitializeDevice request. A password over 20 characters
+    /// (#2085), or an empty one (#2094), raises ValueError before anything
+    /// is sent.
     #[pyo3(signature = (address, reinitialized_state, password=None))]
     fn reinitialize_device<'py>(
         &self,
@@ -138,6 +194,7 @@ impl BACnetClient {
         reinitialized_state: PyReinitializedState,
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        crate::reinitialize::password_limit("password", &password)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let state = reinitialized_state.to_rust();
@@ -238,7 +295,16 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Get event information from a remote device.
+    /// Get event information from a remote device: one GetEventInformation
+    /// answer, decoded.
+    ///
+    /// Returns `{"summaries": [...], "more_events": bool}`. Each summary is
+    /// a dict with `object_id`, `event_state` (an `EventState`),
+    /// `acknowledged_transitions` and `event_enable` (`BitString`s naming
+    /// `TO_OFFNORMAL`, `TO_FAULT`, `TO_NORMAL`), `event_timestamps` (three
+    /// `BACnetTimeStamp`s), `notify_type` (a `NotifyType`) and
+    /// `event_priorities` (three ints). While `more_events` is true, call
+    /// again with the last summary's `object_id`.
     #[pyo3(signature = (address, last_received_object_identifier=None))]
     fn get_event_information<'py>(
         &self,
@@ -253,11 +319,11 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
-            let raw = c
+            let ack = c
                 .get_event_information(&mac, last_oid)
                 .await
                 .map_err(to_py_err)?;
-            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            crate::py_async::attach(|py| event_information_dict(py, &ack))
         })
     }
 }

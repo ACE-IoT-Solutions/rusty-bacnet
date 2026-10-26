@@ -14,10 +14,11 @@ use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{
-    BACnetEventLogRecord, BACnetLogMultipleRecord, BACnetLogRecord, EventLogDatum,
-    EventNotificationRequest, LogData, LogDatum, LogValue,
+    BACnetDeviceObjectPropertyReference, BACnetEventLogRecord, BACnetLogMultipleRecord,
+    BACnetLogRecord, BACnetPropertyStates, EventLogDatum, EventNotificationRequest, LogData,
+    LogDatum, LogValue, NotificationParameters,
 };
-use bacnet_types::enums::{EventState, EventType, NotifyType, ObjectType};
+use bacnet_types::enums::{EventState, EventType, NotifyType, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, StatusFlags, Time};
 use serde_json::json;
 use support::run;
@@ -101,6 +102,45 @@ async fn server() -> BACnetServer<BipTransport> {
             .unwrap();
     }
 
+    // Event Log 2: notifications carrying their event values (#2073).
+    let mut valued = EventLogObject::new(2, "EL-2", 10).unwrap();
+    for (hour, notification) in [
+        (
+            8,
+            EventNotificationRequest {
+                event_values: Some(NotificationParameters::OutOfRange {
+                    exceeding_value: 101.5,
+                    status_flags: StatusFlags::IN_ALARM,
+                    deadband: 1.0,
+                    exceeded_limit: 100.0,
+                }),
+                ..alarm()
+            },
+        ),
+        (
+            9,
+            EventNotificationRequest {
+                event_type: EventType::CHANGE_OF_STATE,
+                message_text: None,
+                from_state: EventState::NORMAL,
+                to_state: EventState::OFFNORMAL,
+                event_values: Some(NotificationParameters::ChangeOfState {
+                    new_state: BACnetPropertyStates::BinaryValue(1),
+                    status_flags: StatusFlags::IN_ALARM | StatusFlags::OUT_OF_SERVICE,
+                }),
+                ..alarm()
+            },
+        ),
+    ] {
+        valued
+            .add_record(BACnetEventLogRecord {
+                date: DATE,
+                time: time(hour),
+                log_datum: EventLogDatum::Notification(notification),
+            })
+            .unwrap();
+    }
+
     let mut multiple = TrendLogMultipleObject::new(1, "TLM-1", 10).unwrap();
     multiple
         .add_record(BACnetLogMultipleRecord {
@@ -131,8 +171,12 @@ async fn server() -> BACnetServer<BipTransport> {
     let objects: Vec<Box<dyn BACnetObject>> = vec![
         Box::new(trend),
         Box::new(events),
+        Box::new(valued),
         Box::new(multiple),
         Box::new(long),
+        Box::new(event_state_log()),
+        Box::new(status_flags_log()),
+        Box::new(members_log()),
     ];
     let mut list = vec![device.object_identifier()];
     list.extend(objects.iter().map(|object| object.object_identifier()));
@@ -150,6 +194,102 @@ async fn server() -> BACnetServer<BipTransport> {
         .build()
         .await
         .unwrap()
+}
+
+/// A reference to `property` of `object_type` instance `instance`.
+fn sampling(
+    object_type: ObjectType,
+    instance: u32,
+    property: PropertyIdentifier,
+) -> BACnetDeviceObjectPropertyReference {
+    BACnetDeviceObjectPropertyReference::new_local(oid(object_type, instance), property.to_raw())
+}
+
+/// Trend Log 3 samples Analog Input 1's Event_State: two enumerations and,
+/// mismatched, a REAL (#2091).
+fn event_state_log() -> TrendLogObject {
+    let mut log = TrendLogObject::new(3, "TL-3", 10).unwrap();
+    log.set_log_device_object_property(Some(sampling(
+        ObjectType::ANALOG_INPUT,
+        1,
+        PropertyIdentifier::EVENT_STATE,
+    )))
+    .unwrap();
+    for (hour, log_datum) in [
+        (8, LogDatum::EnumValue(0)),
+        (9, LogDatum::EnumValue(3)),
+        (10, LogDatum::RealValue(1.5)),
+    ] {
+        log.add_record(BACnetLogRecord {
+            date: DATE,
+            time: time(hour),
+            log_datum,
+            status_flags: None,
+        })
+        .unwrap();
+    }
+    log
+}
+
+/// Status flags as a logged bit string.
+fn flags_datum(bits: u8) -> LogDatum {
+    LogDatum::BitstringValue {
+        unused_bits: 4,
+        data: vec![bits << 4],
+    }
+}
+
+/// Trend Log 4 samples Analog Input 1's Status_Flags.
+fn status_flags_log() -> TrendLogObject {
+    let mut log = TrendLogObject::new(4, "TL-4", 10).unwrap();
+    log.set_log_device_object_property(Some(sampling(
+        ObjectType::ANALOG_INPUT,
+        1,
+        PropertyIdentifier::STATUS_FLAGS,
+    )))
+    .unwrap();
+    for (hour, bits) in [(8, 0b1000), (9, 0)] {
+        log.add_record(BACnetLogRecord {
+            date: DATE,
+            time: time(hour),
+            log_datum: flags_datum(bits),
+            status_flags: None,
+        })
+        .unwrap();
+    }
+    log
+}
+
+/// Trend Log Multiple 2: Analog Input 1's Event_State, an empty member and
+/// Binary Input 1's Present_Value, each named by its own reference.
+fn members_log() -> TrendLogMultipleObject {
+    let mut log = TrendLogMultipleObject::new(2, "TLM-2", 10).unwrap();
+    for reference in [
+        sampling(ObjectType::ANALOG_INPUT, 1, PropertyIdentifier::EVENT_STATE),
+        sampling(
+            ObjectType::ANALOG_INPUT,
+            ObjectIdentifier::WILDCARD_INSTANCE,
+            PropertyIdentifier::PRESENT_VALUE,
+        ),
+        sampling(
+            ObjectType::BINARY_INPUT,
+            1,
+            PropertyIdentifier::PRESENT_VALUE,
+        ),
+    ] {
+        log.add_property_reference(reference).unwrap();
+    }
+    log.add_record(BACnetLogMultipleRecord {
+        date: DATE,
+        time: time(8),
+        log_data: LogData::Values(vec![
+            LogValue::EnumValue(2),
+            LogValue::EnumValue(2),
+            LogValue::EnumValue(1),
+        ]),
+    })
+    .unwrap();
+    log
 }
 
 /// The server's `ip:port`, as the CLI takes a target.
@@ -283,6 +423,65 @@ async fn read_range_prints_decoded_log_records() {
     server.stop().await.unwrap();
 }
 
+/// An Event Log's notifications show their event values for each event
+/// type, in the table and as typed fields in JSON (#2073).
+#[tokio::test]
+async fn read_range_shows_event_values_per_event_type() {
+    let mut server = server().await;
+    let target = target(&server);
+
+    let out_of_range = "ALARM OUT_OF_RANGE ANALOG_INPUT:3 NORMAL -> HIGH_LIMIT \"too hot\" \
+                        {exceeding value 101.5, flags in-alarm, deadband 1, limit 100}";
+    let change_of_state = "ALARM CHANGE_OF_STATE ANALOG_INPUT:3 NORMAL -> OFFNORMAL \
+                           {state active, flags in-alarm | out-of-service}";
+    let table = read_range(&target, "event-log:2", "table").await;
+    for cell in [out_of_range, change_of_state] {
+        assert!(table.contains(cell), "{cell}: {table}");
+    }
+
+    let events: serde_json::Value =
+        serde_json::from_str(&read_range(&target, "event-log:2", "json").await).unwrap();
+    assert_eq!(
+        events["records"],
+        json!([
+            {
+                "timestamp": "2026-10-03 08:00:00.00",
+                "datum": out_of_range,
+                "event_values": {
+                    "element": "notification-parameters",
+                    "text": "out-of-range: exceeding value 101.5, flags in-alarm, deadband 1, \
+                             limit 100",
+                    "fields": {
+                        "event_type": {"value": 5, "name": "out-of-range"},
+                        "exceeding_value": 101.5,
+                        "status_flags": {"bits": "1000", "names": ["in-alarm"]},
+                        "deadband": 1.0,
+                        "exceeded_limit": 100.0,
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-10-03 09:00:00.00",
+                "datum": change_of_state,
+                "event_values": {
+                    "element": "notification-parameters",
+                    "text": "change-of-state: state active, flags in-alarm | out-of-service",
+                    "fields": {
+                        "event_type": {"value": 1, "name": "change-of-state"},
+                        "new_state": {"element": "property-state", "text": "active"},
+                        "status_flags": {
+                            "bits": "1001",
+                            "names": ["in-alarm", "out-of-service"],
+                        },
+                    },
+                },
+            },
+        ])
+    );
+
+    server.stop().await.unwrap();
+}
+
 /// A range, its flags and first sequence number, and `--all` paging a log
 /// that needs several pages, ending with the checkpoint (#1532).
 #[tokio::test]
@@ -383,6 +582,66 @@ async fn read_range_takes_a_range_shows_its_flags_and_pages_a_whole_log() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(diagnostic), "{flags:?}: {stderr}");
     }
+
+    server.stop().await.unwrap();
+}
+
+/// A Trend Log's enumerations and bits are named by the property its
+/// Log_DeviceObjectProperty names, in the table and in JSON; a value the
+/// property doesn't name, a log with no reference and an empty member
+/// print as logged (#2091).
+#[tokio::test]
+async fn read_range_names_logged_values_by_the_monitored_property() {
+    let mut server = server().await;
+    let target = target(&server);
+    let json = |text: String| serde_json::from_str::<serde_json::Value>(&text).unwrap();
+
+    let event_state = json(read_range(&target, "trend-log:3", "json").await);
+    assert_eq!(
+        event_state["records"],
+        json!([
+            { "timestamp": "2026-10-03 08:00:00.00", "datum": "normal" },
+            { "timestamp": "2026-10-03 09:00:00.00", "datum": "high-limit" },
+            { "timestamp": "2026-10-03 10:00:00.00", "datum": "1.5" },
+        ])
+    );
+    assert_eq!(event_state["item_count"], json!(3));
+    let table = read_range(&target, "trend-log:3", "table").await;
+    for cell in ["normal", "high-limit"] {
+        assert!(table.contains(cell), "{cell}: {table}");
+    }
+    assert!(!table.contains("enum "), "{table}");
+
+    // --all reads the reference once, before the pages, and names every
+    // page's records.
+    let paged =
+        json(read_range_with(&target, "trend-log:4", "json", &["--all", "--count", "1"]).await);
+    assert_eq!(paged["pages"], json!(2), "{paged}");
+    assert_eq!(
+        paged["records"],
+        json!([
+            { "timestamp": "2026-10-03 08:00:00.00", "datum": "in-alarm" },
+            { "timestamp": "2026-10-03 09:00:00.00", "datum": "none" },
+        ])
+    );
+
+    let members = json(read_range(&target, "trend-log-multiple:2", "json").await);
+    assert_eq!(
+        members["records"],
+        json!([{ "timestamp": "2026-10-03 08:00:00.00", "datum": "[offnormal, enum 2, active]" }])
+    );
+
+    // Trend Log 2 has no reference: its values print as logged.
+    let unnamed = json(
+        read_range_with(
+            &target,
+            "trend-log:2",
+            "json",
+            &["--position", "1", "--count", "1"],
+        )
+        .await,
+    );
+    assert_eq!(unnamed["records"][0]["datum"], json!("1"));
 
     server.stop().await.unwrap();
 }

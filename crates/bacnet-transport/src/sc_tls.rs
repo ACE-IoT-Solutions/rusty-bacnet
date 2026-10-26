@@ -8,6 +8,8 @@ pub mod inspection;
 mod peer_info;
 pub mod pem;
 pub use peer_info::{ScCertificateMetadata, ScHandshakeKind, ScPeerCertificate, ScTlsPeerInfo};
+mod subject_alt_name;
+pub use subject_alt_name::ScSubjectAltName;
 mod attempt_capture;
 mod tls_failure;
 mod untrusted_peer;
@@ -257,47 +259,8 @@ where
 }
 
 mod validate;
+use validate::parse_wss_uri;
 pub use validate::validate_wss_uri;
-
-fn parse_wss_uri(url: &str) -> Result<tokio_tungstenite::tungstenite::http::Uri, Error> {
-    let uri: tokio_tungstenite::tungstenite::http::Uri = url.parse().map_err(|e| {
-        ScConnectError::WebSocket {
-            http_status: None,
-            untrusted_peer: None,
-            tls: None,
-            kind: ScWebSocketErrorKind::InvalidUrl,
-            message: format!("Invalid WebSocket URL: {e}"),
-        }
-        .into_bacnet_error()
-    })?;
-
-    if !uri
-        .scheme_str()
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("wss"))
-    {
-        return Err(ScConnectError::WebSocket {
-            http_status: None,
-            untrusted_peer: None,
-            tls: None,
-            kind: ScWebSocketErrorKind::UnsupportedScheme,
-            message: "BACnet/SC WebSocket URI must use wss scheme".into(),
-        }
-        .into_bacnet_error());
-    }
-
-    if uri.host().map(str::is_empty).unwrap_or(true) {
-        return Err(ScConnectError::WebSocket {
-            http_status: None,
-            untrusted_peer: None,
-            tls: None,
-            kind: ScWebSocketErrorKind::MissingHubHost,
-            message: "BACnet/SC WebSocket URI must include a hub host".into(),
-        }
-        .into_bacnet_error());
-    }
-
-    Ok(uri)
-}
 
 fn tcp_addr_from_uri(uri: &tokio_tungstenite::tungstenite::http::Uri) -> Result<String, Error> {
     let host = uri.host().filter(|host| !host.is_empty()).ok_or_else(|| {

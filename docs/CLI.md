@@ -106,8 +106,8 @@ Commands that take a `<target>` argument accept several formats:
 
 When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
-**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `file-read`,
-`file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
+**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `alarm-summary`,
+`enrollment-summary`, `file-read`, `file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
 `create-object`, `delete-object` and `ack-alarm` (`ack`) take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
@@ -151,7 +151,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
 | write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -375,7 +375,7 @@ or `c`; editing saved network settings clears the old attestation. The safety
 policy is `writes = "session"` (the default: `W` may arm a write session) or
 `"never"` (`W` says why and arms nothing), and `dangerous = true`, which needs
 `writes = "session"`, allows dangerous operations inside an armed session
-(today, commanding priority 6).
+(commanding priority 6, and `:dcc` and `:reinit`).
 
 The config root is the platform directory returned by
 `directories::ProjectDirs::from("", "", "bacnet").config_dir()`. The dialog
@@ -498,7 +498,7 @@ table is refreshed from the client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`; the footer shows the syntax of the commands matching what is typed |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -881,8 +881,37 @@ or a slot's holder changed since the preview, nothing is sent and the result
 says to review it again. A priority array that was read but isn't 16 values
 refuses the write. Esc declines; nothing is sent and the audit log records it.
 The result shows
-each write's outcome; a device whose write policy refuses it
-(SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors.
+each write's outcome; one the device's policy refuses
+(SERVICE_REQUEST_DENIED) is shown as `DENIED by the device's policy`, apart
+from other errors.
+
+**Device management.** `:dcc enable`, `:dcc disable-initiation|disable
+[MINUTES|forever]` (also `:control`) send DeviceCommunicationControl, and
+`:reinit STATE` sends ReinitializeDevice, with the one-shot `control` and
+`reinit` names for the action and state. A disable without MINUTES (1 to
+65535) lasts 15 minutes; `forever` sends no duration, so it lasts until
+enabled again or a restart; `enable` takes no duration. The one-shot
+`control` is unchanged. Both go to the device open on the Browse screen, or the
+selected row on the Devices screen; anywhere else, or with nothing
+selected, they are refused and say so. They need an armed write session on
+a profile with `dangerous = true`; without it, and in a passive or
+monitor-only session, they are refused with the reason, and the write worker
+checks the same rules again before sending. A masked prompt takes the
+password: each character shows as `*`, a blank one sends none, at most 20
+characters (Clauses 16.1.1.1.3 and 16.4.1.1.2), and Esc cancels and clears
+it. The password is held only as `audit::Secret`, which never prints its
+text, and it is dropped once the request is sent or declined. The T3
+confirmation follows: type the device instance, then Enter. The result shows
+the device's acknowledgement or error; a refusal by the device's policy
+(SERVICE_REQUEST_DENIED) shows as `DENIED by the device's policy`, as a
+refused write does. Neither request is kept in the
+ledger, because revert can't undo it. The audit record (event `dcc` or
+`reinit`) names the service, the device, the state, the duration, the tier
+and the outcome, with a `password` field written as `[redacted]` when one was
+sent; the password reaches only the request on the wire. The capture masks
+it with `*` (same length) in any frame this node sent or heard on the wire
+before the frame enters the ring, marks the frame "password redacted", and
+exports it masked.
 
 **Ledger.** Every change still in effect is kept with its pre-image in
 `ledger.json`, saved before each request goes out and after each answer, so it
@@ -908,7 +937,9 @@ profile starts; one a crash cut off mid-request is recorded as unknown.
 flushed and synced: UTC time, OS user, host, profile, transport and local
 address, session level, the event, and for a write its target, service,
 parameters, priority, pre-image and outcome (ack, error class and code,
-denied, reject, abort, timeout or not sent). A `sending` record goes in before
+denied, reject, abort, timeout or not sent). An outcome's `class`, `code` and
+`reason` are strings: the name, or the decimal number for a value without one
+(`"WRITE_ACCESS_DENIED"`, `"300"`). A `sending` record goes in before
 each request. Arming, disarming, refusals, declined confirmations, reverts and
 kept entries are recorded too; a session that ran out shows as
 `write-session (expired)`. Fields
@@ -1010,14 +1041,111 @@ bacnet read-range 192.168.1.100 trend-log:1 --all --count 100            # the w
 bacnet --min-interval-ms 50 read-range 192.168.1.100 trend-log:1 --all --sequence 1201
 ```
 
+`read`, `readm`, `read-range` and `subscribe` show values decoded for the
+object and property they belong to, the same way the terminal UI does; see
+[Value output](#value-output) below.
+
 `read` and `readm` interpret Tags as named values: a whole array looks like
 `["exhaust", "floor"=3]`, an indexed element like `"floor"=3`, and index zero
 prints the count. An empty array prints `[]`. Names and text values are quoted
 and escaped; a semantic tag has no equals sign, while a valued NULL prints
-`"name"=null`. Invalid Tags bytes produce one `[invalid Tags; raw: ...]`
-marker for the complete payload. JSON keeps the existing `object`, `property`
-and string `value` fields, with an array index included in the property name.
-Other properties and `read-range` retain their existing formatting.
+`"name"=null`. Invalid Tags bytes produce one `[invalid Tags] [raw ...]`
+marker for the complete payload. JSON keeps the `object`, `property` and
+string `value` fields, with an array index included in the property name, and
+adds the typed `decoded` form.
+
+#### Value output
+
+Text output names what the device sent:
+
+- enumerations by name in kebab case: `offnormal`, `open-loop`,
+  `degrees-fahrenheit`; a binary object's state as `active` or `inactive`. A
+  number the property's enumeration doesn't name prints as the number;
+- bit strings with names as the set bits, `in-alarm | fault`, or `none`;
+  other bit strings as their bits, `bits(0101)`;
+- objects as `analog-input 1`, dates as `2026-10-19`, times as `07:00`
+  (seconds and hundredths when they aren't zero), REALs with every digit;
+- constructed values decoded: timestamps, Weekly_Schedule days (`Mon 07:00 =
+  72.5, 18:00 = null`), exception schedules, Date_List entries, references,
+  Recipient_List destinations (`device 99 process 7: Mon-Fri 08:00-17:00,
+  confirmed, to-offnormal | to-fault | to-normal`), Event_Parameters,
+  Active_COV_Subscriptions, Device_Address_Binding, a Command's actions,
+  Group and Global Group members, shed levels, Scale and Prescale, and the
+  access control lists. Event_Parameters name the algorithm and its
+  fields, `unsigned-range: delay 30 s, low 10, high 300`; a value under a tag
+  the standard doesn't assign lists its fields by context tag, each field's
+  octets as `[raw …]` since their datatype isn't known: `30: [0] [raw 1e],
+  [1] [raw 0a]`;
+- a list or array whole, every element, in brackets; an indexed read of an
+  array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
+  as the array's size;
+- anything that doesn't decode as hex, `[raw 0e 0f]`, the one spelling every
+  command uses for undecoded octets.
+
+Names follow one rule: identifiers the command echoes back, the `object` and
+`property` columns and fields, keep their canonical UPPER_SNAKE form
+(`ANALOG_INPUT:1`, `PRESENT_VALUE`), the form the arguments and the Python
+bindings use; values are written in kebab case, as the terminal UI writes
+them. A property that `readm` couldn't read is such an echoed outcome and
+prints in the canonical form, `ERROR: PROPERTY:UNKNOWN_PROPERTY`; an error
+inside a value, such as a Group member's, is part of the value and prints in
+kebab case, `error property:unknown-property`.
+
+JSON keeps each value's text in `value` and adds its typed form under
+`decoded`; `subscribe` puts the texts in a `values` map and the typed forms
+in a `decoded` map, both keyed by property. Enumerations, bit strings,
+objects and numbers carry their numbers, so scripts needn't depend on the
+names' spelling:
+
+| Value | `decoded` |
+|-------|-----------|
+| NULL, BOOLEAN | `null`, `true`, `false` |
+| Unsigned, Signed, REAL, Double | a number (`{"float": "NaN"}` for a non-finite one); JSON doesn't say which of the four it was |
+| CharacterString | a string |
+| OCTET STRING | `{"octets": "0a0b"}` |
+| ENUMERATED | `{"value": 2, "name": "offnormal"}`; no `name` when the enumeration isn't known |
+| BIT STRING | `{"bits": "0100", "names": ["fault"]}`, first bit first; no `names` when the bits have none |
+| Date, Time | `{"date": "2026-10-19"}`, `{"time": "07:00"}` |
+| Object identifier | `{"type": "analog-input", "type_number": 0, "instance": 1}` |
+| Constructed element | `{"element": "daily-schedule", "text": "Mon 07:00 = 72.5"}`: its kind and the text form |
+| Several values, a list or array | an array of the above |
+| Octets that don't decode | `{"raw": "0e0f"}` |
+
+A constructed element's `text` is for display, like the table: its wording
+may change, so don't parse it. Branch on `element`; structured fields may
+join it later without removing `text`. The kinds are `access-rule`,
+`action-list`, `address-binding`, `authentication-factor`,
+`authentication-factor-format`, `authentication-policy`, `calendar-entry`,
+`cov-subscription`, `daily-schedule`, `date-range`, `destination`,
+`device-object-property-reference`, `device-object-reference`,
+`event-parameter`, `name-value`, `object-property-reference`,
+`port-permission`, `prescale`, `property-access-result`,
+`read-access-result`, `read-access-specification`, `recipient`, `scale`,
+`shed-level`, `special-event`, `stage-limit-value`, `time-stamp` and
+`value-source`.
+
+An `event-parameter` element also has `fields`, an object of the value's
+members by their snake-case names in wire order, each in the forms above:
+`algorithm` first (an enumerated named as its event type), then the
+algorithm's members, references as `device-object-property-reference`
+elements and change-of-state values as `property-state` elements:
+
+```json
+{
+  "element": "event-parameter",
+  "text": "unsigned-range: delay 30 s, low 10, high 300",
+  "fields": {
+    "algorithm": {"value": 11, "name": "unsigned-range"},
+    "time_delay": 30,
+    "low_limit": 10,
+    "high_limit": 300
+  }
+}
+```
+
+An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
+`items` for a list that isn't a log; log records keep their text form, and an
+Event Log notification adds its typed `event_values`.
 
 `--position`, `--sequence` and `--time` pick the range, each with `--count`
 (default 100; negative reads backward). `--time` takes the device's local time
@@ -1039,9 +1167,52 @@ Multiple or Audit Log record by record, showing each record's timestamp, datum
 and, for a Trend Log, status flags (blank when none is set). JSON output
 lists them under `records`, with `result_flags` and `first_sequence_number`,
 and the hex of anything from the first record that doesn't decode under
-`undecoded`. Other properties decode as application
-values under `items`, where anything that doesn't decode ends the list as
-`[raw: ..]` hex.
+`undecoded`. A logged value prints as a value does. A log record doesn't say
+which property it came from, so once the device has answered the first
+ReadRange of a Trend Log or Trend Log Multiple's Log_Buffer, `read-range`
+reads its Log_DeviceObjectProperty once (one request more per command,
+however many pages `--all` reads, and none for a device that doesn't
+answer) and names
+each value by the property it samples: an Event_State log prints
+`offnormal`, a Status_Flags log `in-alarm`, and a binary object's
+Present_Value `active`. A Trend Log Multiple names each member's value by
+its own reference. When that read fails or names nothing, when a member's
+reference is empty, or when a value's type doesn't fit the property (a REAL
+where an enumeration was expected), the value prints as logged: an
+enumeration as `enum 3` and a bit string as its bits. An Event Log
+notification ends with its event values in braces, each named for its event
+type:
+
+```text
+ALARM OUT_OF_RANGE ANALOG_INPUT:3 NORMAL -> HIGH_LIMIT "too hot" {exceeding value 101.5, flags in-alarm, deadband 1, limit 100}
+ALARM CHANGE_OF_STATE ANALOG_INPUT:3 NORMAL -> OFFNORMAL {state active, flags in-alarm | out-of-service}
+```
+
+Its JSON record adds `event_values`, a `notification-parameters` element
+whose `fields` hold `event_type` (an enumerated) and each value by its
+snake-case name in the [Value output](#value-output) forms:
+
+```json
+{
+  "element": "notification-parameters",
+  "text": "out-of-range: exceeding value 101.5, flags in-alarm, deadband 1, limit 100",
+  "fields": {
+    "event_type": {"value": 5, "name": "out-of-range"},
+    "exceeding_value": 101.5,
+    "status_flags": {"bits": "1000", "names": ["in-alarm"]},
+    "deadband": 1.0,
+    "exceeded_limit": 100.0
+  }
+}
+```
+
+Every event type the stack decodes has its fields, from
+`change-of-bitstring` to `change-of-timer`. A value the standard leaves open,
+such as a command failure's feedback, is decoded as application values, and
+kept as `{"raw": ...}` when it isn't one; an optional value the device left
+out is `null`. Other
+properties list their elements under `items`, each decoded as above, where
+anything that doesn't decode ends the list as `[raw ..]`.
 
 **Aliases:** `rp` = read, `rpm` = readm, `rr` = read-range
 
@@ -1059,6 +1230,9 @@ bacnet --allow-write write 192.168.1.100 av:1 pv enumerated:3       # explicit e
 bacnet --allow-write write 192.168.1.100 sc:1 pv date:2024-03-15    # date value
 bacnet --allow-write write 192.168.1.100 sc:1 pv time:14:30:00      # time value
 bacnet --allow-write write 192.168.1.100 nc:1 pv object:ai:1        # object identifier value
+bacnet --allow-write write 192.168.1.100 ai:1 reliability open-loop  # enumeration by name
+bacnet --allow-write write 192.168.1.100 ai:1 event-enable "to-offnormal | to-normal"  # named bits
+bacnet --allow-write write 192.168.1.100 trend-log:1 start-time "2026-10-25 14:30"   # date-time
 ```
 
 Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
@@ -1093,6 +1267,81 @@ bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2
 
 Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
 
+**Values by name.** `write` and `writem` know the property they write, so
+a value can be typed as [Value output](#value-output) prints it, and a value
+read pastes back as a write:
+
+- a plain number for an analog or integer object's value (Present_Value,
+  Relinquish_Default, a Priority_Array slot, COV_Increment, High_Limit,
+  Low_Limit, Deadband) is sent as the property's datatype: `72` for an
+  Analog Value is REAL 72.0, Double for a Large Analog Value, INTEGER or
+  Unsigned for the integer objects. A number past the datatype's range is
+  refused. A REAL holds whole numbers exactly only up to 16,777,216 (2^24);
+  past that it keeps about seven significant digits. A number for an
+  enumerated property is sent as ENUMERATED;
+
+- an enumeration by name, in kebab case, UPPER_SNAKE or any case
+  (`open-loop`, `OPEN_LOOP`), or by number; a binary object's state as
+  `active` or `inactive`, with or without the object's text after it
+  (`active (On)`); a multi-state state by number, its text allowed after
+  it (`2 (Heat)`);
+- a named bit string by its set bits, `in-alarm,fault` or `in-alarm |
+  fault` (quote a `|` for the shell; `writem` needs the `|` form, since a
+  comma separates its writes), as 0/1 digits first bit first (`1100`), or
+  `none` for no bit set (an empty value is refused, so a blank field never
+  clears every bit); a bit string without names as `bits(0101)`;
+- a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`), `*` for any
+  field, the special months and days by name (`*-even-months-last-day`),
+  or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
+  field, or `any time`; hundredths are two digits (`.05`, `.50`). The
+  `date:` and `time:` prefixes take the same forms;
+- a date-time as a date then a time, `2026-10-19 Mon 07:00`, or
+  `unspecified`; for a property that holds one (Start_Time, Stop_Time,
+  Modification_Date, a DateTime Value's Present_Value and similar), a date
+  alone leaves the time unspecified;
+- a timestamp (Last_Restore_Time, an `event-time-stamps[N]` element) as
+  `seq 42`, a time, or a date and time.
+
+A mistyped name is refused with the valid names, or the nearest few when
+the enumeration is long:
+
+```text
+Error: unknown BinaryPV 'actve'; expected one of: inactive, active (or a number)
+```
+
+The explicit forms (`enumerated:N`, `date:`, `time:`, `object:`, a quoted
+string, `null`, `true`/`false`) keep their meaning for every property.
+
+**Constructed values as JSON.** A Weekly_Schedule day, an
+Exception_Schedule special event, a Date_List calendar entry and a
+Recipient_List destination are typed as JSON: one element for an indexed
+write (`weekly-schedule[2]`, `exception-schedule[1]`), a JSON list of them
+for the whole property (a Weekly_Schedule is seven days, Monday first). The
+shapes follow the Python bindings' typed constructors, with dates and times
+written as above:
+
+| Element | JSON |
+|---------|------|
+| Day | `[["07:00", 72.5], ["18:00", null]]`; an entry may also be `{"time": "07:00", "value": 72.5}` |
+| Calendar entry | `{"kind": "date", "date": "2026-12-25"}`, `{"kind": "date_range", "start_date": "2026-07-01", "end_date": "2026-07-04"}` or `{"kind": "week_n_day", "month": 12, "week_of_month": 1, "day_of_week": 1}` (`null` or 255 for any) |
+| Special event | `{"period": <calendar entry or "calendar:1">, "time_values": <day>, "priority": 10}` |
+| Destination | `{"recipient": "device:99", "process_identifier": 7}`, optionally with `valid_days` (`["mon", "tue"]` or Python's bit number), `from_time`, `to_time`, `issue_confirmed_notifications` and `transitions` (`["to-offnormal"]` or a number); left out, a destination covers every day, all day, every transition, unconfirmed. A recipient may also be `{"kind": "device", "object_identifier": "device:99"}` or `{"kind": "address", "network_number": 5, "mac_address": "0a:00:00:64:ba:c0"}` |
+
+An entry's value is a JSON null, boolean or number (a whole number is
+Unsigned, or Signed when negative; one with a decimal point or an
+exponent, or too large for either, is a REAL, refused past a REAL's range) or a
+string in the value grammar above (`"active"`, `"enumerated:3"`; a
+CharacterString keeps its inner quotes, `"\"Occupied\""`). A field the
+shape doesn't know is refused, and every error names where it is:
+
+```bash
+bacnet --allow-write write 192.168.1.100 schedule:1 weekly-schedule[2] '[["07:00", 72.5], ["18:00", null]]'
+bacnet --allow-write write 192.168.1.100 calendar:1 date-list '[{"kind": "date", "date": "2026-12-25"}]'
+```
+
+In the TUI, type JSON in the write form's Value field; the `:writem` bar
+splits on spaces and reads a quoted word as a string.
+
 ### COV Subscriptions
 
 ```bash
@@ -1113,12 +1362,20 @@ or cancelled, it stays after the CLI exits, and it needs `--allow-write`. A
 process killed outright (SIGKILL) can't cancel; its subscription runs out with
 its lifetime.
 
+Each notification's values are decoded for the monitored object, as `read`
+decodes them; JSON adds their typed forms under `decoded`, keyed by property.
+
 **Alias:** `cov` = subscribe
 
 ### Alarms and Events
 
 ```bash
-bacnet alarms 192.168.1.100                              # get event/alarm summary
+bacnet alarms 192.168.1.100                              # active events and unacknowledged transitions
+bacnet alarms 192.168.1.100 --max 50                     # stop after 50 objects
+bacnet alarm-summary 192.168.1.100                       # objects in alarm (GetAlarmSummary)
+bacnet enrollment-summary 192.168.1.100                  # event-initiating objects (GetEnrollmentSummary)
+bacnet enrollment-summary 192.168.1.100 --acked not-acked --state active
+bacnet enrollment-summary 192.168.1.100 --event-type out-of-range --priority 1-100 --class 5
 
 bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 \
   --timestamp sequence:417 --ack-time time:14,30,00,00
@@ -1126,6 +1383,61 @@ bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" 
   --timestamp time:14,29,58,25 \
   --ack-time "datetime:2026,9,2,3;14,30,00,00"
 ```
+
+`alarms` lists every object with an event state other than normal or a
+transition not yet acknowledged (GetEventInformation). A device can answer
+in pages; `alarms` asks for the next page, from the last object, until the
+device says there are no more or `--max` objects (default 10000) have
+arrived. The table shows each object, its event state, the transitions
+acknowledged (`Acked`) and enabled, the notify type, the time of each
+transition's last event (to-offnormal, to-fault, to-normal) and their
+notification priorities (`3/5/200`, in the same order). When `--max` stops
+the reading early, a last line says the device holds more.
+
+`alarm-summary` lists the objects in alarm with their state and
+acknowledged transitions (GetAlarmSummary). `enrollment-summary` lists
+event-initiating objects with their event type, state, notification
+priority and notification class (GetEnrollmentSummary); a device returns
+only the objects that match all the filters given. The standard keeps both
+services only so clients can reach older devices, and advises newer ones
+not to serve them (Clauses 13.10 and 13.11), so a current device may reject
+them; `alarms` works everywhere. The `enrollment-summary` filters:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--acked <F>` | `all` | `all`, `acked`, or `not-acked` (an unacknowledged transition) |
+| `--state <S>` | (any) | `offnormal`, `fault`, `normal`, `all`, or `active` (not normal) |
+| `--event-type <T>` | (any) | An event type by name: `out-of-range`, `change-of-state`, ... |
+| `--priority <P>` | (any) | Notification priority, `MIN-MAX` (0 to 255) or one value |
+| `--class <N>` | (any) | Notification class number |
+
+Names take either spelling, `not-acked` or `NOT_ACKED`. All three commands
+take routed targets.
+
+In JSON, `alarms` prints `{"summaries": [...], "more_events": false}`, and
+`alarm-summary` and `enrollment-summary` print an array. Each field is a
+value in the [Value output](#value-output) forms, keyed in snake case:
+
+```json
+{
+  "object": {"type": "analog-value", "type_number": 2, "instance": 1},
+  "event_state": {"value": 3, "name": "high-limit"},
+  "acknowledged_transitions": {"bits": "011", "names": ["to-fault", "to-normal"]},
+  "event_enable": {"bits": "111", "names": ["to-offnormal", "to-fault", "to-normal"]},
+  "notify_type": {"value": 0, "name": "alarm"},
+  "event_timestamps": {
+    "to_offnormal": {"element": "time-stamp", "text": "2026-10-25 Sun 14:30:05"},
+    "to_fault": {"element": "time-stamp", "text": "seq 42"},
+    "to_normal": {"element": "time-stamp", "text": "07:00"}
+  },
+  "event_priorities": {"to_offnormal": 3, "to_fault": 5, "to_normal": 200}
+}
+```
+
+An `alarm-summary` entry has `object`, `alarm_state` and
+`acknowledged_transitions`; an `enrollment-summary` entry has `object`,
+`event_type`, `event_state`, `priority` and `notification_class` (`null`
+when the device left it out).
 
 **ack-alarm flags:**
 
@@ -1136,10 +1448,15 @@ bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" 
 | `--ack-time <SPEC>` | (required) | Caller-selected time of acknowledgment |
 | `--source <S>` | `bacnet-cli` | Acknowledgment source string |
 
-Both timestamp flags use the same strict grammar:
+Both timestamp flags take a timestamp as the CLI prints one, so a printed
+timestamp pastes back: `seq 417`, a time (`14:29:58.25`), or a date and time
+(`"2026-10-25 Sun 14:30:05"`; a date alone leaves the time unspecified), with
+the date and time forms of [Writing Properties](#writing-properties). They
+also take the strict grammar:
 
 - `sequence:<0..65535>`
-- `time:<hour>,<minute>,<second>,<hundredths>`
+- `time:<hour>,<minute>,<second>,<hundredths>`, or `time:HH:MM[:SS[.hh]]`
+  as `write` takes it
 - `datetime:<full-year>,<month>,<day>,<day-of-week>;<hour>,<minute>,<second>,<hundredths>`
 
 Date years are `1900..2154`; months are `1..14`, days are `1..34`,
@@ -1149,8 +1466,9 @@ when BACnet's unspecified value is intended (use full-year `255` for an
 unspecified year). Values are preserved exactly and neither timestamp is
 inferred from a clock. Quote `datetime:` values in command shells because the
 grammar contains a semicolon. `--timestamp` must come from the original event
-notification; `--ack-time` is explicitly chosen by the caller. The current
-raw `alarms` response is not a guided source for these values.
+notification; `--ack-time` is explicitly chosen by the caller. `alarms`
+shows each transition's last event time in the printed form, which
+`--timestamp` takes as shown (quote it for the shell).
 
 **Alias:** `ack` = ack-alarm
 
@@ -1183,7 +1501,7 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 | Flag | Description |
 |------|-------------|
 | `--duration <M>` | Duration in minutes |
-| `--password <P>` | Password string |
+| `--password <P>` | Password, 1 to 20 characters; leave the flag out to send none |
 
 **Aliases:** `dcc` = control
 
@@ -1193,7 +1511,7 @@ deprecated, and a rusty-bacnet server refuses it under every DCC policy.
 
 | Flag | Description |
 |------|-------------|
-| `--password <P>` | Password string |
+| `--password <P>` | Password, 1 to 20 characters; leave the flag out to send none |
 
 ```bash
 # Time synchronization

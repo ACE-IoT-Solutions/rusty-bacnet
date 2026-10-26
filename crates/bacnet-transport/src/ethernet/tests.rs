@@ -321,10 +321,10 @@ fn ethernet_destination_policy_precedes_all_llc_controls() {
 #[cfg(target_os = "linux")]
 #[test]
 fn ethernet_number_capability_delegates_without_configured_authority() {
-    use crate::{any::AnyTransport, mstp::LoopbackSerial};
+    use crate::any::AnyTransport;
     let transport = EthernetTransport::new("unused");
     assert!(transport.supports_local_nonrouter_number_controls());
-    let any: AnyTransport<LoopbackSerial> = AnyTransport::Ethernet(transport);
+    let any: AnyTransport = AnyTransport::Ethernet(transport);
     assert!(any.supports_local_nonrouter_number_controls());
     assert!(any.bip_port().is_none());
 }

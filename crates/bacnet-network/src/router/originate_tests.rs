@@ -158,3 +158,55 @@ async fn a_busy_refused_in_the_same_drain_doesnt_fail_a_queued_request() {
     );
     router.stop().await.unwrap();
 }
+
+/// A global Who-Is from the router's own application leaves by every
+/// port as that link's broadcast, still global with a full hop count, from
+/// the address the request selects (#1809).
+#[tokio::test]
+async fn a_global_broadcast_leaves_by_every_port() {
+    const WHO_IS: [u8; 2] = [0x10, 0x08];
+    let (mut router, _apdus, mut peers) = start(3).await;
+    let global = |source| {
+        let mut request = Request::new(
+            Address {
+                network: 0xFFFF,
+                mac: &[],
+            },
+            &WHO_IS,
+        );
+        request.source = source;
+        request
+    };
+    let bare = [&[1, 0x20, 0xFF, 0xFF, 0, 255][..], &WHO_IS].concat();
+
+    router
+        .originate(&global(SourceSelection::EgressPort))
+        .unwrap();
+    for peer in &mut peers {
+        let sent = sending(peer).await;
+        assert_eq!(sent.to, None, "the link's broadcast");
+        assert_eq!(sent.npdu, bare);
+        assert!(sent.attributes.is_empty());
+        sent.complete.send(Ok(())).unwrap();
+    }
+
+    // From port 1's address: SNET 2000 and SADR [2] on the other ports,
+    // none on port 1 itself.
+    router
+        .originate(&global(SourceSelection::Port(PortId(1))))
+        .unwrap();
+    let sourced = [
+        &[1, 0x28, 0xFF, 0xFF, 0, 0x07, 0xD0, 1, 2, 255][..],
+        &WHO_IS,
+    ]
+    .concat();
+    for (index, peer) in peers.iter_mut().enumerate() {
+        let sent = sending(peer).await;
+        assert_eq!(sent.to, None, "port {index}");
+        let expected = if index == 1 { &bare } else { &sourced };
+        assert_eq!(&sent.npdu, expected, "port {index}");
+        sent.complete.send(Ok(())).unwrap();
+    }
+    assert_eq!(router.counters().originated, 2);
+    router.stop().await.unwrap();
+}

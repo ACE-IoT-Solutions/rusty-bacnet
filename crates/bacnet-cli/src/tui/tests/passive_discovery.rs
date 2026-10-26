@@ -157,7 +157,6 @@ async fn passive_receives_real_router_startup_after_listener_readiness() {
     use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
     use bacnet_transport::{
         any::AnyTransport, bbmd::BdtEntry, bip::BipTransport, loopback::LoopbackTransport,
-        mstp::NoSerial,
     };
     let mut net = Passive::start(super::network::plan(None)).await;
     let mut bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
@@ -172,7 +171,7 @@ async fn passive_receives_real_router_startup_after_listener_readiness() {
     let StartedRouter { mut router, .. } = BACnetRouter::start(
         vec![
             RouterPort {
-                transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
+                transport: AnyTransport::Bip(Box::new(bip)),
                 network_number: 1,
             },
             RouterPort {

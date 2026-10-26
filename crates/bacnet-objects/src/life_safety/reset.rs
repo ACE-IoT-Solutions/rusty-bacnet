@@ -1,7 +1,6 @@
 //! Application-owned reset execution for built-in Life Safety objects.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, LifeSafetyOperation, LifeSafetyState, SilencedState,
@@ -143,10 +142,9 @@ fn reset_error(error: LifeSafetyResetError) -> Error {
         LifeSafetyResetError::InvalidOperationInThisState => {
             life_safety_error(ErrorCode::INVALID_OPERATION_IN_THIS_STATE)
         }
-        LifeSafetyResetError::ServiceRequestDenied => Error::Protocol {
-            class: ErrorClass::SERVICES,
-            code: ErrorCode::SERVICE_REQUEST_DENIED,
-        },
+        LifeSafetyResetError::ServiceRequestDenied => {
+            Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
+        }
     }
 }
 
@@ -188,9 +186,8 @@ impl LifeSafetyPointObject {
             silenced: self.silenced,
             operation_expected: self.operation_expected,
         };
-        let result = match catch_unwind(AssertUnwindSafe(|| executor(&context))) {
-            Ok(result) => result,
-            Err(_) => return Err(reset_error(LifeSafetyResetError::ServiceRequestDenied)),
+        let Some(result) = crate::catch_panic(|| executor(&context)) else {
+            return Err(reset_error(LifeSafetyResetError::ServiceRequestDenied));
         };
         let commit = result.map_err(reset_error)?;
 
@@ -241,9 +238,8 @@ impl LifeSafetyZoneObject {
             silenced: self.silenced,
             operation_expected: self.operation_expected,
         };
-        let result = match catch_unwind(AssertUnwindSafe(|| executor(&context))) {
-            Ok(result) => result,
-            Err(_) => return Err(reset_error(LifeSafetyResetError::ServiceRequestDenied)),
+        let Some(result) = crate::catch_panic(|| executor(&context)) else {
+            return Err(reset_error(LifeSafetyResetError::ServiceRequestDenied));
         };
         let commit = result.map_err(reset_error)?;
 

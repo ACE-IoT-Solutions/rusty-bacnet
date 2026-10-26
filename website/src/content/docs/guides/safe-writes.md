@@ -3,7 +3,7 @@ title: "Write and relinquish deliberately"
 description: "Keep control-changing operations separate from read-only onboarding."
 ---
 
-A BACnet write can change real equipment behavior. Use this page only for an authorized, identified, commandable point with a reviewed site procedure. Prefer an isolated lab device while learning.
+A BACnet write can change real equipment behavior. Use this page only for an authorized, identified, commandable point with a reviewed site procedure. Prefer an isolated lab device while learning; the [local lab](/rusty-bacnet/start/local-lab/) serves one on loopback as `av:1`.
 
 ## Before the write
 

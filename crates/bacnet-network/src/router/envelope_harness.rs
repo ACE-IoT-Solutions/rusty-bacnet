@@ -215,12 +215,7 @@ impl Harness {
             })
             .collect();
         let engine = Engine::new(&configs, tokio_clock(), options).unwrap();
-        let shared = Arc::new(Shared {
-            engine,
-            gate: Arc::clone(&gate),
-            networks: networks.to_vec(),
-            warnings: Default::default(),
-        });
+        let shared = Arc::new(Shared::new(engine, Arc::clone(&gate), networks.to_vec()));
         let (txs, rxs) = capacities.iter().map(|&n| send_queue::channel(n)).unzip();
         let (local_tx, apdus, counters) = AdmissionReceiver::channel(true);
         let mut harness = Self {
@@ -355,6 +350,20 @@ impl Harness {
             link_layer_group: ctx.link_layer_group,
             data_attributes: ctx.data_attributes,
             provenance: ctx.provenance,
+            direct_response: None,
+            reply_tx: None,
+        });
+    }
+
+    /// Hand the raw `npdu` from `source_mac` to `port`, as its transport
+    /// would, with no encode in between.
+    pub(super) fn handle_frame(&mut self, port: usize, source_mac: &[u8], npdu: Bytes) {
+        self.ports[port].dispatch(ReceivedNpdu {
+            npdu,
+            source_mac: MacAddr::from_slice(source_mac),
+            link_layer_group: false,
+            data_attributes: Vec::new(),
+            provenance: TransportProvenance::unverified(),
             direct_response: None,
             reply_tx: None,
         });

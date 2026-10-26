@@ -1146,6 +1146,34 @@ hangs off the tailnet (D4); install from another directory or pass
       slice for #1665/#1696, 0.13-plus release line, firmware vendor pin,
       plan wording for K5/Phase 4, PR hygiene).
 
+## Integration 2026-10-26 - pinned upstream 0.15 development
+
+`feature/upstream-0.15-migration` integrates upstream `dev` at `773c4025e`
+from the ACE 0.14 migration head `788e4d28e`. Upstream still declares the
+workspace version `0.14.0`; this integration does not assign a release version.
+
+The upstream Python `BACnetRouter` and its lifecycle tests are restored. It
+owns B/IP forwarding and supports the application client/server attachment
+API. The ACE mixed B/IP+SC implementation is now `AceMixedRouter`, isolated
+in `crates/rusty-bacnet/src/ace_mixed_router/`. Mixed-router callers must import
+`AceMixedRouter` and use `AceMixedRouter.from_ports(...)`; their typed
+`RouterBipPort`/`RouterScPort` configs and `start`/`stop`, health, routes and
+reannouncement settings retain their existing behavior. The two router
+classes use distinct configuration types and cannot be interchanged.
+
+The ACE runtime is included in workspace builds again. Its operation error
+mapping now consumes upstream `RemoteError`, retaining retryable Abort and
+non-retryable Error/Reject outcomes. Its routed read/write helpers and the
+native per-port reannouncement extension remain present. Distribution naming
+and the private ACE release path remain unchanged.
+
+Remaining downstream work: migrate the mixed router import in consumers;
+implement real per-port counters if required (`port_counters` was already
+absent in the 0.14 integration); restore SC wire-level router coverage (J2);
+and resolve the existing mixed-router failover limitation. The canonical
+upstream router's application attachment cannot be used on `AceMixedRouter`.
+The previous 0.14 gate results above apply only to that earlier revision.
+
 ## Out of scope
 
 - Changes to the SC hub relay semantics beyond configurable size limits.

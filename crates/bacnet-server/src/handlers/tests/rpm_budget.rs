@@ -56,10 +56,10 @@ impl BACnetObject for Counting {
             return Ok(PropertyValue::List(vec![PropertyValue::Unsigned(1); 1000]));
         }
         if property == PropertyIdentifier::DESCRIPTION {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ));
         }
         Ok(PropertyValue::Unsigned(1))
     }

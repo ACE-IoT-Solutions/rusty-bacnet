@@ -10,7 +10,6 @@ use bacnet_objects::{
 use bacnet_server::server::{BACnetServer, ServerConfig};
 use bacnet_transport::{
     any::AnyTransport,
-    mstp::LoopbackSerial,
     sc::{ScConnection, ScConnectionState, ScTransport, WebSocketPort},
     sc_frame::{BROADCAST_VMAC, ScFunction, decode_sc_message, encode_sc_message},
     sc_hub::ScHub,
@@ -42,8 +41,8 @@ fn database() -> ObjectDatabase {
     db
 }
 enum Owner {
-    Server(Box<BACnetServer<AnyTransport<LoopbackSerial>>>),
-    Endpoint(Box<EndpointSession<AnyTransport<LoopbackSerial>>>),
+    Server(Box<BACnetServer>),
+    Endpoint(Box<EndpointSession>),
 }
 impl Owner {
     async fn start(server: bool, transport: ScTransport<TlsWebSocket>) -> Self {

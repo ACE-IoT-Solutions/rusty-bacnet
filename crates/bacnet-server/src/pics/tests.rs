@@ -37,10 +37,10 @@ impl BACnetObject for TestAnalogInput {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         static PROPS: [PropertyIdentifier; 8] = [
@@ -124,10 +124,10 @@ impl BACnetObject for TestDevice {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         static PROPS: [PropertyIdentifier; 6] = [
@@ -355,7 +355,8 @@ fn services_match_implementation() {
         .iter()
         .find(|s| s.service_name == "ReadProperty")
         .expect("ReadProperty should be listed");
-    assert!(!rp.initiator);
+    // It initiates ReadProperty too, for a Channel member in another device.
+    assert!(rp.initiator);
     assert!(rp.executor);
 
     // I-Am is initiator only

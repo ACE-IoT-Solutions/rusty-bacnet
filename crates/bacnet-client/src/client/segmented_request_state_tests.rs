@@ -8,7 +8,7 @@ use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::{Duration, timeout};
@@ -146,7 +146,7 @@ async fn assert_premature_response_aborts(kind: PrematureResponse) {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Abort { reason })
+        Err(Error::Remote(RemoteError::Abort { reason }))
             if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert_eq!(client.tsm.lock().await.pending_count(), 0);
@@ -223,7 +223,7 @@ async fn reject_during_segmented_send_stops_the_sender() {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Reject { reason }) if reason == RejectReason::OTHER
+        Err(Error::Remote(RemoteError::Reject { reason })) if reason == RejectReason::OTHER
     ));
     expect_silence(&mut rx, "after Reject completed the send").await;
     assert_eq!(client.tsm.lock().await.pending_count(), 0);
@@ -284,7 +284,7 @@ async fn server_abort_during_segmented_send_stops_the_sender() {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Abort { reason }) if reason == AbortReason::BUFFER_OVERFLOW
+        Err(Error::Remote(RemoteError::Abort { reason })) if reason == AbortReason::BUFFER_OVERFLOW
     ));
     expect_silence(&mut rx, "after server Abort completed the send").await;
     assert_eq!(client.tsm.lock().await.pending_count(), 0);

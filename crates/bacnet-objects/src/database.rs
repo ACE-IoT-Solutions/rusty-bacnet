@@ -1,7 +1,8 @@
 //! ObjectDatabase — stores and retrieves BACnet objects by identifier.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use crate::collections::{HashMap, HashSet};
+use crate::prelude::*;
+use alloc::sync::Arc;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
 use bacnet_types::error::Error;
@@ -29,7 +30,7 @@ use trend_poll::TrendPollSchedule;
 /// Enforces Object_Name uniqueness within a device.
 /// Maintains secondary indexes for O(1) name lookup and O(1) type lookup.
 pub struct ObjectDatabase {
-    audit_owner: Option<std::sync::Weak<AuditOwnership>>,
+    audit_owner: Option<alloc::sync::Weak<AuditOwnership>>,
     network_port: Option<network_port::NetworkPortRegistration>,
     objects: HashMap<ObjectIdentifier, Box<dyn BACnetObject>>,
     trend_poll: TrendPollSchedule,
@@ -175,10 +176,10 @@ impl ObjectDatabase {
         if let Some(&owner) = self.name_index.get(new_name)
             && owner != *oid
         {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::DUPLICATE_NAME,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::DUPLICATE_NAME,
+            ));
         }
         Ok(())
     }

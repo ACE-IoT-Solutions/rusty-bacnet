@@ -74,20 +74,20 @@ impl BACnetObject for BuiltInProjectionObject {
             p if p == PropertyIdentifier::FEEDBACK_VALUE => {
                 self.feedback_value
                     .clone()
-                    .ok_or(bacnet_types::error::Error::Protocol {
-                        class: ErrorClass::PROPERTY,
-                        code: ErrorCode::UNKNOWN_PROPERTY,
-                    })
+                    .ok_or(bacnet_types::error::Error::protocol(
+                        ErrorClass::PROPERTY,
+                        ErrorCode::UNKNOWN_PROPERTY,
+                    ))
             }
             p if p == PropertyIdentifier::RELIABILITY => Ok(self.reliability.clone()),
             p if p == PropertyIdentifier::STATUS_FLAGS => Ok(self.status_flags.clone()),
             p if p == PropertyIdentifier::HIGH_LIMIT => Ok(PropertyValue::Real(80.0)),
             p if p == PropertyIdentifier::LOW_LIMIT => Ok(PropertyValue::Real(20.0)),
             p if p == PropertyIdentifier::DEADBAND => Ok(PropertyValue::Real(2.0)),
-            _ => Err(bacnet_types::error::Error::Protocol {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(bacnet_types::error::Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -98,10 +98,10 @@ impl BACnetObject for BuiltInProjectionObject {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), bacnet_types::error::Error> {
-        Err(bacnet_types::error::Error::Protocol {
-            class: ErrorClass::PROPERTY,
-            code: ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(bacnet_types::error::Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {

@@ -16,13 +16,13 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, LineGauge, Paragraph, Row, Table, Wrap};
 
+use bacnet_ops::label::kebab;
 use bacnet_transport::bip::ForeignRegistrationOutcome;
 
 use super::{Theme, WIDE_WIDTH};
 use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::network::{Fetched, NetworkState, View};
-use crate::tui::app::objects::kebab;
 use crate::tui::network::matrix::{Cell, Matrix};
 
 /// Height of the foreign-device panel, borders included, with the

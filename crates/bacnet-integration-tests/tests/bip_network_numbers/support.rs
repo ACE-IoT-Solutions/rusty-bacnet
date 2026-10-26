@@ -9,7 +9,6 @@ use bacnet_transport::{
     any::AnyTransport,
     bip::BipTransport,
     bvll::decode_bip_mac,
-    mstp::LoopbackSerial,
     port::{ReceivedNpdu, TransportPort},
 };
 use bacnet_types::enums::EngineeringUnits;
@@ -143,7 +142,7 @@ impl Drop for Signal<'_> {
     }
 }
 pub struct ObservedBip {
-    inner: AnyTransport<LoopbackSerial>,
+    inner: AnyTransport,
     gates: Option<Arc<Gates>>,
 }
 impl TransportPort for ObservedBip {

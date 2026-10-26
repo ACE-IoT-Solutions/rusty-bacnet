@@ -9,6 +9,7 @@ use bacnet_objects::multistate::MultiStateInputObject;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_types::enums::{EngineeringUnits, EventState, Reliability};
+use bacnet_types::error::RemoteError;
 struct Fixture {
     server: BACnetServer<TestTransport>,
     sent: SendLog,
@@ -102,10 +103,10 @@ async fn read(
 
 fn assert_protocol_error(error: Error, class: ErrorClass, code: ErrorCode) {
     match error {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } => {
+        }) => {
             assert_eq!(actual_class, class);
             assert_eq!(actual_code, code);
         }

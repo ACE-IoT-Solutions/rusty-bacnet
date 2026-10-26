@@ -216,10 +216,7 @@ impl BACnetObject for Overridden {
         }
         match &self.read {
             Read::Value(value) => Ok(value.clone()),
-            Read::Failure(class, code) => Err(Error::Protocol {
-                class: *class,
-                code: *code,
-            }),
+            Read::Failure(class, code) => Err(Error::protocol(*class, *code)),
             Read::Forbidden => panic!("forbidden property read: {property:?}"),
         }
     }

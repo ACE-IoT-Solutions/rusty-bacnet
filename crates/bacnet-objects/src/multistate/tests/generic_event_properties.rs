@@ -9,7 +9,7 @@ use super::super::*;
 use bacnet_encoding::primitives::encode_timestamp_choice;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bytes::BytesMut;
 
 fn timestamp_property_value(timestamp: &BACnetTimeStamp) -> PropertyValue {
@@ -115,7 +115,7 @@ fn assert_write_access_denied(
     label: &str,
 ) {
     match result.expect_err(&format!("{label}: {property:?} write must be refused")) {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 class,
                 ErrorClass::PROPERTY,
@@ -441,10 +441,10 @@ fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
 
 fn assert_property_read_error(result: Result<PropertyValue, Error>, code: ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
+        }) => {
             assert_eq!(class, ErrorClass::PROPERTY);
             assert_eq!(actual, code);
         }

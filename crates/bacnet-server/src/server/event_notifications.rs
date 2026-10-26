@@ -62,10 +62,10 @@ fn read_committed_history_snapshot(
     ) {
         (Ok(PropertyValue::CharacterString(message_text)), _) => message_text,
         (
-            Err(Error::Protocol {
+            Err(Error::Remote(RemoteError::Error {
                 class: ErrorClass::PROPERTY,
                 code: ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            })),
             MessageTexts::Optional,
         ) => String::new(),
         _ => return None,

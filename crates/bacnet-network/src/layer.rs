@@ -252,7 +252,7 @@ impl Clone for ReceivedApdu {
             is_group: self.is_group,
             global_broadcast: self.global_broadcast,
             data_attributes: self.data_attributes.clone(),
-            provenance: self.provenance,
+            provenance: self.provenance.clone(),
             direct_response: self.direct_response.clone(),
             router_response: self.router_response.clone(),
             reply_tx: None,

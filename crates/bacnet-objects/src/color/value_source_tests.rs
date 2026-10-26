@@ -12,6 +12,7 @@ use bacnet_types::constructed::{BACnetAddress, BACnetColorCommand, BACnetXyColor
 use bacnet_types::enums::{
     AuditLevel, ColorOperation, ErrorCode, ObjectType, PropertyIdentifier as P,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 
 fn device(instance: u32) -> ObjectIdentifier {
@@ -62,7 +63,7 @@ fn stop() -> PropertyValue {
 
 fn assert_code(result: Result<impl std::fmt::Debug, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { code, .. }) => {
+        Err(Error::Remote(RemoteError::Error { code, .. })) => {
             assert_eq!(code, expected, "expected {expected:?}")
         }
         other => panic!("expected {expected:?}, got {other:?}"),

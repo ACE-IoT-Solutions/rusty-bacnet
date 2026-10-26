@@ -8,6 +8,8 @@
 
 use pyo3::prelude::*;
 
+mod ace_mixed_router;
+mod app_transport;
 mod bip_options;
 mod client;
 mod discovery;
@@ -20,6 +22,7 @@ mod hub_bindings;
 mod log_records;
 mod logging_bridge;
 mod mstp_py;
+mod mutation_policy;
 mod object_audit_policy;
 mod object_options;
 mod py_async;
@@ -72,17 +75,19 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bip_options::PyBbmd>()?;
     m.add_class::<bip_options::PyMulticast>()?;
     m.add_class::<sc_reconnect::PyScReconnect>()?;
-    m.add_class::<router::PyRouterBipPort>()?;
-    m.add_class::<router::PyRouterScPort>()?;
-    m.add_class::<router::PyRouterPortHealth>()?;
-    m.add_class::<router::PyRouterRouteEntry>()?;
-    m.add_class::<router::PyBACnetRouter>()?;
+    m.add_class::<ace_mixed_router::PyRouterBipPort>()?;
+    m.add_class::<ace_mixed_router::PyRouterScPort>()?;
+    m.add_class::<ace_mixed_router::PyRouterPortHealth>()?;
+    m.add_class::<ace_mixed_router::PyRouterRouteEntry>()?;
+    m.add_class::<ace_mixed_router::PyAceMixedRouter>()?;
+    router::register(m)?;
     sc_peer::register(m)?;
     sc_events::register(m)?;
     discovery::register(m)?;
     sc_inspection::register(m)?;
     endpoint::register(m)?;
     reinitialize::register(m)?;
+    mutation_policy::register(m)?;
     m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
     m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;
 

@@ -820,4 +820,16 @@ fn name_returns_the_constant_name_or_none() {
     }
 }
 
+#[test]
+fn resolved_enum_name_is_the_constant_or_none() {
+    let name = |property, value| ResolvedEnum::from_property(property, value).name();
+    assert_eq!(name(PropertyIdentifier::EVENT_STATE, 3), Some("HIGH_LIMIT"));
+    assert_eq!(name(PropertyIdentifier::OBJECT_TYPE, 8), Some("DEVICE"));
+    // A known enumeration, but a number it doesn't name.
+    assert_eq!(name(PropertyIdentifier::EVENT_STATE, 900), None);
+    // No enumeration known from the property alone.
+    assert_eq!(name(PropertyIdentifier::PRESENT_VALUE, 1), None);
+}
+
 mod access_production;
+mod enumeration;

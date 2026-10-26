@@ -188,12 +188,7 @@ async fn bip_builders_keep_custom_cov_policy_and_independent_channel_capacities(
                 .port(0)
         );
         if erased {
-            options(
-                builder.build_any::<NoSerial>().await.unwrap(),
-                &peer,
-                &mut rx,
-            )
-            .await;
+            options(builder.build_any().await.unwrap(), &peer, &mut rx).await;
         } else {
             options(builder.build().await.unwrap(), &peer, &mut rx).await;
         }
@@ -213,7 +208,7 @@ async fn bip6_builders_keep_custom_cov_policy_and_independent_channel_capacities
                 .device_instance(123)
         );
         if erased {
-            let client = builder.build_any::<NoSerial>().await.unwrap();
+            let client = builder.build_any().await.unwrap();
             let AnyTransport::Bip6(transport) = client.transport() else {
                 panic!("expected B/IPv6");
             };
@@ -258,7 +253,7 @@ async fn sc_builders_keep_custom_cov_policy_and_independent_channel_capacities()
                 .device_uuid([3; 16])
         );
         if erased {
-            let client = Box::pin(builder.build_any::<NoSerial>()).await.unwrap();
+            let client = Box::pin(builder.build_any()).await.unwrap();
             let AnyTransport::Sc(transport) = client.transport() else {
                 panic!("expected SC");
             };

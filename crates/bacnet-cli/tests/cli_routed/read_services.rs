@@ -5,8 +5,10 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::trend::TrendLogObject;
 use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier, Reliability};
+use bacnet_types::enums::{EventState, NotifyType, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
+
+use crate::support::alarm::FixedAlarm;
 
 /// The lab objects refer to Notification Class 0 by default.
 pub(super) fn database() -> ObjectDatabase {
@@ -80,11 +82,15 @@ fn json_output(output: &std::process::Output) -> Value {
 }
 
 async fn direct_site() -> (BACnetServer<BipTransport>, String) {
+    direct_site_with(database()).await
+}
+
+async fn direct_site_with(database: ObjectDatabase) -> (BACnetServer<BipTransport>, String) {
     let direct = BACnetServer::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .device(lab_identity(INSTANCE))
-        .database(database())
+        .database(database)
         .build()
         .await
         .unwrap();
@@ -93,24 +99,56 @@ async fn direct_site() -> (BACnetServer<BipTransport>, String) {
     (direct, address)
 }
 
+/// The service fixture with one active alarm, whose timestamps are fixed
+/// so the direct and routed answers can match.
+fn alarm_database() -> ObjectDatabase {
+    let mut database = database();
+    let mut alarm = FixedAlarm::new(1, EventState::HIGH_LIMIT, 0b011, NotifyType::ALARM);
+    alarm.class = 0;
+    database.add(Box::new(alarm)).unwrap();
+    database
+}
+
 #[tokio::test]
-async fn routed_alarms_preserves_the_direct_response_for_both_target_forms() {
-    let (mut router, mut remote, port) = site().await;
-    let (mut direct, address) = direct_site().await;
-    let expected = json!({
-        "status": "ok",
-        "message": "GetEventInformation response (4 bytes, raw — decoding not yet implemented):\n0e 0f 19 00"
-    });
-    assert_eq!(
-        json_output(&query(None, &address, "alarms", &[]).await),
-        expected
-    );
-    for target in [format!("{DNET}:{INSTANCE}"), format!("{DNET}:0x05")] {
-        assert_eq!(
-            json_output(&query(Some(port), &target, "alarms", &[]).await),
-            expected,
-            "{target}"
-        );
+async fn routed_alarm_commands_match_the_direct_response_for_both_target_forms() {
+    let (mut router, mut remote, port) = site_with_database(alarm_database()).await;
+    let (mut direct, address) = direct_site_with(alarm_database()).await;
+    let alarm = json!({"type": "analog-value", "type_number": 2, "instance": 1});
+    for (service, arguments) in [
+        ("alarms", &[][..]),
+        ("alarm-summary", &[]),
+        ("enrollment-summary", &["--event-type", "buffer-ready"]),
+    ] {
+        let expected = json_output(&query(None, &address, service, arguments).await);
+        match service {
+            "alarms" => {
+                assert_eq!(expected["more_events"], json!(false));
+                let summaries = expected["summaries"].as_array().unwrap();
+                assert_eq!(summaries.len(), 1, "{expected}");
+                assert_eq!(summaries[0]["object"], alarm);
+                assert_eq!(summaries[0]["event_state"]["name"], "high-limit");
+                assert_eq!(
+                    summaries[0]["event_timestamps"]["to_fault"]["text"],
+                    "seq 42"
+                );
+            }
+            "alarm-summary" => {
+                assert_eq!(expected.as_array().map(Vec::len), Some(1), "{expected}");
+                assert_eq!(expected[0]["object"], alarm);
+            }
+            _ => assert_eq!(
+                expected[0]["object"],
+                json!({"type": "trend-log", "type_number": 20, "instance": 1}),
+                "{expected}"
+            ),
+        }
+        for target in [format!("{DNET}:{INSTANCE}"), format!("{DNET}:0x05")] {
+            assert_eq!(
+                json_output(&query(Some(port), &target, service, arguments).await),
+                expected,
+                "{service} {target}"
+            );
+        }
     }
     direct.stop().await.unwrap();
     remote.stop().await.unwrap();

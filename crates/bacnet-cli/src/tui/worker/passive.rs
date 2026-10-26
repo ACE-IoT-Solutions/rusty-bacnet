@@ -176,6 +176,7 @@ pub(crate) fn refusal(command: Command) -> Option<WorkerEvent> {
         Command::Safety(
             SafetyCommand::Prepare { req, .. }
             | SafetyCommand::Execute { req, .. }
+            | SafetyCommand::Manage { req, .. }
             | SafetyCommand::Revert { req },
         ) => WorkerEvent::Safety(SafetyEvent::Refused {
             req: Some(req),

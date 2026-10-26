@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::target::AddressStyle;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::mstp::MstpTransport;
@@ -28,12 +29,12 @@ use bacnet_transport::tap::{FrameTap, FrameTapReceiver, TapDirection, TapPeer, T
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
+use super::redact::scrub;
 use super::{Batch, CaptureCommand, CaptureEvent, CaptureFrame, Direction, FrameSummary, Framing};
-use crate::core::target::AddressStyle;
-use crate::decode::frame::summarize_frame;
 use crate::tui::message::WorkerEvent;
 use crate::tui::monitor::lines::CliSerial;
 use crate::tui::worker::{EventSink, Offer};
+use bacnet_ops::decode::frame::summarize_frame;
 
 /// What a session's capture is called before its tap is known.
 pub(crate) const TAP: &str = "the session's frame tap";
@@ -200,6 +201,7 @@ fn convert(
         via,
         bytes: frame.bytes,
         summary,
+        redacted: false,
     }
 }
 
@@ -293,6 +295,7 @@ fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
         via,
         bytes,
         summary,
+        redacted: false,
     }
 }
 
@@ -455,11 +458,12 @@ pub(crate) async fn pump(
                 }
             }
             next = source.next() => match next {
+                // A password leaves no frame before the ring sees it.
                 Next::Frame(frame) => {
-                    batch.push(frame);
+                    batch.push(scrub(frame));
                     while batch.len() < BATCH {
                         match source.try_next() {
-                            Some(frame) => batch.push(frame),
+                            Some(frame) => batch.push(scrub(frame)),
                             None => break,
                         }
                     }

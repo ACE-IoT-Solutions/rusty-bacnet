@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::limits::RequestLimits;
+use bacnet_ops::target::AddressStyle;
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_transport::port::TransportPort;
 use bacnet_transport::sc::ScEvent;
@@ -17,11 +19,9 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::browse::limits::RateCap;
 use super::watch::WatchOptions;
 use super::write::SafetyOptions;
 use super::{COMMAND_CHANNEL_CAPACITY, DeviceFeed, EventSink, passive};
-use crate::core::target::AddressStyle;
 use crate::transport::{self, TransportArgs};
 use crate::tui::message::{
     Command, DirectedTo, OpId, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent,
@@ -385,11 +385,11 @@ async fn serve_with<T: TransportPort + 'static>(
     sc_events: Option<broadcast::Receiver<ScEvent>>,
 ) {
     let client = Arc::new(client);
-    let rate = RateCap::new(options.max_rate);
+    let rate = RequestLimits::new(options.max_rate);
     let mut local = style.format(client.local_mac());
     // A B/IPv6 VMAC alone doesn't say where the client is bound.
     if let Some(bound) =
-        crate::core::target::as_bip6(client.transport()).and_then(|t| t.local_address())
+        bacnet_ops::target::as_bip6(client.transport()).and_then(|t| t.local_address())
     {
         local = format!("{local} ({bound})");
     }
@@ -449,7 +449,7 @@ async fn serve_with<T: TransportPort + 'static>(
                                 sink.deliver(WorkerEvent::OpFinished { op: old, outcome: OpOutcome::Cancelled }).await;
                             }
                             if let WhoIsScope::Directed { to: DirectedTo::Bip6(peer), .. } = &spec.scope {
-                                let vmac = Box::pin(crate::core::target::bip6_vmac(client.transport(), *peer));
+                                let vmac = Box::pin(bacnet_ops::target::bip6_vmac(client.transport(), *peer));
                                 resolving = Some(Resolving { op, spec, vmac });
                             } else {
                                 listening = who_is(&client, &sink, op, &spec).await;

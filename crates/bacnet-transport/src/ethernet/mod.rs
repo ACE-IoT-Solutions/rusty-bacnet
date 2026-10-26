@@ -284,7 +284,6 @@ mod transport {
     use std::os::fd::AsRawFd;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use tokio::io::unix::AsyncFd;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
     use tracing::{debug, warn};
@@ -292,6 +291,7 @@ mod transport {
     use super::egress::{LlcReply, ReplyFailures, send_whole_frame};
     use super::ingress::{FrameIngress, classify_frame, npdu_channel_full};
     use crate::port::{ReceivedNpdu, TransportPort, TransportProvenance};
+    use crate::sys::packet_socket::AsyncSocket;
     use crate::warn_throttle::WarnThrottle;
 
     /// Max NPDU size for Ethernet: 1518 (max frame) - 14 (eth header) - 3 (LLC) - 4 (FCS by NIC) = 1497.
@@ -568,7 +568,7 @@ mod transport {
             let (tx, rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
             let local_mac = self.local_mac;
 
-            let async_fd = AsyncFd::new(Arc::clone(&socket)).map_err(|e| {
+            let async_fd = AsyncSocket::register(Arc::clone(&socket)).map_err(|e| {
                 Error::Transport(std::io::Error::other(format!(
                     "AsyncFd creation failed: {e}"
                 )))

@@ -13,7 +13,7 @@ Existing section links remain below so saved bookmarks can reach the right page.
 
 ## Match the link to an owner
 
-[Continue: Match the link to an owner](/rusty-bacnet/reference/transports/#match-the-link-to-an-owner).
+[Continue: Match the link to an owner](/rusty-bacnet/connect/overview/#match-the-link-to-an-owner).
 
 ## Read the Number-control evidence at its actual scope
 

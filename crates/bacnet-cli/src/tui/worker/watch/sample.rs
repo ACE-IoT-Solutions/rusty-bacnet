@@ -6,13 +6,14 @@
 //! symbol) and exactly, for the CSV log (every digit, no state texts).
 
 use bacnet_client::client::ReceivedCOVNotification;
+use bacnet_ops::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, units};
+use bacnet_ops::label::kebab;
 use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 use tokio::time::Instant;
 
-use crate::tui::app::objects::kebab;
-use crate::tui::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, units};
 use crate::tui::point::Health;
+use crate::tui::row_error::row_error_text;
 use crate::tui::watched::{Point, Sample};
 
 /// One value of a point, as read or notified, not yet written out.
@@ -139,7 +140,7 @@ pub(crate) fn from_rows(property: PropertyIdentifier, rows: &[RawRow]) -> Option
         .and_then(|(_, value)| value.as_deref().ok())
         .and_then(flags);
     Some(Reading {
-        value: value.clone(),
+        value: value.clone().map_err(|error| row_error_text(&error)),
         flags: status,
         at: Instant::now().into_std(),
     })

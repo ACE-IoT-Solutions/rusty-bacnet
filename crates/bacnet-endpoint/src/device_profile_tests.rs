@@ -5,6 +5,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::constructed::BACnetNameValue;
 use bacnet_types::enums::{ErrorClass, ErrorCode, RejectReason};
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 
 const TAGS: PropertyIdentifier = PropertyIdentifier::TAGS;
@@ -35,13 +36,13 @@ fn primitive(bytes: &[u8]) -> PropertyValue {
 }
 fn assert_reject<T: std::fmt::Debug>(result: Result<T, Error>) {
     assert!(
-        matches!(result, Err(Error::Reject { reason }) if reason == RejectReason::UNRECOGNIZED_SERVICE),
+        matches!(result, Err(Error::Remote(RemoteError::Reject { reason })) if reason == RejectReason::UNRECOGNIZED_SERVICE),
         "{result:?}"
     );
 }
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY && code == expected),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == expected),
         "{result:?}"
     );
 }

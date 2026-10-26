@@ -1,6 +1,7 @@
 //! The write session's worker side: it checks every request against the
 //! session level and the profile's policy again, reads the pre-image,
-//! sends the writes, and owns the ledger and the audit log.
+//! sends the writes and the device management requests ([`manage`]), and
+//! owns the ledger and the audit log.
 //!
 //! [`run`] is polled beside the session loop under `join!`, like the
 //! browser and the watch list, and serves one request at a time. It does
@@ -12,6 +13,7 @@
 //! While it runs it holds the workspace's lock ([`lock`]), so a second
 //! session on the same profile can't arm.
 
+mod manage;
 mod send;
 
 use std::path::PathBuf;
@@ -20,6 +22,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::class::Class;
+use bacnet_ops::engine::{Halt, Reader, Wanted, unreachable};
+use bacnet_ops::limits::RequestLimits;
 use bacnet_transport::port::TransportPort;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -27,9 +32,6 @@ use tokio::time::Instant;
 
 use self::send::{find, gate_name, item_json, relinquishes, send, unchanged};
 use super::EventSink;
-use super::browse::limits::RateCap;
-use super::browse::read::{Halt, Reader, Wanted, unreachable};
-use crate::core::class::Class;
 use crate::tui::message::WorkerEvent;
 use crate::tui::profile::{Safety, Writes};
 use crate::tui::safety::audit::{Audit, Context, utc_now};
@@ -37,7 +39,8 @@ use crate::tui::safety::ledger::{Entry, Ledger};
 use crate::tui::safety::lock::{WorkspaceLock, lock};
 use crate::tui::safety::plan::{self, PRE_READ, PRIORITY_6, PreRead};
 use crate::tui::safety::{
-    Gate, Level, MAX_MINUTES, Outcome, Planned, Preview, SafetyCommand, SafetyEvent, WriteSpec,
+    Change, Gate, Level, MAX_MINUTES, Outcome, Planned, Preview, SafetyCommand, SafetyEvent,
+    WriteSpec,
 };
 
 /// Why a passive session refuses anything that transmits.
@@ -125,7 +128,7 @@ pub(crate) async fn keep_offline(options: &SafetyOptions, level: Level) {
         return;
     };
     let audit = Audit::open(dir, context(options, "-"));
-    let kept = lock(dir).and_then(|held| {
+    let kept = lock(dir, "tui").and_then(|held| {
         let mut ledger = Ledger::open(dir)?;
         ledger.keep_all();
         ledger.save()?;
@@ -175,7 +178,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     sink: &EventSink,
     mut commands: mpsc::Receiver<SafetyCommand>,
-    rate: &RateCap,
+    rate: &RequestLimits,
     options: &SafetyOptions,
     local: &str,
 ) {
@@ -228,7 +231,7 @@ impl<'a> Runner<'a> {
                 return runner;
             }
         }
-        match lock(dir).and_then(|held| Ok((held, Ledger::open(dir)?))) {
+        match lock(dir, "tui").and_then(|held| Ok((held, Ledger::open(dir)?))) {
             Ok((held, ledger)) => {
                 runner._lock = Some(held);
                 runner.ledger = Some(ledger);
@@ -348,7 +351,7 @@ impl<'a> Runner<'a> {
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
         command: SafetyCommand,
     ) {
         match command {
@@ -382,10 +385,18 @@ impl<'a> Runner<'a> {
                 }
                 tell(sink, SafetyEvent::Disarmed).await;
             }
-            SafetyCommand::Declined { preview } => {
+            SafetyCommand::Declined {
+                change: Change::Write(preview),
+            } => {
                 let items: Vec<Value> = preview.items.iter().map(item_json).collect();
                 let fields = json!({ "items": items, "tier": gate_name(&preview.gate) });
                 self.audit("declined", fields).await;
+            }
+            SafetyCommand::Declined {
+                change: Change::Device(request),
+            } => self.audit("declined", request.audit_json()).await,
+            SafetyCommand::Manage { req, request } => {
+                self.manage(client, sink, rate, req, *request).await;
             }
             SafetyCommand::Prepare { req, specs, batch } => {
                 if let Some(why) = self.refusal() {
@@ -475,7 +486,7 @@ impl<'a> Runner<'a> {
         &self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
         specs: &[WriteSpec],
         batch: bool,
     ) -> Result<Preview, String> {
@@ -557,7 +568,7 @@ impl<'a> Runner<'a> {
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
         preview: &Preview,
     ) -> Vec<(String, Outcome)> {
         if sink.is_cancelled() {
@@ -613,8 +624,11 @@ impl<'a> Runner<'a> {
         // The exit guard counts a write in flight; by now it is on disk
         // in both the ledger and the audit log.
         tell(sink, SafetyEvent::Ledger(self.entries())).await;
-        rate.acquire().await;
+        // One turn at the device for the preview's writes, sent one after
+        // another (#1791).
+        let turn = rate.turn(preview.device).await;
         let outcomes = send(client, preview).await;
+        drop(turn);
         for ((item, id), outcome) in preview.items.iter().zip(&ids).zip(&outcomes) {
             if let Some(ledger) = &mut self.ledger {
                 ledger.finish(*id, outcome.applied(), &backup);
@@ -658,7 +672,7 @@ impl<'a> Runner<'a> {
         &mut self,
         client: &BACnetClient<T>,
         sink: &EventSink,
-        rate: &RateCap,
+        rate: &RequestLimits,
     ) -> usize {
         let entries = self
             .ledger
@@ -670,7 +684,7 @@ impl<'a> Runner<'a> {
                 _ if sink.is_cancelled() => Outcome::NotSent("the session ended first".into()),
                 (Some(undo), Some(object)) => {
                     find(client, entry.device).await;
-                    rate.acquire().await;
+                    let turn = rate.turn(entry.device).await;
                     let result = client
                         .write_property_to_device(
                             entry.device,
@@ -681,6 +695,7 @@ impl<'a> Runner<'a> {
                             entry.priority,
                         )
                         .await;
+                    drop(turn);
                     Outcome::of(&result)
                 }
                 _ => Outcome::NotSent(UNKNOWN_PRE_IMAGE.into()),

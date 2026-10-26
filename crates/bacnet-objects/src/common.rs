@@ -44,7 +44,7 @@ pub(crate) fn protocol_error(
     class: bacnet_types::enums::ErrorClass,
     code: bacnet_types::enums::ErrorCode,
 ) -> bacnet_types::error::Error {
-    bacnet_types::error::Error::Protocol { class, code }
+    bacnet_types::error::Error::protocol(class, code)
 }
 
 /// Classify an unhandled built-in write after its specific guards and routes.
@@ -140,6 +140,7 @@ macro_rules! read_identity_properties {
         }
     };
 }
+use crate::prelude::*;
 pub(crate) use read_identity_properties;
 
 /// Common read_property match arms shared by most object types.

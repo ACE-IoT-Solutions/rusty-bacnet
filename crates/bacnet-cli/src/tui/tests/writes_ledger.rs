@@ -76,7 +76,7 @@ async fn a_batch_failing_part_way_tracks_only_the_writes_before_the_failure() {
     finished(&mut site).await;
     let outcomes = outcomes(&site.app);
     assert_eq!(outcomes[0], Outcome::Ack, "{outcomes:?}");
-    assert!(matches!(outcomes[1], Outcome::Error { .. }), "{outcomes:?}");
+    assert!(matches!(outcomes[1], Outcome::Refused(_)), "{outcomes:?}");
     assert!(matches!(outcomes[2], Outcome::NotSent(_)), "{outcomes:?}");
     assert_eq!(slot(&site, 12).await, PropertyValue::Real(41.0));
     let ledger = Ledger::open(dir.path()).unwrap();

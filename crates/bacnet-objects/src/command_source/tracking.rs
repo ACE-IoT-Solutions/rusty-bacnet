@@ -25,8 +25,8 @@ pub(crate) struct ValueSourceTracking {
 impl Default for ValueSourceTracking {
     fn default() -> Self {
         Self {
-            sources: std::array::from_fn(|_| BACnetValueSource::None),
-            owners: std::array::from_fn(|_| None),
+            sources: core::array::from_fn(|_| BACnetValueSource::None),
+            owners: core::array::from_fn(|_| None),
             sequence: 0,
         }
     }

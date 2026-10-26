@@ -43,6 +43,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // Validate every configured route against the concrete transport before
         // mutating the database or starting network work. No binding takes a
         // group address (#1493).
+        // Max_APDU_Length_Accepted is fixed here for the server's life; a
+        // later fall in the transport's capacity leaves it as is, and each
+        // reply is sized to its route instead (#2093).
         super::network_port::validate_apdu_capacity(&mut config, &transport)?;
         crate::local_device::validate_startup(&db, &config.device)?;
         let is_group = |mac: &[u8]| transport.is_group_destination(mac);
@@ -268,7 +271,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         // Abort arm cancels in-flight segmented response
                         // senders and records server-TSM results (#377).
                         // Provenance snapshot for this ingress (RB-07, by value).
-                        let provenance = received.provenance;
+                        let provenance = received.provenance.clone();
                         let route = received.response_route();
                         super::segmented_receive::remove_peer_aborted_request(
                             &mut seg_receivers,
@@ -284,7 +287,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     source_mac.as_slice(),
                                     source_network.as_ref(),
                                     req.invoke_id,
-                                    provenance,
+                                    provenance.clone(),
                                 );
                                 if let Some(conflict) =
                                     super::segmented_receive::find_receive_provenance_conflict(

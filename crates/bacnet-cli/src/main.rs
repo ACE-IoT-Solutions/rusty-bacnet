@@ -6,9 +6,12 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // a command-line tool prints its results
 #![forbid(unsafe_code)]
 
+use std::time::Duration;
 use std::{io::IsTerminal, net::Ipv4Addr};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::destination::{self, Destination};
+use bacnet_ops::{parse, target};
 use bacnet_transport::{bip::BipTransport, port::TransportPort};
 use clap::{CommandFactory, FromArgMatches};
 
@@ -21,11 +24,12 @@ mod core;
 mod decode;
 mod entry;
 mod foreign;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod mstp;
 mod mstp_thread;
 mod multicast;
 mod output;
-mod parse;
 #[cfg(feature = "tui")]
 mod paths;
 mod sc_check;
@@ -34,10 +38,8 @@ mod transport;
 #[cfg(feature = "tui")]
 mod tui;
 
-use crate::core::destination::{self, Destination};
 use crate::core::guard;
 use crate::core::range::parse_discover_range;
-use crate::core::target;
 use args::{Cli, Command};
 use output::OutputFormat;
 
@@ -87,13 +89,30 @@ async fn resolve_target_mac<T: TransportPort + 'static>(
     Ok(destination::resolve_mac(client, target_str).await?)
 }
 
+/// How long a routed target waits for its device to answer a Who-Is sent
+/// to its network, as long as `discover` waits by default.
+const ROUTED_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
+
+/// Undocumented: milliseconds to wait instead, so tests of a device that
+/// never answers don't wait the full three seconds.
+const ROUTED_WAIT_VAR: &str = "BACNET_CLI_ROUTED_WAIT_MS";
+
+/// How long a routed target waits for its device: [`ROUTED_DISCOVERY_WAIT`],
+/// unless the environment sets another wait for a test.
+fn routed_wait() -> Duration {
+    std::env::var(ROUTED_WAIT_VAR)
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(ROUTED_DISCOVERY_WAIT, Duration::from_millis)
+}
+
 /// Resolve a target string for a command with a routed client call: read,
 /// readm, write and subscribe also take `dnet:instance` and `dnet:0xMAC`.
 async fn resolve_destination<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Destination, Box<dyn std::error::Error>> {
-    Ok(destination::resolve(client, target_str, destination::routed_wait()).await?)
+    Ok(destination::resolve(client, target_str, routed_wait()).await?)
 }
 
 /// Execute a one-shot CLI command.
@@ -103,7 +122,10 @@ async fn execute_command<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Tui { .. } | Command::ScCheck { .. } | Command::MstpPorts => {
+        Command::Tui { .. }
+        | Command::Mcp { .. }
+        | Command::ScCheck { .. }
+        | Command::MstpPorts => {
             unreachable!()
         }
         Command::Discover {
@@ -180,7 +202,8 @@ async fn execute_command<T: TransportPort + 'static>(
             let to = resolve_destination(client, target).await?;
             let (object_type, instance) = parse::parse_object_specifier(object)?;
             let (prop, index) = parse::parse_property(property)?;
-            let (val, inline_priority) = parse::parse_value_with_priority(value)?;
+            let (val, inline_priority) =
+                parse::parse_value_for_with_priority(object_type, prop, index, value)?;
             let pri = priority.or(inline_priority);
             commands::write::write_property_cmd(
                 client,
@@ -250,9 +273,17 @@ async fn execute_command<T: TransportPort + 'static>(
             let to = resolve_destination(client, target).await?;
             commands::device::reinit_cmd(client, &to, state, password.as_deref(), format).await?;
         }
-        Command::Alarms { target } => {
+        Command::Alarms { target, max } => {
             let to = resolve_destination(client, target).await?;
-            commands::device::alarms_cmd(client, &to, format).await?;
+            commands::alarms::alarms_cmd(client, &to, *max, format).await?;
+        }
+        Command::AlarmSummary { target } => {
+            let to = resolve_destination(client, target).await?;
+            commands::alarms::alarm_summary_cmd(client, &to, format).await?;
+        }
+        Command::EnrollmentSummary { target, filters } => {
+            let to = resolve_destination(client, target).await?;
+            commands::alarms::enrollment_summary_cmd(client, &to, filters, format).await?;
         }
         Command::FileRead {
             target,
@@ -531,8 +562,8 @@ fn guard_one_shot(cli: &Cli, confirm: &mut dyn guard::Confirm) -> Result<(), gua
     };
     // A name that wasn't captured classifies as nothing, so it is refused.
     let name = cli.command_name.as_deref().unwrap_or_default();
-    let class = core::class::of(name).map(|class| match command {
-        Command::Subscribe { lifetime, .. } => core::class::of_subscribe(*lifetime),
+    let class = bacnet_ops::class::of(name).map(|class| match command {
+        Command::Subscribe { lifetime, .. } => bacnet_ops::class::of_subscribe(*lifetime),
         _ => class,
     });
     guard::check(name, class, target, cli.policy(), confirm)
@@ -568,6 +599,10 @@ async fn cli_main(cli: Cli) -> CliResult {
         // The TUI sets up its own tracing: nothing may write to the terminal
         // while it is in raw mode. Boxed so its state stays out of this future.
         return Box::pin(run_tui(cli)).await;
+    }
+    if matches!(cli.command, Some(Command::Mcp { .. })) {
+        // Stdout is the MCP stream: it sets up its own tracing, on stderr.
+        return Box::pin(run_mcp(cli)).await;
     }
     setup_tracing(
         cli.verbose,
@@ -672,6 +707,22 @@ async fn run_tui(cli: Cli) -> CliResult {
         let _ = cli;
         eprintln!(
             "Error: The terminal UI requires the 'tui' feature. Rebuild with:\n  cargo install bacnet-cli --features tui"
+        );
+        std::process::exit(1);
+    }
+}
+
+/// `bacnet mcp`, or the rebuild advice when the `mcp` feature is off.
+async fn run_mcp(cli: Cli) -> CliResult {
+    #[cfg(feature = "mcp")]
+    {
+        mcp::run(cli).await
+    }
+    #[cfg(not(feature = "mcp"))]
+    {
+        let _ = cli;
+        eprintln!(
+            "Error: The MCP server requires the 'mcp' feature. Rebuild with:\n  cargo install bacnet-cli --features mcp"
         );
         std::process::exit(1);
     }

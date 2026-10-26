@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn dcc_disable_rate_validation_before_start() {
@@ -278,14 +279,18 @@ fn dcc_configured_validation_retains_decode_password_unknown_mode_precedence() {
         // `[1]` announces one contents octet and holds none (#1374): the
         // request's Reject for a missing parameter (#1446).
         let failure = validate(&[0x19]);
-        assert!(matches!(failure.error, Error::Reject { reason }
-            if reason == RejectReason::MISSING_REQUIRED_PARAMETER));
+        assert!(
+            matches!(failure.error, Error::Remote(RemoteError::Reject { reason })
+            if reason == RejectReason::MISSING_REQUIRED_PARAMETER)
+        );
         assert!(matches!(failure.outcome, DccOutcome::Malformed));
         // The password is checked before the mode, so an unknown mode with
         // no password is a password failure.
         let failure = validate(&[0x19, 3]);
-        assert!(matches!(failure.error, Error::Protocol { class, code }
-            if class == ErrorClass::SECURITY && code == ErrorCode::PASSWORD_FAILURE));
+        assert!(
+            matches!(failure.error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::SECURITY && code == ErrorCode::PASSWORD_FAILURE)
+        );
         assert!(matches!(failure.outcome, DccOutcome::PasswordFailure));
         let mut data = BytesMut::new();
         DeviceCommunicationControlRequest {
@@ -357,6 +362,84 @@ async fn dcc_require_password_rejected_before_start() {
     let debug = format!("{config:?}");
     assert!(!debug.contains("secret-sentinel"));
     assert!(debug.contains("DenyAll"));
+}
+
+/// A configured DCC or ReinitializeDevice password over 20 characters could
+/// never be sent, so the server refuses it before start; 20 multi-octet
+/// characters are within the limit (#2060).
+#[tokio::test]
+async fn configured_password_over_twenty_characters_rejected_before_start() {
+    let too_long = "é".repeat(21);
+    for (config, name) in [
+        (
+            ServerConfig {
+                dcc_password: Some(too_long.clone()),
+                ..Default::default()
+            },
+            "dcc_password",
+        ),
+        (
+            ServerConfig {
+                reinit_password: Some(too_long.clone()),
+                ..Default::default()
+            },
+            "reinit_password",
+        ),
+    ] {
+        let started = Arc::new(AtomicBool::new(false));
+        let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&error, Error::Encoding(m) if m == &format!("{name} exceeds the 20-character limit")),
+            "{error:?}"
+        );
+        assert!(!started.load(Ordering::Acquire));
+    }
+    let fits = "é".repeat(20);
+    let config = ServerConfig {
+        dcc_password: Some(fits.clone()),
+        reinit_password: Some(fits),
+        ..Default::default()
+    };
+    config.validate_dcc_config().unwrap();
+}
+
+/// An empty DCC or ReinitializeDevice password could never match, since a
+/// request's empty password decodes as none, so the server refuses it before
+/// start in every policy (#2094).
+#[tokio::test]
+async fn configured_empty_password_rejected_before_start() {
+    for policy in [DccPolicy::DenyAll, DccPolicy::LegacyPermissive] {
+        for name in ["dcc_password", "reinit_password"] {
+            let mut config = ServerConfig {
+                dcc_policy: policy,
+                ..Default::default()
+            };
+            match name {
+                "dcc_password" => config.dcc_password = Some(String::new()),
+                _ => config.reinit_password = Some(String::new()),
+            }
+            let started = Arc::new(AtomicBool::new(false));
+            let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                matches!(&error, Error::Encoding(m) if m == &format!("{name} is empty; leave it unset for no password")),
+                "{error:?}"
+            );
+            assert!(!started.load(Ordering::Acquire));
+        }
+    }
+    assert!(
+        BACnetServer::bip_builder()
+            .reinit_password("")
+            .build()
+            .await
+            .is_err()
+    );
 }
 
 #[cfg(feature = "sc-tls")]

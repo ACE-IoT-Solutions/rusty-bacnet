@@ -129,7 +129,10 @@ async fn worker_warning_to(
         AdmittedDirectPeer {
             address: "127.0.0.1:1".parse().unwrap(),
             member: &member,
-            identity: route.identity(),
+            provenance: crate::port::TransportProvenance::verified_direct_peer(
+                route.identity(),
+                Default::default(),
+            ),
             response: route,
             warnings,
         },

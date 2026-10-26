@@ -8,7 +8,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
 use bacnet_types::MacAddr;
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::{Duration, timeout};
@@ -141,7 +141,7 @@ async fn max_retry_budget_sends_exactly_255_retransmissions() {
     .expect("the maximum retry budget must terminate");
     assert!(matches!(
         result,
-        Err(Error::Abort { reason }) if reason == AbortReason::TSM_TIMEOUT
+        Err(Error::Remote(RemoteError::Abort { reason })) if reason == AbortReason::TSM_TIMEOUT
     ));
     assert_eq!(drain.await.unwrap(), 1 + usize::from(u8::MAX));
 

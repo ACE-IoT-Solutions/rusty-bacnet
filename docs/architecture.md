@@ -38,19 +38,28 @@ Runtime and application roles
   bacnet-server         Full server dispatch, COV, events, scheduling
   bacnet-endpoint       Public shared owner composing bounded sibling roles
 
+Operations core (UI-free, for the front ends)
+  bacnet-ops            Target and value grammar, value formatting, request
+                        limits, read engine over bacnet-client
+  bacnet-mcp            Read-only MCP server over the bacnet-ops engine
+                        (rmcp SDK; the CLI's `mcp` feature)
+
 Selected direct dependencies
   bacnet-endpoint -> bacnet-client, bacnet-server, bacnet-endpoint-core,
                      bacnet-network, bacnet-objects
-  bacnet-cli     -> bacnet-client              (CLI application)
+  bacnet-ops     -> bacnet-client, bacnet-transport
+  bacnet-mcp     -> bacnet-ops, rmcp
+  bacnet-cli     -> bacnet-ops, bacnet-client, bacnet-mcp (with `mcp`)  (CLI application)
   rusty-bacnet   -> bacnet-client, bacnet-server, bacnet-endpoint
                                               (PyO3 bindings)
 ```
 
 `bacnet-client`, `bacnet-server` and `bacnet-endpoint` are all workspace
-`default-members`, along with the foundational crates, endpoint-core,
+`default-members`, along with the foundational crates, endpoint-core, `bacnet-ops`,
 integration tests, the MS/TP bus simulator and benchmarks. The CLI
-(`bacnet-cli`) and PyO3 binding (`rusty-bacnet`) are excluded from default
-builds: the CLI pulls in heavier application dependencies, and the Python
+(`bacnet-cli`), the MCP server (`bacnet-mcp`) and PyO3 binding (`rusty-bacnet`)
+are excluded from default builds: the CLI and the MCP server pull in heavier
+application dependencies, and the Python
 extension needs its native Python build context. They remain workspace
 members and can be selected explicitly. So does the unpublished firmware link
 test, `firmware/link`, which links the MS/TP stack (`bacnet-mstp-codec`,
@@ -164,7 +173,7 @@ MAC address format varies by transport:
 - **Ethernet**: 6 bytes (IEEE 802 MAC)
 - **Loopback**: arbitrary (synthetic, e.g., `[0x00, 0x01]`)
 
-`AnyTransport<S>` is a type-erased enum wrapping all transport types, enabling mixed-transport routing (e.g., BIP + MS/TP + Loopback on the same router).
+`AnyTransport` is a type-erased enum wrapping all transport types, enabling mixed-transport routing (e.g., BIP + MS/TP + Loopback on the same router). Its MS/TP variant runs over a `BoxedSerial`, so the enum carries no serial-port type parameter, and `BACnetClient` and `BACnetServer` take it as their default transport type.
 
 The transports' OS calls that still need `unsafe` (Winsock, `GetAdaptersAddresses`, `getifaddrs`, the libc `recvmsg`/`sendmsg` fallbacks for targets nix doesn't cover, and the RS-485 ioctl) sit in one private module, `bacnet-transport`'s `sys`, behind safe wrappers. It is the only place in the crate allowed to use `unsafe`, and the crate's `unsafe_stays_in_sys` test fails on unsafe code anywhere else (#1923).
 

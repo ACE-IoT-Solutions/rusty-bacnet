@@ -2,6 +2,7 @@ use super::*;
 use PropertyIdentifier as P;
 use bacnet_objects::{averaging::AveragingObject, traits::BACnetObject};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 #[test]
@@ -255,8 +256,10 @@ fn rpm_averaging_indexed_reads_and_bytes_are_unchanged() {
                 Err(expected) => {
                     assert!(result.property_value.is_none());
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                    assert!(matches!(rp, Err(Error::Protocol { class, code })
-                        if class == ErrorClass::PROPERTY && code == expected));
+                    assert!(
+                        matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                        if class == ErrorClass::PROPERTY && code == expected)
+                    );
                     assert!(response.is_empty());
                 }
             }

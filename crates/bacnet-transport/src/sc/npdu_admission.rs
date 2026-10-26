@@ -278,8 +278,9 @@ pub(crate) struct DirectPeer {
     pub(crate) vmac: Vmac,
     /// Peer socket address, for drop logging.
     pub(crate) addr: SocketAddr,
-    /// Verified TLS identity of the peer.
-    pub(crate) identity: crate::port::DirectScIdentity,
+    /// The connection's verified direct provenance, built once for it:
+    /// identity and leaf certificate (#1965).
+    pub(crate) provenance: TransportProvenance,
     /// Handle for replying on the direct connection, when available.
     pub(crate) response: Option<crate::port::DirectResponse>,
 }
@@ -416,7 +417,7 @@ impl ScNpduAdmission {
         let DirectPeer {
             vmac: peer,
             addr: peer_addr,
-            identity,
+            provenance,
             response: direct_response,
         } = peer;
         let source_mac = MacAddr::from_slice(&peer);
@@ -425,7 +426,7 @@ impl ScNpduAdmission {
             source_mac: source_mac.clone(),
             link_layer_group: false,
             data_attributes: data_attributes::from_data_options(msg),
-            provenance: TransportProvenance::verified_direct_peer(identity),
+            provenance,
             direct_response,
             reply_tx: None,
         };

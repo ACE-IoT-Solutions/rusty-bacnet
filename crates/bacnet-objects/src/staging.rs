@@ -4,7 +4,8 @@
 //! local target-write plans for the server, which executes them after releasing
 //! the source-object database mutation lock.
 
-use std::borrow::Cow;
+use crate::prelude::*;
+use alloc::borrow::Cow;
 
 use bacnet_encoding::constructed::{decode_stage_limit_value, encode_stage_limit_value};
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
@@ -655,7 +656,7 @@ fn validate_min_present_value(
 }
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol { class, code }
+    Error::protocol(class, code)
 }
 
 #[cfg(test)]

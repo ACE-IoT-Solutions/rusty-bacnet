@@ -283,7 +283,17 @@ async fn gpio_direction_errors_are_reported_and_recoverable() {
 
 #[tokio::test]
 async fn custom_backend_without_drain_never_claims_tx_complete() {
-    assert!(matches!(crate::mstp::NoSerial.drain().await,
+    /// A backend that leaves `drain` at the trait's default.
+    struct NoDrain;
+    impl SerialPort for NoDrain {
+        async fn write(&self, _data: &[u8]) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
+            Ok(0)
+        }
+    }
+    assert!(matches!(NoDrain.drain().await,
         Err(Error::Transport(e)) if e.kind() == std::io::ErrorKind::Unsupported));
 }
 
@@ -390,7 +400,7 @@ async fn native_serial_execution_modes_share_host_timing_harness() {
     use crate::mstp::{MstpExecutionMode, execution_tests::execution_timing_harness};
 
     // Native pseudo-terminals exercise the backend used for UART and USB ports;
-    // late-tail delivery models host chunking, not physical RS-485 timing.
+    // split reads model host chunking, not physical RS-485 timing.
     for baud in [9600, 38400, 76800] {
         for chunked in [false, true] {
             for software_direction in [false, true] {

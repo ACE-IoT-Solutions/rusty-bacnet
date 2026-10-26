@@ -465,9 +465,7 @@ fn decode_success_filter(
         // A value the enumeration doesn't define, as GetEnrollmentSummary
         // answers its own filters.
         _ => {
-            return Err(Error::Reject {
-                reason: RejectReason::UNDEFINED_ENUMERATION,
-            });
+            return Err(Error::reject(RejectReason::UNDEFINED_ENUMERATION));
         }
     };
     Ok((filter, end))

@@ -81,7 +81,7 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
         directions,
         [Direction::Out, Direction::In, Direction::Out, Direction::In]
     );
-    let server_address = crate::output::format_mac(&target);
+    let server_address = bacnet_ops::target::format_mac(&target);
     assert_eq!(frames[0].destination, server_address);
     assert_eq!(frames[1].source, server_address);
     let pdus: Vec<_> = frames
@@ -119,7 +119,7 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
         labels.contains(&"Service: read-property".to_string()),
         "{labels:?}"
     );
-    assert!(labels.iter().any(|l| l == "Real: 72.5"), "{labels:?}");
+    assert!(labels.iter().any(|l| l == "Value: 72.5"), "{labels:?}");
 
     filter(&mut app, "svc:ReadProperty errors");
     assert_eq!(app.capture.visible().collect::<Vec<_>>(), [4]);
@@ -127,7 +127,7 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
     server.stop().await.unwrap();
 }
 
-fn flat_labels(fields: &[crate::decode::tree::Field]) -> Vec<String> {
+fn flat_labels(fields: &[bacnet_ops::decode::tree::Field]) -> Vec<String> {
     let mut out = Vec::new();
     for field in fields {
         out.push(field.label.clone());

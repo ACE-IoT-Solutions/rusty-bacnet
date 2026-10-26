@@ -12,6 +12,7 @@ use bacnet_encoding::npdu::decode_npdu;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
+use bacnet_types::error::RemoteError;
 use bytes::Bytes;
 use tokio::time::{Duration, timeout};
 
@@ -227,7 +228,7 @@ async fn routed_reassembly_abort_carries_dnet_dadr() {
 
     let result = request_task.await.unwrap();
     assert!(
-        matches!(result, Err(super::Error::Abort { .. })),
+        matches!(result, Err(super::Error::Remote(RemoteError::Abort { .. }))),
         "the caller must observe the abort, got {result:?}"
     );
     router_transport.stop().await.unwrap();

@@ -115,7 +115,10 @@ pub(super) fn outcomes(app: &App) -> Vec<Outcome> {
 
 pub(super) fn preview(app: &App) -> &crate::tui::safety::Preview {
     match modal(app) {
-        Some(Modal::Confirm { preview, .. }) => preview,
+        Some(Modal::Confirm {
+            change: crate::tui::safety::Change::Write(preview),
+            ..
+        }) => preview,
         other => panic!("expected a preview, got {other:?}"),
     }
 }

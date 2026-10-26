@@ -9,7 +9,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 use serde_json::{Value, json};
 
 use crate::tui::safety::{Gate, NULL, Outcome, Planned, Preview};
@@ -84,9 +84,10 @@ pub(super) fn batch_outcomes(items: &[Planned], result: &Result<(), Error>) -> V
     let outcome = match (result, failed_at) {
         // An Error PDU without a failed write we can place leaves which
         // ones took effect unknown.
-        (Err(error @ (Error::Protocol { .. } | Error::Structured { .. })), None) => {
-            Outcome::Failed(error.to_string())
-        }
+        (
+            Err(error @ (Error::Remote(RemoteError::Error { .. }) | Error::Structured { .. })),
+            None,
+        ) => Outcome::Failed(error.to_string()),
         _ => Outcome::of(result),
     };
     (0..items.len())
@@ -159,8 +160,8 @@ pub(super) fn item_json(item: &Planned) -> Value {
     json!({
         "target": {
             "device": spec.device,
-            "object": crate::tui::app::objects::object_label(spec.object),
-            "property": crate::tui::app::objects::kebab(spec.property),
+            "object": bacnet_ops::label::object_label(spec.object),
+            "property": bacnet_ops::label::kebab(spec.property),
             "index": spec.index,
         },
         "params": { "value": item.value.text, "encoded": hex(&item.value.bytes) },

@@ -10,6 +10,7 @@ use bacnet_objects::event_log::EventLogObject;
 use bacnet_objects::trend::TrendLogObject;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, EventLogDatum, LogDatum};
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 use PropertyIdentifier as P;
@@ -83,7 +84,7 @@ fn rp(db: &ObjectDatabase, oid: ObjectIdentifier, property: P) -> Vec<u8> {
 
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
             if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );

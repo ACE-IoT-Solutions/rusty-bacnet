@@ -9,6 +9,7 @@ use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{
     BACnetDestination, BACnetEventParameter, BACnetRecipient, FaultParameters,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
 
 fn framed_event_parameters() -> Vec<u8> {
@@ -418,11 +419,37 @@ fn malformed_framed_event_parameters_write_rejected() {
         let err =
             write_framed(&mut db, oid, PropertyIdentifier::EVENT_PARAMETERS, bad).unwrap_err();
         match err {
-            Error::Protocol { class, .. } => {
+            Error::Remote(RemoteError::Error { class, .. }) => {
                 assert_eq!(class, ErrorClass::PROPERTY);
             }
             other => panic!("expected protocol error, got {other:?}"),
         }
+    }
+}
+
+/// A change-of-characterstring alarm string in JIS X 0208, a character set
+/// the stack can't convert, is answered with an Error naming it, not a
+/// Reject (#2090).
+#[test]
+fn unsupported_character_set_in_event_parameters_is_an_error() {
+    let mut db = ObjectDatabase::new();
+    let ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_CHARACTERSTRING).unwrap();
+    let oid = ee.object_identifier();
+    db.add(Box::new(ee)).unwrap();
+
+    // [17] { [0] 0, [1] { CharacterString, character set 2, two octets } }
+    let jis = vec![
+        0xFE, 0x11, 0x09, 0x00, 0x1E, 0x73, 0x02, 0x30, 0x42, 0x1F, 0xFF, 0x11,
+    ];
+    let err = write_framed(&mut db, oid, PropertyIdentifier::EVENT_PARAMETERS, jis).unwrap_err();
+    match err {
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(
+                (class, code),
+                (ErrorClass::PROPERTY, ErrorCode::CHARACTER_SET_NOT_SUPPORTED)
+            );
+        }
+        other => panic!("expected an Error PDU, got {other:?}"),
     }
 }
 

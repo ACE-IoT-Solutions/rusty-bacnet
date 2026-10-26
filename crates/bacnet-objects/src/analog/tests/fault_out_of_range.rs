@@ -1,6 +1,7 @@
 use super::super::*;
 use crate::traits::{BACnetObject, ReliabilityEvaluation};
 use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::StatusFlags;
 
 fn reliability(object: &dyn BACnetObject) -> u32 {
@@ -34,7 +35,7 @@ fn assert_unchanged(result: Result<ReliabilityEvaluation, Error>) {
 fn assert_unknown_property<T>(result: Result<T, Error>) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
+        Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::UNKNOWN_PROPERTY
     ));
@@ -43,7 +44,7 @@ fn assert_unknown_property<T>(result: Result<T, Error>) {
 fn assert_write_denied(result: Result<(), Error>) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
+        Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::WRITE_ACCESS_DENIED
     ));

@@ -32,6 +32,8 @@ use crate::tags;
 #[cfg(feature = "alloc")]
 mod formal_error;
 pub mod header;
+#[cfg(feature = "alloc")]
+mod remote_error;
 
 use header::{MaxApdu, MaxSegments};
 
@@ -846,6 +848,8 @@ fn decode_abort(data: Bytes) -> Result<AbortPdu, Error> {
 mod change_list_error_tests;
 #[cfg(all(test, feature = "alloc"))]
 mod encode_refusal_tests;
+#[cfg(all(test, feature = "alloc"))]
+mod remote_error_tests;
 #[cfg(all(test, feature = "alloc"))]
 mod structured_error_tests;
 #[cfg(all(test, feature = "alloc"))]

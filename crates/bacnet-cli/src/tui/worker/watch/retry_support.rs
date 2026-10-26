@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_transport::port::ReceivedNpdu;
+use bacnet_types::MacAddr;
 use bytes::Bytes;
 
 use super::*;
@@ -47,10 +48,10 @@ impl TransportPort for Peer {
         let reply = match self.reply {
             Reply::Silent => return Ok(()),
             Reply::SendProtocol => {
-                return Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::SERVICES,
-                    code: bacnet_types::enums::ErrorCode::OTHER,
-                });
+                return Err(Error::protocol(
+                    bacnet_types::enums::ErrorClass::SERVICES,
+                    bacnet_types::enums::ErrorCode::OTHER,
+                ));
             }
             Reply::Transport => {
                 return Err(Error::Transport(std::io::Error::other("test send failed")));

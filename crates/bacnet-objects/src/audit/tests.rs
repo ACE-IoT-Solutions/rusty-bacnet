@@ -8,7 +8,7 @@ use bacnet_types::constructed::{
     BACnetRecipient,
 };
 use bacnet_types::enums::{AuditOperation, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
 
 use crate::clock::{ClockFrame, ClockReader};
@@ -100,7 +100,7 @@ fn frame(minute: u8) -> ClockFrame {
 fn assert_operational_problem(error: Error) {
     assert!(matches!(
         error,
-        Error::Protocol { class, code }
+        Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::DEVICE
                 && code == ErrorCode::OPERATIONAL_PROBLEM
     ));

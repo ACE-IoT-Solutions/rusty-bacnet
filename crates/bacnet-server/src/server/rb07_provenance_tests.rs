@@ -88,7 +88,7 @@ async fn cross_segment_provenance_mismatch_is_detected_fail_closed() {
     > = HashMap::new();
     keys.insert(segmented_receive_key(mac, None, 7, unverified), ());
     let conflict = keys.keys().find(|existing| {
-        let expected = segmented_receive_key(mac, None, 7, verified);
+        let expected = segmented_receive_key(mac, None, 7, verified.clone());
         existing.0 == expected.0
             && existing.1 == expected.1
             && existing.2 == expected.2

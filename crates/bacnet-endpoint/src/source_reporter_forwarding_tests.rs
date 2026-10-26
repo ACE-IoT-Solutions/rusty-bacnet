@@ -7,6 +7,7 @@ use bacnet_objects::traits::MonotonicClock;
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::{BACnetAuditLogQueryParameters, BACnetObjectSelector};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn typed_device_authority_is_forwarded_without_copying() {
@@ -42,9 +43,11 @@ fn read(object: &dyn BACnetObject, property: PropertyIdentifier) -> PropertyValu
 }
 
 fn denied(result: Result<(), Error>) {
-    assert!(matches!(result, Err(Error::Protocol { class, code })
+    assert!(
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
         if class == ErrorClass::PROPERTY
-            && code == ErrorCode::WRITE_ACCESS_DENIED));
+            && code == ErrorCode::WRITE_ACCESS_DENIED)
+    );
 }
 
 #[tokio::test]

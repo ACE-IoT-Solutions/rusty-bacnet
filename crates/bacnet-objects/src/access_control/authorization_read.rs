@@ -3,6 +3,7 @@
 use super::*;
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 pub(super) fn object(
@@ -33,7 +34,9 @@ pub(super) fn error(
     error: Error,
 ) -> AuthorizationProblem {
     let failure = match error {
-        Error::Protocol { class, code } => AuthorizationReadFailure::Protocol { class, code },
+        Error::Remote(RemoteError::Error { class, code }) => {
+            AuthorizationReadFailure::Protocol { class, code }
+        }
         other => AuthorizationReadFailure::Other(other.to_string()),
     };
     problem(object, property, failure)
@@ -65,7 +68,7 @@ pub(super) fn optional(
     })?;
     match object.read_property(property, None) {
         Ok(value) => Ok(Some(value)),
-        Err(Error::Protocol { class, code })
+        Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::UNKNOWN_PROPERTY
                 && !object.property_list().contains(&property) =>

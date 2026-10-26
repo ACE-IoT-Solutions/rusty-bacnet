@@ -38,17 +38,17 @@ impl BACnetObject for LookupTestNotificationClass {
         match property {
             p if p == PropertyIdentifier::NOTIFICATION_CLASS => Ok(PropertyValue::Unsigned(1)),
             p if p == PropertyIdentifier::RECIPIENT_LIST => match self.behavior {
-                RecipientListBehavior::Unavailable => Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::PROPERTY,
-                    code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
-                }),
+                RecipientListBehavior::Unavailable => Err(Error::protocol(
+                    bacnet_types::enums::ErrorClass::PROPERTY,
+                    bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
+                )),
                 // A malformed complete list with no valid destination prefix.
                 RecipientListBehavior::Invalid => Ok(PropertyValue::ApplicationData(vec![0x5E])),
             },
-            _ => Err(Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::PROPERTY,
-                code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
-            }),
+            _ => Err(Error::protocol(
+                bacnet_types::enums::ErrorClass::PROPERTY,
+                bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -59,10 +59,10 @@ impl BACnetObject for LookupTestNotificationClass {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: bacnet_types::enums::ErrorClass::PROPERTY,
-            code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
-        })
+        Err(Error::protocol(
+            bacnet_types::enums::ErrorClass::PROPERTY,
+            bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {

@@ -355,7 +355,7 @@ async fn direct_principal_endpoint_reinitialize_context_keeps_the_provenance() {
             is_group: false,
             global_broadcast: false,
             data_attributes: Vec::new(),
-            provenance: admitted.provenance,
+            provenance: admitted.provenance.clone(),
             reply_tx: None,
         })
         .await;

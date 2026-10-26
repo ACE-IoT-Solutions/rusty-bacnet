@@ -43,13 +43,13 @@ Reduce the request to one object/property. Investigate the peer's APDU limits, r
 
 ## BACnet/SC connection fails
 
-Check whether the binary includes SC support, then distinguish URL/connectivity, certificate trust, hostname/validity, client identity, hub acceptance, and BACnet target errors. The CLI trusts only the CA named by `--sc-ca`, and Python only `sc_ca_cert`; neither falls back to the system's root certificates. Follow the stage table in [BACnet/SC setup](/rusty-bacnet/guides/bacnet-sc/#diagnose-the-stage-that-failed). Fix the trust deployment using approved procedures; do not disable verification.
+Check whether the binary includes SC support, then distinguish URL/connectivity, certificate trust, hostname/validity, client identity, hub acceptance, and BACnet target errors. The CLI trusts only the CA named by `--sc-ca`, and Python only `sc_ca_cert`; neither falls back to the system's root certificates. Follow the stage table in [BACnet/SC setup](/rusty-bacnet/connect/bacnet-sc/#diagnose-the-stage-that-failed). Fix the trust deployment using approved procedures; do not disable verification.
 
 ## The serial port opens but MS/TP is unstable
 
 Check duplicate MACs, baud, `Max_Master`, adapter/driver behavior, transmit-direction timing, and the physical trunk. For a USB adapter, check the transmit-latency pad and the usage and reply timeouts (`mstp_*_ms`); for one that hears its own frames, `mstp_echo`. Test representative host load and observe the wire. Opening a serial file and completing one read do not establish deterministic token timing or full Clause 9 behavior.
 
-Use the [MS/TP guide](/rusty-bacnet/guides/mstp/) for the qualification boundary. A real-time kernel recommendation must be tied to evidence from the actual host and adapter, not merely the language used by the stack.
+Use the [MS/TP guide](/rusty-bacnet/connect/mstp/) for the qualification boundary. A real-time kernel recommendation must be tied to evidence from the actual host and adapter, not merely the language used by the stack.
 
 ## A write succeeded but the present value did not change
 

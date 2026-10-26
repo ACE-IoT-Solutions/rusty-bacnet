@@ -4,6 +4,7 @@ use bacnet_objects::{
     audit::{AuditLogObject, AuditLogPersistence, AuditLogSnapshot},
     traits::BACnetObject,
 };
+use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -124,9 +125,11 @@ fn rpm_audit_log_metadata_does_not_enable_create_object() {
         .encode(&mut request);
         let mut response = BytesMut::new();
         let result = handle_create_object(&mut db, &request, &mut response);
-        assert!(matches!(result, Err(Error::Protocol { class, code })
+        assert!(
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::OBJECT
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE));
+                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
+        );
         assert!(response.is_empty());
         assert!(db.is_empty());
     }

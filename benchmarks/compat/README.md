@@ -16,6 +16,9 @@ python3 benchmarks/compat/bootstrap.py /absolute/historical/checkout --adapter v
 # Use --adapter current for f056aba22cff95ec98f77511238711a93ce82da4.
 ```
 
+The `--adapter current` path tracks dev's API, while `v013_adapter.rs` is
+frozen against the v0.13.0 API, so leave it unchanged when dev's API moves.
+
 The generated `benchmarks/src/bin/normalized-clients.rs` includes these exact
 candidate source files by absolute path. It never copies the whole benchmark
 tree. Keep the candidate available during builds and record all included source

@@ -2,11 +2,12 @@
 use super::accompaniment_types::*;
 use super::{AccessRightsDecision, evaluate_access_rights};
 use crate::database::ObjectDatabase;
+use crate::prelude::*;
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{AccessEvent, ObjectType};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
-use std::time::Duration;
+use core::time::Duration;
 
 #[path = "accompaniment_read.rs"]
 mod read;
@@ -37,7 +38,7 @@ mod timing;
 ///     enums::ObjectType,
 ///     primitives::ObjectIdentifier,
 /// };
-/// use std::time::Duration;
+/// use core::time::Duration;
 /// # fn main() -> Result<(), bacnet_types::error::Error> {
 /// let id = |kind, n| ObjectIdentifier::new(kind, n).unwrap();
 /// let point = id(ObjectType::ACCESS_POINT, 1);

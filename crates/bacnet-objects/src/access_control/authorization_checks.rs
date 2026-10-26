@@ -3,7 +3,7 @@ use super::*;
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{AccessPassbackMode, ObjectType, PropertyIdentifier as P};
 use bacnet_types::primitives::PropertyValue;
-use std::time::Duration;
+use core::time::Duration;
 
 type Outcome = Result<AuthorizationCheckOutcome, AuthorizationProblem>;
 

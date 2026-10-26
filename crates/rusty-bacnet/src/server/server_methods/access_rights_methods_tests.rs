@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference};
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
@@ -69,7 +70,7 @@ fn python_access_rules_reach_both_arrays() {
             .err()
             .unwrap();
         assert!(
-            matches!(refused, Error::Protocol { class, code }
+            matches!(refused, Error::Remote(RemoteError::Error { class, code })
                 if class == ErrorClass::PROPERTY
                     && code == ErrorCode::VALUE_OUT_OF_RANGE),
             "{refused:?}"
@@ -207,7 +208,7 @@ fn python_accompaniment_reaches_the_optional_row() {
     .err()
     .unwrap();
     assert!(
-        matches!(refused, Error::Protocol { class, code }
+        matches!(refused, Error::Remote(RemoteError::Error { class, code })
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "{refused:?}"

@@ -75,8 +75,8 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY && code == expected));
+                let refused = Error::protocol(ErrorClass::PROPERTY, expected).remote();
+                assert_eq!(rp.err().and_then(|error| error.remote()), refused);
                 assert!(response.is_empty());
             }
         }

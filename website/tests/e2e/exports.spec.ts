@@ -5,7 +5,9 @@ import legacyRoutes from '../../src/data/legacy-routes.json' with { type: 'json'
 import { release } from '../../src/lib/site.mjs';
 const base = '/rusty-bacnet/';
 const origin = 'https://jscott3201.github.io';
-const routes = ['', ...navigation.flatMap(group => group.items.map(item => `${item.slug}/`))];
+// A sidebar entry: a page, or a nested group of pages.
+type NavItem = { slug?: string; items?: NavItem[] };
+const routes = ['', ...navigation.flatMap(group => (group.items as NavItem[]).flatMap((item): NavItem[] => item.items ?? [item]).map(item => `${item.slug}/`))];
 
 test('canonical, sitemap, all local links and assets resolve under the project prefix', async ({ page, request }) => {
   const targets = new Map<string, Set<string>>();
@@ -74,6 +76,18 @@ test('download, MDX source view, Markdown exports and llms are source-derived', 
   await page.goto(base + 'start/local-lab/');
   await page.getByText('Show the complete loopback_lab.py script', { exact: true }).click();
   await expect(page.locator('details code')).toHaveText(source.trim(), { useInnerText: true });
+});
+
+test('the search index holds each canonical page once and no compatibility page', async ({ request }) => {
+  const entry = await (await request.get(base + 'pagefind/pagefind-entry.json')).json();
+  expect(Object.values(entry.languages).reduce((sum: number, language: any) => sum + language.page_count, 0)).toBe(routes.length);
+  for (const route of routes) {
+    const html = await (await request.get(base + route)).text();
+    expect(html.match(/data-pagefind-body/g) ?? [], route).toHaveLength(1);
+  }
+  for (const legacy of legacyRoutes) {
+    expect(await (await request.get(base + legacy.from + '/')).text(), legacy.from).not.toContain('data-pagefind-body');
+  }
 });
 
 test('unknown route returns a useful custom 404 with working local recovery', async ({ page }) => {

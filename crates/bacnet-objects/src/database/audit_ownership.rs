@@ -1,9 +1,7 @@
 //! Lifetime protection for one installed target Audit runtime.
 use super::*;
-use std::sync::{
-    Weak,
-    atomic::{AtomicBool, Ordering},
-};
+use alloc::sync::Weak;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A lease retained by the runtime and every task that can still use its profile.
 /// Sealing denies writes; structural protection lasts until all leases are gone.
@@ -109,8 +107,5 @@ impl ObjectDatabase {
 }
 
 fn protected() -> Error {
-    Error::Protocol {
-        class: ErrorClass::OBJECT,
-        code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
-    }
+    Error::protocol(ErrorClass::OBJECT, ErrorCode::OBJECT_DELETION_NOT_PERMITTED)
 }

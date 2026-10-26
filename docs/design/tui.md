@@ -227,8 +227,8 @@ What M0 draws (80x24):
 | Screen | Contents |
 |---|---|
 | Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not known yet (unread, refused or unanswered) last) and filter (the filter matches the router and any name already read, and reads none, #1929); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network), below the table or, from 160 columns when both fit at their content widths, beside it (#1915) |
-| Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with each object's name (#1896) and a filter that matches labels and names already read (#1929); property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device and a `--max-rate` cap across devices |
-| Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
+| Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with each object's name (#1896) and a filter that matches labels and names already read (#1929); property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device, shared with the watch list, writes and COV renewals (#1791), and a `--max-rate` cap across devices |
+| Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), for local and routed devices alike (#1790), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD, and `:bbmd` alone goes back to ours. Write-BDT and Delete-FDT-Entry are later items |
 | SC (#967) | Hub connector status (state, primary or failover hub, reconnect attempt and backoff, heartbeat age and round trip); identity (local VMAC, device UUID, hub VMAC, duplicate-VMAC NAKs); the hub's certificate chain; the connection doctor's phase timeline (URL, DNS, TCP, TLS, WebSocket upgrade, Connect) with a hint from the typed failure; an event timeline. The local certificate inventory and pre-dial lint (#968) are a third view on the same screen, beside the chain or the doctor from 160 columns. Panes fit their content and the timeline takes the spare height (#1890) |
 | MS/TP (#969, #970, #1893, #1897) | Participant panel (`--mstp`): this station and its counters, each pane sized to its content, with timer lateness (late count, maximum, and the lateness bands where the pane is tall enough); or the passive monitor (`tui --mstp-monitor PORT`): a station grid, the token ring with rotation and hold times, Max_Master findings, error counters, and the safe-join wizard (`J`) that hands the port to a participant through the T2 join dialog. The monitor's summary wraps rather than being cut at 80 columns; from 160 columns the address map and station table sit side by side, and a table out of rows ends with `+N more`. The join dialog lists the ports `mstp-ports` does: on macOS only USB and other call-out devices, without Bluetooth or the debug console |
@@ -311,7 +311,7 @@ The project README asks for authorization before use on a network. The
 one-shot CLI guards writes with `--allow-write`, and DCC and reinitialize
 also with `--yes` or a typed confirmation (#972). The one-shots and the TUI
 take a command's class (read, write or device management) from one
-table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
+table, `bacnet_ops::class` (`crates/bacnet-ops/src/class.rs`); `Level::permits` maps the TUI's levels onto it.
 
 **Session levels** (always shown in the status bar):
 
@@ -337,8 +337,9 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
    set `writes = "never"`. Arming needs a profile workspace for the ledger and
    the audit log, so a flags-only session stays read-only.
 4. **Dangerous operations** (#964): off unless the profile sets
-   `dangerous = true` and a write session is armed. Today the only one is
-   commanding priority 6; DCC, reinitialize and BDT writes will join it.
+   `dangerous = true` and a write session is armed: commanding priority 6,
+   and DCC and reinitialize (`:dcc`, `:reinit`, #1799). BDT writes will join
+   them.
 
 **Confirmation tiers**
 
@@ -347,8 +348,8 @@ table, `core/class.rs`; `Level::permits` maps the TUI's levels onto it.
 | T0 | Reads, discovery, capture | None, except that a global or full-range Who-Is gets a one-line warning with the expected response volume and needs a second Enter (M0) |
 | T1 | Writes at priorities 9 to 16, non-commandable property writes | Preview (old to new, slot occupancy, whether the effective value changes), then Enter |
 | T2 | Priority 8 overrides, Out_Of_Service toggles, WPM batches, relinquishing a slot we did not write, alarm ack, time sync, MS/TP join | Preview plus `y`; recorded in the ledger with the pre-image. An MS/TP join (#969) has no pre-image, so it has no ledger entry; on a profile session each confirmed join is written to the audit log (`mstp-join`: profile, port, station, baud, Max_Master, Max_Info_Frames, time) before the port opens. Unlike a write, whose audit record failing is only logged, a join that can't be recorded is not made (#1862) |
-| T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. DCC defaults to a finite duration |
-| Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3); the deprecated plain-disable DCC option, which current-revision servers ignore (Clause 16.1) | Expert flag only |
+| T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. A DCC disable lasts 15 minutes unless a duration or `forever` is typed (#1799); plain disable is T3 here too, behind `dangerous = true` |
+| Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3) | Expert flag only (`dangerous = true`); then T3. The deprecated plain-disable DCC option, which current-revision servers refuse (Clause 16.1), needs the same flag, which every DCC needs, and is confirmed at T3 with a deprecation warning |
 
 As built in #964 (`tui/safety/plan.rs`): priorities 3, 4 and 7, which Table 19-1
 leaves to the site but which outrank the operator's 8, are T2 like 8. A
@@ -358,9 +359,16 @@ tier; one blocked member blocks it. The "expert flag" is the profile's
 slot this session's ledger holds is T1 at priorities 9 to 16. A write without a
 priority goes to 16 for a commandable property (Clause 19.2.1); a priority on a
 non-commandable property is not sent. The app enforces the tiers, and the write
-worker checks the level, the policy and priority 6 again before sending. The T3
-flow (the device instance typed out) and `audit::Secret` for passwords are
-there for DCC and reinitialize to reuse.
+worker checks the level, the policy and priority 6 again before sending. DCC and
+reinitialize (#1799) reuse the T3 flow (the device instance typed out) through
+one confirmation dialog for writes and device management, and carry their
+passwords in `audit::Secret`. A DCC disable without a duration lasts 15
+minutes; `forever` sends no duration, so it lasts until enabled again. The
+one-shot `control` is unchanged: without `--duration` it sends none. The
+confirmation names the duration. A plain `disable` is allowed under
+`dangerous = true` with a deprecation warning. The capture masks either
+request's password before the frame enters its ring, so neither the screen
+nor a pcap export holds it.
 
 Before any commandable write, the TUI reads the priority array, Present_Value,
 Relinquish_Default and Out_Of_Service. It says when a stronger slot is active
@@ -425,7 +433,9 @@ Hardening after review (#964):
 **Audit log** (#964). `audit.jsonl` in the profile workspace is append-only.
 Each record holds UTC time, OS user, host, profile, transport and local
 address, target, service, decoded parameters, priority, pre-image, outcome
-(ack, error class and code, reject, abort, timeout) and session level.
+(ack, error class and code, reject, abort, timeout; `class`, `code` and
+`reason` are strings holding the name, or the decimal number when there is
+none) and session level.
 Passwords are redacted (an `audit::Secret` serialises as `[redacted]`, and any
 field named like a password is redacted on the way out), file payloads will be
 reduced to size plus SHA-256 when file writes arrive, and key material never
@@ -442,8 +452,8 @@ distinctly.
 - Passwords for DCC and reinitialize are entered in masked fields and never
   stored, in history or anywhere else.
 - Polling uses conservative defaults: a minimum interval per point, one
-  outstanding confirmed request per device while browsing, and a global
-  request-rate cap.
+  outstanding confirmed request per device, shared by the browser, the watch
+  list, writes and COV renewals (#1791), and a global request-rate cap.
 - An active MS/TP join is T2: joining a trunk means taking part in token
   passing (Clause 9.5), so a duplicate or out-of-range MAC affects every device
   on it. As built in #969, every join, a flags-only session's later ones
@@ -485,7 +495,11 @@ distinctly.
 
 Everything stays in `crates/bacnet-cli`, behind the `tui` cargo feature
 (a default feature since 0.14.0, #974), and outside the workspace's `default-members` as before. A separate
-crate is not justified until a second consumer exists. Building with
+crate was not justified until a second consumer existed. The MCP server is that
+consumer (#2064): the UI-free parts the TUI shares with the one-shot commands (the
+class table, the target and value grammar, the value formatter, the request limits
+and the reader) moved to the `bacnet-ops` crate in #2065, and the write safety core
+follows in a later phase ([`mcp.md`](mcp.md)). Building with
 `--no-default-features` drops ratatui and crossterm; `bacnet tui` then prints
 rebuild advice and exits 1, and a bare `bacnet` prints the usage and exits 2.
 

@@ -74,7 +74,7 @@ pub struct ServerConfig {
     /// reaches it, and neither [`mutation_policy`](Self::mutation_policy) nor
     /// [`policy`](Self::policy) covers this service, so restrict sources
     /// through the context. Refuse
-    /// with [`Error::Protocol`]: a panic or an [`Error::Reject`] is answered
+    /// with [`Error::protocol`]: a panic or an [`Error::reject`] is answered
     /// SERVICES / OTHER.
     pub on_reinitialize: Option<ReinitializeHandler>,
     /// Local mutation authorization mode (default: permissive). SC mTLS channel/peer
@@ -226,9 +226,9 @@ impl ServerConfig {
     /// The installed policy, if it decides mutations
     /// ([`ServerPolicy::decides_mutations`]). `None` takes the no-policy
     /// path: allowed without decoding for authorization.
-    pub(crate) fn mutation_decider(&self) -> Option<&dyn ServerPolicy> {
+    pub(crate) fn mutation_decider(&self) -> Option<&Arc<dyn ServerPolicy>> {
         self.policy
-            .as_deref()
+            .as_ref()
             .filter(|policy| policy.decides_mutations())
     }
 }

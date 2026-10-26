@@ -29,6 +29,7 @@ mod address;
 mod audit;
 mod audit_projection;
 mod authentication_policy;
+mod bit_string;
 mod constructed_py;
 mod constructed_read;
 mod cov;
@@ -37,7 +38,9 @@ mod destination;
 mod device;
 mod enums;
 mod event_parameter_py;
+pub(crate) mod int_enums;
 mod mapping;
+mod notification_parameters_py;
 mod object_identifier;
 mod object_profile;
 mod property_reference;
@@ -58,12 +61,15 @@ pub(crate) use audit::recipient as audit_recipient_from_py;
 pub(crate) use audit::{audit_log_query_request_from_py, audit_notification_request_from_py};
 pub(crate) use audit_projection::{audit_log_query_ack_to_py, audit_log_record_to_py};
 pub(crate) use authentication_policy::authentication_policies_from_py;
+pub use bit_string::PyBitString;
 pub use cov::{PyCovNotification, PyCovNotificationIterator};
 pub(crate) use date::{date_from_value, date_value, specific_date_time};
 pub(crate) use destination::destinations;
 pub use device::PyDiscoveredDevice;
 pub use enums::*;
+pub(crate) use int_enums::IntEnumValue;
 pub(crate) use mapping::scale as scale_from_py;
+pub(crate) use notification_parameters_py::notification_parameters_to_py;
 pub use object_identifier::PyObjectIdentifier;
 pub(crate) use object_profile::object_profile_from_py;
 pub(crate) use property_reference::{
@@ -105,11 +111,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPropertyIdentifier>()?;
     PyPropertyIdentifier::register_constants(&m.getattr("PropertyIdentifier")?)?;
 
-    m.add_class::<PyErrorClass>()?;
-    PyErrorClass::register_constants(&m.getattr("ErrorClass")?)?;
-
-    m.add_class::<PyErrorCode>()?;
-    PyErrorCode::register_constants(&m.getattr("ErrorCode")?)?;
+    // EngineeringUnits, ErrorClass, ErrorCode, RejectReason and AbortReason
+    // are IntEnum classes (#1816).
+    int_enums::register(m)?;
 
     m.add_class::<PyAuditOperation>()?;
     PyAuditOperation::register_constants(&m.getattr("AuditOperation")?)?;
@@ -140,6 +144,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEventType>()?;
     PyEventType::register_constants(&m.getattr("EventType")?)?;
 
+    m.add_class::<PyNotifyType>()?;
+    PyNotifyType::register_constants(&m.getattr("NotifyType")?)?;
+
     m.add_class::<PyMessagePriority>()?;
     PyMessagePriority::register_constants(&m.getattr("MessagePriority")?)?;
 
@@ -149,6 +156,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Composite types
     m.add_class::<PyObjectIdentifier>()?;
     m.add_class::<PyPropertyValue>()?;
+    m.add_class::<PyBitString>()?;
+    m.add_function(wrap_pyfunction!(bit_string::enum_name, m)?)?;
     m.add_class::<PyBACnetTimeStamp>()?;
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;

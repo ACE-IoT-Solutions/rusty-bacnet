@@ -3,6 +3,7 @@
 use super::super::*;
 use crate::traits::ReliabilityEvaluation;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, Reliability};
+use bacnet_types::error::RemoteError;
 
 fn read_reliability(object: &dyn BACnetObject) -> u32 {
     match object
@@ -58,7 +59,7 @@ fn write_unsigned(object: &mut dyn BACnetObject, property: PropertyIdentifier, v
 fn assert_unknown_property(result: Result<PropertyValue, Error>) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
+        Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::PROPERTY
                 && code == ErrorCode::UNKNOWN_PROPERTY
     ));

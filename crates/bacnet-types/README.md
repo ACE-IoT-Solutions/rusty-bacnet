@@ -44,8 +44,8 @@ an allocator (#1614), for firmware with no heap.
 
 | Profile | Features | What it has |
 | --- | --- | --- |
-| Hosted | `std` (default) | Everything, including `error::Error::Transport` and `bip_port`. Enables `alloc`. |
-| `no_std` with a heap | `alloc` | Everything but those two. Firmware must supply a global allocator. |
+| Hosted | `std` (default) | Everything, including `error::Error::Transport`. Enables `alloc`. |
+| `no_std` with a heap | `alloc` | Everything but `Error::Transport`. Firmware must supply a global allocator. `bip_port` needs atomic compare-and-swap too, so ARMv6-M goes without it (#1615). |
 | No allocator | neither | The enums, `ObjectIdentifier`, `Date`, `Time`, `BACnetTimeStamp`, the bit-string flag types and the error type. The owned values (`PropertyValue`, the `constructed` types, `MacAddr`, the `calendar` matching) need `alloc`. |
 | | `serde` | Deserialization for `enums::ObjectType` and `enums::PropertyIdentifier`; enables `alloc`, without selecting `std`. |
 

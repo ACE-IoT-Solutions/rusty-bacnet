@@ -64,6 +64,10 @@
 //!   count-only saturating and never affect decisions.
 
 mod actions;
+mod application;
+mod application_feed;
+mod application_replies;
+mod application_transactions;
 pub mod control_policy;
 mod counters;
 mod dispatch;
@@ -81,6 +85,7 @@ mod send_warning;
 mod sender;
 mod shutdown;
 mod startup;
+pub use application::{RouterApplicationPort, RouterApplicationPorts};
 pub use replies::RouterResponse;
 pub use shutdown::{RouterStopError, RouterStopFailure};
 
@@ -150,7 +155,14 @@ enum SendRequest {
 /// an NPDU too long for the port with reject reason 4 (#1665). It follows
 /// the limit's changes after that, for a transport that publishes them
 /// ([`TransportPort::max_npdu_changes`], #1696).
-pub struct RouterPort<T: TransportPort> {
+///
+/// `T` defaults to [`AnyTransport`], so `RouterPort` alone names a port of a
+/// router that mixes link types; `RouterPort<BipTransport>` and the like
+/// name one of a router whose ports share a concrete transport.
+///
+/// [`AnyTransport`]: bacnet_transport::any::AnyTransport
+/// [`BipTransport`]: bacnet_transport::bip::BipTransport
+pub struct RouterPort<T: TransportPort = bacnet_transport::any::AnyTransport> {
     /// The transport for this port.
     pub transport: T,
     /// The network number assigned to this port: 1 to 65534.
@@ -547,6 +559,8 @@ mod r7_reply_tests;
 mod rb06_convergence_tests;
 #[cfg(test)]
 mod rb09_control_policy_tests;
+#[cfg(test)]
+mod reannounce_tests;
 #[cfg(test)]
 mod reject_tests;
 #[cfg(test)]

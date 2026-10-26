@@ -68,7 +68,7 @@ impl ResponseRoute {
 
     /// Original authentication scope; this never follows a replacement peer.
     pub fn provenance(&self) -> TransportProvenance {
-        self.provenance
+        self.provenance.clone()
     }
 
     /// Cap an APDU by the captured router port and direct peer NPDU/BVLC limits,
@@ -206,7 +206,7 @@ impl ReceivedApdu {
     /// Save this ingress's response route before moving it into queued work.
     pub fn response_route(&self) -> ResponseRoute {
         ResponseRoute {
-            provenance: self.provenance,
+            provenance: self.provenance.clone(),
             direct: self.direct_response.clone(),
             router: self.router_response.clone(),
         }

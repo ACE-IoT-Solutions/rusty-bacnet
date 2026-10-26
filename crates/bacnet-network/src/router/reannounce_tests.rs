@@ -3,9 +3,9 @@
 use super::ingress_harness::{drain_announcements, fixture, launch, network, wire};
 use super::{RouterOptions, SendRequest};
 use bacnet_encoding::npdu::decode_npdu;
-use bacnet_types::enums::NetworkMessageType;
+use bacnet_npdu::NetworkMessageType;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn recovery_reannounces_only_on_the_selected_port() {
     let (ports, mut peers) = fixture(3);
     let (mut router, _apdus) = launch(ports, RouterOptions::new()).await;
@@ -29,17 +29,18 @@ async fn recovery_reannounces_only_on_the_selected_port() {
         let SendRequest::Broadcast {
             npdu,
             data_attributes,
+            ..
         } = wire(&mut peers[1]).await
         else {
             panic!("expected recovery announcement")
         };
         assert!(data_attributes.is_empty());
         let npdu = decode_npdu(npdu).unwrap();
-        assert_eq!(npdu.message_type, Some(message_type.to_raw()));
+        assert_eq!(npdu.message_type, Some(message_type));
         assert_eq!(npdu.payload[..], data[..]);
     }
 
     assert!(router.reannounce_port(3).is_err());
-    router.stop().await;
+    router.stop().await.unwrap();
     assert!(router.reannounce_port(1).is_err());
 }

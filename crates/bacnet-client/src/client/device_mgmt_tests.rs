@@ -13,6 +13,7 @@ use bacnet_types::enums::{
     EnableDisable, ErrorClass, ErrorCode, ObjectType, ReinitializedState, RejectReason,
     Segmentation,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -247,10 +248,10 @@ async fn device_mgmt_confirmed_protocol_errors_and_rejects_are_preserved() {
     );
     assert!(matches!(
         result,
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: ErrorClass::SECURITY,
             code: ErrorCode::PASSWORD_FAILURE
-        })
+        }))
     ));
     let (result, ()) = tokio::join!(
         client.reinitialize_device_from_device(INSTANCE, ReinitializedState::WARMSTART, None),
@@ -267,9 +268,9 @@ async fn device_mgmt_confirmed_protocol_errors_and_rejects_are_preserved() {
     );
     assert!(matches!(
         result,
-        Err(Error::Reject {
+        Err(Error::Remote(RemoteError::Reject {
             reason: RejectReason::UNRECOGNIZED_SERVICE
-        })
+        }))
     ));
     client.stop().await.unwrap();
     peer.transport.stop().await.unwrap();
@@ -400,4 +401,62 @@ async fn device_mgmt_unknown_device_and_invalid_time_routes_send_nothing() {
     }
     client.stop().await.unwrap();
     peer.transport.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn over_long_or_empty_passwords_fail_before_anything_is_sent() {
+    // #2085: 21 characters (two octets each in UTF-8) never reach the wire;
+    // #2094: nor does an empty password, which the caller omits instead.
+    for (too_long, why, routed) in [
+        ("é".repeat(21), "20-character limit", true),
+        ("é".repeat(21), "20-character limit", false),
+        (String::new(), "omit it", true),
+        (String::new(), "omit it", false),
+    ] {
+        let (mut client, mut peer) = site(routed).await;
+        let errors = [
+            client
+                .device_communication_control_from_device(
+                    INSTANCE,
+                    EnableDisable::DISABLE,
+                    None,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+            client
+                .reinitialize_device_from_device(
+                    INSTANCE,
+                    ReinitializedState::COLDSTART,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+            client
+                .device_communication_control(
+                    ROUTER,
+                    EnableDisable::DISABLE,
+                    None,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+            client
+                .reinitialize_device(
+                    ROUTER,
+                    ReinitializedState::COLDSTART,
+                    Some(too_long.clone()),
+                )
+                .await
+                .unwrap_err(),
+        ];
+        for err in errors {
+            assert!(matches!(err, Error::Encode(_)), "{err:?}");
+            assert!(err.to_string().contains(why), "{err}");
+        }
+        tokio::task::yield_now().await;
+        peer.empty();
+        client.stop().await.unwrap();
+        peer.transport.stop().await.unwrap();
+    }
 }

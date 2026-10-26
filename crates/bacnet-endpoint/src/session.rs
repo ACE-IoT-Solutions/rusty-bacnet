@@ -83,6 +83,7 @@ mod startup;
 
 #[path = "device_writes.rs"]
 mod device_writes;
+pub use device_writes::{RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES, ResponderOptIn};
 #[path = "registered_port.rs"]
 mod registered_port;
 
@@ -262,7 +263,12 @@ struct SessionShared {
 /// # Ok(())
 /// # }
 /// ```
-pub struct EndpointSession<T: TransportPort + 'static> {
+///
+/// `T` defaults to [`AnyTransport`](bacnet_transport::any::AnyTransport), so
+/// `EndpointSession` alone names a session over any built-in transport;
+/// `EndpointSession<BipTransport>` and the like name one over a concrete
+/// transport, as the builders return.
+pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::AnyTransport> {
     shared: Arc<SessionShared>,
     coordinator: Arc<OutboundTransactionCoordinator>,
     ingress: Option<EndpointIngress<T>>,
@@ -558,7 +564,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         };
         if let Err(error) = self
             .publish_registered_port(
-                receivers.bip_port.clone(),
+                (receivers.bip_port.clone(), receivers.bip6_port.clone()),
                 receivers.egress.local_network_number(),
             )
             .await
@@ -933,7 +939,7 @@ async fn handle_inbound(parts: &mut DispatchParts, received: ReceivedApdu) {
     let _link_group = received.link_layer_group;
     let _is_group = received.is_group;
     let _attributes = received.data_attributes.clone();
-    let _provenance = received.provenance;
+    let _provenance = &received.provenance;
     let _ingress = received.ingress_network;
     let Some(responder) = parts.responder.as_ref() else {
         let mut counters = parts.shared.counters.lock().await;
@@ -1080,6 +1086,9 @@ async fn handle_ingress_policy(shared: &Arc<SessionShared>, outcome: PolicyOutco
 #[path = "source_read_tests.rs"]
 mod source_read_tests;
 
+#[cfg(test)]
+#[path = "registered_port_bip6_tests.rs"]
+mod registered_port_bip6_tests;
 #[cfg(test)]
 #[path = "registered_port_lifetime_tests.rs"]
 mod registered_port_lifetime_tests;

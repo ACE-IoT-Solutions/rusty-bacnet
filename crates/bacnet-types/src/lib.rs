@@ -10,7 +10,9 @@
 #[macro_use]
 extern crate alloc;
 
-#[cfg(feature = "std")]
+pub mod bip6_vmac;
+// Its shared views are `Arc`s, which need atomic compare-and-swap (#1615).
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 pub mod bip_port;
 pub mod bitstring;
 // Matches the constructed calendar types, which need alloc.

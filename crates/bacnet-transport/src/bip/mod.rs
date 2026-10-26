@@ -43,6 +43,7 @@ mod bbmd_receive;
 mod bbmd_start;
 mod client_snapshot;
 mod exchange;
+pub use bacnet_bip_core::node::ExchangeRefusal;
 pub use exchange::BvlcExchangeError;
 mod foreign_device;
 mod foreign_target;
@@ -128,10 +129,6 @@ pub struct BipTransport {
     bbmd_config: Option<BbmdConfig>,
     /// BBMD state (when acting as a BBMD, created in `start()`).
     bbmd: Option<Arc<std::sync::Mutex<BbmdState>>>,
-    /// Whether the BBMD state serves a B/IP-M group (Annex J.8.3), as last
-    /// set: a restart locks the state to change it only when the group
-    /// came or went.
-    bbmd_serves_group: bool,
     /// BBMD FDT expiry purge task.
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
     /// Foreign device registration (when registered as a foreign device),
@@ -217,7 +214,6 @@ impl BipTransport {
             recv_task: None,
             bbmd_config: None,
             bbmd: None,
-            bbmd_serves_group: false,
             bbmd_fdt_purge_task: None,
             foreign_device: None,
             node: None,
@@ -360,11 +356,8 @@ impl BipTransport {
     /// FD_Subscription_Lifetime, activated by ReinitializeDevice); a later
     /// start keeps the values it moved to.
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
-        self.foreign_device = Some(Arc::new(foreign_target::ForeignTarget::new(
-            config,
-            self.broadcast_address,
-            self.interface,
-        )));
+        let target = foreign_target::ForeignTarget::new(config, self);
+        self.foreign_device = Some(Arc::new(target));
     }
 
     /// Get the BBMD state (if BBMD mode is enabled). It appears when
@@ -533,6 +526,7 @@ impl TransportPort for BipTransport {
                     Arc::new(bbmd::LiveTables {
                         state: Arc::clone(state),
                         file: self.bdt_file.clone(),
+                        group: self.supports_multicast().then(|| self.group_change()),
                     }) as Arc<dyn BbmdTables>
                 }),
             },
@@ -592,7 +586,7 @@ impl TransportPort for BipTransport {
         if let Some(foreign) = &foreign_config {
             foreign.check_bbmd(self.broadcast_address, self.interface)?;
         }
-        let multicast = self.multicast.config();
+        let multicast = self.multicast.start_config();
         if let Some(group) = &multicast {
             self.check_multicast_start(group, foreign_config.is_some())?;
         }
@@ -639,7 +633,7 @@ impl TransportPort for BipTransport {
             state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
-            self.bbmd_serves_group = multicast.is_some();
+            self.multicast.set_bbmd_serves_group(multicast.is_some());
             Some(ip)
         } else if let Some(bbmd) = self.bbmd.as_ref().filter(|_| wildcard_bind) {
             // An explicit interface keeps its IP and port, and its mask,
@@ -654,15 +648,16 @@ impl TransportPort for BipTransport {
             Some(ip)
         } else {
             // A restart may come with another group, or none: only then is
-            // the state locked.
+            // the state locked. The rule it holds is tracked beside it, a
+            // run-time activation of the group included (#1963).
             let group = multicast.is_some();
             if let Some(bbmd) = self
                 .bbmd
                 .as_ref()
-                .filter(|_| self.bbmd_serves_group != group)
+                .filter(|_| self.multicast.bbmd_serves_group() != group)
             {
                 bbmd::lock(bbmd).set_serves_group(group)?;
-                self.bbmd_serves_group = group;
+                self.multicast.set_bbmd_serves_group(group);
             }
             None
         };

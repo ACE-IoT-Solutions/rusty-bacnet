@@ -15,7 +15,7 @@ use bacnet_types::enums::{
     AbortReason, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier, RejectReason,
     Segmentation,
 };
-use bacnet_types::error::{ErrorDetail, SegmentationError};
+use bacnet_types::error::{ErrorDetail, RemoteError, SegmentationError};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, Time};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -204,7 +204,7 @@ fn alarm_request(
 }
 
 #[tokio::test(start_paused = true)]
-async fn object_mgmt_create_preserves_specifiers_initial_values_and_raw_reply() {
+async fn object_mgmt_create_preserves_specifiers_initial_values_and_decodes_reply() {
     for routed in [true, false] {
         let (mut client, mut peer) = site(routed).await;
         for (specifier, values, reply) in [
@@ -234,11 +234,15 @@ async fn object_mgmt_create_preserves_specifiers_initial_values_and_raw_reply() 
                     peer.complex_ack(&request, reply).await;
                 }
             );
-            assert_eq!(
-                result.unwrap().as_ref(),
-                reply,
-                "the raw API must not interpret CreateObject ACK bytes"
-            );
+            // Only the first reply is a CreateObject-ACK: (MULTI_STATE_VALUE, 77).
+            if reply.is_empty() || reply[0] != 0xc4 {
+                assert!(result.is_err(), "{reply:02x?} must not decode");
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    ObjectIdentifier::new(ObjectType::MULTI_STATE_VALUE, 77).unwrap()
+                );
+            }
         }
         client.stop().await.unwrap();
         peer.transport.stop().await.unwrap();
@@ -345,10 +349,10 @@ async fn object_mgmt_routed_structured_error_protocol_error_reject_and_abort_sur
     );
     assert!(matches!(
         result,
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: ErrorClass::OBJECT,
             code: ErrorCode::UNKNOWN_OBJECT
-        })
+        }))
     ));
     let expected = alarm_request(0, time(), date_time());
     for abort in [false, true] {
@@ -377,16 +381,16 @@ async fn object_mgmt_routed_structured_error_protocol_error_reject_and_abort_sur
         if abort {
             assert!(matches!(
                 result,
-                Err(Error::Abort {
+                Err(Error::Remote(RemoteError::Abort {
                     reason: AbortReason::OUT_OF_RESOURCES
-                })
+                }))
             ));
         } else {
             assert!(matches!(
                 result,
-                Err(Error::Reject {
+                Err(Error::Remote(RemoteError::Reject {
                     reason: RejectReason::UNRECOGNIZED_SERVICE
-                })
+                }))
             ));
         }
     }

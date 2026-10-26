@@ -10,13 +10,13 @@
 
 use bacnet_client::client::{BACnetClient, ReceivedIHave};
 use bacnet_network::layer::{NetworkReport, ReceivedNetworkReport};
+use bacnet_ops::target::AddressStyle;
 use bacnet_services::who_has::WhoHasObject;
 use bacnet_transport::port::TransportPort;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
 use super::EventSink;
-use crate::core::target::AddressStyle;
 use crate::tui::message::WorkerEvent;
 use crate::tui::network::discovery::{DiscoveryCommand, DiscoveryEvent, FoundRow};
 
@@ -58,7 +58,7 @@ pub(super) fn report(
         NetworkReport::RejectMessageToNetwork(reject) => DiscoveryEvent::Rejected {
             router: from,
             network: reject.network,
-            reason: crate::decode::frame::kebab(reject.reason),
+            reason: bacnet_ops::decode::frame::kebab(reject.reason),
         },
         _ => return None,
     })

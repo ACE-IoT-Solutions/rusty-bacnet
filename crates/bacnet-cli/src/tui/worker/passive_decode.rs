@@ -1,5 +1,6 @@
 //! Decode observations without activating a protocol participant.
-use crate::core::target::AddressStyle;
+use bacnet_ops::target::AddressStyle;
+
 use crate::tui::network::discovery::DiscoveryEvent;
 use bacnet_client::client::ReceivedIHave;
 use bacnet_encoding::{
