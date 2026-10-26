@@ -92,7 +92,7 @@ async fn at_once(
 ) -> (Vec<(SocketAddrV4, Probe)>, Duration, usize) {
     let (live, most) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
     let begin = Instant::now();
-    let probes = survey_with(seed, LOCAL, |bbmd| {
+    let (probes, not_followed) = survey_with(seed, LOCAL, |bbmd| {
         let (live, most) = (Rc::clone(&live), Rc::clone(&most));
         async move {
             live.set(live.get() + 1);
@@ -103,6 +103,7 @@ async fn at_once(
         }
     })
     .await;
+    assert!(not_followed.is_empty(), "{not_followed:?}");
     (probes, begin.elapsed(), most.get())
 }
 
@@ -222,8 +223,9 @@ async fn a_real_survey_waits_out_silent_peers_together() {
         own: address_of(client.local_mac()).unwrap(),
         broadcast: client.broadcast_address(),
     };
-    let probes = survey(&client, seed_at, here).await;
+    let (probes, not_followed) = survey(&client, seed_at, here).await;
     let took = begin.elapsed();
+    assert!(not_followed.is_empty(), "{not_followed:?}");
     assert_eq!(probes.len(), 4);
     assert!(matches!(probes[0], (at, Probe::Table(_)) if at == seed_at));
     for ((at, probe), silent) in probes[1..].iter().zip(&silent_at) {
@@ -233,4 +235,35 @@ async fn a_real_survey_waits_out_silent_peers_together() {
     assert!(took >= TIMEOUT && took < 2 * TIMEOUT, "took {took:?}");
     client.stop().await.unwrap();
     seed.stop().await.unwrap();
+}
+
+/// Entries no read may go to come back beside the probes, with the BBMD
+/// that listed them and why, for the matrix view to list (#2130).
+#[tokio::test(start_paused = true)]
+async fn entries_not_followed_come_back_with_their_reason() {
+    use bacnet_ops::bbmd::{NotFollowed, Unfollowed};
+    let row = |address: SocketAddrV4| BdtRow {
+        address,
+        mask: Ipv4Addr::BROADCAST,
+    };
+    let broadcast = SocketAddrV4::new(Ipv4Addr::BROADCAST, 47808);
+    let seed = Probe::Table(vec![row(at(0)), row(broadcast), row(LOCAL.own)]);
+    let (probes, not_followed) = survey_with(at(0), LOCAL, |_| {
+        let seed = seed.clone();
+        async move { seed }
+    })
+    .await;
+    assert_eq!(probes, [(at(0), seed.clone())]);
+    let skipped = |address, why| Unfollowed {
+        address,
+        listed_by: at(0),
+        why,
+    };
+    assert_eq!(
+        not_followed,
+        [
+            skipped(broadcast, NotFollowed::Broadcast),
+            skipped(LOCAL.own, NotFollowed::Own),
+        ]
+    );
 }
