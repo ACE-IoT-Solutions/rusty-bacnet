@@ -90,7 +90,7 @@ async fn the_hub_connection_is_tapped_from_connect_to_disconnect() {
 
     // Idle for a heartbeat interval: the node sends a Heartbeat-Request.
     let interval = crate::sc::heartbeat::DEFAULT_HEARTBEAT_INTERVAL_MS;
-    tokio::time::sleep(Duration::from_millis(interval * 2)).await;
+    tokio::time::sleep(Duration::from_millis(interval + 1)).await;
     let heartbeat = decode_sc_message(&hub.recv().await.unwrap()).unwrap();
     assert_eq!(heartbeat.function, ScFunction::HeartbeatRequest);
     let ack = message(ScFunction::HeartbeatAck, heartbeat.message_id, None, &[]);
