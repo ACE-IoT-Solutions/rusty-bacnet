@@ -265,6 +265,17 @@ impl Lab {
             .count()
     }
 
+    /// When each confirmed request of `service` went.
+    pub(super) fn sent_at(&self, service: u8) -> Vec<Instant> {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, _)| *s == service)
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
     /// Every confirmed request's service, in order.
     pub(super) fn services(&self) -> Vec<u8> {
         self.sent.lock().unwrap().iter().map(|(s, _)| *s).collect()

@@ -89,6 +89,10 @@ async fn a_refused_subscription_falls_back_to_polling() {
         snapshot.note.as_deref().unwrap().starts_with("COV refused"),
         "{snapshot:?}"
     );
+    assert!(
+        matches!(snapshot.why, Some(Why::Refused(_))),
+        "{snapshot:?}"
+    );
     assert!(lab.table().await.is_empty());
     tokio::time::sleep(Duration::from_secs(25)).await;
     assert_eq!(class.snapshot().polls, 2, "a poll every 10 s");
@@ -155,6 +159,16 @@ async fn a_silent_device_is_reported() {
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.state, State::Unreachable, "{snapshot:?}");
     assert_eq!(snapshot.source, Some(Source::Poll));
+    // The poll that followed failed too: its error is the note, while the
+    // reason the point is polled stays the renewal's.
+    assert!(
+        matches!(snapshot.why, Some(Why::Lapsed(Some(_)))),
+        "{snapshot:?}"
+    );
+    assert!(
+        snapshot.polls == 0 && !snapshot.note.as_deref().unwrap().contains("renewal"),
+        "{snapshot:?}"
+    );
     lab.quirks.muted.store(false, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(320)).await;
     let snapshot = lease.snapshot();
@@ -311,6 +325,7 @@ fn notifications_cannot_grow_the_rows() {
         &mut rows,
         &point,
         &POINT_PROPERTIES,
+        false,
         &notification(ai(1), &flood),
     );
     assert_eq!(rows.len(), 1, "only the point property joins");
@@ -319,6 +334,7 @@ fn notifications_cannot_grow_the_rows() {
             &mut rows,
             &point,
             &POINT_PROPERTIES,
+            false,
             &notification(ai(1), &flood),
         );
     }
@@ -345,9 +361,9 @@ fn notifications_cannot_grow_the_rows() {
     );
     assert!(dispatch::belongs(&element, Some(&target), &mine));
     let mut rows = Vec::new();
-    dispatch::merge(&mut rows, &element, &[], &other);
+    dispatch::merge(&mut rows, &element, &[], false, &other);
     assert!(rows.is_empty());
-    dispatch::merge(&mut rows, &element, &[], &mine);
+    dispatch::merge(&mut rows, &element, &[], false, &mine);
     assert_eq!(rows.len(), 1);
     // A whole array sent without an index isn't the element; one value
     // without an index is.
@@ -358,7 +374,7 @@ fn notifications_cannot_grow_the_rows() {
     array.notification.list_of_values[0].value = [0x00; 16].to_vec();
     assert!(!dispatch::belongs(&element, Some(&target), &array));
     let mut kept = rows.clone();
-    dispatch::merge(&mut kept, &element, &[], &array);
+    dispatch::merge(&mut kept, &element, &[], false, &array);
     assert_eq!(kept, rows, "the previous value stays");
     let single = notification(
         element.object,
@@ -375,6 +391,31 @@ fn notifications_cannot_grow_the_rows() {
     assert!(!dispatch::belongs(&whole, Some(&target), &mine));
 }
 
+/// A property watch that keeps Status_Flags takes in its property
+/// whichever order a notification lists them, into empty rows (a first
+/// read that failed whole) as into rows it has.
+#[test]
+fn a_property_watch_takes_its_property_whatever_the_order() {
+    let point = Point {
+        device: LAB,
+        object: ai(1),
+        watched: Watched::Property {
+            property: PropertyIdentifier::PRESENT_VALUE,
+            index: None,
+        },
+    };
+    let pv = PropertyIdentifier::PRESENT_VALUE;
+    let flags = PropertyIdentifier::STATUS_FLAGS;
+    for order in [[flags, pv], [pv, flags]] {
+        let values = [(order[0], None), (order[1], None)];
+        let mut rows = Vec::new();
+        let merged = dispatch::merge(&mut rows, &point, &[], true, &notification(ai(1), &values));
+        let kept: Vec<PropertyIdentifier> = merged.iter().map(|(p, _)| *p).collect();
+        assert_eq!(kept, order, "{order:?}");
+        assert_eq!(rows.len(), 2);
+    }
+}
+
 /// Notifications the hub's receiver falls behind on are counted.
 #[tokio::test(start_paused = true)]
 async fn lagged_notifications_are_counted() {
@@ -382,6 +423,7 @@ async fn lagged_notifications_are_counted() {
         PROCESS_BASE,
         Duration::from_secs(1),
         POINT_PROPERTIES.to_vec(),
+        false,
     ));
     let (sender, receiver) = tokio::sync::broadcast::channel(1);
     for _ in 0..4 {

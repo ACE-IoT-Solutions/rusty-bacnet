@@ -181,3 +181,36 @@ async fn silent_device_after_permanent_refusal_keeps_original_poll_backoff_bound
     assert!((4..=10).contains(&polls), "{polls} polls in 300 s");
     site.stop().await;
 }
+
+/// A row whose device isn't in the device table fails at once, sending
+/// nothing, as it did before the list ran on the hub (#2115). Once the
+/// device is discovered, watching the point again subscribes: the failed
+/// row left nothing behind in the hub.
+#[tokio::test(start_paused = true)]
+async fn a_row_for_a_device_not_yet_discovered_fails_without_a_request() {
+    let mut site = Site::start_with_options(
+        vec![Server::lab(100, LAB)],
+        ClientLimits::default(),
+        options(300, 10, 0),
+    )
+    .await;
+    command(&mut site, "watch 100 ai:1").await;
+    site.pump_until(|app| app.watch.rows().is_empty()).await;
+    let flash = site
+        .app
+        .flash
+        .as_ref()
+        .map(|f| f.text.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        flash,
+        "Can't watch analog-input 1: device 100 is not in the device table"
+    );
+    assert!(site.hub.services_to(&LAB_MAC).is_empty(), "nothing sent");
+    site.who_is("", 1).await;
+    command(&mut site, "watch 100 ai:1").await;
+    settle(&mut site).await;
+    assert_eq!(sources(&site), [Source::Cov { lifetime: 300 }]);
+    assert_eq!(active(&site), 1);
+    site.stop().await;
+}

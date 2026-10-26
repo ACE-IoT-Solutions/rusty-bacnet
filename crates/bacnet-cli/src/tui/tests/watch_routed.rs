@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bacnet_ops::engine::Engine;
 use bacnet_ops::limits::RequestLimits;
+use bacnet_ops::watch::Hub;
 use bacnet_server::LocalCommandSource;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::PropertyValue;
@@ -13,7 +15,7 @@ use bacnet_types::primitives::PropertyValue;
 use super::site::{Site, routed_parts};
 use super::watch::{ai, command, options, settle, sources};
 use crate::tui::watched::{Point, Source};
-use crate::tui::worker::watch::jobs::{self, Lifetime};
+use crate::tui::worker::watch::{WatchOptions, hub_options, hub_point};
 
 const LAB: u32 = 100;
 
@@ -76,7 +78,8 @@ async fn routed_rows_subscribe_renew_and_cancel_through_the_router() {
 
 /// The cancel goes the way the subscription went (#1790): a routed row
 /// whose device has left the client's device table by the time it is
-/// cancelled is still cancelled on the device.
+/// cancelled is still cancelled on the device. The row runs on the watch
+/// hub with the list's settings, as the worker runs it (#2115).
 #[tokio::test(start_paused = true)]
 async fn a_routed_row_is_cancelled_after_its_device_leaves_the_table() {
     let (routed, client) = routed_parts(LAB).await;
@@ -85,25 +88,39 @@ async fn a_routed_row_is_cancelled_after_its_device_leaves_the_table() {
     while client.get_device(LAB).await.is_none() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let rate = RequestLimits::new(0);
+    let rate = Arc::new(RequestLimits::new(0));
+    let engine = Arc::new(Engine::new(Arc::clone(&client), rate));
+    let options = WatchOptions {
+        lifetime: 60,
+        request_budget: Duration::from_secs(8),
+        ..WatchOptions::default()
+    };
+    let hub = Hub::new(engine, hub_options(&options)).unwrap();
     let point = Point {
         device: LAB,
         network: Some(super::site::ROUTED_NETWORK),
         object: ai(1),
         property: PropertyIdentifier::PRESENT_VALUE,
     };
-    let lifetime = Lifetime::new(60, Duration::from_secs(8));
-    let started = jobs::start(&client, &rate, 1, point, lifetime, true).await;
-    let managed = started.outcome.expect("the routed row subscribed");
-    let target = started.target.expect("the device was in the table");
+    let lease = hub.watch(hub_point(&point)).unwrap();
+    while lease.snapshot().source.is_none() {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        lease.snapshot().source,
+        Some(bacnet_ops::watch::Source::Cov)
+    );
     assert_eq!(routed.server().cov_counters().subscriptions_active, 1);
 
     client.clear_devices().await;
-    jobs::cancel(&client, &rate, 1, point, target, Some(managed))
-        .await
-        .unwrap();
+    drop(lease);
+    while hub.stats().tasks > 0 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(routed.server().cov_counters().subscriptions_active, 0);
 
+    assert!(hub.shutdown(Duration::from_secs(5)).await);
+    drop(hub);
     let Ok(mut client) = Arc::try_unwrap(client) else {
         panic!("client still retained");
     };

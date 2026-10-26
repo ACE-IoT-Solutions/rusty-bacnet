@@ -166,6 +166,10 @@ async fn an_unanswered_subscription_is_retried_after_its_backoff() {
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.source, Some(Source::Poll), "{snapshot:?}");
     assert_eq!(snapshot.state, State::Unreachable);
+    assert!(
+        matches!(snapshot.why, Some(Why::Refused(_))),
+        "{snapshot:?}"
+    );
     assert!(snapshot.note.unwrap().starts_with("COV refused"));
     assert!(lab.table().await.is_empty());
     tokio::time::sleep(Duration::from_secs(25)).await;
@@ -178,6 +182,7 @@ async fn an_unanswered_subscription_is_retried_after_its_backoff() {
     assert_eq!(snapshot.source, Some(Source::Cov), "{snapshot:?}");
     assert_eq!(snapshot.state, State::Live);
     assert_eq!(snapshot.note, None);
+    assert_eq!(snapshot.why, None, "subscribed: nothing to explain");
     assert_eq!(lab.table().await.len(), 1);
     // Polled meanwhile; the retry read the point again first.
     let services = lab.services();
@@ -548,4 +553,48 @@ fn a_routed_device_is_matched_by_its_address() {
         None,
         &from(DEVICE, &[2], Some((10, &[3])))
     ));
+}
+
+/// Under [`Reads::value`] a property watch keeps the Status_Flags a
+/// notification carries beside its property, so its samples carry the
+/// device's flags; under the MCP's reads it keeps the property alone.
+#[tokio::test(start_paused = true)]
+async fn a_property_watch_keeps_notified_flags_when_it_reads_them() {
+    for (reads, flags) in [(Reads::value(), true), (Reads::points(), false)] {
+        let options = WatchOptions {
+            reads,
+            ..WatchOptions::default()
+        };
+        let lab = Lab::start(options).await;
+        let point = Point {
+            watched: Watched::Property {
+                property: PropertyIdentifier::PRESENT_VALUE,
+                index: None,
+            },
+            ..object(ai(3))
+        };
+        let lease = lab.hub.watch(point).unwrap();
+        settle().await;
+        let mut samples = lease.samples();
+        lab.server
+            .set_present_value_local(&ai(3), PropertyValue::Real(33.0))
+            .await
+            .unwrap();
+        settle().await;
+        let sample = samples.try_next().expect("notified");
+        assert_eq!(sample.via, Via::Notification);
+        let properties: Vec<PropertyIdentifier> =
+            sample.values.unwrap().iter().map(|(p, _)| *p).collect();
+        let expected = if flags {
+            vec![
+                PropertyIdentifier::PRESENT_VALUE,
+                PropertyIdentifier::STATUS_FLAGS,
+            ]
+        } else {
+            vec![PropertyIdentifier::PRESENT_VALUE]
+        };
+        assert_eq!(properties, expected);
+        drop(lease);
+        lab.stop().await;
+    }
 }

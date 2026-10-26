@@ -212,6 +212,31 @@ pub struct Snapshot {
     pub polls: u64,
     /// Renewals the device took.
     pub renewals: u64,
+    /// Why the point is polled, or was given up, as its start or a failed
+    /// renewal found; a poll's error, which goes to [`note`](Self::note),
+    /// leaves it. `None` while subscribed, and before the first start ends.
+    pub why: Option<Why>,
+}
+
+/// Why a point is polled or given up ([`Snapshot::why`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Why {
+    /// The device refused the subscription or didn't answer it, with the
+    /// error.
+    Refused(String),
+    /// The first read had no answer, so no subscription was asked for.
+    NoAnswer(String),
+    /// A renewal failed, with its error, or stopped.
+    Lapsed(Option<String>),
+    /// The device isn't in the discovery table.
+    Missing,
+}
+
+impl Default for Snapshot {
+    /// A point not read yet: starting, no rows, nothing counted.
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Snapshot {
@@ -227,6 +252,7 @@ impl Snapshot {
             coalesced: 0,
             polls: 0,
             renewals: 0,
+            why: None,
         }
     }
 }
@@ -394,6 +420,7 @@ impl<T: TransportPort + 'static> Hub<T> {
             PROCESS_BASE,
             options.coalesce,
             options.reads.object.clone(),
+            options.reads.property_flags,
         ));
         let (stop_dispatch, stopped) = watch::channel(false);
         let notifications = engine.client().cov_notifications();
