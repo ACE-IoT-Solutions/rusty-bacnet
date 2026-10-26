@@ -549,6 +549,11 @@ mod tests {
         assert_eq!(wrap("  lead on", 6), ["  lead", "on"]);
         // Control characters become spaces.
         assert_eq!(wrap("a\nb\tc\u{1b}", 10), ["a b c"]);
+        // Bidirectional overrides and isolates are dropped (#2122).
+        assert_eq!(
+            wrap("2 (High\u{202E}) \u{2067}x\u{2069}", 20),
+            ["2 (High) x"]
+        );
         for line in wrap("[a, bb, ccc, dddd, eeeee, ffffff]", 9) {
             assert!(text_width(&line) <= 9, "{line:?}");
         }

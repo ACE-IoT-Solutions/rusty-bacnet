@@ -32,7 +32,7 @@ mod tagged;
 mod units;
 mod wire;
 
-pub use clean::{HIDDEN, MAX_NAME_CHARS, clean_name, is_hidden};
+pub use clean::{HIDDEN, MAX_NAME_CHARS, clean_name, is_hidden, is_hidden_on_screen};
 pub(crate) use constructed::timestamp_text;
 pub use data::{Datum, Fields, PLAIN_ELEMENTS};
 pub use logged::{LogColumns, LoggedProperty, MAX_STATE_TEXT_OBJECTS};

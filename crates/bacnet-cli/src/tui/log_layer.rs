@@ -169,10 +169,15 @@ impl LineVisitor {
     }
 }
 
-/// One line, no control characters (they would move the cursor), bounded.
+/// One line, no control characters (they would move the cursor) and no
+/// invisible format characters (they would reorder or hide what follows),
+/// bounded.
 fn sanitize(text: &str) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_LINE_CHARS));
-    for (count, ch) in text.chars().enumerate() {
+    let shown = text
+        .chars()
+        .filter(|ch| !bacnet_ops::format::is_hidden_on_screen(*ch));
+    for (count, ch) in shown.enumerate() {
         if count == MAX_LINE_CHARS {
             out.push('…');
             break;
@@ -229,6 +234,8 @@ mod tests {
     fn long_lines_are_truncated_and_times_are_utc() {
         let long = "x".repeat(MAX_LINE_CHARS + 50);
         assert_eq!(sanitize(&long).chars().count(), MAX_LINE_CHARS + 1);
+        // A right-to-left override or an isolate is dropped (#2122).
+        assert_eq!(sanitize("High\u{202E} \u{2066}1\u{2069}"), "High 1");
         let t = UNIX_EPOCH + Duration::from_secs(86_400 * 3 + 3_723);
         assert_eq!(utc_hms(t), "01:02:03");
     }

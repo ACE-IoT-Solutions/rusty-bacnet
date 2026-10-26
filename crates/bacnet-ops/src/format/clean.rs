@@ -60,6 +60,15 @@ pub fn is_hidden(ch: char) -> bool {
     HIDDEN.iter().any(|&(low, high)| (low..=high).contains(&ch))
 }
 
+/// Whether a screen drops `ch`: a [`HIDDEN`] character other than the zero
+/// width joiner (U+200D). The joiner only fuses an emoji sequence (a
+/// family, a flag) into one picture, and can't reorder or hide the text
+/// around it, so the CLI and the TUI keep it; the MCP envelopes, read by a
+/// model rather than a person, drop it with the rest.
+pub fn is_hidden_on_screen(ch: char) -> bool {
+    ch != '\u{200D}' && is_hidden(ch)
+}
+
 /// Whether `ch` breaks a line or moves the cursor: a control (C0, DEL and
 /// C1) or a line or paragraph separator.
 fn breaks(ch: char) -> bool {
@@ -70,12 +79,13 @@ fn breaks(ch: char) -> bool {
 pub const MAX_NAME_CHARS: usize = 128;
 
 /// A device's name (or other short text) for display: each control
-/// character and line or paragraph separator as a space, so it can't move the cursor or break a row, each
-/// [`HIDDEN`] character dropped, so it can't reorder what follows, and at
-/// most [`MAX_NAME_CHARS`] characters.
+/// character and line or paragraph separator as a space, so it can't move
+/// the cursor or break a row, each character [`is_hidden_on_screen`]
+/// dropped, so it can't reorder or hide what follows, and at most
+/// [`MAX_NAME_CHARS`] characters.
 pub fn clean_name(text: &str) -> String {
     text.chars()
-        .filter(|ch| !is_hidden(*ch))
+        .filter(|ch| !is_hidden_on_screen(*ch))
         .take(MAX_NAME_CHARS)
         .map(|ch| if breaks(ch) { ' ' } else { ch })
         .collect()
@@ -97,8 +107,11 @@ mod tests {
             clean_name("\u{2066}a\u{2067}b\u{2068}c\u{2069}\u{200B}d\u{FEFF}"),
             "abcd"
         );
+        // The zero width joiner keeps an emoji family one picture.
+        let family = "\u{1F468}\u{200D}\u{1F469}";
+        assert_eq!(clean_name(family), family);
         for &(low, high) in HIDDEN {
-            for ch in [low, high] {
+            for ch in [low, high].into_iter().filter(|ch| *ch != '\u{200D}') {
                 assert_eq!(
                     clean_name(&format!("a{ch}b")),
                     "ab",
