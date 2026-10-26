@@ -12,7 +12,6 @@ use tokio::time::Instant;
 
 use super::{Spec, schema};
 use crate::context::{Call, Ctx, ROUTER_CAP};
-
 use crate::errors::ToolError;
 
 pub(super) const NAME: &str = "bacnet_network_map";
@@ -210,12 +209,15 @@ pub(super) async fn run<T: TransportPort + 'static>(
 
 /// Broadcast a Who-Is-Router-To-Network and keep what answers, if the
 /// policy allows a broad request and none went in the last minute. The
-/// wait for answers ends with the call's budget, so a short budget returns
-/// the routers heard by then rather than timing out.
+/// wait for answers ends with the call's budget (measured after the wait
+/// for the rate slot), so a short budget returns the routers heard by then
+/// rather than timing out.
 ///
-/// A query cancelled while it waits keeps its claim (the broadcast went),
-/// and the routers known before stay as they were; only a finished query
-/// replaces them.
+/// A query cancelled while it waits keeps its claim on the minute: after
+/// the broadcast, which went, and also during the wait for the rate slot,
+/// when nothing was sent yet (accepted: the next query waits a minute
+/// either way). The routers known before stay as they were; only a
+/// finished query replaces them.
 async fn ask_routers<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
@@ -234,7 +236,6 @@ async fn ask_routers<T: TransportPort + 'static>(
     }
     let asked = Instant::now();
     let wanted = Duration::from_secs(wait_s.unwrap_or(3).clamp(1, 30));
-    let wait = wanted.min(call.deadline.saturating_duration_since(asked));
     // Checked and claimed under one lock, so parallel calls can't both go.
     let previous_claim = {
         let mut routers = ctx.routers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -250,16 +251,21 @@ async fn ask_routers<T: TransportPort + 'static>(
         }
         routers.asked.replace(asked)
     };
-    match engine.discover_routers(network, wait).await {
+    match engine
+        .discover_routers(network, wanted, Some(call.deadline))
+        .await
+    {
         Ok(found) => {
             let mut routers = ctx.routers.lock().unwrap_or_else(PoisonError::into_inner);
             // Asking about one network hears only its routers: keep the
-            // others known before.
-            let mut merged = match (network, routers.heard.take()) {
+            // others known before, after the ones just heard, so the cap
+            // drops old routers first.
+            let before = match (network, routers.heard.take()) {
                 (Some(_), Some((_, before))) => before,
                 _ => Vec::new(),
             };
-            for router in found {
+            let mut merged = found;
+            for router in before {
                 match merged.iter_mut().find(|known| known.mac == router.mac) {
                     Some(known) => {
                         known.networks.extend(router.networks);
@@ -270,6 +276,7 @@ async fn ask_routers<T: TransportPort + 'static>(
                 }
             }
             merged.truncate(ROUTER_CAP);
+
             routers.heard = Some((asked, merged));
             Ok(())
         }

@@ -445,6 +445,13 @@ pub(super) async fn run<T: TransportPort + 'static>(
         }
     }
     let resume = read.resume.and_then(pack);
+    if read.resume.is_some() && resume.is_none() && read.stopped.is_none() {
+        // More remains, but at no sequence number a cursor can carry.
+        read.stopped = Some(json!({
+            "error": "failed",
+            "message": "the log has more records, but gave no sequence number to resume from",
+        }));
+    }
     let mut body = json!({
         "device": device.instance,
         "object": object,
@@ -454,7 +461,8 @@ pub(super) async fn run<T: TransportPort + 'static>(
         "more_items": read.more_items,
         "gaps": read.gaps,
         "done": read.done,
-        "truncated": resume.is_some(),
+        "truncated": read.resume.is_some(),
+
         "next_cursor": resume.map(|at| next(ctx, NAME, raw, at)),
         "limits": ctx.limits(Some(usize::try_from(limit).unwrap_or(usize::MAX))),
     });

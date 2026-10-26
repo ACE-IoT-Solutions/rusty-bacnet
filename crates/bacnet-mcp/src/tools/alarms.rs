@@ -177,8 +177,19 @@ pub(super) async fn run<T: TransportPort + 'static>(
             .map(|object| next(ctx, NAME, raw, position(object))),
         "limits": ctx.limits(Some(max)),
     });
-    if args.summaries && args.cursor.is_none() {
+    // The summaries come only when the events left time for them: a call
+    // whose budget went on the events sends neither, and says so under
+    // summary_errors, so the agent can ask for them on their own.
+    if args.summaries && args.cursor.is_none() && call.out_of_time() {
+        let skipped = json!({
+            "skipped": "budget",
+            "message": "the call's budget went on the event summaries; nothing was sent for \
+                        this summary: call again with summaries true and max smaller",
+        });
+        body["summary_errors"] = json!({ "alarm": skipped, "enrollment": skipped });
+    } else if args.summaries && args.cursor.is_none() {
         let mut errors = Map::new();
+
         match engine.alarm_summary(instance).await {
             Ok(ack) => {
                 let source = format!("device {instance} alarm-summary");

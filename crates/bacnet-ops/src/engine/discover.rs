@@ -79,16 +79,25 @@ impl<T: TransportPort + 'static> Engine<T> {
 
     /// Broadcast one Who-Is-Router-To-Network on this network, for
     /// `network` or every network (`None`), under the rate cap, then
-    /// collect the I-Am-Router-To-Network answers heard for `wait`: one
-    /// entry per router, with the networks it reaches. No answer is an
-    /// empty list.
+    /// collect the I-Am-Router-To-Network answers heard for `wait`, or
+    /// until `deadline` if that comes first (counted after the wait for
+    /// the rate slot): one entry per router, with the networks it reaches.
+    /// No answer is an empty list.
     pub async fn discover_routers(
         &self,
         network: Option<u16>,
         wait: std::time::Duration,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<Vec<DiscoveredRouter>, Error> {
         self.limits.slot(Some(0)).await;
+        let wait = match deadline {
+            Some(deadline) => {
+                wait.min(deadline.saturating_duration_since(tokio::time::Instant::now()))
+            }
+            None => wait,
+        };
         let found = self.client.discover_routers(network, wait).await;
+
         // A refused send never left, so it isn't charged.
         if found.is_err() {
             crate::limits::refund();

@@ -384,7 +384,6 @@ where
             return Ok((summaries, true));
         }
         let ack = fetch(after).await?;
-
         for summary in ack.list_of_event_summaries {
             if !seen.insert(summary.object_identifier.encode()) {
                 return Err(Error::Encoding(format!(

@@ -162,6 +162,39 @@ async fn alarms_stop_at_the_budget_and_resume() {
     lab.stop().await;
 }
 
+/// When the events spend the budget, the alarm and enrollment summaries
+/// aren't sent: each is reported skipped for the budget.
+#[tokio::test(start_paused = true)]
+async fn summaries_wait_for_a_call_with_time() {
+    let policy = budget(Duration::from_secs(1));
+    let mut lab = Lab::start_site(policy, Duration::from_millis(600)).await;
+    lab.agent.initialize().await;
+    let result = lab
+        .agent
+        .call(
+            "bacnet_alarms",
+            json!({ "device": 1201, "summaries": true }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["more_events"], json!(true), "{body}");
+    assert_eq!(body["alarm_summary"], Value::Null);
+    assert_eq!(body["enrollment_summary"], Value::Null);
+    for which in ["alarm", "enrollment"] {
+        assert_eq!(
+            body["summary_errors"][which]["skipped"],
+            json!("budget"),
+            "{body}"
+        );
+    }
+    let requests = body["cost"]["requests"].as_u64().unwrap();
+    assert_eq!(
+        requests,
+        u64::try_from(body["events"].as_array().unwrap().len()).unwrap()
+    );
+    lab.stop().await;
+}
+
 /// The wait for routers ends with the call's budget: a 2 s budget with
 /// wait_s 30 returns what was heard, not a timeout.
 #[tokio::test(start_paused = true)]
@@ -220,6 +253,34 @@ async fn a_cancelled_router_query_records_nothing_heard() {
         .await;
     assert_eq!(failed(&again)["reason"], json!("rate-limited"));
     assert_eq!(lab.sends().len(), 1, "one broadcast in all");
+    lab.stop().await;
+}
+
+/// A description matches past the characters a result shows: the search
+/// keeps more of the text than the envelope carries.
+#[tokio::test(start_paused = true)]
+async fn find_matches_past_the_shown_text() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    let result = lab
+        .agent
+        .call(
+            "bacnet_find_object",
+            json!({ "description": "TAIL-MARKER", "types": ["ai"], "range": "1201" }),
+        )
+        .await;
+    let body = ok(&result);
+    let found = body["matches"].as_array().unwrap();
+    assert_eq!(found.len(), 1, "{body}");
+    assert_eq!(found[0]["object"], json!("analog-input:3"));
+    let shown = &found[0]["description"];
+    assert_eq!(shown["truncated"], json!(true));
+    let text = shown["untrusted"].as_str().unwrap();
+    assert_eq!(text.chars().count(), 256);
+    assert!(
+        !text.contains("tail-marker"),
+        "the marker is past the shown text"
+    );
     lab.stop().await;
 }
 

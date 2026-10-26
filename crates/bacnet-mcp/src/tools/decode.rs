@@ -226,7 +226,7 @@ fn fields_json(fields: &[Field], budget: &mut usize, cap: usize) -> Vec<Value> {
         } else {
             // The decoder's own words, cleaned all the same; a long one
             // (an unknown tag's octets as hex) is cut and says so.
-            let (text, truncated) = clean(&field.label, cap.max(LABEL_CAP));
+            let (text, truncated) = clean(&field.label, LABEL_CAP);
             (json!(text), truncated)
         };
         let children = fields_json(&field.children, budget, cap);

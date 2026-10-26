@@ -80,7 +80,8 @@ pub(crate) struct Names {
     pub(crate) description: Option<Option<Cleaned>>,
 }
 
-/// Device text after [`crate::untrusted::clean`], and whether the cap cut it.
+/// Device text after [`crate::untrusted::clean`], kept long enough to
+/// match on, and whether that cap cut it.
 #[derive(Debug, Clone)]
 pub(crate) struct Cleaned {
     pub(crate) text: String,

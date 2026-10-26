@@ -271,6 +271,27 @@ fn cached<T: TransportPort + 'static>(
 /// again when needed.
 const NAMES_PER_DEVICE: usize = 4_096;
 
+/// Objects whose names are kept across every device; past it, the oldest
+/// device's names go.
+const NAMES_TOTAL: usize = 16_384;
+
+/// Characters of a name or description kept for matching. Results show
+/// only the policy's text cap of them, but a search matches against all
+/// of these, so a description hit past the shown text still counts.
+///
+/// Worst case the cache holds [`NAMES_TOTAL`] objects with two strings of
+/// this many characters each, about 134 million characters. A device sends
+/// each string in one property answer, so real ones are far shorter.
+const MATCH_CAP: usize = 4_096;
+
+/// Kept text as an envelope, cut to `cap` characters for display.
+fn shown(kept: &Cleaned, cap: usize, source: String) -> Value {
+    match kept.text.char_indices().nth(cap) {
+        Some((cut, _)) => envelope_cleaned(&kept.text[..cut], true, source),
+        None => envelope_cleaned(&kept.text, kept.truncated, source),
+    }
+}
+
 /// Keep what was read of `object`'s names, evicting the oldest device past
 /// [`LIST_CAP`].
 fn remember<T: TransportPort + 'static>(
@@ -292,6 +313,24 @@ fn remember<T: TransportPort + 'static>(
     }
     if entry.objects.len() < NAMES_PER_DEVICE || entry.objects.contains_key(&object) {
         entry.objects.insert(object, read);
+    }
+    // Past the total, the oldest other devices go first; this device's
+    // newest names stay.
+    while names.values().map(|kept| kept.objects.len()).sum::<usize>() > NAMES_TOTAL {
+        let oldest = names
+            .iter()
+            .filter(|(kept_device, _)| **kept_device != device)
+            .min_by_key(|(_, kept)| kept.at)
+            .map(|(device, _)| *device);
+        match oldest {
+            Some(oldest) => drop(names.remove(&oldest)),
+            None => {
+                if let Some(entry) = names.get_mut(&device) {
+                    entry.objects.remove(&object);
+                }
+                break;
+            }
+        }
     }
     while names.len() > LIST_CAP {
         let oldest = names
@@ -447,7 +486,7 @@ async fn search<T: TransportPort + 'static>(
                 Ok(read) => {
                     let kept = |property| {
                         row_text(&read.rows, property).map(|text| {
-                            let (text, truncated) = clean(&text, cap);
+                            let (text, truncated) = clean(&text, MATCH_CAP);
                             Cleaned { text, truncated }
                         })
                     };
@@ -488,16 +527,11 @@ async fn search<T: TransportPort + 'static>(
         let source = |property: &str| format!("device {instance} {text} {property}");
         let mut row = json!({ "device": instance, "object": text });
         if let Some(name) = &names.name {
-            row["name"] = envelope_cleaned(&name.text, name.truncated, source("object-name"));
+            row["name"] = shown(name, cap, source("object-name"));
         }
         if let Some(Some(description)) = &names.description {
-            row["description"] = envelope_cleaned(
-                &description.text,
-                description.truncated,
-                source("description"),
-            );
+            row["description"] = shown(description, cap, source("description"));
         }
-
         page.matches.push(row);
     }
 }
