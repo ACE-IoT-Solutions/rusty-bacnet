@@ -82,7 +82,7 @@ SHOTS = {
     "profiles-new-bip": (MAIN, "The new B/IP profile form with its fields and their defaults."),
     "profiles-new-mstp": (MAIN, "The new MS/TP profile form: serial port, MAC, baud, Max_Master and Max_Info_Frames."),
     "profiles-preview-attest": (MAIN, "A B/IP profile preview in Foreign Device mode, asking for first-use authorization."),
-    "profiles-passive": (MAIN, "A passive session: the status bar reads PASSIVE and the device list says nothing is transmitted."),
+    "profiles-passive": (MAIN, "A passive B/IP session: the status bar reads listening and PASSIVE, and the footer says foreign-device settings are ignored."),
     "discovery-whois-form": (MAIN, "The Who-Is form with its Scope, Target, Range and Listen fields."),
     "discovery-whois-warning": (MAIN, "The Who-Is form warning that a global Who-Is with no range reaches every device."),
     "discovery-devices": (MAIN, "The device table after a global Who-Is: two local devices and one routed device on network 2."),

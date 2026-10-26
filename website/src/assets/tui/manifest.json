@@ -115,12 +115,12 @@
   {
    "name": "profiles-passive",
    "file": "profiles-passive.webp",
-   "alt": "A passive session: the status bar reads PASSIVE and the device list says nothing is transmitted.",
+   "alt": "A passive B/IP session: the status bar reads listening and PASSIVE, and the footer says foreign-device settings are ignored.",
    "size": "120x36",
    "source": "live",
    "command": "bacnet tui --profile lab --passive",
    "keys": "Enter",
-   "commit": "93125c060"
+   "commit": "051e083c0"
   },
   {
    "name": "discovery-whois-form",
