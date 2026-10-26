@@ -82,8 +82,10 @@ static NO_TEXTS: StateTexts = StateTexts {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogColumns {
     columns: Vec<Option<LoggedProperty>>,
-    /// The state texts of each column, by column; shorter when the last
-    /// columns have none.
+    /// The state texts of each column as the device sent them, by column;
+    /// shorter when the last columns have none.
+    raw: Vec<StateTexts>,
+    /// The same, cleaned for display ([`clean_name`]).
     texts: Vec<StateTexts>,
 }
 
@@ -141,6 +143,13 @@ impl LogColumns {
         self.texts.get(column).unwrap_or(&NO_TEXTS)
     }
 
+    /// [`Self::state_texts`] as the device sent them, uncleaned and uncut,
+    /// for a front end that cleans device text its own way (the MCP
+    /// server's envelopes, which also say when they cut it).
+    pub fn raw_state_texts(&self, column: usize) -> &StateTexts {
+        self.raw.get(column).unwrap_or(&NO_TEXTS)
+    }
+
     /// The objects whose state texts would name a column, in column order,
     /// each once, on the log's device only, at most
     /// [`MAX_STATE_TEXT_OBJECTS`].
@@ -176,8 +185,10 @@ impl LogColumns {
             }) {
                 if self.texts.len() <= index {
                     self.texts.resize(index + 1, StateTexts::default());
+                    self.raw.resize(index + 1, StateTexts::default());
                 }
                 self.texts[index] = cleaned.clone();
+                self.raw[index] = texts.clone();
             }
         }
     }
@@ -208,6 +219,7 @@ impl FromIterator<Option<LoggedProperty>> for LogColumns {
     fn from_iter<I: IntoIterator<Item = Option<LoggedProperty>>>(columns: I) -> Self {
         Self {
             columns: columns.into_iter().collect(),
+            raw: Vec::new(),
             texts: Vec::new(),
         }
     }

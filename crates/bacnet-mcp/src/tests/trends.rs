@@ -460,10 +460,12 @@ async fn state_columns_are_labelled_with_enveloped_state_texts() {
         json!({ "1": quarter, "2": quarter, "3": quarter, "4": quarter })
     );
     assert_eq!(columns[0]["numeric"], Value::Null);
-    let speed = |text| device_text(text, "multi-state-value:1", "state-text");
+    let speed = |text: &str| device_text(text, "multi-state-value:1", "state-text");
+    // The text as the device sent it, under the envelope's own cap.
+    let low = "Low".repeat(50);
     assert_eq!(
         columns[0]["state_texts"],
-        json!({ "1": speed("Off"), "2": speed("Low"), "3": speed("High") })
+        json!({ "1": speed("Off"), "2": speed(&low), "3": speed("High") })
     );
     assert_eq!(
         columns[1]["states"],

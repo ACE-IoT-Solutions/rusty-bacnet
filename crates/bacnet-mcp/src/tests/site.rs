@@ -159,8 +159,8 @@ pub(crate) fn multi_state(i: u32) -> u64 {
     u64::from(i % 4 + 1)
 }
 
-/// Multi-state-value:1 (State_Text `Off`, `Low` and a `High` with a
-/// right-to-left override), binary-value:1 (`Running` and `Stopped`) and
+/// Multi-state-value:1 (State_Text `Off`, a 150-character `LowLow…`, longer
+/// than the CLI keeps, and a `High` with a right-to-left override), binary-value:1 (`Running` and `Stopped`) and
 /// trend-log-multiple:1, [`STATE_RECORDS`] records of their Present_Values
 /// and of a multi-state-value:9 that doesn't exist (#2122).
 fn state_objects() -> Vec<Box<dyn BACnetObject>> {
@@ -170,7 +170,11 @@ fn state_objects() -> Vec<Box<dyn BACnetObject>> {
         .write_property(
             PropertyIdentifier::STATE_TEXT,
             None,
-            PropertyValue::List(vec![text("Off"), text("Low"), text("High\u{202E}")]),
+            PropertyValue::List(vec![
+                text("Off"),
+                text(&"Low".repeat(50)),
+                text("High\u{202E}"),
+            ]),
             None,
         )
         .unwrap();

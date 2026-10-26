@@ -297,7 +297,7 @@ async fn state_texts_name_binary_and_multi_state_columns() {
                     states: Vec::new(),
                 },
                 ObjectType::MULTI_STATE_VALUE => StateTexts {
-                    states: vec!["Off".into(), "Lo\nw".into()],
+                    states: vec!["Off".into(), "Lo\nw".into(), "x".repeat(200)],
                     ..StateTexts::default()
                 },
                 // A refused read.
@@ -312,14 +312,20 @@ async fn state_texts_name_binary_and_multi_state_columns() {
     assert_eq!(named(&columns, 1, &PropertyValue::Unsigned(2)), "2 (Lo w)");
     assert_eq!(named(&columns, 1, &PropertyValue::Unsigned(1)), "1 (Off)");
     // Past the end of State_Text, and state 0, which no text names.
-    assert_eq!(named(&columns, 1, &PropertyValue::Unsigned(3)), "3");
+    assert!(named(&columns, 1, &PropertyValue::Unsigned(3)).starts_with("3 (xxx"));
+    assert_eq!(named(&columns, 1, &PropertyValue::Unsigned(4)), "4");
     assert_eq!(named(&columns, 1, &PropertyValue::Unsigned(0)), "0");
     assert_eq!(named(&columns, 2, &PropertyValue::Unsigned(2)), "2");
     // The typed form keeps the formatter's own names: no device text.
     let typed = ValueFormat::new(ObjectType::TREND_LOG, columns.state_texts(0), Floats::Exact)
         .logged_data(columns.column(0), &enumerated(1));
     assert!(!typed.may_hold_device_text(), "{typed:?}");
-    assert_eq!(columns.state_texts(1).states, ["Off", "Lo w"]);
+    // Shown cleaned and cut; kept raw for a front end that cleans its own.
+    let cut = "x".repeat(crate::format::MAX_NAME_CHARS);
+    assert_eq!(columns.state_texts(1).states, ["Off", "Lo w", cut.as_str()]);
+    assert_eq!(columns.raw_state_texts(1).states[1], "Lo\nw");
+    assert_eq!(columns.raw_state_texts(1).states[2], "x".repeat(200));
+    assert_eq!(columns.raw_state_texts(2), &StateTexts::default());
     assert_eq!(columns.state_texts(9), &StateTexts::default());
 }
 

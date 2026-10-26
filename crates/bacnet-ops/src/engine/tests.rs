@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_client::log_reader::LogCursor;
 use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject};
+use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::device_identity::{DeviceIdentity, build_database_with_extra};
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
@@ -70,8 +71,28 @@ fn event_state_trend() -> TrendLogObject {
     log
 }
 
-/// The lab: a device with an analog input, an analog output and two trend
-/// logs, an engine over a client paired with it, and the server to stop.
+/// Binary Value `instance`, with its Active_Text and Inactive_Text (#2122).
+fn binary_value(instance: u32, active: &str, inactive: &str) -> BinaryValueObject {
+    let mut value = BinaryValueObject::new(instance, format!("BV-{instance}")).unwrap();
+    for (property, text) in [
+        (PropertyIdentifier::ACTIVE_TEXT, active),
+        (PropertyIdentifier::INACTIVE_TEXT, inactive),
+    ] {
+        value
+            .write_property(
+                property,
+                None,
+                PropertyValue::CharacterString(text.into()),
+                None,
+            )
+            .unwrap();
+    }
+    value
+}
+
+/// The lab: a device with an analog input, an analog output, two binary
+/// values and two trend logs, an engine over a client paired with it, and
+/// the server to stop.
 async fn lab() -> (Engine<LoopbackTransport>, BACnetServer<LoopbackTransport>) {
     lab_on(|port| port).await
 }
@@ -90,6 +111,8 @@ async fn lab_on<C: TransportPort + 'static>(
         Box::new(trend(3)),
         Box::new(event_state_trend()),
         Box::new(NotificationClass::new(0, "Alarms").unwrap()),
+        Box::new(binary_value(1, "Running", "Stopped")),
+        Box::new(binary_value(2, "Open", "Shut")),
     ];
     let database = build_database_with_extra(&identity, objects).unwrap();
     let (client_port, server_port) = LoopbackTransport::pair(vec![1], vec![2]);
@@ -577,3 +600,6 @@ async fn a_refused_who_is_is_not_charged() {
     assert_eq!(account.requests(), 0);
     stop(engine, server).await;
 }
+
+#[path = "state_text_tests.rs"]
+mod state_text_tests;

@@ -1187,8 +1187,10 @@ State_Text, and shows each state with its text: `active (Running)`, `2
 (Low)`. That is one request more an object, once per command, for at most 8
 objects (the rest of a large Trend Log Multiple keeps plain states). A
 refused read, an empty text or a state past the end of State_Text keeps the
-plain form, `active` or `2`. The texts come from the device; control
-characters in them print as spaces. An Event Log
+plain form, `active` or `2`. The texts come from the device: control
+characters in them print as spaces, and invisible format characters
+(bidirectional overrides and isolates, zero-width characters) are dropped,
+as they are from object names. An Event Log
 notification ends with its event values in braces, each named for its event
 type:
 

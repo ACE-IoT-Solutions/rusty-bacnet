@@ -12,6 +12,7 @@
 //! AcknowledgeAlarm use routed calls.
 //! Commands without a routed call take [`resolve_mac`], which refuses one.
 
+use std::cell::Cell;
 use std::ops::ControlFlow;
 use std::time::Duration;
 
@@ -434,9 +435,10 @@ impl Destination {
     /// [`MAX_STATE_TEXT_OBJECTS`](crate::format::MAX_STATE_TEXT_OBJECTS).
     /// A reference that names a device is read only when it names this
     /// destination's device: one addressed by instance, or a MAC the
-    /// client's discovery table knows. A refused read leaves its columns
-    /// named as before, and a device that stops answering ends the reading
-    /// (#2122).
+    /// client's discovery table holds for exactly one device. A refused
+    /// read leaves its columns named as before, a device that refuses
+    /// ReadPropertyMultiple is read by ReadProperty for the rest of the
+    /// objects, and a device that stops answering ends the reading (#2122).
     pub async fn log_state_texts<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
@@ -444,19 +446,24 @@ impl Destination {
     ) {
         let log_device = match self {
             Self::Device(instance) => Some(*instance),
-            Self::Mac(mac) => client
-                .discovered_devices()
-                .await
-                .iter()
-                .find(|device| {
+            Self::Mac(mac) => {
+                let devices = client.discovered_devices().await;
+                let mut at_mac = devices.iter().filter(|device| {
                     device.source_network.is_none()
                         && device.mac_address.as_slice() == mac.as_slice()
-                })
-                .map(|device| device.object_identifier.instance_number()),
+                });
+                // Two instances at one MAC: which one the log is on is unknown.
+                match (at_mac.next(), at_mac.next()) {
+                    (Some(device), None) => Some(device.object_identifier.instance_number()),
+                    _ => None,
+                }
+            }
         };
+        let no_rpm = Cell::new(false);
+        let no_rpm = &no_rpm;
         columns
             .read_state_texts(log_device, |object| async move {
-                match self.state_text_rows(client, object).await {
+                match self.state_text_rows(client, object, no_rpm).await {
                     Ok(rows) => ControlFlow::Continue(StateTexts::from_rows(&rows)),
                     Err(error) if unreachable(&error) => ControlFlow::Break(()),
                     Err(_) => ControlFlow::Continue(StateTexts::default()),
@@ -467,13 +474,29 @@ impl Destination {
 
     /// `object`'s state text properties: one ReadProperty for a single
     /// one, else one ReadPropertyMultiple, or ReadProperty each when the
-    /// device refuses it.
+    /// device refuses it. `no_rpm` is set once the device has refused
+    /// RPM, and skips it from then on.
     async fn state_text_rows<T: TransportPort + 'static>(
         &self,
         client: &BACnetClient<T>,
         object: ObjectIdentifier,
+        no_rpm: &Cell<bool>,
     ) -> Result<Vec<RawRow>, Error> {
         let properties = StateTexts::properties(object.object_type());
+        let read_each = async || {
+            let mut rows = Vec::with_capacity(properties.len());
+            for property in properties {
+                match self.read_property(client, object, *property, None).await {
+                    Ok(ack) => rows.push((*property, Ok(ack.property_value))),
+                    Err(error) if unreachable(&error) => return Err(error),
+                    Err(error) => rows.push((*property, Err(RowError::from(error)))),
+                }
+            }
+            Ok(rows)
+        };
+        if no_rpm.get() {
+            return read_each().await;
+        }
         if let [property] = properties {
             let ack = self.read_property(client, object, *property, None).await?;
             return Ok(vec![(*property, Ok(ack.property_value))]);
@@ -490,18 +513,14 @@ impl Destination {
         };
         match self.read_property_multiple(client, vec![spec]).await {
             Ok(ack) => Ok(rpm_rows(ack)),
-            Err(error) if rpm_failure(&error) == RpmFailure::Other => Err(error),
-            Err(_) => {
-                let mut rows = Vec::with_capacity(properties.len());
-                for property in properties {
-                    match self.read_property(client, object, *property, None).await {
-                        Ok(ack) => rows.push((*property, Ok(ack.property_value))),
-                        Err(error) if unreachable(&error) => return Err(error),
-                        Err(error) => rows.push((*property, Err(RowError::from(error)))),
-                    }
+            Err(error) => match rpm_failure(&error) {
+                RpmFailure::Other => Err(error),
+                RpmFailure::Refused => {
+                    no_rpm.set(true);
+                    read_each().await
                 }
-                Ok(rows)
-            }
+                RpmFailure::TooLarge => read_each().await,
+            },
         }
     }
 

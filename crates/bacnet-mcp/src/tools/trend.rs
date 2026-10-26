@@ -107,6 +107,7 @@ fn output() -> Value {
             "state_texts": {
                 "type": ["object", "null"],
                 "description": "The monitored object's text for each key of states, untrusted",
+                "additionalProperties": schema::envelope_object(),
             },
             "failures": { "type": "integer" },
             "other": { "type": "integer" },

@@ -449,7 +449,7 @@ impl Summary {
                         "device {device} {}",
                         object_text(object.object_type(), object.instance_number())
                     );
-                    column.state_texts(columns.state_texts(index), &source, cap)
+                    column.state_texts(columns.raw_state_texts(index), &source, cap)
                 });
                 column.json(index, labels)
             })
