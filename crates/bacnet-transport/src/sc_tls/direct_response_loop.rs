@@ -64,6 +64,10 @@ pub(super) async fn serve_npdu_loop<W>(
                 if failed {
                     return;
                 }
+                // The initiator's AB.6.3 timer restarts on any BVLC it
+                // receives, so a peer we keep sending to has no reason to
+                // probe; what we send counts as activity too (#2133).
+                idle_deadline = tokio::time::Instant::now() + config.idle_timeout;
                 continue;
             }
             Event::Write(None) => return,

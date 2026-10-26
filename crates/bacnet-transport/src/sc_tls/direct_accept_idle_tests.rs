@@ -1,10 +1,12 @@
 //! The accepting side's idle bound against long initiator heartbeat periods
 //! (#2133), on tokio's paused clock with the default configuration.
 //!
-//! Annex AB.6.3 lets an initiating peer's heartbeat timeout be as long as
-//! 300 seconds, so an initiator that only sends Heartbeat-Request at that
-//! pace must keep its link; a silent link still closes at the bound, and a
-//! socket that never sends Connect-Request is held only for the connect wait.
+//! Annex AB.6.3 caps a fixed heartbeat timeout at 300 seconds and makes a
+//! configurable one support up to at least that, so an initiator that only
+//! sends Heartbeat-Request at that pace must keep its link, as must one that
+//! never probes because we keep sending to it. A silent link still closes at
+//! the bound, and a socket that never sends Connect-Request is held only for
+//! the connect wait.
 use super::super::direct_accept_tests::TestCa;
 use super::*;
 use crate::sc::direct_membership::{DirectMembership, DirectRole, Membership};
@@ -48,6 +50,8 @@ struct Link {
     member: Arc<Membership>,
     frames: UnboundedSender<DirectFrame>,
     sent: Arc<std::sync::Mutex<Vec<ScFunction>>>,
+    /// Our side's writer onto the link (the loop's `Event::Write` arm).
+    response: crate::port::DirectResponse,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -64,9 +68,10 @@ impl Link {
         let config = default_config();
         let sink = Sink(sent.clone());
         let owner = member.clone();
+        let identity = crate::port::DirectScIdentity::verified([3; 32], owner.generation);
+        let response = crate::port::DirectResponse::new(&owner, identity);
+        let writer = response.clone();
         let task = tokio::spawn(async move {
-            let identity = crate::port::DirectScIdentity::verified([3; 32], owner.generation);
-            let response = crate::port::DirectResponse::new(&owner, identity);
             let mut responses = owner.take_writes();
             let _retire = RetireMember(&owner);
             let (tx, _rx) = mpsc::channel(4);
@@ -97,6 +102,7 @@ impl Link {
             member,
             frames,
             sent,
+            response: writer,
             task,
         }
     }
@@ -153,8 +159,32 @@ async fn initiator_heartbeating_every_120_seconds_keeps_the_link() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn initiator_at_the_longest_allowed_heartbeat_keeps_the_link() {
+async fn initiator_at_the_longest_fixed_heartbeat_keeps_the_link() {
     survives(Duration::from_secs(300), 3).await;
+}
+
+/// An initiator restarts its heartbeat timer on every BVLC message it
+/// receives, so one we keep sending to never probes; our writes must hold
+/// the link open by themselves.
+#[tokio::test(start_paused = true)]
+async fn our_writes_alone_keep_a_quiet_initiators_link() {
+    let link = Link::start();
+    Link::settle().await;
+    let scope = crate::port::DirectResponseScope::default();
+    for n in 1..=3 {
+        tokio::time::advance(Duration::from_secs(200)).await;
+        Link::settle().await;
+        assert!(link.open(), "dropped before write {n}");
+        link.response.send(&[1, 0], &scope).await.unwrap();
+    }
+    tokio::time::advance(Duration::from_secs(200)).await;
+    Link::settle().await;
+    assert!(link.open(), "dropped 200 s after the last write");
+    assert_eq!(
+        link.sent.lock().unwrap().as_slice(),
+        [ScFunction::EncapsulatedNpdu; 3],
+        "the peer sent nothing, so nothing but our writes went out"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -237,14 +267,33 @@ async fn a_pending_socket_frees_its_slot_without_waiting_for_the_idle_bound() {
 }
 
 #[tokio::test]
-async fn start_rejects_a_zero_or_unschedulable_idle_timeout_before_binding() {
-    for timeout in [Duration::ZERO, Duration::MAX] {
+async fn start_rejects_zero_or_oversized_timeouts_before_binding() {
+    let day = Duration::from_secs(24 * 60 * 60);
+    for timeout in [Duration::ZERO, day + Duration::from_nanos(1), Duration::MAX] {
         let config = default_config().with_idle_timeout(timeout);
         assert!(
             DirectListener::start(config).await.is_err(),
-            "{timeout:?} must be rejected"
+            "idle {timeout:?} must be rejected"
         );
     }
+    let five_minutes = Duration::from_secs(300);
+    for timeout in [
+        Duration::ZERO,
+        five_minutes + Duration::from_nanos(1),
+        Duration::MAX,
+    ] {
+        let config = default_config().with_connect_timeout(timeout);
+        assert!(
+            DirectListener::start(config).await.is_err(),
+            "connect {timeout:?} must be rejected"
+        );
+    }
+    // The caps themselves are accepted.
+    let config = default_config()
+        .with_idle_timeout(day)
+        .with_connect_timeout(five_minutes);
+    let (mut listener, _rx) = DirectListener::start(config).await.unwrap();
+    listener.stop().await;
     // Short values stay a deliberate local choice.
     let config = default_config().with_idle_timeout(Duration::from_millis(1));
     let (mut listener, _rx) = DirectListener::start(config).await.unwrap();
