@@ -3,6 +3,7 @@
 
 mod bbmd;
 mod discovery;
+mod legacy;
 mod limits;
 mod listen;
 mod protocol;

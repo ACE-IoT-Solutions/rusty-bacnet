@@ -78,11 +78,29 @@ all) is a -32603 with the same body.
 
 `rmcp` 3.5.1 implements `subscriptions/listen` (2026-07-28): the server
 sends the acknowledgment, then `notifications/resources/updated` carrying
-only the URI; the client reads the resource. A legacy client (the older
-`initialize` handshake) can't open a listen stream, and
-`resources/subscribe` is not offered, so the server's `initialize` answer
-for a version older than 2026-07-28 doesn't advertise `resources.subscribe`
-(`server/discover` does); such hosts use `bacnet_watch`.
+only the URI; the client reads the resource. A legacy client (one that
+opens with the older `initialize` handshake, such as a 2025-06-18 host)
+can't open a listen stream; it subscribes with `resources/subscribe` and
+`resources/unsubscribe` instead (#2114), and the `initialize` answer
+advertises `resources.subscribe` for every version.
+
+- **Legacy subscriptions.** A `resources/subscribe` is checked as a listen
+  URI is and takes a watch on the same hub, under the same caps: listen
+  streams, legacy subscriptions and `bacnet_watch` share the 32 points of
+  the principal and the 256 of the process. Updates go out as
+  `notifications/resources/updated`, the device list and alarm polls
+  included. A URI that can't be honoured is a JSON-RPC -32602 with the
+  tool error body, as a refused read is: `invalid-argument` (malformed, or
+  a device summary, which has no updates), `unknown-device`, or `refused`
+  with `device-not-allowed`, `network-not-allowed`, `principal-cap`,
+  `process-cap`, `passive` or `shutting-down` (the session is ending);
+  nothing is sent. Subscribing twice to one
+  URI is one subscription, and a session holds at most 64 URIs (twice the
+  point cap). `resources/unsubscribe` drops the subscription and its watch
+  at once; the last watch on a point cancels its BACnet subscription. When
+  the session ends (the host closes stdin, or a signal) every legacy
+  subscription goes with it. The session resource counts them under
+  `watches.legacy`.
 
 - **Acknowledgment.** It lists only the URIs honoured. A point URI is
   honoured when it parses, its device is in the discovery table (so call
@@ -136,8 +154,9 @@ for a version older than 2026-07-28 doesn't advertise `resources.subscribe`
 
 ## The tool-only fallback
 
-`bacnet_watch` (points: device, object, optional property; up to 32 a
-call) puts points on the hub as a subscription would. The first call
+For hosts that subscribe neither way (some show resources but never
+subscribe), `bacnet_watch` (points: device, object, optional property; up
+to 32 a call) puts points on the hub as a subscription would. The first call
 returns every value (waiting up to 10 s for new points' first reads); a
 call with its `next_cursor` and the same points returns `changed: false`
 without values for points unchanged since, and reading them sends nothing.
@@ -212,8 +231,8 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
 
 `--passive` lists only `bacnet://session` and `bacnet://ledger` and no
 templates; reading any other resource is refused (`refused: passive`), and
-a listen stream honours only those two. Nothing that needs traffic is
-offered.
+a listen stream or a legacy `resources/subscribe` honours only those two.
+Nothing that needs traffic is offered.
 
 ## Results
 
@@ -333,6 +352,12 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   device list announced once on arrivals; the resource lists, contents,
   envelope, caches and a cancelled read; `bacnet_watch` across cursors,
   its idle expiry, cap and reach; output schemas include `bacnet_watch`.
+- `crates/bacnet-mcp/src/tests/legacy.rs` (#2114): a 2025-06-18 session
+  offered `resources.subscribe`, subscribing (twice, one subscription),
+  told of a COV change, and unsubscribing, which cancels the subscription
+  in the lab device's table; closing the session, and dropping its future,
+  releasing every watch; the caps shared with listen streams; refusals as
+  -32602 errors with nothing sent; passive mode; the device list announced.
 - `crates/bacnet-ops/src/watch/tests.rs`: the hub against the device's
   subscription table: sharing and cancel, a refusal polled every 10 s, a
   coalesced storm, renewal before expiry, a silent device and recovery, a

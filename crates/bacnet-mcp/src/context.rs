@@ -317,13 +317,23 @@ impl<T: TransportPort + 'static> Ctx<T> {
     /// Whether `instance` is a known device the policy lets the server
     /// reach, without waiting for the discovery table.
     pub(crate) fn reach_known(&self, instance: u32) -> bool {
+        self.reach_check(instance).is_ok()
+    }
+
+    /// [`reach_known`](Self::reach_known), saying why not: the device
+    /// isn't in the discovery table, or the policy leaves it out.
+    pub(crate) fn reach_check(&self, instance: u32) -> Result<(), ToolError> {
         let network = self
             .known
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&instance)
             .copied();
-        network.is_some_and(|network| self.allow(instance, network).is_ok())
+        let network = network.ok_or_else(|| ToolError::UnknownDevice {
+            device: instance.to_string(),
+            hint: DISCOVER_HINT.into(),
+        })?;
+        self.allow(instance, network)
     }
 
     /// The known devices in reach, in order.

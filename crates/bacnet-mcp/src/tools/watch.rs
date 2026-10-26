@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use super::{Spec, next, schema, start};
 use crate::context::{Call, Ctx, DeviceArg};
 use crate::errors::ToolError;
-use crate::listen::TOOL_IDLE;
+use crate::listen::{SHUTTING_DOWN, TOOL_IDLE};
 use crate::resources::point_body;
 use crate::resources::uri::of_point;
 
@@ -189,6 +189,11 @@ pub(super) async fn run<T: TransportPort + 'static>(
                 };
                 match ctx.subs.tool_watch(ctx, point) {
                     Ok(()) => Ok(point),
+                    Err(SHUTTING_DOWN) => {
+                        let error =
+                            ToolError::refused(SHUTTING_DOWN, "the server is shutting down");
+                        Err((of_point(&point), error.json()))
+                    }
                     Err(cap) => {
                         let error = ToolError::refused(
                             "watch-cap",
