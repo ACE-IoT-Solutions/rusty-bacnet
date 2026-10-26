@@ -12,12 +12,28 @@ use bacnet_types::enums::ServiceSupported;
 /// here or in [`RESPONDER_OPT_IN_SERVICES`] is refused.
 pub const RESPONDER_SERVICES: &[ServiceSupported] = &[ServiceSupported::READ_PROPERTY];
 
-/// The services the server role executes only once enabled, each with the
-/// [`EndpointSession`] method that enables it. The local Device and the
-/// session identity then advertise them too.
-pub const RESPONDER_OPT_IN_SERVICES: &[(ServiceSupported, &str)] = &[
-    (ServiceSupported::WRITE_PROPERTY, "with_device_writes"),
-    (ServiceSupported::REINITIALIZE_DEVICE, "with_reinitialize"),
+/// A service the session's server role executes only once an
+/// [`EndpointSession`] method enables it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponderOptIn {
+    /// The service, as its `BACnetServicesSupported` bit.
+    pub service: ServiceSupported,
+    /// The name of the [`EndpointSession`] method that enables it.
+    pub method: &'static str,
+}
+
+/// The services the server role executes only once enabled, with the method
+/// that enables each. The local Device and the session identity then
+/// advertise them too.
+pub const RESPONDER_OPT_IN_SERVICES: &[ResponderOptIn] = &[
+    ResponderOptIn {
+        service: ServiceSupported::WRITE_PROPERTY,
+        method: "with_device_writes",
+    },
+    ResponderOptIn {
+        service: ServiceSupported::REINITIALIZE_DEVICE,
+        method: "with_reinitialize",
+    },
 ];
 
 impl<T: TransportPort + 'static> EndpointSession<T> {
@@ -104,7 +120,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         };
         let opt_in = RESPONDER_OPT_IN_SERVICES
             .iter()
-            .map(|(service, _)| *service)
+            .map(|opt_in| opt_in.service)
             .filter(|service| enabled(*service));
         RESPONDER_SERVICES.iter().copied().chain(opt_in).collect()
     }

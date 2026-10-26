@@ -516,17 +516,19 @@ impl<'a> PicsGenerator<'a> {
         properties.into_values().collect()
     }
 
-    /// The services the PICS marks as initiated (its initiator column):
-    /// announcements and notifications `bacnet-server` builds and sends
-    /// itself. Distinct from
+    /// The services the PICS marks as initiated (its initiator column): the
+    /// requests `bacnet-server` can build and send itself, in some
+    /// configuration. Distinct from
     /// [`EXECUTED_SERVICES`](bacnet_objects::device::EXECUTED_SERVICES), which
     /// Clause 12.11 ties to execution.
     ///
-    /// The server sends these through its own outbound paths, not through
-    /// `bacnet-client`, and none of them is a request `bacnet-client` sends
-    /// (`bacnet_client::client::SENT_SERVICES`): a test pins that the two lists
-    /// don't overlap. An application that runs a client beside the server
-    /// initiates both.
+    /// Some go out only when configured: COV and event notifications need a
+    /// subscription or a recipient, audit notifications need audit reporting,
+    /// and WriteProperty, ReadProperty and Who-Is need a Command action or a
+    /// Channel member in another device (Who-Is finds that device). The server
+    /// sends them through its own outbound paths, not through `bacnet-client`.
+    /// A test scans the server's source and fails on an outbound service this
+    /// list leaves out.
     pub const INITIATED_SERVICES: &'static [ServiceSupported] = &[
         ServiceSupported::I_AM,
         ServiceSupported::I_HAVE,
@@ -536,6 +538,11 @@ impl<'a> PicsGenerator<'a> {
         ServiceSupported::UNCONFIRMED_EVENT_NOTIFICATION,
         ServiceSupported::CONFIRMED_COV_NOTIFICATION_MULTIPLE,
         ServiceSupported::UNCONFIRMED_COV_NOTIFICATION_MULTIPLE,
+        ServiceSupported::CONFIRMED_AUDIT_NOTIFICATION,
+        ServiceSupported::UNCONFIRMED_AUDIT_NOTIFICATION,
+        ServiceSupported::READ_PROPERTY,
+        ServiceSupported::WRITE_PROPERTY,
+        ServiceSupported::WHO_IS,
     ];
 
     fn build_services(&self) -> Vec<ServiceSupport> {
@@ -567,13 +574,13 @@ impl<'a> PicsGenerator<'a> {
         };
         for service in executed {
             service_map
-                .entry(service_display_name(service))
+                .entry(service_display_name(service).unwrap_or("Unknown"))
                 .or_default()
                 .1 = true;
         }
         for service in Self::INITIATED_SERVICES {
             service_map
-                .entry(service_display_name(*service))
+                .entry(service_display_name(*service).unwrap_or("Unknown"))
                 .or_default()
                 .0 = true;
         }
@@ -825,9 +832,10 @@ pub fn generate_pics(
 }
 
 /// The name the PICS prints for a `BACnetServicesSupported` bit position,
-/// such as `ReadProperty` or `I-Am`, or `Unknown` for a reserved bit.
-pub fn service_display_name(service: ServiceSupported) -> &'static str {
-    match service.to_raw() {
+/// such as `ReadProperty` or `I-Am`, or `None` for a reserved bit. The PICS
+/// prints `Unknown` for a reserved bit a Device declares.
+pub fn service_display_name(service: ServiceSupported) -> Option<&'static str> {
+    Some(match service.to_raw() {
         0 => "AcknowledgeAlarm",
         1 => "ConfirmedCOVNotification",
         2 => "ConfirmedEventNotification",
@@ -874,8 +882,8 @@ pub fn service_display_name(service: ServiceSupported) -> &'static str {
         46 => "UnconfirmedAuditNotification",
         47 => "Who-Am-I",
         48 => "You-Are",
-        _ => "Unknown",
-    }
+        _ => return None,
+    })
 }
 
 // ─────────────────────────────── Tests ─────────────────────────────────────

@@ -7,9 +7,12 @@ options stay below for context. The first PR (part B: the catalogue, the
 client-sent list, the generator, `support.json` and `project/conformance`)
 is built; the sample PICS and `integrate/pics` are not yet. Section 2
 describes the sources as they were before it. One finding from that PR: the
-server and the client send disjoint sets of services, so the test pins that
-the PICS initiator list and the client-sent list don't overlap rather than
-that one contains the other. Spec references are clause numbers only.
+server sends its requests through its own outbound paths, never through
+`bacnet-client`, so the client-sent list can't vouch for the PICS initiator
+list. Instead a test scans the server's source for the request PDUs it builds
+and ties `INITIATED_SERVICES` to them; that added audit notifications,
+WriteProperty, ReadProperty and Who-Is, which the server sends only when
+configured. Spec references are clause numbers only.
 
 ## 1. Problem
 

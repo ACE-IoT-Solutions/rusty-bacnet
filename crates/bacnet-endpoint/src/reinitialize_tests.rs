@@ -400,7 +400,7 @@ fn the_responder_lists_match_what_each_session_executes() {
         .chain(
             RESPONDER_OPT_IN_SERVICES
                 .iter()
-                .map(|(service, _)| *service),
+                .map(|opt_in| opt_in.service),
         )
         .collect();
     assert_eq!(session(true, true), all);
@@ -413,7 +413,7 @@ fn the_responder_lists_match_what_each_session_executes() {
     );
 
     let source = include_str!("device_writes.rs");
-    for (service, method) in RESPONDER_OPT_IN_SERVICES {
+    for ResponderOptIn { service, method } in RESPONDER_OPT_IN_SERVICES {
         assert!(
             source.contains(&format!("pub fn {method}("))
                 || source.contains(&format!("pub fn {method}<")),

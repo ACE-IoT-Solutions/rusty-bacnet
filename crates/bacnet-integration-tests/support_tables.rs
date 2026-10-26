@@ -9,11 +9,11 @@
 //! - services: the full server's `EXECUTED_SERVICES` and the PICS initiator
 //!   list, the client's `SENT_SERVICES`, the shared endpoint's responder lists,
 //!   and the Python client's methods in the type stub, matched to services by
-//!   name ([`python_services`]);
+//!   name, with every other method on an explicit list ([`python_services`]);
 //! - data links: the Cargo features of `bacnet-transport`, resolved through the
 //!   manifests for the Python wheel (`rusty-bacnet`) and for each release
 //!   target of the CLI (`TARGETS` in `scripts/release/third_party_notices.py`,
-//!   which its own test ties to the release build scripts);
+//!   which `test_third_party_notices.py` ties to the release build scripts);
 //! - the release the site describes, from `website/src/lib/site.mjs`.
 //!
 //! The file tracks `dev`: it is regenerated whenever one of those sources
@@ -21,6 +21,10 @@
 //! `tests/support_tables.rs` fails when the committed file differs from a
 //! fresh run; `cargo run -p bacnet-integration-tests --example support-tables`
 //! rewrites it.
+//!
+//! JSON objects are built through [`object`], which sorts their keys, so the
+//! output doesn't depend on whether serde_json's `preserve_order` feature is on
+//! somewhere in the build.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -64,9 +68,57 @@ const PYTHON_METHOD_SUFFIXES: &[&str] = &[
     "_replies",
     "_from_device",
     "_to_device",
+    "_from_devices",
+    "_to_devices",
+];
+
+/// `BACnetClient` methods in the stub whose name names no service, so they
+/// count for none. Some send a service another method already names
+/// (`discover` and `who_is`, `unsubscribe_cov` and `subscribe_cov`,
+/// `read_log_page` and `read_range`); the rest send none: lifecycle,
+/// accessors, event streams, and BVLL or network-layer messages. Generation
+/// fails on a method that is neither here nor named after a service, and on
+/// an entry here the stub no longer has.
+const PYTHON_OTHER_METHODS: &[&str] = &[
+    "__init__",
+    "__aenter__",
+    "__aexit__",
+    "stop",
+    "discover",
+    "unsubscribe_cov",
+    "read_log_page",
+    "i_have_events",
+    "cov_notifications",
+    "network_reports",
+    "connection_events",
+    "discovered_devices",
+    "get_device",
+    "clear_devices",
+    "add_device",
+    "resolve_vmac",
+    "connection_status",
+    "foreign_registration",
+    "sc_npdu_drop_counts",
+    "sc_peer_info",
+    "discover_routers",
+    "read_bdt",
+    "write_bdt",
+    "read_fdt",
+    "delete_fdt_entry",
+    "register_foreign_device_bvlc",
 ];
 
 type Result<T> = std::result::Result<T, String>;
+
+/// A JSON object with its keys in sorted order, however serde_json's map
+/// is configured.
+fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
+    let sorted: BTreeMap<String, Value> = fields
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    Value::Object(sorted.into_iter().collect())
+}
 
 fn read(repo: &Path, path: &str) -> Result<String> {
     std::fs::read_to_string(repo.join(path))
@@ -80,19 +132,30 @@ pub fn generate(repo: &Path) -> Result<String> {
     let stub = read(repo, "crates/rusty-bacnet/rusty_bacnet.pyi")?;
     let manifests = Manifests::load(repo)?;
     let cli_targets = cli_targets(&read(repo, "scripts/release/third_party_notices.py")?)?;
-    let document = json!({
-        "generatedBy": "crates/bacnet-integration-tests/support_tables.rs; run `cargo run -p bacnet-integration-tests --example support-tables`, do not edit",
-        "release": release,
-        "tracks": "dev",
-        "objectTypes": object_types()?,
-        "excludedObjectTypes": bacnet_objects::catalogue::EXCLUDED_TYPES
-            .iter()
-            .map(|t| Ok(json!({ "id": t.to_raw(), "name": name_of(t.name(), t.to_raw())? })))
-            .collect::<Result<Vec<_>>>()?,
-        "services": services(&python_services(&stub)?)?,
-        "cliTargets": cli_targets.keys().collect::<Vec<_>>(),
-        "dataLinks": data_links(&manifests, &cli_targets)?,
-    });
+    let excluded = bacnet_objects::catalogue::EXCLUDED_TYPES
+        .iter()
+        .map(|t| {
+            Ok(object([
+                ("id", json!(t.to_raw())),
+                ("name", json!(name_of(t.name(), t.to_raw())?)),
+            ]))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let document = object([
+        (
+            "generatedBy",
+            json!(
+                "crates/bacnet-integration-tests/support_tables.rs; run `cargo run -p bacnet-integration-tests --example support-tables`, do not edit"
+            ),
+        ),
+        ("release", json!(release)),
+        ("tracks", json!("dev")),
+        ("objectTypes", json!(object_types()?)),
+        ("excludedObjectTypes", json!(excluded)),
+        ("services", json!(services(&python_services(&stub)?)?)),
+        ("cliTargets", json!(cli_targets.keys().collect::<Vec<_>>())),
+        ("dataLinks", json!(data_links(&manifests, &cli_targets)?)),
+    ]);
     let text = serde_json::to_string_pretty(&document).map_err(|error| error.to_string())? + "\n";
     let lower = text.to_lowercase();
     if let Some(word) = FORBIDDEN_WORDS.iter().find(|word| lower.contains(*word)) {
@@ -128,12 +191,12 @@ fn object_types() -> Result<Vec<Value>> {
         .iter()
         .map(|support| {
             let t = support.object_type;
-            Ok(json!({
-                "id": t.to_raw(),
-                "name": name_of(t.name(), t.to_raw())?,
-                "create": support.createable,
-                "delete": support.deleteable,
-            }))
+            Ok(object([
+                ("id", json!(t.to_raw())),
+                ("name", json!(name_of(t.name(), t.to_raw())?)),
+                ("create", json!(support.createable)),
+                ("delete", json!(support.deleteable)),
+            ]))
         })
         .collect()
 }
@@ -167,7 +230,7 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
     let responder = bits(bacnet_endpoint::RESPONDER_SERVICES);
     let opt_in: BTreeMap<u8, &str> = bacnet_endpoint::RESPONDER_OPT_IN_SERVICES
         .iter()
-        .map(|(service, method)| (service.to_raw(), *method))
+        .map(|opt_in| (opt_in.service.to_raw(), opt_in.method))
         .collect();
     let mut rows = Vec::new();
     for raw in 0..=u8::MAX {
@@ -179,10 +242,8 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
             continue;
         }
         let service = ServiceSupported::from_raw(raw);
-        let label = service_display_name(service);
-        if label == "Unknown" {
-            return Err(format!("service bit {raw} has no PICS name"));
-        }
+        let label = service_display_name(service)
+            .ok_or_else(|| format!("service bit {raw} has no PICS name"))?;
         let kind =
             kind(service).ok_or_else(|| format!("{label}: neither confirmed nor unconfirmed"))?;
         let endpoint = if responder.contains(&raw) {
@@ -192,17 +253,17 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
         };
         rows.push((
             (kind != "confirmed", label),
-            json!({
-                "bit": raw,
-                "name": name_of(service.name(), raw)?,
-                "label": label,
-                "kind": kind,
-                "serverExecutes": executed.contains(&raw),
-                "serverInitiates": initiated.contains(&raw),
-                "clientSends": sent.contains(&raw),
-                "endpoint": endpoint,
-                "pythonSends": python.contains(&raw),
-            }),
+            object([
+                ("bit", json!(raw)),
+                ("name", json!(name_of(service.name(), raw)?)),
+                ("label", json!(label)),
+                ("kind", json!(kind)),
+                ("serverExecutes", json!(executed.contains(&raw))),
+                ("serverInitiates", json!(initiated.contains(&raw))),
+                ("clientSends", json!(sent.contains(&raw))),
+                ("endpoint", endpoint),
+                ("pythonSends", json!(python.contains(&raw))),
+            ]),
         ));
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -212,8 +273,14 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
 /// The services the Python client's methods send, from the type stub: a
 /// method of `BACnetClient` sends a service when its name is the service's
 /// name in snake case (`read_property`, `vt_open`), alone or followed by one
-/// of [`PYTHON_METHOD_SUFFIXES`].
+/// of [`PYTHON_METHOD_SUFFIXES`]. Every other method must be in
+/// [`PYTHON_OTHER_METHODS`].
 pub fn python_services(stub: &str) -> Result<BTreeSet<u8>> {
+    python_services_with(stub, PYTHON_OTHER_METHODS)
+}
+
+/// [`python_services`] with its list of other methods given.
+pub fn python_services_with(stub: &str, others: &[&str]) -> Result<BTreeSet<u8>> {
     let start = stub
         .find("\nclass BACnetClient:")
         .ok_or("the stub has no BACnetClient class")?;
@@ -231,17 +298,36 @@ pub fn python_services(stub: &str) -> Result<BTreeSet<u8>> {
     if !methods.contains("read_property") {
         return Err("the stub's BACnetClient has no read_property method".into());
     }
-    Ok((0..=u8::MAX)
-        .filter(|raw| {
-            let Some(name) = ServiceSupported::from_raw(*raw).name() else {
-                return false;
-            };
-            let snake = name.to_lowercase();
-            PYTHON_METHOD_SUFFIXES
-                .iter()
-                .any(|suffix| methods.contains(format!("{snake}{suffix}").as_str()))
-        })
-        .collect())
+    let stale: Vec<_> = others.iter().filter(|m| !methods.contains(*m)).collect();
+    if !stale.is_empty() {
+        return Err(format!(
+            "PYTHON_OTHER_METHODS names methods the stub lacks: {stale:?}"
+        ));
+    }
+    let mut services = BTreeSet::new();
+    let mut unclassified = Vec::new();
+    for method in methods.iter().filter(|m| !others.contains(*m)) {
+        let service = (0..=u8::MAX).find(|raw| {
+            ServiceSupported::from_raw(*raw).name().is_some_and(|name| {
+                let snake = name.to_lowercase();
+                PYTHON_METHOD_SUFFIXES
+                    .iter()
+                    .any(|suffix| *method == format!("{snake}{suffix}"))
+            })
+        });
+        match service {
+            Some(raw) => {
+                services.insert(raw);
+            }
+            None => unclassified.push(*method),
+        }
+    }
+    if !unclassified.is_empty() {
+        return Err(format!(
+            "BACnetClient methods neither named after a service nor in PYTHON_OTHER_METHODS: {unclassified:?}"
+        ));
+    }
+    Ok(services)
 }
 
 /// `TARGETS` in third_party_notices.py: each CLI release target and the
@@ -302,16 +388,17 @@ fn data_links(manifests: &Manifests, cli: &BTreeMap<String, Vec<String>>) -> Res
                 return Err(format!("bacnet-transport has no feature {feature}"));
             }
             let built = |features: &BTreeSet<String>| feature.is_none_or(|f| features.contains(f));
-            Ok(json!({
-                "id": id,
-                "label": link.to_string(),
-                "feature": feature,
-                "python": built(&python),
-                "cli": cli
-                    .iter()
-                    .map(|(target, features)| ((*target).clone(), json!(built(features))))
-                    .collect::<serde_json::Map<_, _>>(),
-            }))
+            let by_target: BTreeMap<String, Value> = cli
+                .iter()
+                .map(|(target, features)| ((*target).clone(), json!(built(features))))
+                .collect();
+            Ok(object([
+                ("id", json!(id)),
+                ("label", json!(link.to_string())),
+                ("feature", json!(feature)),
+                ("python", json!(built(&python))),
+                ("cli", Value::Object(by_target.into_iter().collect())),
+            ]))
         })
         .collect()
 }
@@ -327,7 +414,11 @@ struct Dependency {
 /// The parts of a workspace member's manifest that decide its features.
 struct Manifest {
     features: BTreeMap<String, Vec<String>>,
+    /// Normal dependencies on workspace crates.
     dependencies: BTreeMap<String, Dependency>,
+    /// Every normal dependency's key, workspace crate or not, with whether it
+    /// is optional.
+    all_dependencies: BTreeMap<String, bool>,
 }
 
 /// Every workspace member, by package name.
@@ -347,6 +438,18 @@ fn strings(value: Option<&toml::Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The `bacnet-transport` features a build of workspace crate `package` with
+/// its default features and `features` turns on.
+#[allow(dead_code)] // The freshness test calls it; the example doesn't.
+pub fn transport_features(
+    repo: &Path,
+    package: &str,
+    features: &[&str],
+) -> Result<BTreeSet<String>> {
+    let features: Vec<String> = features.iter().map(|f| (*f).to_owned()).collect();
+    Manifests::load(repo)?.transport_features(package, &features)
 }
 
 impl Manifests {
@@ -376,17 +479,28 @@ impl Manifests {
                         .collect()
                 })
                 .unwrap_or_default();
-            // Normal dependencies, including target-specific ones.
-            let mut sections: Vec<&toml::Table> =
-                table(&manifest, "dependencies").into_iter().collect();
+            // Normal dependencies; target-specific ones only for their keys.
+            let mut sections: Vec<(&toml::Table, bool)> = table(&manifest, "dependencies")
+                .into_iter()
+                .map(|t| (t, false))
+                .collect();
             if let Some(targets) = table(&manifest, "target") {
-                sections.extend(targets.values().filter_map(|t| table(t, "dependencies")));
+                sections.extend(
+                    targets
+                        .values()
+                        .filter_map(|t| table(t, "dependencies"))
+                        .map(|t| (t, true)),
+                );
             }
             let mut dependencies = BTreeMap::new();
-            for section in sections {
+            let mut all_dependencies = BTreeMap::new();
+            for (section, target_specific) in sections {
                 for (key, spec) in section {
-                    let inherited =
-                        spec.get("workspace").and_then(toml::Value::as_bool) == Some(true);
+                    let flag = |value: &toml::Value, key: &str| {
+                        value.get(key).and_then(toml::Value::as_bool)
+                    };
+                    all_dependencies.insert(key.clone(), flag(spec, "optional").unwrap_or(false));
+                    let inherited = flag(spec, "workspace") == Some(true);
                     let base = if inherited {
                         shared.get(key)
                     } else {
@@ -397,13 +511,20 @@ impl Manifests {
                         continue;
                     }
                     let base = base.expect("checked above");
+                    if target_specific {
+                        return Err(format!(
+                            "{name}: a target-specific dependency on workspace crate {key}, which the resolver doesn't handle"
+                        ));
+                    }
+                    if spec.get("package").is_some() || base.get("package").is_some() {
+                        return Err(format!(
+                            "{name}: workspace crate {key} is renamed with `package`, which the resolver doesn't handle"
+                        ));
+                    }
                     let mut features = strings(base.get("features"));
                     if inherited {
                         features.extend(strings(spec.get("features")));
                     }
-                    let flag = |value: &toml::Value, key: &str| {
-                        value.get(key).and_then(toml::Value::as_bool)
-                    };
                     dependencies.insert(
                         key.clone(),
                         Dependency {
@@ -422,6 +543,7 @@ impl Manifests {
                 Manifest {
                     features,
                     dependencies,
+                    all_dependencies,
                 },
             );
         }
@@ -521,17 +643,29 @@ impl Resolver<'_> {
         }
         let manifest = self.manifests.get(package)?;
         let Some(entries) = manifest.features.get(feature) else {
-            // An optional dependency's implicit feature, or "default" when none is declared.
-            if manifest
-                .dependencies
-                .get(feature)
-                .is_some_and(|d| d.optional)
-            {
-                self.add_dependency(package, feature)?;
+            // "default" when none is declared, or an optional dependency's
+            // implicit feature; anything else is a typo.
+            if feature == "default" {
+                return Ok(());
             }
-            return Ok(());
+            if manifest.all_dependencies.get(feature) == Some(&true) {
+                return self.add_dependency(package, feature);
+            }
+            return Err(format!("{package} has no feature {feature}"));
         };
         for entry in entries {
+            let dep_key = entry.strip_prefix("dep:").or_else(|| {
+                entry
+                    .split_once('/')
+                    .map(|(dep, _)| dep.trim_end_matches('?'))
+            });
+            if let Some(dep) = dep_key
+                && !manifest.all_dependencies.contains_key(dep)
+            {
+                return Err(format!(
+                    "{package} feature {feature} names no dependency {dep}"
+                ));
+            }
             if let Some(dep) = entry.strip_prefix("dep:") {
                 self.add_dependency(package, dep)?;
             } else if let Some((dep, sub)) = entry.split_once("?/") {

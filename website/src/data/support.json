@@ -532,7 +532,7 @@
       "name": "CONFIRMED_AUDIT_NOTIFICATION",
       "pythonSends": true,
       "serverExecutes": true,
-      "serverInitiates": false
+      "serverInitiates": true
     },
     {
       "bit": 1,
@@ -675,7 +675,7 @@
       "name": "READ_PROPERTY",
       "pythonSends": true,
       "serverExecutes": true,
-      "serverInitiates": false
+      "serverInitiates": true
     },
     {
       "bit": 14,
@@ -796,7 +796,7 @@
       "name": "WRITE_PROPERTY",
       "pythonSends": true,
       "serverExecutes": true,
-      "serverInitiates": false
+      "serverInitiates": true
     },
     {
       "bit": 16,
@@ -862,7 +862,7 @@
       "name": "UNCONFIRMED_AUDIT_NOTIFICATION",
       "pythonSends": true,
       "serverExecutes": true,
-      "serverInitiates": false
+      "serverInitiates": true
     },
     {
       "bit": 28,
@@ -950,7 +950,7 @@
       "name": "WHO_IS",
       "pythonSends": true,
       "serverExecutes": true,
-      "serverInitiates": false
+      "serverInitiates": true
     },
     {
       "bit": 40,

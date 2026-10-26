@@ -15,5 +15,5 @@ pub use identity::{DeviceIdentity, NetworkPortEntry, build_database_with_extra};
 pub use roles::{ClientRoleHandle, EndpointApduDestination, ServerRoleHandle};
 pub use session::{
     EndpointSession, PolicyCountersSnapshot, RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES,
-    SessionConfig, SessionExit, SessionRole,
+    ResponderOptIn, SessionConfig, SessionExit, SessionRole,
 };

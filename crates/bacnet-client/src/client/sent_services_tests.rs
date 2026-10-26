@@ -378,9 +378,11 @@ fn every_service_choice_in_the_client_source_is_listed() {
         "the scan must reach the client's method files"
     );
     let mut missing = Vec::new();
+    let mut named = BTreeSet::new();
     for (path, source) in &sources {
         // Inline test modules may name anything.
-        let source = source.split("#[cfg(test)]").next().unwrap();
+        let source = strip_test_modules(source);
+        let source = source.as_str();
         for (prefix, confirmed) in [
             ("UnconfirmedServiceChoice::", false),
             ("ConfirmedServiceChoice::", true),
@@ -408,6 +410,7 @@ fn every_service_choice_in_the_client_source_is_listed() {
                         .and_then(ServiceSupported::from_unconfirmed_choice)
                 };
                 let bit = bit.unwrap_or_else(|| panic!("{name} in {path:?} is a defined service"));
+                named.insert(bit.to_raw());
                 if !listed.contains(&bit.to_raw()) {
                     missing.push(format!("{name} ({})", path.display()));
                 }
@@ -417,5 +420,63 @@ fn every_service_choice_in_the_client_source_is_listed() {
     assert!(
         missing.is_empty(),
         "the client source sends services SENT_SERVICES leaves out: {missing:?}"
+    );
+    // The scan saw the whole source: each listed service is named in it.
+    let unseen: Vec<_> = listed.difference(&named).collect();
+    assert!(
+        unseen.is_empty(),
+        "listed services the scan didn't see: {unseen:?}"
+    );
+}
+
+/// Drops each `#[cfg(test)] mod name { .. }` block, so inline tests don't
+/// count. Everything else stays, including `#[cfg(test)]` on single items
+/// such as a `use` (#1496 review: cutting at the first marker skipped most
+/// of `client/mod.rs`).
+fn strip_test_modules(source: &str) -> String {
+    const MARKER: &str = "#[cfg(test)]";
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(at) = rest.find(MARKER) {
+        let after = &rest[at + MARKER.len()..];
+        let trimmed = after.trim_start();
+        let is_inline_module = trimmed.starts_with("mod ")
+            && trimmed
+                .find(['{', ';'])
+                .is_some_and(|i| trimmed.as_bytes()[i] == b'{');
+        if !is_inline_module {
+            out.push_str(&rest[..at + MARKER.len()]);
+            rest = after;
+            continue;
+        }
+        out.push_str(&rest[..at]);
+        let open = after.find('{').expect("checked above");
+        let mut depth = 0usize;
+        let mut end = after.len();
+        for (index, ch) in after[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + index + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn stripping_drops_only_inline_test_modules() {
+    let source = "#[cfg(test)]\nuse a;\nfn kept() {}\n#[cfg(test)]\nmod tests;\n#[cfg(test)]\nmod inline {\n    fn f() { {} }\n}\nfn also_kept() {}\n";
+    assert_eq!(
+        strip_test_modules(source),
+        "#[cfg(test)]\nuse a;\nfn kept() {}\n#[cfg(test)]\nmod tests;\n\nfn also_kept() {}\n"
     );
 }

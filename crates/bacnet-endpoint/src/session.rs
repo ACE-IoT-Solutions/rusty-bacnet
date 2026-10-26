@@ -83,7 +83,7 @@ mod startup;
 
 #[path = "device_writes.rs"]
 mod device_writes;
-pub use device_writes::{RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES};
+pub use device_writes::{RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES, ResponderOptIn};
 #[path = "registered_port.rs"]
 mod registered_port;
 
