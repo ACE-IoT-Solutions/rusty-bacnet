@@ -246,8 +246,20 @@ impl ValueFormat<'_> {
                     .map(|item| self.element_data(property, item))
                     .collect(),
             ),
-            PropertyValue::ApplicationData(bytes) => Datum::Raw {
-                raw: hex(bytes, ""),
+            PropertyValue::ApplicationData(bytes) => match self.priority_date_time(property, value)
+            {
+                // A date-time slot reads as Present_Value's date and time.
+                Some((date, time)) => Datum::List(vec![
+                    Datum::Date {
+                        date: date_text(&date),
+                    },
+                    Datum::Time {
+                        time: time_text(&time),
+                    },
+                ]),
+                None => Datum::Raw {
+                    raw: hex(bytes, ""),
+                },
             },
         }
     }

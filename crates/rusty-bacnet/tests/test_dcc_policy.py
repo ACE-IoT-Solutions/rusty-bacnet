@@ -80,7 +80,7 @@ class DccConstructorTests(unittest.TestCase):
                          sc_device_uuid=bytes.fromhex("8e62ac46d7084226913776a32b619315"),
                          sc_ca_cert="ca.pem", sc_client_cert="cert.pem", sc_client_key="key.pem")
             for policy in ["deny_all", "legacy_permissive"]:
-                for password in [None, "", "x" * 20]:
+                for password in [None, "x" * 20]:
                     BACnetServer(123, transport=transport, dcc_policy=policy, dcc_password=password,
                                  sc_device_uuid=bytes.fromhex("8e62ac46d7084226913776a32b619315"),
                                  sc_ca_cert="ca.pem", sc_client_cert="cert.pem", sc_client_key="key.pem")
@@ -93,6 +93,14 @@ class DccConstructorTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "dcc_password exceeds the 20-character limit"):
                     BACnetServer(123, dcc_policy=policy, dcc_password="é" * 21)
                 BACnetServer(123, dcc_policy=policy, dcc_password="é" * 20)
+
+    def test_empty_password_refused_in_every_policy(self):
+        # #2094: a request's empty password decodes as none, so a configured
+        # empty one could never match; None is how to configure no password.
+        for policy in ["deny_all", "require_password", "legacy_permissive"]:
+            with self.subTest(policy=policy):
+                with self.assertRaisesRegex(ValueError, "empty dcc_password"):
+                    BACnetServer(123, dcc_policy=policy, dcc_password="")
 
     def test_comm_state_stub_returns_enable_disable(self):
         stub_path = Path(rusty_bacnet.__file__).with_suffix(".pyi")
@@ -336,6 +344,13 @@ class DccNativeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "password exceeds the 20-character limit"):
                     client.reinitialize_device(address, ReinitializedState.COLDSTART,
                                                password="é" * 21)
+                # #2094: an empty password is refused too; None sends none.
+                with self.assertRaisesRegex(ValueError, "empty password"):
+                    client.device_communication_control(address, EnableDisable.DISABLE,
+                                                        password="")
+                with self.assertRaisesRegex(ValueError, "empty password"):
+                    client.reinitialize_device(address, ReinitializedState.COLDSTART,
+                                               password="")
                 await client.device_communication_control(
                     address, EnableDisable.DISABLE_INITIATION, time_duration=1,
                     password="é" * 20)

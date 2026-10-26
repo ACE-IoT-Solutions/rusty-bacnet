@@ -40,11 +40,15 @@ use crate::constructed::tagged::{misplaced_kind, unclosed_kind};
 use crate::tags::TagClass;
 use crate::tags::{self, app_tag};
 
+mod priority_value;
 mod scalar;
 mod strings;
 mod timestamp;
 mod view;
 
+#[cfg(feature = "alloc")]
+pub use priority_value::encode_priority_date_time;
+pub use priority_value::{PRIORITY_DATE_TIME_TAG, decode_priority_date_time};
 pub use strings::{
     encode_app_bit_string_to_sink, encode_app_character_string_to_sink,
     encode_app_octet_string_to_sink, encode_bit_string_to_sink, encode_character_string_to_sink,

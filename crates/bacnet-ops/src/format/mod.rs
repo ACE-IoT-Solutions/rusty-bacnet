@@ -34,12 +34,12 @@ pub use data::{Datum, Fields};
 pub use wire::format_property_value;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
-use bacnet_encoding::primitives::decode_application_value;
+use bacnet_encoding::primitives::{decode_application_value, decode_priority_date_time};
 use bacnet_types::enums::{
     EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
 };
 use bacnet_types::error::{Error, RemoteError};
-use bacnet_types::primitives::PropertyValue;
+use bacnet_types::primitives::{Date, PropertyValue, Time};
 
 use units::unit_symbol;
 
@@ -190,6 +190,16 @@ pub(crate) fn is_multistate(object_type: ObjectType) -> bool {
         ObjectType::MULTI_STATE_INPUT,
         ObjectType::MULTI_STATE_OUTPUT,
         ObjectType::MULTI_STATE_VALUE,
+    ]
+    .contains(&object_type)
+}
+
+/// The DateTime Value object types, whose commanded value is a
+/// BACnetDateTime.
+pub(crate) fn is_date_time_value(object_type: ObjectType) -> bool {
+    [
+        ObjectType::DATETIME_VALUE,
+        ObjectType::DATETIMEPATTERN_VALUE,
     ]
     .contains(&object_type)
 }
@@ -392,7 +402,30 @@ impl<'a> ValueFormat<'a> {
         {
             return state;
         }
+        if let Some((date, time)) = self.priority_date_time(property, value) {
+            return primitive::date_time(&date, &time);
+        }
         primitive::text(property, value, self.floats)
+    }
+
+    /// A DateTime Value's priority slot holding a date-time: the
+    /// BACnetPriorityValue choice under context tag 1, which the generic
+    /// decoder leaves as its octets (#2098). `None` for anything else.
+    fn priority_date_time(
+        &self,
+        property: PropertyIdentifier,
+        value: &PropertyValue,
+    ) -> Option<(Date, Time)> {
+        let PropertyValue::ApplicationData(octets) = value else {
+            return None;
+        };
+        if !is_date_time_value(self.object_type) || property != PropertyIdentifier::PRIORITY_ARRAY {
+            return None;
+        }
+        match decode_priority_date_time(octets, 0) {
+            Ok((date_time, end)) if end == octets.len() => Some(date_time),
+            _ => None,
+        }
     }
 
     /// A binary or multi-state object's state, named.

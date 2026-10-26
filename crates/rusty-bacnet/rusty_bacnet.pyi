@@ -2135,7 +2135,10 @@ class PropertyValue:
     - A whole read (no ``array_index``) of a property the stack's
       classification table marks as an array or list on that object type
       (every BACnetARRAY and BACnetLIST of the 2020 object tables) is a
-      ``list`` at every length, 0 and 1 included.
+      ``list`` at every length, 0 and 1 included. A DateTime Value or
+      DateTime Pattern Value's Priority_Array is such a list of 16 slots: a
+      set slot, the date-time choice under context tag 1, is
+      ``application_data`` whose ``.value`` is ``[date, time]`` (#2098).
     - Any other read is the bare value when it holds one element, and a
       ``list`` in wire order when it holds none or several (a date-time is
       a date and then a time). An indexed read is one element under these
@@ -2221,7 +2224,8 @@ class PropertyValue:
     @property
     def value(self) -> Any:
         """The Python-native value (int, float, str, bytes, bool, dict, tuple,
-        ObjectIdentifier, BitString, list, or None); ``application_data`` is ``bytes``,
+        ObjectIdentifier, BitString, list, or None); ``application_data`` is ``bytes``
+        (except a DateTime Value's set Priority_Array slot, ``[date, time]``),
         and a typed constructed element the form its typed write takes, or
         the form docs/python-api.md gives it. A date is ``(year, month, day,
         day_of_week)`` with the full year, or 255 for an unspecified year,
@@ -3875,7 +3879,7 @@ class BACnetClient:
         """Send DeviceCommunicationControl to a remote device.
 
         Raises ValueError, before anything is sent, for a password over 20
-        characters.
+        characters or an empty one (pass None to send no password).
         """
         ...
 
@@ -3888,7 +3892,7 @@ class BACnetClient:
         """Send ReinitializeDevice to a remote device.
 
         Raises ValueError, before anything is sent, for a password over 20
-        characters.
+        characters or an empty one (pass None to send no password).
         """
         ...
 
@@ -4782,8 +4786,9 @@ class BACnetServer:
         after_reinitialize: Optional[AfterReinitialize] = None,
         router: Optional[BACnetRouter] = None,
     ) -> None:
-        """``dcc_password`` and ``reinit_password`` hold at most 20
-        characters; a longer one raises ValueError here (#2060).
+        """``dcc_password`` and ``reinit_password`` hold 1 to 20
+        characters; a longer one (#2060) or an empty one (#2094) raises
+        ValueError here. None configures no password.
 
         ``transport="router"`` with ``router`` (a ``BACnetRouter`` built
         with ``application="client_and_server"``): host the device on the
@@ -6844,8 +6849,8 @@ class BipEndpoint:
     ) -> None:
         """``on_reinitialize`` / ``after_reinitialize``: execute
         ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
-        ``reinit_password`` (needs ``on_reinitialize``, else ValueError; at
-        most 20 characters, else ValueError) is the password a request must
+        ``reinit_password`` (needs ``on_reinitialize``, else ValueError; 1 to
+        20 characters, else ValueError) is the password a request must
         carry. The callable runs on the session's
         one dispatch task, so a slow one stalls every request.
         ``device_write_policy``: a callable that decides each WriteProperty

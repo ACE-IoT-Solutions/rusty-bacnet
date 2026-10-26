@@ -1,31 +1,52 @@
-"""The code samples the website displays, and how each one is verified.
+"""The code samples the website and the root README display, and how each
+one is verified.
 
 Every fenced block and every Starlight ``<Code>`` component under
-``src/content/docs`` must have exactly one entry in ``SAMPLES``; a new block
-without one, or an entry whose block is gone, fails ``test_site_samples``.
-An entry is keyed by the page and the block's first line (for a component,
-its tag line), so moving a block within its page needs no change here, but
-editing its first line does.
+``src/content/docs``, and every fenced block in the repository's
+``README.md`` (#2105), must have exactly one entry in ``SAMPLES``; a new
+block without one, or an entry whose block is gone, fails
+``test_site_samples``. An entry is keyed by the page (``README.md`` for the
+README) and the block's first line (for a component, its tag line), so moving
+a block within its page needs no change here, but editing its first line does.
 
 The classes match section 6 of ``docs/design/website-audit-0.15.md``:
 
 - ``Run``: CI runs each ``bacnet`` command against a loopback server and
-  checks its exit status and output (class A).
+  checks its exit status and output (class A). A Python block is one
+  program: CI runs the whole block and checks its output.
 - ``Covered``: another CI test runs or compiles this block (class A).
 - ``Parse``: CI runs each ``bacnet`` command with ``--help`` appended, so clap
   checks every subcommand, option and value before it; nothing is sent
-  (class D). Used for samples that would leave the host.
+  (class D). Used for samples that would leave the host. In a JSON block (an
+  agent host's MCP configuration), the commands are each ``mcpServers``
+  entry's ``command`` and ``args``.
+- ``Example``: a Rust block that is a Cargo example file below its header
+  comment, byte for byte; the test checks the text, and CI's
+  ``clippy --all-targets`` compiles the example (class A).
+- ``Deps``: a Cargo ``[dependencies]`` table; the test checks that each
+  ``bacnet-*`` crate is a published workspace crate at the site's release,
+  and that it names every crate the listed examples use.
 - ``Skip``: not run by CI, with the audit class and the reason.
+
+The README's Rust blocks compile against the ``dev`` workspace, while its
+dependency table tells users to depend on the release (the minor version in
+``src/lib/site.mjs``). An API change on ``dev`` that a README block uses
+therefore needs its table, and the release, to follow; when the release
+bumps ``site.mjs``, the ``Deps`` check fails until the README's versions
+follow it (docs/ci.md, release checklist).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import re
 import shlex
 
 WEBSITE = Path(__file__).resolve().parents[2]
+REPO = WEBSITE.parent
 DOCS = WEBSITE / "src/content/docs"
+README = REPO / "README.md"
 # The markers around a generated reference region, as an HTML comment (.md)
 # or an MDX comment (.mdx).
 GENERATED_START = re.compile(r"^(?:<!--|\{/\*) generated:start\b")
@@ -75,6 +96,18 @@ class Parse:
 
 
 @dataclass(frozen=True)
+class Example:
+    # The Cargo example file, relative to the repository root.
+    path: str
+
+
+@dataclass(frozen=True)
+class Deps:
+    # The Example files whose crates the table must name.
+    examples: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Skip:
     cls: str
     reason: str
@@ -94,8 +127,9 @@ class Block:
         return f"{self.page}:{self.line}"
 
 
-def blocks(docs: Path = DOCS) -> list[Block]:
-    """Every fenced block and ``<Code>`` component, in page order.
+def blocks(docs: Path = DOCS, readme: Path | None = README) -> list[Block]:
+    """Every fenced block and ``<Code>`` component, in page order, then the
+    README's fenced blocks (page ``README.md``).
 
     Blocks inside a generated reference region are left out: the CLI,
     Python and Rust reference pages (``reference/cli.md``,
@@ -106,8 +140,10 @@ def blocks(docs: Path = DOCS) -> list[Block]:
     their generators and ``tests/unit/reference.test.mjs`` check them.
     """
     found = []
-    for path in sorted(docs.rglob("*.md*")):
-        page = path.relative_to(docs).as_posix()
+    pages = [(path, path.relative_to(docs).as_posix()) for path in sorted(docs.rglob("*.md*"))]
+    if readme is not None:
+        pages.append((readme, "README.md"))
+    for path, page in pages:
         lines = path.read_text(encoding="utf-8").splitlines()
         fence = None
         generated = False
@@ -144,6 +180,27 @@ def key(block: Block) -> str:
     return f"{block.page}::{block.first}"
 
 
+def block_commands(block: Block) -> list[list[str]]:
+    """A block's commands: an MCP host configuration's servers for JSON,
+    otherwise its shell lines."""
+    if block.lang != "json":
+        return commands(block.text)
+    servers = json.loads(block.text)["mcpServers"]
+    return [[server["command"], *server["args"]] for server in servers.values()]
+
+
+def example_body(path: str) -> str:
+    """A README example file below its header: the leading ``//!`` and
+    ``#![...]`` lines (each a full line) and one blank line after them."""
+    lines = (REPO / path).read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines) and (lines[index].startswith("//!") or lines[index].startswith("#![")):
+        index += 1
+    if index == 0 or index >= len(lines) or lines[index] != "":
+        raise ValueError(f"{path}: expected a header of //! and #![...] lines, then a blank line")
+    return "\n".join(lines[index + 1:])
+
+
 def commands(text: str) -> list[list[str]]:
     """The shell commands in a block, split into words: continuations joined,
     blank lines and comments dropped."""
@@ -167,6 +224,13 @@ ROUTER_PY_A = Covered(("crates/rusty-bacnet/tests/test_website_router.py",))
 POLICY_A = Covered((f"{IT}/sc_operator_policy_source.rs", f"{IT}/sc_operator_policy.rs"))
 LAB_A = Covered(("website/tests/python/test_loopback_lab.py",))
 PY_FIRST_READ_A = Covered(("crates/rusty-bacnet/tests/test_website_first_read.py",))
+README_READ_RS = "examples/rust/readme_read.rs"
+README_SERVER_RS = "examples/rust/readme_server.rs"
+# The README quickstart server: test_site_samples runs this block as the
+# "readme" server, and checks that scripts/release/cli_smoke.sh, which runs
+# it at release time, holds the same text.
+README_SERVER = "README.md::# local_server.py: one simulated temperature sensor on 127.0.0.1:47808"
+QUICKSTART = "127.0.0.1:47808"
 
 INSTALL = "installs or builds software"
 POWERSHELL = "PowerShell; the job that runs this test is Linux only"
@@ -341,4 +405,21 @@ SAMPLES: dict[str, object] = {
         Skip("E", "TUI command-bar input, checked against command_bar.rs"),
     "tui/writes.mdx:::dcc disable-initiation 30":
         Skip("E", "TUI command-bar input, checked against command_bar.rs"),
+    # The repository's README.md (#2105), in page order.
+    README_SERVER: Covered(("website/tests/python/test_site_samples.py",)),
+    "README.md::# read_value.py: read Analog Input 1's present value":
+        Run(QUICKSTART, (ok(r"^22\.5$"),), server="readme"),
+    "README.md::use bacnet_client::client::BACnetClient;": Example(README_READ_RS),
+    "README.md::bacnet --interface 127.0.0.1 --port 0 read 127.0.0.1:47808 ai:1 pv": Run(QUICKSTART, (
+        ok(r"22\.5"),
+        ok(r"22\.5", "Zone temperature"),
+    ), server="readme"),
+    "README.md::use bacnet_objects::DeviceIdentity;": Example(README_SERVER_RS),
+    "README.md::# watch_value.py: subscribe to Analog Input 1 and print its first notification":
+        Run(QUICKSTART, (ok(r"^PropertyIdentifier\.PRESENT_VALUE 22\.5$"),), server="readme"),
+    "README.md::bacnet": Parse(),
+    "README.md::bacnet mcp authorize --profile plant-a": Parse(),
+    "README.md::{": Parse(),
+    "README.md::[dependencies]": Deps((README_READ_RS, README_SERVER_RS)),
+    "README.md::git clone https://github.com/jscott3201/rusty-bacnet.git": Skip("F", INSTALL),
 }

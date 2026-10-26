@@ -43,6 +43,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // Validate every configured route against the concrete transport before
         // mutating the database or starting network work. No binding takes a
         // group address (#1493).
+        // Max_APDU_Length_Accepted is fixed here for the server's life; a
+        // later fall in the transport's capacity leaves it as is, and each
+        // reply is sized to its route instead (#2093).
         super::network_port::validate_apdu_capacity(&mut config, &transport)?;
         crate::local_device::validate_startup(&db, &config.device)?;
         let is_group = |mac: &[u8]| transport.is_group_destination(mac);

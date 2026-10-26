@@ -1,10 +1,15 @@
-"""Run the website's CLI samples against loopback servers (#1989).
+"""Run the website's and the README's samples against loopback servers
+(#1989, #2105).
 
 Every displayed block needs an entry in site_samples.SAMPLES. The ``Run``
 samples run against the loopback lab (or the server guide's own program) on
 127.0.0.1, with the page's device address replaced by the server's; any other
 address, or a transport that could leave the host, is refused before a
-command starts. The ``Parse`` samples run with ``--help`` appended.
+command starts. The ``Parse`` samples run with ``--help`` appended. The
+README's quickstart server is itself a sample: the ``readme`` server runs that
+block, and its Python and CLI samples run against it. ``ReadmeSamples`` checks
+the README's Rust blocks against their Cargo examples, its dependency table,
+and the release smoke test's copy of the quickstart server.
 
 The CLI comes from BACNET_CLI, or target/debug/bacnet when that exists; the
 CLI tests skip without one, and fail if BACNET_CLI names a missing file.
@@ -18,17 +23,22 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import tomllib
 import unittest
 
 import site_samples as samples
-from site_samples import Covered, Expect, Parse, Run, Skip
+from site_samples import Covered, Deps, Example, Expect, Parse, Run, Skip
 
-REPO = samples.WEBSITE.parent
+REPO = samples.REPO
+SMOKE = REPO / "scripts/release/cli_smoke.sh"
+INTEGRATION_MANIFEST = REPO / "crates/bacnet-integration-tests/Cargo.toml"
 LAB = samples.WEBSITE / "examples/python/loopback_lab.py"
 SERVER_DEVICE = samples.WEBSITE / "examples/python/server_device.py"
 LOOPBACK = "127.0.0.1"
@@ -166,8 +176,11 @@ def text(output: str | bytes | None) -> str:
 class Server:
     """A server program on loopback; its output lines are collected as it runs."""
 
-    def __init__(self, argv: list[str], ready: str, stop_on_eof: bool):
+    def __init__(self, argv: list[str], ready: str, stop_on_eof: bool, scratch: str | None = None,
+                 ready_timeout: float = 15):
         self.stop_on_eof = stop_on_eof
+        # A directory the server's program was written to, removed on stop.
+        self.scratch = scratch
         self.lines: list[str] = []
         self.changed = threading.Condition()
         self.process = subprocess.Popen(
@@ -175,9 +188,20 @@ class Server:
         )
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
-        first = self.wait_for(ready)
-        self.address = re.search(r"127\.0\.0\.1:\d+", first).group(0)
-        check_loopback([self.address])
+        try:
+            first = self.wait_for(ready, ready_timeout)
+            self.address = re.search(r"127\.0\.0\.1:\d+", first).group(0)
+            check_loopback([self.address])
+        except BaseException:
+            # A server that never got ready must not live on holding its port.
+            self.process.kill()
+            self.process.wait()
+            self.reader.join(timeout=5)
+            for stream in (self.process.stdin, self.process.stdout):
+                stream.close()
+            if self.scratch:
+                shutil.rmtree(self.scratch, ignore_errors=True)
+            raise
 
     def _read(self) -> None:
         for line in self.process.stdout:
@@ -213,6 +237,8 @@ class Server:
         self.reader.join(timeout=5)
         for stream in (self.process.stdin, self.process.stdout):
             stream.close()
+        if self.scratch:
+            shutil.rmtree(self.scratch, ignore_errors=True)
 
 
 def start_server(kind: str) -> Server:
@@ -220,7 +246,29 @@ def start_server(kind: str) -> Server:
         return Server([sys.executable, "-u", str(LAB), "--serve", "--seconds", "600"], "Example server: ", False)
     if kind == "server_device":
         return Server([sys.executable, "-u", str(SERVER_DEVICE)], "Serving device 1001 at ", True)
+    if kind == "readme":
+        # The README's quickstart server, its displayed bytes, stopped with Ctrl+C.
+        scratch = tempfile.mkdtemp(prefix="readme-server-")
+        program = Path(scratch) / "local_server.py"
+        program.write_text(block_by_key(samples.README_SERVER).text + "\n", encoding="utf-8")
+        return Server([sys.executable, "-u", str(program)], "Listening at ", False, scratch)
     raise ValueError(kind)
+
+
+def block_by_key(wanted: str) -> samples.Block:
+    found = [block for block in samples.blocks() if samples.key(block) == wanted]
+    if len(found) != 1:
+        raise AssertionError(f"expected one block for {wanted!r}, found {len(found)}")
+    return found[0]
+
+
+def run_python(block: samples.Block) -> subprocess.CompletedProcess:
+    """Run a Python block as a program, from a file of its displayed bytes."""
+    with tempfile.TemporaryDirectory(prefix="sample-") as scratch:
+        program = Path(scratch) / "sample.py"
+        program.write_text(block.text + "\n", encoding="utf-8")
+        return subprocess.run([sys.executable, str(program)], stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, timeout=TIMEOUT)
 
 
 def entries(kind: type) -> list[tuple[samples.Block, object]]:
@@ -251,18 +299,26 @@ class SampleInventory(unittest.TestCase):
     def test_entries_are_well_formed(self):
         for key, spec in samples.SAMPLES.items():
             with self.subTest(key=key):
-                self.assertIsInstance(spec, (Run, Covered, Parse, Skip))
+                self.assertIsInstance(spec, (Run, Covered, Parse, Skip, Example, Deps))
                 if isinstance(spec, Skip):
                     self.assertIn(spec.cls, "CDEFG")
                     self.assertTrue(spec.reason)
                 if isinstance(spec, Covered):
                     for path in spec.by:
                         self.assertTrue((REPO / path).is_file(), path)
+                if isinstance(spec, Example):
+                    self.assertIn(spec.path, example_paths(), "not a [[example]] of bacnet-integration-tests")
+                if isinstance(spec, Deps):
+                    for path in spec.examples:
+                        self.assertIn(path, example_paths())
 
     def test_run_and_parse_blocks_are_cli_lines(self):
         for block, spec in entries(Run) + entries(Parse):
             with self.subTest(block=block.where):
-                lines = samples.commands(block.text)
+                if isinstance(spec, Run) and block.lang == "python":
+                    self.assertEqual(len(spec.expect), 1, "a Python block is one program")
+                    continue
+                lines = samples.block_commands(block)
                 self.assertTrue(lines)
                 if isinstance(spec, Run):
                     self.assertEqual(len(lines), len(spec.expect), "one expectation per command")
@@ -271,6 +327,117 @@ class SampleInventory(unittest.TestCase):
                 else:
                     for words in lines:
                         parse_argv("bacnet", split_env(words)[1], spec)
+
+
+def example_paths() -> set[str]:
+    """The [[example]] files of bacnet-integration-tests, relative to the repository."""
+    manifest = tomllib.loads(INTEGRATION_MANIFEST.read_text(encoding="utf-8"))
+    base = INTEGRATION_MANIFEST.parent
+    return {(base / item["path"]).resolve().relative_to(REPO).as_posix() for item in manifest.get("example", [])}
+
+
+def release_minor() -> str:
+    site = (samples.WEBSITE / "src/lib/site.mjs").read_text(encoding="utf-8")
+    release = re.search(r"export const release = '(\d+)\.(\d+)\.\d+';", site)
+    return f"{release.group(1)}.{release.group(2)}"
+
+
+def dependency_problems(table: str, examples: tuple[str, ...]) -> list[str]:
+    """What is wrong with a README dependency table, for these examples."""
+    problems = []
+    deps = tomllib.loads(table).get("dependencies", {})
+    minor = release_minor()
+    for name, spec in deps.items():
+        if not name.startswith("bacnet-"):
+            continue
+        version = (spec if isinstance(spec, str) else spec.get("version", "")).lstrip("=^~")
+        manifest = REPO / "crates" / name / "Cargo.toml"
+        if not manifest.is_file():
+            problems.append(f"{name} is not a workspace crate")
+        elif tomllib.loads(manifest.read_text(encoding="utf-8"))["package"].get("publish") is False:
+            problems.append(f"{name} is not published")
+        if version != minor and not version.startswith(minor + "."):
+            problems.append(f"{name} = {version!r}, not the release's {minor}")
+    tokio = deps.get("tokio", {})
+    features = set(tokio.get("features", [])) if isinstance(tokio, dict) else set()
+    for path in examples:
+        body = samples.example_body(path)
+        for crate in sorted(set(re.findall(r"^use (bacnet_\w+)", body, re.M))):
+            if crate.replace("_", "-") not in deps:
+                problems.append(f"{path} uses {crate}, which the table leaves out")
+        needed = {"macros", "rt-multi-thread"} if "#[tokio::main]" in body else set()
+        if "tokio::signal" in body:
+            needed.add("signal")
+        if needed - features:
+            problems.append(f"{path} needs tokio features {sorted(needed - features)}")
+    return problems
+
+
+class ServerStartup(unittest.TestCase):
+    def test_a_server_that_never_gets_ready_is_killed(self):
+        scratch = tempfile.mkdtemp(prefix="never-ready-")
+        with tempfile.TemporaryDirectory(prefix="never-ready-pid-") as keep:
+            pid_file = Path(keep) / "pid"
+            program = (f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+                       "print('starting', flush=True); time.sleep(60)")
+            started = time.monotonic()
+            with self.assertRaises(AssertionError):
+                Server([sys.executable, "-c", program], "never printed", False, scratch, ready_timeout=2)
+            # Without the kill, closing the pipes waits for the child's 60 s sleep.
+            self.assertLess(time.monotonic() - started, 20, "the child outlived its failed start")
+            self.assertFalse(Path(scratch).exists(), "the scratch directory was left behind")
+            pid = int(pid_file.read_text())
+        if os.name != "nt":
+            # Killed and reaped: the pid no longer names a process.
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+
+class ReadmeSamples(unittest.TestCase):
+    """The README's blocks that need no CLI or server (#2105)."""
+
+    def test_rust_blocks_are_their_cargo_examples(self):
+        found = entries(Example)
+        self.assertTrue(found)
+        for block, spec in found:
+            with self.subTest(block=block.where):
+                self.assertEqual(block.lang, "rust")
+                self.assertEqual(block.text, samples.example_body(spec.path), f"{block.where} differs from {spec.path}")
+
+    def test_dependency_tables(self):
+        found = entries(Deps)
+        self.assertTrue(found)
+        for block, spec in found:
+            with self.subTest(block=block.where):
+                self.assertEqual(dependency_problems(block.text, spec.examples), [])
+
+    def test_dependency_check_catches_drift(self):
+        good = block_by_key("README.md::[dependencies]").text
+        spec = samples.SAMPLES["README.md::[dependencies]"]
+        self.assertEqual(dependency_problems(good, spec.examples), [])
+        for bad in (
+            good.replace('bacnet-server = "', 'bacnet-serverx = "'),
+            good.replace('bacnet-objects = "', 'bacnet-integration-tests = "'),
+            good.replace(f'bacnet-client = "{release_minor()}"', 'bacnet-client = "0.1"'),
+            good.replace(', "signal"', ""),
+            "\n".join(line for line in good.splitlines() if not line.startswith("bacnet-encoding")),
+        ):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(dependency_problems(bad, spec.examples), [])
+
+    def test_release_smoke_runs_the_readme_server(self):
+        script = SMOKE.read_text(encoding="utf-8")
+        copy = re.search(r"cat >\"\$tmp/local_server\.py\" <<'EOF'\n(.*?)\nEOF\n", script, re.S)
+        self.assertIsNotNone(copy, "cli_smoke.sh no longer writes local_server.py")
+        self.assertEqual(copy.group(1), block_by_key(samples.README_SERVER).text)
+
+    def test_mcp_host_configurations_name_the_cli(self):
+        found = [block for block, _ in entries(Parse) if block.lang == "json"]
+        self.assertTrue(found)
+        for block in found:
+            with self.subTest(block=block.where):
+                for words in samples.block_commands(block):
+                    self.assertEqual(words[:3], ["bacnet", "mcp", "serve"])
 
 
 class LoopbackGuard(unittest.TestCase):
@@ -333,6 +500,15 @@ class CliSamples(unittest.TestCase):
 
     def check(self, block: samples.Block, spec: Run, server: Server | None) -> None:
         address = server.address if server else ""
+        if block.lang == "python":
+            self.assertEqual(address, spec.device, f"{block.where}: the program names {spec.device}")
+            result = run_python(block)
+            output = text(result.stdout) + text(result.stderr)
+            (expect,) = spec.expect
+            self.assertEqual(result.returncode, expect.status, f"{block.where}\n{output}")
+            for pattern in expect.patterns:
+                self.assertRegex(output, re.compile(pattern, re.M), block.where)
+            return
         for words, expect in zip(samples.commands(block.text), spec.expect, strict=True):
             argv, env = self.run_line(words, spec, address)
             label = " ".join(argv[1:])
@@ -397,9 +573,12 @@ class CliSamples(unittest.TestCase):
     def test_server_guide_samples_on_its_program(self):
         self.run_on("server_device")
 
+    def test_readme_samples_on_its_quickstart_server(self):
+        self.run_on("readme")
+
     def test_parse_samples(self):
         for block, spec in entries(Parse):
-            for words in samples.commands(block.text):
+            for words in samples.block_commands(block):
                 env, words = split_env(words)
                 argv = parse_argv(self.cli, words, spec)
                 with self.subTest(block=block.where, command=" ".join(words)):

@@ -121,8 +121,9 @@ def __init__(
 ) -> None
 ```
 
-`dcc_password` and `reinit_password` hold at most 20
-characters; a longer one raises ValueError here (#2060).
+`dcc_password` and `reinit_password` hold 1 to 20
+characters; a longer one (#2060) or an empty one (#2094) raises
+ValueError here. None configures no password.
 
 `transport="router"` with `router` (a `BACnetRouter` built
 with `application="client_and_server"`): host the device on the

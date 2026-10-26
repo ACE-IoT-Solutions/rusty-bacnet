@@ -201,6 +201,64 @@ fn datetime_value_priority_array() {
     );
 }
 
+/// #2098: each set Priority_Array slot of a date-time value type is the
+/// BACnetPriorityValue date-time choice, context tag 1 around the Date and
+/// Time, so a whole read is sixteen elements. Present_Value stays bare.
+#[test]
+fn datetime_priority_array_slots_carry_the_context_one_choice() {
+    let date = Date {
+        year: 126,
+        month: 10,
+        day: 25,
+        day_of_week: 7,
+    };
+    let time = Time {
+        hour: 7,
+        minute: 30,
+        second: 0,
+        hundredths: 0,
+    };
+    let set = PropertyValue::List(vec![PropertyValue::Date(date), PropertyValue::Time(time)]);
+    let wrapped =
+        PropertyValue::ApplicationData(vec![0x1E, 0xA4, 126, 10, 25, 7, 0xB4, 7, 30, 0, 0, 0x1F]);
+    let mut dtv = DateTimeValueObject::new(1, "DTV-1").unwrap();
+    let mut dtpv = DateTimePatternValueObject::new(1, "DTPV-1").unwrap();
+    let objects: [&mut dyn BACnetObject; 2] = [&mut dtv, &mut dtpv];
+    for obj in objects {
+        obj.write_property(
+            PropertyIdentifier::PRESENT_VALUE,
+            None,
+            set.clone(),
+            Some(8),
+        )
+        .unwrap();
+        let PropertyValue::List(slots) = obj
+            .read_property(PropertyIdentifier::PRIORITY_ARRAY, None)
+            .unwrap()
+        else {
+            panic!("a whole Priority_Array read is a list");
+        };
+        assert_eq!(slots.len(), 16);
+        assert_eq!(slots[7], wrapped);
+        assert!(
+            slots
+                .iter()
+                .enumerate()
+                .all(|(i, slot)| i == 7 || *slot == PropertyValue::Null)
+        );
+        assert_eq!(
+            obj.read_property(PropertyIdentifier::PRIORITY_ARRAY, Some(8))
+                .unwrap(),
+            wrapped
+        );
+        assert_eq!(
+            obj.read_property(PropertyIdentifier::PRESENT_VALUE, None)
+                .unwrap(),
+            set
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // DatePatternValueObject (non-commandable)
 // -----------------------------------------------------------------------

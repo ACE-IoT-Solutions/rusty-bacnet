@@ -248,6 +248,16 @@ pub(super) fn spawn_number_worker<T: TransportPort + 'static>(
     })
 }
 
+/// Resolve the Device's Max_APDU_Length_Accepted against the transport's
+/// receive capacity, once, at start.
+///
+/// The result stays fixed while the server runs, even if the transport's
+/// capacity later falls (a BACnet/SC hub failover, a router port whose path
+/// shrinks; #2093). Peers read the value once, from I-Am or their address
+/// binding, and cache it, so changing the property afterwards would not
+/// reach them. Replies stay safe without it: each response is sized to its
+/// own route's budget (`ResponseRoute::max_apdu_length`, the requester's
+/// declared limit included), so a smaller path still gets replies that fit.
 pub(super) fn validate_apdu_capacity<T: TransportPort>(
     config: &mut ServerConfig,
     transport: &T,

@@ -341,7 +341,7 @@ impl Outcome {
     pub(crate) fn describe(&self) -> String {
         match self {
             Self::Ack => "acknowledged".into(),
-            Self::Denied => "DENIED by the device's write policy (SERVICE_REQUEST_DENIED)".into(),
+            Self::Denied => "DENIED by the device's policy (SERVICE_REQUEST_DENIED)".into(),
             Self::Refused(RemoteError::Error { class, code }) => format!("error {class} / {code}"),
             Self::Refused(RemoteError::Reject { reason }) => format!("rejected, reason {reason}"),
             Self::Refused(RemoteError::Abort { reason }) => format!("aborted, reason {reason}"),

@@ -404,10 +404,15 @@ async fn device_mgmt_unknown_device_and_invalid_time_routes_send_nothing() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn over_long_passwords_fail_before_anything_is_sent() {
-    // #2085: 21 characters (two octets each in UTF-8) never reach the wire.
-    let too_long = "é".repeat(21);
-    for routed in [true, false] {
+async fn over_long_or_empty_passwords_fail_before_anything_is_sent() {
+    // #2085: 21 characters (two octets each in UTF-8) never reach the wire;
+    // #2094: nor does an empty password, which the caller omits instead.
+    for (too_long, why, routed) in [
+        ("é".repeat(21), "20-character limit", true),
+        ("é".repeat(21), "20-character limit", false),
+        (String::new(), "omit it", true),
+        (String::new(), "omit it", false),
+    ] {
         let (mut client, mut peer) = site(routed).await;
         let errors = [
             client
@@ -447,7 +452,7 @@ async fn over_long_passwords_fail_before_anything_is_sent() {
         ];
         for err in errors {
             assert!(matches!(err, Error::Encode(_)), "{err:?}");
-            assert!(err.to_string().contains("20-character limit"), "{err}");
+            assert!(err.to_string().contains(why), "{err}");
         }
         tokio::task::yield_now().await;
         peer.empty();

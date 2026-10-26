@@ -6,7 +6,11 @@ This reference follows the `dev` branch. At the `v0.14.0` tag it describes the
 [published 0.14.0 package](https://pypi.org/project/rusty-bacnet/0.14.0/), which
 the site's tutorials also target; see the [installation guidance](../README.md#install).
 Changes merged after the release wait in [`changelog.d/`](../changelog.d/); to
-use them, follow [Build from source](../README.md#build-from-source).
+use them, follow [Build from source](https://jscott3201.github.io/rusty-bacnet/development/overview/#build-a-source-checkout).
+
+Python and Rust expose different configuration surfaces: the bindings don't
+wrap every Rust API, so check this reference before assuming a Rust option
+exists in Python.
 
 **Requirements:** Python >= 3.11
 
@@ -528,6 +532,12 @@ is an error.
   a BACnetARRAY or BACnetLIST; a vendor-defined collection is shaped by the
   last rule. A whole Object_List, Priority_Array, one-state State_Text or a
   B/IP Network Port's IP_DNS_SERVER is a `list`.
+- **A DateTime Value or DateTime Pattern Value's Priority_Array** is a
+  `list` of 16 slots too. A set slot is the date-time choice under context
+  tag 1, so it reads as `application_data` holding those octets, and its
+  `.value` is `[date, time]`, the form Present_Value reads in; an indexed
+  read of that slot is the same `application_data` (#2098). A Present_Value
+  write takes the bare date and time, not the slot's octets.
 - **Anything else** is the bare value when it holds one element, and a
   `list` in wire order when it holds none or several. An empty value is
   `PropertyValue.list([])`, whatever the property's element type. A
@@ -2838,11 +2848,11 @@ server = BACnetServer(
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
     mutation_policy="permissive", # keyword-only; "deny_all", or a callable deciding each mutation
-    dcc_password=None,           # at most 20 characters; password alone does not enable DCC
+    dcc_password=None,           # 1 to 20 characters ("" raises); password alone does not enable DCC
     dcc_policy="deny_all",       # keyword-only; explicit require_password or INSECURE legacy_permissive
     dcc_source_restriction=None, # optional list[(network_or_None, bytes)]; [] denies all; requires require_password
     dcc_disable_rate_limit=None, # optional (capacity, refill_interval_ms); (3, 20000) enables default rate
-    reinit_password=None,        # password for ReinitializeDevice, at most 20 characters
+    reinit_password=None,        # password for ReinitializeDevice, 1 to 20 characters
     sc_control_rate_limit=None,  # keyword-only; SC only, see "SC ingress quotas and drop counters"
     on_reinitialize=None,        # keyword-only; see "ReinitializeDevice"
     after_reinitialize=None,     # keyword-only; runs after the SimpleACK

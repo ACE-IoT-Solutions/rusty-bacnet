@@ -345,8 +345,9 @@ async fn a_password_without_a_handler_is_refused() {
     );
 }
 
-/// A configured password over 20 characters could never be sent, so startup
-/// refuses it; 20 multi-octet characters are within the limit (#2060).
+/// A configured password over 20 characters could never be sent, and an
+/// empty one never matched, so startup refuses both; 20 multi-octet
+/// characters are within the limit (#2060, #2094).
 #[tokio::test]
 async fn a_password_over_twenty_characters_is_refused() {
     let session = |password: String| {
@@ -360,6 +361,13 @@ async fn a_password_over_twenty_characters_is_refused() {
     assert_refused(
         &mut session("é".repeat(21)),
         "reinit_password exceeds the 20-character limit",
+    )
+    .await;
+    // An empty one could never match, since an empty request password
+    // decodes as none (#2094).
+    assert_refused(
+        &mut session(String::new()),
+        "reinit_password is empty; leave it unset for no password",
     )
     .await;
     let mut fits = session("é".repeat(20));

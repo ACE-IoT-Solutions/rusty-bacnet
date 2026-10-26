@@ -70,8 +70,8 @@ def __init__(
 
 `on_reinitialize` / `after_reinitialize`: execute
 ReinitializeDevice, as `BACnetServer`'s keywords do (#1566);
-`reinit_password` (needs `on_reinitialize`, else ValueError; at
-most 20 characters, else ValueError) is the password a request must
+`reinit_password` (needs `on_reinitialize`, else ValueError; 1 to
+20 characters, else ValueError) is the password a request must
 carry. The callable runs on the session's
 one dispatch task, so a slow one stalls every request.
 `device_write_policy`: a callable that decides each WriteProperty

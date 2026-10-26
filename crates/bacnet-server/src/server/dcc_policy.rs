@@ -144,19 +144,27 @@ impl DccSourceRestriction {
 
 impl super::ServerConfig {
     pub(super) fn validate_dcc_config(&self) -> Result<(), Error> {
+        // RequirePassword names the missing password itself, empty included.
+        self.dcc_policy.validate(&self.dcc_password)?;
         // A configured password past the 20-character limit could never be
-        // sent, so it would refuse every request (#2060).
+        // sent, so it would refuse every request (#2060). An empty one could
+        // never match either: a request's empty password decodes as none
+        // (#2094). Leave the password unset instead.
         for (name, password) in [
             ("dcc_password", &self.dcc_password),
             ("reinit_password", &self.reinit_password),
         ] {
+            if password.as_deref() == Some("") {
+                return Err(Error::Encoding(format!(
+                    "{name} is empty; leave it unset for no password"
+                )));
+            }
             if password.as_deref().is_some_and(|p| !password_fits(p)) {
                 return Err(Error::Encoding(format!(
                     "{name} exceeds the {MAX_PASSWORD_CHARS}-character limit"
                 )));
             }
         }
-        self.dcc_policy.validate(&self.dcc_password)?;
         if let Some(restriction) = &self.dcc_source_restriction {
             restriction.validate_policy(self.dcc_policy)?;
         }
