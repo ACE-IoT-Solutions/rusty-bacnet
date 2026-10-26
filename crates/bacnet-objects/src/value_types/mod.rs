@@ -357,8 +357,14 @@ fn clone_bitstring_to_pv(v: &(u8, Vec<u8>)) -> PropertyValue {
     }
 }
 
-fn datetime_copy_to_pv(v: (Date, Time)) -> PropertyValue {
-    PropertyValue::List(vec![PropertyValue::Date(v.0), PropertyValue::Time(v.1)])
+/// A set Priority_Array slot of a date-time value type: the date-time choice
+/// of BACnetPriorityValue, context tag 1 around the Date and Time (#2098).
+/// Present_Value and Relinquish_Default stay a bare BACnetDateTime; only the
+/// array element is the CHOICE.
+fn datetime_priority_value(v: (Date, Time)) -> PropertyValue {
+    let mut buf = bytes::BytesMut::with_capacity(12);
+    bacnet_encoding::primitives::encode_priority_date_time(&mut buf, &v.0, &v.1);
+    PropertyValue::ApplicationData(buf.to_vec())
 }
 
 fn datetime_to_pv(dt: &(Date, Time)) -> PropertyValue {
@@ -649,7 +655,7 @@ define_value_object_commandable! {
     ),
     pv_to_property: (|v: &(Date, Time)| datetime_to_pv(v)),
     property_to_pv: pv_to_datetime,
-    pa_wrap: datetime_copy_to_pv,
+    pa_wrap: datetime_priority_value,
     rd_wrap: (|v: &(Date, Time)| datetime_to_pv(v)),
     rd_validate: (|_: &(Date, Time)| -> Result<(), Error> { Ok(()) }),
     copy_type: copy,
@@ -701,7 +707,7 @@ define_value_object_commandable! {
     ),
     pv_to_property: (|v: &(Date, Time)| datetime_to_pv(v)),
     property_to_pv: pv_to_datetime,
-    pa_wrap: datetime_copy_to_pv,
+    pa_wrap: datetime_priority_value,
     rd_wrap: (|v: &(Date, Time)| datetime_to_pv(v)),
     rd_validate: (|_: &(Date, Time)| -> Result<(), Error> { Ok(()) }),
     copy_type: copy,

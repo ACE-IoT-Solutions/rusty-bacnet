@@ -195,3 +195,71 @@ fn element_kinds_have_fixed_names() {
         ]
     );
 }
+
+/// #2098: a DateTime Value's Priority_Array is sixteen elements, a set slot
+/// the date-time choice under context tag 1, shown as a date-time in the
+/// text, the per-slot element and the typed data. The same octets on
+/// another object type stay raw.
+#[test]
+fn a_date_time_priority_slot_reads_as_a_date_time() {
+    use bacnet_encoding::primitives::encode_priority_date_time;
+    use bacnet_types::primitives::Date;
+    let date = Date {
+        year: 126,
+        month: 10,
+        day: 25,
+        day_of_week: Date::UNSPECIFIED,
+    };
+    let time = Time {
+        hour: 7,
+        minute: 30,
+        second: 0,
+        hundredths: 0,
+    };
+    let mut buf = BytesMut::new();
+    for slot in 1..=16 {
+        if slot == 8 {
+            encode_priority_date_time(&mut buf, &date, &time);
+        } else {
+            buf.extend_from_slice(&[0x00]);
+        }
+    }
+    let values = decode_all(&buf).unwrap();
+    assert_eq!(values.len(), 16);
+
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(O::DATETIME_VALUE, &texts, Floats::Exact).whole_lists();
+    let shown = format.value(P::PRIORITY_ARRAY, &buf);
+    assert!(shown.contains("null, 2026-10-25 07:30, null"), "{shown}");
+    assert_eq!(
+        format.element(P::PRIORITY_ARRAY, &values[7]),
+        "2026-10-25 07:30"
+    );
+    // An indexed read of the slot.
+    let slot = &buf[7..19];
+    assert_eq!(
+        format.value_at(P::PRIORITY_ARRAY, Some(8), slot),
+        "2026-10-25 07:30"
+    );
+    let Datum::List(items) = data(O::DATETIME_VALUE, P::PRIORITY_ARRAY, &buf) else {
+        panic!("a whole Priority_Array is a list");
+    };
+    assert_eq!(items.len(), 16);
+    assert_eq!(
+        items[7],
+        Datum::List(vec![
+            Datum::Date {
+                date: "2026-10-25".into()
+            },
+            Datum::Time {
+                time: "07:30".into()
+            },
+        ])
+    );
+    assert_eq!(items[0], Datum::Null);
+    // Not a date-time value type: the octets are shown as they came.
+    assert!(matches!(
+        data(O::ANALOG_VALUE, P::PRIORITY_ARRAY, slot),
+        Datum::Raw { .. }
+    ));
+}

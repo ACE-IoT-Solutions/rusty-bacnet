@@ -127,9 +127,35 @@ fn property_value_to_py(
             list.into_any().unbind()
         }
         primitives::PropertyValue::ApplicationData(bytes) => {
-            PyBytes::new(py, bytes).into_any().unbind()
+            match priority_date_time(bytes, property) {
+                // A date-time Priority_Array slot (#2098) reads as its
+                // object's Present_Value does: the date, then the time.
+                Some((date, time)) => {
+                    let pair = pyo3::types::PyList::empty(py);
+                    pair.append(date_value(&date))?;
+                    pair.append(time_value(&time))?;
+                    pair.into_any().unbind()
+                }
+                None => PyBytes::new(py, bytes).into_any().unbind(),
+            }
         }
     })
+}
+
+/// The Date and Time of a Priority_Array slot holding the date-time choice
+/// of BACnetPriorityValue, context tag 1 around them; `None` for any other
+/// octets or property.
+fn priority_date_time(
+    octets: &[u8],
+    property: Option<bacnet_types::enums::PropertyIdentifier>,
+) -> Option<(primitives::Date, primitives::Time)> {
+    if property != Some(bacnet_types::enums::PropertyIdentifier::PRIORITY_ARRAY) {
+        return None;
+    }
+    match bacnet_encoding::primitives::decode_priority_date_time(octets, 0) {
+        Ok((date_time, end)) if end == octets.len() => Some(date_time),
+        _ => None,
+    }
 }
 
 #[pymethods]

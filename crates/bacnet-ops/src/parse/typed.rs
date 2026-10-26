@@ -3,20 +3,19 @@
 //! formatter prints, so a value read can be pasted back as a write.
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
-use bacnet_encoding::primitives::{encode_property_value, encode_timestamp_choice};
-use bacnet_encoding::tags::{encode_closing_tag, encode_opening_tag};
+use bacnet_encoding::primitives::{encode_priority_date_time, encode_timestamp_choice};
 use bacnet_types::bitstring::{EventTransitionBits, LimitEnable, StatusFlags};
 use bacnet_types::enums::{
     BinaryPV, LifeSafetyState, ObjectType, PropertyIdentifier, ResolvedBits, ResolvedEnum,
     ServiceSupported,
 };
-use bacnet_types::primitives::{PropertyValue, Time};
+use bacnet_types::primitives::{Date, PropertyValue, Time};
 use bytes::BytesMut;
 
 use super::datetime::{parse_date_time, parse_time, parse_timestamp};
 use super::numeric::{Number, coerce, finite, numeric};
 use super::{json, parse_value, split_priority};
-use crate::format::{holds_state, is_binary, is_multistate};
+use crate::format::{holds_state, is_binary, is_date_time_value, is_multistate};
 use crate::label::kebab;
 
 /// Names listed in full when a typed name is wrong; a longer list gives
@@ -148,15 +147,6 @@ fn holds_date_time(object_type: ObjectType, property: PropertyIdentifier) -> boo
         P::PRESENT_VALUE | P::RELINQUISH_DEFAULT => is_date_time_value(object_type),
         _ => false,
     }
-}
-
-/// The DateTime Value object types.
-fn is_date_time_value(object_type: ObjectType) -> bool {
-    [
-        ObjectType::DATETIME_VALUE,
-        ObjectType::DATETIMEPATTERN_VALUE,
-    ]
-    .contains(&object_type)
 }
 
 /// Whether an object type is a life safety point or zone.
@@ -431,15 +421,21 @@ pub(super) fn bit_string(set: &[bool]) -> PropertyValue {
 
 /// A date and a time, the time unspecified when none is typed.
 fn parse_date_time_value(text: &str) -> Result<PropertyValue, String> {
+    let (date, time) = parse_date_and_time(text)?;
+    Ok(PropertyValue::List(vec![
+        PropertyValue::Date(date),
+        PropertyValue::Time(time),
+    ]))
+}
+
+/// The typed date with its time, which is unspecified when only the date is given.
+fn parse_date_and_time(text: &str) -> Result<(Date, Time), String> {
     let (date, time) = parse_date_time(text)?;
     let time: Time = match time {
         Some(time) => time,
         None => parse_time("any time")?,
     };
-    Ok(PropertyValue::List(vec![
-        PropertyValue::Date(date),
-        PropertyValue::Time(time),
-    ]))
+    Ok((date, time))
 }
 
 /// Parse a value typed for `property` of an object of `object_type`, at
@@ -498,11 +494,9 @@ pub fn parse_value_for(
         },
         Kind::Number(number) => coerce(number, parse_value(text)?),
         Kind::PriorityDateTime => {
+            let (date, time) = parse_date_and_time(text)?;
             let mut buf = BytesMut::new();
-            encode_opening_tag(&mut buf, 1);
-            encode_property_value(&mut buf, &parse_date_time_value(text)?)
-                .map_err(|e| format!("cannot encode the date-time: {e}"))?;
-            encode_closing_tag(&mut buf, 1);
+            encode_priority_date_time(&mut buf, &date, &time);
             Ok(PropertyValue::ApplicationData(buf.to_vec()))
         }
         Kind::Bits(bits) => parse_bits(&bits, text),
