@@ -15,13 +15,13 @@ use ratatui::crossterm::event::KeyCode;
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::decode::frame::summarize_frame;
-use crate::decode::testing;
 use crate::tui::app::capture::{CaptureKey, CaptureState, Focus};
 use crate::tui::app::watch::Screen;
 use crate::tui::capture::worker::{Source, pump, route};
 use crate::tui::capture::{Batch, CaptureCommand, CaptureEvent, CaptureFrame, Direction, Framing};
 use crate::tui::worker::EventSink;
+use bacnet_ops::decode::frame::summarize_frame;
+use bacnet_ops::decode::testing;
 
 /// A fixed wall-clock time, `ms` after 2025-10-09 08:53:20 UTC.
 pub(super) fn wall(ms: u64) -> SystemTime {

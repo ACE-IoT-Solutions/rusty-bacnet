@@ -64,7 +64,7 @@ async fn no_configuration_lists_a_write_tool() {
             assert_eq!(tool["annotations"]["readOnlyHint"], json!(true), "{tool}");
         }
         if passive {
-            assert_eq!(names, ["bacnet_discover"]);
+            assert_eq!(names, ["bacnet_discover", "bacnet_decode"]);
         }
         drop(agent);
         serving.await.unwrap();

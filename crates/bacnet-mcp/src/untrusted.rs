@@ -19,6 +19,11 @@ pub(crate) fn envelope(text: &str, source: impl Into<String>, cap: usize) -> Val
     json!({ "untrusted": text, "source": source.into(), "truncated": truncated })
 }
 
+/// An envelope for text already cleaned and capped by [`clean`].
+pub(crate) fn envelope_cleaned(text: &str, truncated: bool, source: impl Into<String>) -> Value {
+    json!({ "untrusted": text, "source": source.into(), "truncated": truncated })
+}
+
 /// `text` cleaned and capped; true when it was cut.
 pub(crate) fn clean(text: &str, cap: usize) -> (String, bool) {
     let mut cleaned: String = text

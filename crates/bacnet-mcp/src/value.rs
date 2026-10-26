@@ -77,6 +77,15 @@ fn datum_json(datum: &Datum) -> Value {
     serde_json::to_value(datum).expect("a datum serializes")
 }
 
+/// Any serializable value built from [`Datum`]s (a single datum, or a
+/// summary such as an alarm's) as JSON, with each device-text leaf in an
+/// envelope from `source`, capped at `cap`.
+pub(crate) fn enveloped(value: &impl serde::Serialize, source: &str, cap: usize) -> Value {
+    let mut json = serde_json::to_value(value).expect("decoded data serializes");
+    envelope_leaves(&mut json, source, cap);
+    json
+}
+
 /// The object forms of [`Datum`] whose strings are the formatter's own
 /// (names, digits, dates), by their keys; a key in the second list may be
 /// left out.

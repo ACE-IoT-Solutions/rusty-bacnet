@@ -129,6 +129,11 @@ impl Listing {
         self.indexed.is_none_or(|(total, next)| next > total)
     }
 
+    /// Why an element read stopped early, if the device stopped answering.
+    pub(super) fn stopped(&self) -> Option<&str> {
+        self.stopped.as_deref()
+    }
+
     /// How far the read has got, for a result.
     pub(super) fn progress(&self) -> Value {
         let (total, next) = self.indexed.unwrap_or((0, 0));

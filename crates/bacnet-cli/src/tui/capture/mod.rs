@@ -32,7 +32,7 @@ use std::time::SystemTime;
 
 use bytes::Bytes;
 
-pub(crate) use crate::decode::frame::{FrameSummary, Framing};
+pub(crate) use bacnet_ops::decode::frame::{FrameSummary, Framing};
 
 pub(crate) mod filter;
 #[cfg(feature = "pcap")]

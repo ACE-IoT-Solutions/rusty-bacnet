@@ -30,6 +30,9 @@ pub struct Field {
     pub range: Range<usize>,
     /// Its parts.
     pub children: Vec<Field>,
+    /// The label quotes a character string from the frame: text whoever
+    /// sent it chose, which a front end shows as data.
+    pub device_text: bool,
 }
 
 impl Field {
@@ -38,6 +41,7 @@ impl Field {
             label: label.into(),
             range,
             children: Vec::new(),
+            device_text: false,
         }
     }
 
@@ -46,6 +50,7 @@ impl Field {
             label: label.into(),
             range,
             children,
+            device_text: false,
         }
     }
 
@@ -89,6 +94,18 @@ pub fn decode_tree(framing: Framing, frame: &[u8]) -> Vec<Field> {
         None => {}
     }
     fields
+}
+
+/// An NPDU given without its link, decoded into its fields: the NPCI,
+/// then a network message or the APDU. Ranges are offsets in `npdu`.
+pub fn decode_npdu_tree(npdu_octets: &[u8]) -> Vec<Field> {
+    npdu(npdu_octets, 0)
+}
+
+/// An APDU given on its own, decoded into its fields: the header, then
+/// the service parameters tag by tag. Ranges are offsets in `apdu`.
+pub fn decode_apdu_tree(apdu_octets: &[u8]) -> Field {
+    apdu(apdu_octets, 0)
 }
 
 /// The link header's node, with the problem the link reported last.
@@ -503,7 +520,7 @@ fn value_text(value: &PropertyValue) -> String {
             )
         }
         // TODO(#1888): the TUI's float cap applies here once it lands.
-        value => crate::output::format_property_value(value),
+        value => crate::format::format_property_value(value),
     }
 }
 
@@ -557,6 +574,7 @@ fn walk(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> (Ve
         }
         .min(end)
         .max(content);
+        let device_text = matches!(&decoded, Some(Ok((PropertyValue::CharacterString(_), _))));
         let label = match decoded {
             Some(Ok((value, _))) => format!(
                 "{}: {}",
@@ -578,7 +596,9 @@ fn walk(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> (Ve
                 }
             }
         };
-        fields.push(Field::leaf(label, base + pos..base + after));
+        let mut field = Field::leaf(label, base + pos..base + after);
+        field.device_text = device_text;
+        fields.push(field);
         pos = after;
     }
     (fields, end)

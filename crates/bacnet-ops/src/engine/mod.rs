@@ -27,6 +27,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use bacnet_client::client::BACnetClient;
 use bacnet_client::log_reader::{LogCursor, LogPage, read_log_page};
 use bacnet_services::alarm_event::GetEventInformationAck;
+use bacnet_services::alarm_summary::GetAlarmSummaryAck;
+use bacnet_services::enrollment_summary::{GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
@@ -247,6 +249,25 @@ impl<T: TransportPort + 'static> Engine<T> {
         let _turn = self.turn(device).await;
         self.client
             .get_event_information_from_device(device, after)
+            .await
+    }
+
+    /// `device`'s GetAlarmSummary answer: the objects whose alarms it
+    /// reports this way.
+    pub async fn alarm_summary(&self, device: u32) -> Result<GetAlarmSummaryAck, Error> {
+        let _turn = self.turn(device).await;
+        self.client.get_alarm_summary_from_device(device).await
+    }
+
+    /// `device`'s GetEnrollmentSummary answer for `request`'s filters.
+    pub async fn enrollment_summary(
+        &self,
+        device: u32,
+        request: &GetEnrollmentSummaryRequest,
+    ) -> Result<GetEnrollmentSummaryAck, Error> {
+        let _turn = self.turn(device).await;
+        self.client
+            .get_enrollment_summary_from_device(device, request)
             .await
     }
 }
