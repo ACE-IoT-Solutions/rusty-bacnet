@@ -878,6 +878,7 @@ mod segmentation;
 mod segmentation_abort;
 mod segmentation_context;
 mod segmented_request;
+mod summaries;
 mod transaction_cleanup;
 mod transaction_peer;
 mod transport_access;

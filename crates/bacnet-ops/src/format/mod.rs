@@ -17,6 +17,7 @@
 //! keep every digit. The compact places cut a long list short; the CLI
 //! shows it whole ([`ValueFormat::whole_lists`]).
 
+pub mod alarms;
 mod commands;
 mod constructed;
 mod data;

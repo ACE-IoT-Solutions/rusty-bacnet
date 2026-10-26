@@ -87,6 +87,10 @@
       {
         "label": "Write & relinquish",
         "slug": "guides/safe-writes"
+      },
+      {
+        "label": "AI agents (MCP)",
+        "slug": "guides/ai-agents"
       }
     ]
   },
